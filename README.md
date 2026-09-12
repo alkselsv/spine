@@ -188,3 +188,5 @@ uv run python -m compileall -q src tests
 - [Продуктовые кейсы](docs/cases/) — исходные требования.
 - [Настройки engineering skills](docs/agents/) — issue tracker, triage и domain
   documentation workflow.
+- [Skills Matt Pocock](docs/agents/matt-pocock-skills.md) — выбор skill и примеры
+  использования в Spine.
