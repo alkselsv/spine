@@ -22,7 +22,11 @@ platform.
 
 - [x] Python/FastAPI-проект и локальный Q&A-прототип на Cognee.
 - [x] Каркас domain, application, connectors, memory, agents, workflows и web.
-- [x] Framework-independent контракты capability, agent invocation, artifact и workflow.
+- [x] Начальный framework-independent каркас контрактов capability, agent invocation, artifact и workflow.
+- [ ] Local agent runtime seam: capability-specific schemas, типизированные
+      `AgentRequest`/`AgentResponse` и полный `AgentExecutionContext`.
+- [ ] Явный registry/factory, structural `AgentHandler`, adapter async-функций,
+      `EventSink`, cooperative cancellation и разделение runtime/workflow retry.
 - [ ] Workspace и environment context во всех API-командах.
 - [ ] `SourceObject`, `SourceRevision`, immutable originals и provenance locators.
 - [ ] Context Broker с Cognee как заменяемой retrieval-проекцией.
@@ -47,6 +51,8 @@ web-интерфейсе и получает проверяемый ответ �
 - [ ] Индексация, обновление, удаление и полная перестройка Cognee-проекции.
 - [ ] Object-level ACL и наследование прав документ → chunk/reference.
 - [ ] Typed retrieval contract через Context Broker.
+- [ ] Capability `answer_question` как эталонный local `AgentHandler`: pinned
+      `AgentVersion`/`ContextProfile`, runtime-managed artifacts и citations.
 - [ ] `/api/v1/ask`: answer, citations, confidence, `as_of`, trace ID и abstention.
 - [ ] Q&A/Search UI: выбор scope, citations inspector, freshness и feedback.
 - [ ] Golden dataset из реальных обезличенных вопросов.
@@ -59,6 +65,8 @@ web-интерфейсе и получает проверяемый ответ �
 - Недостаточный контекст приводит к явному отказу или уточняющему вопросу.
 - Изменение/удаление документа отражается в результатах после контролируемого sync.
 - Пользователь не может получить сведения из недоступного ему документа.
+- Каждый Q&A run сохраняет workspace/environment, acting subject, закреплённые
+  версии agent/prompt/context, input/output artifacts и единый trace ID.
 - Согласованные quality thresholds проходят на versioned eval dataset.
 - Основной сценарий выполняется через UI без CLI.
 
@@ -188,7 +196,8 @@ web-интерфейсе и получает проверяемый ответ �
 - [ ] Унифицированные workflow deployments, reusable subworkflows и visual editor.
 - [ ] Agent catalog UI, version comparison, shadow/canary и rollback.
 - [ ] Tool registry, scoped grants, service identities и kill switch.
-- [ ] Third-party Agent SDK, manifests и certification — при наличии внешних integrations.
+- [ ] Third-party Agent SDK, manifests и certification — только при появлении
+      подтверждённого продуктового кейса для внешних агентов.
 - [ ] Cross-case Insights: cost, quality, human correction и business outcomes.
 - [ ] Continuous evaluation и drift monitoring.
 - [ ] Process mining и объяснимые automation opportunities.

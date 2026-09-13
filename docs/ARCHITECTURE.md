@@ -1,7 +1,7 @@
 # Архитектура Spine
 
 Статус: **предлагаемая архитектура**  
-Версия: **0.5**  
+Версия: **0.6**
 Область: переход от Q&A-прототипа на Cognee к платформе контекстно-зависимой оркестрации множества AI-агентов и людей.
 
 ## 1. Назначение
@@ -141,7 +141,7 @@ flowchart LR
 | `api` | REST API, auth context, Q&A, команды и read models | Горизонтально, stateless |
 | `connector-worker` | Webhooks, polling, cursors, rate limits источников | По источнику и workspace |
 | `projection-worker` | Нормализация, identity resolution, Cognee indexing | По очередям и типам данных |
-| `agent-runtime` | Запуск локальных агентов и adapters к внешним агентам | По capability/model/tool profile |
+| `agent-runtime` | Запуск локальных agent handlers; extension seam для будущих remote adapters | По capability/model/tool profile |
 | `evaluation-worker` | Проверка step output и handoff contracts | По evaluator type/version |
 | `temporal-worker` | Workflow definitions, routing, timers, gates и Activities | По task queue/domain |
 | `web` | Workspaces, Workflows, Agents, Runs, Insights, approvals | Статическая доставка + API |
@@ -363,24 +363,30 @@ Q&A — один consumer этого контракта. Любой agent step �
 
 ### Агент как deployable component
 
-Агент — версионируемый исполнитель одного или нескольких capabilities, а не глобальный чат-бот. Его контракт включает:
+Агент — версионируемый исполнитель одного или нескольких capabilities, а не глобальный чат-бот. Схемы принадлежат контракту capability, поэтому одна версия агента может безопасно предоставлять несколько capabilities с разными входами и выходами:
 
 ```text
-AgentVersion:
-  capability_contracts[]
+CapabilityContract:
+  capability
   input_schema
   output_schema
+  handler_key
+
+AgentVersion:
+  capability_contracts[]
   runtime: llm | code | external
   model_profile
   prompt_version
   context_profile
   tool_grants[]
   resource_limits
-  retry_policy
+  runtime_retry_policy
   evaluation_suite
 ```
 
-Платформа не ограничивает число или предметную область агентов. Возможные классы:
+`runtime_retry_policy` задаёт только короткие технические повторы одной попытки вызова. Долговременные retry, fallback, human review и stop определяются workflow и handoff policy; реализация агента не запускает собственный durable retry loop.
+
+Платформа не ограничивает число или предметную область агентов. Возможные функциональные категории, не являющиеся иерархией Python-классов:
 
 - intake/router — классификация и маршрутизация работы;
 - extractor/normalizer — извлечение структурированных данных;
@@ -392,36 +398,46 @@ AgentVersion:
 - operator — контролируемые изменения во внешних системах;
 - monitor — проверка outcome и drift после выполнения.
 
-Один агент может использовать разные модели в разных версиях. Один capability может иметь несколько bindings: дешёвый default, более сильный fallback, tenant-specific implementation или внешний агент.
+Один агент может использовать разные модели в разных версиях. Один capability может иметь несколько bindings: дешёвый default, более сильный fallback или tenant-specific implementation; binding на внешний агент появится только вместе с будущим remote adapter.
 
-### Agent SDK и ecosystem boundary
+### Agent runtime seam
 
-Spine должен иметь небольшой protocol-level SDK, чтобы сторонний агент можно было подключить без зависимости от его внутреннего framework:
+В текущем scope Spine поддерживает две формы локальной реализации:
+
+1. объект, структурно удовлетворяющий небольшому `AgentHandler` protocol;
+2. обычную async-функцию, приведённую к тому же interface через adapter.
+
+Наследование от framework-specific `BaseAgent` не требуется. Явный runtime registry сопоставляет стабильный `implementation_key` с factory и handlers конкретных capabilities. Автоматическое сканирование модулей и исполнение произвольных import paths из хранимой конфигурации запрещены.
 
 ```text
-manifest()    → identity, publisher, capabilities, schemas, risk hints
-health()      → availability and compatibility
-invoke()      → AgentInvocation → AgentResult
-cancel()      → cooperative cancellation
-artifacts()   → signed/immutable artifact references
-telemetry()   → trace correlation and usage metrics
+AgentHandler[InputT, OutputT]:
+  invoke(AgentRequest[InputT], AgentExecutionContext)
+    → AgentResponse[OutputT]
 ```
 
-SDK должен иметь HTTP/JSON transport в первой версии и допускать другие adapters позже. Входы и выходы проходят schema validation; секреты и raw credentials агенту не передаются. Tool вызовы предпочтительно идут через Spine Tool Gateway, чтобы permissions, rate limits и audit оставались централизованными.
+Одна `AgentVersion` может объединять несколько связанных handlers, но workflow step вызывает ровно один capability. Каждому capability соответствует отдельный типизированный handler; универсальный строковый router внутри реализации не является interface платформы.
 
-Agent package публикуется с versioned manifest и совместимостью protocol/schema. Marketplace как коммерческая поверхность не нужен для MVP, но граница `Publisher → Package → Version → Certification → Deployment` должна появиться в модели сразу.
+Внешние agent endpoints, сторонний Agent SDK, package trust и transport protocol не входят в текущий scope четырёх приоритетных кейсов. Runtime seam должен позволить позднее добавить remote adapter без изменения workflow и capability contracts. Когда появится подтверждённый кейс внешнего агента, отдельно выбираются protocol, manifest, health, cancellation, artifact transfer и certification; Agno не становится обязательной зависимостью Spine.
+
+`AgentPackage` остаётся каталоговой и дистрибуционной сущностью для встроенных и будущих сторонних реализаций: `Publisher → Package → Version → Certification → Deployment`. Это не runtime team и не скрытый workflow.
 
 ### Унифицированный контракт запуска
 
 ```text
 AgentInvocation:
+  workspace_id
+  environment
   work_item_id
+  workflow_run_id
   step_run_id
+  agent_run_id
   capability
+  acting_on_behalf_of
   input_artifacts[]
   context_request
   constraints
   idempotency_key
+  trace_id
 
 AgentResult:
   status
@@ -432,6 +448,47 @@ AgentResult:
   proposed_actions[]
   trace_ref
 ```
+
+Платформенный `AgentInvocation` содержит ссылки на сохранённые artifacts и полный execution identity. До вызова локальной реализации runtime проверяет binding и grants, загружает input artifacts, валидирует capability schema и строит:
+
+```text
+AgentRequest[InputT]:
+  capability
+  input
+  constraints
+
+AgentExecutionContext:
+  workspace_id
+  environment
+  work_item_id
+  workflow_run_id
+  step_run_id
+  agent_run_id
+  acting_on_behalf_of
+  idempotency_key
+  trace_id
+  deadline
+  context_profile
+  permitted_tools
+  event_sink
+  cancellation
+
+AgentResponse[OutputT]:
+  status
+  output
+  evidence_refs[]
+  confidence
+  structured_metrics
+  proposed_actions[]
+```
+
+Handler возвращает значение, а не сохраняет Spine artifacts. Runtime валидирует response, сохраняет output, evidence и proposed actions с lineage и формирует `AgentResult`. Так persistence, provenance и idempotency не дублируются в каждой реализации.
+
+`EventSink` принимает версионированные progress, tool-call и usage events и не раскрывает chain-of-thought. Финальный response не смешивается с event iterator. Runtime управляет cancellation scope; handler получает cooperative cancellation через execution context. Для будущего remote adapter эти операции отображаются на transport-specific events и cancel.
+
+Реализация stateless между вызовами: в объекте допустимы неизменяемые зависимости и безопасные технические caches, но состояние run, workflow, approvals и retries принадлежит платформе.
+
+Реализация capability может кратковременно координировать внутренние model/agent calls. Все такие вызовы создают nested traces. Если внутренний переход создаёт самостоятельно оцениваемый artifact, требует approval, выполняет внешнее действие, имеет собственный retry lifecycle или должен пережить рестарт, он становится явным workflow step.
 
 `AgentResult` не считается принятым автоматически. Workflow передаёт его в handoff evaluation.
 
@@ -504,6 +561,8 @@ Workflow graph поддерживает пять типов step:
 3. `human` — задача, решение или редактирование artifact.
 4. `gate` — evaluation, policy, approval или branch.
 5. `subworkflow` — повторно используемый процесс.
+
+Форма Python-реализации не определяет тип step. Async-функция является `code` step, если workflow напрямую закрепляет детерминированное преобразование или бизнес-правило и для него не нужны Agent Binding и deployment lifecycle. Та же техническая форма может быть подключена function adapter как `agent` step, только если она является заменяемой версионируемой реализацией capability и управляется через каталог, binding, deployment и evaluations.
 
 Human step является first-class узлом с теми же input/output contracts, deadline, status и handoff evaluation, что и agent step. Человек — не только аварийный fallback: workflow может изначально распределять judgement-heavy работу людям, а повторяемые операции — агентам.
 
@@ -1010,10 +1069,10 @@ detectors без специальных обходов в platform core.
 - ADR-007: production graph/vector backends.
 - ADR-008: хранение, редактирование и retention PII.
 - ADR-009: prompt/model versioning и release gates по evals.
-- ADR-010: capability contracts, agent bindings и fallback resolution.
+- [ADR-010](adr/0010-capability-based-agent-runtime.md): capability contracts, local agent runtime seam, bindings и retry/fallback ownership.
 - ADR-011: artifact schemas и handoff evaluation protocol.
 - ADR-012: business outcome attribution и cost accounting.
-- ADR-013: third-party Agent SDK, package trust и certification.
+- ADR-013: future third-party Agent SDK, package trust и certification после появления подтверждённого внешнего кейса.
 - ADR-014: service identity, delegated authority и short-lived tool credentials.
 - ADR-015: Workflow Compiler и validation lifecycle для AI-generated drafts.
 - ADR-016: frontend information architecture, environment context и read-model API.
