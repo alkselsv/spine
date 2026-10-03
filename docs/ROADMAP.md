@@ -48,7 +48,10 @@ web-интерфейсе и получает проверяемый ответ �
 
 - [ ] Надёжная загрузка PDF, DOCX, XLSX, Markdown и text с версиями и checksum.
 - [ ] Parsing metadata: страницы, листы, строки, заголовки и другие stable locators.
-- [ ] Индексация, обновление, удаление и полная перестройка Cognee-проекции.
+- [ ] Versioned baseline ontology и evidence-linked извлечение domain entities и
+      relations из `SourceRevision`.
+- [ ] Индексация, обновление, удаление и полная перестройка graph/vector Context
+      projection; Cognee — первый replaceable adapter.
 - [ ] Object-level ACL и наследование прав документ → chunk/reference.
 - [ ] Typed retrieval contract через Context Broker.
 - [ ] Capability `answer_question` как эталонный local `AgentHandler`: pinned
@@ -64,6 +67,8 @@ web-интерфейсе и получает проверяемый ответ �
 - Ответ нельзя выдать без валидной ссылки на доступную ревизию источника.
 - Недостаточный контекст приводит к явному отказу или уточняющему вопросу.
 - Изменение/удаление документа отражается в результатах после контролируемого sync.
+- Извлечённые entities и relations ссылаются на конкретные source revisions и
+  перестраиваются вместе с versioned Context Graph.
 - Пользователь не может получить сведения из недоступного ему документа.
 - Каждый Q&A run сохраняет workspace/environment, acting subject, закреплённые
   версии agent/prompt/context, input/output artifacts и единый trace ID.

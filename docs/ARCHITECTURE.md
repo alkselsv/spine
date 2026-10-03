@@ -1,8 +1,12 @@
 # Архитектура Spine
 
 Статус: **предлагаемая архитектура**  
-Версия: **0.6**
+Версия: **0.9**
 Область: переход от Q&A-прототипа на Cognee к платформе контекстно-зависимой оркестрации множества AI-агентов и людей.
+
+Расшифровка технических и англоязычных понятий приведена в
+[словаре архитектурных терминов](GLOSSARY.md). Канонические термины предметной
+модели Spine определены в [`CONTEXT.md`](../CONTEXT.md).
 
 ## 1. Назначение
 
@@ -159,7 +163,7 @@ flowchart LR
 
 | Хранилище | Назначение | Авторитетность |
 |---|---|---|
-| PostgreSQL | Каталог агентов, workflow, business objects, work items, artifacts, evaluations, runs, approvals, audit, outbox | Источник истины Spine |
+| PostgreSQL | Каталог агентов, workflow, business objects, work items, artifacts, ontology/projection definitions, evaluations, runs, approvals, audit, outbox | Источник истины Spine |
 | S3/MinIO | Сырые payload, оригиналы файлов и вложения | Неизменяемый первичный материал |
 | Cognee relational/vector/graph stores | Семантический поиск и связи | Перестраиваемая проекция |
 | Temporal persistence | Event history активных и завершённых workflow | Источник истины исполнения workflow |
@@ -187,13 +191,29 @@ flowchart LR
 - `Attachment` — ссылка на оригинал в object storage.
 - `IngestionRun` — состояние и метрики одной синхронизации.
 
+### Онтология и Context projection
+
+- `OntologyVersion` — неизменяемая опубликованная схема типов сущностей,
+  отношений, aliases, extraction constraints и validation rules.
+- `OntologyCandidate` — предложенное Cognee или человеком расширение онтологии,
+  ещё не влияющее на production extraction.
+- `ProjectionVersion` — закреплённая версия Context projection и её lifecycle
+  status; ссылается на ontology/configuration и receipts физической реализации.
+- `ProjectionRun` — идемпотентное построение, удаление или rebuild проекции из
+  набора `SourceRevision`.
+- `ProjectionReceipt` — результат adapter: source mappings, counts, warnings,
+  failures и implementation metadata.
+- `ContextBundle` — сохранённый срез chunks, entities, relations и evidence,
+  фактически переданный agent run.
+
 ### Каталог возможностей и агентов
 
 - `CapabilityDefinition` — стабильный контракт способности, например `extract_contract_terms`, `qualify_lead`, `reconcile_invoice` или `draft_customer_reply`.
 - `AgentDefinition`, `AgentVersion` — идентичность агента и неизменяемая версия его конфигурации.
 - `AgentDeployment` — активная версия в `dev`, `shadow`, `canary` или `production`.
 - `AgentBinding` — выбор реализации для capability в конкретном workspace/workflow.
-- `AgentPackage`, `Publisher`, `Certification` — пакет встроенного или стороннего агента, его издатель и результат проверки.
+- `AgentPackage`, `Publisher`, `Certification` — версионируемый дистрибутив реализации агента, его издатель и результат проверки.
+- `Skill` — переиспользуемый набор agent-readable инструкций, references, assets и объявленных utilities внутри `AgentPackage`; не является capability или самостоятельно запускаемым агентом.
 - `AgentOwner`, `RiskTier`, `SecurityReview` — ответственный человек/команда, класс риска и актуальность review.
 - `ToolDefinition`, `ToolVersion`, `ToolGrant` — инструмент, контракт и разрешение на использование.
 - `MCPServerDefinition`, `ExternalAPIGrant` — инвентаризация подключённых MCP/API и доступных операций.
@@ -281,7 +301,8 @@ Evidence
 5. Normalizer создаёт или обновляет канонический объект.
 6. Identity resolution связывает людей, клиентов и проекты между источниками.
 7. В той же транзакции записываются `DomainEvent` и outbox record.
-8. Consumers обновляют read models и Cognee, публикуют доступные triggers для workflow.
+8. Consumers обновляют read models, создают идемпотентные команды построения
+   Context projection и публикуют доступные triggers для workflow.
 9. Cursor продвигается только после надёжной фиксации принятых данных.
 
 ### Семантика ошибок
@@ -293,14 +314,116 @@ Evidence
 - Удаление во внешней системе: создать tombstone, а не терять историю.
 - Частичное обновление: собрать новую каноническую ревизию, не заменять неизвестные поля `null`.
 
-## 9. Контекстный слой Cognee
+## 9. Контекстный слой и Cognee
 
-Cognee отвечает за semantic retrieval и навигацию по связям, но не определяет актуальное состояние workflow или разрешение на действие.
+Cognee является первым движком построения graph/vector Context projection, а не
+пассивным хранилищем и не источником истины. Он может выполнять значительную
+часть интеллектуальной и технической работы: parsing и chunking, embeddings,
+извлечение и consolidation сущностей и связей, применение ontology, запись в
+graph/vector stores, graph traversal и hybrid retrieval. Spine не реализует
+второй extraction engine поверх Cognee.
 
-### Два режима загрузки
+Разделение ответственности проходит между управлением знаниями и выполнением
+семантической обработки:
 
-1. **Неструктурированные материалы** — документы, сообщения, отчёты, спецификации и другие artifacts загружаются через `remember()` с provenance metadata.
-2. **Структурированные сущности** — бизнес-объекты, workflow, agents, capabilities и результаты работы записываются как собственные Pydantic `DataPoint` с явными связями.
+| Spine владеет | Cognee adapter может выполнять |
+|---|---|
+| `workspace_id`, source identity, immutable revisions и ACL | Parsing/chunking, если сохраняются требуемые stable locators |
+| Published ontology/configuration versions | Извлечение entities и relations по опубликованной ontology |
+| Projection lifecycle, idempotency, activation, audit и eval gates | Embeddings, entity/relation consolidation и graph/vector indexing |
+| Каноническими бизнес-фактами и решениями identity resolution | Предложение ontology candidates и вероятностных identity candidates |
+| Внешним `RetrievalResult`, evidence и access policy | Graph/vector/hybrid retrieval и traversal внутри разрешённого scope |
+
+Владение означает контроль interface, версий и продуктовых гарантий, а не
+обязательную собственную реализацию алгоритма. Cognee остаётся глубокой
+реализацией за seam Context projection; API, workflow и агенты не вызывают его
+напрямую.
+
+### Projection interface и поток наполнения
+
+После фиксации `SourceRevision` projection worker формирует команду, а выбранный
+adapter выполняет внутренний pipeline и возвращает receipt:
+
+```text
+SourceRevision + ACL
+  → ProjectionCommand
+  → Cognee adapter
+      → parse/chunk
+      → embeddings
+      → ontology/entity/relation extraction
+      → consolidation
+      → graph/vector writes
+  → ProjectionReceipt
+  → validation/evals
+  → active ProjectionVersion
+```
+
+```text
+ProjectionCommand:
+  workspace_id
+  environment
+  source_revision_ids[]
+  security_domain
+  ontology_version
+  projection_version
+  idempotency_key
+
+ProjectionReceipt:
+  projection_version
+  source_to_projection_refs[]
+  counts
+  warnings[]
+  failures[]
+  implementation_metadata
+
+ContextProjection:
+  project(ProjectionCommand) → ProjectionReceipt
+  remove(RemoveProjectionCommand) → ProjectionReceipt
+  retrieve(RetrievalRequest) → RetrievalResult
+```
+
+`implementation_metadata` может содержать необходимые для диагностики версии
+Cognee pipeline, parser, extractor, embedding model и физических stores, но не
+просачивается в capability или workflow contracts. `source_to_projection_refs`
+позволяет adapter сопоставить graph/chunk identifiers с конкретными
+`SourceRevision` и stable locators.
+
+Spine хранит в Postgres source revisions, ACL, опубликованные ontology и
+projection configurations, состояние runs, receipts, activation history и
+evidence/context bundles, использованные значимыми agent runs. Все graph nodes,
+edges, chunks и embeddings не обязаны дублироваться в Postgres: они могут
+оставаться в Cognee-managed stores как перестраиваемая проекция. Извлечённое
+утверждение переносится в каноническую модель только после отдельного domain
+validation или human decision; до этого оно остаётся вероятностной частью
+Context Graph.
+
+### Два режима проекции
+
+1. **Неструктурированные материалы** — документы, сообщения, отчёты,
+   спецификации и другие artifacts adapter передаёт во внутренний Cognee
+   pipeline, включая `remember()`, с source revision, ACL и provenance metadata.
+2. **Структурированные сущности** — бизнес-объекты, workflow, agents,
+   capabilities и результаты работы adapter проецирует как собственные Pydantic
+   `DataPoint` с детерминированными ID и явными связями.
+
+Конкретные вызовы Cognee являются деталями adapter. Внешний projection contract
+не возвращает Cognee answer string и не требует от caller знания datasets,
+`DataPoint` или внутренних pipeline tasks.
+
+### Онтология и извлечение
+
+Production extraction использует закреплённую `OntologyVersion`: набор типов
+сущностей, допустимых отношений, aliases, extraction constraints и validation
+rules. Cognee применяет эту ontology и создаёт её экземпляры в графе. Для новой
+предметной области Cognee может выполнить discovery и предложить новые entity /
+relation types, но они сохраняются как `OntologyCandidate`; после evaluation или
+review публикуется новая `OntologyVersion` и запускается reindex. Один документ
+не может неявно изменить production-онтологию всего workspace.
+
+Аналогично, автоматическое consolidation создаёт вероятностный identity
+candidate. Только достаточно доказанное правило или отдельное решение переводит
+его в канонический `EntityLink`. Это позволяет использовать сильные стороны
+Cognee без смешивания LLM-вывода с фактом внешней системы.
 
 Базовая графовая схема:
 
@@ -326,6 +449,21 @@ flowchart LR
 - Для известных бизнес-ключей задаются deduplication fields.
 - LLM-extracted entity не сливается с канонической сущностью без достаточного evidence.
 - Результат ambiguous identity resolution хранит candidates и требует дополнительного сигнала или ручного подтверждения.
+
+### Версии, обновление и удаление
+
+`ProjectionVersion` закрепляет как минимум ontology/configuration version и
+receipt конкретной реализации; состояния: `building`, `validating`, `active`,
+`failed`, `retired`. Новая версия сначала строится в shadow scope, проходит
+evidence, retrieval-regression и ACL leakage checks, затем атомарно становится
+active для Context Broker.
+
+Новая `SourceRevision` не перезаписывает старую: adapter деактивирует её chunks,
+embeddings и relation assertions в новой проекции и индексирует новую ревизию.
+Tombstone исключает материал из retrieval согласно retention policy, сохраняя
+audit history. Полный rebuild повторно выполняет versioned projection commands
+из originals и canonical revisions; он может дать улучшенную проекцию при новой
+версии extractor и не обязан побитово воспроизводить старый граф.
 
 ### Dataset strategy
 
@@ -355,9 +493,13 @@ Q&A — один consumer этого контракта. Любой agent step �
 
 ### Среды
 
-- Local development: Kuzu и локальный vector store.
+- Local development: поддерживаемый graph backend через adapter и локальный vector
+  store; архивированный Kuzu допустим только для изолированных compatibility
+  tests, но не является target default.
 - Production: Neo4j или другой concurrency-safe graph backend; vector backend выбирается нагрузочным тестом, предпочтительно `pgvector` на ранней стадии для сокращения инфраструктуры.
-- Reindex выполняется отдельным workflow с shadow index и переключением версии после проверки.
+- Reindex выполняется отдельным workflow с shadow projection и переключением
+  версии после проверки; Cognee pipeline остаётся внутренней работой
+  идемпотентных Activities, а не бизнес-workflow.
 
 ## 10. Платформа агентов
 
@@ -420,6 +562,78 @@ AgentHandler[InputT, OutputT]:
 Внешние agent endpoints, сторонний Agent SDK, package trust и transport protocol не входят в текущий scope четырёх приоритетных кейсов. Runtime seam должен позволить позднее добавить remote adapter без изменения workflow и capability contracts. Когда появится подтверждённый кейс внешнего агента, отдельно выбираются protocol, manifest, health, cancellation, artifact transfer и certification; Agno не становится обязательной зависимостью Spine.
 
 `AgentPackage` остаётся каталоговой и дистрибуционной сущностью для встроенных и будущих сторонних реализаций: `Publisher → Package → Version → Certification → Deployment`. Это не runtime team и не скрытый workflow.
+
+### Agent packages и skills
+
+Локальная реализация может поставляться как каталог с machine-readable manifest,
+handlers, schemas, инструкциями, skills, тестами и evaluation assets:
+
+```text
+src/spine/agents/packages/document_qa/
+  spine-agent.yaml
+  AGENT.md
+  handler.py
+  schemas.py
+  skills/
+    search_documents/
+      SKILL.md
+      tools.py | scripts/
+      references/
+      assets/
+  tests/
+  evals/
+```
+
+Spine поддерживает совместимое подмножество распространённого формата skill
+`SKILL.md + scripts/references/assets`. `SKILL.md` содержит инструкции и
+навигацию для реализации агента, но не заменяет manifest агента. Manifest
+фиксирует как минимум package/version, `implementation_key`, capability handlers,
+input/output schemas, используемые skills, tool requirements, context profile и
+resource limits.
+
+Один `AgentPackage` может использовать несколько skills; один skill может
+объявлять несколько utilities. Skill не вызывается workflow напрямую и не
+получает собственное durable состояние. Если переиспользуемое поведение должно
+выбираться через binding, иметь отдельные input/output, deployment и evaluation,
+оно моделируется как Capability, а не как skill.
+
+Наличие Python- или shell-файла внутри skill не даёт ему права на исполнение.
+Package loader проверяет schema manifest и checksum, а явный runtime registry
+разрешает только зарегистрированные handlers. Utilities, которым нужен доступ к
+данным, сети или внешним системам, публикуются как типизированные tools и
+вызываются через Tool Gateway с grants, timeout, audit и idempotency policy.
+Произвольное исполнение файлов, найденных сканированием каталога, запрещено.
+Developer skills из `.agents/skills/` могут служить источником инструкций и
+references, но не считаются production-агентами без manifest, handlers, schemas,
+permissions и evals.
+
+### Agent frameworks внутри реализации
+
+Spine не требует LangChain, LangGraph, Agno или другой agent framework для
+реализации `AgentHandler`. Обычная async-функция и прямой model adapter являются
+полноценными реализациями; для первого Q&A-среза предпочтителен именно этот
+минимальный путь: retrieval через Context Broker, model call, typed response и
+проверка citations.
+
+Framework может быть опциональной зависимостью отдельного `AgentPackage` и
+оставаться за runtime seam. LangChain допустим для готового model/tool-calling
+loop и model integrations. LangGraph допустим для краткоживущего внутреннего
+графа одного handler, например `plan → retrieve → inspect → synthesize → check`,
+если сложность такого цикла уже подтверждена реализацией.
+
+LangGraph не является вторым durable orchestrator. Межшаговое состояние,
+долгоживущие retries, timers, approvals, внешние side effects и восстановление
+после рестарта принадлежат Temporal. Внутренний graph state ограничен одним
+agent step; его independently evaluated artifact, approval, внешний action или
+собственный durable lifecycle выносится в явный workflow step. Framework adapter
+обязан:
+
+- получать identity, deadline, grants и cancellation из `AgentExecutionContext`;
+- направлять tool calls через Spine Tool Gateway, не обходя policy и audit;
+- отображать progress/tool/usage events в `EventSink` без chain-of-thought;
+- создавать nested traces для внутренних model и agent calls;
+- возвращать единый типизированный `AgentResponse`, валидируемый Spine runtime;
+- не использовать framework checkpoint/store как источник истины Spine.
 
 ### Унифицированный контракт запуска
 
@@ -678,6 +892,13 @@ Q&A response:
 
 Интерфейс — обязательная часть control и assurance plane. Ценность Spine заключается не только в исполнении workflow, но и в том, что бизнес-команды видят работу людей и AI как одну управляемую систему, а IT/Risk контролируют deployments, permissions и качество.
 
+Детальные продуктовые требования и границы первого интерфейсного среза описаны в
+[`INTERFACE.md`](INTERFACE.md). В R1 интерфейс начинается с администраторской
+Control Plane: администратор загружает документы, наблюдает parsing/indexing,
+проверяет Company Brain через встроенный Q&A Chat и прослеживает ответ до
+citations и run. Чат для обычных сотрудников и общая agent/workflow Control
+Plane в первый срез не входят.
+
 ### Инсайты из интерфейса Trace
 
 Публичные макеты Trace показывают несколько устойчивых паттернов:
@@ -819,11 +1040,15 @@ draft | validating | ready | scheduled | running | waiting
 needs_review | blocked | failed | completed | cancelled | disabled
 ```
 
-Цвет никогда не является единственным носителем статуса: нужны текст и icon. Для каждой async-команды UI показывает `accepted → running → terminal state`, idempotency key и ссылку на run. Empty, loading, partial, stale, permission-denied и degraded состояния проектируются явно.
+Для каждой async-команды UI показывает `accepted → running → terminal state`, idempotency key и ссылку на run. Empty, loading, partial, stale, permission-denied и degraded состояния проектируются явно.
 
 ### Frontend architecture
 
-- TypeScript + React/Next.js.
+- TypeScript strict + React SPA, Vite и React Router Data Mode.
+- `pnpm` с закреплённой версией и lock-файлом.
+- Base UI для headless primitives; адаптированные Halaska patterns задают
+  визуальный язык.
+- CSS variables + CSS Modules для tokens и локальных styles.
 - Сгенерированный из OpenAPI typed client; UI не дублирует серверные domain schemas вручную.
 - TanStack Query для server state; URL хранит filters, selected workspace/environment и navigation state.
 - React Flow или аналог только для visual DAG после стабилизации workflow DSL.
@@ -835,7 +1060,10 @@ needs_review | blocked | failed | completed | cancelled | disabled
 
 ### UI delivery slices
 
-1. **Foundation:** app shell, workspace/environment, auth, design system и generated API client.
+1. **R1 Knowledge Control Plane:** administrator-only app shell,
+   workspace/environment context, document upload and revisions, ingestion /
+   projection status, diagnostic Q&A Chat, citations inspector and Q&A run
+   timeline.
 2. **Observe:** Overview, integrations health, agent/workflow/run lists и read-only run timeline.
 3. **Decide:** Work Queue, approvals, artifact/evidence inspector и activity feed.
 4. **Control:** agent detail, grants, deployments, validation reports и governance.
@@ -896,6 +1124,7 @@ src/spine/
     governance/
     runtime/
     adapters/
+    packages/
     tools/
     prompts/
   evaluations/
@@ -940,8 +1169,9 @@ web/
 - OpenTelemetry для end-to-end correlation.
 - Langfuse для LLM tracing, prompt management и evals.
 - Pytest, Testcontainers и Temporal time-skipping tests.
-- React/Next.js для Ops UI, когда API-контракты стабилизируются.
-- Storybook и Playwright для component, accessibility и end-to-end UI tests.
+- React SPA, Vite, React Router Data Mode, Base UI и TanStack Query для Ops UI.
+- Vitest, Testing Library и Playwright для frontend contract, component и
+  end-to-end UI tests.
 
 Версии ключевых зависимостей фиксируются совместимыми диапазонами или lock-файлом. Обновление Cognee, Temporal SDK, модели embeddings или dimension требует отдельной миграционной процедуры и regression eval.
 
@@ -1011,7 +1241,7 @@ web/
 | Integration | Postgres/outbox, Cognee indexing/retrieval, object storage |
 | Workflow | Timers, Signals, retries, cancellation, replay compatibility |
 | Eval | Agent capability, handoff и Q&A quality на versioned datasets |
-| UI component | Design-system states, permissions, artifact renderers, accessibility |
+| UI component | Design-system states, permissions и artifact renderers |
 | UI end-to-end | Workspace/environment isolation, run inspection, approval и deployment flows |
 | End-to-end | Trigger → multi-agent workflow → gates → outcome → audit |
 
@@ -1060,7 +1290,7 @@ detectors без специальных обходов в platform core.
 
 ## 22. Архитектурные решения, требующие отдельного ADR
 
-- ADR-001: Postgres как canonical store, Cognee как derived projection.
+- [ADR-001](adr/0001-canonical-store-and-context-graph.md): Postgres как canonical store, обязательный Context Graph как derived projection.
 - ADR-002: границы Cognee datasets и модель доступа.
 - ADR-003: Temporal как единственный durable orchestrator.
 - ADR-004: transactional outbox и гарантии доставки.
@@ -1091,4 +1321,6 @@ detectors без специальных обходов в platform core.
 - [Cognee: permissions](https://docs.cognee.ai/core-concepts/multi-user-mode/permissions-system/overview) — dataset-scoped access control.
 - [Cognee: graph stores](https://docs.cognee.ai/setup-configuration/graph-stores) — варианты local и production backends.
 - [Temporal documentation](https://docs.temporal.io/) и [Python SDK](https://github.com/temporalio/sdk-python) — durable workflows, Activities, Signals, Updates и timers.
+- [LangChain overview](https://docs.langchain.com/oss/python/langchain/overview) — high-level agent loop и model/tool integrations поверх LangGraph.
+- [LangGraph overview](https://docs.langchain.com/oss/python/langgraph/overview) — stateful agent graph runtime, persistence и human-in-the-loop; в Spine допустим только внутри одного handler, без конкуренции с Temporal.
 - [Langfuse documentation](https://langfuse.com/docs) — LLM tracing, prompt management, datasets и evaluations.

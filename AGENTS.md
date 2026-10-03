@@ -36,6 +36,39 @@ ahead of the four cases unless the roadmap is explicitly changed.
   for the ingestion pipeline and Cognee adapter.
 - `web/` is an intentional product-interface scaffold, not optional documentation.
 
+## Technology stack
+
+Treat `pyproject.toml` and `uv.lock` as the source of truth for installed Python
+packages. Add a package to `pyproject.toml` before importing it directly; a
+transitive Cognee dependency is not part of Spine's supported application stack.
+
+### Active stack
+
+- Python `>=3.10,<3.15`, managed with `uv`; Hatchling builds the package from
+  `src/spine`.
+- Pydantic v2 and `pydantic-settings` define typed contracts and environment
+  configuration.
+- FastAPI and Uvicorn expose the current HTTP API; `httpx` exercises ASGI routes
+  in tests.
+- Cognee is the current graph/vector memory adapter. Import it lazily after
+  `configure_environment()` has assigned absolute project-local storage paths.
+- `pypdf`, `python-docx` and `openpyxl` load PDF, DOCX and XLSX sources. Markdown
+  and text files use the standard library.
+- Pytest and pytest-asyncio are the test runner. The repository currently has no
+  separate JavaScript test toolchain.
+
+### Target stack, add only when a vertical slice needs it
+
+- PostgreSQL is the canonical store; SQLAlchemy and Alembic are the intended
+  persistence and migration tools.
+- Temporal Python SDK owns durable workflows, retries, signals and long waits.
+- The product interface is planned around TypeScript, React, generated OpenAPI
+  types, TanStack Query and SSE. `web/` is still a scaffold: select and record the
+  concrete framework, package manager and test runner before adding frontend code.
+- Object storage, telemetry backends and external connectors remain behind ports;
+  choose implementations in the consuming roadmap slice, not from transitive
+  dependencies or empty directories.
+
 ## Architecture boundaries
 
 Dependencies point inward:
@@ -157,33 +190,87 @@ dependency only when a roadmap item needs it and an adapter boundary is defined.
 - Never commit credentials, production payloads, customer correspondence or
   unredacted evaluation examples. Use synthetic or anonymized fixtures.
 
-## Verification
+## Test design
 
-Install development dependencies when needed:
+Every behavior change carries a test at the lowest boundary that proves it. A bug
+fix starts with a test that fails for the reported behavior and passes after the
+fix. Tests assert public contracts and domain outcomes, not private call order or
+the internal shape of an implementation.
+
+### Test shape
+
+- Name tests `test_<condition>_<outcome>` and keep one behavioral reason for
+  failure per test. Parameterize examples that exercise the same rule.
+- Use explicit factories for valid domain objects, then override only fields
+  relevant to the scenario. Keep expected values visible in the test.
+- Make tests deterministic. Inject clocks, identifiers, model clients and external
+  adapters; do not depend on wall-clock time, random UUIDs, network availability or
+  test execution order.
+- Use `tmp_path` for files and databases. A test must not write to repository
+  fixtures, `.spine/`, a developer database or another test's directory.
+- Prefer a small fake that implements a port over patching internals of FastAPI,
+  Cognee, Temporal, SQLAlchemy or an SDK. Assert recorded commands/events when the
+  interaction itself is the contract.
+- Keep committed fixtures synthetic or anonymized, minimal and immutable. Record
+  the fixture schema/version and source assumptions beside replay or evaluation
+  datasets.
+
+### Test levels
+
+- **Domain unit tests:** pure rules and invariants; no filesystem, network,
+  database, FastAPI, Cognee, Temporal or concrete adapter imports.
+- **Application tests:** execute a use case through ports with in-memory fakes;
+  cover success, rejection, partial failure and retry policy.
+- **Contract tests:** run the same behavior suite against every implementation of
+  a port. Cover schema validation and mapping at connectors, tools, memory and API
+  boundaries.
+- **Integration tests:** use real serialization, temporary SQLite/PostgreSQL,
+  Cognee projection or another adapter boundary. Keep external-service tests
+  opt-in and skip them with a clear missing-prerequisite reason.
+- **Replay and evaluation tests:** pin dataset, prompt/model, detector, projection
+  and evaluator versions. A material retrieval, prompt, model or detector change
+  updates or adds cases and reports metric deltas.
+- **Interface tests:** when the web toolchain exists, cover component states and
+  the critical user path. Generated OpenAPI files are verified by regeneration,
+  not hand-written tests of generated implementation details.
+
+### Required scenarios
+
+- For workspace-owned behavior, prove allowed access, denied access and isolation
+  between two workspaces. A denied result must not leak protected text in output,
+  logs or errors.
+- For an idempotent operation, repeat the same command/key and retry after a
+  partial failure; assert one logical effect and a stable result.
+- For revisions and projections, cover current, stale, deleted/tombstoned,
+  rebuild failure and rollback to the last active version.
+- For evidence-bearing output, reject missing, inaccessible, stale or fabricated
+  references. Cover abstention when usable evidence is absent.
+- For money, assert exact `Decimal` values, currency, tax order and rounding at
+  boundary cases. Never use approximate float assertions for financial results.
+- For FastAPI, call the app in-process with `httpx.ASGITransport`; cover response
+  schema, validation errors, authorization, structured failures and trace/workspace
+  context without binding a network port.
+- For durable workflows, keep workflow code deterministic and test it with
+  time-skipping plus fake activities. Cover retry exhaustion, cancellation,
+  signals, queries and idempotent activity re-execution.
+- For Cognee or an LLM, the default suite uses a port fake. A real-provider test
+  is separate, opt-in and never required for the offline suite.
+
+## Verification gates
+
+During development run the narrowest affected test first. Before handoff install
+the declared development dependencies and run the repository gates:
 
 ```bash
 uv sync --extra dev
-```
-
-Run the relevant subset during development and the full suite before handoff:
-
-```bash
 uv run pytest -q
 uv run python -m compileall -q src tests
 ```
 
-The architecture tests must continue to prove that `domain` has no framework
-imports. Add proportionate tests for every change:
-
-- unit tests for domain rules and policies;
-- contract tests for connectors, tools and API schemas;
-- integration tests for persistence, outbox and Cognee projection;
-- replay/eval tests for retrieval, agents and detectors;
-- UI component/end-to-end tests when the web implementation exists;
-- idempotency tests for every mutating external operation.
-
-If a required external service cannot run locally, keep its adapter behind a port,
-test it with recorded/anonymized contract fixtures and state what was not verified.
+Completion means the new test is present, the full suite passes, and
+`test_domain_layer_has_no_framework_imports` still proves the domain boundary. If
+an external integration could not be exercised, its fake/contract suite must pass
+and the handoff must name the exact unverified integration and prerequisite.
 
 ## Agent skills
 

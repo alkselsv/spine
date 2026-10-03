@@ -1,0 +1,474 @@
+# Интерфейс Spine
+
+Статус: **рабочие продуктовые требования**  
+Область: первый интерфейсный срез R1 — администраторская Control Plane для
+управления Company Brain и проверки Q&A.
+
+## 1. Назначение первого интерфейса
+
+Первый интерфейс Spine предназначен для администратора. Он загружает документы,
+наблюдает их обработку и проверяет качество Company Brain через встроенный чат.
+Чат в R1 является диагностической консолью, а не пользовательским корпоративным
+ассистентом: доступ к нему имеет только администратор.
+
+Интерфейс должен замыкать один проверяемый цикл:
+
+```text
+загрузить документ
+  → дождаться parsing и indexing
+  → проверить извлечённое содержимое и состояние проекции
+  → задать контрольный вопрос
+  → проверить ответ, abstention и citations
+  → открыть run и локализовать проблему
+  → заменить источник или запустить повторную обработку
+```
+
+Продуктовым и визуальным референсом служит
+[Agno Control Plane](https://www.agno.com/products/control-plane): прежде всего
+его представления Knowledge, Chat, Sessions и Tracing. Spine не принимает Agno
+как runtime-зависимость и не копирует его browser-to-runtime архитектуру. Web UI
+обращается к API Spine; браузер не работает напрямую с Cognee, model provider,
+Temporal или хранилищами.
+
+## 2. Пользователь и права
+
+В R1 поддерживается одна интерфейсная роль — `administrator`.
+
+Администратор может:
+
+- загружать поддерживаемые документы в workspace;
+- видеть состояние parsing, projection и indexing;
+- просматривать метаданные, ревизии, извлечённое содержимое и ошибки;
+- логически удалять документ и запускать повторную обработку;
+- задавать вопросы встроенному capability `answer_question`;
+- просматривать citations, evidence и диагностическую информацию run;
+- оставлять feedback на ответ и citations.
+
+Обычные сотрудники не получают доступ к чату или панели в первом релизе. Это не
+отменяет серверную модель авторизации: API проверяет роль, `workspace_id` и
+environment для каждой команды и retrieval request. Скрытая навигация не
+считается контролем доступа.
+
+## 3. Информационная архитектура
+
+```text
+Spine Control Plane
+├── Knowledge
+│   ├── Documents
+│   ├── Uploads
+│   └── Document details
+├── Chat
+│   ├── Sessions
+│   └── Sources
+├── Runs
+│   └── Run details
+└── Settings
+    ├── Workspace
+    └── Environment
+```
+
+В app shell всегда видны текущие workspace и environment. Если deployment
+обслуживает только одно значение, они могут быть read-only, но остаются частью
+route/request context.
+
+### 3.1. Knowledge
+
+Список документов показывает:
+
+- название, тип и размер оригинала;
+- source identity и активную `SourceRevision`;
+- checksum;
+- область доступа;
+- время загрузки и последней успешной индексации;
+- состояние parsing и Context projection;
+- краткую ошибку и доступное следующее действие.
+
+Минимальные состояния документа:
+
+```text
+uploaded → parsing → indexing → ready
+                     ↘ failed
+ready → stale | deleted
+```
+
+Загрузка поддерживает drag-and-drop нескольких файлов, предварительную проверку
+типа и размера, отдельный прогресс и результат для каждого файла. Повторная
+загрузка того же содержимого должна дать стабильный идемпотентный результат;
+изменившийся документ создаёт новую ревизию, а не перезаписывает старую.
+
+Карточка документа содержит оригинальные метаданные, историю ревизий, stable
+locators, извлечённый текст или chunks, состояние проекции, warnings и failures.
+Удаление создаёт tombstone. Физическое необратимое удаление не является обычным
+действием интерфейса.
+
+### 3.2. Chat
+
+Chat позволяет администратору проверять один встроенный capability
+`answer_question`. Выбор произвольного агента, команды или workflow в R1 не
+предусмотрен.
+
+Экран поддерживает:
+
+- создание и открытие тестовой сессии;
+- выбор доступного knowledge scope, когда в workspace их несколько;
+- потоковое отображение состояния выполнения и ответа;
+- явный abstention или запрос уточнения при недостатке evidence;
+- citations рядом с подтверждаемыми утверждениями;
+- инспектор source revision, locator и использованного excerpt;
+- freshness/as-of и версию Context projection;
+- переход к связанному run;
+- feedback: полезность ответа, неверный ответ и неверная citation.
+
+Chat не показывает скрытую chain-of-thought. Вместо неё доступны структурированная
+сводка, использованные источники, версии, решения gate и диагностические события.
+
+### 3.3. Runs
+
+Runs — операционный журнал вопросов и ingestion-проверок, а не полная workflow
+Control Plane будущих релизов. Список показывает status, initiator, session,
+started at, duration и наличие ошибок.
+
+Карточка Q&A run показывает:
+
+- workspace, environment, acting subject и trace ID;
+- закреплённые версии agent, prompt, context profile и projection;
+- retrieval strategy и найденные references;
+- источники, использованные и отклонённые при формировании ответа;
+- итоговый status: `answered`, `abstained` или `failed`;
+- latency, token/cost metrics, warnings и structured errors.
+
+Начальная реализация может использовать линейную timeline. Tree/waterfall для
+всех model и tool calls добавляется только после появления реальной вложенности.
+
+### 3.4. Settings
+
+В R1 Settings преимущественно read-only и показывает:
+
+- текущие workspace и environment;
+- health API и Cognee adapter;
+- активную `ProjectionVersion`;
+- model и embedding provider без credentials;
+- последнюю успешную ingestion/projection operation;
+- версии parser, extractor и projection configuration, полезные для диагностики.
+
+## 4. Общие состояния и обратная связь
+
+Каждый экран проектируется для состояний:
+
+```text
+loading | empty | partial | stale | degraded
+permission_denied | validation_failed | failed | ready
+```
+
+Ошибка содержит понятное описание, trace ID и безопасное следующее действие, но
+не раскрывает credentials, защищённый текст или внутренний stack trace.
+
+Для длительной операции интерфейс показывает переход
+`accepted → running → terminal state`; обновление может поступать через SSE с
+polling fallback. Повтор команды использует тот же idempotency key, когда это
+retry одной логической операции.
+
+## 5. API-границы первого среза
+
+UI использует версионированные endpoints под `/api/v1` и сгенерированные из
+OpenAPI типы. Минимальные ресурсы:
+
+- documents и source revisions;
+- uploads/ingestion runs;
+- projection status;
+- Q&A sessions и messages;
+- Q&A runs и evidence references;
+- feedback;
+- health/configuration summary.
+
+API возвращает structured errors и сохраняет workspace, environment, acting
+subject и trace ID. Ответ Q&A включает как минимум answer status, structured
+citations, confidence или abstention reason, `as_of` и projection version.
+
+## 6. Не входит в R1
+
+- чат для обычных сотрудников;
+- visual agent или workflow builder;
+- выбор агентов, teams и произвольных workflows в Chat;
+- публикация и rollback agent deployments через UI;
+- approvals, schedules и вмешательство в активный run;
+- learning memory и ручное редактирование model conclusions;
+- универсальный Context Graph editor;
+- dashboard бизнес-метрик и общий Insights;
+- настройка сложной RBAC/ABAC-модели через UI.
+
+Эти функции добавляются только в том vertical slice, который подтверждает их
+необходимость.
+
+## 7. Критерии первого интерфейсного релиза
+
+- Администратор загружает поддерживаемый файл без CLI и видит отдельный результат
+  его обработки.
+- Новая версия и повторная загрузка не уничтожают историю и не создают
+  неконтролируемые дубликаты.
+- После успешной индексации администратор задаёт контрольный вопрос через Chat.
+- Каждый выданный ответ содержит доступную citation на конкретную ревизию и
+  stable locator; иначе Chat показывает abstention.
+- Из Chat можно открыть run и проследить вопрос до retrieval evidence и версий
+  исполнения.
+- Ошибку parsing, projection или generation можно локализовать без доступа к
+  серверным логам, а retry не создаёт второй логический эффект.
+- Неавторизованный пользователь не может использовать Chat, читать документ или
+  получить его текст из error/trace response.
+- Основной сценарий проходит через UI без CLI и прямого обращения к Cognee.
+
+## 8. Решения по реализации интерфейса
+
+Статус решений в этом разделе: **приняты для R1**. Prototype gate проверяет их на
+вертикальном сценарии до расширения frontend scope.
+
+### 8.1. Halaska задаёт визуальное направление
+
+[Halaska UI](https://ui.halaska.com/) используется как визуальный и UX-референс
+для Spine Control Plane. Наиболее релевантны его паттерны для административных
+экранов, streaming, evidence/confidence, feedback, action receipts, recovery и
+run diagnostics.
+
+Halaska не становится внешней доменной моделью или runtime Spine. Его единый JSX
+kit не добавляется в production-код без изменений и не устанавливается широким
+agent prompt поверх всего `web/`. Выбранные части:
+
+- переносятся контролируемым diff из закреплённого upstream commit;
+- преобразуются в типизированные `.tsx`-модули;
+- раскладываются по `design-system` и consuming feature;
+- связываются с design tokens Spine;
+- получают component и interaction tests;
+- сохраняют требуемое MIT license notice.
+
+Предлагаемая структура:
+
+```text
+web/
+  design-system/
+    tokens/
+    primitives/
+    patterns/
+      evidence/
+      feedback/
+      run-timeline/
+      status/
+  features/
+    knowledge/
+    chat/
+    runs/
+```
+
+Сложные интерактивные элементы — dialog, menu, combobox, select, tooltip —
+строятся на Base UI, даже если их внешний вид следует Halaska. В R1 не смешиваются
+две primitive libraries.
+
+### 8.2. Chat принадлежит Spine
+
+Поведение Chat реализуется как небольшой Spine-owned feature. Каноническое
+состояние sessions, messages, runs, citations и feedback находится на backend;
+frontend не создаёт второй источник истины.
+
+```text
+Halaska-derived presentation
+  → Spine chat state and transport adapter
+  → generated OpenAPI client + SSE
+  → Spine API
+  → answer_question / Context Broker
+```
+
+Минимальная frontend-граница:
+
+```ts
+interface ChatTransport {
+  createSession(): Promise<Session>;
+  getSession(sessionId: string): Promise<Session>;
+  listMessages(sessionId: string): Promise<Message[]>;
+  sendMessage(
+    sessionId: string,
+    input: SendMessageInput,
+    signal: AbortSignal,
+  ): AsyncIterable<ChatEvent>;
+  cancelRun(runId: string): Promise<void>;
+  submitFeedback(input: FeedbackInput): Promise<void>;
+}
+```
+
+Streaming использует типизированные события Spine, например `run_started`,
+`stage_changed`, `answer_delta`, `citation_added`, `abstained`, `completed` и
+`failed`. UI library не определяет wire format публичного API.
+
+Frontend обязан самостоятельно покрыть auto-scroll, send/stop, cancellation,
+session hydration, reconnect/partial failure, retry, `Enter`/`Shift+Enter`,
+защиту от двойной отправки и связь message → run → citations.
+
+Решение пересматривается, если подтверждённый продуктовый сценарий потребует
+branching, редактирования истории, сложных attachments, нескольких агентов,
+generative tool UI или других thread operations. `ChatTransport` сохраняет seam,
+за которым другой runtime можно подключить позднее без изменения API и доменной
+модели.
+
+### 8.3. Выбранный frontend stack
+
+Целевая композиция R1:
+
+```text
+React + TypeScript strict
+├── Vite                               build и dev server
+├── React Router Data Mode              routing и route boundaries
+├── Base UI                             headless primitives
+├── Halaska-derived patterns            визуальный язык Control Plane
+├── CSS variables + CSS Modules         tokens и локальные styles
+├── TanStack Query                      server state
+├── generated OpenAPI client            request/response contracts
+├── Spine ChatTransport + SSE           streaming Q&A
+└── Vitest + Testing Library + Playwright
+```
+
+Package manager — `pnpm`; его версия фиксируется полем `packageManager` и
+lock-файлом. Frontend собирается как SPA и публикуется статическими assets.
+FastAPI остаётся единственным backend/control-plane server. Next.js, React Server
+Components, Server Actions и отдельный Node BFF в R1 не используются.
+
+Halaska и любой будущий chat runtime остаются presentation/adaptation слоем. Они
+не владеют `SourceRevision`, `ProjectionVersion`, `Session`, `Run`, `Citation`,
+`Feedback` или access policy и не обращаются напрямую к Cognee, Temporal, model
+provider или базе данных.
+
+### 8.4. Prototype gate
+
+До расширения frontend scope прототип должен доказать один вертикальный сценарий:
+
+1. Загрузить документ и показать progression до `ready` или `failed`.
+2. Создать и восстановить Q&A session с backend.
+3. Получить streaming answer с двумя structured citations.
+4. Открыть citation inspector с `SourceRevision` и stable locator.
+5. Показать abstention и structured error.
+6. Отменить run и безопасно повторить его как новый run с lineage.
+7. Перейти от message к run diagnostics.
+
+После этого версии dependencies и upstream revision Halaska закрепляются в
+`package.json`, lock-файле и документации `web/`.
+
+## 9. Технические требования frontend R1
+
+### 9.1. Маршруты и URL state
+
+Минимальные маршруты:
+
+```text
+/knowledge/documents
+/knowledge/documents/:documentId
+/chat/:sessionId
+/runs/:runId
+/settings
+```
+
+URL сохраняет выбранный документ, session/run, pagination, filters, tab,
+workspace и environment. Состояние, на которое требуется прямая ссылка или
+восстановление после reload, не хранится только в component state.
+
+### 9.2. Авторизация и request context
+
+- Все страницы и API-команды доступны только роли `administrator`.
+- Каждый запрос несёт acting subject, `workspace_id`, environment и trace ID.
+- Сервер проверяет роль и scope; скрытие control в UI не является авторизацией.
+- Мутации используют `Idempotency-Key`.
+- Credentials и provider keys не попадают в browser bundle, URL, telemetry или
+  client logs.
+
+### 9.3. Server и local state
+
+TanStack Query владеет documents, revisions, ingestion runs, sessions, messages,
+Q&A runs, feedback и health/configuration summary. Server state не копируется в
+отдельный глобальный store. Component state используется для draft, открытых
+панелей и других несохранённых UI-состояний.
+
+Frontend API types и client генерируются из OpenAPI. Файлы под
+`web/api/generated/` не редактируются вручную; CI проверяет их регенерацией.
+
+### 9.4. Streaming
+
+SSE-протокол поддерживает как минимум:
+
+```text
+run_started | stage_changed | answer_delta | citation_added
+abstained | completed | failed | heartbeat
+```
+
+Каждое событие имеет event ID, session/message/run/trace IDs и versioned payload.
+Клиент поддерживает упорядочивание, deduplication, reconnect/resume, heartbeat,
+timeout, cancellation и terminal state. После terminal event клиент запрашивает
+каноническое сообщение у API; transient deltas не становятся единственным
+источником сохранённого ответа.
+
+### 9.5. Upload и ingestion
+
+- Поддерживаются batch upload, progress и отдельный результат каждого файла.
+- Client validation проверяет формат, размер и количество до отправки.
+- Upload можно отменить и безопасно повторить.
+- `uploading`, `uploaded`, `parsing`, `indexing`, `ready`, `rejected` и `failed`
+  являются разными состояниями.
+- Повтор того же содержимого возвращает стабильный результат; новое содержимое
+  создаёт `SourceRevision`.
+- Partial failure одного файла не скрывает успешную обработку остальных.
+
+### 9.6. Citations и AI output
+
+Citation является типизированным объектом с document/source revision, stable
+locator, excerpt, `as_of` и projection version, а не только Markdown-ссылкой в
+тексте. Inspector получает защищённый excerpt с сервера после проверки доступа.
+
+Model output считается недоверенным: Markdown санитизируется, произвольные HTML,
+script, iframe и model-generated JavaScript не исполняются. UI не показывает
+system prompts, credentials, внутренние provider errors или chain-of-thought.
+
+### 9.7. Состояния и ошибки
+
+Каждый route и самостоятельная data panel реализует необходимые состояния
+`loading`, `empty`, `partial`, `stale`, `degraded`, `permission_denied`,
+`validation_failed`, `failed` и `ready`. Отдельно обрабатываются недоступность
+API/Cognee, устаревшая projection, разрыв SSE, partial answer, отменённый run и
+недоступная citation.
+
+Structured error содержит стабильный code, безопасное описание, retryability и
+trace ID. Raw stack trace и защищённые данные в response не возвращаются.
+
+### 9.8. Локализация и форматирование
+
+R1 выпускается на русском языке, но пользовательские строки не разбрасываются по
+JSX. Даты, числа, длительности и размеры форматируются через `Intl`. Frontend
+переводит стабильные backend codes в product copy; текст backend error не
+используется как единственный способ определить тип ошибки.
+
+### 9.9. Производительность
+
+- Routes загружаются лениво.
+- Lists используют server-side cursor pagination.
+- Streaming updates объединяются так, чтобы не перерисовывать весь thread на
+  каждый token.
+- Устаревшие requests отменяются.
+- Большие таблицы виртуализируются только после подтверждения объёма данных.
+- Halaska kit декомпозируется; весь исходный kit не включается в один runtime
+  bundle.
+
+### 9.10. Наблюдаемость
+
+Frontend telemetry содержит route/action, stable error code, trace ID, frontend
+release, API latency и SSE reconnect count. Полные тексты документов, questions,
+answers, citation excerpts, credentials и сырые provider payloads не отправляются
+без отдельной retention/privacy policy.
+
+### 9.11. Тестовые требования
+
+- Vitest проверяет state reducers, formatters, transport и другие чистые
+  frontend contracts.
+- Testing Library проверяет components через пользовательские действия и
+  видимые outcomes.
+- Playwright проверяет критический путь через реальный browser и fake/controlled
+  API boundary.
+- API fixtures типизированы и синтетические; сеть и provider availability не
+  требуются для default suite.
+- Обязательные interface scenarios: batch upload с partial failure, полный
+  ingestion lifecycle, streaming answer, abstention, SSE reconnect, citation
+  inspector, permission denied без утечки, cancel/retry без duplicate run и
+  восстановление session после reload.
