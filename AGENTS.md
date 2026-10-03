@@ -278,6 +278,11 @@ and the handoff must name the exact unverified integration and prerequisite.
 
 Issues and specs live in GitHub Issues. See `docs/agents/issue-tracker.md`.
 
+### Branching and integration
+
+For ticket branches, parallel worktrees, pull requests, prototypes, merges and
+release tags, follow `docs/agents/branching.md`.
+
 ### Triage labels
 
 Use the standard mattpocock/skills triage labels. See
