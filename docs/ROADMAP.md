@@ -40,9 +40,11 @@ R0 не является самостоятельным продуктовым �
 
 ### Пользовательский результат
 
-Сотрудник загружает или подключает разрешённые ему документы, задаёт вопрос в
-web-интерфейсе и получает проверяемый ответ со ссылками на конкретные фрагменты
-актуальных версий источников.
+Администратор загружает разрешённые документы, наблюдает их обработку и через
+диагностический Q&A проверяет retrieval и generation в web-интерфейсе. Каждый
+выданный ответ прослеживается до конкретных фрагментов актуальных версий
+источников и связанного run; ошибки ingestion, projection и generation
+локализуются без CLI.
 
 ### Scope
 
@@ -57,7 +59,9 @@ web-интерфейсе и получает проверяемый ответ �
 - [ ] Capability `answer_question` как эталонный local `AgentHandler`: pinned
       `AgentVersion`/`ContextProfile`, runtime-managed artifacts и citations.
 - [ ] `/api/v1/ask`: answer, citations, confidence, `as_of`, trace ID и abstention.
-- [ ] Q&A/Search UI: выбор scope, citations inspector, freshness и feedback.
+- [ ] Administrator-only Knowledge Control Plane: документы и ревизии, ingestion /
+      projection status, диагностический Q&A, citations inspector, run timeline,
+      freshness и feedback.
 - [ ] Golden dataset из реальных обезличенных вопросов.
 - [ ] Regression eval для retrieval, groundedness, citation correctness и ACL leakage.
 - [ ] Метрики latency, cost, answer rate и пользовательской полезности.
@@ -73,11 +77,13 @@ web-интерфейсе и получает проверяемый ответ �
 - Каждый Q&A run сохраняет workspace/environment, acting subject, закреплённые
   версии agent/prompt/context, input/output artifacts и единый trace ID.
 - Согласованные quality thresholds проходят на versioned eval dataset.
-- Основной сценарий выполняется через UI без CLI.
+- Администратор выполняет основной сценарий загрузки, диагностики и контрольного
+  Q&A через UI без CLI.
 
 ### Не входит
 
 - Диалоговый универсальный copilot с внешними действиями.
+- Q&A-интерфейс для обычных сотрудников.
 - Визуальный workflow builder.
 - Полная платформа сторонних агентов.
 

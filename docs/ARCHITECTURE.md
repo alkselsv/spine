@@ -1281,7 +1281,8 @@ third-party certification, универсальный visual builder и process 
 4. Возвращает structured answer с citations, freshness, trace ID и явным abstention.
 5. Не позволяет цитате ссылаться на недоступную или несуществующую ревизию.
 6. Проходит согласованные thresholds на versioned Q&A eval dataset.
-7. Даёт пользователю выполнить основной сценарий и оставить feedback через web UI.
+7. Даёт администратору загрузить и диагностировать документы, выполнить
+   контрольный Q&A и оставить feedback через web UI без CLI.
 8. Наблюдается по latency, cost, retrieval/index errors и пользовательской полезности.
 
 Целевая зрелость всей платформы оценивается после четырёх кейсов: общие contracts
