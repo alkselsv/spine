@@ -783,6 +783,415 @@ RetrievalResult:
   projection_snapshot_id
 ```
 
+#### Grounded answer disclosure
+
+Для R1 `Grounded Answer` является бинарным предикатом disclosure gate, тогда как
+groundedness остаётся градуированной evaluation-метрикой. Граница атрибуции —
+семантический `Answer Claim`, а не предложение или Markdown-маркер. Каждый
+внешне проверяемый фактический claim должен быть фактически поддержан одной или
+несколькими valid evidence references из exact persisted `ContextBundle`.
+Наличие citation без проверки поддержки claim недостаточно.
+
+Модель может использовать общие языковые и reasoning-способности, но не может
+вводить фактические premises из model memory или general knowledge. Допустим
+`Derived Claim`, если все его фактические inputs grounded, преобразование
+детерминировано и воспроизводимо, а результат явно обозначен как derived.
+
+Ответ может объединять несколько claims и источников. Partial answer разрешён
+только когда каждый раскрытый claim независимо полезен и grounded, отсутствующее
+coverage не может его опровергнуть, а ограничение ответа показано без раскрытия
+существования, identity или content недоступных источников. Exhaustive answer
+оценивается относительно явного authorized `Target Completeness Scope`; если его
+полноту подтвердить нельзя, partial result не выдаётся как exhaustive и требует
+explicit `Partial Fallback Authorization`.
+
+Противоречивые current sources не разрешаются моделью молча. Если все позиции
+independently grounded и authorized, система может выдать `Grounded Conflict` с
+evidence для каждой позиции и без единого вывода. Когда пользователь требует
+один вывод, а approved deterministic precedence rule отсутствует, система
+abstains от такого вывода. Recency сама по себе не является precedence rule, а
+conflict detection гарантируется только в пределах retrieved, validated,
+authorized evidence scope.
+
+#### Citation identity and claim linkage
+
+`Citation` имеет immutable opaque identity, уникальную в определённом persisted
+answer scope, и никогда не переназначается другому evidence. Она разрешается в
+immutable provenance: `SourceObject`, `SourceRevision`, digest оригинала,
+format-specific stable locator, parser/locator scheme version и exact evidence
+item persisted `ContextBundle`. Immutable run relationship однозначно связывает
+её с `ProjectionSnapshot`, `CanonicalBoundary` и server-selected `as_of`.
+Excerpt, source title, filename, URL, retrieval score и Markdown marker являются
+display или diagnostic data и не участвуют в authoritative identity.
+
+Каждый externally verifiable `Answer Claim` имеет stable identity внутри
+immutable answer и точное положение в его представлении. Canonical attribution
+задаётся явным `Claim Evidence Relationship`, а inline markers являются только
+rendering. Relationship различает:
+
+- independent/corroborating evidence, где каждый reference самостоятельно
+  поддерживает claim;
+- joint evidence, где claim поддерживается только совокупностью и обязательны
+  все contributors;
+- derivation inputs, которые grounded factual inputs `Derived Claim`.
+
+Для `Grounded Conflict` позиции моделируются как отдельные grounded claims,
+связанные explicit contradiction relationship. Evidence противоположной позиции
+не считается support для опровергаемого ею assertion; assertion о наличии
+конфликта само поддерживается evidence обеих позиций. Конкретная persistence
+schema и кодирование answer locations определяются в `to-spec`.
+
+#### Citation and answer validation
+
+Candidate answer является недоверенным model output и до disclosure проходит
+mandatory layered gate:
+
+1. Citation ссылается на evidence item exact persisted `ContextBundle`; model не
+   может добавить evidence собственным identifier.
+2. Source/revision identity, original digest, parser/locator version и locator
+   разрешаются точно, а resolved content совпадает с сохранённым segment/excerpt.
+3. PostgreSQL подтверждает canonical-current revision и отсутствие tombstone
+   fence для ordinary Q&A.
+4. Current authorization разрешает каждый contributing `SourceObject` до model
+   access, до validation access и на applicable protected disclosure boundaries.
+5. Versioned auditable support-validation policy подтверждает, что evidence
+   действительно поддерживает attributed claim.
+6. Independent, joint, derivation и conflict relationships удовлетворяют своей
+   composition semantics; multi-source claim требует authorization и support от
+   каждого required contributor.
+7. Полный ответ не содержит unsupported factual claims, fabricated citations
+   или citations, не относящихся к attributed claim.
+8. Gate сохраняет immutable validation facts, policy/version lineage и outcome
+   отдельно от будущей current disclosure eligibility.
+
+Deterministic identity, revision, digest, locator, canonical-currentness и
+authorization checks обязательны и не могут быть overridden semantic validator.
+Semantic support validation также обязательна, versioned и auditable; model-based
+validator не является формальной гарантией factual correctness, а его качество
+измеряется evaluations. Failure, timeout или unavailability любого mandatory
+stage fail closed. Numerical quality thresholds принадлежат versioned evaluation
+baseline и release approval, а не этому contract.
+
+Candidate с invalid citation не исправляется silent deletion. Required citation
+failure делает claim invalid; disclosure требует regeneration либо separately
+validated Partial Answer. Ни answer content, ни citation/excerpt не раскрываются
+через HTTP, SSE или другой channel до прохождения полного gate.
+
+#### Later citation inspection
+
+Answer-time `Citation Validation Record` и execution context неизменяемы, но не
+выдают вечного права disclosure. Поздний inspector server-side повторно разрешает
+citation по exact historical revision и применяет current PostgreSQL policy,
+source lifecycle и retention/deletion rules. Locator никогда не разрешается
+против replacement revision, а stored excerpt или cache не обходят current
+authority.
+
+Current citation может раскрыть protected excerpt только после current checks.
+Superseded или tombstoned revision доступна лишь через уже разрешённый ADR 0018
+explicit history/citation-inspection flow, с явной historical маркировкой и
+только когда current `AccessPolicy` и retention/deletion policy разрешают exact
+revision disclosure. Этот flow не делает revision current, не передаёт её в
+model context и не вводит arbitrary historical Q&A. Иначе inspector возвращает
+safe protected unavailable/unverifiable state без approximate excerpt и без
+утечки source existence, identity, content или sensitive причины недоступности.
+
+#### Q&A outcomes and abstention
+
+Один Q&A run завершается conceptual `Q&A Outcome`:
+
+- `answered` — раскрыт прошедший gate Grounded Answer;
+- `clarification_required` — текущий run завершён safe clarification request,
+  но более широкое user interaction может продолжиться новым run;
+- `abstained` — обязательные проверки завершились, но Grounded Answer нельзя
+  установить;
+- `denied` — request или continued disclosure не имеет требуемой authorization;
+- `failed` — infrastructure либо mandatory processing component не смог
+  надёжно завершиться;
+- `cancelled` — execution завершён authorized cancellation.
+
+Partiality, completeness и presence of grounded conflict являются независимыми
+semantic dimensions answered result. Partial answer может одновременно содержать
+`Grounded Conflict`; комбинации не сворачиваются в mutually exclusive answer-kind
+taxonomy. Exact schemas остаются для `to-spec`.
+
+Abstention хранит два уровня причин. `Disclosure-Safe Reason` сообщает только
+необходимую non-leaking категорию: no usable evidence, insufficient support,
+unresolved conflict для требуемого single conclusion, incomplete authorized
+coverage, unmet freshness, evidence invalidated during execution или rejected
+candidate. Protected diagnostics могут различать filtered unauthorized evidence,
+superseded revision, tombstone, exclusion, malformed locator, fabricated citation
+и validator outcome только для independently authorized viewer. Administrator или
+operational role сам по себе не даёт такого content access. Public response не
+раскрывает source existence, identity, content, counts, exclusions, tombstones
+или protected revision changes через wording, error shape или unnecessary detail.
+Timing side channels являются explicit security/evaluation concern, но contract
+не обещает absolute constant-time behavior.
+
+#### Request-specific projection serving
+
+Publication freshness, health и coverage являются входами request-specific
+serving decision, а не заменой groundedness или completeness:
+
+- `healthy` не гарантирует answerability;
+- stale/degraded publication может поддержать narrow Grounded Answer только если
+  все required evidence canonically current, authorized, exactly verifiable и
+  sufficiently reliable для claims;
+- drift, missing newly accepted sources, failed partitions и exclusions не
+  считаются доказательством отсутствия факта или конфликта;
+- validation retrieved evidence не доказывает completeness или отсутствие
+  противоречий вне validated authorized scope;
+- exhaustive answer требует defensible completeness относительно explicit
+  authorized `Target Completeness Scope`;
+- unknown или unverifiable projection impact не считается harmless;
+- superseded и tombstoned revisions fenced независимо от operational health;
+- отсутствие valid active publication, ambiguous activation generation либо
+  integrity/reconciliation state, не позволяющее установить trustworthy context,
+  является operational context unavailability (`failed`), а не abstention.
+
+Partial Answer допустим только по правилам disclosure gate и не может маскировать
+unmet completeness, freshness или material conflict-resolution requirement.
+
+#### Operational outcome mapping
+
+Successful retrieval без usable evidence или с insufficient/conflicting support
+ведёт к abstention, если separately validated Partial Answer или Grounded Conflict
+невозможен. Evidence, отфильтрованное object authorization, не достигает model и
+не получает source-sensitive public reason. Request-level authorization failure
+ведёт к `denied`.
+
+Retrieval timeout, backend outage, corrupt active routing, невозможность
+установить consistent canonical state, generation provider failure, malformed
+structured output либо schema-processing failure после applicable technical
+retries ведут к `failed`. Successful semantic validator с unsupported или
+inconclusive result отклоняет candidate; после permitted bounded regeneration
+attempts итог — `abstained`. Failure, timeout или unavailability validator
+infrastructure — `failed`.
+
+Canonical revision change до disclosure требует revalidation либо bounded
+regeneration из newly authorized current evidence. Если current evidence успешно
+проверено, но недостаточно, run abstains; если consistent canonical state после
+permitted attempts не устанавливается, run fails. Authorization change немедленно
+fences future protected output и завершает run safe denied outcome. Уже переданные
+SSE bytes не могут быть отозваны, поэтому authorization проверяется на каждой
+disclosure boundary, а race handling уточняется в `to-spec`.
+
+Ни candidate tokens, ни partially validated fragments не раскрываются. Переход к
+Partial Answer требует separately validated immutable representation. Technical
+retry, bounded regeneration, cancellation и recovery следуют принятой hybrid
+execution boundary: short attempts принадлежат runtime/worker, а composite durable
+lifecycle, cancellation и exhaustion policy — Temporal.
+
+#### Completeness scope and observed coverage
+
+Requester может выбрать доступный knowledge scope и выразить exhaustive intent,
+но не объявляет scope complete или authorized. Server выводит immutable
+`Target Completeness Scope` из request, pinned `ContextProfile`, workspace и
+environment, canonical authorization, source constraints и freshness
+requirements. Active publication не сужает required target: отдельно вычисляется
+`Observed Coverage` — verifiably represented часть target в pinned
+`ProjectionSnapshot` с current source lifecycle, drift, exclusions, failed
+partitions и freshness gaps.
+
+Exhaustive disclosure требует доказуемого соответствия Observed Coverage всему
+Target Completeness Scope. Incomplete projection coverage не переопределяет
+target и не превращает incomplete result в complete. Scope derivation, membership,
+coverage diagnostics и counts являются protected в той мере, в которой они могут
+раскрыть недоступные sources; public result использует только disclosure-safe
+summary.
+
+#### Attempt isolation and publication changes
+
+Каждый `Q&A Attempt` использует ровно один immutable, consistently pinned
+`ProjectionSnapshot`, activation generation, `CanonicalBoundary`, `as_of` и
+`ContextBundle`. Candidate и accepted answer не смешивают evidence разных
+snapshots или attempts. Bounded retry/regeneration создаёт новый attempt; final
+answer связывается только с exact context успешного attempt, а abandoned attempts
+остаются protected diagnostics.
+
+Новая activation сама по себе не инвалидирует attempt. Перед disclosure система
+проверяет, могли ли activation или canonical drift materially повлиять на evidence
+validity, required freshness, conflict handling либо comparison Target Completeness
+Scope с Observed Coverage. Если влияние material или не может быть доказано как
+immaterial, candidate проходит revalidation либо bounded regeneration на newly
+authorized current evidence; prior validity не предполагается. Если все
+requirements сохраняются, pinned attempt может быть раскрыт со своими исходными
+snapshot и `as_of`. Current authorization проверяется на каждой protected
+disclosure boundary.
+
+Protected evidence или derived content, перенесённые между attempts, сохраняют
+полную lineage и `Disclosure Dependency`; перенос не разрешает смешать evidence
+identities в accepted answer или потерять исходную authorization dependency.
+
+#### Stored answers and current disclosure eligibility
+
+Stored question, accepted answer, claims, ContextBundle, validation facts и
+lineage неизменяемы пока retained и никогда не перепривязываются к newer evidence.
+Обычный history display повторно проверяет current authorization, canonical source
+validity и retention. Каждый protected source, content которого достиг generation
+в accepted attempt либо через carried-forward content, является `Disclosure
+Dependency`, даже если final answer его не цитирует.
+
+Если любой required dependency становится unauthorized, superseded, tombstoned
+или иначе ineligible для ordinary disclosure, R1 скрывает весь content-bearing
+history entry без partial redaction. Остаются только independently authorized
+safe operational metadata и protected unavailable state. ADR 0018 может разрешить
+отдельный exact historical citation inspection, но не historical stored-answer
+display, arbitrary historical Q&A или обход через cached answer/excerpt.
+
+Immutability действует только пока record retained. Retention expiry, mandatory
+deletion и legally required erasure могут удалить либо необратимо обезличить
+protected artifacts по defined policy; audit immutability не означает indefinite
+content retention.
+
+#### Confidence, audit and reproducibility
+
+Confidence является optional non-authoritative evaluation metadata от named,
+versioned policy. Оно не заменяет disclosure gate, evidence, authorization,
+canonical validity, completeness или conflict status и не может превратить
+rejected candidate в answer. Model self-confidence не представляется calibrated
+probability factual correctness. User-facing number появляется только с
+documented interpretation и suitable evaluation; calibration и thresholds
+принадлежат evaluation baseline и release approval.
+
+Protected reproducibility record сохраняет, в пределах applicable retention:
+
+- run, attempt, trace, workspace/environment и acting identities;
+- original question, Target Completeness Scope и Observed Coverage decision;
+- pinned capability, Agent, prompt, model, ContextProfile, projection, parser,
+  locator и validation-policy versions;
+- exact ContextBundles, canonical boundaries, activation generations, snapshots
+  и `as_of` каждого attempt;
+- authorization-decision и policy-version references;
+- protected candidates, rejection records, accepted answer, claims, citations,
+  relationships, derivations и validation facts;
+- outcome, safe/protected reasons, retry/cancellation lineage, feedback и later
+  disclosure-eligibility decisions;
+- server-side protected SSE emission records с event identity, без утверждения,
+  что emission доказывает client receipt.
+
+Questions, prompts, bundles, candidates, diagnostics и audit artifacts подчинены
+content authorization и retention; audit/telemetry backend не является bypass.
+Hidden chain-of-thought не сохраняется. Reproducibility означает reconstruction
+actual inputs, context, policy versions, decisions и disclosed output, но не
+byte-identical regeneration nondeterministic model. Идентификаторы и safe metadata,
+которые остаются после content erasure, определяются retention contract в
+`to-spec`; этот architecture contract не требует indefinite retention.
+
+#### Question, session and clarification semantics
+
+User messages, corrections и factual premises являются protected input и
+retrieval constraints, а не authoritative evidence. Factual premise о knowledge
+base проверяется по authorized `ContextBundle` прежде чем стать source-backed
+Answer Claim. User input не создаёт, не изменяет и не impersonates Citation или
+authoritative evidence; upload становится evidence только после governed
+ingestion.
+
+Явно переданные parameters и hypothetical premises моделируются как `Task Input`.
+Они могут участвовать в reasoning и reproducible deterministic derivations, если
+не представлены как verified facts, все source-dependent rules и factual inputs
+grounded, а conditional nature результата явно раскрыта.
+
+Session history используется только как current-authorized `Interpretive Context`
+для references, intent и selected parameters. Каждый follow-up run выполняет
+fresh authorization, Target Completeness Scope derivation, active snapshot
+selection, retrieval и evidence validation. Prior assistant answers, citations,
+summaries и session memory не становятся independent evidence. History, утратившая
+current disclosure eligibility, не передаётся model; небезопасно разрешимый
+reference приводит к safe clarification либо иному disclosure-safe outcome.
+
+`clarification_required` применяется только к material ambiguity user intent,
+requested scope или safely discoverable input. Оно не содержит unvalidated answer
+claims и не раскрывает protected source existence, identity, counts, conflicts,
+excerpts или exclusions. Clarification не заменяет abstention, denial или failure,
+завершает текущий run, а response пользователя создаёт linked new run с fresh
+authorization, scope, snapshot и ContextBundle. Если safe clarification
+невозможно сформулировать, используется appropriate disclosure-safe outcome.
+
+Exhaustive intent определяется question semantics, explicit constraints и
+versioned interpretation policy, но никогда retrieval success. Явный exhaustive
+request по умолчанию требует доказанного соответствия Observed Coverage всему
+Target Completeness Scope. Отсутствие explicit all-or-nothing instruction не
+является согласием на partial result. Partial Answer для exhaustive request
+допускается только при `Partial Fallback Authorization` в current request либо
+applicable previously accepted preference, не конфликтующей с current request.
+Explicit current completeness requirement всегда имеет precedence над general
+preference. Без такого разрешения unmet completeness ведёт к abstention; при
+materially ambiguous completeness intent — к clarification. Разрешённый partial
+fallback остаётся fully grounded, independently useful, явно non-exhaustive и не
+подразумевает absence вне verified Observed Coverage.
+
+#### Q&A evaluation and acceptance
+
+Hard safety invariants разделяются на mechanically enforceable checks и
+probabilistic semantic correctness. Deterministic gates проверяют evidence
+identity, ContextBundle membership, SourceObject/SourceRevision, digest,
+parser/locator version, exact locator resolution, canonical currentness,
+tombstone state, authorization и validity каждого required contributor. Failed
+deterministic check не может быть overridden semantic model или quality score.
+Любой protected disclosure channel, включая SSE, fail closed.
+
+Semantic claim support, relevance, completeness interpretation и conflict
+detection проверяются versioned validators и human-labelled benchmarks. Проход
+verification/acceptance suite является release gate, но finite tests и
+model-based validation не объявляются mathematical guarantee для всех inputs.
+
+Versioned evaluation различает и измеряет:
+
+- citation identity и locator validity;
+- semantic claim-to-evidence support correctness;
+- retrieval relevance, recall и ranking при наличии relevance labels;
+- semantic-validator false acceptance и false rejection;
+- outcome classification, exhaustive intent и completeness decisions;
+- conflict handling, partial-answer behavior и derived-claim correctness;
+- answer usefulness отдельно от safety invariants.
+
+Каждая evaluation фиксирует dataset, model, prompt, retrieval, parser,
+locator-scheme, validation-policy, ContextProfile и projection configuration
+versions. Deterministic checks и human labels являются primary; model judge может
+только supplement. Numerical thresholds определяются отдельными evaluation
+baseline и release approval, включая Issue #17 где applicable.
+
+Required representative scenarios включают:
+
+- single-source, multi-claim, multi-document independent/joint/derived answers;
+- grounded conflicts, safe clarification, Task Inputs и hypotheses;
+- eligible и ineligible conversation history;
+- absent/insufficient evidence и complete/incomplete exhaustive questions с и
+  без Partial Fallback Authorization;
+- fabricated, malformed, unrelated, stale и unresolvable citations;
+- allowed, denied, mixed-access и two-workspace retrieval;
+- current, superseded, tombstoned, missing и retention-expired evidence;
+- current/stale × healthy/degraded, drift, exclusions, failed partitions и
+  unpublished context;
+- newly accepted sources missing from active projection for exhaustive query;
+- activation и canonical changes during generation, включая repeated changes
+  during bounded regeneration;
+- revocation before model access, during validation, between final validation and
+  protected SSE emission, at later SSE boundaries и before stored-answer access;
+- retrieval, generation и validator failure/timeout;
+- semantic-validator false acceptance/false rejection against human labels;
+- current, historical-authorized и unavailable citation inspection;
+- cancellation, bounded regeneration, retry exhaustion и recovery.
+
+Representative interaction combinations используются вместо полного Cartesian
+product. Fixtures synthetic либо explicitly approved anonymized.
+
+Acceptance имеет три разные границы:
+
+1. **Architectural readiness for `to-spec`:** Q&A decisions и scenarios
+   documented, ADRs consistent, behavioral blockers absent; implementation или
+   passing production tests не implied.
+2. **Development and CI:** offline deterministic, fake-adapter и contract suites
+   mandatory; live-provider/real-Cognee tests могут выполняться separately.
+3. **Production R1 release qualification:** actual configured PostgreSQL
+   authorization, Cognee projection/retrieval, Temporal lifecycle и configured
+   model/validators проходят release-relevant end-to-end verification, hard
+   invariants, integration contracts и approved quality thresholds. Fake-only
+   evidence недостаточно.
+
+Material prompt, model, retrieval, parser, locator, completeness, policy или
+validator changes rerun affected suites и report results/quality deltas.
+
 Q&A — один consumer этого контракта. Любой agent step получает контекст через
 `Context Broker` и собственный versioned `ContextProfile`: разрешённые datasets,
 relation traversal, freshness limits, token budget и retrieval strategy. Агент не
@@ -853,11 +1262,11 @@ uniform not-found; при разрешённой operational visibility content 
 возвращает safe permission-denied без утечки существования или содержания через
 details, counts или diagnostics.
 
-Если viewer теряет доступ хотя бы к одному `SourceObject`, участвовавшему в
-stored answer, весь content-bearing history entry скрывается: question, answer,
-ContextBundle, citations и evidence. Разрешены только safe run metadata и status
-`content_unavailable_due_to_access_change`. Partial redaction откладывается до
-контракта с полной claim-to-evidence lineage и доказанно безопасной семантикой.
+Если viewer теряет доступ либо current disclosure eligibility хотя бы к одному
+`Disclosure Dependency` stored answer, весь content-bearing history entry
+скрывается: question, answer, ContextBundle, citations и evidence. Разрешены
+только safe run metadata и protected unavailable status. Partial redaction не
+поддерживается в R1.
 
 Effective authorization повторно проверяется перед model invocation, перед
 раскрытием protected output и перед каждым content-bearing SSE event. Commit
@@ -1267,6 +1676,11 @@ Q&A response:
   "as_of": "..."
 }
 ```
+
+Этот JSON остаётся illustrative, а не финальной API schema. `confidence` optional
+и допускается только с documented named/versioned interpretation; authoritative
+grounding, completeness, conflict и validation semantics определены в Q&A
+contract выше.
 
 Все list endpoints используют cursor pagination. Мутирующие команды принимают `Idempotency-Key`. Для обновления UI достаточно SSE; WebSocket добавляется только для сценариев с двусторонним real-time взаимодействием.
 
@@ -1713,6 +2127,9 @@ detectors без специальных обходов в platform core.
 - [ADR-018](adr/0018-canonical-source-and-projection-publication-lifecycle.md):
   immutable source observations, canonical revision acceptance, publication
   snapshots, drift, rollback и recovery.
+- [ADR-019](adr/0019-grounded-answer-disclosure-contract.md): binary Grounded
+  Answer disclosure, claim-level citations, abstention, completeness и current
+  disclosure eligibility.
 - ADR-TBD: artifact schemas и handoff evaluation protocol.
 - ADR-012: business outcome attribution и cost accounting.
 - ADR-013: future third-party Agent SDK, package trust и certification после появления подтверждённого внешнего кейса.

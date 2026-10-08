@@ -103,6 +103,11 @@ Security Domain partition receipts and validation lineage. Only an active
 validated snapshot serves ordinary retrieval.
 _Avoid_: Projection Config Version, mutable index, database copy
 
+**Context Bundle**:
+The exact authorized retrieval context and evidence persisted as issued to one
+Agent Run.
+_Avoid_: Retrieval Result, model context window, current projection
+
 **Projection Drift**:
 Canonically accepted source changes after a Projection Snapshot's Canonical
 Boundary that are not represented in that snapshot.
@@ -137,6 +142,105 @@ _Avoid_: Projection health, snapshot lifecycle state, source timestamp
 A derived `healthy` or `degraded` assessment of exclusions, failed processing,
 artifact integrity, receipt consistency and reconciliation for a publication.
 _Avoid_: Publication Freshness, answerability, manifest completeness
+
+### Grounded question answering
+
+**Answer Claim**:
+The smallest independently verifiable factual assertion made by an answer.
+Claim boundaries follow meaning rather than sentences or formatting.
+_Avoid_: Sentence, answer paragraph, citation marker
+
+**Citation**:
+An immutable, durably identified reference from an Answer Claim to one exact
+evidence item and its Source Revision-scoped provenance.
+_Avoid_: Markdown link, excerpt, filename, retrieval result
+
+**Claim Evidence Relationship**:
+The explicit semantic relationship connecting an Answer Claim to independently
+supporting, jointly supporting or derivation-input evidence.
+_Avoid_: Nearby citation marker, source list, opposing evidence
+
+**Citation Validation Record**:
+The immutable result and policy lineage of validating one Citation for an
+answer at its disclosure boundary.
+_Avoid_: Current access decision, citation availability, confidence score
+
+**Grounded Answer**:
+An answer for which every externally verifiable Answer Claim is actually
+supported by valid authorized evidence from the exact persisted Context Bundle.
+It is a binary disclosure predicate, not a quality score.
+_Avoid_: Groundedness score, confident answer, answer with citations
+
+**Derived Claim**:
+An Answer Claim produced by a reproducible deterministic transformation whose
+factual inputs are grounded and whose derived nature is disclosed.
+_Avoid_: Model inference, uncited calculation, general knowledge
+
+**Target Completeness Scope**:
+The server-derived authorized source scope that must be covered to justify an
+exhaustive answer; it does not imply visibility into unauthorized material.
+_Avoid_: Entire repository, projected sources, retrieval results
+
+**Observed Coverage**:
+The verifiably represented portion of a Target Completeness Scope in the pinned
+Projection Snapshot, including explicit lifecycle, exclusion and freshness gaps.
+_Avoid_: Target Completeness Scope, retrieved evidence, successful publication
+
+**Q&A Attempt**:
+One bounded generation and validation attempt using exactly one pinned Projection
+Snapshot, Canonical Boundary and Context Bundle.
+_Avoid_: Q&A run, retry loop, mixed-snapshot answer
+
+**Disclosure Dependency**:
+A protected source whose content reached generation, directly or through content
+carried from an earlier attempt, and therefore constrains later answer disclosure.
+_Avoid_: Citation only, retrieved candidate, source mentioned in answer
+
+**Partial Answer**:
+A clearly limited answer containing only independently useful Answer Claims that
+individually satisfy the Grounded Answer predicate and cannot be invalidated by
+missing coverage.
+_Avoid_: Best-effort answer, silently incomplete answer, exhaustive answer
+
+**Task Input**:
+A protected user-supplied parameter or explicitly hypothetical premise used
+conditionally without representing it as verified source evidence.
+_Avoid_: Citation, Source Observation, verified fact
+
+**Interpretive Context**:
+Currently disclosure-eligible conversation material used to resolve references,
+intent and Task Inputs but never to ground an Answer Claim.
+_Avoid_: Evidence, session memory authority, prior-answer source
+
+**Partial Fallback Authorization**:
+An explicit current-request instruction or applicable accepted preference that
+permits a non-exhaustive answer when an exhaustive request cannot be completed.
+_Avoid_: Missing all-or-nothing instruction, retrieval success, system default
+
+**Grounded Conflict**:
+A Grounded Answer that presents contradictory authorized evidence without
+selecting a position unless an approved deterministic precedence rule applies.
+_Avoid_: Model arbitration, newest-source-wins, resolved fact
+
+**Q&A Outcome**:
+The terminal disposition of one question-answering run: answered,
+clarification-required, abstained, denied, failed or cancelled.
+_Avoid_: Answer kind, interaction state, HTTP status
+
+**Clarification Required**:
+A Q&A Outcome that ends the current run with a safe request to disambiguate the
+question while allowing the broader user interaction to continue.
+_Avoid_: Abstention, failed run, follow-up answer
+
+**Abstention**:
+A Q&A Outcome in which required checks completed but no Grounded Answer could be
+established; it is distinct from denied access and operational failure.
+_Avoid_: Error, permission denial, empty answer
+
+**Disclosure-Safe Reason**:
+A non-content-bearing explanation of a Q&A Outcome that does not reveal
+protected source existence, identity, content or lifecycle details.
+_Avoid_: Internal diagnostic, raw error, source count
 
 ### Access and authorization
 
