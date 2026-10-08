@@ -58,7 +58,8 @@ R0 не является самостоятельным продуктовым �
 - [ ] Typed retrieval contract через Context Broker.
 - [ ] Capability `answer_question` как эталонный local `AgentHandler`: pinned
       `AgentVersion`/`ContextProfile`, runtime-managed artifacts и citations.
-- [ ] `/api/v1/ask`: answer, citations, confidence, `as_of`, trace ID и abstention.
+- [ ] `/api/v1/ask`: grounded answer/outcome, structured citations, optional
+      versioned confidence metadata, `as_of`, trace ID и abstention.
 - [ ] Administrator-only Knowledge Control Plane: документы и ревизии, ingestion /
       projection status, диагностический Q&A, citations inspector, run timeline,
       freshness и feedback.

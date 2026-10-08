@@ -124,11 +124,23 @@ Chat позволяет администратору проверять один
 - выбор доступного knowledge scope, когда в workspace их несколько;
 - потоковое отображение состояния выполнения и ответа;
 - явный abstention или запрос уточнения при недостатке evidence;
-- citations рядом с подтверждаемыми утверждениями;
+- citations рядом с подтверждаемыми claims после прохождения disclosure gate;
 - инспектор source revision, locator и использованного excerpt;
 - freshness/as-of и версию Context projection;
+- раздельные Target Completeness Scope и Observed Coverage без раскрытия
+  unauthorized membership, exclusions или counts;
 - переход к связанному run;
 - feedback: полезность ответа, неверный ответ и неверная citation.
+
+User-supplied parameters и hypotheses показываются как inputs/assumptions, а не
+как source evidence. Session history помогает разрешать references только пока
+она current-authorized; prior answer никогда не отображается как evidence нового.
+`clarification_required` создаёт новый linked run после ответа пользователя.
+
+Для explicit exhaustive request UI не предлагает partial result по умолчанию.
+Non-exhaustive fallback возможен только после explicit request/preference и
+показывает, что Target Completeness Scope не покрыт Observed Coverage. Current
+request completeness constraints имеют precedence над сохранённой preference.
 
 Chat не показывает скрытую chain-of-thought. Вместо неё доступны структурированная
 сводка, использованные источники, версии, решения gate и диагностические события.
@@ -143,9 +155,15 @@ started at, duration и наличие ошибок.
 
 - workspace, environment, acting subject и trace ID;
 - закреплённые версии agent, prompt, context profile и projection;
+- attempts с отдельно pinned snapshot/boundary/as_of без смешения evidence;
 - retrieval strategy и найденные references;
 - источники, использованные и отклонённые при формировании ответа;
-- итоговый status: `answered`, `abstained` или `failed`;
+- итоговый outcome: `answered`, `clarification_required`, `abstained`, `denied`,
+  `failed` или `cancelled`;
+- независимые признаки completeness/partiality и grounded conflict для answered
+  result;
+- Target Completeness Scope, Observed Coverage и serving/validation decisions в
+  пределах текущей content authorization;
 - latency, token/cost metrics, warnings и structured errors.
 
 Начальная реализация может использовать линейную timeline. Tree/waterfall для
@@ -195,8 +213,9 @@ OpenAPI типы. Минимальные ресурсы:
 - health/configuration summary.
 
 API возвращает structured errors и сохраняет workspace, environment, acting
-subject и trace ID. Ответ Q&A включает как минимум answer status, structured
-citations, confidence или abstention reason, `as_of` и projection snapshot.
+subject и trace ID. Ответ Q&A включает как минимум outcome, structured citations
+для answered result, disclosure-safe reason для non-answer outcome, `as_of` и
+projection snapshot. Versioned confidence metadata optional и не заменяет gate.
 
 ## 6. Не входит в R1
 
@@ -412,7 +431,8 @@ SSE-протокол поддерживает как минимум:
 
 ```text
 run_started | stage_changed | answer_delta | citation_added
-abstained | completed | failed | heartbeat
+clarification_required | abstained | denied | completed | failed | cancelled
+heartbeat
 ```
 
 Каждое событие имеет event ID, session/message/run/trace IDs и versioned payload.
@@ -420,6 +440,23 @@ abstained | completed | failed | heartbeat
 timeout, cancellation и terminal state. После terminal event клиент запрашивает
 каноническое сообщение у API; transient deltas не становятся единственным
 источником сохранённого ответа.
+
+`answer_delta` и `citation_added` не передают candidate model output. Они могут
+транслировать только content из уже принятого Grounded Answer после полного
+claim/evidence disclosure gate и current authorization check перед protected
+event. До этого stream показывает только safe progress. Failure validation или
+authorization change завершает stream safe terminal event без undisclosed
+answer content.
+
+Public terminal payload использует disclosure-safe reason и одинаково безопасную
+структуру для source-sensitive причин. Protected diagnostics и source-specific
+details запрашиваются отдельно и только после content authorization. UI и
+telemetry не должны создавать очевидно различимые source-dependent detail/count
+paths; timing leakage проверяется security tests без обещания constant time.
+
+Server-side event log фиксирует emission/event identity для resume и audit, но не
+объявляет emission доказательством client receipt. Accepted answer content всегда
+гидратируется из canonical persisted message после terminal event.
 
 ### 9.5. Upload и ingestion
 
@@ -438,9 +475,18 @@ timeout, cancellation и terminal state. После terminal event клиент 
 
 ### 9.6. Citations и AI output
 
-Citation является типизированным объектом с document/source revision, stable
-locator, excerpt, `as_of` и projection snapshot, а не только Markdown-ссылкой в
-тексте. Inspector получает защищённый excerpt с сервера после проверки доступа.
+Citation является immutable типизированным объектом с opaque identity,
+SourceObject/SourceRevision provenance, original digest, versioned stable locator,
+exact ContextBundle evidence reference и immutable run linkage к `as_of` и
+projection snapshot, а не только Markdown-ссылкой. Claim-to-evidence linkage
+является server-owned contract; display metadata и inline marker не authoritative.
+
+Inspector разрешает citation только на сервере и повторно проверяет current
+policy, source lifecycle и retention. Он никогда не применяет historical locator
+к replacement revision. Historical excerpt показывается с явной маркировкой
+только в разрешённом ADR 0018 history/citation-inspection flow; иначе UI
+показывает safe unavailable state без protected distinctions. Stored excerpt и
+cache не являются fallback authority.
 
 Model output считается недоверенным: Markdown санитизируется, произвольные HTML,
 script, iframe и model-generated JavaScript не исполняются. UI не показывает
@@ -453,6 +499,20 @@ system prompts, credentials, внутренние provider errors или chain-o
 `validation_failed`, `failed` и `ready`. Отдельно обрабатываются недоступность
 API/Cognee, устаревшая projection, разрыв SSE, partial answer, отменённый run и
 недоступная citation.
+
+Partiality и grounded conflict отображаются независимо: один answered result
+может быть одновременно limited по completeness и показывать несколько
+противоречивых grounded positions. Ни degraded status, ни найденные citations
+сами по себе не позволяют UI называть ответ complete.
+
+Stored answer content показывается только после current disclosure-eligibility
+check для всех Disclosure Dependencies. При revocation, supersession, tombstone
+или retention restriction скрывается весь content-bearing history entry; UI не
+делает partial redaction и показывает только independently authorized safe status.
+
+Numerical confidence не является обязательным UI field. Если оно показывается,
+UI объясняет named/versioned policy и meaning score и не представляет его как
+probability correctness, completeness или authorization.
 
 Structured error содержит стабильный code, безопасное описание, retryability и
 trace ID. Raw stack trace и защищённые данные в response не возвращаются.
@@ -496,3 +556,11 @@ answers, citation excerpts, credentials и сырые provider payloads не о�
   ingestion lifecycle, streaming answer, abstention, SSE reconnect, citation
   inspector, permission denied без утечки, cancel/retry без duplicate run и
   восстановление session после reload.
+- Streaming tests доказывают отсутствие candidate content, fail-closed behavior
+  и authorization change между validation и каждым protected SSE emission.
+- History tests скрывают previously authorized stored answer после revocation,
+  supersession, tombstone или retention restriction любой Disclosure Dependency.
+- Exhaustive-answer UI states различают Target Completeness Scope и Observed
+  Coverage, включая newly accepted source, отсутствующий в active projection.
+- UI tests не заменяют release-relevant end-to-end verification configured
+  PostgreSQL, Cognee, Temporal и model/validation stack.
