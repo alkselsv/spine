@@ -8,6 +8,30 @@ interface считаются экспортированные SDK-функции
 модели и helpers использованы только как доказательство реализации и не должны
 импортироваться adapter'ом Spine.
 
+## Примечание об интеграции с принятой архитектурой
+
+Исходные выводы ниже сохранены как результат исследования Cognee 1.5.4. При
+интеграции 8 октября 2026 года они были сверены с принятыми
+[ADR 0001](../adr/0001-canonical-store-and-context-graph.md),
+[ADR 0011](../adr/0011-canonical-document-access-policy.md) и
+[ADR 0018](../adr/0018-canonical-source-and-projection-publication-lifecycle.md).
+
+ADR 0001 подтверждает роль Cognee как заменяемого projection engine за
+Spine-owned interface. ADR 0011 подтверждает, что Cognee dataset permissions
+остаются только defense in depth, а единственным источником полномочий является
+текущий `AccessPolicy` в PostgreSQL с повторной проверкой каждого evidence.
+
+ADR 0018 уточняет lifecycle-термины, принятые уже после исследования. Упомянутый
+ниже `ProjectionVersion` теперь разделён на immutable processing definition
+`ProjectionConfigVersion` и immutable logical publication manifest
+`ProjectionSnapshot`. Формулировки исследования о возврате к предыдущей active
+version описывают отсутствующий в Cognee механизм, но не разрешённый Spine
+rollback protocol: Spine никогда не переводит active pointer на старый snapshot,
+а публикует successor snapshot на неубывающей canonical boundary. PostgreSQL
+остаётся authority для compare-and-swap activation; Cognee aliases, datasets и
+physical stores являются только производным состоянием. Эти уточнения не меняют
+вывод о необходимости Spine-owned shadow lifecycle и bounded prototype.
+
 ## Краткий вывод
 
 Cognee 1.5.4 подходит как глубокий engine за `ContextProjection`, но не реализует
