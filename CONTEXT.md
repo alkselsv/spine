@@ -6,6 +6,8 @@ used across product, architecture and implementation discussions.
 
 ## Language
 
+### Agents and execution
+
 **Capability**:
 A stable, versioned business contract describing one kind of work and its typed
 input and output.
@@ -51,10 +53,92 @@ A deterministic workflow step bound directly to a versioned transformation or
 business rule rather than resolved through an Agent Binding.
 _Avoid_: Agent, code agent
 
+### Sources and projections
+
 **Context Graph**:
 A versioned, evidence-linked semantic projection of domain entities, relations
 and ontology extracted from canonical source revisions.
 _Avoid_: Source of truth, agent memory, vector index
+
+**Source Object**:
+A stably identified object observed through one connection or created by an
+explicit upload; its identity does not depend on filename, path or checksum.
+_Avoid_: File, document revision, checksum duplicate
+
+**Source Revision**:
+An immutable observation of a Source Object's content and explicitly
+revision-bearing source metadata, regardless of its later admission disposition.
+Operational metadata changes do not create one.
+_Avoid_: Mutable document, projection version, ingestion attempt
+
+**Tombstone Revision**:
+A deletion-kind Source Revision with deletion provenance and no retrievable
+content. When canonically current, it fences every earlier content revision.
+_Avoid_: Hard delete, mutable deleted flag, empty document
+
+**Canonical Acceptance**:
+An append-only decision that a Source Revision has passed identity, idempotency,
+security, completeness and policy checks and may become canonically current.
+_Avoid_: Projection success, ingestion status, document approval
+
+**Current Source Revision**:
+The Source Revision selected by PostgreSQL as the Source Object's canonical
+current state. It does not imply that the revision has been projected or served.
+_Avoid_: Active revision, indexed revision, latest upload
+
+**Canonical Boundary**:
+A durable, commit-consistent cut of accepted-current source state for one
+workspace and environment, with a server-recorded boundary time.
+_Avoid_: Build start time, publication time, source timestamp
+
+**Projection Config Version**:
+An immutable definition of the ontology, extraction, embedding and processing
+settings used to build Context Graph projections.
+_Avoid_: Projection Snapshot, active index, Cognee configuration
+
+**Projection Snapshot**:
+An immutable logical publication of a Context Graph at a server-selected
+Canonical Boundary, with exact source-revision membership, isolated
+Security Domain partition receipts and validation lineage. Only an active
+validated snapshot serves ordinary retrieval.
+_Avoid_: Projection Config Version, mutable index, database copy
+
+**Projection Drift**:
+Canonically accepted source changes after a Projection Snapshot's Canonical
+Boundary that are not represented in that snapshot.
+_Avoid_: Data loss, source timestamp lag, authorization cache
+
+**Manifest Completeness**:
+The property that every source in a Projection Snapshot's declared boundary is
+accounted for as included, tombstoned or excluded with an auditable reason.
+_Avoid_: Coverage completeness, successful publication
+
+**Coverage Completeness**:
+The property that every projection-eligible source in scope is included at its
+expected revision or accounted for as tombstoned, with no projection exclusion.
+_Avoid_: Manifest Completeness, successful publication
+
+**Projection Rollback**:
+Publication of a new successor Projection Snapshot that restores previously
+validated projection behavior without reverting canonical state or its boundary.
+_Avoid_: Pointer reversal, source rollback, database restore
+
+**Activation Generation**:
+A PostgreSQL-controlled monotonic identifier for the active Projection Snapshot
+selection of one workspace, environment and projection kind.
+_Avoid_: Cognee alias, snapshot boundary, cache version
+
+**Publication Freshness**:
+A derived `current` or `stale` assessment of whether canonical drift and the
+applicable freshness requirements are satisfied for an active publication.
+_Avoid_: Projection health, snapshot lifecycle state, source timestamp
+
+**Publication Health**:
+A derived `healthy` or `degraded` assessment of exclusions, failed processing,
+artifact integrity, receipt consistency and reconciliation for a publication.
+_Avoid_: Publication Freshness, answerability, manifest completeness
+
+### Access and authorization
 
 **Actor Reference**:
 An identity used to attribute, initiate or assign work to a human, team, Agent or
