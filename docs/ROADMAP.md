@@ -54,7 +54,7 @@ R0 не является самостоятельным продуктовым �
       relations из `SourceRevision`.
 - [ ] Индексация, обновление, удаление и полная перестройка graph/vector Context
       projection; Cognee — первый replaceable adapter.
-- [ ] Object-level ACL и наследование прав документ → chunk/reference.
+- [ ] Object-level Access Policy и наследование прав документ → chunk/reference.
 - [ ] Typed retrieval contract через Context Broker.
 - [ ] Capability `answer_question` как эталонный local `AgentHandler`: pinned
       `AgentVersion`/`ContextProfile`, runtime-managed artifacts и citations.
@@ -63,7 +63,7 @@ R0 не является самостоятельным продуктовым �
       projection status, диагностический Q&A, citations inspector, run timeline,
       freshness и feedback.
 - [ ] Golden dataset из реальных обезличенных вопросов.
-- [ ] Regression eval для retrieval, groundedness, citation correctness и ACL leakage.
+- [ ] Regression eval для retrieval, groundedness, citation correctness и access-policy leakage.
 - [ ] Метрики latency, cost, answer rate и пользовательской полезности.
 
 ### Exit criteria

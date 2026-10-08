@@ -16,7 +16,7 @@
 ```text
 загрузить документ
   → дождаться parsing и indexing
-  → проверить извлечённое содержимое и состояние проекции
+  → проверить разрешённое содержимое и состояние проекции
   → задать контрольный вопрос
   → проверить ответ, abstention и citations
   → открыть run и локализовать проблему
@@ -38,16 +38,19 @@ Temporal или хранилищами.
 
 - загружать поддерживаемые документы в workspace;
 - видеть состояние parsing, projection и indexing;
-- просматривать метаданные, ревизии, извлечённое содержимое и ошибки;
+- просматривать safe operational metadata и sanitized diagnostics;
+- при наличии `read_content` просматривать protected metadata, ревизии,
+  извлечённое содержимое, citations и evidence;
 - логически удалять документ и запускать повторную обработку;
 - задавать вопросы встроенному capability `answer_question`;
-- просматривать citations, evidence и диагностическую информацию run;
+- просматривать разрешённую диагностическую информацию run;
 - оставлять feedback на ответ и citations.
 
 Обычные сотрудники не получают доступ к чату или панели в первом релизе. Это не
 отменяет серверную модель авторизации: API проверяет роль, `workspace_id` и
 environment для каждой команды и retrieval request. Скрытая навигация не
-считается контролем доступа.
+считается контролем доступа. Роль `administrator` не является content-superuser:
+upload не выдаёт implicit `read_content`, а policy changes подчиняются ADR-011.
 
 ## 3. Информационная архитектура
 
@@ -75,13 +78,15 @@ route/request context.
 
 Список документов показывает:
 
-- название, тип и размер оригинала;
-- source identity и активную `SourceRevision`;
-- checksum;
-- область доступа;
+- opaque source ID, тип и размер оригинала;
+- lifecycle/processing status, Security Domain и policy version;
 - время загрузки и последней успешной индексации;
 - состояние parsing и Context projection;
-- краткую ошибку и доступное следующее действие.
+- sanitized error и доступное следующее действие.
+
+Название, filename, source identity, active `SourceRevision`, checksum и другие
+content-bearing поля показываются только при `read_content`. Counts, errors и
+diagnostics не раскрывают существование или содержание filtered material.
 
 Минимальные состояния документа:
 
@@ -372,6 +377,9 @@ workspace и environment. Состояние, на которое требует
 - Все страницы и API-команды доступны только роли `administrator`.
 - Каждый запрос несёт acting subject, `workspace_id`, environment и trace ID.
 - Сервер проверяет роль и scope; скрытие control в UI не является авторизацией.
+- Protected metadata, document content, Chat output, citations, evidence и
+  content-bearing run history дополнительно требуют current `read_content` ко
+  всем contributing Source Objects.
 - Мутации используют `Idempotency-Key`.
 - Credentials и provider keys не попадают в browser bundle, URL, telemetry или
   client logs.

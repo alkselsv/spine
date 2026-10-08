@@ -179,8 +179,78 @@ flowchart LR
 - `Workspace` — граница tenant isolation.
 - `Environment` — изолированный контур `development`, `staging` или `production` внутри workspace; bindings, credentials, runs и policies не смешиваются между средами.
 - `User`, `Team`, `Role`, `Membership` — люди и организационная структура.
-- `ServicePrincipal` — идентичность connector или agent worker.
-- `AccessPolicy` — правила чтения данных и исполнения действий.
+- `ActorRef` — идентичность для назначения, инициирования и аудита работы; сама
+  по себе не является источником полномочий.
+- `AccessPrincipal` — human subject, team/group или service identity, которой
+  `AccessPolicy` может явно выдать полномочия.
+- `ServicePrincipal` — идентичность connector, worker или Agent Deployment;
+  deployment не наследует права создателя, разработчика или администратора.
+- `AccessPolicy` — неизменно версионируемые правила доступа `SourceObject`.
+  Текущая версия в PostgreSQL является единственным каноническим источником
+  authorization; прошлые версии сохраняются только для provenance и audit.
+
+Роль `administrator` даёт доступ к Control Plane, operational lifecycle, safe
+metadata, diagnostics и управлению policy, но не делает человека content
+superuser. Filename, title, parsed text, excerpt, citation и иные content-bearing
+metadata требуют отдельного разрешения. Policy changes проходят явный,
+авторизованный и append-only audited процесс; административная роль не может
+молча выдать своему владельцу право чтения.
+
+R1 использует только allow grants и deny-by-default:
+
+- `read_content` разрешает human/team principal раскрытие original, protected
+  metadata, parsed content, evidence, citations и derived answer content;
+- `process_content` разрешает service principal только явно заданные purpose и
+  operations в пределах workspace/environment, но само по себе не разрешает
+  раскрытие результата человеку;
+- lifecycle operations и policy administration являются полномочиями роли
+  `administrator`, а не следствием `read_content`;
+- direct и team grants объединяются, а on-behalf-of processing использует
+  пересечение effective human `read_content` и service `process_content`.
+
+Policy или membership change, повышающий effective `read_content` инициатора,
+требует отдельного approval другого независимо авторизованного administrator.
+Self-approval запрещён также через team membership и service-principal
+configuration. Если approver недоступен, change остаётся pending или denied.
+Break-glass access в R1 отсутствует; initial bootstrap использует отдельную
+контролируемую и аудируемую процедуру.
+
+Authorization bootstrap разрешён только до sealing authorization state и до
+появления accepted `SourceObject`. Authenticated deployment owner вне обычного
+Control Plane задаёт initial administrators, memberships, eligible Policy
+Templates, Security Domains и service principals. Bootstrap создаёт immutable
+receipt с operator, exact configuration hash, timestamp, environment и
+resulting bindings, после чего необратимо отключается. Production deployment
+настоятельно рекомендуется иметь минимум двух independent administrators; один
+administrator допустим, но после sealing не получает исключения из approval policy.
+Administrator-loss recovery является отдельной externally authorized процедурой,
+не переоткрывает bootstrap и не выдаёт emergency content access. Predesignated
+external deployment и data/security owners и способ их verification фиксируются
+до инцидента. Recovery может только создать replacement administrator bindings
+или исправить trusted identity mappings; она не меняет reader teams,
+`SourceObject` policies и `read_content`. Request, approvals, before/after state,
+configuration hash и execution receipt неизменяемы. После recovery действуют
+обычные approval rules; production настоятельно рекомендуется восстановить
+минимум двух independent administrators.
+
+Policy Proposal неизменяем и связывает requester, exact change/version hash и
+expected baseline version. Для self-benefiting change approver является другим,
+независимо авторизованным human operator, а не вторым account того же человека.
+Approver должен иметь current policy-administration authority в том же
+workspace/environment. Перед atomic activation повторно проверяются authority
+approver и baseline; optimistic concurrency отклоняет stale approval или
+conflicting change. Edit создаёт новую proposal version и отменяет прежний
+approval. Ordinary revocation и change, benefiting only other principals, может
+активировать один authorized administrator; immutable record всё равно сохраняет
+requester и activation. Request, approval, activation и rejection сохраняются
+неизменно.
+
+Каждый human `AccessPrincipal` связан с `CanonicalHumanIdentity` из trusted
+identity mapping. Все известные aliases одного человека сводятся к одному
+identity. Independent approval требует разных verified canonical identities;
+разные account, username, token или OIDC subject сами по себе недостаточны.
+Невозможность подтвердить independence приводит к fail-closed. Audit approval
+сохраняет canonical identities requester и approver.
 
 ### Интеграции и происхождение
 
@@ -190,6 +260,26 @@ flowchart LR
 - `SourceRevision` — неизменяемая наблюдавшаяся версия внешнего объекта.
 - `Attachment` — ссылка на оригинал в object storage.
 - `IngestionRun` — состояние и метрики одной синхронизации.
+
+Новый upload до создания active Access Policy принимается только через узкую
+`AdmissionAuthority`: secure staging, malware/format/size validation, checksum и
+изоляция. Она не даёт `process_content`, retrieval или disclosure. Каждый
+accepted `SourceObject` получает policy из eligible immutable Policy Template,
+approved connector/source configuration или активированной explicit proposal.
+Uploader не получает implicit `read_content` и не может выбрать template вне
+approved source, Security Domain, ingestion purpose и workspace/environment
+eligibility. Selection и activation аудируются. Missing/invalid policy оставляет
+object в quarantine, где допустимы только явно разрешённые isolated admission и
+security-validation operations; ordinary projection, retrieval и model
+processing запрещены.
+
+Admission выполняет отдельный service principal и допускает только bounded
+receive, immutable isolated staging, checksum/safe media metadata,
+deterministic format/archive/malware/resource-limit validation, sanitized status,
+reject и quarantine. Validators могут читать raw bytes только для этих проверок,
+не вызывают semantic extraction, embeddings, Cognee, LLM, preview или retrieval
+и не передают content во внешние services вне явно approved security boundary.
+Staging физически и логически отделён от ordinary knowledge/retrieval pipeline.
 
 ### Онтология и Context projection
 
@@ -328,7 +418,7 @@ graph/vector stores, graph traversal и hybrid retrieval. Spine не реали�
 
 | Spine владеет | Cognee adapter может выполнять |
 |---|---|
-| `workspace_id`, source identity, immutable revisions и ACL | Parsing/chunking, если сохраняются требуемые stable locators |
+| `workspace_id`, source identity, immutable revisions и Access Policy | Parsing/chunking, если сохраняются требуемые stable locators |
 | Published ontology/configuration versions | Извлечение entities и relations по опубликованной ontology |
 | Projection lifecycle, idempotency, activation, audit и eval gates | Embeddings, entity/relation consolidation и graph/vector indexing |
 | Каноническими бизнес-фактами и решениями identity resolution | Предложение ontology candidates и вероятностных identity candidates |
@@ -345,7 +435,7 @@ graph/vector stores, graph traversal и hybrid retrieval. Spine не реали�
 adapter выполняет внутренний pipeline и возвращает receipt:
 
 ```text
-SourceRevision + ACL
+SourceRevision + AccessPolicy reference
   → ProjectionCommand
   → Cognee adapter
       → parse/chunk
@@ -388,7 +478,7 @@ Cognee pipeline, parser, extractor, embedding model и физических stor
 позволяет adapter сопоставить graph/chunk identifiers с конкретными
 `SourceRevision` и stable locators.
 
-Spine хранит в Postgres source revisions, ACL, опубликованные ontology и
+Spine хранит в Postgres source revisions, versioned Access Policies, опубликованные ontology и
 projection configurations, состояние runs, receipts, activation history и
 evidence/context bundles, использованные значимыми agent runs. Все graph nodes,
 edges, chunks и embeddings не обязаны дублироваться в Postgres: они могут
@@ -401,7 +491,7 @@ Context Graph.
 
 1. **Неструктурированные материалы** — документы, сообщения, отчёты,
    спецификации и другие artifacts adapter передаёт во внутренний Cognee
-   pipeline, включая `remember()`, с source revision, ACL и provenance metadata.
+   pipeline, включая `remember()`, с source revision, policy reference и provenance metadata.
 2. **Структурированные сущности** — бизнес-объекты, workflow, agents,
    capabilities и результаты работы adapter проецирует как собственные Pydantic
    `DataPoint` с детерминированными ID и явными связями.
@@ -467,7 +557,8 @@ audit history. Полный rebuild повторно выполняет versione
 
 ### Dataset strategy
 
-Dataset — граница доступа, а не просто тематическая папка. Базовый ключ:
+Dataset — workspace/environment/security-domain partition для defense in depth,
+а не канонический источник authorization и не способ выдать доступ. Базовый ключ:
 
 ```text
 workspace:{workspace_id}:security-domain:{domain}
@@ -489,7 +580,75 @@ RetrievalResult:
   index_version
 ```
 
-Q&A — один consumer этого контракта. Любой agent step получает контекст через `Context Broker` и собственный versioned `ContextProfile`: разрешённые datasets, relation traversal, freshness limits, token budget и retrieval strategy. Агент не подключается к общему графу с неограниченным запросом. Broker применяет tenant/role/purpose policy, журналирует выданный context bundle и возвращает минимально необходимый срез. Перед важным действием актуальность объектов дополнительно проверяется в Postgres или исходной системе.
+Q&A — один consumer этого контракта. Любой agent step получает контекст через
+`Context Broker` и собственный versioned `ContextProfile`: разрешённые datasets,
+relation traversal, freshness limits, token budget и retrieval strategy. Агент не
+подключается к общему графу с неограниченным запросом. Broker deny-by-default и
+fail-closed проверяет в PostgreSQL workspace/environment, текущую Access Policy,
+effective permissions acting subject и service principal, затем применяет
+Security Domain и ContextProfile только как дополнительные ограничения. Для
+on-behalf-of execution действует пересечение полномочий service principal и
+acting human. Лишь после этого Broker журналирует и выдаёт минимальный
+`ContextBundle`; недоступный content не достигает модели, citations, metadata,
+relations или diagnostics.
+
+`SourceRevision`, chunks, entities, relations, references и citations не имеют
+независимой authority: они наследуют текущую Access Policy своего
+`SourceObject`. Историческая policy подтверждает provenance, но не разрешает
+текущий доступ. Context Broker, evidence endpoints и сохранённая answer history
+повторно проверяют текущую policy перед раскрытием content. Revocation не ждёт
+reindex, а authorization cache не может продлить отозванное право.
+
+Каждый service `process_content` grant материализуется в policy конкретного
+`SourceObject` и фиксирует service principal, workspace/environment, purpose,
+permitted operations и optional validity period. Ingestion, projection,
+retrieval и Q&A не получают неявного workspace-wide content access. Background
+processing без human subject допускается только для approved service purpose;
+interactive Q&A дополнительно требует пересечения с human `read_content`.
+
+Purpose, operation, acting identity и service principal образуют
+`TrustedAuthorizationContext` и выводятся только из authenticated route/command,
+registered Capability и Agent Version, workflow/activity definition и deployment
+configuration. Client business input не может подменить эти значения.
+ContextProfile только сужает контекст. Trusted authorization context связывается
+с immutable run и access-decision records; operation grant не может быть
+переиспользован для другого purpose как confused deputy.
+
+Projected entity/property/assertion/relation/summary сохраняет полный набор
+contributing `SourceObject`. Disclosure требует current authorization ко всем
+источникам exposed unit. Unauthorized properties, edges и derived claims
+удаляются до model access; incomplete, ambiguous или непартиционируемый
+provenance приводит к omission всего affected item. Graph topology, IDs, counts,
+scores, summaries и diagnostics не сообщают о filtered material.
+
+Administrator без `read_content` видит только явно разрешённый operational
+shell: opaque source ID, lifecycle/processing status, timestamps, media type,
+byte size, Security Domain ID, policy version и sanitized warning/error data.
+Filename, title, uploader identity, extracted structure, previews, citations,
+entities, relations, model inputs/outputs и raw provider errors являются
+protected. Undiscoverable resources не попадают в lists/search/retrieval и дают
+uniform not-found; при разрешённой operational visibility content endpoint
+возвращает safe permission-denied без утечки существования или содержания через
+details, counts или diagnostics.
+
+Если viewer теряет доступ хотя бы к одному `SourceObject`, участвовавшему в
+stored answer, весь content-bearing history entry скрывается: question, answer,
+ContextBundle, citations и evidence. Разрешены только safe run metadata и status
+`content_unavailable_due_to_access_change`. Partial redaction откладывается до
+контракта с полной claim-to-evidence lineage и доказанно безопасной семантикой.
+
+Effective authorization повторно проверяется перед model invocation, перед
+раскрытием protected output и перед каждым content-bearing SSE event. Commit
+policy, team/workspace/environment membership, human/service principal,
+delegation или scope change является точкой invalidation для последующих
+authorization decisions. Positive cache/lease не переносится через такую
+версию; cross-instance invalidation ускоряет cancellation, но correctness
+опирается на проверку канонической версии. При обнаружении change generation по
+возможности отменяется, undisclosed output отбрасывается, а stream получает
+только safe terminal authorization-changed event. Уже переданные bytes не могут
+быть отозваны; event, проверенный непосредственно перед concurrent commit, может
+успеть уйти до обнаружения invalidation, поэтому zero-latency revocation не
+гарантируется.
 
 ### Среды
 
@@ -1178,17 +1337,40 @@ web/
 ## 17. Безопасность и multi-tenancy
 
 - `workspace_id` обязателен во всех tenant-owned таблицах и событиях.
+- Environment является обязательной изолирующей границей для policy evaluation
+  и всей retrieval/evidence pipeline; grant не пересекает workspace или environment.
 - Postgres Row-Level Security — дополнительная защита от ошибок application filters.
-- Dataset Cognee выделяется по workspace и security domain.
+- PostgreSQL хранит текущую каноническую Access Policy; при невозможности
+  установить authorization запрос запрещается.
+- PostgreSQL также хранит effective workspace/environment memberships и role
+  bindings. Validated OIDC claims или deployment configuration могут поступать
+  в controlled mapping, но arbitrary token group names не становятся grants или
+  authoritative Access Principals.
+- Dataset Cognee выделяется по workspace, environment и security domain только
+  как defense in depth и никогда не является authority для выдачи доступа.
 - Credentials подключений хранятся в secrets manager, не в payload и не в graph.
 - Каждый agent deployment работает как отдельный service principal и получает минимальные, ограниченные по scope и времени permissions.
-- Вызов всегда содержит `acting_on_behalf_of`; права создателя агента не наследуются автоматически.
+- Вызов всегда содержит `acting_on_behalf_of`; effective authority является
+  пересечением service principal и acting human, а права создателя, разработчика
+  или deployment administrator не наследуются автоматически.
 - Tool Gateway выдаёт краткоживущие credentials либо выполняет операцию от имени агента, не раскрывая постоянный secret.
 - Third-party agent endpoints получают egress allowlist, data classification policy и явный список передаваемых полей.
 - Реестр хранит owner, publisher, deployments, tools/MCP/API grants, дату security review и kill-switch status.
 - PII и secrets редактируются перед отправкой в LLM/telemetry согласно policy.
 - Все исходящие действия связываются с `actor`, `workflow_run`, `approval` и `trace_id`.
 - Audit log append-only; административные операции также журналируются.
+- Access decisions и policy changes сохраняются как immutable audit records;
+  историческая policy не может авторизовать текущий запрос.
+- Self-benefiting content grants и membership/service configuration требуют
+  independent approval; normal operation не имеет break-glass bypass в R1.
+- Interactive acting human выводится только из authenticated request context и
+  не принимается как client-controlled identity field. Human delegation и
+  administrator impersonation отсутствуют в R1.
+- Policy Templates, eligibility rules, Security Domain assignments и connector
+  policy configurations изменяются только immutable Policy Proposals. Potential
+  future indirect self-benefit требует independent approval. Template version
+  approval не переписывает уже activated object policies, а eligible template
+  определяется server-side trusted source/configuration context.
 - Retention и право удаления распространяются на raw storage, Postgres, Cognee и observability backend.
 - Prompt injection из документов считается недоверенным вводом: найденный текст никогда не меняет system policy или список tools.
 
@@ -1292,19 +1474,24 @@ detectors без специальных обходов в platform core.
 ## 22. Архитектурные решения, требующие отдельного ADR
 
 - [ADR-001](adr/0001-canonical-store-and-context-graph.md): Postgres как canonical store, обязательный Context Graph как derived projection.
-- ADR-002: границы Cognee datasets и модель доступа.
+- ADR-002: production backend isolation и физические границы Cognee datasets;
+  каноническая R1 authorization model зафиксирована в ADR-011.
 - ADR-003: Temporal как единственный durable orchestrator.
 - ADR-004: transactional outbox и гарантии доставки.
 - ADR-005: identity resolution между источниками.
-- ADR-006: policy levels и перечень действий, требующих approval.
+- ADR-006: policy levels и approval для внешних действий; document access-policy
+  approval для R1 зафиксирован в ADR-011.
 - ADR-007: production graph/vector backends.
 - ADR-008: хранение, редактирование и retention PII.
 - ADR-009: prompt/model versioning и release gates по evals.
 - [ADR-010](adr/0010-capability-based-agent-runtime.md): capability contracts, local agent runtime seam, bindings и retry/fallback ownership.
-- ADR-011: artifact schemas и handoff evaluation protocol.
+- [ADR-011](adr/0011-canonical-document-access-policy.md): canonical document
+  Access Policy, delegated retrieval authority, bootstrap и approval.
+- ADR-TBD: artifact schemas и handoff evaluation protocol.
 - ADR-012: business outcome attribution и cost accounting.
 - ADR-013: future third-party Agent SDK, package trust и certification после появления подтверждённого внешнего кейса.
-- ADR-014: service identity, delegated authority и short-lived tool credentials.
+- ADR-014: service identity и short-lived credentials для Tool Gateway;
+  R1 document-processing authority и отсутствие delegation зафиксированы в ADR-011.
 - ADR-015: Workflow Compiler и validation lifecycle для AI-generated drafts.
 - ADR-016: frontend information architecture, environment context и read-model API.
 - ADR-017: workflow canvas DSL, artifact renderers и real-time update protocol.
