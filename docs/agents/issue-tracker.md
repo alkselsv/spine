@@ -40,6 +40,14 @@ The map is one issue labelled `wayfinder:map`; its child tickets are GitHub
 sub-issues where supported.
 
 - Child labels use `wayfinder:<type>`: `research`, `prototype`, `grilling` or `task`.
+- Wayfinding resolves uncertainty and prepares work for specification; it does
+  not implement production features. A `wayfinder:task` is limited to manual or
+  mechanical work required before a decision can be made, not delivery work.
+- When the decision frontier is clear, hand off through
+  `to-spec` -> `to-tickets` -> `implement` -> `code-review` -> merge.
+- Keep implementation-shaped issues discovered during wayfinding as planning
+  inputs until `to-tickets` decides whether to reuse, reshape or supersede them.
+  Do not execute them directly from the wayfinding map.
 - Represent blocking relationships with native GitHub issue dependencies.
 - If sub-issues or dependencies are unavailable, use task lists and a
   `Blocked by: #<number>` line.
