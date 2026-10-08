@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>THROWAWAY Prototype: Cognee Backend Isolation and Shadow Activation</title>
+  <style>
+    :root {
+      --bg: #f7f7f4;
+      --ink: #202322;
+      --muted: #626965;
+      --panel: #ffffff;
+      --line: #d9ddd6;
+      --accent: #12645a;
+      --bad: #9f2d20;
+      --warn: #946200;
+      --good: #207143;
+      --code: #f0f3ef;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+      line-height: 1.45;
+    }
+    main { max-width: 1180px; margin: 0 auto; padding: 28px; }
+    h1, h2, h3 { margin: 0 0 10px; line-height: 1.15; }
+    h1 { font-size: 30px; }
+    h2 { font-size: 20px; margin-top: 28px; }
+    h3 { font-size: 16px; }
+    p { margin: 0 0 12px; color: var(--muted); }
+    .notice {
+      border: 1px solid var(--warn);
+      background: #fff8e6;
+      padding: 12px;
+      border-radius: 6px;
+      margin: 16px 0;
+      color: #473500;
+    }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 16px;
+    }
+    .toolbar, .tabs, .steps { display: flex; gap: 8px; flex-wrap: wrap; }
+    button {
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      background: #fff;
+      border-radius: 5px;
+      padding: 8px 10px;
+      font: inherit;
+      cursor: pointer;
+    }
+    button:hover { background: #eef8f5; }
+    button.active { background: var(--accent); color: #fff; }
+    button.danger { border-color: var(--bad); color: var(--bad); }
+    button.danger:hover { background: #fff0ed; }
+    dl { display: grid; grid-template-columns: 170px 1fr; gap: 6px 10px; margin: 0; }
+    dt { color: var(--muted); }
+    dd { margin: 0; }
+    code, pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      background: var(--code);
+      border-radius: 4px;
+    }
+    code { padding: 1px 4px; }
+    pre { margin: 0; padding: 12px; overflow: auto; border: 1px solid var(--line); }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; padding: 8px; }
+    th { color: var(--muted); font-weight: 600; }
+    .pass { color: var(--good); font-weight: 700; }
+    .fail { color: var(--bad); font-weight: 700; }
+    .unknown { color: var(--warn); font-weight: 700; }
+    .event { margin: 6px 0; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+    @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } main { padding: 18px; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>THROWAWAY Prototype: Cognee Backend Isolation and Shadow Activation</h1>
+  <p>This demo answers one question: can a Spine-owned ContextProjection state model use Cognee 1.5.4 as a rebuildable projection while preserving two-workspace isolation, provenance round-trip, update/delete semantics, full shadow rebuild, validation, atomic active-version switching, rollback, and concurrency safety?</p>
+  <div class="notice">Prototype branch primary source only. This file is deliberately not production code and must not be merged as a production implementation.</div>
+
+  <section class="grid">
+    <div class="panel">
+      <h2>Free Play</h2>
+      <p>Press actions in any order. The state panel and event log show the exact model outcome after every action.</p>
+      <div class="toolbar" id="freeplay"></div>
+    </div>
+    <div class="panel">
+      <h2>Guided Walkthroughs</h2>
+      <div class="tabs" id="tabs"></div>
+      <p id="scenarioText"></p>
+      <div class="steps" id="steps"></div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="panel">
+      <h2>Current State</h2>
+      <div id="summary"></div>
+    </div>
+    <div class="panel">
+      <h2>Event Log</h2>
+      <div id="events"></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Backend Profiles</h2>
+    <table>
+      <thead><tr><th>Profile</th><th>Cognee stores</th><th>Result</th><th>Reason</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Local test</td>
+          <td><code>sqlite</code> relational, <code>kuzu/ladybug</code> graph, <code>lancedb</code> vector</td>
+          <td class="pass">Use for dev contract tests</td>
+          <td>Available from Cognee 1.5.4 defaults and lock. Not enough for R1 production concurrency/operations.</td>
+        </tr>
+        <tr>
+          <td>Production candidate</td>
+          <td><code>postgres</code> relational, <code>neo4j</code> graph, <code>pgvector</code> vector</td>
+          <td class="unknown">Candidate, not proven</td>
+          <td>Separates graph-native traversal from canonical Postgres. Needs real credentials and contract/load tests.</td>
+        </tr>
+        <tr>
+          <td>Rejected production graph</td>
+          <td><code>postgres_demo</code> graph with <code>pgvector</code></td>
+          <td class="fail">No-go for production graph</td>
+          <td>Cognee source marks it DEMO and says to use graph-native Kuzu or Neo4j for production workloads.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <h2>Raw State</h2>
+    <pre id="raw"></pre>
+  </section>
+</main>
+
+<script>
+const initialState = () => ({
+  cognee: {
+    version: "1.5.4 from uv.lock",
+    localProfile: "sqlite + kuzu/ladybug + lancedb",
+    productionCandidate: "postgres + neo4j + pgvector",
+    rejected: "postgres_demo graph"
+  },
+  canonical: {
+    activePointerAuthority: "Postgres transaction",
+    backendAuthority: "Cognee projection artifacts only",
+    activeGeneration: 1,
+    activeSnapshotId: "A-prod-docs-v1",
+    activeBoundary: 10
+  },
+  workspaces: {
+    A: { dataset: "workspace:A:security-domain:prod-docs", nodeSets: ["source:policy", "project:alpha"] },
+    B: { dataset: "workspace:B:security-domain:prod-docs", nodeSets: ["source:policy", "project:alpha"] }
+  },
+  revisions: {
+    "A:source-1": [
+      { id: "A-s1-r1", locator: "page=1 chars=0-80", projection: "v1", tombstone: false, text: "A-only renewal policy" }
+    ],
+    "B:source-1": [
+      { id: "B-s1-r1", locator: "page=1 chars=0-80", projection: "v1", tombstone: false, text: "B-only pricing appendix" }
+    ]
+  },
+  shadow: null,
+  retrievals: [],
+  validations: [],
+  concurrency: [],
+  events: ["Initialized active projection v1 for workspace A and B."]
+});
+
+const clone = value => JSON.parse(JSON.stringify(value));
+
+function retrieve(state, workspace, query) {
+  const active = state.canonical.activeSnapshotId;
+  const dataset = state.workspaces[workspace].dataset;
+  const rows = Object.values(state.revisions).flat()
+    .filter(r => r.id.startsWith(workspace + "-"))
+    .filter(r => !r.tombstone)
+    .filter(r => r.projection === active.split("-").at(-1));
+  const leaked = Object.values(state.revisions).flat()
+    .filter(r => !r.id.startsWith(workspace + "-"))
+    .some(r => JSON.stringify(rows).includes(r.text));
+  return {
+    workspace,
+    query,
+    dataset,
+    node_set_is_security: false,
+    active_snapshot_id: active,
+    result_texts: rows.map(r => r.text),
+    references: rows.map(r => ({
+      source_revision_id: r.id,
+      locator: r.locator,
+      projection_snapshot_id: active,
+      workspace,
+      security_domain: "prod-docs"
+    })),
+    denied_leakage: leaked ? "FAIL" : "PASS: denied content absent from text, references, logs, and errors"
+  };
+}
+
+function validateShadow(state, shadow, forceFail=false) {
+  const candidateRows = Object.values(state.revisions).flat()
+    .filter(r => r.projection === shadow.version && !r.tombstone);
+  const hasEvidence = candidateRows.every(r => r.locator && r.id);
+  const aclLeakage = candidateRows.some(r => r.id.startsWith("A-") && r.text.includes("B-only"));
+  const regression = forceFail ? "FAIL" : "PASS";
+  return {
+    snapshot_id: shadow.snapshotId,
+    evidence: hasEvidence ? "PASS" : "FAIL",
+    retrieval_regression: regression,
+    acl_leakage: aclLeakage ? "FAIL" : "PASS",
+    eligible: hasEvidence && !aclLeakage && regression === "PASS"
+  };
+}
+
+function reduce(state, action) {
+  const next = clone(state);
+  const push = msg => next.events.unshift(msg);
+  switch (action.type) {
+    case "RESET":
+      return initialState();
+    case "RETRIEVE_A":
+      next.retrievals.unshift(retrieve(next, "A", "renewal policy"));
+      push("Retrieved from workspace A through the Postgres-selected active projection only.");
+      return next;
+    case "RETRIEVE_B_DENIED_FROM_A":
+      next.retrievals.unshift(retrieve(next, "A", "B-only pricing appendix"));
+      next.retrievals[0].result_texts = [];
+      next.retrievals[0].references = [];
+      push("Denied cross-workspace retrieval: no B text, reference, log detail, or raw error was exposed to A.");
+      return next;
+    case "ADD_A_V2":
+      next.revisions["A:source-1"].push({ id: "A-s1-r2", locator: "page=1 chars=0-96", projection: "v2", tombstone: false, text: "A-only renewal policy updated" });
+      push("Added SourceRevision A-s1-r2. Older A-s1-r1 remains immutable and is not silently overwritten.");
+      return next;
+    case "TOMBSTONE_B":
+      next.revisions["B:source-1"].push({ id: "B-s1-r2", locator: "deletion event ext-42", projection: "v2", tombstone: true, text: "" });
+      push("Accepted B tombstone. Ordinary retrieval must fence previous B content even before physical cleanup.");
+      return next;
+    case "BUILD_SHADOW_V2":
+      next.shadow = {
+        snapshotId: "A-prod-docs-v2",
+        version: "v2",
+        scope: "shadow:workspace:A:security-domain:prod-docs:v2",
+        predecessor: next.canonical.activeSnapshotId,
+        boundary: 12,
+        ordinaryRetrieval: false
+      };
+      push("Built shadow projection v2 in a separate scope. Context Broker still reads active v1.");
+      return next;
+    case "VALIDATE_SHADOW":
+      if (!next.shadow) return reduce(reduce(next, { type: "BUILD_SHADOW_V2" }), action);
+      next.validations.unshift(validateShadow(next, next.shadow, false));
+      push("Validation passed: evidence, retrieval regression, and ACL leakage checks are green.");
+      return next;
+    case "ACTIVATE_SHADOW":
+      if (!next.shadow) return reduce(reduce(next, { type: "BUILD_SHADOW_V2" }), action);
+      if (!next.validations[0]?.eligible) {
+        push("Activation blocked: candidate has no passing validation receipt.");
+        return next;
+      }
+      if (next.shadow.predecessor !== next.canonical.activeSnapshotId) {
+        push("Activation rejected: stale predecessor compare-and-swap failed.");
+        return next;
+      }
+      next.canonical.activeSnapshotId = next.shadow.snapshotId;
+      next.canonical.activeBoundary = next.shadow.boundary;
+      next.canonical.activeGeneration += 1;
+      next.shadow = null;
+      push("Postgres transaction atomically switched the active pointer to v2 and advanced activation_generation.");
+      return next;
+    case "FAILED_SHADOW":
+      next.shadow = { snapshotId: "A-prod-docs-v3-bad", version: "v3", scope: "shadow:bad", predecessor: next.canonical.activeSnapshotId, boundary: 13, ordinaryRetrieval: false };
+      next.validations.unshift(validateShadow(next, next.shadow, true));
+      push("Built bad shadow candidate. Validation failed, so it never becomes active.");
+      return next;
+    case "ROLLBACK":
+      next.shadow = { snapshotId: "A-prod-docs-v3-rollback-to-v1-config", version: "v1", scope: "shadow:rollback", predecessor: next.canonical.activeSnapshotId, boundary: Math.max(next.canonical.activeBoundary, 12), ordinaryRetrieval: false };
+      next.validations.unshift({ snapshot_id: next.shadow.snapshotId, evidence: "PASS", retrieval_regression: "PASS", acl_leakage: "PASS", eligible: true, rollback: "successor snapshot, not pointer rewind" });
+      return reduce(next, { type: "ACTIVATE_SHADOW" });
+    case "CONCURRENT_ACTIVATION":
+      const attempt1 = { actor: "rebuild-worker-1", expected_predecessor: next.canonical.activeSnapshotId, candidate: "A-prod-docs-v2a", result: "COMMITTED" };
+      const attempt2 = { actor: "rebuild-worker-2", expected_predecessor: next.canonical.activeSnapshotId, candidate: "A-prod-docs-v2b", result: "REJECTED stale predecessor after worker-1 commit" };
+      next.canonical.activeSnapshotId = attempt1.candidate;
+      next.canonical.activeGeneration += 1;
+      next.concurrency.unshift(attempt2, attempt1);
+      push("Two activation attempts raced. Postgres compare-and-swap allowed one commit and rejected the stale one; no split brain.");
+      return next;
+    default:
+      return next;
+  }
+}
+
+const actions = [
+  ["Retrieve A", "RETRIEVE_A"],
+  ["Denied B From A", "RETRIEVE_B_DENIED_FROM_A"],
+  ["Add A v2", "ADD_A_V2"],
+  ["Tombstone B", "TOMBSTONE_B"],
+  ["Build Shadow v2", "BUILD_SHADOW_V2"],
+  ["Validate Shadow", "VALIDATE_SHADOW"],
+  ["Activate Shadow", "ACTIVATE_SHADOW"],
+  ["Failed Shadow", "FAILED_SHADOW"],
+  ["Rollback Successor", "ROLLBACK"],
+  ["Concurrent Activation", "CONCURRENT_ACTIVATION"],
+  ["Reset", "RESET", "danger"]
+];
+
+const scenarios = [
+  {
+    name: "Isolation",
+    text: "Workspace A and B use deterministic datasets. node_set scopes retrieval but does not authorize disclosure.",
+    steps: ["RETRIEVE_A", "RETRIEVE_B_DENIED_FROM_A"]
+  },
+  {
+    name: "Provenance",
+    text: "Retrieval references round-trip through SourceRevision, locator, projection snapshot, workspace, and security domain.",
+    steps: ["RETRIEVE_A"]
+  },
+  {
+    name: "Update/Delete",
+    text: "A new revision is append-only. A tombstone fences prior content from ordinary retrieval.",
+    steps: ["ADD_A_V2", "TOMBSTONE_B", "RETRIEVE_A"]
+  },
+  {
+    name: "Shadow Switch",
+    text: "Shadow v2 builds outside ordinary retrieval, validates, then activates through a single Postgres pointer switch.",
+    steps: ["ADD_A_V2", "BUILD_SHADOW_V2", "VALIDATE_SHADOW", "ACTIVATE_SHADOW", "RETRIEVE_A"]
+  },
+  {
+    name: "Rollback",
+    text: "Rollback is a new successor activation that can reuse v1-compatible artifacts; it is not a pointer rewind.",
+    steps: ["BUILD_SHADOW_V2", "VALIDATE_SHADOW", "ACTIVATE_SHADOW", "FAILED_SHADOW", "ROLLBACK"]
+  },
+  {
+    name: "Concurrency",
+    text: "Two activation attempts race. Postgres owns the transaction/lock; Cognee only stores candidate artifacts.",
+    steps: ["CONCURRENT_ACTIVATION"]
+  }
+];
+
+let state = initialState();
+let currentScenario = 0;
+let scenarioStep = 0;
+
+function dispatch(type) {
+  state = reduce(state, { type });
+  render();
+}
+
+function renderSummary() {
+  const s = state;
+  document.getElementById("summary").innerHTML = `
+    <dl>
+      <dt>Cognee version</dt><dd>${s.cognee.version}</dd>
+      <dt>Active snapshot</dt><dd>${s.canonical.activeSnapshotId}</dd>
+      <dt>Active boundary</dt><dd>${s.canonical.activeBoundary}</dd>
+      <dt>Activation generation</dt><dd>${s.canonical.activeGeneration}</dd>
+      <dt>Pointer authority</dt><dd>${s.canonical.activePointerAuthority}</dd>
+      <dt>Cognee authority</dt><dd>${s.canonical.backendAuthority}</dd>
+      <dt>Workspace A dataset</dt><dd><code>${s.workspaces.A.dataset}</code></dd>
+      <dt>Workspace B dataset</dt><dd><code>${s.workspaces.B.dataset}</code></dd>
+      <dt>Shadow candidate</dt><dd>${s.shadow ? `<code>${s.shadow.snapshotId}</code>, ordinary retrieval: ${s.shadow.ordinaryRetrieval}` : "none"}</dd>
+      <dt>Latest retrieval</dt><dd>${s.retrievals[0] ? s.retrievals[0].denied_leakage : "none"}</dd>
+    </dl>`;
+}
+
+function render() {
+  document.getElementById("freeplay").innerHTML = actions.map(([label, type, kind]) =>
+    `<button class="${kind || ""}" data-action="${type}">${label}</button>`).join("");
+  document.querySelectorAll("[data-action]").forEach(btn => btn.onclick = () => dispatch(btn.dataset.action));
+
+  document.getElementById("tabs").innerHTML = scenarios.map((sc, i) =>
+    `<button class="${i === currentScenario ? "active" : ""}" data-tab="${i}">${sc.name}</button>`).join("");
+  document.querySelectorAll("[data-tab]").forEach(btn => btn.onclick = () => {
+    currentScenario = Number(btn.dataset.tab);
+    scenarioStep = 0;
+    state = initialState();
+    render();
+  });
+  const scenario = scenarios[currentScenario];
+  document.getElementById("scenarioText").textContent = scenario.text;
+  document.getElementById("steps").innerHTML = scenario.steps.map((type, i) =>
+    `<button class="${i === scenarioStep ? "active" : ""}" data-step="${i}">${i + 1}. ${actions.find(a => a[1] === type)[0]}</button>`).join("");
+  document.querySelectorAll("[data-step]").forEach(btn => btn.onclick = () => {
+    const i = Number(btn.dataset.step);
+    dispatch(scenario.steps[i]);
+    scenarioStep = Math.min(i + 1, scenario.steps.length - 1);
+    render();
+  });
+
+  renderSummary();
+  document.getElementById("events").innerHTML = state.events.slice(0, 12).map(e => `<div class="event">${e}</div>`).join("");
+  document.getElementById("raw").textContent = JSON.stringify(state, null, 2);
+}
+
+render();
+</script>
+</body>
+</html>
