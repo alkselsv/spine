@@ -82,9 +82,13 @@ route/request context.
 - lifecycle/processing status, Security Domain и policy version;
 - время загрузки и последней успешной индексации;
 - состояние parsing и Context projection;
+- отдельные manifest/coverage completeness, canonical drift,
+  `freshness_status = current | stale` и `health_status = healthy | degraded`
+  через safe operational metadata;
+- отдельное `unpublished`/`unavailable` состояние до первой active publication;
 - sanitized error и доступное следующее действие.
 
-Название, filename, source identity, active `SourceRevision`, checksum и другие
+Название, filename, source identity, current `SourceRevision`, checksum и другие
 content-bearing поля показываются только при `read_content`. Counts, errors и
 diagnostics не раскрывают существование или содержание filtered material.
 
@@ -93,13 +97,15 @@ diagnostics не раскрывают существование или соде
 ```text
 uploaded → parsing → indexing → ready
                      ↘ failed
-ready → stale | deleted
+ready → deleted
 ```
 
 Загрузка поддерживает drag-and-drop нескольких файлов, предварительную проверку
-типа и размера, отдельный прогресс и результат для каждого файла. Повторная
-загрузка того же содержимого должна дать стабильный идемпотентный результат;
-изменившийся документ создаёт новую ревизию, а не перезаписывает старую.
+типа и размера, отдельный прогресс и результат для каждого файла. Retry одной
+логической upload command с тем же `Idempotency-Key` возвращает стабильный
+результат. Новый upload без explicit target создаёт отдельный `SourceObject` даже
+при тех же bytes/filename; replacement явно указывает stable object ID, а
+изменившийся canonical revision digest создаёт новую ревизию.
 
 Карточка документа содержит оригинальные метаданные, историю ревизий, stable
 locators, извлечённый текст или chunks, состояние проекции, warnings и failures.
@@ -151,7 +157,9 @@ started at, duration и наличие ошибок.
 
 - текущие workspace и environment;
 - health API и Cognee adapter;
-- активную `ProjectionVersion`;
+- активный `ProjectionSnapshot` и его `as_of` boundary;
+- PostgreSQL-controlled activation generation, publication/rollback status и
+  pending catch-up/reconciliation state;
 - model и embedding provider без credentials;
 - последнюю успешную ingestion/projection operation;
 - версии parser, extractor и projection configuration, полезные для диагностики.
@@ -188,7 +196,7 @@ OpenAPI типы. Минимальные ресурсы:
 
 API возвращает structured errors и сохраняет workspace, environment, acting
 subject и trace ID. Ответ Q&A включает как минимум answer status, structured
-citations, confidence или abstention reason, `as_of` и projection version.
+citations, confidence или abstention reason, `as_of` и projection snapshot.
 
 ## 6. Не входит в R1
 
@@ -214,6 +222,10 @@ citations, confidence или abstention reason, `as_of` и projection version.
 - После успешной индексации администратор задаёт контрольный вопрос через Chat.
 - Каждый выданный ответ содержит доступную citation на конкретную ревизию и
   stable locator; иначе Chat показывает abstention.
+- Chat не представляет partial result как exhaustive, если snapshot exclusions,
+  drift или Context Profile не позволяют подтвердить необходимую полноту.
+- UI не считает `healthy` достаточным для ответа: serving decision остаётся
+  request-specific результатом authorization, validity, evidence и profile gates.
 - Из Chat можно открыть run и проследить вопрос до retrieval evidence и версий
   исполнения.
 - Ошибку parsing, projection или generation можно локализовать без доступа к
@@ -335,7 +347,7 @@ FastAPI остаётся единственным backend/control-plane server. 
 Components, Server Actions и отдельный Node BFF в R1 не используются.
 
 Halaska и любой будущий chat runtime остаются presentation/adaptation слоем. Они
-не владеют `SourceRevision`, `ProjectionVersion`, `Session`, `Run`, `Citation`,
+не владеют `SourceRevision`, `ProjectionSnapshot`, `Session`, `Run`, `Citation`,
 `Feedback` или access policy и не обращаются напрямую к Cognee, Temporal, model
 provider или базе данных.
 
@@ -416,14 +428,18 @@ timeout, cancellation и terminal state. После terminal event клиент 
 - Upload можно отменить и безопасно повторить.
 - `uploading`, `uploaded`, `parsing`, `indexing`, `ready`, `rejected` и `failed`
   являются разными состояниями.
-- Повтор того же содержимого возвращает стабильный результат; новое содержимое
-  создаёт `SourceRevision`.
+- Retry той же logical command с тем же `Idempotency-Key` возвращает стабильный
+  результат; отдельный upload не объединяет `SourceObject` по checksum.
+- Replacement явно указывает stable object ID; новый canonical revision digest
+  создаёт `SourceRevision`, exact duplicate observation — нет.
+- Manual replacement и restoration отправляют expected current revision;
+  concurrent stale command получает conflict без нового canonical effect.
 - Partial failure одного файла не скрывает успешную обработку остальных.
 
 ### 9.6. Citations и AI output
 
 Citation является типизированным объектом с document/source revision, stable
-locator, excerpt, `as_of` и projection version, а не только Markdown-ссылкой в
+locator, excerpt, `as_of` и projection snapshot, а не только Markdown-ссылкой в
 тексте. Inspector получает защищённый excerpt с сервера после проверки доступа.
 
 Model output считается недоверенным: Markdown санитизируется, произвольные HTML,

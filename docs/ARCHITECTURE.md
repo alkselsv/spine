@@ -256,8 +256,16 @@ identity. Independent approval требует разных verified canonical id
 
 - `Connection` — подключение конкретного workspace к внешней системе.
 - `SyncCursor` — позиция incremental sync.
-- `SourceObject` — внешний объект со стабильной парой `(connection_id, external_id)`.
-- `SourceRevision` — неизменяемая наблюдавшаяся версия внешнего объекта.
+- `SourceObject` — внешний объект со стабильной парой `(connection_id, external_id)`;
+  upload получает стабильный generated ID. Filename, path и checksum не являются
+  идентичностью объекта.
+- `SourceRevision` — неизменяемая наблюдавшаяся версия внешнего объекта, включая
+  content и явно определённые revision-bearing metadata. Admission disposition и
+  canonical acceptance записываются отдельно append-only records; operational
+  metadata не создают новую revision.
+- Tombstone revision — deletion-kind `SourceRevision` с deletion provenance и
+  без retrievable content; canonical current tombstone немедленно ограждает все
+  предыдущие content revisions от disclosure.
 - `Attachment` — ссылка на оригинал в object storage.
 - `IngestionRun` — состояние и метрики одной синхронизации.
 
@@ -273,6 +281,43 @@ object в quarantine, где допустимы только явно разре
 security-validation operations; ordinary projection, retrieval и model
 processing запрещены.
 
+`SourceRevision` может быть записана до admission decision, но только accepted
+revision может стать canonical current для `SourceObject`. Canonical acceptance
+требует verified source identity, idempotency resolution, успешной security
+admission, complete canonical observation и eligible active `AccessPolicy`.
+Parsing, semantic extraction, embeddings и projection не являются условиями
+canonical acceptance. Observed, quarantined и rejected content не допускается в
+ordinary projection, retrieval, LLM processing или human content-disclosure
+interfaces. До admission и policy activation raw bytes доступны только ранее
+определённой `AdmissionAuthority` для разрешённых security-validation операций.
+Quarantined и rejected payload подчиняются явным retention и cleanup rules.
+
+Для tombstone canonical acceptance применяет deletion-specific checks: verified
+existing `SourceObject` identity, trustworthy ordering/idempotency и complete
+deletion provenance. Отсутствие content, content-oriented security admission или
+active policy не может задержать authoritative deletion fence. Current
+`AccessPolicy` продолжает управлять любым разрешённым historical disclosure, но
+не выдаёт и не блокирует право удалить объект из ordinary retrieval.
+
+Canonical current выбирается по trustworthy connector-defined source version или
+ordering token, когда он существует. Late older observation сохраняется в
+истории, но не заменяет более новую current revision. Источник без authoritative
+ordering требует optimistic `expected_current_revision_id`; manual replacement и
+restoration всегда передают такой precondition. Успешные acceptances получают
+PostgreSQL-controlled commit-consistent order. Обычный PostgreSQL sequence и
+timestamp, прочитанный внутри transaction, сами по себе не доказывают commit
+order; реализация использует serialized transactional acceptance counter или
+другой provably equivalent механизм. Failed optimistic check не создаёт новых
+canonical effects.
+
+Exact duplicate observation одного `SourceObject` не создаёт новую revision.
+Изменение content или connector-defined revision-bearing metadata создаёт новую;
+operational metadata — нет. Одинаковые file bytes никогда автоматически не
+сливают разные `SourceObject`, provenance или policies. Новый local upload без
+явного target создаёт новый object даже при совпадении filename/checksum; retry
+или replacement существующего object использует stable object ID и idempotency /
+expected-current preconditions.
+
 Admission выполняет отдельный service principal и допускает только bounded
 receive, immutable isolated staging, checksum/safe media metadata,
 deterministic format/archive/malware/resource-limit validation, sanitized status,
@@ -287,8 +332,11 @@ Staging физически и логически отделён от ordinary kn
   отношений, aliases, extraction constraints и validation rules.
 - `OntologyCandidate` — предложенное Cognee или человеком расширение онтологии,
   ещё не влияющее на production extraction.
-- `ProjectionVersion` — закреплённая версия Context projection и её lifecycle
-  status; ссылается на ontology/configuration и receipts физической реализации.
+- `ProjectionConfigVersion` — неизменяемая версия ontology, extraction rules,
+  embedding configuration, implementation metadata и других processing settings.
+- `ProjectionSnapshot` — неизменяемый logical publication manifest с точной
+  canonical input boundary, source-revision membership, Security Domain partition
+  receipts, validation results, configuration version и predecessor snapshot.
 - `ProjectionRun` — идемпотентное построение, удаление или rebuild проекции из
   набора `SourceRevision`.
 - `ProjectionReceipt` — результат adapter: source mappings, counts, warnings,
@@ -381,19 +429,26 @@ Evidence
 
 1. Connector принимает webhook или читает следующую страницу API по `SyncCursor`.
 2. Сырой payload сохраняется в object storage с checksum.
-3. В Postgres создаются `SourceObject` и новая `SourceRevision`.
+3. Source identity проверяется до привязки observation к существующему
+   `SourceObject`; в Postgres создаётся новая immutable `SourceRevision` либо
+   возвращается результат точного duplicate observation.
 4. Проверяется уникальный ключ события:
 
    ```text
    workspace_id + connection_id + external_id + external_version/event_id
    ```
 
-5. Normalizer создаёт или обновляет канонический объект.
-6. Identity resolution связывает людей, клиентов и проекты между источниками.
-7. В той же транзакции записываются `DomainEvent` и outbox record.
-8. Consumers обновляют read models, создают идемпотентные команды построения
+5. Admission disposition записывается append-only record.
+6. Для admitted revision Normalizer формирует complete canonical observation, а
+   Identity resolution связывает людей, клиентов и проекты между источниками.
+7. Canonical acceptance записывается отдельным append-only record; canonical
+   current revision, canonical object, `DomainEvent` и outbox record фиксируются
+   в одной транзакции независимо от будущего результата projection.
+8. Для quarantined/rejected revision сохраняется disposition без canonical effect.
+9. Consumers обновляют read models, создают идемпотентные команды построения
    Context projection и публикуют доступные triggers для workflow.
-9. Cursor продвигается только после надёжной фиксации принятых данных.
+10. Cursor продвигается только после durable фиксации observation, disposition и
+    всех положенных canonical/outbox effects.
 
 ### Семантика ошибок
 
@@ -401,8 +456,22 @@ Evidence
 - Ошибка одного объекта: quarantine/dead-letter без остановки всего sync.
 - Неизвестная схема: сохранить raw payload, пометить ingestion warning.
 - Повторное событие: вернуть прежний результат по idempotency key.
-- Удаление во внешней системе: создать tombstone, а не терять историю.
+- Та же source event/revision identity и тот же canonical digest: вернуть
+  прежний idempotent result; та же identity и другой digest: integrity conflict.
+- Verified удаление во внешней системе: создать tombstone revision, а не терять
+  историю.
 - Частичное обновление: собрать новую каноническую ревизию, не заменять неизвестные поля `null`.
+
+Canonical acceptance tombstone немедленно прекращает ordinary disclosure из
+published projections, caches, citations и derived evidence; asynchronous
+physical cleanup не продлевает доступ. Verified reappearance создаёт новую
+content revision того же `SourceObject` только при доказанной identity
+continuity и заново проходит admission, policy eligibility, canonical acceptance
+и projection. Local upload явно указывает tombstoned object ID и expected current
+revision. Connector включает provider generation/namespace в external identity,
+если provider переиспользует IDs; unverifiable continuity приводит к quarantine.
+Reappearance не восстанавливает revoked authority и всегда подчиняется current
+`AccessPolicy`.
 
 ## 9. Контекстный слой и Cognee
 
@@ -431,11 +500,12 @@ graph/vector stores, graph traversal и hybrid retrieval. Spine не реали�
 
 ### Projection interface и поток наполнения
 
-После фиксации `SourceRevision` projection worker формирует команду, а выбранный
-adapter выполняет внутренний pipeline и возвращает receipt:
+После canonical acceptance current `SourceRevision` и фиксации outbox projection
+worker формирует команду, а выбранный adapter выполняет внутренний pipeline и
+возвращает receipt:
 
 ```text
-SourceRevision + AccessPolicy reference
+Accepted current SourceRevision + AccessPolicy reference
   → ProjectionCommand
   → Cognee adapter
       → parse/chunk
@@ -445,7 +515,8 @@ SourceRevision + AccessPolicy reference
       → graph/vector writes
   → ProjectionReceipt
   → validation/evals
-  → active ProjectionVersion
+  → validated ProjectionSnapshot
+  → atomic active publication switch
 ```
 
 ```text
@@ -455,11 +526,12 @@ ProjectionCommand:
   source_revision_ids[]
   security_domain
   ontology_version
-  projection_version
+  projection_config_version
+  target_snapshot_id
   idempotency_key
 
 ProjectionReceipt:
-  projection_version
+  target_snapshot_id
   source_to_projection_refs[]
   counts
   warnings[]
@@ -479,7 +551,7 @@ Cognee pipeline, parser, extractor, embedding model и физических stor
 `SourceRevision` и stable locators.
 
 Spine хранит в Postgres source revisions, versioned Access Policies, опубликованные ontology и
-projection configurations, состояние runs, receipts, activation history и
+projection configurations, logical snapshot manifests, состояние runs, receipts, activation history и
 evidence/context bundles, использованные значимыми agent runs. Все graph nodes,
 edges, chunks и embeddings не обязаны дублироваться в Postgres: они могут
 оставаться в Cognee-managed stores как перестраиваемая проекция. Извлечённое
@@ -542,11 +614,142 @@ flowchart LR
 
 ### Версии, обновление и удаление
 
-`ProjectionVersion` закрепляет как минимум ontology/configuration version и
-receipt конкретной реализации; состояния: `building`, `validating`, `active`,
-`failed`, `retired`. Новая версия сначала строится в shadow scope, проходит
-evidence, retrieval-regression и ACL leakage checks, затем атомарно становится
-active для Context Broker.
+`ProjectionConfigVersion` закрепляет ontology, extraction, embedding,
+implementation и processing settings. `ProjectionRun` и append-only validation
+records несут состояния `building`, `validating`, `failed`, `complete`. После
+получения required receipts и validation results создаётся immutable
+`ProjectionSnapshot`: logical publication manifest, а не обязательная полная
+физическая копия stores. Он содержит точную `CanonicalBoundary`, included source
+revisions, Security Domain partition receipts, validation results, configuration
+version и predecessor. Snapshot manifest после создания не меняется; `active` и
+`retired` являются производными от append-only activation history, а не mutable
+полями snapshot.
+
+`CanonicalBoundary` идентифицирует workspace/environment, durable monotonic
+commit-consistent acceptance boundary, durable server-side boundary timestamp и
+точную accepted-current revision либо tombstone каждого source в declared
+publication scope. Она представляет один committed database state. Позднее
+принятое observation остаётся за boundary, даже если его external timestamp
+раньше. Boundary не выводится из build start, activation time, source timestamp,
+обычного PostgreSQL sequence или timestamp, sampled inside transaction.
+Реализация должна durable и verifiably зафиксировать boundary и timestamp; если
+выбранная СУБД не даёт exact commit timestamp, API документирует более слабое
+значение server-recorded boundary time, не называя его exact commit time.
+
+Для каждой пары `(workspace_id, environment, projection_kind)` до первой успешной
+publication существует zero active snapshot, после неё — exactly one active
+snapshot pointer. При отсутствии active snapshot retrieval fail-closed. Candidate
+сначала строится в shadow scope и не
+обслуживает ordinary retrieval, проходит все required partition updates,
+evidence, retrieval-regression и ACL leakage checks, затем активируется atomic
+compare-and-swap относительно expected predecessor. Один logical manifest может
+ссылаться на физически изолированные Security Domain partitions; эти partitions
+не выдают authority. Каждый Q&A run фиксирует snapshot и server-selected `as_of`
+input boundary, включая exact snapshot ID и boundary sequence. `published_at`,
+boundary sequence и boundary timestamp являются разными значениями. R1 API
+`as_of` описывает server-selected canonical publication boundary и не утверждает,
+что canonical changes после boundary уже спроецированы.
+
+Snapshot, корректный для boundary B, может активироваться после появления более
+новых canonical changes, если manifest complete и internally consistent для B,
+все mandatory partition validation и safety gates пройдены, boundary продвигает
+active publication монотонно, а compare-and-swap подтверждает expected
+predecessor. Changes после B durable записываются как `ProjectionDrift` и не могут
+быть потеряны или сочтены спроецированными; durable, retryable и observable
+catch-up создаёт successor snapshot в пределах explicit operational retry/age
+policies. Activation success не является доказательством отсутствия drift.
+
+Каждый source в declared boundary имеет verifiable manifest status:
+`included(expected_revision)`, `tombstoned` или `excluded(typed_reason)`.
+Неучтённый source делает manifest invalid. Snapshot с exclusions может успешно
+активироваться только после manifest/partition validation, zero ACL leakage,
+проверок citations и approved coverage, freshness, retrieval и evidence-quality
+gates. Численные thresholds определяются evaluation baseline и release decision,
+не этим lifecycle contract. Пока обязательный threshold не определён, automatic
+partial-failure publication запрещена. Successful publication, manifest
+completeness и coverage completeness являются разными свойствами.
+
+Excluded source не возвращает предыдущую revision и может быть повторно включён
+только successor snapshot. Operational status не меняет immutable manifest и
+вычисляется из canonical state, append-only processing/validation records и
+current reconciliation results по двум независимым осям:
+
+- `freshness_status = current | stale`: unresolved canonical drift за active
+  boundary или нарушение applicable freshness requirement даёт `stale`;
+- `health_status = healthy | degraded`: typed exclusions, failed required
+  processing, missing/corrupt artifacts, receipt inconsistency или unresolved
+  reconciliation failure дают `degraded`.
+
+Все четыре комбинации допустимы; manifest completeness и coverage completeness
+остаются отдельными facts. До первой successful publication состояние
+`unpublished`/`unavailable` означает отсутствие active snapshot и не кодируется
+как freshness/health combination. `Stale` запускает catch-up и freshness
+monitoring; `degraded` — repair, reconciliation и source-specific retry.
+
+API/UI показывают обе оси и safe operational diagnostics без protected filename,
+content, source identity или sensitive processing detail. Context Broker для
+каждого request отдельно проверяет current authorization, revision validity,
+tombstone, evidence availability и applicable `ContextProfile`. `Healthy` само по
+себе не означает safe-to-answer. При невыполненной freshness/coverage request
+abstains или fail-safe отклоняется; comprehensive query не выдаёт partial result
+как exhaustive.
+
+Contract tests покрывают все четыре freshness/health combinations и переходы от
+canonical update, partial failure, successful catch-up и projection recovery,
+не выводя completeness или answerability только из operational status.
+
+#### Activation, rollback и recovery
+
+PostgreSQL является единственной authority активации. Durable и addressable
+shadow artifacts, partition receipts и validation results существуют до
+activation. Одна PostgreSQL transaction проверяет expected predecessor,
+candidate eligibility и monotonic boundary, переключает active snapshot pointer,
+увеличивает `activation_generation`, добавляет immutable activation record и
+сохраняет outbox, invalidation и catch-up intents. Crash до commit оставляет
+predecessor authoritative; crash после commit оставляет authoritative новый
+snapshot, а pending outbox work восстанавливается и повторяется.
+
+Activation command идемпотентна: повтор activation identity с тем же canonical
+digest возвращает committed result, а другой digest даёт integrity conflict.
+Stale predecessor compare-and-swap fail-safe отклоняется. Context Broker
+проверяет PostgreSQL-controlled activation generation; delayed Cognee alias или
+cache update не являются второй authority. Невозможность установить valid active
+publication приводит к fail-closed, сохраняя проверки current revision,
+tombstone и `AccessPolicy`. Distributed transaction между PostgreSQL и Cognee не
+используется; конкретный backend routing доказывается в Issue #28.
+
+Projection rollback никогда не переводит pointer на старый snapshot. Он создаёт
+новый immutable successor с новым ID, non-regressing `CanonicalBoundary`, полным
+manifest текущих revisions/tombstones и immutable rollback activation record.
+Successor проходит applicable safety/publication gates и может восстановить
+previously validated `ProjectionConfigVersion`. Старые physical artifacts можно
+reuse только при доказанных source-revision identity, provenance, configuration
+compatibility и integrity. Superseded, tombstoned или incompatible artifacts
+остаются fenced/excluded; при недоказанной корректности они rebuild либо остаются
+excluded до следующего valid successor. Rollback не меняет canonical
+`SourceObject` state и не восстанавливает revoked access.
+
+Каждая partition operation адресует immutable snapshot candidate и несёт stable
+idempotency identity и canonical payload digest. Тот же identity/digest безопасно
+resume operation или возвращает verified receipt; другой digest является
+integrity conflict. Partial writes остаются вне ordinary retrieval. Reconciliation
+сравнивает canonical manifest, partition receipts, activation generation,
+expected physical artifacts, source-revision identity/integrity и configuration
+version. Missing, corrupt, incomplete или ambiguous backend state fenced и
+reported degraded.
+
+Artifact существующего immutable snapshot можно reconstruct только при
+доказуемой artifact identity и integrity. Byte equality не предполагается для
+nondeterministic ML/LLM processing. Если требуемая эквивалентность не доказана,
+recovery создаёт successor snapshot вместо скрытой мутации публикации. Orphaned
+shadow artifacts и obsolete physical tombstone data удаляются bounded,
+auditable, idempotent retention procedures.
+
+Failed или abandoned snapshot candidate никогда не становится active и не
+обслуживает ordinary retrieval; authoritative остаётся прежний active pointer.
+Retry продолжает ту же idempotent operation, когда identity/integrity доказаны,
+либо создаёт новый successor candidate. Candidate status и safe diagnostics
+сохраняются для audit и recovery.
 
 Новая `SourceRevision` не перезаписывает старую: adapter деактивирует её chunks,
 embeddings и relation assertions в новой проекции и индексирует новую ревизию.
@@ -577,7 +780,7 @@ RetrievalResult:
   relations[]
   references[]
   retrieval_strategy
-  index_version
+  projection_snapshot_id
 ```
 
 Q&A — один consumer этого контракта. Любой agent step получает контекст через
@@ -592,12 +795,31 @@ acting human. Лишь после этого Broker журналирует и в
 `ContextBundle`; недоступный content не достигает модели, citations, metadata,
 relations или diagnostics.
 
+R1 Q&A извлекает данные только из PostgreSQL-selected active
+`ProjectionSnapshot`; request не принимает client-controlled historical time или
+snapshot selection. Historical revisions доступны только через authorized
+revision-history и citation-inspection flows с учётом retention/deletion policy.
+
 `SourceRevision`, chunks, entities, relations, references и citations не имеют
 независимой authority: они наследуют текущую Access Policy своего
 `SourceObject`. Историческая policy подтверждает provenance, но не разрешает
 текущий доступ. Context Broker, evidence endpoints и сохранённая answer history
 повторно проверяют текущую policy перед раскрытием content. Revocation не ждёт
 reindex, а authorization cache не может продлить отозванное право.
+
+Кроме authorization, перед ordinary retrieval, model use и evidence disclosure
+Context Broker проверяет, что projected evidence по-прежнему соответствует
+canonical current revision и что `SourceObject` не tombstoned. Проверка
+распространяется на cached evidence, derived graph relations, citations и model
+context. Projection lag, snapshot activation или rollback не могут сделать
+superseded или tombstoned content current либо вернуть его в ordinary Q&A.
+
+Явный authorized revision-history или citation-inspection flow может раскрыть
+точно запрошенную historical revision, если current `AccessPolicy`, retention и
+deletion policy всё ещё разрешают это disclosure. Он не использует historical
+policy, не передаёт revision в Q&A/model context и не объявляет её current.
+Конкретная реализация consistent multi-domain publication, shadow activation и
+rollback проверяется prototype/feasibility work из Issue #28.
 
 Каждый service `process_content` grant материализуется в policy конкретного
 `SourceObject` и фиксирует service principal, workspace/environment, purpose,
@@ -1041,6 +1263,7 @@ Q&A response:
   ],
   "confidence": 0.86,
   "trace_id": "...",
+  "projection_snapshot_id": "...",
   "as_of": "..."
 }
 ```
@@ -1487,6 +1710,9 @@ detectors без специальных обходов в platform core.
 - [ADR-010](adr/0010-capability-based-agent-runtime.md): capability contracts, local agent runtime seam, bindings и retry/fallback ownership.
 - [ADR-011](adr/0011-canonical-document-access-policy.md): canonical document
   Access Policy, delegated retrieval authority, bootstrap и approval.
+- [ADR-018](adr/0018-canonical-source-and-projection-publication-lifecycle.md):
+  immutable source observations, canonical revision acceptance, publication
+  snapshots, drift, rollback и recovery.
 - ADR-TBD: artifact schemas и handoff evaluation protocol.
 - ADR-012: business outcome attribution и cost accounting.
 - ADR-013: future third-party Agent SDK, package trust и certification после появления подтверждённого внешнего кейса.

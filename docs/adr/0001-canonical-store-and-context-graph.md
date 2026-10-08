@@ -15,8 +15,9 @@ Cognee is allowed to perform the substantial projection work—parsing and
 chunking, embeddings, ontology-driven entity/relation extraction, consolidation,
 graph/vector writes and hybrid retrieval—behind a Spine-owned
 `ContextProjection` interface. Spine owns immutable source revisions, access
-policy, published ontology and projection versions, activation/evaluation and
-the external evidence contract; it does not duplicate every projected node,
-edge or embedding in PostgreSQL. A probabilistic projection result becomes a
+policy, published ontology, projection configuration versions, immutable logical
+publication snapshots, activation/evaluation and the external evidence contract;
+it does not duplicate every projected node, edge or embedding in PostgreSQL. A
+probabilistic projection result becomes a
 canonical business fact only through separate domain validation or a human
 decision.
