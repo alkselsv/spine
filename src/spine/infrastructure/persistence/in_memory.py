@@ -58,11 +58,22 @@ class _Store:
 
 
 def _workspace_copy(value: Workspace) -> Workspace:
-    return value.model_copy(deep=True)
+    """Rebuild a canonical Workspace without invoking overridable copy hooks."""
+    if type(value) is not Workspace:
+        raise TypeError("Unsupported Workspace implementation.")
+    return Workspace(id=value.id, slug=value.slug, display_name=value.display_name)
 
 
 def _environment_copy(value: Environment) -> Environment:
-    return value.model_copy(deep=True)
+    """Rebuild a canonical Environment without invoking overridable copy hooks."""
+    if type(value) is not Environment:
+        raise TypeError("Unsupported Environment implementation.")
+    return Environment(
+        id=value.id,
+        workspace_id=value.workspace_id,
+        kind=value.kind,
+        display_name=value.display_name,
+    )
 
 
 class _Lifecycle(Enum):

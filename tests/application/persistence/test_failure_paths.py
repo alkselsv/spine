@@ -22,6 +22,7 @@ from spine.infrastructure.persistence.contexts import (
     create_initial_workspace_bootstrap_authority,
 )
 from spine.infrastructure.persistence.in_memory import InMemoryPersistence
+import spine.infrastructure.persistence.in_memory as in_memory
 
 
 WORKSPACE_ID = UUID("10000000-0000-0000-0000-000000000001")
@@ -224,42 +225,38 @@ async def test_environment_write_failure_is_sanitized_and_terminal() -> None:
 
 
 @pytest.mark.asyncio
-async def test_workspace_read_failure_is_sanitized_and_terminal() -> None:
-    ReadFailingWorkspace.copy_calls = 0
+async def test_workspace_read_failure_is_sanitized_and_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     persistence, context_authority = await configured_persistence()
     write_context = context(context_authority, OTHER_WORKSPACE_ID)
     async with persistence.uow_factory(write_context) as uow:
         await uow.workspaces.add(
-            ReadFailingWorkspace(
-                id=OTHER_WORKSPACE_ID,
-                slug="contoso",
-                display_name="Contoso",
-            )
+            workspace(OTHER_WORKSPACE_ID)
         )
         await uow.commit()
 
+    def fail_copy(value: Workspace) -> Workspace:
+        raise RuntimeError(COPY_FAILURE_DETAIL)
+
+    monkeypatch.setattr(in_memory, "_workspace_copy", fail_copy)
     uow = persistence.uow_factory(write_context)
-    async with uow:
-        await assert_terminal_after_failure(
-            uow,
-            lambda: uow.workspaces.resolve(OTHER_WORKSPACE_ID),
-        )
+    with pytest.raises(UnexpectedPersistenceError):
+        await uow.__aenter__()
+    with pytest.raises(UnitOfWorkLifecycleError):
+        await uow.commit()
 
 
 @pytest.mark.asyncio
-async def test_entry_copy_failure_is_sanitized_and_terminal() -> None:
-    EntryFailingWorkspace.copy_calls = 0
+async def test_entry_copy_failure_is_sanitized_and_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     persistence, context_authority = await configured_persistence()
     write_context = context(context_authority, OTHER_WORKSPACE_ID)
-    async with persistence.uow_factory(write_context) as uow:
-        await uow.workspaces.add(
-            EntryFailingWorkspace(
-                id=OTHER_WORKSPACE_ID,
-                slug="contoso",
-                display_name="Contoso",
-            )
-        )
-        await uow.commit()
+    def fail_copy(value: Workspace) -> Workspace:
+        raise RuntimeError(COPY_FAILURE_DETAIL)
+
+    monkeypatch.setattr(in_memory, "_workspace_copy", fail_copy)
 
     uow = persistence.uow_factory(write_context)
     with pytest.raises(UnexpectedPersistenceError) as raised:
@@ -270,25 +267,27 @@ async def test_entry_copy_failure_is_sanitized_and_terminal() -> None:
 
 
 @pytest.mark.asyncio
-async def test_environment_read_failure_is_sanitized_and_terminal() -> None:
-    ReadFailingEnvironment.copy_calls = 0
+async def test_environment_read_failure_is_sanitized_and_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     persistence, context_authority = await configured_persistence()
     write_context = context(context_authority, OTHER_WORKSPACE_ID)
     async with persistence.uow_factory(write_context) as setup:
         await setup.workspaces.add(workspace(OTHER_WORKSPACE_ID))
         await setup.commit()
     async with persistence.uow_factory(write_context) as uow:
-        await uow.environments.add(
-            ReadFailingEnvironment(**environment().model_dump())
-        )
+        await uow.environments.add(environment())
         await uow.commit()
 
+    def fail_copy(value: Environment) -> Environment:
+        raise RuntimeError(COPY_FAILURE_DETAIL)
+
+    monkeypatch.setattr(in_memory, "_environment_copy", fail_copy)
     uow = persistence.uow_factory(write_context)
-    async with uow:
-        await assert_terminal_after_failure(
-            uow,
-            lambda: uow.environments.resolve(ENVIRONMENT_ID),
-        )
+    with pytest.raises(UnexpectedPersistenceError):
+        await uow.__aenter__()
+    with pytest.raises(UnitOfWorkLifecycleError):
+        await uow.commit()
 
 
 @pytest.mark.asyncio
@@ -299,11 +298,8 @@ async def test_environment_read_failure_is_sanitized_and_terminal() -> None:
 )
 async def test_commit_copy_failure_is_atomic_and_terminal(
     failing_environment: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    if failing_environment:
-        CommitFailingEnvironment.copy_calls = 0
-    else:
-        CommitFailingWorkspace.copy_calls = 0
     persistence, context_authority = await configured_persistence()
     write_context = context(context_authority, OTHER_WORKSPACE_ID)
     uow = persistence.uow_factory(write_context)
@@ -311,17 +307,15 @@ async def test_commit_copy_failure_is_atomic_and_terminal(
     async with uow:
         if failing_environment:
             await uow.workspaces.add(workspace(OTHER_WORKSPACE_ID))
-            await uow.environments.add(
-                CommitFailingEnvironment(**environment().model_dump())
-            )
+            await uow.environments.add(environment())
+            def fail_copy(value: Environment) -> Environment:
+                raise RuntimeError(COPY_FAILURE_DETAIL)
+            monkeypatch.setattr(in_memory, "_environment_copy", fail_copy)
         else:
-            await uow.workspaces.add(
-                CommitFailingWorkspace(
-                    id=OTHER_WORKSPACE_ID,
-                    slug="contoso",
-                    display_name="Contoso",
-                )
-            )
+            await uow.workspaces.add(workspace(OTHER_WORKSPACE_ID))
+            def fail_copy(value: Workspace) -> Workspace:
+                raise RuntimeError(COPY_FAILURE_DETAIL)
+            monkeypatch.setattr(in_memory, "_workspace_copy", fail_copy)
         with pytest.raises(UnexpectedPersistenceError) as raised:
             await uow.commit()
         assert COPY_FAILURE_DETAIL not in str(raised.value)
@@ -329,6 +323,7 @@ async def test_commit_copy_failure_is_atomic_and_terminal(
         with pytest.raises(UnitOfWorkLifecycleError):
             await uow.commit()
 
+    monkeypatch.undo()
     async with persistence.uow_factory(write_context) as reader:
         assert await reader.workspaces.resolve(OTHER_WORKSPACE_ID) is None
         assert await reader.environments.resolve(ENVIRONMENT_ID) is None

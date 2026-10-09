@@ -67,7 +67,11 @@ operation clear staged mutations and make the Unit of Work terminal while
 preserving the original exception or cancellation. Expected absence remains a
 normal `None` result and does not invalidate the transaction.
 
-The in-memory adapter stages deep copies per Unit of Work and publishes them
+The in-memory adapter reconstructs fresh canonical Workspace and Environment
+instances at every persistence boundary (staging, snapshots, publication, and
+reads) rather than trusting polymorphic copy hooks. No caller-owned mutable
+domain instance or nested value is retained by committed state, and repository
+results never expose mutable committed state. It publishes prepared state
 atomically only on explicit commit. It is intended for deterministic application
 and shared adapter-contract tests; it does not emulate PostgreSQL RLS, locks,
 isolation levels, pooling, or provider failures.
