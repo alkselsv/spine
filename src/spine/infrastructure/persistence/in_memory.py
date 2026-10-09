@@ -114,13 +114,15 @@ class InMemoryUnitOfWork:
     def __init__(
         self,
         store: _Store,
-        context: TrustedPersistenceContext,
+        source_context: TrustedPersistenceContext,
+        context_snapshot: TrustedPersistenceContext,
         context_verifier: TrustedContextVerifier,
     ) -> None:
-        if not isinstance(context, TrustedPersistenceContext):
+        if not isinstance(source_context, TrustedPersistenceContext):
             raise InvalidPersistenceContextError("Persistence context is invalid.")
         self._store = store
-        self.context = context
+        self._source_context = source_context
+        self._context_snapshot = context_snapshot
         self._context_verifier = context_verifier
         self._scope: PersistenceScope | None = None
         self._initialized = False
@@ -156,8 +158,8 @@ class InMemoryUnitOfWork:
         self._lifecycle = _Lifecycle.ENTERING
         self._owner = asyncio.current_task()
         try:
-            self._context_verifier.verify(self.context)
             async with self._store.lock:
+                context_snapshot = self._context_verifier.verify(self._source_context)
                 self._base_workspaces = {
                     key: _workspace_copy(value) for key, value in self._store.workspaces.items()
                 }
@@ -166,11 +168,12 @@ class InMemoryUnitOfWork:
                     for key, value in self._store.environments.items()
                 }
                 self._initialized = self._store.initialized
-            if not self._initialized:
-                raise InvalidBootstrapAuthorityError(
-                    "Initial bootstrap is not authorized."
-                )
-            self._validate_context()
+                if not self._initialized:
+                    raise InvalidBootstrapAuthorityError(
+                        "Initial bootstrap is not authorized."
+                    )
+                self._validate_context(context_snapshot)
+                self._context_snapshot = context_snapshot
         except BaseException:
             self._lifecycle = _Lifecycle.CLOSED
             self._clear_transaction()
@@ -229,8 +232,8 @@ class InMemoryUnitOfWork:
         if self._lifecycle is not _Lifecycle.ACTIVE:
             raise UnitOfWorkLifecycleError("Unit of Work is not active.")
 
-    def _validate_context(self) -> None:
-        scope = self.context.scope
+    def _validate_context(self, context_snapshot: TrustedPersistenceContext) -> None:
+        scope = context_snapshot.scope
         if isinstance(scope, WorkspaceScope):
             self._scope = WorkspaceScope(workspace_id=scope.workspace_id)
             return
@@ -287,8 +290,13 @@ class _InMemoryUnitOfWorkFactory:
     def __call__(self, context: TrustedPersistenceContext) -> InMemoryUnitOfWork:
         if not isinstance(context, TrustedPersistenceContext):
             raise InvalidPersistenceContextError("Persistence context is invalid.")
-        self._context_verifier.verify(context)
-        return InMemoryUnitOfWork(self._store, context, self._context_verifier)
+        context_snapshot = self._context_verifier.verify(context)
+        return InMemoryUnitOfWork(
+            self._store,
+            context,
+            context_snapshot,
+            self._context_verifier,
+        )
 
 
 class _InMemoryInitialWorkspaceBootstrap:

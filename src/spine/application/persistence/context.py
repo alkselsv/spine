@@ -147,6 +147,6 @@ class TrustedPersistenceContext:
 
 
 class TrustedContextVerifier(Protocol):
-    """Composition-root-controlled provenance verification boundary."""
+    """Authenticate source context and return a detached trusted snapshot."""
 
-    def verify(self, context: TrustedPersistenceContext) -> None: ...
+    def verify(self, context: TrustedPersistenceContext) -> TrustedPersistenceContext: ...

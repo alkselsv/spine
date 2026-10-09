@@ -17,6 +17,7 @@ from spine.application.persistence.context import (
     PersistenceScope,
     TrustedContextProvenance,
     TrustedPersistenceContext,
+    WorkspaceScope,
 )
 from spine.application.persistence.errors import InvalidPersistenceContextError
 
@@ -110,7 +111,7 @@ class TrustedContextBoundary:
             trace_id=trace_id,
         )
 
-    def verify(self, context: TrustedPersistenceContext) -> None:
+    def verify(self, context: TrustedPersistenceContext) -> TrustedPersistenceContext:
         try:
             if not isinstance(context, TrustedPersistenceContext):
                 raise _invalid_context()
@@ -120,6 +121,7 @@ class TrustedContextBoundary:
             expected = self._signature(context)
             if not hmac.compare_digest(context.provenance.signature, expected):
                 raise _invalid_context()
+            return _authenticated_snapshot(context)
         except InvalidPersistenceContextError:
             raise
         except (AttributeError, TypeError, ValueError):
@@ -179,3 +181,27 @@ def _canonical_context(context: TrustedPersistenceContext) -> bytes:
         context.trace_id.hex,
     )
     return "\x1f".join(values).encode("ascii")
+
+
+def _authenticated_snapshot(context: TrustedPersistenceContext) -> TrustedPersistenceContext:
+    scope = context.scope
+    if isinstance(scope, EnvironmentScope):
+        snapshot_scope: PersistenceScope = EnvironmentScope(
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+        )
+    else:
+        snapshot_scope = WorkspaceScope(workspace_id=scope.workspace_id)
+    return TrustedPersistenceContext(
+        scope=snapshot_scope,
+        origin=context.origin,
+        purpose=PersistencePurpose(context.purpose.value),
+        operation=PersistenceOperation(context.operation.value),
+        trace_id=context.trace_id,
+        acting_subject_id=context.acting_subject_id,
+        service_principal_id=context.service_principal_id,
+        provenance=TrustedContextProvenance(
+            issuer_id=context.provenance.issuer_id,
+            signature=bytes(context.provenance.signature),
+        ),
+    )

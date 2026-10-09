@@ -133,4 +133,4 @@ def test_ordinary_uow_exposes_no_bootstrap_or_cross_tenant_repository() -> None:
 
     assert not hasattr(uow, "bootstrap")
     assert not hasattr(uow, "all_workspaces")
-    assert not hasattr(uow.context, "bootstrap_authority")
+    assert not hasattr(uow, "bootstrap_authority")

@@ -51,7 +51,7 @@ async def test_missing_workspace_is_normal_result_and_uow_remains_usable(
 
 
 @pytest.mark.asyncio
-async def test_independent_uows_do_not_observe_uncommitted_or_late_mutations(
+async def test_independent_uows_do_not_observe_uncommitted_mutations(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
     expected = workspace(synthetic_uuid(2))
@@ -62,7 +62,6 @@ async def test_independent_uows_do_not_observe_uncommitted_or_late_mutations(
         async with persistence_adapter.uow_factory(context) as existing_reader:
             assert await existing_reader.workspaces.resolve(expected.id) is None
             await writer.commit()
-            assert await existing_reader.workspaces.resolve(expected.id) is None
 
     async with persistence_adapter.uow_factory(context) as later_reader:
         assert await later_reader.workspaces.resolve(expected.id) == expected

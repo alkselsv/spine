@@ -18,9 +18,13 @@ The boundary binds the scope, origin, acting subject, service principal,
 server-selected `PersistencePurpose` and `PersistenceOperation`, trace identity,
 and issuer identity into an authenticated proof. A Unit of Work verifies the
 proof and revalidates every bound field both when the factory is called and when
-the context is entered. Contexts constructed from public fields, mutated after
-issuance, or issued by another boundary fail before repositories become usable.
-Environment ownership is then checked against canonical state.
+the context is entered. Entry performs its final authentication after acquiring
+the adapter's transaction synchronization point, then constructs a complete,
+detached snapshot of the authenticated scope, origin, identities, purpose,
+operation, trace, issuer, and signature without another asynchronous suspension.
+Repositories use only that snapshot. Contexts constructed from public fields,
+mutated after issuance, or issued by another boundary fail before repositories
+become usable. Environment ownership is then checked against canonical state.
 
 This proof protects the application boundary from caller-controlled data and
 accidental cross-boundary context reuse. It is not a sandbox or privilege
