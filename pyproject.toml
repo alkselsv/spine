@@ -29,6 +29,9 @@ dev = [
 [project.scripts]
 spine-seed = "spine.scripts.seed:main"
 spine-ask = "spine.scripts.ask_cli:main"
+spine-db-bootstrap = "spine.scripts.database:operator_bootstrap_main"
+spine-db-migrate = "spine.scripts.database:migrate_main"
+spine-db-bootstrap-workspace = "spine.scripts.database:initial_workspace_main"
 
 [build-system]
 requires = ["hatchling"]
@@ -36,6 +39,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/spine"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"alembic.ini" = "spine/infrastructure/db/alembic.ini"
+"migrations" = "spine/infrastructure/db/alembic_migrations"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

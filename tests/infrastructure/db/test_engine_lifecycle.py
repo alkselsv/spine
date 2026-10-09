@@ -4,6 +4,8 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
+from alembic import command as alembic_command
+from sqlalchemy import MetaData
 
 from spine.infrastructure.db.engine import (
     DatabaseRuntime,
@@ -76,12 +78,38 @@ async def test_start_creates_one_bounded_engine_and_async_session_factory() -> N
             "pool_timeout": 7.0,
             "pool_pre_ping": True,
             "pool_reset_on_return": "rollback",
-            "connect_args": {"connect_timeout": 4},
+            "connect_args": {
+                "connect_timeout": 4,
+                "options": "-csearch_path=pg_catalog,spine",
+            },
             "hide_parameters": True,
         },
     )
     assert readiness_checks == [engine]
     assert built_sessions == [(engine, {"expire_on_commit": False, "autoflush": False})]
+
+
+@pytest.mark.asyncio
+async def test_start_never_invokes_alembic_or_creates_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = RecordingEngine()
+
+    def unexpected_migration(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("application startup invoked Alembic")
+
+    monkeypatch.setattr(alembic_command, "upgrade", unexpected_migration)
+    monkeypatch.setattr(MetaData, "create_all", unexpected_migration)
+    runtime = DatabaseRuntime(
+        engine_factory=lambda _url, **_kwargs: engine,
+        session_factory_builder=lambda _engine, **_kwargs: object,
+        readiness_check=lambda _engine: _completed_check(),
+    )
+
+    await runtime.start(runtime_settings())
+
+    assert runtime.resources is not None
+    await runtime.shutdown()
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from spine.infrastructure.db.settings import (
     REDACTED_DATABASE_URL,
+    POSTGRESQL_SEARCH_PATH_OPTIONS,
     SUPPORTED_POSTGRESQL_MAJOR,
     RuntimeDatabaseSettings,
 )
@@ -97,6 +98,7 @@ class DatabaseRuntime:
                     pool_reset_on_return="rollback",
                     connect_args={
                         "connect_timeout": settings.connect_timeout_seconds,
+                        "options": POSTGRESQL_SEARCH_PATH_OPTIONS,
                     },
                     hide_parameters=True,
                 )

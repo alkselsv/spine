@@ -169,6 +169,7 @@ src/spine/
   workflows/       durable workflow adapters
   evaluations/     evaluators и release gates
   infrastructure/  persistence, outbox, storage и telemetry
+migrations/         линейные Alembic revisions канонической PostgreSQL schema
 web/               каркас продуктового интерфейса
 tests/             автоматические проверки
 ```
@@ -184,8 +185,9 @@ uv run python -m compileall -q src tests
 ```
 
 Полный набор тестов включает обязательный real-PostgreSQL gate. Поддерживаемая
-версия, отдельные runtime/migration/test настройки и безопасный explicit-URL
-режим описаны в [PostgreSQL runtime and test harness](docs/postgresql.md).
+версия, operator bootstrap, отдельные runtime/migration/test настройки,
+Alembic-команды и безопасный explicit-URL режим описаны в
+[PostgreSQL bootstrap, migrations, runtime and test harness](docs/postgresql.md).
 
 Перед архитектурными или межмодульными изменениями прочитайте
 [AGENTS.md](AGENTS.md).

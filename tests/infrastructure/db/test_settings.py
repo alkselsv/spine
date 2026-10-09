@@ -5,6 +5,7 @@ from pydantic import SecretStr, ValidationError
 
 from spine.infrastructure.db.settings import (
     MigrationDatabaseSettings,
+    OperatorDatabaseSettings,
     RuntimeDatabaseSettings,
     TestDatabaseSettings as DatabaseTestSettings,
 )
@@ -12,6 +13,7 @@ from spine.infrastructure.db.settings import (
 RUNTIME_URL = "postgresql+psycopg://runtime_user:runtime_secret@db/runtime"
 MIGRATION_URL = "postgresql+psycopg://migration_user:migration_secret@db/migration"
 TEST_URL = "postgresql+psycopg://test_user:test_secret@db/spine_test_explicit"
+OPERATOR_URL = "postgresql+psycopg://operator:operator_secret@db/postgres"
 
 
 def test_runtime_settings_are_frozen_and_reject_unknown_fields() -> None:
@@ -69,6 +71,48 @@ def test_runtime_migration_and_test_environment_surfaces_are_separate(
     assert migration.url.get_secret_value() == MIGRATION_URL
     assert test.url is not None
     assert test.url.get_secret_value() == TEST_URL
+
+
+def test_operator_settings_are_explicit_and_separate_from_runtime_credentials() -> None:
+    settings = OperatorDatabaseSettings(
+        url=OPERATOR_URL,
+        database_name="spine",
+        migration_role="spine_migration",
+        migration_password="migration-secret",
+        runtime_role="spine_runtime",
+        runtime_password="runtime-secret",
+    )
+
+    assert settings.database_name == "spine"
+    assert settings.migration_role == "spine_migration"
+    assert settings.runtime_role == "spine_runtime"
+    rendered = repr(settings)
+    assert "operator_secret" not in rendered
+    assert "migration-secret" not in rendered
+    assert "runtime-secret" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("database_name", "spine; DROP DATABASE postgres"),
+        ("migration_role", "spine-migration"),
+        ("runtime_role", "SpineRuntime"),
+    ],
+)
+def test_operator_settings_reject_unsafe_identifiers(field: str, value: str) -> None:
+    values = {
+        "url": OPERATOR_URL,
+        "database_name": "spine",
+        "migration_role": "spine_migration",
+        "migration_password": "migration-secret",
+        "runtime_role": "spine_runtime",
+        "runtime_password": "runtime-secret",
+    }
+    values[field] = value
+
+    with pytest.raises(ValidationError, match="identifier"):
+        OperatorDatabaseSettings(**values)
 
 
 def test_test_settings_never_fall_back_to_runtime_or_migration_url(
