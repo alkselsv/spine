@@ -23,6 +23,14 @@ platform.
 - [x] Python/FastAPI-проект и локальный Q&A-прототип на Cognee.
 - [x] Каркас domain, application, connectors, memory, agents, workflows и web.
 - [x] Начальный framework-independent каркас контрактов capability, agent invocation, artifact и workflow.
+- [x] Canonical PostgreSQL persistence foundation: async runtime, раздельные
+      runtime/migration/test roles, Alembic migrations и безопасный test harness.
+- [x] Начальная tenancy schema для `Workspace`/`Environment` и контролируемый
+      bootstrap первого workspace.
+- [x] Trusted persistence context, tenant isolation через PostgreSQL RLS и
+      context-bound Unit of Work с контрактными in-memory/PostgreSQL адаптерами.
+- [x] Command digests, idempotency receipts, retry policy и базовая трансляция
+      persistence errors.
 - [ ] Local agent runtime seam: capability-specific schemas, типизированные
       `AgentRequest`/`AgentResponse` и полный `AgentExecutionContext`.
 - [ ] Явный registry/factory, structural `AgentHandler`, adapter async-функций,
