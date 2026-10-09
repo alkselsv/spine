@@ -46,9 +46,26 @@ class ArchitectureScaffoldTests(unittest.TestCase):
 
     def test_domain_layer_has_no_framework_imports(self) -> None:
         domain_root = Path(__file__).parents[1] / "src" / "spine" / "domain"
-        forbidden = {"cognee", "fastapi", "sqlalchemy", "temporalio"}
+        forbidden = {"alembic", "cognee", "fastapi", "psycopg", "sqlalchemy", "temporalio"}
 
         for path in domain_root.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            imported_roots: set[str] = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    imported_roots.update(alias.name.split(".", 1)[0] for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    imported_roots.add(node.module.split(".", 1)[0])
+
+            self.assertFalse(imported_roots & forbidden, f"framework import in {path}")
+
+    def test_application_persistence_contracts_have_no_framework_imports(self) -> None:
+        contracts_root = (
+            Path(__file__).parents[1] / "src" / "spine" / "application" / "persistence"
+        )
+        forbidden = {"alembic", "cognee", "fastapi", "psycopg", "sqlalchemy", "temporalio"}
+
+        for path in contracts_root.rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             imported_roots: set[str] = set()
             for node in ast.walk(tree):
