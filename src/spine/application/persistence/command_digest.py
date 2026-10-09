@@ -34,6 +34,8 @@ class CommandDigest:
 
     algorithm_version: str
     value: str
+    operation: PersistenceOperation
+    operation_schema_version: int
 
     def __post_init__(self) -> None:
         version_match = (
@@ -49,6 +51,16 @@ class CommandDigest:
             int(self.value, 16)
         except ValueError:
             raise UnsupportedCommandValueError("Command digest must be a SHA-256 hex value.") from None
+        if not isinstance(self.operation, PersistenceOperation):
+            raise UnsupportedCommandValueError("Command digest operation is invalid.")
+        if (
+            not isinstance(self.operation_schema_version, int)
+            or isinstance(self.operation_schema_version, bool)
+            or self.operation_schema_version <= 0
+        ):
+            raise UnsupportedCommandValueError(
+                "Command digest operation schema version must be a positive integer."
+            )
 
 
 def canonical_command_bytes(
@@ -97,6 +109,8 @@ def digest_command(
     return CommandDigest(
         algorithm_version=COMMAND_DIGEST_ALGORITHM_VERSION,
         value=hashlib.sha256(canonical).hexdigest(),
+        operation=operation,
+        operation_schema_version=operation_schema_version,
     )
 
 
@@ -104,10 +118,20 @@ def _canonical_value(value: object) -> Any:
     if value is None:
         return {"type": "null", "value": None}
     if isinstance(value, Enum):
-        enum_value = value.value
-        if not isinstance(enum_value, str):
-            raise UnsupportedCommandValueError("Enum values must be strings.")
-        return {"type": "enum", "value": unicodedata.normalize("NFC", enum_value)}
+        declared_value = _canonical_value(value.value)
+        if declared_value["type"] in {"enum", "list", "object"}:
+            raise UnsupportedCommandValueError(
+                "Enum values must be supported scalar values."
+            )
+        result: dict[str, object] = {
+            "type": "enum",
+            "value": declared_value["value"],
+        }
+        if declared_value["type"] != "string":
+            result["value_type"] = declared_value["type"]
+            if "precision" in declared_value:
+                result["precision"] = declared_value["precision"]
+        return result
     if isinstance(value, bool):
         return {"type": "bool", "value": value}
     if isinstance(value, str):
@@ -143,7 +167,12 @@ def _canonical_mapping(value: Mapping[object, object]) -> dict[str, object]:
     for key, item in value.items():
         if not isinstance(key, str):
             raise UnsupportedCommandValueError("Command object keys must be strings.")
-        items[key] = _canonical_value(item)
+        normalized_key = unicodedata.normalize("NFC", key)
+        if normalized_key in items:
+            raise UnsupportedCommandValueError(
+                "Command object keys must be unique after NFC normalization."
+            )
+        items[normalized_key] = _canonical_value(item)
     return {"type": "object", "value": {key: items[key] for key in sorted(items)}}
 
 

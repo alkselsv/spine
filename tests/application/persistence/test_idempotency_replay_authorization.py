@@ -12,7 +12,10 @@ from spine.application.persistence.context import (
     PersistencePurpose,
     WorkspaceScope,
 )
-from spine.application.persistence.errors import IdempotencyConflictError
+from spine.application.persistence.errors import (
+    IdempotencyConflictError,
+    UnitOfWorkLifecycleError,
+)
 from spine.application.persistence.idempotency import (
     IdempotencyKey,
     IdempotencyReplay,
@@ -176,15 +179,50 @@ async def test_same_key_and_digest_under_different_trusted_operation_does_not_re
         await uow.commit()
 
     async with persistence.uow_factory(context_b) as uow:
+        with pytest.raises(IdempotencyConflictError, match="trusted operation"):
+            await uow.idempotency.claim(
+                operation_schema_version=1,
+                key=key,
+                digest=digest,
+            )
+
+    async with persistence.uow_factory(context_b) as uow:
         claim_b = await uow.idempotency.claim(
+            operation_schema_version=1,
+            key=key,
+            digest=digest_command(
+                operation=operation_b,
+                operation_schema_version=1,
+                payload={"amount": Decimal("10.00")},
+            ),
+        )
+        assert isinstance(claim_b, OwnedIdempotencyClaim)
+        assert claim_b.operation == operation_b
+        mismatched_claim = OwnedIdempotencyClaim(
+            kind="owned",
+            receipt_id=claim_b.receipt_id,
+            operation=operation_b,
             operation_schema_version=1,
             key=key,
             digest=digest,
         )
-        assert isinstance(claim_b, OwnedIdempotencyClaim)
-        assert claim_b.operation == operation_b
         with pytest.raises(IdempotencyConflictError, match="cannot be completed"):
             await uow.idempotency.complete(
-                claim_a,
+                mismatched_claim,
                 OpaqueResultReference("proposal", RESULT_ID, 1),
             )
+        with pytest.raises(UnitOfWorkLifecycleError, match="not active"):
+            await uow.commit()
+
+    async with persistence.uow_factory(context_b) as uow:
+        claim_b = await uow.idempotency.claim(
+            operation_schema_version=1,
+            key=key,
+            digest=digest_command(
+                operation=operation_b,
+                operation_schema_version=1,
+                payload={"amount": Decimal("10.00")},
+            ),
+        )
+        assert isinstance(claim_b, OwnedIdempotencyClaim)
+        await uow.rollback()

@@ -209,8 +209,18 @@ class _IdempotencyRepository:
         self._uow._guard_active()
 
         def repository_operation() -> IdempotencyClaimResult:
+            operation = self._uow._operation_snapshot()
+            if (
+                digest.operation != operation
+                or digest.operation_schema_version != operation_schema_version
+            ):
+                self._uow._fail(
+                    IdempotencyConflictError(
+                        "Idempotency digest does not match the trusted operation."
+                    )
+                )
             receipt_key = self._uow._receipt_key(
-                operation=self._uow._operation_snapshot(),
+                operation=operation,
                 operation_schema_version=operation_schema_version,
                 key=key,
             )
@@ -225,7 +235,7 @@ class _IdempotencyRepository:
                 return IdempotencyReplay(
                     kind="replay",
                     receipt_id=existing.receipt_id,
-                    operation=self._uow._operation_snapshot(),
+                    operation=operation,
                     operation_schema_version=operation_schema_version,
                     key=key,
                     result=existing.result,
@@ -234,7 +244,7 @@ class _IdempotencyRepository:
             claim = OwnedIdempotencyClaim(
                 kind="owned",
                 receipt_id=receipt_id,
-                operation=self._uow._operation_snapshot(),
+                operation=operation,
                 operation_schema_version=operation_schema_version,
                 key=key,
                 digest=digest,
@@ -262,6 +272,13 @@ class _IdempotencyRepository:
                     IdempotencyConflictError("Only an owned idempotency claim can complete.")
                 )
             if claim.operation != self._uow._operation_snapshot():
+                self._uow._fail(
+                    IdempotencyConflictError("Idempotency claim cannot be completed.")
+                )
+            if (
+                claim.digest.operation != claim.operation
+                or claim.digest.operation_schema_version != claim.operation_schema_version
+            ):
                 self._uow._fail(
                     IdempotencyConflictError("Idempotency claim cannot be completed.")
                 )
@@ -508,6 +525,14 @@ class InMemoryUnitOfWork:
         ]
         if incomplete:
             raise UnitOfWorkLifecycleError("Owned idempotency claims must be completed before commit.")
+        if any(
+            receipt.key.operation_name != receipt.digest.operation.value
+            or receipt.key.operation_schema_version != receipt.digest.operation_schema_version
+            for receipt in self._pending_receipts.values()
+        ):
+            raise IdempotencyConflictError(
+                "Idempotency digest does not match the trusted operation."
+            )
         available_workspaces = self._store.workspaces.keys() | self._pending_workspaces.keys()
         if any(
             environment.workspace_id not in available_workspaces

@@ -26,6 +26,22 @@ class RenamedExampleStatus(str, Enum):
     READY = "ready"
 
 
+class NumericStatus(Enum):
+    READY = 1
+
+
+class RenamedNumericStatus(Enum):
+    READY = 1
+
+
+class UuidStatus(Enum):
+    READY = UUID("10000000-0000-0000-0000-000000000002")
+
+
+class DecimalStatus(Enum):
+    READY = Decimal("12.3400")
+
+
 OPERATION = PersistenceOperation("proposal.generate")
 WORKSPACE_ID = UUID("10000000-0000-0000-0000-000000000001")
 
@@ -164,6 +180,76 @@ def test_enum_class_name_does_not_affect_digest() -> None:
     assert first == second
 
 
+def test_scalar_enum_values_use_declared_canonical_values() -> None:
+    assert digest_command(
+        operation=OPERATION,
+        operation_schema_version=1,
+        payload={"status": NumericStatus.READY},
+    ) == digest_command(
+        operation=OPERATION,
+        operation_schema_version=1,
+        payload={"status": RenamedNumericStatus.READY},
+    )
+    assert canonical_command_bytes(
+        operation=OPERATION,
+        operation_schema_version=1,
+        payload={"status": NumericStatus.READY},
+    ).decode("utf-8").find('"value_type":"integer"') >= 0
+    assert digest_command(
+        operation=OPERATION,
+        operation_schema_version=1,
+        payload={"status": UuidStatus.READY},
+    )
+    assert digest_command(
+        operation=OPERATION,
+        operation_schema_version=1,
+        payload={"status": DecimalStatus.READY},
+    )
+
+
+@pytest.mark.parametrize(
+    ("enum_value", "expected_digest"),
+    [
+        (
+            ExampleStatus.READY,
+            "64028fb37bbb756d346e33b30992b0af36f198d5d821c174e2fe77bd4d9f6a49",
+        ),
+        (
+            NumericStatus.READY,
+            "c756a1e061fb0bf42bbd0eeb9fa3320bbdae0e6b0444b4dcaf2fe29f6fadd203",
+        ),
+        (
+            UuidStatus.READY,
+            "0cfb88433d9117ffcc2534800b5cf500281bfb6c2ed9043cd7766e31a642409c",
+        ),
+        (
+            DecimalStatus.READY,
+            "e92379305a8439d225d3552f2ac8043021cf97a5b68e4d45484ce596a0088deb",
+        ),
+    ],
+)
+def test_enum_golden_vectors_are_stable(enum_value: Enum, expected_digest: str) -> None:
+    digest = digest_command(
+        operation=OPERATION,
+        operation_schema_version=1,
+        payload={"status": enum_value},
+    )
+
+    assert digest.value == expected_digest
+
+
+def test_unsupported_enum_values_are_rejected() -> None:
+    class UnsupportedStatus(Enum):
+        READY = ("not", "a", "scalar")
+
+    with pytest.raises(UnsupportedCommandValueError, match="supported scalar"):
+        digest_command(
+            operation=OPERATION,
+            operation_schema_version=1,
+            payload={"status": UnsupportedStatus.READY},
+        )
+
+
 def test_unicode_strings_are_normalized_to_nfc() -> None:
     composed = digest_command(
         operation=OPERATION,
@@ -179,15 +265,41 @@ def test_unicode_strings_are_normalized_to_nfc() -> None:
     assert composed == decomposed
 
 
+def test_unicode_mapping_keys_are_normalized_at_all_nesting_levels() -> None:
+    composed = digest_command(
+        operation=OPERATION,
+        operation_schema_version=1,
+        payload={"café": [{"résumé": "Café"}]},
+    )
+    decomposed = digest_command(
+        operation=OPERATION,
+        operation_schema_version=1,
+        payload={"cafe\u0301": [{"re\u0301sume\u0301": "Cafe\u0301"}]},
+    )
+
+    assert composed == decomposed
+
+
+def test_unicode_mapping_key_normalization_collision_is_rejected() -> None:
+    with pytest.raises(UnsupportedCommandValueError, match="unique after NFC"):
+        digest_command(
+            operation=OPERATION,
+            operation_schema_version=1,
+            payload={"café": 1, "cafe\u0301": 2},
+        )
+
+
 def test_command_digest_accepts_current_version_and_rejects_future_or_malformed_versions() -> None:
     digest = "0" * 64
 
-    assert CommandDigest("spine.command-digest.v1", digest).value == digest
+    assert CommandDigest(
+        "spine.command-digest.v1", digest, OPERATION, 1
+    ).value == digest
 
     with pytest.raises(UnsupportedCommandValueError):
-        CommandDigest("spine.command-digest.v2", digest)
+        CommandDigest("spine.command-digest.v2", digest, OPERATION, 1)
     with pytest.raises(UnsupportedCommandValueError):
-        CommandDigest("spine.command-digest.latest", digest)
+        CommandDigest("spine.command-digest.latest", digest, OPERATION, 1)
 
 
 @pytest.mark.parametrize(
