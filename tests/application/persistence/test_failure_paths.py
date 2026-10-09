@@ -23,6 +23,13 @@ from spine.infrastructure.persistence.contexts import (
 )
 from spine.infrastructure.persistence.in_memory import InMemoryPersistence
 import spine.infrastructure.persistence.in_memory as in_memory
+from spine.application.persistence.command_digest import digest_command
+from spine.application.persistence.idempotency import (
+    IdempotencyKey,
+    IdempotencyOperation,
+    OpaqueResultReference,
+    OwnedIdempotencyClaim,
+)
 
 
 WORKSPACE_ID = UUID("10000000-0000-0000-0000-000000000001")
@@ -327,3 +334,52 @@ async def test_commit_copy_failure_is_atomic_and_terminal(
     async with persistence.uow_factory(write_context) as reader:
         assert await reader.workspaces.resolve(OTHER_WORKSPACE_ID) is None
         assert await reader.environments.resolve(ENVIRONMENT_ID) is None
+
+
+@pytest.mark.asyncio
+async def test_commit_receipt_copy_failure_is_atomic_and_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    persistence, context_authority = await configured_persistence()
+    write_context = context(context_authority, WORKSPACE_ID)
+    digest = digest_command(
+        operation=PersistenceOperation("proposal.generate"),
+        operation_schema_version=1,
+        payload={"workspace_id": WORKSPACE_ID},
+    )
+    key = IdempotencyKey("copy-failure-key")
+    uow = persistence.uow_factory(write_context)
+
+    async with uow:
+        claim = await uow.idempotency.claim(
+            operation=IdempotencyOperation("proposal.generate", 1),
+            key=key,
+            digest=digest,
+        )
+        assert isinstance(claim, OwnedIdempotencyClaim)
+        await uow.idempotency.complete(
+            claim,
+            OpaqueResultReference(
+                result_type="proposal",
+                result_id=OTHER_WORKSPACE_ID,
+                schema_version=1,
+            ),
+        )
+
+        def fail_receipt_copy(value):
+            raise RuntimeError(COPY_FAILURE_DETAIL)
+
+        monkeypatch.setattr(in_memory, "_receipt_copy", fail_receipt_copy)
+        with pytest.raises(UnexpectedPersistenceError) as raised:
+            await uow.commit()
+        assert COPY_FAILURE_DETAIL not in str(raised.value)
+        assert str(raised.value) == "Persistence operation failed."
+
+    monkeypatch.undo()
+    async with persistence.uow_factory(write_context) as retry:
+        claim = await retry.idempotency.claim(
+            operation=IdempotencyOperation("proposal.generate", 1),
+            key=key,
+            digest=digest,
+        )
+        assert isinstance(claim, OwnedIdempotencyClaim)

@@ -8,6 +8,7 @@ from typing import Protocol
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.application.persistence.repositories import (
     EnvironmentRepository,
+    IdempotencyRepository,
     WorkspaceRepository,
 )
 
@@ -18,6 +19,9 @@ class UnitOfWork(Protocol):
 
     @property
     def environments(self) -> EnvironmentRepository: ...
+
+    @property
+    def idempotency(self) -> IdempotencyRepository: ...
 
     async def __aenter__(self) -> "UnitOfWork": ...
 

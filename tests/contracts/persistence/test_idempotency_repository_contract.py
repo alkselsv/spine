@@ -1,0 +1,312 @@
+from __future__ import annotations
+
+from decimal import Decimal
+from uuid import UUID
+
+import pytest
+
+from spine.application.persistence.command_digest import digest_command
+from spine.application.persistence.context import PersistenceOperation
+from spine.application.persistence.errors import IdempotencyConflictError, UnitOfWorkLifecycleError
+from spine.application.persistence.idempotency import (
+    IdempotencyKey,
+    IdempotencyOperation,
+    IdempotencyReplay,
+    OpaqueResultReference,
+    OwnedIdempotencyClaim,
+)
+from spine.domain.common import EnvironmentKind
+from spine.domain.workspaces import Environment, Workspace
+
+from .adapter import PersistenceAdapter
+from .ids import synthetic_uuid
+
+
+OPERATION = IdempotencyOperation(name="proposal.generate", schema_version=1)
+COMMAND_OPERATION = PersistenceOperation("proposal.generate")
+
+
+def command_digest(amount: str = "12.3400"):
+    return digest_command(
+        operation=COMMAND_OPERATION,
+        operation_schema_version=1,
+        payload={"amount": Decimal(amount), "customer_id": synthetic_uuid(401)},
+    )
+
+
+def result_ref(result_id: UUID = synthetic_uuid(501)) -> OpaqueResultReference:
+    return OpaqueResultReference(
+        result_type="proposal",
+        result_id=result_id,
+        schema_version=1,
+    )
+
+
+def workspace(workspace_id: UUID) -> Workspace:
+    return Workspace(id=workspace_id, slug="northwind", display_name="Northwind")
+
+
+async def persist_workspace(adapter: PersistenceAdapter, workspace_id: UUID) -> None:
+    context = adapter.workspace_context(workspace_id)
+    async with adapter.uow_factory(context) as uow:
+        await uow.workspaces.add(workspace(workspace_id))
+        await uow.commit()
+
+
+async def persist_environment(
+    adapter: PersistenceAdapter,
+    workspace_id: UUID,
+    environment_id: UUID,
+) -> None:
+    context = adapter.workspace_context(workspace_id)
+    async with adapter.uow_factory(context) as uow:
+        await uow.environments.add(
+            Environment(
+                id=environment_id,
+                workspace_id=workspace_id,
+                kind=EnvironmentKind.PRODUCTION,
+                display_name="Production",
+            )
+        )
+        await uow.commit()
+
+
+@pytest.mark.asyncio
+async def test_claim_complete_and_replay_return_same_result_reference(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(101)
+    await persist_workspace(persistence_adapter, workspace_id)
+    context = persistence_adapter.workspace_context(workspace_id)
+    key = IdempotencyKey("transport-key-1")
+    digest = command_digest()
+    expected = result_ref()
+
+    async with persistence_adapter.uow_factory(context) as uow:
+        claim = await uow.idempotency.claim(
+            operation=OPERATION,
+            key=key,
+            digest=digest,
+        )
+        assert isinstance(claim, OwnedIdempotencyClaim)
+        await uow.idempotency.complete(claim, expected)
+        await uow.commit()
+
+    async with persistence_adapter.uow_factory(context) as uow:
+        replay = await uow.idempotency.claim(
+            operation=OPERATION,
+            key=key,
+            digest=digest,
+        )
+        assert isinstance(replay, IdempotencyReplay)
+        assert replay.result == expected
+        await uow.commit()
+
+
+@pytest.mark.asyncio
+async def test_same_key_with_different_digest_raises_stable_conflict(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(102)
+    await persist_workspace(persistence_adapter, workspace_id)
+    context = persistence_adapter.workspace_context(workspace_id)
+    key = IdempotencyKey("transport-key-2")
+
+    async with persistence_adapter.uow_factory(context) as uow:
+        claim = await uow.idempotency.claim(
+            operation=OPERATION,
+            key=key,
+            digest=command_digest("12.34"),
+        )
+        assert isinstance(claim, OwnedIdempotencyClaim)
+        await uow.idempotency.complete(claim, result_ref())
+        await uow.commit()
+
+    with pytest.raises(IdempotencyConflictError, match="Idempotency key conflicts"):
+        async with persistence_adapter.uow_factory(context) as uow:
+            await uow.idempotency.claim(
+                operation=OPERATION,
+                key=key,
+                digest=command_digest("99.99"),
+            )
+
+
+@pytest.mark.asyncio
+async def test_independent_workspaces_environments_and_keys_do_not_collide(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(103)
+    other_workspace_id = synthetic_uuid(104)
+    environment_id = synthetic_uuid(201)
+    other_environment_id = synthetic_uuid(202)
+    await persist_workspace(persistence_adapter, workspace_id)
+    await persist_workspace(persistence_adapter, other_workspace_id)
+    await persist_environment(persistence_adapter, workspace_id, environment_id)
+    await persist_environment(persistence_adapter, workspace_id, other_environment_id)
+    digest = command_digest()
+    key = IdempotencyKey("shared-key")
+
+    contexts = [
+        persistence_adapter.workspace_context(workspace_id),
+        persistence_adapter.workspace_context(other_workspace_id),
+        persistence_adapter.environment_context(workspace_id, environment_id),
+        persistence_adapter.environment_context(workspace_id, other_environment_id),
+    ]
+
+    for index, context in enumerate(contexts, start=1):
+        async with persistence_adapter.uow_factory(context) as uow:
+            claim = await uow.idempotency.claim(
+                operation=OPERATION,
+                key=key,
+                digest=digest,
+            )
+            assert isinstance(claim, OwnedIdempotencyClaim)
+            await uow.idempotency.complete(claim, result_ref(synthetic_uuid(600 + index)))
+            await uow.commit()
+
+    async with persistence_adapter.uow_factory(persistence_adapter.workspace_context(workspace_id)) as uow:
+        different_key = await uow.idempotency.claim(
+            operation=OPERATION,
+            key=IdempotencyKey("different-key"),
+            digest=digest,
+        )
+        assert isinstance(different_key, OwnedIdempotencyClaim)
+
+
+@pytest.mark.asyncio
+async def test_incomplete_owned_claim_prevents_commit_and_rolls_back(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(105)
+    await persist_workspace(persistence_adapter, workspace_id)
+    context = persistence_adapter.workspace_context(workspace_id)
+    key = IdempotencyKey("incomplete-key")
+    digest = command_digest()
+
+    async with persistence_adapter.uow_factory(context) as uow:
+        claim = await uow.idempotency.claim(
+            operation=OPERATION,
+            key=key,
+            digest=digest,
+        )
+        assert isinstance(claim, OwnedIdempotencyClaim)
+        with pytest.raises(UnitOfWorkLifecycleError, match="must be completed"):
+            await uow.commit()
+
+    async with persistence_adapter.uow_factory(context) as uow:
+        claim = await uow.idempotency.claim(
+            operation=OPERATION,
+            key=key,
+            digest=digest,
+        )
+        assert isinstance(claim, OwnedIdempotencyClaim)
+
+
+@pytest.mark.asyncio
+async def test_rollback_discards_claim_and_completed_receipt(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(106)
+    await persist_workspace(persistence_adapter, workspace_id)
+    context = persistence_adapter.workspace_context(workspace_id)
+    key = IdempotencyKey("rollback-key")
+    digest = command_digest()
+
+    async with persistence_adapter.uow_factory(context) as uow:
+        claim = await uow.idempotency.claim(
+            operation=OPERATION,
+            key=key,
+            digest=digest,
+        )
+        assert isinstance(claim, OwnedIdempotencyClaim)
+        await uow.idempotency.complete(claim, result_ref())
+        await uow.rollback()
+
+    async with persistence_adapter.uow_factory(context) as uow:
+        claim = await uow.idempotency.claim(
+            operation=OPERATION,
+            key=key,
+            digest=digest,
+        )
+        assert isinstance(claim, OwnedIdempotencyClaim)
+
+
+@pytest.mark.asyncio
+async def test_completing_replay_unknown_or_already_completed_claim_fails(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(107)
+    await persist_workspace(persistence_adapter, workspace_id)
+    context = persistence_adapter.workspace_context(workspace_id)
+    key = IdempotencyKey("completion-conflict-key")
+    digest = command_digest()
+
+    async with persistence_adapter.uow_factory(context) as uow:
+        claim = await uow.idempotency.claim(
+            operation=OPERATION,
+            key=key,
+            digest=digest,
+        )
+        assert isinstance(claim, OwnedIdempotencyClaim)
+        await uow.idempotency.complete(claim, result_ref())
+        await uow.commit()
+
+    async with persistence_adapter.uow_factory(context) as uow:
+        claim = await uow.idempotency.claim(
+            operation=OPERATION,
+            key=IdempotencyKey("already-completed-key"),
+            digest=digest,
+        )
+        assert isinstance(claim, OwnedIdempotencyClaim)
+        await uow.idempotency.complete(claim, result_ref(synthetic_uuid(503)))
+        with pytest.raises(IdempotencyConflictError, match="cannot be completed"):
+            await uow.idempotency.complete(claim, result_ref(synthetic_uuid(504)))
+
+    async with persistence_adapter.uow_factory(context) as uow:
+        replay = await uow.idempotency.claim(
+            operation=OPERATION,
+            key=key,
+            digest=digest,
+        )
+        assert isinstance(replay, IdempotencyReplay)
+        with pytest.raises(IdempotencyConflictError, match="Only an owned"):
+            await uow.idempotency.complete(replay, result_ref())  # type: ignore[arg-type]
+
+    unknown_claim = OwnedIdempotencyClaim(
+        kind="owned",
+        receipt_id=synthetic_uuid(999),
+        operation=OPERATION,
+        key=IdempotencyKey("unknown-key"),
+        digest=digest,
+    )
+    async with persistence_adapter.uow_factory(context) as uow:
+        with pytest.raises(IdempotencyConflictError, match="cannot be completed"):
+            await uow.idempotency.complete(unknown_claim, result_ref())
+
+
+@pytest.mark.asyncio
+async def test_differently_scoped_claim_cannot_complete(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(108)
+    other_workspace_id = synthetic_uuid(109)
+    await persist_workspace(persistence_adapter, workspace_id)
+    await persist_workspace(persistence_adapter, other_workspace_id)
+    digest = command_digest()
+
+    async with persistence_adapter.uow_factory(
+        persistence_adapter.workspace_context(workspace_id)
+    ) as uow:
+        claim = await uow.idempotency.claim(
+            operation=OPERATION,
+            key=IdempotencyKey("scope-key"),
+            digest=digest,
+        )
+        assert isinstance(claim, OwnedIdempotencyClaim)
+        await uow.rollback()
+
+    async with persistence_adapter.uow_factory(
+        persistence_adapter.workspace_context(other_workspace_id)
+    ) as uow:
+        with pytest.raises(IdempotencyConflictError, match="cannot be completed"):
+            await uow.idempotency.complete(claim, result_ref())
