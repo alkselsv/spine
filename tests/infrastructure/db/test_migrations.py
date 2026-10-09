@@ -85,8 +85,9 @@ def valid_preflight_state(**overrides: object) -> MigrationPreflightState:
         "runtime_role_has_memberships": False,
         "runtime_role_can_assume_migration": False,
         "runtime_role_can_create_in_database": False,
-        "runtime_role_has_spine_schema_access": False,
-        "runtime_role_has_tenant_table_privileges": False,
+        "runtime_role_can_create_in_spine_schema": False,
+        "runtime_role_has_unsafe_table_privileges": False,
+        "runtime_role_has_unprotected_tenant_dml": False,
         "schema_owner": None,
     }
     values.update(overrides)
@@ -112,8 +113,9 @@ def test_migration_preflight_rejects_missing_or_privileged_runtime_role() -> Non
         valid_preflight_state(runtime_role_has_memberships=True),
         valid_preflight_state(runtime_role_can_assume_migration=True),
         valid_preflight_state(runtime_role_can_create_in_database=True),
-        valid_preflight_state(runtime_role_has_spine_schema_access=True),
-        valid_preflight_state(runtime_role_has_tenant_table_privileges=True),
+        valid_preflight_state(runtime_role_can_create_in_spine_schema=True),
+        valid_preflight_state(runtime_role_has_unsafe_table_privileges=True),
+        valid_preflight_state(runtime_role_has_unprotected_tenant_dml=True),
     ):
         try:
             validate_migration_preflight(
