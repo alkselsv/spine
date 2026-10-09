@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, cast
 
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from spine.infrastructure.db.settings import (
     REDACTED_DATABASE_URL,
+    SUPPORTED_POSTGRESQL_MAJOR,
     RuntimeDatabaseSettings,
 )
 
@@ -20,7 +23,19 @@ class DisposableAsyncEngine(Protocol):
 
 
 EngineFactory = Callable[..., DisposableAsyncEngine]
-SessionFactoryBuilder = Callable[..., object]
+SessionFactory = Callable[..., AsyncSession]
+SessionFactoryBuilder = Callable[..., SessionFactory]
+ReadinessCheck = Callable[[DisposableAsyncEngine], Awaitable[None]]
+
+
+async def _verify_supported_postgresql(engine: DisposableAsyncEngine) -> None:
+    async_engine = cast(AsyncEngine, engine)
+    async with async_engine.connect() as connection:
+        major = await connection.scalar(
+            text("SELECT current_setting('server_version_num')::integer / 10000")
+        )
+    if major != SUPPORTED_POSTGRESQL_MAJOR:
+        raise RuntimeError("unsupported PostgreSQL server identity")
 
 
 class DatabaseStartupError(RuntimeError):
@@ -36,7 +51,7 @@ class DatabaseResources:
     """The engine and operation-scoped async session factory for one process."""
 
     engine: DisposableAsyncEngine
-    session_factory: object
+    session_factory: SessionFactory
 
 
 class DatabaseRuntime:
@@ -47,9 +62,11 @@ class DatabaseRuntime:
         *,
         engine_factory: EngineFactory = create_async_engine,
         session_factory_builder: SessionFactoryBuilder = async_sessionmaker,
+        readiness_check: ReadinessCheck = _verify_supported_postgresql,
     ) -> None:
         self._engine_factory = engine_factory
         self._session_factory_builder = session_factory_builder
+        self._readiness_check = readiness_check
         self._resources: DatabaseResources | None = None
         self._settings: RuntimeDatabaseSettings | None = None
         self._lifecycle_lock = asyncio.Lock()
@@ -81,7 +98,9 @@ class DatabaseRuntime:
                     connect_args={
                         "connect_timeout": settings.connect_timeout_seconds,
                     },
+                    hide_parameters=True,
                 )
+                await self._readiness_check(engine)
                 session_factory = self._session_factory_builder(
                     engine,
                     expire_on_commit=False,

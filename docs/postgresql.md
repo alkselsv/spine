@@ -15,7 +15,9 @@ dependencies, while PostgreSQL Testcontainers is a direct `dev` dependency.
 process after `RuntimeDatabaseSettings` validates. It creates an
 `async_sessionmaker` for operation-owned sessions and awaits engine disposal at
 shutdown. Pool pre-ping, rollback-on-return, pool capacity, checkout timeout,
-and Psycopg connection timeout are set explicitly.
+and Psycopg connection timeout are set explicitly. Startup opens a connection
+and rejects an unreachable server or a PostgreSQL major other than 17; any
+startup failure disposes the new engine before returning a sanitized error.
 
 Runtime and migration credentials have separate configuration surfaces:
 

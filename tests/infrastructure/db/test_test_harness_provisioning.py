@@ -11,7 +11,10 @@ from spine.infrastructure.db.settings import (
 )
 from spine.infrastructure.db.test_harness import (
     PostgreSQLGateError,
+    TestDatabaseProvision,
+    TestTarget,
     UnsafeTestTargetError,
+    install_container_marker,
     provision_test_database,
 )
 
@@ -106,3 +109,69 @@ def test_container_start_failure_fails_gate_without_credentials() -> None:
     rendered = str(error.value)
     assert "password" not in rendered
     assert "postgresql" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_marker_installation_keeps_marker_out_of_logged_sql(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = "spine-test-harness:v1:secret-marker"
+    statements: list[str] = []
+    parameters: list[dict[str, str] | None] = []
+    engine_options: dict[str, object] = {}
+
+    class FakeConnection:
+        async def scalar(self, _statement: object) -> str:
+            return "spine_test_container"
+
+        async def execute(
+            self,
+            statement: object,
+            values: dict[str, str] | None = None,
+        ) -> None:
+            statements.append(str(statement))
+            parameters.append(values)
+
+    class BeginContext:
+        async def __aenter__(self) -> FakeConnection:
+            return FakeConnection()
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    class FakeEngine:
+        disposed = False
+
+        def begin(self) -> BeginContext:
+            return BeginContext()
+
+        async def dispose(self) -> None:
+            self.disposed = True
+
+    engine = FakeEngine()
+
+    def fake_engine_factory(_url: str, **kwargs: object) -> FakeEngine:
+        engine_options.update(kwargs)
+        return engine
+
+    monkeypatch.setattr(
+        "spine.infrastructure.db.test_harness.create_async_engine",
+        fake_engine_factory,
+    )
+    provision = TestDatabaseProvision(
+        url=SecretStr(
+            "postgresql+psycopg://test_user:test_secret@db/spine_test_container"
+        ),
+        target=TestTarget(
+            database_name="spine_test_container",
+            disposable_marker=SecretStr(marker),
+        ),
+        container=FakeContainer(),
+    )
+
+    await install_container_marker(provision)
+
+    assert engine_options["hide_parameters"] is True
+    assert marker not in " ".join(statements)
+    assert parameters == [{"marker": marker}, None]
+    assert engine.disposed is True

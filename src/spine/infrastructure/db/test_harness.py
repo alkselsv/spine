@@ -310,7 +310,11 @@ async def install_container_marker(provision: TestDatabaseProvision) -> None:
         raise UnsafeTestTargetError(
             "explicit databases cannot be marked by the harness"
         )
-    engine = create_async_engine(provision.url.get_secret_value())
+    engine = create_async_engine(
+        provision.url.get_secret_value(),
+        hide_parameters=True,
+    )
+    operation_failed = False
     try:
         async with engine.begin() as connection:
             actual_name = await connection.scalar(text("SELECT current_database()"))
@@ -318,33 +322,49 @@ async def install_container_marker(provision: TestDatabaseProvision) -> None:
                 raise UnsafeTestTargetError(
                     "container database identity did not match expectation"
                 )
-            database_identifier = _quoted_identifier(provision.target.database_name)
-            marker = _marker_sql_literal(
-                provision.target.disposable_marker.get_secret_value()
+            marker = provision.target.disposable_marker.get_secret_value()
+            if not _MARKER.fullmatch(marker):
+                raise UnsafeTestTargetError(
+                    "disposable test marker has an invalid format"
+                )
+            await connection.execute(
+                text(
+                    "SELECT set_config("
+                    "'spine.test_disposable_marker', :marker, true)"
+                ),
+                {"marker": marker},
             )
             await connection.execute(
-                text(f"COMMENT ON DATABASE {database_identifier} IS {marker}")
+                text(
+                    "DO $spine$ BEGIN "
+                    "EXECUTE format('COMMENT ON DATABASE %I IS %L', "
+                    "current_database(), "
+                    "current_setting('spine.test_disposable_marker')); "
+                    "END $spine$"
+                )
             )
     except UnsafeTestTargetError:
+        operation_failed = True
         raise
     except Exception:
+        operation_failed = True
         raise PostgreSQLGateError(
             "mandatory PostgreSQL gate could not initialize the disposable marker"
         ) from None
     finally:
-        await engine.dispose()
+        try:
+            await engine.dispose()
+        except Exception:
+            if not operation_failed:
+                raise PostgreSQLGateError(
+                    "mandatory PostgreSQL gate could not dispose marker resources"
+                ) from None
 
 
 def _quoted_identifier(identifier: str) -> str:
     if not _IDENTIFIER.fullmatch(identifier):
         raise UnsafeTestTargetError("database identifier is not exact and safe")
     return f'"{identifier}"'
-
-
-def _marker_sql_literal(marker: str) -> str:
-    if not _MARKER.fullmatch(marker):
-        raise UnsafeTestTargetError("disposable test marker has an invalid format")
-    return f"'{marker}'"
 
 
 async def _read_database_identity(connection: AsyncConnection) -> DatabaseIdentity:
@@ -404,6 +424,7 @@ class HarnessLease:
             pool_timeout=5.0,
             pool_pre_ping=True,
             pool_reset_on_return="rollback",
+            hide_parameters=True,
         )
         connection: AsyncConnection | None = None
         lock_acquired = False
@@ -432,32 +453,10 @@ class HarnessLease:
             await lease._provision_owned_namespaces()
             return lease
         except UnsafeTestTargetError as error:
-            try:
-                if connection is not None:
-                    await connection.rollback()
-                    if lock_acquired:
-                        await connection.execute(
-                            text("SELECT pg_advisory_unlock(:lock_id)"),
-                            {"lock_id": HARNESS_ADVISORY_LOCK_ID},
-                        )
-                    await connection.close()
-                await engine.dispose()
-            except Exception:
-                pass
+            await _release_failed_lease(engine, connection, lock_acquired)
             raise error from None
         except Exception:
-            try:
-                if connection is not None:
-                    await connection.rollback()
-                    if lock_acquired:
-                        await connection.execute(
-                            text("SELECT pg_advisory_unlock(:lock_id)"),
-                            {"lock_id": HARNESS_ADVISORY_LOCK_ID},
-                        )
-                    await connection.close()
-                await engine.dispose()
-            except Exception:
-                pass
+            await _release_failed_lease(engine, connection, lock_acquired)
             raise UnsafeTestTargetError(
                 "test database setup could not be safely verified"
             ) from None
@@ -535,18 +534,18 @@ class HarnessLease:
             await self._verify_cleanup_ownership()
             schema = _quoted_identifier(self.ownership.schema_name)
             role = _quoted_identifier(self.ownership.role_name)
-            await self._connection.execute(text(f"DROP SCHEMA {schema} CASCADE"))
+            await self._connection.execute(text(f"DROP SCHEMA {schema}"))
             await self._connection.execute(text(f"DROP ROLE {role}"))
             await self._connection.commit()
         except UnsafeTestTargetError as error:
-            await self._connection.rollback()
+            await _rollback_quietly(self._connection)
             raise UnsafeTestTargetError(
                 f"{error}; resources left intact: "
                 f"schema={self.ownership.schema_name}, "
                 f"role={self.ownership.role_name}"
             ) from None
         except Exception:
-            await self._connection.rollback()
+            await _rollback_quietly(self._connection)
             raise UnsafeTestTargetError(
                 "cleanup could not be verified; resources left intact: "
                 f"schema={self.ownership.schema_name}, "
@@ -559,13 +558,53 @@ class HarnessLease:
 
         if self._closed:
             return
-        await self._connection.rollback()
-        if self._lock_acquired:
-            await self._connection.execute(
-                text("SELECT pg_advisory_unlock(:lock_id)"),
-                {"lock_id": HARNESS_ADVISORY_LOCK_ID},
-            )
-            self._lock_acquired = False
-        await self._connection.close()
-        await self._engine.dispose()
+        failed = await _release_failed_lease(
+            self._engine,
+            self._connection,
+            self._lock_acquired,
+        )
+        self._lock_acquired = False
         self._closed = True
+        if failed:
+            raise UnsafeTestTargetError(
+                "test harness resources could not be disposed deterministically"
+            ) from None
+
+
+async def _release_failed_lease(
+    engine: AsyncEngine,
+    connection: AsyncConnection | None,
+    lock_acquired: bool,
+) -> bool:
+    """Attempt every release step even when an earlier step fails."""
+
+    failed = False
+    if connection is not None:
+        try:
+            await connection.rollback()
+        except Exception:
+            failed = True
+        if lock_acquired:
+            try:
+                await connection.execute(
+                    text("SELECT pg_advisory_unlock(:lock_id)"),
+                    {"lock_id": HARNESS_ADVISORY_LOCK_ID},
+                )
+            except Exception:
+                failed = True
+        try:
+            await connection.close()
+        except Exception:
+            failed = True
+    try:
+        await engine.dispose()
+    except Exception:
+        failed = True
+    return failed
+
+
+async def _rollback_quietly(connection: AsyncConnection) -> None:
+    try:
+        await connection.rollback()
+    except Exception:
+        pass

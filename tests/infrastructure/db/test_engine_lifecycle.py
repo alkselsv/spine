@@ -42,6 +42,7 @@ async def test_start_creates_one_bounded_engine_and_async_session_factory() -> N
     calls: list[tuple[str, dict[str, Any]]] = []
     engine = RecordingEngine()
     built_sessions: list[tuple[object, dict[str, Any]]] = []
+    readiness_checks: list[object] = []
 
     def engine_factory(url: str, **kwargs: Any) -> RecordingEngine:
         calls.append((url, kwargs))
@@ -53,9 +54,13 @@ async def test_start_creates_one_bounded_engine_and_async_session_factory() -> N
         built_sessions.append((created_engine, kwargs))
         return object
 
+    async def readiness_check(created_engine: object) -> None:
+        readiness_checks.append(created_engine)
+
     runtime = DatabaseRuntime(
         engine_factory=engine_factory,
         session_factory_builder=session_factory_builder,
+        readiness_check=readiness_check,
     )
 
     first = await runtime.start(runtime_settings())
@@ -72,8 +77,10 @@ async def test_start_creates_one_bounded_engine_and_async_session_factory() -> N
             "pool_pre_ping": True,
             "pool_reset_on_return": "rollback",
             "connect_args": {"connect_timeout": 4},
+            "hide_parameters": True,
         },
     )
+    assert readiness_checks == [engine]
     assert built_sessions == [(engine, {"expire_on_commit": False, "autoflush": False})]
 
 
@@ -83,6 +90,7 @@ async def test_shutdown_awaits_engine_disposal_and_is_idempotent() -> None:
     runtime = DatabaseRuntime(
         engine_factory=lambda _url, **_kwargs: engine,
         session_factory_builder=lambda _engine, **_kwargs: object,
+        readiness_check=lambda _engine: _completed_check(),
     )
     await runtime.start(runtime_settings())
 
@@ -116,6 +124,31 @@ def test_process_database_runtime_has_one_lifecycle_owner() -> None:
     assert get_process_database_runtime() is get_process_database_runtime()
 
 
+async def _completed_check() -> None:
+    return None
+
+
+@pytest.mark.asyncio
+async def test_readiness_failure_disposes_engine_and_fails_startup() -> None:
+    engine = RecordingEngine()
+
+    async def failing_readiness(_engine: object) -> None:
+        raise RuntimeError(f"unsupported server for {DATABASE_URL}")
+
+    runtime = DatabaseRuntime(
+        engine_factory=lambda _url, **_kwargs: engine,
+        session_factory_builder=lambda _engine, **_kwargs: object,
+        readiness_check=failing_readiness,
+    )
+
+    with pytest.raises(DatabaseStartupError) as error:
+        await runtime.start(runtime_settings())
+
+    assert engine.dispose_awaited is True
+    assert runtime.resources is None
+    assert DATABASE_URL not in str(error.value)
+
+
 @pytest.mark.asyncio
 async def test_disposal_failure_is_sanitized_and_remains_retryable() -> None:
     class FailingEngine(RecordingEngine):
@@ -126,6 +159,7 @@ async def test_disposal_failure_is_sanitized_and_remains_retryable() -> None:
     runtime = DatabaseRuntime(
         engine_factory=lambda _url, **_kwargs: engine,
         session_factory_builder=lambda _engine, **_kwargs: object,
+        readiness_check=lambda _engine: _completed_check(),
     )
     await runtime.start(runtime_settings())
 

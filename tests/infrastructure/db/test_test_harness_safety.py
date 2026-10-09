@@ -15,6 +15,7 @@ from spine.infrastructure.db.test_harness import (
     validate_database_identity,
     validate_disposable_marker,
     validate_target_database_name,
+    _release_failed_lease,
 )
 
 
@@ -160,3 +161,37 @@ def test_unrecorded_owned_identifier_is_rejected() -> None:
             ownership,
             OwnedResources(),
         )
+
+
+@pytest.mark.asyncio
+async def test_failed_release_attempts_close_and_dispose_after_rollback_error() -> None:
+    class FailingConnection:
+        closed = False
+
+        async def rollback(self) -> None:
+            raise RuntimeError("rollback failed with sensitive details")
+
+        async def execute(self, *_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("unlock failed with sensitive details")
+
+        async def close(self) -> None:
+            self.closed = True
+
+    class RecordingEngine:
+        disposed = False
+
+        async def dispose(self) -> None:
+            self.disposed = True
+
+    connection = FailingConnection()
+    engine = RecordingEngine()
+
+    failed = await _release_failed_lease(  # type: ignore[arg-type]
+        engine,  # type: ignore[arg-type]
+        connection,  # type: ignore[arg-type]
+        True,
+    )
+
+    assert failed is True
+    assert connection.closed is True
+    assert engine.disposed is True

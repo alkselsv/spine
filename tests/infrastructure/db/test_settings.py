@@ -20,8 +20,12 @@ def test_runtime_settings_are_frozen_and_reject_unknown_fields() -> None:
     with pytest.raises(ValidationError):
         settings.pool_size = 10  # type: ignore[misc]
 
-    with pytest.raises(ValidationError, match="extra_forbidden"):
+    with pytest.raises(ValidationError, match="extra_forbidden") as error:
         RuntimeDatabaseSettings(url=RUNTIME_URL, migration_url=MIGRATION_URL)
+
+    rendered = f"{error.value.errors()!r} {error.value.json()}"
+    assert "migration_secret" not in rendered
+    assert "migration_user" not in rendered
 
 
 def test_database_settings_representations_redact_credentials() -> None:
@@ -40,7 +44,7 @@ def test_database_validation_error_redacts_invalid_url_credentials() -> None:
             url="postgresql+asyncpg://runtime_user:runtime_secret@db/runtime"
         )
 
-    rendered = str(error.value)
+    rendered = f"{error.value!r} {error.value.errors()!r} {error.value.json()}"
     assert "runtime_secret" not in rendered
     assert "runtime_user" not in rendered
 
@@ -87,12 +91,16 @@ def test_test_settings_never_fall_back_to_runtime_or_migration_url(
 
 
 def test_explicit_test_url_requires_identity_and_marker() -> None:
-    with pytest.raises(ValidationError, match="expected_name.*disposable_marker"):
+    with pytest.raises(ValidationError, match="expected_name.*disposable_marker") as error:
         DatabaseTestSettings(
             url=SecretStr(TEST_URL),
             expected_name=None,
             disposable_marker=None,
         )
+
+    rendered = f"{error.value.errors()!r} {error.value.json()}"
+    assert "test_secret" not in rendered
+    assert "test_user" not in rendered
 
 
 @pytest.mark.parametrize(
@@ -109,6 +117,6 @@ def test_database_settings_reject_unsupported_drivers_without_leaking_url(
     with pytest.raises(ValidationError) as error:
         settings_type(url=SecretStr(url))
 
-    rendered = str(error.value)
+    rendered = f"{error.value!r} {error.value.errors()!r} {error.value.json()}"
     assert "secret" not in rendered
     assert url not in rendered

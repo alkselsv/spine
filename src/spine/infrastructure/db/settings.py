@@ -5,7 +5,12 @@ from __future__ import annotations
 from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic.fields import FieldInfo
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 SUPPORTED_POSTGRESQL_MAJOR = 17
 TESTCONTAINERS_POSTGRES_IMAGE = "postgres:17.6-bookworm"
@@ -28,6 +33,37 @@ def _validate_postgresql_url(url: SecretStr) -> SecretStr:
     return url
 
 
+class _SecretWrappingSource(PydanticBaseSettingsSource):
+    """Convert secret inputs before Pydantic can retain them in error details."""
+
+    def __init__(
+        self,
+        settings_cls: type[BaseSettings],
+        source: PydanticBaseSettingsSource,
+    ) -> None:
+        super().__init__(settings_cls)
+        self._source = source
+
+    def get_field_value(
+        self,
+        field: FieldInfo,
+        field_name: str,
+    ) -> tuple[object, str, bool]:
+        return self._source.get_field_value(field, field_name)
+
+    def __call__(self) -> dict[str, object]:
+        values = self._source()
+        for field_name, value in values.items():
+            normalized_name = field_name.lower()
+            is_sensitive_field = any(
+                token in normalized_name
+                for token in ("url", "password", "credential", "marker")
+            )
+            if isinstance(value, str) and is_sensitive_field:
+                values[field_name] = SecretStr(value)
+        return values
+
+
 class _DatabaseSettings(BaseSettings):
     """Common safety policy for independently loaded database settings."""
 
@@ -38,6 +74,25 @@ class _DatabaseSettings(BaseSettings):
         case_sensitive=False,
         hide_input_in_errors=True,
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return tuple(
+            _SecretWrappingSource(settings_cls, source)
+            for source in (
+                init_settings,
+                env_settings,
+                dotenv_settings,
+                file_secret_settings,
+            )
+        )
 
 
 class RuntimeDatabaseSettings(_DatabaseSettings):
