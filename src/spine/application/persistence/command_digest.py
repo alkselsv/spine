@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -18,6 +20,8 @@ from spine.application.persistence.context import PersistenceOperation
 COMMAND_DIGEST_ALGORITHM_VERSION: Final[str] = "spine.command-digest.v1"
 _CANONICAL_REPRESENTATION_VERSION: Final[str] = "spine.canonical-command.v1"
 _UTC_PRECISION: Final[str] = "microseconds"
+_ALGORITHM_VERSION = re.compile(r"spine\.command-digest\.v([1-9][0-9]*)\Z")
+_CURRENT_VERSION_NUMBER: Final[int] = int(COMMAND_DIGEST_ALGORITHM_VERSION.rsplit("v", 1)[1])
 
 
 class UnsupportedCommandValueError(ValueError):
@@ -26,13 +30,18 @@ class UnsupportedCommandValueError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class CommandDigest:
-    """SHA-256 digest over a versioned canonical command representation."""
+    """SHA-256 digest over a supported canonical command representation version."""
 
     algorithm_version: str
     value: str
 
     def __post_init__(self) -> None:
-        if self.algorithm_version != COMMAND_DIGEST_ALGORITHM_VERSION:
+        version_match = (
+            _ALGORITHM_VERSION.fullmatch(self.algorithm_version)
+            if isinstance(self.algorithm_version, str)
+            else None
+        )
+        if version_match is None or int(version_match.group(1)) > _CURRENT_VERSION_NUMBER:
             raise UnsupportedCommandValueError("Unsupported command digest algorithm.")
         if not isinstance(self.value, str) or len(self.value) != 64:
             raise UnsupportedCommandValueError("Command digest must be a SHA-256 hex value.")
@@ -98,11 +107,11 @@ def _canonical_value(value: object) -> Any:
         enum_value = value.value
         if not isinstance(enum_value, str):
             raise UnsupportedCommandValueError("Enum values must be strings.")
-        return {"type": "enum", "enum_type": value.__class__.__qualname__, "value": enum_value}
+        return {"type": "enum", "value": unicodedata.normalize("NFC", enum_value)}
     if isinstance(value, bool):
         return {"type": "bool", "value": value}
     if isinstance(value, str):
-        return {"type": "string", "value": value}
+        return {"type": "string", "normalization": "NFC", "value": unicodedata.normalize("NFC", value)}
     if isinstance(value, int):
         return {"type": "integer", "value": str(value)}
     if isinstance(value, Decimal):

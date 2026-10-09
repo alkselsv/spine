@@ -10,7 +10,6 @@ from spine.application.persistence.context import PersistenceOperation
 from spine.application.persistence.errors import IdempotencyConflictError, UnitOfWorkLifecycleError
 from spine.application.persistence.idempotency import (
     IdempotencyKey,
-    IdempotencyOperation,
     IdempotencyReplay,
     OpaqueResultReference,
     OwnedIdempotencyClaim,
@@ -22,14 +21,13 @@ from .adapter import PersistenceAdapter
 from .ids import synthetic_uuid
 
 
-OPERATION = IdempotencyOperation(name="proposal.generate", schema_version=1)
-COMMAND_OPERATION = PersistenceOperation("proposal.generate")
+OPERATION_SCHEMA_VERSION = 1
 
 
-def command_digest(amount: str = "12.3400"):
+def command_digest(operation: PersistenceOperation, amount: str = "12.3400"):
     return digest_command(
-        operation=COMMAND_OPERATION,
-        operation_schema_version=1,
+        operation=operation,
+        operation_schema_version=OPERATION_SCHEMA_VERSION,
         payload={"amount": Decimal(amount), "customer_id": synthetic_uuid(401)},
     )
 
@@ -79,26 +77,28 @@ async def test_claim_complete_and_replay_return_same_result_reference(
     await persist_workspace(persistence_adapter, workspace_id)
     context = persistence_adapter.workspace_context(workspace_id)
     key = IdempotencyKey("transport-key-1")
-    digest = command_digest()
+    digest = command_digest(context.operation)
     expected = result_ref()
 
     async with persistence_adapter.uow_factory(context) as uow:
         claim = await uow.idempotency.claim(
-            operation=OPERATION,
+            operation_schema_version=OPERATION_SCHEMA_VERSION,
             key=key,
             digest=digest,
         )
         assert isinstance(claim, OwnedIdempotencyClaim)
+        assert claim.operation == context.operation
         await uow.idempotency.complete(claim, expected)
         await uow.commit()
 
     async with persistence_adapter.uow_factory(context) as uow:
         replay = await uow.idempotency.claim(
-            operation=OPERATION,
+            operation_schema_version=OPERATION_SCHEMA_VERSION,
             key=key,
             digest=digest,
         )
         assert isinstance(replay, IdempotencyReplay)
+        assert replay.operation == context.operation
         assert replay.result == expected
         await uow.commit()
 
@@ -114,9 +114,9 @@ async def test_same_key_with_different_digest_raises_stable_conflict(
 
     async with persistence_adapter.uow_factory(context) as uow:
         claim = await uow.idempotency.claim(
-            operation=OPERATION,
+            operation_schema_version=OPERATION_SCHEMA_VERSION,
             key=key,
-            digest=command_digest("12.34"),
+            digest=command_digest(context.operation, "12.34"),
         )
         assert isinstance(claim, OwnedIdempotencyClaim)
         await uow.idempotency.complete(claim, result_ref())
@@ -125,9 +125,9 @@ async def test_same_key_with_different_digest_raises_stable_conflict(
     with pytest.raises(IdempotencyConflictError, match="Idempotency key conflicts"):
         async with persistence_adapter.uow_factory(context) as uow:
             await uow.idempotency.claim(
-                operation=OPERATION,
+                operation_schema_version=OPERATION_SCHEMA_VERSION,
                 key=key,
-                digest=command_digest("99.99"),
+                digest=command_digest(context.operation, "99.99"),
             )
 
 
@@ -143,7 +143,6 @@ async def test_independent_workspaces_environments_and_keys_do_not_collide(
     await persist_workspace(persistence_adapter, other_workspace_id)
     await persist_environment(persistence_adapter, workspace_id, environment_id)
     await persist_environment(persistence_adapter, workspace_id, other_environment_id)
-    digest = command_digest()
     key = IdempotencyKey("shared-key")
 
     contexts = [
@@ -154,9 +153,10 @@ async def test_independent_workspaces_environments_and_keys_do_not_collide(
     ]
 
     for index, context in enumerate(contexts, start=1):
+        digest = command_digest(context.operation)
         async with persistence_adapter.uow_factory(context) as uow:
             claim = await uow.idempotency.claim(
-                operation=OPERATION,
+                operation_schema_version=OPERATION_SCHEMA_VERSION,
                 key=key,
                 digest=digest,
             )
@@ -164,11 +164,12 @@ async def test_independent_workspaces_environments_and_keys_do_not_collide(
             await uow.idempotency.complete(claim, result_ref(synthetic_uuid(600 + index)))
             await uow.commit()
 
-    async with persistence_adapter.uow_factory(persistence_adapter.workspace_context(workspace_id)) as uow:
+    workspace_context = persistence_adapter.workspace_context(workspace_id)
+    async with persistence_adapter.uow_factory(workspace_context) as uow:
         different_key = await uow.idempotency.claim(
-            operation=OPERATION,
+            operation_schema_version=OPERATION_SCHEMA_VERSION,
             key=IdempotencyKey("different-key"),
-            digest=digest,
+            digest=command_digest(workspace_context.operation),
         )
         assert isinstance(different_key, OwnedIdempotencyClaim)
 
@@ -181,11 +182,11 @@ async def test_incomplete_owned_claim_prevents_commit_and_rolls_back(
     await persist_workspace(persistence_adapter, workspace_id)
     context = persistence_adapter.workspace_context(workspace_id)
     key = IdempotencyKey("incomplete-key")
-    digest = command_digest()
+    digest = command_digest(context.operation)
 
     async with persistence_adapter.uow_factory(context) as uow:
         claim = await uow.idempotency.claim(
-            operation=OPERATION,
+            operation_schema_version=OPERATION_SCHEMA_VERSION,
             key=key,
             digest=digest,
         )
@@ -195,7 +196,7 @@ async def test_incomplete_owned_claim_prevents_commit_and_rolls_back(
 
     async with persistence_adapter.uow_factory(context) as uow:
         claim = await uow.idempotency.claim(
-            operation=OPERATION,
+            operation_schema_version=OPERATION_SCHEMA_VERSION,
             key=key,
             digest=digest,
         )
@@ -210,11 +211,11 @@ async def test_rollback_discards_claim_and_completed_receipt(
     await persist_workspace(persistence_adapter, workspace_id)
     context = persistence_adapter.workspace_context(workspace_id)
     key = IdempotencyKey("rollback-key")
-    digest = command_digest()
+    digest = command_digest(context.operation)
 
     async with persistence_adapter.uow_factory(context) as uow:
         claim = await uow.idempotency.claim(
-            operation=OPERATION,
+            operation_schema_version=OPERATION_SCHEMA_VERSION,
             key=key,
             digest=digest,
         )
@@ -224,7 +225,7 @@ async def test_rollback_discards_claim_and_completed_receipt(
 
     async with persistence_adapter.uow_factory(context) as uow:
         claim = await uow.idempotency.claim(
-            operation=OPERATION,
+            operation_schema_version=OPERATION_SCHEMA_VERSION,
             key=key,
             digest=digest,
         )
@@ -239,11 +240,11 @@ async def test_completing_replay_unknown_or_already_completed_claim_fails(
     await persist_workspace(persistence_adapter, workspace_id)
     context = persistence_adapter.workspace_context(workspace_id)
     key = IdempotencyKey("completion-conflict-key")
-    digest = command_digest()
+    digest = command_digest(context.operation)
 
     async with persistence_adapter.uow_factory(context) as uow:
         claim = await uow.idempotency.claim(
-            operation=OPERATION,
+            operation_schema_version=OPERATION_SCHEMA_VERSION,
             key=key,
             digest=digest,
         )
@@ -253,7 +254,7 @@ async def test_completing_replay_unknown_or_already_completed_claim_fails(
 
     async with persistence_adapter.uow_factory(context) as uow:
         claim = await uow.idempotency.claim(
-            operation=OPERATION,
+            operation_schema_version=OPERATION_SCHEMA_VERSION,
             key=IdempotencyKey("already-completed-key"),
             digest=digest,
         )
@@ -264,7 +265,7 @@ async def test_completing_replay_unknown_or_already_completed_claim_fails(
 
     async with persistence_adapter.uow_factory(context) as uow:
         replay = await uow.idempotency.claim(
-            operation=OPERATION,
+            operation_schema_version=OPERATION_SCHEMA_VERSION,
             key=key,
             digest=digest,
         )
@@ -275,7 +276,8 @@ async def test_completing_replay_unknown_or_already_completed_claim_fails(
     unknown_claim = OwnedIdempotencyClaim(
         kind="owned",
         receipt_id=synthetic_uuid(999),
-        operation=OPERATION,
+        operation=context.operation,
+        operation_schema_version=OPERATION_SCHEMA_VERSION,
         key=IdempotencyKey("unknown-key"),
         digest=digest,
     )
@@ -292,13 +294,12 @@ async def test_differently_scoped_claim_cannot_complete(
     other_workspace_id = synthetic_uuid(109)
     await persist_workspace(persistence_adapter, workspace_id)
     await persist_workspace(persistence_adapter, other_workspace_id)
-    digest = command_digest()
+    context = persistence_adapter.workspace_context(workspace_id)
+    digest = command_digest(context.operation)
 
-    async with persistence_adapter.uow_factory(
-        persistence_adapter.workspace_context(workspace_id)
-    ) as uow:
+    async with persistence_adapter.uow_factory(context) as uow:
         claim = await uow.idempotency.claim(
-            operation=OPERATION,
+            operation_schema_version=OPERATION_SCHEMA_VERSION,
             key=IdempotencyKey("scope-key"),
             digest=digest,
         )

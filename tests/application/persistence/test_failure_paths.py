@@ -26,7 +26,6 @@ import spine.infrastructure.persistence.in_memory as in_memory
 from spine.application.persistence.command_digest import digest_command
 from spine.application.persistence.idempotency import (
     IdempotencyKey,
-    IdempotencyOperation,
     OpaqueResultReference,
     OwnedIdempotencyClaim,
 )
@@ -343,7 +342,7 @@ async def test_commit_receipt_copy_failure_is_atomic_and_terminal(
     persistence, context_authority = await configured_persistence()
     write_context = context(context_authority, WORKSPACE_ID)
     digest = digest_command(
-        operation=PersistenceOperation("proposal.generate"),
+        operation=write_context.operation,
         operation_schema_version=1,
         payload={"workspace_id": WORKSPACE_ID},
     )
@@ -352,7 +351,7 @@ async def test_commit_receipt_copy_failure_is_atomic_and_terminal(
 
     async with uow:
         claim = await uow.idempotency.claim(
-            operation=IdempotencyOperation("proposal.generate", 1),
+            operation_schema_version=1,
             key=key,
             digest=digest,
         )
@@ -378,7 +377,7 @@ async def test_commit_receipt_copy_failure_is_atomic_and_terminal(
     monkeypatch.undo()
     async with persistence.uow_factory(write_context) as retry:
         claim = await retry.idempotency.claim(
-            operation=IdempotencyOperation("proposal.generate", 1),
+            operation_schema_version=1,
             key=key,
             digest=digest,
         )

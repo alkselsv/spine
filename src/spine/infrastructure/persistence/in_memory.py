@@ -15,6 +15,7 @@ from spine.application.persistence.bootstrap import (
 )
 from spine.application.persistence.context import (
     EnvironmentScope,
+    PersistenceOperation,
     PersistenceScope,
     TrustedPersistenceContext,
     TrustedContextVerifier,
@@ -32,7 +33,6 @@ from spine.application.persistence.errors import (
 from spine.application.persistence.idempotency import (
     IdempotencyClaimResult,
     IdempotencyKey,
-    IdempotencyOperation,
     IdempotencyReplay,
     OpaqueResultReference,
     OwnedIdempotencyClaim,
@@ -202,14 +202,18 @@ class _IdempotencyRepository:
     async def claim(
         self,
         *,
-        operation: IdempotencyOperation,
+        operation_schema_version: int,
         key: IdempotencyKey,
         digest: CommandDigest,
     ) -> IdempotencyClaimResult:
         self._uow._guard_active()
 
         def repository_operation() -> IdempotencyClaimResult:
-            receipt_key = self._uow._receipt_key(operation=operation, key=key)
+            receipt_key = self._uow._receipt_key(
+                operation=self._uow._operation_snapshot(),
+                operation_schema_version=operation_schema_version,
+                key=key,
+            )
             existing = self._uow._resolve_receipt(receipt_key)
             if existing is not None:
                 if existing.digest != digest:
@@ -221,7 +225,8 @@ class _IdempotencyRepository:
                 return IdempotencyReplay(
                     kind="replay",
                     receipt_id=existing.receipt_id,
-                    operation=operation,
+                    operation=self._uow._operation_snapshot(),
+                    operation_schema_version=operation_schema_version,
                     key=key,
                     result=existing.result,
                 )
@@ -229,7 +234,8 @@ class _IdempotencyRepository:
             claim = OwnedIdempotencyClaim(
                 kind="owned",
                 receipt_id=receipt_id,
-                operation=operation,
+                operation=self._uow._operation_snapshot(),
+                operation_schema_version=operation_schema_version,
                 key=key,
                 digest=digest,
             )
@@ -255,8 +261,13 @@ class _IdempotencyRepository:
                 self._uow._fail(
                     IdempotencyConflictError("Only an owned idempotency claim can complete.")
                 )
+            if claim.operation != self._uow._operation_snapshot():
+                self._uow._fail(
+                    IdempotencyConflictError("Idempotency claim cannot be completed.")
+                )
             receipt_key = self._uow._receipt_key(
                 operation=claim.operation,
+                operation_schema_version=claim.operation_schema_version,
                 key=claim.key,
             )
             pending = self._uow._pending_receipts.get(receipt_key)
@@ -294,6 +305,7 @@ class InMemoryUnitOfWork:
         self._context_snapshot = context_snapshot
         self._context_verifier = context_verifier
         self._scope: PersistenceScope | None = None
+        self._operation: PersistenceOperation | None = None
         self._initialized = False
         self._lifecycle = _Lifecycle.NEW
         self._owner: asyncio.Task[object] | None = None
@@ -321,6 +333,12 @@ class InMemoryUnitOfWork:
     def idempotency(self) -> _IdempotencyRepository:
         self._guard_active()
         return self._idempotency
+
+    def _operation_snapshot(self) -> PersistenceOperation:
+        self._guard_active()
+        if self._operation is None:
+            raise UnitOfWorkLifecycleError("Unit of Work is not active.")
+        return self._operation
 
     @property
     def scope(self) -> PersistenceScope:
@@ -463,6 +481,7 @@ class InMemoryUnitOfWork:
         scope = context_snapshot.scope
         if isinstance(scope, WorkspaceScope):
             self._scope = WorkspaceScope(workspace_id=scope.workspace_id)
+            self._operation = PersistenceOperation(context_snapshot.operation.value)
             return
         if not isinstance(scope, EnvironmentScope):
             raise InvalidPersistenceContextError("Persistence context is invalid.")
@@ -473,6 +492,7 @@ class InMemoryUnitOfWork:
             workspace_id=scope.workspace_id,
             environment_id=scope.environment_id,
         )
+        self._operation = PersistenceOperation(context_snapshot.operation.value)
 
     def _validate_commit(self) -> None:
         if self._pending_workspaces and not self._store.initialized:
@@ -509,7 +529,8 @@ class InMemoryUnitOfWork:
     def _receipt_key(
         self,
         *,
-        operation: IdempotencyOperation,
+        operation: PersistenceOperation,
+        operation_schema_version: int,
         key: IdempotencyKey,
     ) -> _ReceiptKey:
         scope = self.scope
@@ -517,8 +538,8 @@ class InMemoryUnitOfWork:
         return _ReceiptKey(
             workspace_id=scope.workspace_id,
             environment_id=environment_id,
-            operation_name=operation.name,
-            operation_schema_version=operation.schema_version,
+            operation_name=operation.value,
+            operation_schema_version=operation_schema_version,
             idempotency_key=key.value,
         )
 
@@ -530,6 +551,7 @@ class InMemoryUnitOfWork:
         self._pending_environments.clear()
         self._pending_receipts.clear()
         self._scope = None
+        self._operation = None
 
     def _fail(self, error: Exception) -> NoReturn:
         self._raise_terminal(error)

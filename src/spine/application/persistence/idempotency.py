@@ -8,6 +8,7 @@ from typing import Literal, Protocol
 from uuid import UUID
 
 from spine.application.persistence.command_digest import CommandDigest
+from spine.application.persistence.context import PersistenceOperation
 from spine.application.persistence.errors import IdempotencyConflictError
 
 
@@ -36,16 +37,6 @@ class IdempotencyKey:
 
 
 @dataclass(frozen=True, slots=True)
-class IdempotencyOperation:
-    name: str
-    schema_version: int
-
-    def __post_init__(self) -> None:
-        _require_identifier(self.name, field_name="operation name")
-        _require_version(self.schema_version, field_name="operation schema version")
-
-
-@dataclass(frozen=True, slots=True)
 class OpaqueResultReference:
     result_type: str
     result_id: UUID
@@ -62,18 +53,26 @@ class OpaqueResultReference:
 class OwnedIdempotencyClaim:
     kind: Literal["owned"]
     receipt_id: UUID
-    operation: IdempotencyOperation
+    operation: PersistenceOperation
+    operation_schema_version: int
     key: IdempotencyKey
     digest: CommandDigest
+
+    def __post_init__(self) -> None:
+        _require_version(self.operation_schema_version, field_name="operation schema version")
 
 
 @dataclass(frozen=True, slots=True)
 class IdempotencyReplay:
     kind: Literal["replay"]
     receipt_id: UUID
-    operation: IdempotencyOperation
+    operation: PersistenceOperation
+    operation_schema_version: int
     key: IdempotencyKey
     result: OpaqueResultReference
+
+    def __post_init__(self) -> None:
+        _require_version(self.operation_schema_version, field_name="operation schema version")
 
 
 IdempotencyClaimResult = OwnedIdempotencyClaim | IdempotencyReplay
@@ -83,7 +82,7 @@ class IdempotencyRepository(Protocol):
     async def claim(
         self,
         *,
-        operation: IdempotencyOperation,
+        operation_schema_version: int,
         key: IdempotencyKey,
         digest: CommandDigest,
     ) -> IdempotencyClaimResult: ...

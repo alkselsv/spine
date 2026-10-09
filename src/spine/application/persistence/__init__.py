@@ -39,7 +39,6 @@ from spine.application.persistence.errors import (
 from spine.application.persistence.idempotency import (
     IdempotencyClaimResult,
     IdempotencyKey,
-    IdempotencyOperation,
     IdempotencyReplay,
     OpaqueResultReference,
     OwnedIdempotencyClaim,
@@ -66,7 +65,6 @@ __all__ = [
     "IdempotencyClaimResult",
     "IdempotencyConflictError",
     "IdempotencyKey",
-    "IdempotencyOperation",
     "IdempotencyReplay",
     "IdempotencyRepository",
     "IncompatibleSchemaError",

@@ -9,6 +9,7 @@ import pytest
 
 from spine.application.persistence.command_digest import (
     COMMAND_DIGEST_ALGORITHM_VERSION,
+    CommandDigest,
     UnsupportedCommandValueError,
     canonical_command_bytes,
     digest_command,
@@ -19,6 +20,10 @@ from spine.application.persistence.context import PersistenceOperation
 class ExampleStatus(str, Enum):
     READY = "ready"
     PAUSED = "paused"
+
+
+class RenamedExampleStatus(str, Enum):
+    READY = "ready"
 
 
 OPERATION = PersistenceOperation("proposal.generate")
@@ -100,7 +105,7 @@ def test_canonical_command_bytes_are_versioned_and_deterministic() -> None:
         '"missing":{"type":"null","value":null},'
         '"requested_at":{"precision":"microseconds","type":"datetime",'
         '"value":"2026-10-09T12:30:45.123456Z"},'
-        '"status":{"enum_type":"ExampleStatus","type":"enum","value":"ready"},'
+        '"status":{"type":"enum","value":"ready"},'
         '"workspace_id":{"type":"uuid","value":"10000000-0000-0000-0000-000000000001"}'
         "}}}"
     )
@@ -120,7 +125,7 @@ def test_canonical_command_bytes_are_versioned_and_deterministic() -> None:
                     {"sku": "B-2", "quantity": 1},
                 ],
             },
-            "85bbf2a77f831be7de4efde8d231dee132167df29ef965e485e01922bb497537",
+            "b2bb4c9eb3cad3cf0048d916fe645107ca5c01edbb98537fb25d6cdf424e1c0e",
         ),
         (
             {
@@ -129,7 +134,7 @@ def test_canonical_command_bytes_are_versioned_and_deterministic() -> None:
                 "flag": False,
                 "nested": {"b": 2, "a": 1},
             },
-            "65bedc7b953ac5b8ea07ee113ad5c41034c2b568b9880d5828fbeaf99b65efd0",
+            "1c812fe4b9ecaa1dad183683c3a2838c19cefccb32a102d5fa7d6affef0632bf",
         ),
     ],
 )
@@ -142,6 +147,47 @@ def test_golden_digest_vectors_are_stable(payload: dict[str, object], expected_d
 
     assert digest.algorithm_version == COMMAND_DIGEST_ALGORITHM_VERSION
     assert digest.value == expected_digest
+
+
+def test_enum_class_name_does_not_affect_digest() -> None:
+    first = digest_command(
+        operation=OPERATION,
+        operation_schema_version=1,
+        payload={"status": ExampleStatus.READY},
+    )
+    second = digest_command(
+        operation=OPERATION,
+        operation_schema_version=1,
+        payload={"status": RenamedExampleStatus.READY},
+    )
+
+    assert first == second
+
+
+def test_unicode_strings_are_normalized_to_nfc() -> None:
+    composed = digest_command(
+        operation=OPERATION,
+        operation_schema_version=1,
+        payload={"unicode": "Caf\u00e9"},
+    )
+    decomposed = digest_command(
+        operation=OPERATION,
+        operation_schema_version=1,
+        payload={"unicode": "Cafe\u0301"},
+    )
+
+    assert composed == decomposed
+
+
+def test_command_digest_accepts_current_version_and_rejects_future_or_malformed_versions() -> None:
+    digest = "0" * 64
+
+    assert CommandDigest("spine.command-digest.v1", digest).value == digest
+
+    with pytest.raises(UnsupportedCommandValueError):
+        CommandDigest("spine.command-digest.v2", digest)
+    with pytest.raises(UnsupportedCommandValueError):
+        CommandDigest("spine.command-digest.latest", digest)
 
 
 @pytest.mark.parametrize(
