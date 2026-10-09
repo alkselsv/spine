@@ -113,15 +113,13 @@ class TrustedContextBoundary:
 
     def verify(self, context: TrustedPersistenceContext) -> TrustedPersistenceContext:
         try:
-            if not isinstance(context, TrustedPersistenceContext):
+            snapshot = _capture_context(context)
+            if snapshot.provenance.issuer_id != self._issuer_id:
                 raise _invalid_context()
-            context.validate_shape()
-            if context.provenance.issuer_id != self._issuer_id:
+            expected = self._signature(snapshot)
+            if not hmac.compare_digest(snapshot.provenance.signature, expected):
                 raise _invalid_context()
-            expected = self._signature(context)
-            if not hmac.compare_digest(context.provenance.signature, expected):
-                raise _invalid_context()
-            return _authenticated_snapshot(context)
+            return snapshot
         except InvalidPersistenceContextError:
             raise
         except (AttributeError, TypeError, ValueError):
@@ -151,12 +149,12 @@ class TrustedContextBoundary:
                 signature=b"\x00" * _SIGNATURE_SIZE,
             ),
         )
-        unsigned.validate_shape()
+        snapshot = _capture_context(unsigned)
         return replace(
-            unsigned,
+            snapshot,
             provenance=TrustedContextProvenance(
                 issuer_id=self._issuer_id,
-                signature=self._signature(unsigned),
+                signature=self._signature(snapshot),
             ),
         )
 
@@ -183,25 +181,81 @@ def _canonical_context(context: TrustedPersistenceContext) -> bytes:
     return "\x1f".join(values).encode("ascii")
 
 
-def _authenticated_snapshot(context: TrustedPersistenceContext) -> TrustedPersistenceContext:
+def _capture_uuid(value: object) -> UUID:
+    if type(value) is not UUID:
+        raise _invalid_context()
+    integer = value.int
+    if integer == 0:
+        raise _invalid_context()
+    return UUID(int=integer)
+
+
+def _capture_optional_uuid(value: object) -> UUID | None:
+    if value is None:
+        return None
+    return _capture_uuid(value)
+
+
+def _capture_context(context: TrustedPersistenceContext) -> TrustedPersistenceContext:
+    """Read untrusted fields once and return the exact data to authenticate.
+
+    Exact-type checks reject polymorphic inputs as defense in depth. Security does
+    not depend on those checks: validation, HMAC comparison, and the returned
+    authority all consume this one detached snapshot, never the source object.
+    """
+
+    if type(context) is not TrustedPersistenceContext:
+        raise _invalid_context()
+
     scope = context.scope
-    if isinstance(scope, EnvironmentScope):
+    origin = context.origin
+    purpose = context.purpose
+    operation = context.operation
+    trace_id = context.trace_id
+    acting_subject_id = context.acting_subject_id
+    service_principal_id = context.service_principal_id
+    provenance = context.provenance
+
+    if type(scope) is EnvironmentScope:
+        workspace_id = scope.workspace_id
+        environment_id = scope.environment_id
         snapshot_scope: PersistenceScope = EnvironmentScope(
-            workspace_id=scope.workspace_id,
-            environment_id=scope.environment_id,
+            workspace_id=_capture_uuid(workspace_id),
+            environment_id=_capture_uuid(environment_id),
         )
+    elif type(scope) is WorkspaceScope:
+        workspace_id = scope.workspace_id
+        snapshot_scope = WorkspaceScope(workspace_id=_capture_uuid(workspace_id))
     else:
-        snapshot_scope = WorkspaceScope(workspace_id=scope.workspace_id)
-    return TrustedPersistenceContext(
+        raise _invalid_context()
+
+    if type(origin) is not ContextOrigin:
+        raise _invalid_context()
+    if type(purpose) is not PersistencePurpose:
+        raise _invalid_context()
+    purpose_value = purpose.value
+    if type(operation) is not PersistenceOperation:
+        raise _invalid_context()
+    operation_value = operation.value
+    if type(provenance) is not TrustedContextProvenance:
+        raise _invalid_context()
+    issuer_id = provenance.issuer_id
+    signature = provenance.signature
+    if type(signature) is not bytes:
+        raise _invalid_context()
+
+    snapshot = TrustedPersistenceContext(
         scope=snapshot_scope,
-        origin=context.origin,
-        purpose=PersistencePurpose(context.purpose.value),
-        operation=PersistenceOperation(context.operation.value),
-        trace_id=context.trace_id,
-        acting_subject_id=context.acting_subject_id,
-        service_principal_id=context.service_principal_id,
+        origin=origin,
+        purpose=PersistencePurpose(purpose_value),
+        operation=PersistenceOperation(operation_value),
+        trace_id=_capture_uuid(trace_id),
+        acting_subject_id=_capture_optional_uuid(acting_subject_id),
+        service_principal_id=_capture_optional_uuid(service_principal_id),
         provenance=TrustedContextProvenance(
-            issuer_id=context.provenance.issuer_id,
-            signature=bytes(context.provenance.signature),
+            issuer_id=_capture_uuid(issuer_id),
+            signature=bytes(signature),
         ),
     )
+    snapshot.validate_shape()
+    return snapshot

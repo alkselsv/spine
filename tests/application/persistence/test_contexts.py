@@ -113,6 +113,249 @@ def test_verified_context_is_a_complete_detached_snapshot() -> None:
     assert snapshot.provenance is not source.provenance
 
 
+class _SwitchingContext(TrustedPersistenceContext):
+    def __getattribute__(self, name: str) -> object:
+        switch_field = object.__getattribute__(self, "_switch_field")
+        if name == switch_field:
+            reads = object.__getattribute__(self, "_switch_reads") + 1
+            object.__setattr__(self, "_switch_reads", reads)
+            if reads >= object.__getattribute__(self, "_switch_after"):
+                return object.__getattribute__(self, "_alternate_value")
+        return object.__getattribute__(self, name)
+
+
+class _CyclingWorkspaceContext(TrustedPersistenceContext):
+    def __getattribute__(self, name: str) -> object:
+        if name == "scope":
+            reads = object.__getattribute__(self, "_scope_reads") + 1
+            object.__setattr__(self, "_scope_reads", reads)
+            if reads % 5 == 0:
+                return object.__getattribute__(self, "_alternate_scope")
+        return object.__getattribute__(self, name)
+
+
+class _SwitchingWorkspaceScope(WorkspaceScope):
+    def __getattribute__(self, name: str) -> object:
+        if name == "workspace_id":
+            try:
+                reads = object.__getattribute__(self, "_workspace_reads") + 1
+            except AttributeError:
+                return object.__getattribute__(self, name)
+            object.__setattr__(self, "_workspace_reads", reads)
+            if reads >= 3:
+                return object.__getattribute__(self, "_alternate_workspace_id")
+        return object.__getattribute__(self, name)
+
+
+class _SwitchingEnvironmentScope(EnvironmentScope):
+    def __getattribute__(self, name: str) -> object:
+        if name == "environment_id":
+            try:
+                reads = object.__getattribute__(self, "_environment_reads") + 1
+            except AttributeError:
+                return object.__getattribute__(self, name)
+            object.__setattr__(self, "_environment_reads", reads)
+            if reads >= 3:
+                return object.__getattribute__(self, "_alternate_environment_id")
+        return object.__getattribute__(self, name)
+
+
+def _switch_context_field(
+    source: TrustedPersistenceContext,
+    *,
+    field_name: str,
+    switch_after: int,
+    alternate_value: object,
+) -> TrustedPersistenceContext:
+    candidate = _SwitchingContext(
+        scope=source.scope,
+        origin=source.origin,
+        purpose=source.purpose,
+        operation=source.operation,
+        trace_id=source.trace_id,
+        acting_subject_id=source.acting_subject_id,
+        service_principal_id=source.service_principal_id,
+        provenance=source.provenance,
+    )
+    object.__setattr__(candidate, "_switch_field", field_name)
+    object.__setattr__(candidate, "_switch_after", switch_after)
+    object.__setattr__(candidate, "_alternate_value", alternate_value)
+    object.__setattr__(candidate, "_switch_reads", 0)
+    return candidate
+
+
+@pytest.mark.parametrize(
+    ("environment_scoped", "field_name", "switch_after", "alternate_value", "observed"),
+    [
+        (
+            False,
+            "scope",
+            5,
+            WorkspaceScope(workspace_id=OTHER_WORKSPACE_ID),
+            lambda value: value.scope.workspace_id,
+        ),
+        (
+            True,
+            "scope",
+            6,
+            EnvironmentScope(
+                workspace_id=WORKSPACE_ID,
+                environment_id=OTHER_ENVIRONMENT_ID,
+            ),
+            lambda value: value.scope.environment_id,
+        ),
+        (
+            False,
+            "acting_subject_id",
+            4,
+            OTHER_ACTING_SUBJECT_ID,
+            lambda value: value.acting_subject_id,
+        ),
+        (
+            False,
+            "service_principal_id",
+            5,
+            OTHER_SERVICE_PRINCIPAL_ID,
+            lambda value: value.service_principal_id,
+        ),
+        (
+            False,
+            "purpose",
+            4,
+            PersistencePurpose("other_purpose"),
+            lambda value: value.purpose,
+        ),
+        (
+            False,
+            "operation",
+            4,
+            PersistenceOperation("other_operation"),
+            lambda value: value.operation,
+        ),
+        (
+            False,
+            "origin",
+            3,
+            ContextOrigin.WORKER,
+            lambda value: value.origin,
+        ),
+        (
+            False,
+            "trace_id",
+            3,
+            OTHER_TRACE_ID,
+            lambda value: value.trace_id,
+        ),
+        (
+            False,
+            "provenance",
+            8,
+            TrustedContextProvenance(
+                issuer_id=OTHER_ISSUER_ID,
+                signature=b"alternate-untrusted-signature",
+            ),
+            lambda value: value.provenance.issuer_id,
+        ),
+    ],
+    ids=(
+        "workspace",
+        "environment",
+        "acting-subject",
+        "service-principal",
+        "purpose",
+        "operation",
+        "origin",
+        "trace",
+        "issuer",
+    ),
+)
+def test_stateful_context_cannot_substitute_unsigned_authority(
+    environment_scoped: bool,
+    field_name: str,
+    switch_after: int,
+    alternate_value: object,
+    observed: Callable[[TrustedPersistenceContext], object],
+) -> None:
+    authority = boundary()
+    source = authority.interactive(
+        scope=(
+            EnvironmentScope(workspace_id=WORKSPACE_ID, environment_id=ENVIRONMENT_ID)
+            if environment_scoped
+            else WorkspaceScope(workspace_id=WORKSPACE_ID)
+        ),
+        acting_subject_id=ACTING_SUBJECT_ID,
+        service_principal_id=SERVICE_PRINCIPAL_ID,
+        purpose=PURPOSE,
+        operation=OPERATION,
+        trace_id=TRACE_ID,
+    )
+    expected = observed(source)
+    candidate = _switch_context_field(
+        source,
+        field_name=field_name,
+        switch_after=switch_after,
+        alternate_value=alternate_value,
+    )
+
+    try:
+        snapshot = authority.verify(candidate)
+    except InvalidPersistenceContextError:
+        return
+
+    assert observed(snapshot) == expected
+
+
+@pytest.mark.parametrize("scope_kind", ["workspace", "environment"])
+def test_stateful_nested_scope_cannot_substitute_unsigned_identity(scope_kind: str) -> None:
+    authority = boundary()
+    issued_scope: WorkspaceScope | EnvironmentScope
+    if scope_kind == "workspace":
+        issued_scope = WorkspaceScope(workspace_id=WORKSPACE_ID)
+        scope = _SwitchingWorkspaceScope(workspace_id=WORKSPACE_ID)
+        object.__setattr__(scope, "_workspace_reads", 0)
+        object.__setattr__(scope, "_alternate_workspace_id", OTHER_WORKSPACE_ID)
+        expected = WORKSPACE_ID
+        observed = lambda value: value.scope.workspace_id
+    else:
+        issued_scope = EnvironmentScope(
+            workspace_id=WORKSPACE_ID,
+            environment_id=ENVIRONMENT_ID,
+        )
+        scope = _SwitchingEnvironmentScope(
+            workspace_id=WORKSPACE_ID,
+            environment_id=ENVIRONMENT_ID,
+        )
+        object.__setattr__(scope, "_environment_reads", 0)
+        object.__setattr__(scope, "_alternate_environment_id", OTHER_ENVIRONMENT_ID)
+        expected = ENVIRONMENT_ID
+        observed = lambda value: value.scope.environment_id
+    issued = authority.interactive(
+        scope=issued_scope,
+        acting_subject_id=ACTING_SUBJECT_ID,
+        service_principal_id=SERVICE_PRINCIPAL_ID,
+        purpose=PURPOSE,
+        operation=OPERATION,
+        trace_id=TRACE_ID,
+    )
+    source = TrustedPersistenceContext(
+        scope=scope,
+        origin=issued.origin,
+        purpose=issued.purpose,
+        operation=issued.operation,
+        trace_id=issued.trace_id,
+        acting_subject_id=issued.acting_subject_id,
+        service_principal_id=issued.service_principal_id,
+        provenance=issued.provenance,
+    )
+
+    try:
+        snapshot = authority.verify(source)
+    except InvalidPersistenceContextError:
+        return
+
+    assert observed(snapshot) == expected
+
+
 def test_application_contract_exposes_no_unrestricted_authority_issuer() -> None:
     assert not hasattr(persistence_contracts, "issue_trusted_context_authority")
     assert not hasattr(persistence_contracts, "issue_initial_workspace_bootstrap_authority")
@@ -196,6 +439,32 @@ async def test_context_mutated_after_uow_creation_is_rejected_on_entry() -> None
     persistence = InMemoryPersistence(context_verifier=boundary())
     uow = persistence.uow_factory(context)
     object.__setattr__(context.scope, "workspace_id", OTHER_WORKSPACE_ID)
+
+    with pytest.raises(InvalidPersistenceContextError, match="Persistence context is invalid"):
+        await uow.__aenter__()
+
+
+@pytest.mark.asyncio
+async def test_uow_entry_rejects_different_valid_authority_from_same_boundary() -> None:
+    authority = boundary()
+    source = authority.interactive(
+        scope=WorkspaceScope(workspace_id=WORKSPACE_ID),
+        acting_subject_id=ACTING_SUBJECT_ID,
+        purpose=PURPOSE,
+        operation=OPERATION,
+        trace_id=TRACE_ID,
+    )
+    replacement = authority.interactive(
+        scope=WorkspaceScope(workspace_id=OTHER_WORKSPACE_ID),
+        acting_subject_id=ACTING_SUBJECT_ID,
+        purpose=PURPOSE,
+        operation=OPERATION,
+        trace_id=TRACE_ID,
+    )
+    persistence = InMemoryPersistence(context_verifier=authority)
+    uow = persistence.uow_factory(source)
+    object.__setattr__(source, "scope", replacement.scope)
+    object.__setattr__(source, "provenance", replacement.provenance)
 
     with pytest.raises(InvalidPersistenceContextError, match="Persistence context is invalid"):
         await uow.__aenter__()
@@ -345,6 +614,87 @@ async def test_context_mutated_while_entry_waits_never_gains_authority(
 
     with pytest.raises(InvalidPersistenceContextError, match="Persistence context is invalid"):
         await entry_task
+
+
+@pytest.mark.asyncio
+async def test_stateful_context_cannot_escalate_uow_authority() -> None:
+    authority = boundary()
+    bootstrap_authority = create_initial_workspace_bootstrap_authority()
+    persistence = InMemoryPersistence(
+        context_verifier=authority,
+        bootstrap_authority=bootstrap_authority,
+    )
+    expected = Workspace(id=WORKSPACE_ID, slug="northwind", display_name="Northwind")
+    await persistence.initial_workspace_bootstrap.create_initial_workspace(
+        bootstrap_authority,
+        expected,
+    )
+    source = authority.interactive(
+        scope=WorkspaceScope(workspace_id=WORKSPACE_ID),
+        acting_subject_id=ACTING_SUBJECT_ID,
+        purpose=PURPOSE,
+        operation=OPERATION,
+        trace_id=TRACE_ID,
+    )
+    candidate = _CyclingWorkspaceContext(
+        scope=source.scope,
+        origin=source.origin,
+        purpose=source.purpose,
+        operation=source.operation,
+        trace_id=source.trace_id,
+        acting_subject_id=source.acting_subject_id,
+        service_principal_id=source.service_principal_id,
+        provenance=source.provenance,
+    )
+    object.__setattr__(candidate, "_scope_reads", 0)
+    object.__setattr__(
+        candidate,
+        "_alternate_scope",
+        WorkspaceScope(workspace_id=OTHER_WORKSPACE_ID),
+    )
+
+    try:
+        async with persistence.uow_factory(candidate) as uow:
+            assert uow.scope.workspace_id == WORKSPACE_ID
+            assert await uow.workspaces.resolve(WORKSPACE_ID) == expected
+    except InvalidPersistenceContextError:
+        return
+
+
+@pytest.mark.asyncio
+async def test_source_mutation_after_uow_acceptance_does_not_change_authority() -> None:
+    authority = boundary()
+    bootstrap_authority = create_initial_workspace_bootstrap_authority()
+    persistence = InMemoryPersistence(
+        context_verifier=authority,
+        bootstrap_authority=bootstrap_authority,
+    )
+    expected = Workspace(id=WORKSPACE_ID, slug="northwind", display_name="Northwind")
+    await persistence.initial_workspace_bootstrap.create_initial_workspace(
+        bootstrap_authority,
+        expected,
+    )
+    source = authority.interactive(
+        scope=WorkspaceScope(workspace_id=WORKSPACE_ID),
+        acting_subject_id=ACTING_SUBJECT_ID,
+        service_principal_id=SERVICE_PRINCIPAL_ID,
+        purpose=PURPOSE,
+        operation=OPERATION,
+        trace_id=TRACE_ID,
+    )
+
+    async with persistence.uow_factory(source) as uow:
+        _mutate_workspace_scope(source)
+        _mutate_acting_subject(source)
+        _mutate_service_principal(source)
+        _mutate_purpose(source)
+        _mutate_operation(source)
+        _mutate_origin(source)
+        _mutate_trace(source)
+        _mutate_issuer(source)
+
+        assert uow.scope.workspace_id == WORKSPACE_ID
+        assert await uow.workspaces.resolve(WORKSPACE_ID) == expected
 
 
 def test_interactive_context_requires_human_identity() -> None:

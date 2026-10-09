@@ -160,6 +160,10 @@ class InMemoryUnitOfWork:
         try:
             async with self._store.lock:
                 context_snapshot = self._context_verifier.verify(self._source_context)
+                if context_snapshot != self._context_snapshot:
+                    raise InvalidPersistenceContextError(
+                        "Persistence context is invalid."
+                    )
                 self._base_workspaces = {
                     key: _workspace_copy(value) for key, value in self._store.workspaces.items()
                 }
@@ -173,7 +177,6 @@ class InMemoryUnitOfWork:
                         "Initial bootstrap is not authorized."
                     )
                 self._validate_context(context_snapshot)
-                self._context_snapshot = context_snapshot
         except BaseException:
             self._lifecycle = _Lifecycle.CLOSED
             self._clear_transaction()
