@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
-from uuid import UUID, uuid4
+from contextlib import nullcontext
+from uuid import UUID
 
 import pytest
 
@@ -12,22 +12,19 @@ from spine.application.persistence.errors import (
 )
 from spine.domain.workspaces import Workspace
 
-from .conftest import PersistenceAdapter
+from .adapter import PersistenceAdapter
+from .ids import synthetic_uuid
 
 
-def workspace(workspace_id: UUID | None = None) -> Workspace:
-    return Workspace(
-        id=workspace_id or uuid4(),
-        slug="northwind",
-        display_name="Northwind",
-    )
+def workspace(workspace_id: UUID) -> Workspace:
+    return Workspace(id=workspace_id, slug="northwind", display_name="Northwind")
 
 
 @pytest.mark.asyncio
 async def test_explicit_commit_makes_workspace_visible(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
-    expected = workspace()
+    expected = workspace(synthetic_uuid(1))
     context = persistence_adapter.workspace_context(expected.id)
 
     async with persistence_adapter.uow_factory(context) as uow:
@@ -41,10 +38,23 @@ async def test_explicit_commit_makes_workspace_visible(
 
 
 @pytest.mark.asyncio
+async def test_missing_workspace_is_normal_result_and_uow_remains_usable(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(15)
+    context = persistence_adapter.workspace_context(workspace_id)
+
+    async with persistence_adapter.uow_factory(context) as uow:
+        assert await uow.workspaces.resolve(workspace_id) is None
+        assert await uow.workspaces.resolve(workspace_id) is None
+        await uow.commit()
+
+
+@pytest.mark.asyncio
 async def test_independent_uows_do_not_observe_uncommitted_or_late_mutations(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
-    expected = workspace()
+    expected = workspace(synthetic_uuid(2))
     context = persistence_adapter.workspace_context(expected.id)
 
     async with persistence_adapter.uow_factory(context) as writer:
@@ -62,7 +72,7 @@ async def test_independent_uows_do_not_observe_uncommitted_or_late_mutations(
 async def test_concurrent_duplicate_commit_has_one_logical_effect(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
-    expected = workspace()
+    expected = workspace(synthetic_uuid(3))
     context = persistence_adapter.workspace_context(expected.id)
 
     async with persistence_adapter.uow_factory(context) as first:
@@ -83,10 +93,10 @@ async def test_exit_without_successful_commit_discards_workspace(
     persistence_adapter: PersistenceAdapter,
     raise_error: bool,
 ) -> None:
-    expected = workspace()
+    expected = workspace(synthetic_uuid(4 if raise_error else 5))
     context = persistence_adapter.workspace_context(expected.id)
 
-    with pytest.raises(RuntimeError) if raise_error else _does_not_raise():
+    with pytest.raises(RuntimeError) if raise_error else nullcontext():
         async with persistence_adapter.uow_factory(context) as uow:
             await uow.workspaces.add(expected)
             if raise_error:
@@ -100,7 +110,7 @@ async def test_exit_without_successful_commit_discards_workspace(
 async def test_explicit_rollback_is_idempotent_before_close(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
-    expected = workspace()
+    expected = workspace(synthetic_uuid(6))
     context = persistence_adapter.workspace_context(expected.id)
 
     async with persistence_adapter.uow_factory(context) as uow:
@@ -113,10 +123,34 @@ async def test_explicit_rollback_is_idempotent_before_close(
 
 
 @pytest.mark.asyncio
+async def test_repository_failure_is_terminal_and_discards_pending_mutations(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    expected = workspace(synthetic_uuid(7))
+    context = persistence_adapter.workspace_context(expected.id)
+    uow = persistence_adapter.uow_factory(context)
+
+    async with uow:
+        workspace_repository = uow.workspaces
+        await workspace_repository.add(expected)
+        with pytest.raises(ConstraintConflictError, match="already exists"):
+            await workspace_repository.add(expected.model_copy(deep=True))
+        with pytest.raises(UnitOfWorkLifecycleError, match="not active"):
+            await workspace_repository.resolve(expected.id)
+        with pytest.raises(UnitOfWorkLifecycleError, match="not active"):
+            await workspace_repository.add(expected)
+        with pytest.raises(UnitOfWorkLifecycleError, match="not active"):
+            await uow.commit()
+
+    async with persistence_adapter.uow_factory(context) as reader:
+        assert await reader.workspaces.resolve(expected.id) is None
+
+
+@pytest.mark.asyncio
 async def test_duplicate_workspace_identity_raises_typed_conflict(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
-    original = workspace()
+    original = workspace(synthetic_uuid(8))
     context = persistence_adapter.workspace_context(original.id)
     async with persistence_adapter.uow_factory(context) as uow:
         await uow.workspaces.add(original)
@@ -124,14 +158,14 @@ async def test_duplicate_workspace_identity_raises_typed_conflict(
 
     with pytest.raises(ConstraintConflictError, match="already exists"):
         async with persistence_adapter.uow_factory(context) as uow:
-            await uow.workspaces.add(workspace(original.id))
+            await uow.workspaces.add(original.model_copy(deep=True))
 
 
 @pytest.mark.asyncio
 async def test_uow_reentry_fails_deterministically(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
-    context = persistence_adapter.workspace_context(uuid4())
+    context = persistence_adapter.workspace_context(synthetic_uuid(9))
     uow = persistence_adapter.uow_factory(context)
 
     async with uow:
@@ -143,7 +177,7 @@ async def test_uow_reentry_fails_deterministically(
 async def test_uow_concurrent_entry_fails_deterministically(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
-    context = persistence_adapter.workspace_context(uuid4())
+    context = persistence_adapter.workspace_context(synthetic_uuid(10))
     uow = persistence_adapter.uow_factory(context)
 
     entered = await uow.__aenter__()
@@ -157,7 +191,7 @@ async def test_uow_concurrent_entry_fails_deterministically(
 async def test_uow_concurrent_use_fails_deterministically(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
-    context = persistence_adapter.workspace_context(uuid4())
+    context = persistence_adapter.workspace_context(synthetic_uuid(11))
 
     async with persistence_adapter.uow_factory(context) as uow:
         task = asyncio.create_task(uow.workspaces.resolve(context.scope.workspace_id))
@@ -169,7 +203,7 @@ async def test_uow_concurrent_use_fails_deterministically(
 async def test_uow_post_close_access_fails_deterministically(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
-    context = persistence_adapter.workspace_context(uuid4())
+    context = persistence_adapter.workspace_context(synthetic_uuid(12))
     uow = persistence_adapter.uow_factory(context)
     async with uow:
         repository = uow.workspaces
@@ -180,9 +214,63 @@ async def test_uow_post_close_access_fails_deterministically(
         await uow.commit()
 
 
-class _does_not_raise:
-    def __enter__(self) -> None:
-        return None
+@pytest.mark.asyncio
+async def test_cancelled_entry_is_terminal(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    context = persistence_adapter.workspace_context(synthetic_uuid(13))
+    uow = persistence_adapter.uow_factory(context)
+    started = asyncio.Event()
 
-    def __exit__(self, *args: object) -> None:
-        return None
+    async def enter() -> None:
+        started.set()
+        await uow.__aenter__()
+
+    async with persistence_adapter.hold_transactions():
+        task = asyncio.create_task(enter())
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    with pytest.raises(UnitOfWorkLifecycleError):
+        await uow.commit()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_commit_is_terminal_and_discards_pending_mutation(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    expected = workspace(synthetic_uuid(14))
+    context = persistence_adapter.workspace_context(expected.id)
+    ready = asyncio.Event()
+    begin_commit = asyncio.Event()
+    commit_started = asyncio.Event()
+
+    async def write() -> None:
+        async with persistence_adapter.uow_factory(context) as uow:
+            repository = uow.workspaces
+            await repository.add(expected)
+            ready.set()
+            await begin_commit.wait()
+            commit_started.set()
+            try:
+                await uow.commit()
+            except asyncio.CancelledError:
+                with pytest.raises(UnitOfWorkLifecycleError, match="not active"):
+                    await repository.resolve(expected.id)
+                with pytest.raises(UnitOfWorkLifecycleError, match="not active"):
+                    await uow.commit()
+                raise
+
+    task = asyncio.create_task(write())
+    await ready.wait()
+    async with persistence_adapter.hold_transactions():
+        begin_commit.set()
+        await commit_started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    async with persistence_adapter.uow_factory(context) as reader:
+        assert await reader.workspaces.resolve(expected.id) is None

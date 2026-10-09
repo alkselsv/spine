@@ -3,14 +3,16 @@
 from spine.application.persistence.bootstrap import (
     InitialWorkspaceBootstrap,
     InitialWorkspaceBootstrapAuthority,
-    issue_initial_workspace_bootstrap_authority,
 )
 from spine.application.persistence.context import (
+    ContextOrigin,
     EnvironmentScope,
-    TrustedContextAuthority,
+    PersistenceOperation,
+    PersistencePurpose,
+    TrustedContextProvenance,
+    TrustedContextVerifier,
     TrustedPersistenceContext,
     WorkspaceScope,
-    issue_trusted_context_authority,
 )
 from spine.application.persistence.errors import (
     ConstraintConflictError,
@@ -31,6 +33,7 @@ from spine.application.persistence.repositories import (
 from spine.application.persistence.unit_of_work import UnitOfWork, UnitOfWorkFactory
 
 __all__ = [
+    "ContextOrigin",
     "EnvironmentScope",
     "EnvironmentRepository",
     "ConstraintConflictError",
@@ -43,7 +46,10 @@ __all__ = [
     "PersistenceError",
     "PersistenceUnavailableError",
     "RetryablePersistenceError",
-    "TrustedContextAuthority",
+    "PersistenceOperation",
+    "PersistencePurpose",
+    "TrustedContextProvenance",
+    "TrustedContextVerifier",
     "TrustedPersistenceContext",
     "UnitOfWork",
     "UnitOfWorkFactory",
@@ -51,6 +57,4 @@ __all__ = [
     "UnexpectedPersistenceError",
     "WorkspaceScope",
     "WorkspaceRepository",
-    "issue_initial_workspace_bootstrap_authority",
-    "issue_trusted_context_authority",
 ]

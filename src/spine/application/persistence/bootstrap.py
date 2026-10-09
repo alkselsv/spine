@@ -4,28 +4,14 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from spine.application.persistence.errors import InvalidBootstrapAuthorityError
 from spine.domain.workspaces import Workspace
 
 
-_BOOTSTRAP_AUTHORITY_SEAL = object()
+class InitialWorkspaceBootstrapAuthority(Protocol):
+    """Opaque capability bound to one adapter by a trusted composition root."""
 
-
-class InitialWorkspaceBootstrapAuthority:
-    """Opaque one-purpose capability; it contains no tenant authority fields."""
-
-    __slots__ = ("_seal",)
-
-    def __init__(self, seal: object) -> None:
-        if seal is not _BOOTSTRAP_AUTHORITY_SEAL:
-            raise InvalidBootstrapAuthorityError("Initial bootstrap is not authorized.")
-        self._seal = seal
-
-
-def issue_initial_workspace_bootstrap_authority() -> InitialWorkspaceBootstrapAuthority:
-    """Issue bootstrap authority from an explicitly authorized composition root."""
-
-    return InitialWorkspaceBootstrapAuthority(_BOOTSTRAP_AUTHORITY_SEAL)
+    @property
+    def bootstrap_authority_marker(self) -> None: ...
 
 
 class InitialWorkspaceBootstrap(Protocol):

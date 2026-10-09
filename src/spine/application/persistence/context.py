@@ -1,40 +1,63 @@
-"""Trusted, immutable persistence contexts.
+"""Immutable persistence context data and verification contract.
 
-Only server-side composition roots, workers, and tests should hold a
-``TrustedContextAuthority``. Transport payloads and provider claims must first be
-authenticated and mapped by their owning boundary; this module intentionally has
-no dictionary/header/token parser.
+Context data is not authority by itself. A persistence adapter accepts it only
+after a composition-root-provided verifier authenticates its provenance and all
+bound fields.
 """
 
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, dataclass
+import re
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import TypeAlias
+from typing import Protocol, TypeAlias
 from uuid import UUID
 
 from spine.application.persistence.errors import InvalidPersistenceContextError
 
 
-_TRUSTED_CONTEXT_SEAL = object()
-_TRUSTED_AUTHORITY_SEAL = object()
+_POLICY_IDENTIFIER = re.compile(r"[a-z][a-z0-9_.:-]{0,63}")
+
+
+def _invalid_context() -> InvalidPersistenceContextError:
+    return InvalidPersistenceContextError("Persistence context is invalid.")
 
 
 def _require_identifier(value: object) -> UUID:
     if not isinstance(value, UUID) or value.int == 0:
-        raise InvalidPersistenceContextError("Persistence context is invalid.")
+        raise _invalid_context()
     return value
 
 
-def _require_label(value: object) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise InvalidPersistenceContextError("Persistence context is invalid.")
+def _require_policy_identifier(value: object) -> str:
+    if not isinstance(value, str) or _POLICY_IDENTIFIER.fullmatch(value) is None:
+        raise _invalid_context()
     return value
 
 
 @dataclass(frozen=True, slots=True)
+class PersistencePurpose:
+    """Bounded server-selected purpose identifier."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        _require_policy_identifier(self.value)
+
+
+@dataclass(frozen=True, slots=True)
+class PersistenceOperation:
+    """Bounded server-selected operation identifier."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        _require_policy_identifier(self.value)
+
+
+@dataclass(frozen=True, slots=True)
 class WorkspaceScope:
-    """Authority restricted to exactly one Workspace identity."""
+    """Scope restricted to exactly one Workspace identity."""
 
     workspace_id: UUID
 
@@ -44,7 +67,7 @@ class WorkspaceScope:
 
 @dataclass(frozen=True, slots=True)
 class EnvironmentScope:
-    """Authority restricted to one Environment in one Workspace."""
+    """Scope restricted to one Environment in one Workspace."""
 
     workspace_id: UUID
     environment_id: UUID
@@ -62,127 +85,68 @@ class ContextOrigin(str, Enum):
     WORKER = "worker"
 
 
-class TrustedPersistenceContext:
-    """Validated authority selected by a trusted server-side issuer."""
+@dataclass(frozen=True, slots=True)
+class TrustedContextProvenance:
+    """Opaque proof that a particular trusted boundary issued the context."""
 
-    __slots__ = (
-        "scope",
-        "origin",
-        "purpose",
-        "operation",
-        "trace_id",
-        "acting_subject_id",
-        "service_principal_id",
-    )
+    issuer_id: UUID
+    signature: bytes = field(repr=False)
+
+    def __post_init__(self) -> None:
+        _require_identifier(self.issuer_id)
+        if not isinstance(self.signature, bytes) or not self.signature:
+            raise _invalid_context()
+
+
+@dataclass(frozen=True, slots=True)
+class TrustedPersistenceContext:
+    """Context data whose authority must be verified before every UoW opens."""
 
     scope: PersistenceScope
     origin: ContextOrigin
-    purpose: str
-    operation: str
+    purpose: PersistencePurpose
+    operation: PersistenceOperation
     trace_id: UUID
     acting_subject_id: UUID | None
     service_principal_id: UUID | None
+    provenance: TrustedContextProvenance = field(repr=False)
 
-    def __init__(
-        self,
-        *,
-        scope: PersistenceScope,
-        origin: ContextOrigin,
-        purpose: str,
-        operation: str,
-        trace_id: UUID,
-        acting_subject_id: UUID | None = None,
-        service_principal_id: UUID | None = None,
-        _seal: object = None,
-    ) -> None:
-        if _seal is not _TRUSTED_CONTEXT_SEAL:
-            raise InvalidPersistenceContextError("Persistence context is invalid.")
-        if not isinstance(scope, (WorkspaceScope, EnvironmentScope)):
-            raise InvalidPersistenceContextError("Persistence context is invalid.")
-        _require_label(purpose)
-        _require_label(operation)
-        _require_identifier(trace_id)
-        if origin is ContextOrigin.INTERACTIVE:
-            _require_identifier(acting_subject_id)
-        elif origin is ContextOrigin.WORKER:
-            _require_identifier(service_principal_id)
-        else:
-            raise InvalidPersistenceContextError("Persistence context is invalid.")
-        object.__setattr__(self, "scope", scope)
-        object.__setattr__(self, "origin", origin)
-        object.__setattr__(self, "purpose", purpose)
-        object.__setattr__(self, "operation", operation)
-        object.__setattr__(self, "trace_id", trace_id)
-        object.__setattr__(self, "acting_subject_id", acting_subject_id)
-        object.__setattr__(self, "service_principal_id", service_principal_id)
+    def validate_shape(self) -> None:
+        """Revalidate every field without treating frozen data as trustworthy."""
 
-    def __setattr__(self, name: str, value: object) -> None:
-        raise FrozenInstanceError(f"cannot assign to field {name!r}")
-
-    def __delattr__(self, name: str) -> None:
-        raise FrozenInstanceError(f"cannot delete field {name!r}")
+        try:
+            if not isinstance(self.scope, (WorkspaceScope, EnvironmentScope)):
+                raise _invalid_context()
+            _require_identifier(self.scope.workspace_id)
+            if isinstance(self.scope, EnvironmentScope):
+                _require_identifier(self.scope.environment_id)
+            if not isinstance(self.purpose, PersistencePurpose):
+                raise _invalid_context()
+            if not isinstance(self.operation, PersistenceOperation):
+                raise _invalid_context()
+            _require_policy_identifier(self.purpose.value)
+            _require_policy_identifier(self.operation.value)
+            _require_identifier(self.trace_id)
+            if not isinstance(self.provenance, TrustedContextProvenance):
+                raise _invalid_context()
+            _require_identifier(self.provenance.issuer_id)
+            if not isinstance(self.provenance.signature, bytes) or not self.provenance.signature:
+                raise _invalid_context()
+            if self.origin is ContextOrigin.INTERACTIVE:
+                _require_identifier(self.acting_subject_id)
+                if self.service_principal_id is not None:
+                    _require_identifier(self.service_principal_id)
+            elif self.origin is ContextOrigin.WORKER:
+                if self.acting_subject_id is not None:
+                    raise _invalid_context()
+                _require_identifier(self.service_principal_id)
+            else:
+                raise _invalid_context()
+        except (AttributeError, TypeError):
+            raise _invalid_context() from None
 
 
-class TrustedContextAuthority:
-    """Capability held by trusted composition roots, workers, and tests."""
+class TrustedContextVerifier(Protocol):
+    """Composition-root-controlled provenance verification boundary."""
 
-    __slots__ = ("_seal",)
-
-    def __init__(self, seal: object) -> None:
-        if seal is not _TRUSTED_AUTHORITY_SEAL:
-            raise InvalidPersistenceContextError("Persistence context is invalid.")
-        self._seal = seal
-
-    def interactive(
-        self,
-        *,
-        scope: PersistenceScope,
-        acting_subject_id: UUID | None,
-        purpose: str,
-        operation: str,
-        trace_id: UUID,
-    ) -> TrustedPersistenceContext:
-        self._validate_authority()
-        return TrustedPersistenceContext(
-            scope=scope,
-            origin=ContextOrigin.INTERACTIVE,
-            acting_subject_id=acting_subject_id,
-            purpose=purpose,
-            operation=operation,
-            trace_id=trace_id,
-            _seal=_TRUSTED_CONTEXT_SEAL,
-        )
-
-    def worker(
-        self,
-        *,
-        scope: PersistenceScope,
-        service_principal_id: UUID | None,
-        purpose: str,
-        operation: str,
-        trace_id: UUID,
-    ) -> TrustedPersistenceContext:
-        self._validate_authority()
-        return TrustedPersistenceContext(
-            scope=scope,
-            origin=ContextOrigin.WORKER,
-            service_principal_id=service_principal_id,
-            purpose=purpose,
-            operation=operation,
-            trace_id=trace_id,
-            _seal=_TRUSTED_CONTEXT_SEAL,
-        )
-
-    def _validate_authority(self) -> None:
-        if getattr(self, "_seal", None) is not _TRUSTED_AUTHORITY_SEAL:
-            raise InvalidPersistenceContextError("Persistence context is invalid.")
-
-
-def issue_trusted_context_authority() -> TrustedContextAuthority:
-    """Authorize a server-side composition root to construct trusted contexts.
-
-    Calling this function is itself a privileged composition-root decision. It
-    accepts no client fields, claims, or tenant identifiers.
-    """
-
-    return TrustedContextAuthority(_TRUSTED_AUTHORITY_SEAL)
+    def verify(self, context: TrustedPersistenceContext) -> None: ...

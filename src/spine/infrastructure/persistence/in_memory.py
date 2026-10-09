@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from enum import Enum, auto
 from types import TracebackType
+from typing import NoReturn
 from uuid import UUID
 
 from spine.application.persistence.bootstrap import (
@@ -12,7 +13,9 @@ from spine.application.persistence.bootstrap import (
 )
 from spine.application.persistence.context import (
     EnvironmentScope,
+    PersistenceScope,
     TrustedPersistenceContext,
+    TrustedContextVerifier,
     WorkspaceScope,
 )
 from spine.application.persistence.errors import (
@@ -25,10 +28,11 @@ from spine.domain.workspaces import Environment, Workspace
 
 
 class _Store:
-    def __init__(self) -> None:
+    def __init__(self, *, transaction_lock: asyncio.Lock | None = None) -> None:
         self.workspaces: dict[UUID, Workspace] = {}
         self.environments: dict[UUID, Environment] = {}
-        self.lock = asyncio.Lock()
+        self.lock = transaction_lock or asyncio.Lock()
+        self.initialized = False
         self.bootstrap_sealed = False
 
 
@@ -55,16 +59,22 @@ class _WorkspaceRepository:
 
     async def add(self, workspace: Workspace) -> None:
         self._uow._guard_active()
-        scope = self._uow.context.scope
+        scope = self._uow.scope
         if not isinstance(scope, WorkspaceScope) or workspace.id != scope.workspace_id:
-            raise InvalidPersistenceContextError("Persistence context is invalid.")
+            self._uow._fail(
+                InvalidPersistenceContextError("Persistence context is invalid.")
+            )
+        if not self._uow._initialized:
+            self._uow._fail(
+                InvalidBootstrapAuthorityError("Initial bootstrap is not authorized.")
+            )
         if self._uow._resolve_workspace(workspace.id) is not None:
-            raise ConstraintConflictError("Workspace identity already exists.")
+            self._uow._fail(ConstraintConflictError("Workspace identity already exists."))
         self._uow._pending_workspaces[workspace.id] = _workspace_copy(workspace)
 
     async def resolve(self, workspace_id: UUID) -> Workspace | None:
         self._uow._guard_active()
-        if workspace_id != self._uow.context.scope.workspace_id:
+        if workspace_id != self._uow.scope.workspace_id:
             return None
         workspace = self._uow._resolve_workspace(workspace_id)
         return _workspace_copy(workspace) if workspace is not None else None
@@ -76,13 +86,15 @@ class _EnvironmentRepository:
 
     async def add(self, environment: Environment) -> None:
         self._uow._guard_active()
-        scope = self._uow.context.scope
+        scope = self._uow.scope
         if not isinstance(scope, WorkspaceScope) or environment.workspace_id != scope.workspace_id:
-            raise InvalidPersistenceContextError("Persistence context is invalid.")
+            self._uow._fail(
+                InvalidPersistenceContextError("Persistence context is invalid.")
+            )
         if self._uow._resolve_workspace(scope.workspace_id) is None:
-            raise ConstraintConflictError("Owning Workspace does not exist.")
+            self._uow._fail(ConstraintConflictError("Owning Workspace does not exist."))
         if self._uow._resolve_environment(environment.id) is not None:
-            raise ConstraintConflictError("Environment identity already exists.")
+            self._uow._fail(ConstraintConflictError("Environment identity already exists."))
         self._uow._pending_environments[environment.id] = _environment_copy(environment)
 
     async def resolve(self, environment_id: UUID) -> Environment | None:
@@ -90,7 +102,7 @@ class _EnvironmentRepository:
         environment = self._uow._resolve_environment(environment_id)
         if environment is None:
             return None
-        scope = self._uow.context.scope
+        scope = self._uow.scope
         if environment.workspace_id != scope.workspace_id:
             return None
         if isinstance(scope, EnvironmentScope) and environment.id != scope.environment_id:
@@ -99,11 +111,19 @@ class _EnvironmentRepository:
 
 
 class InMemoryUnitOfWork:
-    def __init__(self, store: _Store, context: TrustedPersistenceContext) -> None:
+    def __init__(
+        self,
+        store: _Store,
+        context: TrustedPersistenceContext,
+        context_verifier: TrustedContextVerifier,
+    ) -> None:
         if not isinstance(context, TrustedPersistenceContext):
             raise InvalidPersistenceContextError("Persistence context is invalid.")
         self._store = store
         self.context = context
+        self._context_verifier = context_verifier
+        self._scope: PersistenceScope | None = None
+        self._initialized = False
         self._lifecycle = _Lifecycle.NEW
         self._owner: asyncio.Task[object] | None = None
         self._base_workspaces: dict[UUID, Workspace] = {}
@@ -123,12 +143,20 @@ class InMemoryUnitOfWork:
         self._guard_active()
         return self._environments
 
+    @property
+    def scope(self) -> PersistenceScope:
+        self._guard_active()
+        if self._scope is None:
+            raise UnitOfWorkLifecycleError("Unit of Work is not active.")
+        return self._scope
+
     async def __aenter__(self) -> "InMemoryUnitOfWork":
         if self._lifecycle is not _Lifecycle.NEW:
             raise UnitOfWorkLifecycleError("Unit of Work cannot be entered more than once.")
         self._lifecycle = _Lifecycle.ENTERING
         self._owner = asyncio.current_task()
         try:
+            self._context_verifier.verify(self.context)
             async with self._store.lock:
                 self._base_workspaces = {
                     key: _workspace_copy(value) for key, value in self._store.workspaces.items()
@@ -137,6 +165,11 @@ class InMemoryUnitOfWork:
                     key: _environment_copy(value)
                     for key, value in self._store.environments.items()
                 }
+                self._initialized = self._store.initialized
+            if not self._initialized:
+                raise InvalidBootstrapAuthorityError(
+                    "Initial bootstrap is not authorized."
+                )
             self._validate_context()
         except BaseException:
             self._lifecycle = _Lifecycle.CLOSED
@@ -170,7 +203,7 @@ class InMemoryUnitOfWork:
                 self._store.environments.update(
                     {key: _environment_copy(value) for key, value in self._pending_environments.items()}
                 )
-        except Exception:
+        except BaseException:
             self._lifecycle = _Lifecycle.CLOSED
             self._clear_transaction()
             raise
@@ -199,14 +232,21 @@ class InMemoryUnitOfWork:
     def _validate_context(self) -> None:
         scope = self.context.scope
         if isinstance(scope, WorkspaceScope):
+            self._scope = WorkspaceScope(workspace_id=scope.workspace_id)
             return
         if not isinstance(scope, EnvironmentScope):
             raise InvalidPersistenceContextError("Persistence context is invalid.")
         environment = self._base_environments.get(scope.environment_id)
         if environment is None or environment.workspace_id != scope.workspace_id:
             raise InvalidPersistenceContextError("Persistence context is invalid.")
+        self._scope = EnvironmentScope(
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+        )
 
     def _validate_commit(self) -> None:
+        if self._pending_workspaces and not self._store.initialized:
+            raise InvalidBootstrapAuthorityError("Initial bootstrap is not authorized.")
         if self._pending_workspaces.keys() & self._store.workspaces.keys():
             raise ConstraintConflictError("Workspace identity already exists.")
         if self._pending_environments.keys() & self._store.environments.keys():
@@ -231,14 +271,24 @@ class InMemoryUnitOfWork:
         self._base_environments.clear()
         self._pending_workspaces.clear()
         self._pending_environments.clear()
+        self._scope = None
+
+    def _fail(self, error: Exception) -> NoReturn:
+        self._lifecycle = _Lifecycle.CLOSED
+        self._clear_transaction()
+        raise error
 
 
 class _InMemoryUnitOfWorkFactory:
-    def __init__(self, store: _Store) -> None:
+    def __init__(self, store: _Store, context_verifier: TrustedContextVerifier) -> None:
         self._store = store
+        self._context_verifier = context_verifier
 
     def __call__(self, context: TrustedPersistenceContext) -> InMemoryUnitOfWork:
-        return InMemoryUnitOfWork(self._store, context)
+        if not isinstance(context, TrustedPersistenceContext):
+            raise InvalidPersistenceContextError("Persistence context is invalid.")
+        self._context_verifier.verify(context)
+        return InMemoryUnitOfWork(self._store, context, self._context_verifier)
 
 
 class _InMemoryInitialWorkspaceBootstrap:
@@ -261,6 +311,7 @@ class _InMemoryInitialWorkspaceBootstrap:
             if self._store.bootstrap_sealed or self._store.workspaces:
                 raise ConstraintConflictError("Initial Workspace bootstrap is sealed.")
             self._store.workspaces[workspace.id] = _workspace_copy(workspace)
+            self._store.initialized = True
             self._store.bootstrap_sealed = True
 
 
@@ -270,10 +321,12 @@ class InMemoryPersistence:
     def __init__(
         self,
         *,
+        context_verifier: TrustedContextVerifier,
         bootstrap_authority: InitialWorkspaceBootstrapAuthority | None = None,
+        transaction_lock: asyncio.Lock | None = None,
     ) -> None:
-        store = _Store()
-        self.uow_factory = _InMemoryUnitOfWorkFactory(store)
+        store = _Store(transaction_lock=transaction_lock)
+        self.uow_factory = _InMemoryUnitOfWorkFactory(store, context_verifier)
         self.initial_workspace_bootstrap = _InMemoryInitialWorkspaceBootstrap(
             store, bootstrap_authority
         )
