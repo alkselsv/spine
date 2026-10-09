@@ -74,6 +74,15 @@ async def create_in_memory_adapter() -> PersistenceAdapter:
             trace_id=synthetic_uuid(905),
         )
 
+    def worker_workspace_context(workspace_id: UUID) -> TrustedPersistenceContext:
+        return boundary.worker(
+            scope=WorkspaceScope(workspace_id=workspace_id),
+            service_principal_id=synthetic_uuid(906),
+            purpose=PersistencePurpose("contract_test"),
+            operation=PersistenceOperation("workspace_repository"),
+            trace_id=synthetic_uuid(907),
+        )
+
     @asynccontextmanager
     async def hold_transactions() -> AsyncIterator[None]:
         await transaction_lock.acquire()
@@ -85,6 +94,7 @@ async def create_in_memory_adapter() -> PersistenceAdapter:
     return PersistenceAdapter(
         uow_factory=persistence.uow_factory,
         workspace_context=workspace_context,
+        worker_workspace_context=worker_workspace_context,
         environment_context=environment_context,
         hold_transactions=hold_transactions,
     )

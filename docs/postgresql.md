@@ -4,7 +4,9 @@ Issue #42 establishes the database runtime and mandatory real-PostgreSQL test
 prerequisite. Issue #43 adds the explicit operator bootstrap, the linear Alembic
 environment, and the first canonical Workspace and Environment tables. Issue
 #44 adds forced tenant RLS and the minimum ordinary runtime privileges; it does
-not add application repositories or trusted context binding.
+not add application repositories or trusted context binding. Issue #45 adds the
+production SQLAlchemy Unit of Work, trusted transaction-context binding, and
+purpose-specific Workspace and Environment repositories.
 
 ## Supported stack
 
@@ -40,6 +42,36 @@ SPINE_MIGRATION_DATABASE_RUNTIME_ROLE=spine_runtime
 Importing settings or persistence modules does not load either surface and does
 not create an engine, connection, container, or socket. Migration credentials
 are consumed only by explicit operator commands.
+
+## Runtime Unit of Work
+
+`PostgreSQLPersistence` is assembled from
+`DatabaseRuntime.resources.session_factory` and a composition-root-owned
+`TrustedContextVerifier`. Its `tenant_uow_factory` creates a single-use async
+Unit of Work for the Workspace and Environment repository port; #46 extends
+that narrower port with PostgreSQL idempotency before exposing the complete
+`UnitOfWorkFactory`. Entering creates exactly one async session and one explicit
+`READ COMMITTED` transaction. Before a repository can execute, the adapter
+re-verifies the context proof and binds Workspace, optional Environment, acting
+subject, service principal, purpose, operation, and trace as parameterized
+transaction-local PostgreSQL settings.
+
+Workspace and Environment repositories use schema-qualified SQLAlchemy Core
+mappings and explicit tenant predicates in addition to RLS. An
+Environment-scoped context is accepted only after the selected Environment is
+resolved under the same bound Workspace and Environment. Workspace-scoped
+Environment lifecycle operations temporarily narrow the transaction-local
+Environment setting to the exact Environment argument before executing the
+RLS-guarded statement.
+
+Repositories never commit or roll back. A successful explicit `commit()` is the
+only normal persistence path; leaving the context without it rolls back. A Unit
+of Work is single-entry and task-owned, and rejects re-entry, concurrent use,
+post-close use, and implicit nesting. Statement, commit, cancellation, and
+connection-invalidating failures make the Unit of Work terminal, attempt
+rollback, and close the owned session before returning a stable redacted
+application error. Deadlock and serialization failures retain distinct retryable
+categories; retry orchestration remains outside this adapter.
 
 ## Operator bootstrap and migration
 
