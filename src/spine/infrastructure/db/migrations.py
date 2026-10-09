@@ -47,8 +47,9 @@ class MigrationPreflightState:
     runtime_role_has_memberships: bool
     runtime_role_can_assume_migration: bool
     runtime_role_can_create_in_database: bool
-    runtime_role_has_spine_schema_access: bool
-    runtime_role_has_tenant_table_privileges: bool
+    runtime_role_can_create_in_spine_schema: bool
+    runtime_role_has_unsafe_table_privileges: bool
+    runtime_role_has_unprotected_tenant_dml: bool
     schema_owner: str | None
 
 
@@ -79,8 +80,9 @@ def validate_migration_preflight(
         and not state.runtime_role_has_memberships
         and not state.runtime_role_can_assume_migration
         and not state.runtime_role_can_create_in_database
-        and not state.runtime_role_has_spine_schema_access
-        and not state.runtime_role_has_tenant_table_privileges
+        and not state.runtime_role_can_create_in_spine_schema
+        and not state.runtime_role_has_unsafe_table_privileges
+        and not state.runtime_role_has_unprotected_tenant_dml
     )
     if not valid:
         raise MigrationPreflightError("database migration preflight failed")
@@ -122,15 +124,25 @@ def collect_migration_preflight(
             "AS runtime_role_can_assume_migration, "
             "COALESCE(has_database_privilege(runtime.oid, database.oid, 'CREATE'), false) "
             "AS runtime_role_can_create_in_database, "
-            "COALESCE(has_schema_privilege(runtime.oid, namespace.oid, 'USAGE'), false) "
-            "OR COALESCE(has_schema_privilege(runtime.oid, namespace.oid, 'CREATE'), false) "
-            "AS runtime_role_has_spine_schema_access, "
+            "COALESCE(has_schema_privilege(runtime.oid, namespace.oid, 'CREATE'), false) "
+            "AS runtime_role_can_create_in_spine_schema, "
             "EXISTS (SELECT 1 FROM pg_class AS tenant_table "
             "WHERE tenant_table.relnamespace = namespace.oid "
-            "AND tenant_table.relkind IN ('r', 'p', 'v', 'm', 'S') "
+            "AND ((tenant_table.relkind IN ('r', 'p') "
             "AND has_table_privilege(runtime.oid, tenant_table.oid, "
-            "'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')) "
-            "AS runtime_role_has_tenant_table_privileges, "
+            "'TRUNCATE,REFERENCES,TRIGGER')) "
+            "OR (tenant_table.relkind = 'S' "
+            "AND has_sequence_privilege(runtime.oid, tenant_table.oid, 'UPDATE')))) "
+            "AS runtime_role_has_unsafe_table_privileges, "
+            "EXISTS (SELECT 1 FROM pg_class AS tenant_table "
+            "WHERE tenant_table.relnamespace = namespace.oid "
+            "AND tenant_table.relkind IN ('r', 'p') "
+            "AND has_table_privilege(runtime.oid, tenant_table.oid, "
+            "'SELECT,INSERT,UPDATE,DELETE') "
+            "AND (NOT tenant_table.relrowsecurity "
+            "OR NOT tenant_table.relforcerowsecurity "
+            "OR tenant_table.relowner = runtime.oid)) "
+            "AS runtime_role_has_unprotected_tenant_dml, "
             "pg_get_userbyid(namespace.nspowner) AS schema_owner "
             "FROM pg_database AS database "
             "LEFT JOIN pg_roles AS migration ON migration.rolname = :migration_role "

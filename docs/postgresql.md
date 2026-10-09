@@ -2,8 +2,9 @@
 
 Issue #42 establishes the database runtime and mandatory real-PostgreSQL test
 prerequisite. Issue #43 adds the explicit operator bootstrap, the linear Alembic
-environment, and the first canonical Workspace and Environment tables. It does
-not add application repositories, RLS policies, or runtime tenant-table DML.
+environment, and the first canonical Workspace and Environment tables. Issue
+#44 adds forced tenant RLS and the minimum ordinary runtime privileges; it does
+not add application repositories or trusted context binding.
 
 ## Supported stack
 
@@ -48,7 +49,8 @@ Provisioning has three separate authorities:
 - `spine_migration` owns the application database and `spine` schema and applies
   revisions;
 - `spine_runtime` is a non-owner login with `NOBYPASSRLS`, no role-creation
-  capability, and—until the RLS migration lands—no tenant-table access.
+  capability, schema `USAGE`, and only RLS-guarded DML on the canonical Workspace
+  and Environment tables.
 
 Set the operator-only values in the environment of a trusted deployment step,
 not in an application runtime:
@@ -77,10 +79,10 @@ uv run spine-db-bootstrap-workspace \
 roles. Reconciliation removes runtime-role memberships and direct database
 authority before granting back `CONNECT` only. `spine-db-migrate` verifies the
 current user, database owner, role separation, runtime privileges, memberships,
-database/schema/table access, and existing schema owner before it changes the
-schema. Runtime and migration connections use the controlled search path
-`pg_catalog,spine`. The Alembic version table is `spine.alembic_version`, and the
-committed history has one linear head.
+unsafe database/schema/table access, forced RLS protection, and existing schema
+owner before it changes the schema. Runtime and migration connections use the
+controlled search path `pg_catalog,spine`. The Alembic version table is
+`spine.alembic_version`, and the committed history has one linear head.
 
 `spine-db-bootstrap-workspace` is a one-time migration-authority action. It
 atomically inserts the first Workspace and an operator audit record, then seals
@@ -92,6 +94,40 @@ Application startup never creates roles or schemas, invokes Alembic, or calls
 `metadata.create_all`. A missing role, wrong database/schema owner, privileged
 runtime role, or unknown migration state is an operator error, not something
 startup repairs.
+
+## Tenant RLS convention
+
+Every migration that creates a tenant-owned table must classify it explicitly:
+
+- a **workspace-only** table carries `workspace_id` (or, for the Workspace root,
+  uses `id`) and compares it with transaction-local `spine.workspace_id`;
+- an **environment-scoped** table carries both `workspace_id` and
+  `environment_id`, enforces their composite ownership, and compares both with
+  transaction-local `spine.workspace_id` and `spine.environment_id`.
+
+The initial `workspaces` and sealed bootstrap records are workspace-only. The
+canonical `environments` table is environment-scoped. Missing or malformed
+required settings match no rows and fail write checks. Policies must define both
+`USING` and `WITH CHECK`, and tenant tables must use both `ENABLE ROW LEVEL
+SECURITY` and `FORCE ROW LEVEL SECURITY`. The same revision must install the
+policy before granting the runtime role the minimum required DML and sequence
+privileges. A table with no sequence grants none; a later migration that creates
+a sequence must grant only that exact schema-qualified sequence. Policy, grant,
+table, sequence, and function operations remain schema-qualified and
+connections retain the controlled search path.
+
+The migration owner has an explicit maintenance policy because it already owns
+and evolves the schema and must preserve the sealed initial-Workspace bootstrap.
+Application and isolation tests always use `spine_runtime`; that role cannot
+assume migration ownership, alter policies or schema, disable RLS, or receive
+`TRUNCATE`, `REFERENCES`, or `TRIGGER` privileges.
+
+RLS is tenant/environment defense in depth only. It never grants
+`read_content`, `process_content`, administrator authority, or any other
+document permission from ADR 0011. Trusted application code must still bind the
+validated transaction context, include tenant predicates, evaluate Access
+Policy where protected content is involved, and never accept caller-supplied
+SQL.
 
 ### Failure recovery
 

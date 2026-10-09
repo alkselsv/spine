@@ -16,7 +16,7 @@ from alembic.util.exc import CommandError
 from pydantic import SecretStr
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import IntegrityError, ProgrammingError
+from sqlalchemy.exc import DBAPIError, IntegrityError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 from spine.application.persistence.errors import ConstraintConflictError
@@ -45,6 +45,12 @@ RUNTIME_ROLE = "spine_runtime"
 MIGRATION_PASSWORD = "migration-test-secret"
 RUNTIME_PASSWORD = "runtime-test-secret"
 INITIAL_REVISION = "20261009_01"
+RLS_REVISION = "20261009_02"
+WORKSPACE_A = UUID("20000000-0000-0000-0000-000000000001")
+WORKSPACE_B = UUID("20000000-0000-0000-0000-000000000002")
+ENVIRONMENT_A = UUID("30000000-0000-0000-0000-000000000001")
+ENVIRONMENT_A_SECOND = UUID("30000000-0000-0000-0000-000000000002")
+ENVIRONMENT_B = UUID("30000000-0000-0000-0000-000000000003")
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +58,7 @@ class MigratedDatabase:
     operator: OperatorDatabaseSettings
     migration: MigrationDatabaseSettings
     runtime_url: SecretStr
+    upgraded_from: str
 
 
 def _role_url(provision: TestDatabaseProvision, role: str, password: str) -> SecretStr:
@@ -90,6 +97,11 @@ async def migrated_database(
         migration_role=MIGRATION_ROLE,
         runtime_role=RUNTIME_ROLE,
     )
+    await asyncio.to_thread(upgrade_database, migration, revision=INITIAL_REVISION)
+    async with _connection(migration.url) as connection:
+        upgraded_from = await connection.scalar(
+            text("SELECT version_num FROM spine.alembic_version")
+        )
     await asyncio.to_thread(upgrade_database, migration)
     return MigratedDatabase(
         operator=operator,
@@ -99,11 +111,81 @@ async def migrated_database(
             RUNTIME_ROLE,
             RUNTIME_PASSWORD,
         ),
+        upgraded_from=upgraded_from,
     )
 
 
+@pytest_asyncio.fixture(loop_scope="session")
+async def tenant_rows(migrated_database: MigratedDatabase) -> AsyncIterator[None]:
+    async with _connection(migrated_database.migration.url) as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO spine.workspaces (id, slug, display_name) VALUES "
+                "(:workspace_a, 'workspace-a', 'Workspace A'), "
+                "(:workspace_b, 'workspace-b', 'Workspace B')"
+            ),
+            {"workspace_a": WORKSPACE_A, "workspace_b": WORKSPACE_B},
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO spine.environments "
+                "(id, workspace_id, kind, display_name) VALUES "
+                "(:environment_a, :workspace_a, 'development', 'A Development'), "
+                "(:environment_a_second, :workspace_a, 'staging', 'A Staging'), "
+                "(:environment_b, :workspace_b, 'production', 'B Production')"
+            ),
+            {
+                "environment_a": ENVIRONMENT_A,
+                "environment_a_second": ENVIRONMENT_A_SECOND,
+                "environment_b": ENVIRONMENT_B,
+                "workspace_a": WORKSPACE_A,
+                "workspace_b": WORKSPACE_B,
+            },
+        )
+        await connection.commit()
+    yield
+    async with _connection(migrated_database.migration.url) as connection:
+        await connection.execute(
+            text(
+                "DELETE FROM spine.environments WHERE id IN "
+                "(:environment_a, :environment_a_second, :environment_b)"
+            ),
+            {
+                "environment_a": ENVIRONMENT_A,
+                "environment_a_second": ENVIRONMENT_A_SECOND,
+                "environment_b": ENVIRONMENT_B,
+            },
+        )
+        await connection.execute(
+            text(
+                "DELETE FROM spine.workspaces WHERE id IN "
+                "(:workspace_a, :workspace_b)"
+            ),
+            {"workspace_a": WORKSPACE_A, "workspace_b": WORKSPACE_B},
+        )
+        await connection.commit()
+
+
+async def _set_tenant_context(
+    connection: AsyncConnection,
+    *,
+    workspace_id: UUID | str | None,
+    environment_id: UUID | str | None = None,
+) -> None:
+    if workspace_id is not None:
+        await connection.execute(
+            text("SELECT set_config('spine.workspace_id', :value, true)"),
+            {"value": str(workspace_id)},
+        )
+    if environment_id is not None:
+        await connection.execute(
+            text("SELECT set_config('spine.environment_id', :value, true)"),
+            {"value": str(environment_id)},
+        )
+
+
 @pytest.mark.asyncio(loop_scope="session")
-async def test_empty_database_migrates_to_one_initial_head_and_owned_schema(
+async def test_initial_tenancy_revision_upgrades_to_rls_head_and_owned_schema(
     migrated_database: MigratedDatabase,
 ) -> None:
     async with _connection(migrated_database.migration.url) as connection:
@@ -118,7 +200,8 @@ async def test_empty_database_migrates_to_one_initial_head_and_owned_schema(
                 "WHERE nspname = 'spine'"
             )
         )
-    assert heads == [INITIAL_REVISION]
+    assert migrated_database.upgraded_from == INITIAL_REVISION
+    assert heads == [RLS_REVISION]
     assert owner == MIGRATION_ROLE
 
 
@@ -264,7 +347,7 @@ async def test_environment_workspace_foreign_key_rejects_unknown_owner(
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_runtime_role_is_restricted_non_owner_without_tenant_table_access(
+async def test_runtime_role_is_restricted_non_owner_with_rls_guarded_dml(
     migrated_database: MigratedDatabase,
 ) -> None:
     async with _connection(migrated_database.migration.url) as connection:
@@ -286,12 +369,371 @@ async def test_runtime_role_is_restricted_non_owner_without_tenant_table_access(
     assert tuple(role) == (False, False, False, False, False)
     assert owner != RUNTIME_ROLE
 
-    with pytest.raises(ProgrammingError):
-        async with _connection(migrated_database.runtime_url) as connection:
+    async with _connection(migrated_database.runtime_url) as connection:
+        visible = (
             await connection.execute(text("SELECT id FROM spine.workspaces"))
+        ).scalars().all()
+    assert visible == []
     with pytest.raises(ProgrammingError):
         async with _connection(migrated_database.runtime_url) as connection:
             await connection.execute(text("SET ROLE spine_migration"))
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_rls_catalog_declares_forced_read_and_write_checks(
+    migrated_database: MigratedDatabase,
+) -> None:
+    async with _connection(migrated_database.migration.url) as connection:
+        tables = {
+            row.relname: (row.relrowsecurity, row.relforcerowsecurity)
+            for row in (
+                await connection.execute(
+                    text(
+                        "SELECT relation.relname, relation.relrowsecurity, "
+                        "relation.relforcerowsecurity FROM pg_class AS relation "
+                        "JOIN pg_namespace AS namespace "
+                        "ON namespace.oid = relation.relnamespace "
+                        "WHERE namespace.nspname = 'spine' "
+                        "AND relation.relname IN "
+                        "('workspaces', 'environments', "
+                        "'initial_workspace_bootstrap')"
+                    )
+                )
+            )
+        }
+        policies = {
+            (row.table_name, row.policy_name): (
+                row.roles,
+                row.using_expression,
+                row.check_expression,
+            )
+            for row in (
+                await connection.execute(
+                    text(
+                        "SELECT relation.relname AS table_name, policy.polname "
+                        "AS policy_name, ARRAY(SELECT role.rolname FROM pg_roles AS role "
+                        "WHERE role.oid = ANY(policy.polroles)) AS roles, "
+                        "pg_get_expr(policy.polqual, policy.polrelid) "
+                        "AS using_expression, pg_get_expr(policy.polwithcheck, "
+                        "policy.polrelid) AS check_expression "
+                        "FROM pg_policy AS policy "
+                        "JOIN pg_class AS relation ON relation.oid = policy.polrelid "
+                        "JOIN pg_namespace AS namespace "
+                        "ON namespace.oid = relation.relnamespace "
+                        "WHERE namespace.nspname = 'spine'"
+                    )
+                )
+            )
+        }
+
+    assert tables == {
+        "workspaces": (True, True),
+        "environments": (True, True),
+        "initial_workspace_bootstrap": (True, True),
+    }
+    assert set(policies) == {
+        (table_name, f"pol_{table_name}_{policy_kind}")
+        for table_name in tables
+        for policy_kind in ("tenant_isolation", "migration_maintenance")
+    }
+    for table_name in tables:
+        roles, using_expression, check_expression = policies[
+            (table_name, f"pol_{table_name}_tenant_isolation")
+        ]
+        assert roles == [RUNTIME_ROLE]
+        assert using_expression is not None
+        assert check_expression is not None
+        assert "spine.workspace_id" in using_expression
+        assert "spine.workspace_id" in check_expression
+        maintenance = policies[
+            (table_name, f"pol_{table_name}_migration_maintenance")
+        ]
+        assert maintenance == ([MIGRATION_ROLE], "true", "true")
+    assert "spine.environment_id" in policies[
+        ("environments", "pol_environments_tenant_isolation")
+    ][1]
+    assert "spine.environment_id" in policies[
+        ("environments", "pol_environments_tenant_isolation")
+    ][2]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_runtime_grants_are_minimal_and_tables_remain_migration_owned(
+    migrated_database: MigratedDatabase,
+) -> None:
+    async with _connection(migrated_database.migration.url) as connection:
+        privilege_names = (
+            "select_ok",
+            "insert_ok",
+            "update_ok",
+            "delete_ok",
+            "truncate_ok",
+            "references_ok",
+            "trigger_ok",
+        )
+        privileges = {
+            row["table_name"]: tuple(row[privilege] for privilege in privilege_names)
+            for row in (
+                await connection.execute(
+                    text(
+                        "SELECT relation.relname AS table_name, "
+                        "has_table_privilege(:role, relation.oid, 'SELECT') AS select_ok, "
+                        "has_table_privilege(:role, relation.oid, 'INSERT') AS insert_ok, "
+                        "has_table_privilege(:role, relation.oid, 'UPDATE') AS update_ok, "
+                        "has_table_privilege(:role, relation.oid, 'DELETE') AS delete_ok, "
+                        "has_table_privilege(:role, relation.oid, 'TRUNCATE') AS truncate_ok, "
+                        "has_table_privilege(:role, relation.oid, 'REFERENCES') "
+                        "AS references_ok, has_table_privilege(:role, relation.oid, "
+                        "'TRIGGER') AS trigger_ok FROM pg_class AS relation "
+                        "JOIN pg_namespace AS namespace "
+                        "ON namespace.oid = relation.relnamespace "
+                        "WHERE namespace.nspname = 'spine' "
+                        "AND relation.relname IN "
+                        "('workspaces', 'environments', "
+                        "'initial_workspace_bootstrap')"
+                    ),
+                    {"role": RUNTIME_ROLE},
+                )
+            ).mappings()
+        }
+        owners = {
+            row.relname: row.owner
+            for row in (
+                await connection.execute(
+                    text(
+                        "SELECT relation.relname, pg_get_userbyid(relation.relowner) "
+                        "AS owner FROM pg_class AS relation "
+                        "JOIN pg_namespace AS namespace "
+                        "ON namespace.oid = relation.relnamespace "
+                        "WHERE namespace.nspname = 'spine' "
+                        "AND relation.relname IN "
+                        "('workspaces', 'environments', "
+                        "'initial_workspace_bootstrap')"
+                    )
+                )
+            )
+        }
+        schema_privileges = (
+            await connection.execute(
+                text(
+                    "SELECT has_schema_privilege(:role, 'spine', 'USAGE'), "
+                    "has_schema_privilege(:role, 'spine', 'CREATE')"
+                ),
+                {"role": RUNTIME_ROLE},
+            )
+        ).one()
+
+    assert privileges["workspaces"] == (True, True, True, True, False, False, False)
+    assert privileges["environments"] == (True, True, True, True, False, False, False)
+    assert privileges["initial_workspace_bootstrap"] == (
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+    )
+    assert owners == {
+        "workspaces": MIGRATION_ROLE,
+        "environments": MIGRATION_ROLE,
+        "initial_workspace_bootstrap": MIGRATION_ROLE,
+    }
+    assert tuple(schema_privileges) == (True, False)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_workspace_rls_hides_and_rejects_another_workspace_rows(
+    migrated_database: MigratedDatabase,
+    tenant_rows: None,
+) -> None:
+    async with _connection(migrated_database.runtime_url) as connection:
+        await _set_tenant_context(connection, workspace_id=WORKSPACE_A)
+        visible = (
+            await connection.execute(text("SELECT id FROM spine.workspaces ORDER BY id"))
+        ).scalars().all()
+        updated = (
+            await connection.execute(
+                text(
+                    "UPDATE spine.workspaces SET display_name = 'Hidden update' "
+                    "WHERE id = :workspace_id RETURNING id"
+                ),
+                {"workspace_id": WORKSPACE_B},
+            )
+        ).scalars().all()
+        own_update = (
+            await connection.execute(
+                text(
+                    "UPDATE spine.workspaces SET display_name = 'Visible update' "
+                    "WHERE id = :workspace_id RETURNING id"
+                ),
+                {"workspace_id": WORKSPACE_A},
+            )
+        ).scalars().all()
+        deleted = (
+            await connection.execute(
+                text(
+                    "DELETE FROM spine.workspaces WHERE id = :workspace_id "
+                    "RETURNING id"
+                ),
+                {"workspace_id": WORKSPACE_B},
+            )
+        ).scalars().all()
+
+    assert visible == [WORKSPACE_A]
+    assert updated == []
+    assert deleted == []
+    assert own_update == [WORKSPACE_A]
+
+    rejected_id = UUID("20000000-0000-0000-0000-000000000099")
+    with pytest.raises(DBAPIError) as error:
+        async with _connection(migrated_database.runtime_url) as connection:
+            await _set_tenant_context(connection, workspace_id=WORKSPACE_A)
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.workspaces (id, slug, display_name) "
+                    "VALUES (:id, 'rejected-workspace', 'Rejected') RETURNING id"
+                ),
+                {"id": rejected_id},
+            )
+    assert str(rejected_id) not in str(error.value)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_environment_rls_isolates_two_environments_in_one_workspace(
+    migrated_database: MigratedDatabase,
+    tenant_rows: None,
+) -> None:
+    async with _connection(migrated_database.runtime_url) as connection:
+        await _set_tenant_context(
+            connection,
+            workspace_id=WORKSPACE_A,
+            environment_id=ENVIRONMENT_A,
+        )
+        visible = (
+            await connection.execute(text("SELECT id FROM spine.environments"))
+        ).scalars().all()
+        updated = (
+            await connection.execute(
+                text(
+                    "UPDATE spine.environments SET display_name = 'Hidden update' "
+                    "WHERE id = :environment_id RETURNING id"
+                ),
+                {"environment_id": ENVIRONMENT_A_SECOND},
+            )
+        ).scalars().all()
+        own_delete = (
+            await connection.execute(
+                text(
+                    "DELETE FROM spine.environments WHERE id = :environment_id "
+                    "RETURNING id"
+                ),
+                {"environment_id": ENVIRONMENT_A},
+            )
+        ).scalars().all()
+
+    assert visible == [ENVIRONMENT_A]
+    assert updated == []
+    assert own_delete == [ENVIRONMENT_A]
+
+    rejected_environment = UUID("30000000-0000-0000-0000-000000000099")
+    rejected_scopes = (
+        (ENVIRONMENT_A, WORKSPACE_A),
+        (rejected_environment, WORKSPACE_B),
+    )
+    for environment_setting, row_workspace in rejected_scopes:
+        with pytest.raises(DBAPIError) as error:
+            async with _connection(migrated_database.runtime_url) as connection:
+                await _set_tenant_context(
+                    connection,
+                    workspace_id=WORKSPACE_A,
+                    environment_id=environment_setting,
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO spine.environments "
+                        "(id, workspace_id, kind, display_name) VALUES "
+                        "(:id, :workspace_id, 'development', 'Rejected') "
+                        "RETURNING id"
+                    ),
+                    {"id": rejected_environment, "workspace_id": row_workspace},
+                )
+        assert str(rejected_environment) not in str(error.value)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("workspace_setting", "environment_setting", "table_name"),
+    [
+        (None, None, "workspaces"),
+        (WORKSPACE_A, None, "environments"),
+        ("not-a-workspace", None, "workspaces"),
+        (WORKSPACE_A, "not-an-environment", "environments"),
+    ],
+)
+async def test_missing_or_malformed_settings_fail_closed_without_identifiers(
+    migrated_database: MigratedDatabase,
+    tenant_rows: None,
+    workspace_setting: UUID | str | None,
+    environment_setting: UUID | str | None,
+    table_name: str,
+) -> None:
+    async with _connection(migrated_database.runtime_url) as connection:
+        await _set_tenant_context(
+            connection,
+            workspace_id=workspace_setting,
+            environment_id=environment_setting,
+        )
+        visible = (
+            await connection.execute(text(f"SELECT id FROM spine.{table_name}"))
+        ).scalars().all()
+    assert visible == []
+
+    protected_id = (
+        "40000000-0000-0000-0000-000000000001"
+        if table_name == "workspaces"
+        else "40000000-0000-0000-0000-000000000002"
+    )
+    statement = (
+        "INSERT INTO spine.workspaces (id, slug, display_name) "
+        "VALUES (:id, 'missing-context', 'Missing Context')"
+        if table_name == "workspaces"
+        else "INSERT INTO spine.environments "
+        "(id, workspace_id, kind, display_name) VALUES "
+        "(:id, :workspace_id, 'development', 'Missing Context')"
+    )
+    with pytest.raises(DBAPIError) as error:
+        async with _connection(migrated_database.runtime_url) as connection:
+            await _set_tenant_context(
+                connection,
+                workspace_id=workspace_setting,
+                environment_id=environment_setting,
+            )
+            await connection.execute(
+                text(statement),
+                {"id": protected_id, "workspace_id": WORKSPACE_A},
+            )
+    assert protected_id not in str(error.value)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "CREATE TABLE spine.runtime_ddl_attempt (id integer)",
+        "ALTER TABLE spine.workspaces DISABLE ROW LEVEL SECURITY",
+        "DROP POLICY pol_workspaces_tenant_isolation ON spine.workspaces",
+        "ALTER ROLE spine_runtime BYPASSRLS",
+        "SET ROLE spine_migration",
+    ],
+)
+async def test_runtime_cannot_escalate_database_privileges(
+    migrated_database: MigratedDatabase,
+    statement: str,
+) -> None:
+    with pytest.raises(ProgrammingError):
+        async with _connection(migrated_database.runtime_url) as connection:
+            await connection.execute(text(statement))
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -388,11 +830,15 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         source / "versions" / "20261009_01_initial_tenancy.py",
         target / "versions" / "20261009_01_initial_tenancy.py",
     )
-    (target / "versions" / "20261009_02_injected_failure.py").write_text(
+    shutil.copy(
+        source / "versions" / "20261009_02_tenant_rls.py",
+        target / "versions" / "20261009_02_tenant_rls.py",
+    )
+    (target / "versions" / "20261009_03_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261009_02'\n"
-        "down_revision = '20261009_01'\n"
+        "revision = '20261009_03'\n"
+        "down_revision = '20261009_02'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"
@@ -431,7 +877,7 @@ async def test_transactional_migration_failure_preserves_prior_schema(
         failure_table = await connection.scalar(
             text("SELECT to_regclass('spine.injected_failure')")
         )
-    assert revision == INITIAL_REVISION
+    assert revision == RLS_REVISION
     assert workspaces_after == workspaces_before
     assert failure_table is None
 
@@ -455,7 +901,7 @@ async def test_unknown_revision_is_rejected_without_schema_changes(
         async with _connection(migrated_database.migration.url) as connection:
             await connection.execute(
                 text("UPDATE spine.alembic_version SET version_num = :revision"),
-                {"revision": INITIAL_REVISION},
+                {"revision": RLS_REVISION},
             )
             await connection.commit()
     async with _connection(migrated_database.migration.url) as connection:
