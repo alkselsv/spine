@@ -1,0 +1,140 @@
+"""Typed database configuration without import-time side effects."""
+
+from __future__ import annotations
+
+from urllib.parse import urlsplit
+
+from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+SUPPORTED_POSTGRESQL_MAJOR = 17
+TESTCONTAINERS_POSTGRES_IMAGE = "postgres:17.6-bookworm"
+POSTGRESQL_ASYNC_SCHEME = "postgresql+psycopg"
+
+
+def _validate_postgresql_url(url: SecretStr) -> SecretStr:
+    """Validate only the supported async driver while retaining secret wrapping."""
+
+    parsed = urlsplit(url.get_secret_value())
+    if parsed.scheme != POSTGRESQL_ASYNC_SCHEME or not parsed.hostname:
+        raise ValueError(
+            "database URL must use postgresql+psycopg and include a host; "
+            "received <redacted-database-url>"
+        )
+    if not parsed.path.removeprefix("/"):
+        raise ValueError(
+            "database URL must name a database; received <redacted-database-url>"
+        )
+    return url
+
+
+class _DatabaseSettings(BaseSettings):
+    """Common safety policy for independently loaded database settings."""
+
+    model_config = SettingsConfigDict(
+        frozen=True,
+        extra="forbid",
+        env_file=None,
+        case_sensitive=False,
+        hide_input_in_errors=True,
+    )
+
+
+class RuntimeDatabaseSettings(_DatabaseSettings):
+    """Runtime credentials and bounded process-pool configuration."""
+
+    model_config = SettingsConfigDict(
+        frozen=True,
+        extra="forbid",
+        env_file=None,
+        env_prefix="SPINE_DATABASE_",
+        case_sensitive=False,
+        hide_input_in_errors=True,
+    )
+
+    url: SecretStr = Field(repr=False)
+    pool_size: int = Field(default=5, ge=1, le=100)
+    max_overflow: int = Field(default=5, ge=0, le=100)
+    pool_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    connect_timeout_seconds: int = Field(default=10, gt=0, le=300)
+    pool_pre_ping: bool = True
+    transaction_retry_limit: int = Field(default=3, ge=1, le=10)
+
+    _supported_url = field_validator("url")(_validate_postgresql_url)
+
+
+class MigrationDatabaseSettings(_DatabaseSettings):
+    """Credentials exposed only to explicit migration composition roots."""
+
+    model_config = SettingsConfigDict(
+        frozen=True,
+        extra="forbid",
+        env_file=None,
+        env_prefix="SPINE_MIGRATION_DATABASE_",
+        case_sensitive=False,
+        hide_input_in_errors=True,
+    )
+
+    url: SecretStr = Field(repr=False)
+
+    _supported_url = field_validator("url")(_validate_postgresql_url)
+
+
+class TestDatabaseSettings(_DatabaseSettings):
+    """Dedicated PostgreSQL test target selection; never reads ordinary URLs."""
+
+    __test__ = False
+
+    model_config = SettingsConfigDict(
+        frozen=True,
+        extra="forbid",
+        env_file=None,
+        env_prefix="SPINE_TEST_DATABASE_",
+        case_sensitive=False,
+        hide_input_in_errors=True,
+    )
+
+    url: SecretStr | None = Field(default=None, repr=False)
+    expected_name: str | None = None
+    disposable_marker: SecretStr | None = Field(default=None, repr=False)
+    use_testcontainers: bool = True
+    image: str = TESTCONTAINERS_POSTGRES_IMAGE
+
+    @field_validator("url")
+    @classmethod
+    def _supported_test_url(cls, value: SecretStr | None) -> SecretStr | None:
+        return None if value is None else _validate_postgresql_url(value)
+
+    @field_validator("image")
+    @classmethod
+    def _pinned_image(cls, value: str) -> str:
+        if value != TESTCONTAINERS_POSTGRES_IMAGE:
+            raise ValueError(
+                f"test image must be pinned to {TESTCONTAINERS_POSTGRES_IMAGE}"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _explicit_target_is_fully_identified(self) -> TestDatabaseSettings:
+        if self.url is not None and (
+            self.expected_name is None or self.disposable_marker is None
+        ):
+            raise ValueError(
+                "explicit test URL requires expected_name and disposable_marker"
+            )
+        if self.url is None and (
+            self.expected_name is not None or self.disposable_marker is not None
+        ):
+            raise ValueError(
+                "expected_name and disposable_marker require an explicit test URL"
+            )
+        return self
+
+
+REDACTED_DATABASE_URL = "<redacted-database-url>"
+
+
+def redact_database_url(_: SecretStr | str) -> str:
+    """Return a stable replacement suitable for errors and diagnostics."""
+
+    return REDACTED_DATABASE_URL

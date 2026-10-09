@@ -183,6 +183,10 @@ uv run pytest -q
 uv run python -m compileall -q src tests
 ```
 
+Полный набор тестов включает обязательный real-PostgreSQL gate. Поддерживаемая
+версия, отдельные runtime/migration/test настройки и безопасный explicit-URL
+режим описаны в [PostgreSQL runtime and test harness](docs/postgresql.md).
+
 Перед архитектурными или межмодульными изменениями прочитайте
 [AGENTS.md](AGENTS.md).
 
