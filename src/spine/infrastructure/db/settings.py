@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -15,6 +16,8 @@ from pydantic_settings import (
 SUPPORTED_POSTGRESQL_MAJOR = 17
 TESTCONTAINERS_POSTGRES_IMAGE = "postgres:17.6-bookworm"
 POSTGRESQL_ASYNC_SCHEME = "postgresql+psycopg"
+POSTGRESQL_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
+POSTGRESQL_SEARCH_PATH_OPTIONS = "-csearch_path=pg_catalog,spine"
 
 
 def _validate_postgresql_url(url: SecretStr) -> SecretStr:
@@ -131,8 +134,60 @@ class MigrationDatabaseSettings(_DatabaseSettings):
     )
 
     url: SecretStr = Field(repr=False)
+    migration_role: str = "spine_migration"
+    runtime_role: str = "spine_runtime"
 
     _supported_url = field_validator("url")(_validate_postgresql_url)
+
+    @field_validator("migration_role", "runtime_role")
+    @classmethod
+    def _safe_role_identifier(cls, value: str) -> str:
+        if not POSTGRESQL_IDENTIFIER.fullmatch(value):
+            raise ValueError("role names must be safe lowercase PostgreSQL identifiers")
+        return value
+
+    @model_validator(mode="after")
+    def _migration_roles_are_distinct(self) -> MigrationDatabaseSettings:
+        if self.migration_role == self.runtime_role:
+            raise ValueError("migration and runtime roles must be distinct")
+        return self
+
+
+class OperatorDatabaseSettings(_DatabaseSettings):
+    """Cluster-level inputs used only by the explicit operator bootstrap."""
+
+    model_config = SettingsConfigDict(
+        frozen=True,
+        extra="forbid",
+        env_file=None,
+        env_prefix="SPINE_OPERATOR_DATABASE_",
+        case_sensitive=False,
+        hide_input_in_errors=True,
+    )
+
+    url: SecretStr = Field(repr=False)
+    database_name: str
+    migration_role: str
+    migration_password: SecretStr = Field(repr=False)
+    runtime_role: str
+    runtime_password: SecretStr = Field(repr=False)
+
+    _supported_url = field_validator("url")(_validate_postgresql_url)
+
+    @field_validator("database_name", "migration_role", "runtime_role")
+    @classmethod
+    def _safe_identifier(cls, value: str) -> str:
+        if not POSTGRESQL_IDENTIFIER.fullmatch(value):
+            raise ValueError(
+                "database and role names must be safe lowercase PostgreSQL identifiers"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _roles_are_distinct(self) -> OperatorDatabaseSettings:
+        if self.migration_role == self.runtime_role:
+            raise ValueError("migration and runtime roles must be distinct")
+        return self
 
 
 class TestDatabaseSettings(_DatabaseSettings):
