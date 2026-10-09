@@ -16,7 +16,11 @@ from .ids import synthetic_uuid
 
 
 def workspace(workspace_id: UUID) -> Workspace:
-    return Workspace(id=workspace_id, slug="northwind", display_name="Northwind")
+    return Workspace(
+        id=workspace_id,
+        slug=f"northwind-{workspace_id.hex[-8:]}",
+        display_name="Northwind",
+    )
 
 
 def environment(workspace_id: UUID, environment_id: UUID) -> Environment:

@@ -17,7 +17,11 @@ from .ids import synthetic_uuid
 
 
 def workspace(workspace_id: UUID) -> Workspace:
-    return Workspace(id=workspace_id, slug="northwind", display_name="Northwind")
+    return Workspace(
+        id=workspace_id,
+        slug=f"northwind-{workspace_id.hex[-8:]}",
+        display_name="Northwind",
+    )
 
 
 @pytest.mark.asyncio
@@ -51,6 +55,26 @@ async def test_missing_workspace_is_normal_result_and_uow_remains_usable(
 
 
 @pytest.mark.asyncio
+async def test_worker_and_interactive_contexts_have_same_workspace_isolation(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    expected = workspace(synthetic_uuid(16))
+    interactive = persistence_adapter.workspace_context(expected.id)
+    worker = persistence_adapter.worker_workspace_context(expected.id)
+
+    async with persistence_adapter.uow_factory(interactive) as uow:
+        await uow.workspaces.add(expected)
+        await uow.commit()
+
+    async with persistence_adapter.uow_factory(worker) as uow:
+        assert await uow.workspaces.resolve(expected.id) == expected
+
+    foreign = persistence_adapter.worker_workspace_context(synthetic_uuid(17))
+    async with persistence_adapter.uow_factory(foreign) as uow:
+        assert await uow.workspaces.resolve(expected.id) is None
+
+
+@pytest.mark.asyncio
 async def test_independent_uows_do_not_observe_uncommitted_mutations(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
@@ -73,14 +97,28 @@ async def test_concurrent_duplicate_commit_has_one_logical_effect(
 ) -> None:
     expected = workspace(synthetic_uuid(3))
     context = persistence_adapter.workspace_context(expected.id)
+    first_added = asyncio.Event()
+    second_started = asyncio.Event()
+    first_committed = asyncio.Event()
 
-    async with persistence_adapter.uow_factory(context) as first:
-        async with persistence_adapter.uow_factory(context) as second:
+    async def first_writer() -> None:
+        async with persistence_adapter.uow_factory(context) as first:
             await first.workspaces.add(expected)
-            await second.workspaces.add(expected)
+            first_added.set()
+            await second_started.wait()
             await first.commit()
+            first_committed.set()
+
+    async def second_writer() -> None:
+        await first_added.wait()
+        async with persistence_adapter.uow_factory(context) as second:
+            second_started.set()
+            await first_committed.wait()
             with pytest.raises(ConstraintConflictError, match="already exists"):
+                await second.workspaces.add(expected)
                 await second.commit()
+
+    await asyncio.gather(first_writer(), second_writer())
 
     async with persistence_adapter.uow_factory(context) as reader:
         assert await reader.workspaces.resolve(expected.id) == expected

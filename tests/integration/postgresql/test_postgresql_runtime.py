@@ -45,6 +45,20 @@ async def test_real_postgresql_connectivity_uses_supported_major(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_runtime_transactions_use_read_committed_isolation(
+    postgresql_provision: DatabaseProvision,
+) -> None:
+    runtime = DatabaseRuntime()
+    resources = await runtime.start(_runtime_settings(postgresql_provision))
+
+    async with resources.engine.connect() as connection:  # type: ignore[attr-defined]
+        isolation = await connection.scalar(text("SHOW transaction_isolation"))
+
+    await runtime.shutdown()
+    assert isolation == "read committed"
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_real_postgresql_pool_is_bounded_and_disposal_is_deterministic(
     postgresql_provision: DatabaseProvision,
 ) -> None:

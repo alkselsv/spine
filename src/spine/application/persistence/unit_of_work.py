@@ -13,17 +13,14 @@ from spine.application.persistence.repositories import (
 )
 
 
-class UnitOfWork(Protocol):
+class TenantUnitOfWork(Protocol):
     @property
     def workspaces(self) -> WorkspaceRepository: ...
 
     @property
     def environments(self) -> EnvironmentRepository: ...
 
-    @property
-    def idempotency(self) -> IdempotencyRepository: ...
-
-    async def __aenter__(self) -> "UnitOfWork": ...
+    async def __aenter__(self) -> "TenantUnitOfWork": ...
 
     async def __aexit__(
         self,
@@ -35,6 +32,17 @@ class UnitOfWork(Protocol):
     async def commit(self) -> None: ...
 
     async def rollback(self) -> None: ...
+
+
+class TenantUnitOfWorkFactory(Protocol):
+    def __call__(self, context: TrustedPersistenceContext) -> TenantUnitOfWork: ...
+
+
+class UnitOfWork(TenantUnitOfWork, Protocol):
+    @property
+    def idempotency(self) -> IdempotencyRepository: ...
+
+    async def __aenter__(self) -> "UnitOfWork": ...
 
 
 class UnitOfWorkFactory(Protocol):

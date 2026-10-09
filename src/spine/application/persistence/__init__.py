@@ -53,7 +53,12 @@ from spine.application.persistence.retry import (
     TransactionRetryPolicy,
     run_with_transaction_retry,
 )
-from spine.application.persistence.unit_of_work import UnitOfWork, UnitOfWorkFactory
+from spine.application.persistence.unit_of_work import (
+    TenantUnitOfWork,
+    TenantUnitOfWorkFactory,
+    UnitOfWork,
+    UnitOfWorkFactory,
+)
 
 __all__ = [
     "ContextOrigin",
@@ -84,6 +89,8 @@ __all__ = [
     "TransactionRetryPolicy",
     "TransactionDeadlockError",
     "TransactionSerializationError",
+    "TenantUnitOfWork",
+    "TenantUnitOfWorkFactory",
     "TrustedContextProvenance",
     "TrustedContextVerifier",
     "TrustedPersistenceContext",

@@ -96,6 +96,7 @@ class DatabaseRuntime:
                     pool_timeout=settings.pool_timeout_seconds,
                     pool_pre_ping=settings.pool_pre_ping,
                     pool_reset_on_return="rollback",
+                    isolation_level="READ COMMITTED",
                     connect_args={
                         "connect_timeout": settings.connect_timeout_seconds,
                         "options": POSTGRESQL_SEARCH_PATH_OPTIONS,

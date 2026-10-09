@@ -78,6 +78,7 @@ async def test_start_creates_one_bounded_engine_and_async_session_factory() -> N
             "pool_timeout": 7.0,
             "pool_pre_ping": True,
             "pool_reset_on_return": "rollback",
+            "isolation_level": "READ COMMITTED",
             "connect_args": {
                 "connect_timeout": 4,
                 "options": "-csearch_path=pg_catalog,spine",
