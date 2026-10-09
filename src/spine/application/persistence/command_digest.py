@@ -22,13 +22,14 @@ _CANONICAL_REPRESENTATION_VERSION: Final[str] = "spine.canonical-command.v1"
 _UTC_PRECISION: Final[str] = "microseconds"
 _ALGORITHM_VERSION = re.compile(r"spine\.command-digest\.v([1-9][0-9]*)\Z")
 _CURRENT_VERSION_NUMBER: Final[int] = int(COMMAND_DIGEST_ALGORITHM_VERSION.rsplit("v", 1)[1])
+_COMMAND_DIGEST_CREATION_TOKEN = object()
 
 
 class UnsupportedCommandValueError(ValueError):
     """A command payload contains an unsupported or ambiguous value."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class CommandDigest:
     """SHA-256 digest over a supported canonical command representation version."""
 
@@ -36,6 +37,22 @@ class CommandDigest:
     value: str
     operation: PersistenceOperation
     operation_schema_version: int
+
+    def __init__(
+        self,
+        *,
+        _creation_token: object,
+        algorithm_version: str,
+        canonical_bytes: bytes,
+    ) -> None:
+        if _creation_token is not _COMMAND_DIGEST_CREATION_TOKEN:
+            raise TypeError("CommandDigest values must come from digest_command.")
+        operation, operation_schema_version = _canonical_identity(canonical_bytes)
+        object.__setattr__(self, "algorithm_version", algorithm_version)
+        object.__setattr__(self, "value", hashlib.sha256(canonical_bytes).hexdigest())
+        object.__setattr__(self, "operation", operation)
+        object.__setattr__(self, "operation_schema_version", operation_schema_version)
+        self.__post_init__()
 
     def __post_init__(self) -> None:
         version_match = (
@@ -107,11 +124,34 @@ def digest_command(
         payload=payload,
     )
     return CommandDigest(
+        _creation_token=_COMMAND_DIGEST_CREATION_TOKEN,
         algorithm_version=COMMAND_DIGEST_ALGORITHM_VERSION,
-        value=hashlib.sha256(canonical).hexdigest(),
-        operation=operation,
-        operation_schema_version=operation_schema_version,
+        canonical_bytes=canonical,
     )
+
+
+def _canonical_identity(canonical_bytes: bytes) -> tuple[PersistenceOperation, int]:
+    if not isinstance(canonical_bytes, bytes):
+        raise UnsupportedCommandValueError("Canonical command bytes must be UTF-8 bytes.")
+    try:
+        document = json.loads(canonical_bytes.decode("utf-8"))
+        if (
+            not isinstance(document, dict)
+            or document.get("canonical_version") != _CANONICAL_REPRESENTATION_VERSION
+            or "payload" not in document
+        ):
+            raise ValueError
+        operation = PersistenceOperation(document["operation"])
+        operation_schema_version = document["operation_schema_version"]
+    except (KeyError, TypeError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        raise UnsupportedCommandValueError("Canonical command representation is invalid.") from None
+    if (
+        not isinstance(operation_schema_version, int)
+        or isinstance(operation_schema_version, bool)
+        or operation_schema_version <= 0
+    ):
+        raise UnsupportedCommandValueError("Operation schema version must be a positive integer.")
+    return operation, operation_schema_version
 
 
 def _canonical_value(value: object) -> Any:

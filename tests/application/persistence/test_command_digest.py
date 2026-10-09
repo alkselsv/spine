@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
@@ -162,6 +163,8 @@ def test_golden_digest_vectors_are_stable(payload: dict[str, object], expected_d
     )
 
     assert digest.algorithm_version == COMMAND_DIGEST_ALGORITHM_VERSION
+    assert digest.operation == OPERATION
+    assert digest.operation_schema_version == 1
     assert digest.value == expected_digest
 
 
@@ -289,17 +292,32 @@ def test_unicode_mapping_key_normalization_collision_is_rejected() -> None:
         )
 
 
-def test_command_digest_accepts_current_version_and_rejects_future_or_malformed_versions() -> None:
-    digest = "0" * 64
+def test_command_digest_uses_the_current_algorithm_version() -> None:
+    digest = digest_command(
+        operation=OPERATION,
+        operation_schema_version=1,
+        payload={"status": ExampleStatus.READY},
+    )
 
-    assert CommandDigest(
-        "spine.command-digest.v1", digest, OPERATION, 1
-    ).value == digest
+    assert digest.algorithm_version == COMMAND_DIGEST_ALGORITHM_VERSION
 
-    with pytest.raises(UnsupportedCommandValueError):
-        CommandDigest("spine.command-digest.v2", digest, OPERATION, 1)
-    with pytest.raises(UnsupportedCommandValueError):
-        CommandDigest("spine.command-digest.latest", digest, OPERATION, 1)
+
+def test_command_digest_cannot_be_constructed_or_relabelled_publicly() -> None:
+    digest = digest_command(
+        operation=OPERATION,
+        operation_schema_version=1,
+        payload={"status": ExampleStatus.READY},
+    )
+
+    with pytest.raises(TypeError):
+        CommandDigest(
+            algorithm_version=digest.algorithm_version,
+            canonical_bytes=b"not a supported public construction path",
+        )
+    with pytest.raises(TypeError):
+        replace(digest, operation=PersistenceOperation("proposal.reprice"))
+    with pytest.raises(FrozenInstanceError):
+        digest.operation = PersistenceOperation("proposal.reprice")  # type: ignore[misc]
 
 
 @pytest.mark.parametrize(
