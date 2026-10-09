@@ -14,8 +14,16 @@ from spine.application.persistence.context import (
     TrustedPersistenceContext,
     WorkspaceScope,
 )
+from spine.application.persistence.command_digest import (
+    COMMAND_DIGEST_ALGORITHM_VERSION,
+    CommandDigest,
+    UnsupportedCommandValueError,
+    canonical_command_bytes,
+    digest_command,
+)
 from spine.application.persistence.errors import (
     ConstraintConflictError,
+    IdempotencyConflictError,
     IncompatibleSchemaError,
     InvalidBootstrapAuthorityError,
     InvalidPersistenceContextError,
@@ -23,20 +31,42 @@ from spine.application.persistence.errors import (
     PersistenceError,
     PersistenceUnavailableError,
     RetryablePersistenceError,
+    TransactionDeadlockError,
+    TransactionSerializationError,
     UnexpectedPersistenceError,
     UnitOfWorkLifecycleError,
 )
+from spine.application.persistence.idempotency import (
+    IdempotencyClaimResult,
+    IdempotencyKey,
+    IdempotencyReplay,
+    OpaqueResultReference,
+    OwnedIdempotencyClaim,
+)
 from spine.application.persistence.repositories import (
     EnvironmentRepository,
+    IdempotencyRepository,
     WorkspaceRepository,
+)
+from spine.application.persistence.retry import (
+    RetryEligibility,
+    TransactionRetryPolicy,
+    run_with_transaction_retry,
 )
 from spine.application.persistence.unit_of_work import UnitOfWork, UnitOfWorkFactory
 
 __all__ = [
     "ContextOrigin",
+    "COMMAND_DIGEST_ALGORITHM_VERSION",
+    "CommandDigest",
     "EnvironmentScope",
     "EnvironmentRepository",
     "ConstraintConflictError",
+    "IdempotencyClaimResult",
+    "IdempotencyConflictError",
+    "IdempotencyKey",
+    "IdempotencyReplay",
+    "IdempotencyRepository",
     "IncompatibleSchemaError",
     "InitialWorkspaceBootstrap",
     "InitialWorkspaceBootstrapAuthority",
@@ -48,13 +78,23 @@ __all__ = [
     "RetryablePersistenceError",
     "PersistenceOperation",
     "PersistencePurpose",
+    "OpaqueResultReference",
+    "OwnedIdempotencyClaim",
+    "RetryEligibility",
+    "TransactionRetryPolicy",
+    "TransactionDeadlockError",
+    "TransactionSerializationError",
     "TrustedContextProvenance",
     "TrustedContextVerifier",
     "TrustedPersistenceContext",
     "UnitOfWork",
     "UnitOfWorkFactory",
     "UnitOfWorkLifecycleError",
+    "UnsupportedCommandValueError",
     "UnexpectedPersistenceError",
     "WorkspaceScope",
     "WorkspaceRepository",
+    "canonical_command_bytes",
+    "digest_command",
+    "run_with_transaction_retry",
 ]

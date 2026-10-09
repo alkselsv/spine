@@ -6,6 +6,7 @@ from typing import Protocol
 from uuid import UUID
 
 from spine.domain.workspaces import Environment, Workspace
+from spine.application.persistence.idempotency import IdempotencyRepository
 
 
 class WorkspaceRepository(Protocol):
@@ -18,3 +19,6 @@ class EnvironmentRepository(Protocol):
     async def add(self, environment: Environment) -> None: ...
 
     async def resolve(self, environment_id: UUID) -> Environment | None: ...
+
+
+__all__ = ["EnvironmentRepository", "IdempotencyRepository", "WorkspaceRepository"]

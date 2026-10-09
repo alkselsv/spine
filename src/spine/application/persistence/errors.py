@@ -26,12 +26,24 @@ class RetryablePersistenceError(PersistenceError):
     """The whole transaction may be retried by an eligible caller."""
 
 
+class TransactionDeadlockError(RetryablePersistenceError):
+    """A translated transaction deadlock failure."""
+
+
+class TransactionSerializationError(RetryablePersistenceError):
+    """A translated transaction serialization failure."""
+
+
 class OptimisticConflictError(PersistenceError):
     """An expected predecessor or version no longer matches."""
 
 
 class ConstraintConflictError(PersistenceError):
     """A known persistence invariant rejected the requested change."""
+
+
+class IdempotencyConflictError(ConstraintConflictError):
+    """An idempotency key was reused for different command content or scope."""
 
 
 class IncompatibleSchemaError(PersistenceError):
