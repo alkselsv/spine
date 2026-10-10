@@ -12,11 +12,11 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from spine.agents.runtime.contracts import (
-    _VERIFIED_IDENTITY_TOKEN,
     AgentExecutionContext,
     CapabilitySchemaIdentity,
     ExecutionIdentitySnapshot,
     TrustedToolGrantSet,
+    _validate_runtime_config,
 )
 from spine.agents.runtime.ports import (
     CancellationToken,
@@ -54,9 +54,13 @@ class AgentExecutionContextFactory:
         *,
         authorization_verifier: TrustedAuthorizationContextVerifier | None,
         scope_validator: ExecutionScopeValidator | None,
+        expected_route_policy: RouteAuthorizationPolicy | None,
     ) -> None:
+        """Configure trusted ports and the server-selected agent route policy."""
+
         self._authorization_verifier = authorization_verifier
         self._scope_validator = scope_validator
+        self._expected_route_policy = expected_route_policy
 
     def create(
         self,
@@ -87,7 +91,11 @@ class AgentExecutionContextFactory:
     ) -> AgentExecutionContext:
         """Create one immutable context without invoking the selected handler."""
 
-        if self._authorization_verifier is None or self._scope_validator is None:
+        if (
+            self._authorization_verifier is None
+            or self._scope_validator is None
+            or self._expected_route_policy is None
+        ):
             raise AgentExecutionContextConstructionError(
                 "execution context is unavailable."
             )
@@ -114,6 +122,9 @@ class AgentExecutionContextFactory:
             )
             scope = self._canonical_scope(authorized_context)
             route_policy = self._canonical_route_policy(authorized_context)
+            expected_route_policy = self._canonical_route_policy_value(
+                self._expected_route_policy
+            )
             canonical_diagnostic_context = self._canonical_diagnostic_context(
                 authorized_context
             )
@@ -122,6 +133,7 @@ class AgentExecutionContextFactory:
                 resolution=authorization_resolution,
                 scope=scope,
                 route_policy=route_policy,
+                expected_route_policy=expected_route_policy,
                 workspace_id=workspace_id,
                 environment_id=environment_id,
                 service_principal_id=service_principal_id,
@@ -162,8 +174,7 @@ class AgentExecutionContextFactory:
                 if context_profile is None
                 else context_profile
             )
-            trusted_identity = ExecutionIdentitySnapshot._from_verified_authorization(
-                _issuance_token=_VERIFIED_IDENTITY_TOKEN,
+            trusted_identity = ExecutionIdentitySnapshot(
                 workspace_id=authorization_resolution.scope.workspace_id,
                 environment_id=authorization_resolution.scope.environment_id,
                 acting_subject_id=authorization_resolution.acting_subject_id,
@@ -226,6 +237,20 @@ class AgentExecutionContextFactory:
         )
 
     @staticmethod
+    def _canonical_route_policy_value(
+        policy: RouteAuthorizationPolicy,
+    ) -> RouteAuthorizationPolicy:
+        if type(policy) is not RouteAuthorizationPolicy:
+            raise ValueError
+        return RouteAuthorizationPolicy(
+            required_roles=frozenset(policy.required_roles),
+            required_scope=policy.required_scope,
+            purpose=PersistencePurpose(policy.purpose.value),
+            operation=PersistenceOperation(policy.operation.value),
+            service_principal_id=policy.service_principal_id,
+        )
+
+    @staticmethod
     def _canonical_diagnostic_context(
         authorized_context: AuthorizedRequestContext[DiagnosticContext],
     ) -> DiagnosticContext:
@@ -241,6 +266,7 @@ class AgentExecutionContextFactory:
         resolution: AuthorizationResolution,
         scope: RequestedAuthorizationScope,
         route_policy: RouteAuthorizationPolicy,
+        expected_route_policy: RouteAuthorizationPolicy,
         workspace_id: UUID,
         environment_id: UUID,
         service_principal_id: UUID | None,
@@ -263,6 +289,8 @@ class AgentExecutionContextFactory:
         if route_policy.required_scope is not AuthorizationScopeRequirement.WORKSPACE_ENVIRONMENT:
             raise ValueError
         if route_policy.required_roles != frozenset({AuthorizationRole.ADMINISTRATOR}):
+            raise ValueError
+        if route_policy != expected_route_policy:
             raise ValueError
         if (
             service_principal_id is not None
@@ -337,6 +365,7 @@ class AgentExecutionContextFactory:
             raise ValueError
         if selected_schema != CapabilitySchemaIdentity.from_capability(selected_capability):
             raise ValueError
+        _validate_runtime_config(selected_version.runtime_config)
         forbidden_runtime_keys = {
             "callable",
             "class",
@@ -347,7 +376,11 @@ class AgentExecutionContextFactory:
         }
         if forbidden_runtime_keys.intersection(resolved_binding.agent_version.runtime_config):
             raise ValueError
-        return selected_capability, selected_schema, selected_version
+        return (
+            selected_capability,
+            selected_schema,
+            selected_version.model_copy(update={"runtime_config": {}}),
+        )
 
     @staticmethod
     def _validate_grants(

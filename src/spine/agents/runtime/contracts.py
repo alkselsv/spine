@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 import re
 from typing import Any, Generic, TypeVar
 from uuid import UUID
@@ -17,7 +17,6 @@ from uuid import UUID
 from pydantic import (
     ConfigDict,
     Field,
-    PrivateAttr,
     field_serializer,
     field_validator,
     model_validator,
@@ -39,7 +38,6 @@ from spine.agents.runtime.ports import (
 InputT = TypeVar("InputT")
 OutputT = TypeVar("OutputT")
 _TOOL_GRANT_IDENTIFIER = re.compile(r"[a-z][a-z0-9_.:-]{0,127}")
-_VERIFIED_IDENTITY_TOKEN = object()
 _SENSITIVE_RUNTIME_KEYS = frozenset(
     {
         "access_token",
@@ -233,10 +231,10 @@ class AgentResponse(_ValidatedRuntimeModel, Generic[OutputT]):
 class ExecutionIdentitySnapshot(_ValidatedRuntimeModel):
     """Detached identity data copied from an authorization-boundary view.
 
-    This model is data, not proof of authorization. Direct construction is
-    intentionally possible for deterministic contract tests, but an actual
+    This model is never proof of authorization. Direct construction,
+    validation, copying and deserialization produce plain data only. A
     runtime must obtain and verify the canonical Issue #69 context through the
-    Issue #108 construction boundary.
+    Issue #108 construction boundary immediately before consumption.
     """
 
     model_config = ConfigDict(
@@ -251,7 +249,6 @@ class ExecutionIdentitySnapshot(_ValidatedRuntimeModel):
     acting_subject_id: UUID | None = None
     service_principal_id: UUID | None = None
     authorization_generation: int
-    _authorization_port_issued: bool = PrivateAttr(default=False)
 
     @classmethod
     def from_authorization_context(
@@ -260,29 +257,6 @@ class ExecutionIdentitySnapshot(_ValidatedRuntimeModel):
     ) -> ExecutionIdentitySnapshot:
         del value
         raise TypeError("identity snapshots require trusted authorization verification")
-
-    @classmethod
-    def _from_verified_authorization(
-        cls,
-        *,
-        _issuance_token: object,
-        workspace_id: UUID,
-        environment_id: UUID,
-        acting_subject_id: UUID | None,
-        service_principal_id: UUID | None,
-        authorization_generation: int,
-    ) -> ExecutionIdentitySnapshot:
-        if _issuance_token is not _VERIFIED_IDENTITY_TOKEN:
-            raise TypeError("identity snapshots require trusted authorization verification")
-        snapshot = cls(
-            workspace_id=workspace_id,
-            environment_id=environment_id,
-            acting_subject_id=acting_subject_id,
-            service_principal_id=service_principal_id,
-            authorization_generation=authorization_generation,
-        )
-        object.__setattr__(snapshot, "_authorization_port_issued", True)
-        return snapshot
 
     @field_validator("workspace_id", "environment_id", "acting_subject_id", "service_principal_id")
     @classmethod
@@ -308,10 +282,14 @@ TrustedExecutionIdentitySnapshot = ExecutionIdentitySnapshot
 class AgentExecutionContext(_ValidatedRuntimeModel):
     """Immutable, detached execution metadata supplied to a local handler.
 
-    ``trusted_identity`` is a structural view issued by the authorization
-    boundary. This model does not mint or authenticate it. Event and
-    cancellation ports are dependencies for the current call, not mutable
-    workflow state or bearer authority.
+    ``trusted_identity`` is detached data copied after the authorization
+    boundary has been verified. This model does not mint, authenticate or
+    retain provenance. Event and cancellation ports are dependencies for the
+    current call, not mutable workflow state or bearer authority.
+
+    The construction factory is the only authorization-consuming boundary.
+    Pydantic construction, validation, copying and deserialization are plain
+    data operations and must never be treated as fresh authorization.
     """
 
     model_config = ConfigDict(
@@ -349,6 +327,49 @@ class AgentExecutionContext(_ValidatedRuntimeModel):
 
         return value.model_dump(exclude={"runtime_config"})
 
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> AgentExecutionContext:
+        """Copy data without allowing a copied context to become a new run."""
+
+        if update:
+            raise TypeError("execution contexts cannot be updated")
+        values = deepcopy(self.__dict__) if deep else dict(self.__dict__)
+        if deep:
+            values["cancellation"] = self.cancellation
+            values["event_sink"] = self.event_sink
+        return type(self).model_validate(values)
+
+    def copy(
+        self,
+        *,
+        include: Any = None,
+        exclude: Any = None,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> AgentExecutionContext:
+        """Keep the deprecated copy path non-authoritative and port-safe."""
+
+        if update:
+            raise TypeError("execution contexts cannot be updated")
+        values = deepcopy(self.__dict__) if deep else dict(self.__dict__)
+        if include is not None:
+            values = {key: value for key, value in values.items() if key in include}
+        if exclude is not None:
+            values = {key: value for key, value in values.items() if key not in exclude}
+        if deep:
+            values["cancellation"] = self.cancellation
+            values["event_sink"] = self.event_sink
+        return type(self).model_validate(values)
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> AgentExecutionContext:
+        copied = self.model_copy(deep=True)
+        memo[id(self)] = copied
+        return copied
+
     @field_validator(
         "workspace_id",
         "environment_id",
@@ -374,11 +395,20 @@ class AgentExecutionContext(_ValidatedRuntimeModel):
         cls,
         value: TrustedExecutionIdentitySnapshot,
     ) -> ExecutionIdentitySnapshot:
-        if isinstance(value, ExecutionIdentitySnapshot):
-            if not value._authorization_port_issued:
-                raise ValueError("identity snapshots are data, not authorization provenance")
+        if type(value) is ExecutionIdentitySnapshot:
             return value
-        raise ValueError("trusted identity requires trusted authorization verification")
+        raise ValueError("trusted identity must use the canonical data contract")
+
+    @field_validator("deadline")
+    @classmethod
+    def normalize_deadline(cls, value: datetime | None) -> datetime | None:
+        """Use timezone-aware UTC instants at the handler boundary."""
+
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("deadline must be timezone-aware")
+        return value.astimezone(timezone.utc)
 
     @field_validator("cancellation")
     @classmethod
@@ -406,7 +436,8 @@ class AgentExecutionContext(_ValidatedRuntimeModel):
         _require_matching_schema_identity(self.capability, self.schema_identity)
         _validate_tool_grants(self.agent_version.tool_grants, "agent version")
         _validate_tool_grants(self.permitted_tool_capabilities, "permitted")
-        _validate_runtime_config(self.agent_version.runtime_config)
+        if self.agent_version.runtime_config:
+            raise ValueError("execution context cannot contain runtime configuration")
         if not set(self.permitted_tool_capabilities).issubset(self.agent_version.tool_grants):
             raise ValueError("permitted tool grants exceed agent version grants")
         if self.deadline is not None and (

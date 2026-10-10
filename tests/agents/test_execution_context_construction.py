@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 from uuid import UUID
 
@@ -13,6 +14,7 @@ from spine.agents.runtime import (
     AgentExecutionContext,
     AgentExecutionContextFactory,
     CapabilitySchemaIdentity,
+    ExecutionIdentitySnapshot,
     TrustedToolGrantSet,
 )
 from spine.application.diagnostics import DiagnosticContext
@@ -55,9 +57,7 @@ class FakeEventSink:
 
 @dataclass
 class FakeScopeValidator:
-    expected_workspace_id: UUID
-    expected_environment_id: UUID
-    expected_environment: EnvironmentKind
+    environment_kinds: dict[tuple[UUID, UUID], EnvironmentKind]
     expected_generation: int
 
     def validate(
@@ -68,9 +68,8 @@ class FakeScopeValidator:
         authorization_generation: int,
     ) -> None:
         if (
-            scope.workspace_id != self.expected_workspace_id
-            or scope.environment_id != self.expected_environment_id
-            or environment is not self.expected_environment
+            self.environment_kinds.get((scope.workspace_id, scope.environment_id))
+            is not environment
             or authorization_generation != self.expected_generation
         ):
             raise ValueError("execution scope is invalid")
@@ -213,6 +212,7 @@ def make_context(
     authorized: MagicMock | None = None,
     verifier: FakeVerifier | None = None,
     grants: TrustedToolGrantSet | None = None,
+    expected_route_policy: RouteAuthorizationPolicy | None = None,
     **overrides: object,
 ) -> AgentExecutionContext:
     if authorized is None or resolution is None:
@@ -243,11 +243,13 @@ def make_context(
     return AgentExecutionContextFactory(
         authorization_verifier=verifier,
         scope_validator=FakeScopeValidator(
-            expected_workspace_id=workspace_id,
-            expected_environment_id=environment_id,
-            expected_environment=environment,
+            environment_kinds={
+                (uid(1), uid(2)): EnvironmentKind.DEVELOPMENT,
+                (uid(101), uid(102)): EnvironmentKind.PRODUCTION,
+            },
             expected_generation=resolution.authorization_generation,
         ),
+        expected_route_policy=expected_route_policy or authorized.route_policy,
     ).create(**values)
 
 
@@ -256,7 +258,11 @@ def test_factory_constructs_detached_context_for_each_authorized_scope() -> None
     second = make_context(
         workspace_id=uid(101),
         environment_id=uid(102),
-        selected_binding=resolved_binding(selected_workspace_id=uid(101)),
+        environment=EnvironmentKind.PRODUCTION,
+        selected_binding=resolved_binding(
+            selected_workspace_id=uid(101),
+            selected_environment=EnvironmentKind.PRODUCTION,
+        ),
     )
 
     assert first.workspace_id == uid(1)
@@ -265,6 +271,43 @@ def test_factory_constructs_detached_context_for_each_authorized_scope() -> None
     assert second.workspace_id == uid(101)
     assert second.environment_id == uid(102)
     assert first is not second
+
+
+@pytest.mark.parametrize(
+    ("workspace_id", "environment_id", "environment", "allowed"),
+    (
+        (uid(1), uid(2), EnvironmentKind.DEVELOPMENT, True),
+        (uid(1), uid(102), EnvironmentKind.PRODUCTION, False),
+        (uid(101), uid(2), EnvironmentKind.DEVELOPMENT, False),
+        (uid(101), uid(102), EnvironmentKind.PRODUCTION, True),
+    ),
+)
+def test_factory_enforces_authoritative_workspace_environment_matrix(
+    workspace_id: UUID,
+    environment_id: UUID,
+    environment: EnvironmentKind,
+    allowed: bool,
+) -> None:
+    values = dict(
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        environment=environment,
+        selected_binding=resolved_binding(
+            selected_workspace_id=workspace_id,
+            selected_environment=environment,
+        ),
+    )
+
+    if allowed:
+        context = make_context(**values)
+        assert (context.workspace_id, context.environment_id) == (
+            workspace_id,
+            environment_id,
+        )
+        assert context.environment is environment
+    else:
+        with pytest.raises(ValueError, match="execution context is invalid"):
+            make_context(**values)
 
 
 @pytest.mark.parametrize(
@@ -317,7 +360,11 @@ def test_factory_requires_trusted_verification_and_scope_authority() -> None:
     with pytest.raises(ValueError, match="execution context is unavailable"):
         AgentExecutionContextFactory(
             authorization_verifier=None,
-            scope_validator=FakeScopeValidator(uid(1), uid(2), EnvironmentKind.DEVELOPMENT, 7),
+            scope_validator=FakeScopeValidator(
+                environment_kinds={(uid(1), uid(2)): EnvironmentKind.DEVELOPMENT},
+                expected_generation=7,
+            ),
+            expected_route_policy=None,
         ).create(
             authorized_context=authorized,
             authorization_resolution=resolution,
@@ -343,6 +390,7 @@ def test_authorization_resolution_alone_cannot_mint_context() -> None:
         AgentExecutionContextFactory(
             authorization_verifier=None,
             scope_validator=None,
+            expected_route_policy=None,
         ).create(
             authorized_context=object(),  # type: ignore[arg-type]
             authorization_resolution=resolution,
@@ -369,6 +417,53 @@ def test_factory_rejects_version_capability_and_schema_substitution() -> None:
         make_context(selected_binding=resolved_binding(selected_version=mismatched_version))
     with pytest.raises(ValueError, match="execution context is invalid"):
         make_context(selected_binding=resolved_binding(selected_capability=mismatched_capability))
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("purpose", "operation"),
+)
+def test_factory_rejects_route_policy_substitution(field: str) -> None:
+    authorized, resolution = authorized_context()
+    approved_policy = authorized.route_policy
+    replacement = PersistencePurpose("other") if field == "purpose" else PersistenceOperation("other")
+    authorized.route_policy = approved_policy.model_copy(update={field: replacement})
+
+    with pytest.raises(ValueError, match="execution context is invalid"):
+        make_context(
+            authorized=authorized,
+            resolution=resolution,
+            verifier=FakeVerifier(authorized),
+            expected_route_policy=approved_policy,
+        )
+
+
+def test_factory_requires_expected_route_policy() -> None:
+    authorized, resolution = authorized_context()
+    with pytest.raises(ValueError, match="execution context is unavailable"):
+        AgentExecutionContextFactory(
+            authorization_verifier=FakeVerifier(authorized),
+            scope_validator=FakeScopeValidator(
+                environment_kinds={(uid(1), uid(2)): EnvironmentKind.DEVELOPMENT},
+                expected_generation=resolution.authorization_generation,
+            ),
+            expected_route_policy=None,
+        ).create(
+            authorized_context=authorized,
+            authorization_resolution=resolution,
+            workspace_id=uid(1),
+            environment_id=uid(2),
+            environment=EnvironmentKind.DEVELOPMENT,
+            resolved_binding=resolved_binding(),
+            work_item_id=uid(50),
+            workflow_run_id=uid(51),
+            step_run_id=uid(52),
+            agent_run_id=uid(53),
+            idempotency_key="agent:50:1",
+            permitted_tool_grants=TrustedToolGrantSet(grants=("documents.read",)),
+            cancellation=FakeCancellation(),
+            event_sink=FakeEventSink(),
+        )
 
 
 def test_factory_rejects_grant_expansion_duplicates_and_malformed_grants() -> None:
@@ -402,6 +497,111 @@ def test_factory_preserves_diagnostics_lineage_deadline_and_live_ports() -> None
     assert "cancellation" not in context.model_dump()
     with pytest.raises(ValidationError):
         AgentExecutionContext.model_validate(context.model_dump())
+
+
+def test_context_normalizes_aware_deadline_to_utc() -> None:
+    context = make_context(
+        deadline=datetime(2026, 10, 11, 15, 0, tzinfo=timezone(timedelta(hours=3)))
+    )
+
+    assert context.deadline == datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)
+
+
+def test_context_metadata_deep_copy_preserves_live_port_identity() -> None:
+    cancellation = FakeCancellation()
+    event_sink = FakeEventSink()
+    context = make_context(cancellation=cancellation, event_sink=event_sink)
+
+    copied = context.model_copy(deep=True)
+    legacy_copied = context.copy(deep=True)
+    builtin_copied = deepcopy(context)
+
+    assert copied.cancellation is cancellation
+    assert copied.event_sink is event_sink
+    assert legacy_copied.cancellation is cancellation
+    assert legacy_copied.event_sink is event_sink
+    assert builtin_copied.cancellation is cancellation
+    assert builtin_copied.event_sink is event_sink
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ("model_copy", "copy"),
+)
+def test_context_copy_update_cannot_create_an_authorized_invocation(operation: str) -> None:
+    context = make_context()
+    with pytest.raises(TypeError, match="execution contexts cannot be updated"):
+        getattr(context, operation)(update={"work_item_id": uid(999)})
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "trusted_identity",
+        "workspace_id",
+        "environment_id",
+        "agent_version",
+        "schema_identity",
+        "idempotency_key",
+        "workflow_run_id",
+        "permitted_tool_capabilities",
+    ),
+)
+def test_context_copy_cannot_substitute_authority_bearing_data(field: str) -> None:
+    context = make_context()
+    replacements: dict[str, object] = {
+        "trusted_identity": ExecutionIdentitySnapshot(
+            workspace_id=uid(1),
+            environment_id=uid(2),
+            acting_subject_id=uid(999),
+            authorization_generation=7,
+        ),
+        "workspace_id": uid(999),
+        "environment_id": uid(999),
+        "agent_version": version().model_copy(update={"id": uid(999)}),
+        "schema_identity": CapabilitySchemaIdentity.from_capability(capability()),
+        "idempotency_key": "substituted:999",
+        "workflow_run_id": uid(999),
+        "permitted_tool_capabilities": ("documents.search",),
+    }
+
+    with pytest.raises(TypeError, match="execution contexts cannot be updated"):
+        context.model_copy(update={field: replacements[field]})
+
+
+def test_direct_identity_data_is_not_authorization_proof() -> None:
+    snapshot = ExecutionIdentitySnapshot(
+        workspace_id=uid(1),
+        environment_id=uid(2),
+        acting_subject_id=uid(3),
+        authorization_generation=7,
+    )
+
+    assert not hasattr(snapshot, "authorization_proof")
+    assert not hasattr(snapshot, "issue_authority")
+
+
+def test_factory_projects_runtime_configuration_out_of_handler_context() -> None:
+    selected_version = version().model_copy(
+        update={
+            "runtime_config": {
+                "provider_claims": {"unexpected": "protected-payload"},
+                "executor": Handler(),
+            }
+        }
+    )
+
+    context = make_context(
+        selected_binding=resolved_binding(selected_version=selected_version),
+    )
+
+    assert context.agent_version.id == selected_version.id
+    assert context.agent_version.version == selected_version.version
+    assert context.agent_version.runtime_config == {}
+    assert "protected-payload" not in repr(context)
+    assert "protected-payload" not in str(context)
+    assert "protected-payload" not in repr(context.model_dump(mode="python"))
+    assert "protected-payload" not in context.model_dump_json()
 
 
 def test_context_serialization_excludes_runtime_configuration_and_credentials() -> None:
