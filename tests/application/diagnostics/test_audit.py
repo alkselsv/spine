@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Annotated
 from uuid import UUID
 
 import pytest
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    StringConstraints,
+    ValidationError,
+    create_model,
+)
 
 from spine.application.diagnostics.audit import (
     AccessDecisionAuditPayload,
@@ -144,19 +151,19 @@ def test_registry_rejects_payload_with_unbounded_string_field() -> None:
 
 
 @pytest.mark.parametrize(
-    ("event_type", "payload", "outcome"),
+    ("event_type", "payload", "outcome", "target"),
     (
         (
             "canonical.transition",
             CanonicalTransitionAuditPayload(
                 transition="workspace.activated",
-                object_reference=AuditObjectReference(
-                    object_type="workspace",
-                    object_id=synthetic_uuid(10),
-                    schema_version=1,
-                ),
             ),
             AuditOutcome.COMMITTED,
+            AuditObjectReference(
+                object_type="workspace",
+                object_id=synthetic_uuid(10),
+                schema_version=1,
+            ),
         ),
         (
             "access.decision",
@@ -165,6 +172,7 @@ def test_registry_rejects_payload_with_unbounded_string_field() -> None:
                 operation="read_content",
             ),
             AuditOutcome.ALLOWED,
+            None,
         ),
         (
             "outbox.delivery",
@@ -174,11 +182,13 @@ def test_registry_rejects_payload_with_unbounded_string_field() -> None:
                 attempt_number=2,
             ),
             AuditOutcome.RETRY_SCHEDULED,
+            None,
         ),
         (
             "feedback.recorded",
             FeedbackAuditPayload(feedback_type="answer.helpful"),
             AuditOutcome.RECORDED,
+            None,
         ),
     ),
 )
@@ -186,6 +196,7 @@ def test_default_registry_supports_each_required_event_family(
     event_type: str,
     payload: BaseModel,
     outcome: AuditOutcome,
+    target: AuditObjectReference | None,
 ) -> None:
     event = AuditEventRegistry.with_default_families().build_event(
         workspace_id=synthetic_uuid(20),
@@ -199,9 +210,31 @@ def test_default_registry_supports_each_required_event_family(
         occurred_at=datetime(2026, 1, 2, 3, 4, tzinfo=timezone.utc),
         outcome=outcome,
         reason="registered_outcome",
+        target=target,
     )
 
     assert type(event.payload) is type(payload)
+
+
+def test_canonical_transition_requires_one_envelope_target() -> None:
+    registry = AuditEventRegistry.with_default_families()
+
+    with pytest.raises(UnsupportedAuditEventError, match="target"):
+        registry.build_event(
+            workspace_id=synthetic_uuid(20),
+            event_type="canonical.transition",
+            schema_version=1,
+            payload=CanonicalTransitionAuditPayload(
+                transition="workspace.activated",
+            ),
+            origin=ContextOrigin.INTERACTIVE,
+            acting_subject_id=synthetic_uuid(21),
+            service_principal_id=None,
+            trace_id=synthetic_uuid(22),
+            occurred_at=datetime(2026, 1, 2, 3, 4, tzinfo=timezone.utc),
+            outcome=AuditOutcome.COMMITTED,
+            reason="transition_committed",
+        )
 
 
 def test_audit_envelope_rejects_content_bearing_producer_identity() -> None:
@@ -270,6 +303,66 @@ def test_registry_rejects_password_field_name() -> None:
             event_type="unsafe.password",
             schema_version=1,
             payload_type=PasswordPayload,
+            allowed_outcomes=frozenset({AuditOutcome.ACCEPTED}),
+        )
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ("api_key", "connection_string", "cookie", "authorization"),
+)
+def test_registry_rejects_credential_shaped_field_names(field_name: str) -> None:
+    payload_type = create_model(
+        "CredentialPayload",
+        __config__=ConfigDict(extra="forbid", frozen=True),
+        **{field_name: (AuditIdentifier, ...)},
+    )
+
+    with pytest.raises(ValueError, match="content-bearing"):
+        AuditEventRegistry().register(
+            event_type="unsafe.credential",
+            schema_version=1,
+            payload_type=payload_type,
+            allowed_outcomes=frozenset({AuditOutcome.ACCEPTED}),
+        )
+
+
+def test_registry_accepts_safe_count_despite_content_related_name() -> None:
+    class SafeCountPayload(BaseModel):
+        model_config = ConfigDict(extra="forbid", frozen=True)
+
+        message_count: int
+
+    registry = AuditEventRegistry()
+    registry.register(
+        event_type="safe.count",
+        schema_version=1,
+        payload_type=SafeCountPayload,
+        allowed_outcomes=frozenset({AuditOutcome.RECORDED}),
+    )
+    registry.seal()
+
+
+def test_registry_rejects_unclassified_bounded_string() -> None:
+    BoundedString = Annotated[
+        str,
+        StringConstraints(
+            min_length=1,
+            max_length=128,
+            pattern=r"^[a-z][a-z0-9_.:-]{0,127}$",
+        ),
+    ]
+
+    class UnclassifiedPayload(BaseModel):
+        model_config = ConfigDict(extra="forbid", frozen=True)
+
+        operation: BoundedString
+
+    with pytest.raises(ValueError, match="bounded safe fields"):
+        AuditEventRegistry().register(
+            event_type="unsafe.unclassified",
+            schema_version=1,
+            payload_type=UnclassifiedPayload,
             allowed_outcomes=frozenset({AuditOutcome.ACCEPTED}),
         )
 

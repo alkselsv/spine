@@ -43,6 +43,7 @@ from spine.auth.errors import AuthorizationDeniedError
 from spine.domain.audit import (
     AccessDecisionAuditPayload,
     AuditEvent,
+    AuditFieldKind,
     AuditIdentifier,
     AuditObjectReference,
     AuditOutcome,
@@ -59,10 +60,14 @@ _IDENTIFIER = re.compile(_IDENTIFIER_PATTERN)
 _FORBIDDEN_PAYLOAD_FIELD_TERMS = frozenset(
     {
         "answer",
+        "api_key",
+        "authorization",
         "body",
         "chain_of_thought",
         "content",
         "credential",
+        "cookie",
+        "connection_string",
         "document",
         "error",
         "exception",
@@ -83,6 +88,17 @@ _FORBIDDEN_PAYLOAD_FIELD_TERMS = frozenset(
         "text",
         "url",
     }
+)
+_SAFE_IDENTIFIER_FIELD_SUFFIXES = (
+    "_code",
+    "_id",
+    "_kind",
+    "_operation",
+    "_purpose",
+    "_state",
+    "_status",
+    "_transition",
+    "_type",
 )
 _IMMUTABLE_SCALARS = (
     NoneType,
@@ -115,6 +131,7 @@ class UnsupportedAuditEventError(PersistenceError):
 class _AuditEventDefinition:
     payload_type: type[BaseModel]
     allowed_outcomes: frozenset[AuditOutcome]
+    requires_target: bool
 
 
 def _require_identifier(value: str, *, field_name: str) -> str:
@@ -192,7 +209,7 @@ def _has_no_content_bearing_field_names(
         return True
     checked.add(payload_type)
     for name, field in payload_type.model_fields.items():
-        if any(term in name.lower() for term in _FORBIDDEN_PAYLOAD_FIELD_TERMS):
+        if _is_content_bearing_field_name(name, annotation=field.annotation):
             return False
         for nested_model in _nested_model_types(field.annotation):
             if issubclass(nested_model, AuditObjectReference):
@@ -203,6 +220,27 @@ def _has_no_content_bearing_field_names(
             ):
                 return False
     return True
+
+
+def _is_content_bearing_field_name(name: str, *, annotation: object) -> bool:
+    if not _annotation_can_carry_free_text(annotation):
+        return False
+    normalized = name.lower()
+    if normalized.endswith(_SAFE_IDENTIFIER_FIELD_SUFFIXES):
+        return False
+    return any(term in normalized for term in _FORBIDDEN_PAYLOAD_FIELD_TERMS)
+
+
+def _annotation_can_carry_free_text(annotation: object) -> bool:
+    if annotation is str:
+        return True
+    origin = get_origin(annotation)
+    arguments = get_args(annotation)
+    if origin is Annotated:
+        return bool(arguments) and _annotation_can_carry_free_text(arguments[0])
+    if origin in (Union, UnionType):
+        return any(_annotation_can_carry_free_text(item) for item in arguments)
+    return False
 
 
 def _nested_model_types(annotation: object) -> tuple[type[BaseModel], ...]:
@@ -221,6 +259,8 @@ def _is_safe_payload_annotation(
 ) -> bool:
     if annotation is str:
         return any(
+            item is AuditFieldKind.IDENTIFIER for item in metadata
+        ) and any(
             isinstance(item, StringConstraints)
             and item.min_length is not None
             and item.min_length >= 1
@@ -272,7 +312,7 @@ class AuditEventRegistry:
     @classmethod
     def with_default_families(cls) -> AuditEventRegistry:
         registry = cls()
-        for event_type, payload_type, allowed_outcomes in (
+        for event_type, payload_type, allowed_outcomes, requires_target in (
             (
                 "command.outcome",
                 CommandAuditPayload,
@@ -284,16 +324,19 @@ class AuditEventRegistry:
                         AuditOutcome.COMPLETED,
                     }
                 ),
+                False,
             ),
             (
                 "canonical.transition",
                 CanonicalTransitionAuditPayload,
                 frozenset({AuditOutcome.COMMITTED}),
+                True,
             ),
             (
                 "access.decision",
                 AccessDecisionAuditPayload,
                 frozenset({AuditOutcome.ALLOWED, AuditOutcome.DENIED}),
+                False,
             ),
             (
                 "outbox.delivery",
@@ -305,11 +348,13 @@ class AuditEventRegistry:
                         AuditOutcome.QUARANTINED,
                     }
                 ),
+                False,
             ),
             (
                 "feedback.recorded",
                 FeedbackAuditPayload,
                 frozenset({AuditOutcome.RECORDED}),
+                False,
             ),
         ):
             registry.register(
@@ -317,6 +362,7 @@ class AuditEventRegistry:
                 schema_version=1,
                 payload_type=payload_type,
                 allowed_outcomes=allowed_outcomes,
+                requires_target=requires_target,
             )
         registry.seal()
         return registry
@@ -339,6 +385,7 @@ class AuditEventRegistry:
         schema_version: int,
         payload_type: type[BaseModel],
         allowed_outcomes: frozenset[AuditOutcome],
+        requires_target: bool = False,
     ) -> None:
         if self._sealed:
             raise RuntimeError("Audit Event registry is sealed.")
@@ -357,6 +404,8 @@ class AuditEventRegistry:
             or any(type(outcome) is not AuditOutcome for outcome in allowed_outcomes)
         ):
             raise ValueError("Audit Event outcomes must be a non-empty frozen set.")
+        if type(requires_target) is not bool:
+            raise TypeError("requires_target must be a boolean.")
         if not _is_deeply_immutable_annotation(
             payload_type,
             checked_models=set(),
@@ -376,6 +425,7 @@ class AuditEventRegistry:
         definition = _AuditEventDefinition(
             payload_type=payload_type,
             allowed_outcomes=allowed_outcomes,
+            requires_target=requires_target,
         )
         existing = self._definitions.get(key)
         if existing is not None and existing != definition:
@@ -396,6 +446,10 @@ class AuditEventRegistry:
         if event.outcome not in definition.allowed_outcomes:
             raise UnsupportedAuditEventError(
                 "Audit Event outcome is not registered for this event family."
+            )
+        if definition.requires_target and event.target is None:
+            raise UnsupportedAuditEventError(
+                "Audit Event target is required for this event family."
             )
         try:
             canonical_payload = definition.payload_type.model_validate(

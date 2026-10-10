@@ -3,6 +3,7 @@
 from spine.domain.audit.models import (
     AccessDecisionAuditPayload,
     AuditEvent,
+    AuditFieldKind,
     AuditIdentifier,
     AuditObjectReference,
     AuditOutcome,
@@ -15,6 +16,7 @@ from spine.domain.audit.models import (
 __all__ = [
     "AccessDecisionAuditPayload",
     "AuditEvent",
+    "AuditFieldKind",
     "AuditIdentifier",
     "AuditObjectReference",
     "AuditOutcome",

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from datetime import datetime
 from enum import Enum
-from collections.abc import Mapping
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -24,8 +24,17 @@ from spine.domain.common import ContextOrigin
 
 AUDIT_IDENTIFIER_PATTERN = r"^[a-z][a-z0-9_.:-]{0,127}$"
 _AUDIT_IDENTIFIER = re.compile(AUDIT_IDENTIFIER_PATTERN)
+
+
+class AuditFieldKind(str, Enum):
+    """Explicit semantic classifications accepted in Audit payload schemas."""
+
+    IDENTIFIER = "identifier"
+
+
 AuditIdentifier = Annotated[
     str,
+    AuditFieldKind.IDENTIFIER,
     StringConstraints(
         min_length=1,
         max_length=128,
@@ -105,12 +114,11 @@ class CommandAuditPayload(BaseModel):
 
 
 class CanonicalTransitionAuditPayload(BaseModel):
-    """Safe canonical-transition payload with an opaque object identity."""
+    """Safe canonical-transition payload; the envelope owns the target."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     transition: AuditIdentifier
-    object_reference: AuditObjectReference
 
     @field_validator("transition")
     @classmethod
