@@ -20,16 +20,19 @@ from spine.agents.runtime.ports import (
     EventSink,
     ExecutionScopeValidator,
     TrustedAuthorizationContextVerifier,
+    TrustedExecutionAdmission,
     TrustedExecutionIdentity,
 )
 from spine.agents.runtime.protocol import AgentHandler, AgentRuntime
 from spine.agents.runtime.context import (
+    AgentExecutionContextAdmission,
     AgentExecutionContextConstructionError,
     AgentExecutionContextFactory,
 )
 
 __all__ = [
     "AgentExecutionContext",
+    "AgentExecutionContextAdmission",
     "AgentExecutionContextConstructionError",
     "AgentExecutionContextFactory",
     "AgentHandler",
@@ -46,6 +49,7 @@ __all__ = [
     "TrustedExecutionIdentity",
     "TrustedExecutionIdentitySnapshot",
     "TrustedAuthorizationContextVerifier",
+    "TrustedExecutionAdmission",
     "TrustedToolGrantSet",
     "agent_result_from_response",
     "adapt_async_function",

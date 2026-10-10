@@ -23,6 +23,7 @@ from spine.agents.runtime import (
     AgentRequest,
     AgentResponse,
     CapabilitySchemaIdentity,
+    TrustedExecutionAdmission,
     adapt_async_function,
 )
 from spine.domain.agents import (
@@ -55,8 +56,10 @@ class StructuralHandler:
         self,
         request: AgentRequest[InputModel],
         context: AgentExecutionContext,
+        *,
+        admission: TrustedExecutionAdmission,
     ) -> AgentResponse[OutputModel]:
-        del request, context
+        del request, context, admission
         raise AssertionError("registry resolution must not invoke a handler")
 
 
@@ -256,10 +259,16 @@ def test_registry_registers_structural_handler_and_constructs_after_finalize() -
         )
 
     registry.finalize()
-    assert registry.construct(
+    constructed = registry.construct(
         capability=capability(),
         version=version(),
-    ) is handler
+    )
+    assert constructed is not handler
+    with pytest.raises(TypeError, match="admission"):
+        # The registry's returned entry point must fail closed before handler code.
+        import asyncio
+
+        asyncio.run(constructed.invoke(object(), object()))
 
 
 def test_registry_accepts_explicit_async_function_adapter() -> None:
@@ -278,10 +287,11 @@ def test_registry_accepts_explicit_async_function_adapter() -> None:
     )
     registry.finalize()
 
-    assert registry.construct(
+    constructed = registry.construct(
         capability=capability(),
         version=version(),
-    ) is adapted
+    )
+    assert constructed is not adapted
 
 
 def test_registry_factory_receives_pinned_version_and_does_not_invoke_handler() -> None:

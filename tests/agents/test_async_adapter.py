@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict
 
 from spine.agents.runtime import (
     AgentExecutionContext,
+    AgentExecutionContextAdmission,
     AgentHandler,
     AgentRequest,
     AgentResponse,
@@ -19,6 +20,7 @@ from spine.application.diagnostics import DiagnosticContext
 from spine.domain.agents import AgentResult, AgentRuntimeKind, AgentVersion
 from spine.domain.capabilities import CapabilityDefinition
 from spine.domain.common import EnvironmentKind, SchemaRef
+from tests.agents.test_execution_context_construction import make_admitted_context
 
 
 def uid(value: int) -> UUID:
@@ -59,6 +61,17 @@ class FakeCancellation:
 class FakeEventSink:
     async def emit(self, event: object) -> None:
         del event
+
+
+def admitted_context() -> tuple[AgentExecutionContext, AgentExecutionContextAdmission]:
+    execution_context, admission, _ = make_admitted_context()
+    assert isinstance(admission, AgentExecutionContextAdmission)
+    return execution_context, admission
+
+
+class NoopAdmission:
+    def verify(self, execution_context: AgentExecutionContext) -> None:
+        del execution_context
 
 
 def capability(*, identity_seed: int = 10) -> CapabilityDefinition:
@@ -147,13 +160,83 @@ async def annotated_response_handler(
 
 @pytest.mark.asyncio
 async def test_compatible_async_function_invokes_through_structural_handler() -> None:
-    adapted = adapt_async_function(annotated_raw_handler)
+    execution_context, admission = admitted_context()
+    adapted = adapt_async_function(
+        annotated_raw_handler,
+        admission=admission,
+    )
 
     assert isinstance(adapted, AgentHandler)
-    result = await adapted.invoke(request(), context())
+    result = await adapted.invoke(request(), execution_context)
 
     assert result.output == OutputModel(answer="What is the answer?")
     assert result.schema_identity == request().schema_identity
+
+
+@pytest.mark.asyncio
+async def test_adapter_rejects_plain_context_without_admission_before_handler() -> None:
+    calls = 0
+
+    async def handler(
+        received_request: AgentRequest[InputModel],
+        received_context: AgentExecutionContext,
+    ) -> OutputModel:
+        nonlocal calls
+        del received_request, received_context
+        calls += 1
+        return OutputModel(answer="must not run")
+
+    with pytest.raises(TypeError, match="trusted execution admission"):
+        await adapt_async_function(handler).invoke(request(), context())
+
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_adapter_rejects_structural_noop_admission_before_handler() -> None:
+    calls = 0
+
+    async def handler(
+        received_request: AgentRequest[InputModel],
+        received_context: AgentExecutionContext,
+    ) -> OutputModel:
+        nonlocal calls
+        del received_request, received_context
+        calls += 1
+        return OutputModel(answer="must not run")
+
+    with pytest.raises(TypeError, match="factory-issued"):
+        await adapt_async_function(handler, admission=NoopAdmission()).invoke(
+            request(), context()
+        )
+
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_adapter_rejects_substituted_context_before_handler() -> None:
+    calls = 0
+    original_context, admission = admitted_context()
+
+    async def handler(
+        received_request: AgentRequest[InputModel],
+        received_context: AgentExecutionContext,
+    ) -> OutputModel:
+        nonlocal calls
+        del received_request, received_context
+        calls += 1
+        return OutputModel(answer="must not run")
+
+    adapted = adapt_async_function(
+        handler,
+        admission=admission,
+    )
+    substituted = original_context.model_copy()
+
+    with pytest.raises(TypeError, match="not admitted"):
+        await adapted.invoke(request(), substituted)
+
+    assert calls == 0
 
 
 @pytest.mark.asyncio
@@ -167,9 +250,9 @@ async def test_adapter_passes_request_and_context_without_replacing_identity() -
         seen.extend((received_request, received_context))
         return OutputModel(answer="ok")
 
-    adapted = adapt_async_function(handler)
     original_request = request()
-    original_context = context()
+    original_context, admission = admitted_context()
+    adapted = adapt_async_function(handler, admission=admission)
 
     await adapted.invoke(original_request, original_context)
 
@@ -189,7 +272,11 @@ async def test_existing_response_is_preserved_when_schema_identity_matches() -> 
         del received_request, received_context
         return formed
 
-    result = await adapt_async_function(handler).invoke(request(), context())
+    execution_context, admission = admitted_context()
+    result = await adapt_async_function(
+        handler,
+        admission=admission,
+    ).invoke(request(), execution_context)
 
     assert result is formed
     assert result.output == OutputModel(answer="preserve me")
@@ -209,7 +296,11 @@ async def test_raw_output_uses_request_schema_identity() -> None:
         return OutputModel(answer="typed")
 
     original_request = request()
-    result = await adapt_async_function(handler).invoke(original_request, context())
+    execution_context, admission = admitted_context()
+    result = await adapt_async_function(
+        handler,
+        admission=admission,
+    ).invoke(original_request, execution_context)
 
     assert result.schema_identity == original_request.schema_identity
 
@@ -224,7 +315,11 @@ async def test_conflicting_response_schema_identity_is_rejected() -> None:
         return formed_response(selected=capability(identity_seed=11))
 
     with pytest.raises(ValueError, match="schema identity"):
-        await adapt_async_function(handler).invoke(request(), context())
+        execution_context, admission = admitted_context()
+        await adapt_async_function(
+            handler,
+            admission=admission,
+        ).invoke(request(), execution_context)
 
 
 @pytest.mark.asyncio
@@ -237,7 +332,11 @@ async def test_incorrect_raw_output_is_rejected_without_leaking_contents() -> No
         return "credential=do-not-leak"  # type: ignore[return-value]
 
     with pytest.raises(TypeError) as error:
-        await adapt_async_function(handler).invoke(request(), context())
+        execution_context, admission = admitted_context()
+        await adapt_async_function(
+            handler,
+            admission=admission,
+        ).invoke(request(), execution_context)
 
     assert "credential=do-not-leak" not in str(error.value)
 
@@ -322,9 +421,13 @@ async def test_separate_invocations_do_not_share_adapter_state() -> None:
     second = request().model_copy(
         update={"input": InputModel(question="second question")}
     )
+    first_context, first_admission = admitted_context()
+    second_context, second_admission = admitted_context()
 
-    first_result, second_result = await adapted.invoke(first, context()), await adapted.invoke(
-        second, context()
+    first_result, second_result = await adapted.invoke(
+        first, first_context, admission=first_admission
+    ), await adapted.invoke(
+        second, second_context, admission=second_admission
     )
 
     assert first_result.output == OutputModel(answer="What is the answer?")
@@ -341,4 +444,8 @@ async def test_handler_exceptions_propagate_without_adapter_diagnostics() -> Non
         raise RuntimeError("protected document text and provider payload")
 
     with pytest.raises(RuntimeError, match="protected document text"):
-        await adapt_async_function(handler).invoke(request(), context())
+        execution_context, admission = admitted_context()
+        await adapt_async_function(
+            handler,
+            admission=admission,
+        ).invoke(request(), execution_context)

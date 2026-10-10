@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Generic, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Generic, Protocol, TypeVar, runtime_checkable
 from uuid import UUID
 
 from spine.application.diagnostics import DiagnosticContext
@@ -14,6 +14,9 @@ from spine.auth.contracts import (
 from spine.domain.common import EnvironmentKind
 
 EventT = TypeVar("EventT")
+
+if TYPE_CHECKING:
+    from spine.agents.runtime.contracts import AgentExecutionContext
 
 
 @runtime_checkable
@@ -88,6 +91,19 @@ class TrustedAuthorizationContextVerifier(Protocol):
         """Raise when the context was not issued and verified by the root."""
 
 
+@runtime_checkable
+class TrustedExecutionAdmission(Protocol):
+    """Current authorization admission required immediately before execution.
+
+    An implementation is supplied by trusted composition and must revalidate
+    the exact authorization context, lifecycle, scope and pinned execution
+    selection. Structural compatibility alone is not production authority.
+    """
+
+    def verify(self, context: AgentExecutionContext) -> None:
+        """Raise unless this exact context is currently admitted."""
+
+
 class ExecutionScopeValidator(Protocol):
     """Authoritative Workspace/Environment UUID-to-kind and generation check."""
 
@@ -107,5 +123,6 @@ __all__ = [
     "EventSink",
     "ExecutionScopeValidator",
     "TrustedAuthorizationContextVerifier",
+    "TrustedExecutionAdmission",
     "TrustedExecutionIdentity",
 ]

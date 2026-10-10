@@ -4,6 +4,7 @@ from spine.infrastructure.auth.composition import (
     BoundRouteAuthorization,
     RequestAuthorizationComposer,
 )
+from spine.infrastructure.auth.agent_runtime import RequestAgentAuthorizationVerifier
 from spine.infrastructure.auth.oidc import (
     OIDCAuthenticationRuntime,
     OIDCReadiness,
@@ -31,5 +32,6 @@ __all__ = [
     "OIDCReadinessPolicy",
     "OIDCReadinessStatus",
     "RequestAuthorizationComposer",
+    "RequestAgentAuthorizationVerifier",
     "TrustedRequestContextBoundary",
 ]

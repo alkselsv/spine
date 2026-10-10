@@ -337,11 +337,24 @@ class AgentExecutionContext(_ValidatedRuntimeModel):
 
         if update:
             raise TypeError("execution contexts cannot be updated")
-        values = deepcopy(self.__dict__) if deep else dict(self.__dict__)
-        if deep:
-            values["cancellation"] = self.cancellation
-            values["event_sink"] = self.event_sink
+        values = self._copy_values(deep=deep)
         return type(self).model_validate(values)
+
+    def _copy_values(self, *, deep: bool) -> dict[str, Any]:
+        """Copy metadata while never traversing live runtime dependencies."""
+
+        live_ports = {"cancellation", "event_sink"}
+        if deep:
+            values = {
+                key: deepcopy(value)
+                for key, value in self.__dict__.items()
+                if key not in live_ports
+            }
+        else:
+            values = dict(self.__dict__)
+        values["cancellation"] = self.cancellation
+        values["event_sink"] = self.event_sink
+        return values
 
     def copy(
         self,
@@ -355,7 +368,7 @@ class AgentExecutionContext(_ValidatedRuntimeModel):
 
         if update:
             raise TypeError("execution contexts cannot be updated")
-        values = deepcopy(self.__dict__) if deep else dict(self.__dict__)
+        values = self._copy_values(deep=deep)
         if include is not None:
             values = {key: value for key, value in values.items() if key in include}
         if exclude is not None:

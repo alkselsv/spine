@@ -46,6 +46,87 @@ class AgentExecutionContextConstructionError(ValueError):
     """Disclosure-safe construction failure."""
 
 
+_ADMISSION_CONSTRUCTION_KEY = object()
+
+
+class AgentExecutionContextAdmission:
+    """A non-serializable, current admission for one exact plain context.
+
+    The admission keeps the exact sealed authorization context outside
+    ``AgentExecutionContext`` and re-runs the factory checks at consumption
+    time. It is produced only after successful factory construction; copying
+    or reconstructing the plain context does not produce a matching admission.
+    """
+
+    __slots__ = (
+        "_authorized_context",
+        "_context",
+        "_factory",
+        "_permitted_tool_grants",
+        "_resolved_binding",
+        "_resolution",
+        "_service_principal_id",
+    )
+
+    def __init__(
+        self,
+        *,
+        factory: AgentExecutionContextFactory,
+        context: AgentExecutionContext,
+        authorized_context: AuthorizedRequestContext[DiagnosticContext],
+        resolution: AuthorizationResolution,
+        resolved_binding: ResolvedAgentBinding,
+        permitted_tool_grants: TrustedToolGrantSet,
+        service_principal_id: UUID | None,
+        _construction_key: object,
+    ) -> None:
+        if _construction_key is not _ADMISSION_CONSTRUCTION_KEY:
+            raise TypeError("execution admission must come from the factory")
+        self._factory = factory
+        self._context = context
+        self._authorized_context = authorized_context
+        self._resolution = resolution
+        self._resolved_binding = resolved_binding
+        self._permitted_tool_grants = permitted_tool_grants
+        self._service_principal_id = service_principal_id
+
+    def verify(self, context: AgentExecutionContext) -> None:
+        """Recheck current provenance and exact execution metadata."""
+
+        if context is not self._context:
+            raise ValueError("execution context admission does not match")
+        candidate = self._factory.create(
+            authorized_context=self._authorized_context,
+            authorization_resolution=self._resolution,
+            workspace_id=context.workspace_id,
+            environment_id=context.environment_id,
+            environment=context.environment,
+            resolved_binding=self._resolved_binding,
+            work_item_id=context.work_item_id,
+            workflow_run_id=context.workflow_run_id,
+            step_run_id=context.step_run_id,
+            agent_run_id=context.agent_run_id,
+            attempt_id=context.attempt_id,
+            idempotency_key=context.idempotency_key,
+            permitted_tool_grants=self._permitted_tool_grants,
+            cancellation=context.cancellation,
+            event_sink=context.event_sink,
+            capability=context.capability,
+            schema_identity=context.schema_identity,
+            service_principal_id=self._service_principal_id,
+            diagnostic_context=context.diagnostic_context,
+            input_artifact_ids=context.input_artifact_ids,
+            deadline=context.deadline,
+            context_profile=context.context_profile,
+        )
+        if (
+            candidate.model_dump(mode="python") != context.model_dump(mode="python")
+            or candidate.cancellation is not context.cancellation
+            or candidate.event_sink is not context.event_sink
+        ):
+            raise ValueError("execution context admission does not match")
+
+
 class AgentExecutionContextFactory:
     """Construct a detached context only after trusted boundary verification."""
 
@@ -209,6 +290,45 @@ class AgentExecutionContextFactory:
             raise AgentExecutionContextConstructionError(
                 "execution context is invalid."
             ) from None
+
+    def admission_for(
+        self,
+        *,
+        context: AgentExecutionContext,
+        authorized_context: AuthorizedRequestContext[DiagnosticContext],
+        authorization_resolution: AuthorizationResolution,
+        resolved_binding: ResolvedAgentBinding,
+        permitted_tool_grants: TrustedToolGrantSet,
+        service_principal_id: UUID | None = None,
+    ) -> AgentExecutionContextAdmission:
+        """Bind current trusted authorization to one constructed context.
+
+        The returned admission is the only supported execution input for the
+        async adapter. It is deliberately separate from the serializable
+        context data and must be checked again at handler consumption time.
+        """
+
+        if type(context) is not AgentExecutionContext:
+            raise AgentExecutionContextConstructionError(
+                "execution context is invalid."
+            )
+        admission = AgentExecutionContextAdmission(
+            factory=self,
+            context=context,
+            authorized_context=authorized_context,
+            resolution=authorization_resolution,
+            resolved_binding=resolved_binding,
+            permitted_tool_grants=permitted_tool_grants,
+            service_principal_id=service_principal_id,
+            _construction_key=_ADMISSION_CONSTRUCTION_KEY,
+        )
+        try:
+            admission.verify(context)
+        except Exception:
+            raise AgentExecutionContextConstructionError(
+                "execution context admission is invalid."
+            ) from None
+        return admission
 
     @staticmethod
     def _canonical_scope(
@@ -397,5 +517,6 @@ class AgentExecutionContextFactory:
 
 __all__ = [
     "AgentExecutionContextConstructionError",
+    "AgentExecutionContextAdmission",
     "AgentExecutionContextFactory",
 ]

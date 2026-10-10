@@ -45,12 +45,20 @@ def uid(value: int) -> UUID:
 class FakeCancellation:
     is_cancelled = False
 
+    def __deepcopy__(self, memo: dict[int, object]) -> object:
+        del memo
+        raise AssertionError("cancellation tokens must never be deep-copied")
+
     def raise_if_cancelled(self) -> None:
         if self.is_cancelled:
             raise RuntimeError("cancelled")
 
 
 class FakeEventSink:
+    def __deepcopy__(self, memo: dict[int, object]) -> object:
+        del memo
+        raise AssertionError("event sinks must never be deep-copied")
+
     async def emit(self, event: object) -> None:
         del event
 
@@ -253,6 +261,44 @@ def make_context(
     ).create(**values)
 
 
+def make_admitted_context() -> tuple[AgentExecutionContext, object, FakeVerifier]:
+    authorized, resolution = authorized_context()
+    binding = resolved_binding()
+    verifier = FakeVerifier(authorized)
+    factory = AgentExecutionContextFactory(
+        authorization_verifier=verifier,
+        scope_validator=FakeScopeValidator(
+            environment_kinds={(uid(1), uid(2)): EnvironmentKind.DEVELOPMENT},
+            expected_generation=resolution.authorization_generation,
+        ),
+        expected_route_policy=authorized.route_policy,
+    )
+    context = factory.create(
+        authorized_context=authorized,
+        authorization_resolution=resolution,
+        workspace_id=uid(1),
+        environment_id=uid(2),
+        environment=EnvironmentKind.DEVELOPMENT,
+        resolved_binding=binding,
+        work_item_id=uid(50),
+        workflow_run_id=uid(51),
+        step_run_id=uid(52),
+        agent_run_id=uid(53),
+        idempotency_key="agent:50:1",
+        permitted_tool_grants=TrustedToolGrantSet(grants=("documents.read",)),
+        cancellation=FakeCancellation(),
+        event_sink=FakeEventSink(),
+    )
+    admission = factory.admission_for(
+        context=context,
+        authorized_context=authorized,
+        authorization_resolution=resolution,
+        resolved_binding=binding,
+        permitted_tool_grants=TrustedToolGrantSet(grants=("documents.read",)),
+    )
+    return context, admission, verifier
+
+
 def test_factory_constructs_detached_context_for_each_authorized_scope() -> None:
     first = make_context()
     second = make_context(
@@ -271,6 +317,22 @@ def test_factory_constructs_detached_context_for_each_authorized_scope() -> None
     assert second.workspace_id == uid(101)
     assert second.environment_id == uid(102)
     assert first is not second
+
+
+def test_factory_admission_rechecks_exact_context_and_current_authorization() -> None:
+    context, admission, verifier = make_admitted_context()
+
+    admission.verify(context)
+
+    assert verifier.calls == 3
+
+
+def test_factory_admission_rejects_reconstructed_context() -> None:
+    context, admission, _ = make_admitted_context()
+    reconstructed = context.model_copy()
+
+    with pytest.raises(ValueError, match="admission"):
+        admission.verify(reconstructed)
 
 
 @pytest.mark.parametrize(
@@ -334,7 +396,7 @@ def test_factory_rejects_cross_environment_substitution_against_fixed_authorizat
         )
 
 
-def test_factory_rejects_forged_verifier_input_and_generation_mismatch() -> None:
+def test_factory_rejects_forged_verifier_input() -> None:
     authorized, resolution = authorized_context()
     forged = MagicMock(spec=AuthorizedRequestContext)
     verifier = FakeVerifier(authorized)
@@ -342,6 +404,8 @@ def test_factory_rejects_forged_verifier_input_and_generation_mismatch() -> None
     with pytest.raises(ValueError, match="execution context is invalid"):
         make_context(authorized=forged, resolution=resolution, verifier=verifier)
 
+
+def test_factory_rejects_authorization_generation_mismatch() -> None:
     stale_authorized, current_resolution = authorized_context()
     stale_resolution = current_resolution.model_copy(
         update={"authorization_generation": 8}
@@ -409,14 +473,34 @@ def test_authorization_resolution_alone_cannot_mint_context() -> None:
         )
 
 
-def test_factory_rejects_version_capability_and_schema_substitution() -> None:
+def test_factory_rejects_version_substitution() -> None:
     mismatched_version = version().model_copy(update={"capabilities": ("other",)})
-    mismatched_capability = capability().model_copy(update={"key": "other"})
 
     with pytest.raises(ValueError, match="execution context is invalid"):
         make_context(selected_binding=resolved_binding(selected_version=mismatched_version))
+
+
+def test_factory_rejects_capability_substitution() -> None:
+    mismatched_capability = capability().model_copy(update={"key": "other"})
+
     with pytest.raises(ValueError, match="execution context is invalid"):
         make_context(selected_binding=resolved_binding(selected_capability=mismatched_capability))
+
+
+def test_factory_rejects_schema_identity_substitution() -> None:
+    selected_capability = capability()
+    mismatched_schema = CapabilitySchemaIdentity(
+        capability_id=selected_capability.id,
+        capability_key=selected_capability.key,
+        input_schema=SchemaRef(name="other.input", version="1"),
+        output_schema=selected_capability.output_schema,
+    )
+
+    with pytest.raises(ValueError, match="execution context is invalid"):
+        make_context(
+            selected_binding=resolved_binding(),
+            schema_identity=mismatched_schema,
+        )
 
 
 @pytest.mark.parametrize(
@@ -466,11 +550,17 @@ def test_factory_requires_expected_route_policy() -> None:
         )
 
 
-def test_factory_rejects_grant_expansion_duplicates_and_malformed_grants() -> None:
+def test_factory_rejects_duplicate_grants() -> None:
     with pytest.raises(ValidationError):
         TrustedToolGrantSet(grants=("documents.read", "documents.read"))
+
+
+def test_factory_rejects_malformed_grants() -> None:
     with pytest.raises(ValidationError):
         TrustedToolGrantSet(grants=("documents.read", "Bearer secret"))
+
+
+def test_factory_rejects_grant_expansion() -> None:
     with pytest.raises(ValueError, match="execution context is invalid"):
         make_context(grants=TrustedToolGrantSet(grants=("documents.write",)))
 
@@ -604,7 +694,7 @@ def test_factory_projects_runtime_configuration_out_of_handler_context() -> None
     assert "protected-payload" not in context.model_dump_json()
 
 
-def test_context_serialization_excludes_runtime_configuration_and_credentials() -> None:
+def test_factory_rejects_runtime_configuration_and_credentials() -> None:
     selected_version = version().model_copy(
         update={"runtime_config": {"access_token": "Bearer secret"}}
     )
@@ -615,10 +705,16 @@ def test_context_serialization_excludes_runtime_configuration_and_credentials() 
         )
 
 
-def test_factory_rejects_naive_deadline_zero_lineage_and_bad_diagnostics() -> None:
+def test_factory_rejects_naive_deadline() -> None:
     with pytest.raises(ValueError, match="execution context is invalid"):
         make_context(deadline=datetime(2026, 10, 11, 12, 0))
+
+
+def test_factory_rejects_zero_artifact_lineage() -> None:
     with pytest.raises(ValueError, match="execution context is invalid"):
         make_context(input_artifact_ids=(UUID(int=0),))
+
+
+def test_factory_rejects_zero_diagnostic_id() -> None:
     with pytest.raises(ValidationError):
         make_context(diagnostic_context=DiagnosticContext(trace_id=UUID(int=0)))

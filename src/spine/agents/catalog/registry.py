@@ -11,6 +11,8 @@ from typing import Any
 from uuid import UUID
 
 from spine.agents.runtime import AgentHandler, CapabilitySchemaIdentity
+from spine.agents.runtime.context import AgentExecutionContextAdmission
+from spine.agents.runtime.contracts import AgentExecutionContext, AgentRequest, AgentResponse
 from spine.domain.agents import AgentRuntimeKind, AgentVersion
 from spine.domain.capabilities import CapabilityDefinition
 
@@ -126,11 +128,39 @@ def _is_handler(value: Any) -> bool:
         parameters = tuple(inspect.signature(invoke).parameters.values())
     except (TypeError, ValueError):
         return False
-    return len(parameters) == 2 and all(
-        parameter.kind
-        in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD)
-        for parameter in parameters
+    if len(parameters) != 3:
+        return False
+    first, second, admission = parameters
+    return (
+        first.kind in (first.POSITIONAL_ONLY, first.POSITIONAL_OR_KEYWORD)
+        and second.kind in (second.POSITIONAL_ONLY, second.POSITIONAL_OR_KEYWORD)
+        and admission.kind is admission.KEYWORD_ONLY
+        and admission.name == "admission"
     )
+
+
+class _AdmissionCheckedHandler:
+    """Registry wrapper that admits execution before a registered handler."""
+
+    def __init__(self, handler: AgentHandler[Any, Any]) -> None:
+        self._handler = handler
+
+    async def invoke(
+        self,
+        request: AgentRequest[Any],
+        context: AgentExecutionContext,
+        *,
+        admission: AgentExecutionContextAdmission | None = None,
+    ) -> AgentResponse[Any]:
+        if admission is None:
+            raise TypeError("handler requires trusted execution admission")
+        if type(admission) is not AgentExecutionContextAdmission:
+            raise TypeError("handler requires a factory-issued execution admission")
+        try:
+            admission.verify(context)
+        except Exception:
+            raise TypeError("handler execution context is not admitted") from None
+        return await self._handler.invoke(request, context, admission=admission)
 
 
 def _is_factory(value: Any) -> bool:
@@ -227,7 +257,7 @@ class HandlerRegistry:
             raise HandlerConstructionError("local handler construction failed") from error
         if not _is_handler(handler):
             raise HandlerConstructionError("local handler construction failed")
-        return handler
+        return _AdmissionCheckedHandler(handler)
 
     def _validate_registration(self, registration: AgentImplementationRegistration) -> None:
         self._require_not_finalized()
