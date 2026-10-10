@@ -56,6 +56,8 @@ from spine.application.persistence.repositories import (
     EnvironmentRepository,
     IdempotencyRepository,
     WorkspaceRepository,
+    SourceObservationRepository,
+    SourceObservationResult,
 )
 from spine.application.persistence.retry import (
     RetryEligibility,
@@ -118,6 +120,8 @@ __all__ = [
     "UnexpectedPersistenceError",
     "WorkspaceScope",
     "WorkspaceRepository",
+    "SourceObservationRepository",
+    "SourceObservationResult",
     "canonical_command_bytes",
     "digest_command",
     "run_transaction_with_retry",

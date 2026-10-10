@@ -28,7 +28,7 @@ MIGRATION_ROLE = "spine_migration"
 RUNTIME_ROLE = "spine_runtime"
 MIGRATION_PASSWORD = "migration-readiness-secret"
 RUNTIME_PASSWORD = "runtime-readiness-secret"
-HEAD_REVISION = "20261010_08"
+HEAD_REVISION = "20261010_12"
 
 
 @dataclass(frozen=True, slots=True)
