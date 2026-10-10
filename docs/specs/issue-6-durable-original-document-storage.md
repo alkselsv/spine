@@ -330,17 +330,18 @@ UploadCommandState
   request_digest: PreWriteRequestDigest
   upload_id: UUID
   object_id: UUID
-  state: staging | interrupted | finalized | aborted | integrity_conflict
+  state: staging | interrupted | reconciliation_required | finalized | aborted | integrity_conflict
   provisional_receipt: WriteReceipt | null
 ```
 
 This state is not a second idempotency identity. Its identity and replay
 behavior come from the Issue #8 receipt; it only records physical-upload
 progress and the verified result. `staging` is active, `interrupted` is
-recoverable with the same stored `upload_id`, `finalized` is terminal success,
-`aborted` is a terminal explicit-abort result, and `integrity_conflict` is a
-terminal failed result requiring a new idempotency key. Cleanup failure never
-reopens an aborted command.
+recoverable with the same stored `upload_id`, and `reconciliation_required` is
+an indeterminate blocked state that only trusted reconciliation may resolve.
+`finalized` is terminal success, `aborted` is a terminal explicit-abort result,
+and `integrity_conflict` is a terminal failed result requiring a new
+idempotency key. Cleanup failure never reopens an aborted command.
 
 `WriteReceipt` is provisional physical-storage evidence returned by the
 adapter. It is not a PostgreSQL command receipt and does not prove SourceRevision
@@ -452,12 +453,14 @@ The internal port exposes the following behavior, without prescribing method
 names or provider types:
 
 1. Begin or resume an upload by the server-stored `upload_id` and trusted
-   scope; only `staging` and `interrupted` states may resume.
+   scope; only `staging` and `interrupted` states may resume. A
+   `reconciliation_required` state is rejected by this operation.
 2. Stream bounded chunks into staged storage while calculating digest and length.
 3. Explicitly abort an unfinished upload, making its staged bytes inaccessible
    to ordinary reads and returning a terminal aborted result. Cleanup is a
    separate idempotent operation and never reopens the upload.
-4. Finalize exactly once after successful validation, with overwrite prevention.
+4. Finalize exactly once after successful physical integrity validation, with
+   overwrite prevention; Issue #3 content validation is a separate handoff.
 5. Return a verified provisional physical `WriteReceipt` or a typed adapter-neutral
    failure.
 6. Open a bounded asynchronous read stream for a successfully consumed
@@ -486,6 +489,8 @@ The port translates provider failures into stable categories:
   different observed content identity or physical generation after the Issue #8
   request digest has matched.
 - `UploadNotFound`: staged upload cannot be resumed or finalized.
+- `ReconciliationRequired`: durable evidence is contradictory or insufficient;
+  ordinary retry, abort and finalize are blocked until trusted reconciliation.
 - `IntegrityMismatch`: observed bytes do not match expected digest/length.
 - `ObjectNotFound`: finalized object is absent.
 - `ObjectUnavailable`: temporary capacity, I/O or provider unavailability.
@@ -658,6 +663,8 @@ different lifecycles:
 
 `UploadCommandState` is operational storage state associated with the completed
 Issue #8 result reference. `staging` is active, `interrupted` is recoverable,
+and `reconciliation_required` is an indeterminate blocked state. It is neither
+ordinary-resumable nor terminal: only trusted reconciliation may resolve it.
 `finalized`, `aborted` and `integrity_conflict` are terminal. An explicit abort
 transitions only an unfinished `staging` or `interrupted` upload to `aborted`;
 staged bytes become inaccessible and are scheduled for approved technical
@@ -666,7 +673,9 @@ replay of an aborted command returns the stable terminal result, and a genuinely
 new upload requires a new idempotency key. Abort never deletes a finalized or
 canonically associated object. The state never admits, rejects, quarantines,
 accepts or publishes a SourceRevision. A replay resolves this state reference
-and returns the stable current result; it never creates a second command receipt.
+and returns the stable current result; while `reconciliation_required`, ordinary
+retry returns a typed unavailable/reconciliation error and never creates a
+second staging object, abort, finalization or overwrite operation.
 
 ### Read
 
@@ -756,6 +765,7 @@ physical storage presence.
 | Upload command accepted | PostgreSQL Issue #8 command/idempotency receipt with server-computed pre-write request digest | Resolve stored result identities before opening a stream | No |
 | UploadCommandState: staging | PostgreSQL result reference linked to the Issue #8 receipt | Continue, interrupt or explicitly abort the stored upload ID | No |
 | UploadCommandState: interrupted | PostgreSQL result reference linked to the Issue #8 receipt | Resume the same stored staging identity or explicitly abort | No |
+| UploadCommandState: reconciliation_required | PostgreSQL result reference plus reconciliation evidence | Trusted reconciliation only; ordinary retry, abort and finalize are blocked | No |
 | UploadCommandState: finalized | PostgreSQL result reference plus provisional receipt | Associate only through canonical observation; never rewrite | No until authorized association |
 | UploadCommandState: aborted | PostgreSQL result reference | Return stable terminal result; approved cleanup only | No |
 | UploadCommandState: integrity_conflict | PostgreSQL result reference | Return stable terminal conflict; require a new idempotency key | No |
@@ -776,11 +786,13 @@ physical storage presence.
 | Client disconnects during staging | `interrupted`, staged or absent | Resume the same stored upload ID if state is provable; otherwise reconcile or explicitly abort | Issue #6 worker/adapter |
 | Retry before finalization, same request key/digest | Existing `staging`/`interrupted` command state | Resume or inspect the same stored staging identity; never create an unrelated second upload | Application boundary |
 | Retry before finalization, changed request digest | No new logical effect | Return Issue #8 idempotency conflict | Application boundary |
+| Retry while `reconciliation_required` | Typed unavailable/reconciliation error; no new physical effect | Wait for trusted reconciliation; do not resume, abort or finalize through command retry | Issue #6 reconciliation |
 | Explicit abort before finalization | Stable terminal `aborted` result; staged bytes inaccessible | Replay returns the same result; cleanup is separate and approval-gated | Application boundary/Issue #6 cleanup |
 | Retry after explicit abort, same key/digest | Stable terminal `aborted` result | Do not reopen or create staging; require a new idempotency key for a new upload | Application boundary |
 | Storage write fails | No successful receipt | Retry bounded transient failures; do not claim success | Issue #6 |
 | Digest/length mismatch | Terminal `integrity_conflict`; no physical receipt | Same command is a stable mismatch; changed content requires a new identity | Application and adapter |
 | Process crashes before finalize | Staged bytes or unknown state | Reconcile by upload ID; never publish an unverified object | Issue #6 |
+| Process/machine/provider failure leaves contradictory or insufficient evidence | `reconciliation_required`; inaccessible and unavailable | Trusted reconciliation may resolve only from durable evidence; otherwise operator decision or approved cleanup | Issue #6 plus operations |
 | Process crashes after finalize before receipt persistence | Finalized orphan candidate | Reuse only when digest, length, upload ID and generation all match | Issue #6 plus PostgreSQL reconciliation |
 | Observation/receipt transaction rolls back after object finalize | Finalized orphan candidate; no durable observation or association | Retry the PostgreSQL observation operation with same idempotency key; do not rewrite bytes | Issue #7/application |
 | PostgreSQL commits receipt/reference but outbox delivery fails | Durable observation/reference remains; any committed intent is pending | Replay outbox; no second object write | Issue #4/outbox worker |
@@ -821,6 +833,29 @@ must:
 - quarantine or report ambiguity rather than deleting automatically;
 - apply physical cleanup only after an explicit approved retention/deletion rule;
 - emit safe diagnostics and audit references without private content.
+
+After a process, machine or provider failure, reconciliation resolves
+`reconciliation_required` only from durable evidence:
+
+1. Proven incomplete staging with the same safe staging identity transitions to
+   `interrupted` and may then resume normally.
+2. Proven verified finalization restores/validates the provisional receipt and
+   transitions to `finalized`.
+3. Proven expected/observed digest conflict transitions to terminal
+   `integrity_conflict`.
+4. Proven explicit abort transitions to terminal `aborted`; cleanup status is
+   tracked separately.
+5. Contradictory or insufficient evidence leaves the state
+   `reconciliation_required`, fails closed and requires operator action or an
+   approved cleanup decision.
+
+Ordinary command retry while `reconciliation_required` returns
+`ReconciliationRequired`; it cannot create a staging object, resume, abort,
+finalize or overwrite bytes. A new upload requires a new idempotency key and
+cannot reuse or delete ambiguous bytes automatically. If cleanup of an aborted
+upload fails, the command remains terminal `aborted`, cleanup is marked pending
+or failed, and trusted reconciliation may retry cleanup only under approved
+rules.
 
 Repair may associate a finalized object only when the command identity,
 pre-write request digest, observed content identity, generation, object identity
@@ -903,14 +938,25 @@ The conceptual manifest is:
 StorageRecoveryManifest
   schema_version: positive integer
   recovery_set_id: opaque UUID
-  postgres_boundary: recovery position or snapshot identity
+  fence_epoch: opaque monotonically ordered fencing token
+  fence_state: requested | draining | quiescent | snapshotting | validating |
+    finalized | aborting | failed | released
+  quiescent_barrier: not_reached | reached | invalidated
+  postgres_boundary: durable recovery position or snapshot identity
+  postgres_recovery_watermark: W | null
   object_volume_generation: opaque snapshot/generation identity
+  postgres_component_state: absent | identified | durable | verified | failed
+  object_component_state: absent | identified | durable | verified | failed
   profile: coordinated | best_effort
-  creation_state: preparing | fenced | finalized | incomplete | invalidated
+  creation_state: preparing | incomplete | finalized | failed | invalidated
+  postgres_backup_identity: opaque backup identity | null
+  drained_operation_count: non-negative integer
+  orphaned_operation_count: non-negative integer
+  indeterminate_operation_count: non-negative integer
+  final_status: coherent | incomplete | failed | null
   integrity_algorithm: sha256
   manifest_digest: lowercase hex
   scope: non-sensitive retention/scope identifier
-  fence_id: opaque UUID | null
   start_watermark: opaque monotonic boundary | null
   end_watermark: opaque monotonic boundary | null
   created_at: server timestamp
@@ -925,51 +971,152 @@ that PostgreSQL and a filesystem can be atomically snapshotted together.
 ### Profile A: approved coordinated recovery point
 
 Profile A is the only profile allowed to use `creation_state: finalized` with
-`profile: coordinated` and call the manifest a coherent recovery point. The
-trusted application/operations boundary establishes a bounded `fence_id` and
-watermark. The fence pauses new storage finalizations and new PostgreSQL
-receipt/reference association transactions from crossing the boundary; unrelated
-authorized reads may continue, but new admission, acceptance and physical
-deletion operations that could change the captured receipt/object set are
-paused. In-flight operations either finish before the fence and receive the
-pre-fence watermark or are classified as post-fence and excluded from the
-recovery set.
+`profile: coordinated` and call the manifest a coherent recovery point. One
+trusted backup coordinator owns the fence for this single deployment. It
+creates a fresh opaque `fence_epoch` that is strictly greater than every prior
+epoch. The epoch is coordination metadata, not a SourceRevision or source
+lifecycle sequence. If the approved PostgreSQL implementation has a durable
+monotonic transaction/outbox mutation sequence, the coordinator reuses it for
+`W`; otherwise the operational implementation must provide an equivalent
+durable monotonic recovery position without creating a competing canonical
+lifecycle authority.
 
-The approved coordinator then:
+The fence controls physical finalization/publication, PostgreSQL
+receipt/reference association, storage-generation/reference metadata mutation,
+physical deletion, finalized-object orphan cleanup, repair/reassociation and
+backup-relevant retention-status changes. Ordinary reads may continue. Staging
+may continue only when it remains non-finalized and explicitly outside the
+coherent recovery set; it cannot finalize while the exclusive fence is active.
+Any admission or canonical acceptance/current-publication mutation that changes
+the retained receipt/reference set is fenced. A lifecycle mutation that does
+not change that set may continue only when the selected PostgreSQL backup
+mechanism includes it consistently at `W`; storage never gains lifecycle
+authority from this exception.
 
-1. enters the bounded backup fence and records its start/watermark;
-2. lets in-flight upload finalization and receipt/reference transactions finish
-   or classifies them as post-fence according to that watermark;
-3. records the PostgreSQL recovery position at the fence;
-4. creates the object-volume snapshot/generation corresponding to that same
-   watermark;
-5. creates the PostgreSQL backup/snapshot at the defined recovery boundary;
-6. verifies that both component identities and the manifest are durable;
-7. records the end watermark, integrity-protects the manifest and only then
-   marks it `finalized`;
-8. releases the fence;
-9. restores into an isolated context and reconciles before readiness.
+Every fence-controlled mutation obtains a trusted operation ticket before its
+first irreversible boundary. A ticket admitted before exclusive fence
+activation is pre-fence. It must reach a proven terminal storage/PostgreSQL
+state or a proven reconciled orphan/failed state before quiescence. No new
+ticket is admitted while the fence is active; an attempted operation is
+post-fence and remains blocked or rejected until release. A missing or
+unprovable ticket/terminal state is indeterminate and prevents quiescence.
 
-The exact fence implementation, snapshot primitive and timeout remain
-approval-gated. A product cannot claim Profile A without evidence that it can
-implement the fence/watermark semantics; this is not an unsupported distributed
-transaction.
+The observable ticket has the conceptual shape
+`FenceOperationTicket(ticket_id, fence_epoch, operation_kind, admitted_at,
+scope, status)`. `operation_kind` distinguishes finalization, association,
+reference/generation mutation, deletion/cleanup, repair/reassociation and
+retention-status mutation; `status` is `admitted | completed | rolled_back |
+orphaned | failed | indeterminate`. The ticket contains identifiers and safe
+diagnostics only, never bytes, paths or credentials. Every adapter and
+PostgreSQL participant checks the current epoch before committing a
+fence-controlled mutation.
+
+After all pre-fence tickets are drained or classified, the coordinator records
+durable PostgreSQL recovery watermark `W`: the exact recovery position or
+monotonic mutation sequence containing every completed pre-fence
+receipt/reference mutation and excluding every post-fence mutation. The
+quiescent barrier is observable only when no pre-fence ticket is in flight, no
+indeterminate operation exists, and the coordinator has recorded `W`.
+
+The object snapshot selected for `W` must contain every retained finalized
+object referenced at `W`, must not depend on post-fence finalizations, and may
+contain an additional unassociated object only as a reconcilable orphan. A
+receipt/reference visible at `W` whose verified object is absent from the object
+snapshot invalidates Profile A; it cannot be silently downgraded to coherent.
+
+The fence state machine is:
+
+`requested → draining → quiescent → snapshotting → validating → finalized → released`.
+
+Any timeout, cancellation or component failure transitions through
+`aborting → failed → released`; no failed attempt may enter `finalized`.
+The coordinator has a bounded lease. Takeover after expiry requires a strictly
+newer `fence_epoch`; stale holders and stale tickets are rejected. A takeover
+either safely resumes the same attempt under the new owner or marks it failed
+and releases the fence. Two Profile A coordinators cannot be active together.
+
+At `draining`, the coordinator handles crossing operations as follows:
+
+1. Staging begun before the fence remains noncanonical and is excluded, or is
+   aborted/interrupted under the bounded drain policy; it cannot finalize.
+2. Finalization begun before the fence is drained to a verified associated
+   result, a proven finalized orphan, or a proven failed state. Indeterminate
+   result prevents Profile A.
+3. An object finalized without a committed PostgreSQL association is either
+   associated under its pre-fence ticket or classified as an orphan. It may be
+   in the object snapshot, but `W` must not claim an absent association.
+4. A receipt/reference transaction begun before the fence may commit or roll
+   back during drain; `W` is recorded only afterward.
+5. Physical deletion and finalized-object cleanup begun before the fence must
+   drain to a proven terminal result before quiescence. New deletion, cleanup,
+   repair and retention-status mutations are blocked. Failure to prove a result
+   invalidates Profile A.
+6. Admission/current-publication work is fenced when it changes the retained
+   reference set; otherwise it is included according to the PostgreSQL recovery
+   position and does not alter storage authority.
+
+The success protocol is:
+
+1. Create the lease-backed `fence_epoch` and enter `requested`/`draining`.
+2. Stop new fence-controlled tickets and drain/classify all pre-fence tickets.
+3. Persist the durable PostgreSQL watermark `W` and mark the quiescent barrier.
+4. Enter `snapshotting`; create the object-volume snapshot and PostgreSQL
+   backup identities corresponding to `W`.
+5. Enter `validating`; verify both component identities are durable and verify
+   every receipt/object at `W`, including retained-byte presence and digest.
+6. Persist and integrity-protect the manifest with drained/orphaned counts,
+   zero indeterminate operations and both component identities.
+7. Mark `finalized/coherent`, then release the fence through the guaranteed
+   release path. Restore remains isolated and non-ready until reconciliation.
+
+This is a coordination fence, not an unsupported distributed transaction. The
+exact PostgreSQL backup product, volume snapshot primitive, lease timeout and
+RPO/RTO remain approval-gated.
+
+The fence failure/recovery matrix is:
+
+| Failure/event | Manifest state | Fence state | Automatic release | Resume/operator action | Restored readiness |
+| --- | --- | --- | --- | --- | --- |
+| Timeout while draining | `incomplete` | `aborting` → `failed` | Yes, through the lease/release path | Inspect tickets; takeover may start a new attempt, but no failed attempt is reused as coherent | Not allowed from this attempt |
+| Coordinator crash in `requested`/`draining` | `incomplete` | Lease expires; stale holder rejected | Takeover or release after bounded lease | Inspect last ticket/watermark state; resume safely or fail and release | Not allowed |
+| Coordinator crash in `quiescent` | `incomplete` | Lease expires; barrier is not reusable without revalidation | Takeover must revalidate all tickets and `W`, or fail/release | Re-establish quiescence or start a new attempt | Not allowed |
+| Coordinator crash in `finalized` before release | `finalized` with `coherent` status only if all evidence was persisted | Lease expires; release is still required | Newer coordinator verifies manifest, then releases or invalidates it | Restore remains isolated until validation; no second coordinator may snapshot concurrently |
+| Coordinator crash in `snapshotting`/`validating` | `incomplete` | `aborting` → `failed` | Yes after stale-owner fencing | Treat partial snapshots as non-authoritative; operator may create a separate Profile B | Not allowed until isolated restore validation |
+| PostgreSQL backup failure | `failed`, no coherent final status | `aborting` → `released` | Yes | Preserve sanitized evidence; retry as a new attempt | Existing live service policy applies; this attempt cannot satisfy recovery readiness |
+| Object snapshot failure | `failed`, no coherent final status | `aborting` → `released` | Yes | Preserve component identities; retry as a new attempt or explicit Profile B | Not allowed from this attempt |
+| Manifest persistence/integrity failure | `failed` | `aborting` → `released` | Yes | Do not advertise either component set as coherent; operator may discard or separately classify artifacts | Not allowed |
+| Verification failure after snapshots | `failed` | `aborting` → `released` | Yes | Receipt/object mismatch is degraded and fail-closed; repair or operator decision required | Affected objects unavailable; no coherent readiness |
+| Failure to release fence | `failed` | `failed` until takeover/release | Lease expiry enables only a newer token to take over; never silently clear it | Operator inspects stale holder and either completes release or marks attempt failed | Live service policy applies, but fenced mutations remain blocked until safe release |
+| Stale coordinator replay | No new manifest effect | Current fence unchanged | Not applicable | Reject by older `fence_epoch`; inspect diagnostics | Unchanged |
+| Cleanup/deletion indeterminate at barrier | `incomplete` | `draining` or `aborting` | Only after proven terminal result or lease takeover | No Profile A; retain bytes and require reconciliation/operator decision | Not allowed |
+| Receipt visible at `W`, object absent from snapshot | `failed` | `aborting` → `released` | Yes | Invalidate Profile A; restore/repair or classify separately | Affected receipt unavailable; no coherent readiness |
+| Object present without receipt at `W` | `incomplete` if otherwise valid | `validating` | Yes after validation | Keep as orphan candidate; never infer provenance; operator may create Profile B explicitly | Not readable until reconciled |
+| Operator cancellation | `failed` or `invalidated` | `aborting` → `released` | Yes | Treat all partial artifacts as non-authoritative; start a new attempt if needed | Not allowed from cancelled attempt |
+
+The live service is not made globally unready solely because a backup attempt
+failed unless Issue #18/operations policy requires it. The failed attempt never
+satisfies recovery readiness; a restored environment remains non-ready until
+isolated reconciliation and approval. Any object with uncertain integrity is
+unavailable, and safe operational diagnostics are emitted through the Issue
+#4/#18 boundary. No stale coordinator may mutate state after release because
+every fence-controlled operation checks the current `fence_epoch`.
 
 ### Profile B: best-effort recovery set
 
-If Profile A cannot be established, the manifest uses `profile: best_effort` and
-`creation_state: incomplete` or another non-finalized state. It records the
-independent component generations plus start/end watermarks and the possible
-data-loss or reprocessing window. It is never called a coherent recovery point.
-Finalized objects without receipts and receipts without included objects are
-expected possibilities. Restore is isolated and non-ready; reconciliation,
-integrity checks and operator approval are required before readiness, and any
-receipt whose object cannot be verified fails closed.
+If Profile A cannot be established, an explicit operator action may create a
+separate `profile: best_effort` manifest with `creation_state: incomplete`.
+It records independent component generations, start/end watermarks, fence
+attempt evidence and the possible data-loss or reprocessing window. It is never
+called a coherent recovery point and a failed Profile A attempt is never
+silently relabeled. Finalized objects without receipts and receipts without
+included objects are expected possibilities. Restore is isolated and non-ready;
+reconciliation, integrity checks and operator approval are required before
+readiness, and any receipt whose object cannot be verified fails closed.
 
 For either profile, staging begun before the fence, finalization in progress at
 the fence, object finalization before receipt association, receipt/observation
 transactions in progress, later admission/canonical acceptance and cleanup or
-deletion in progress are classified by the recorded watermark. Restore
+deletion in progress are classified by ticket and recorded watermark. Restore
 preserves ADR 0018 observation, disposition and acceptance semantics and never
 guesses SourceRevision provenance.
 
@@ -1143,6 +1290,8 @@ tests must continue to prove the domain/application framework boundary.
 65. As an upload operator, I want interruption to be resumable but explicit abort to be terminal, so that cleanup failure cannot reopen or duplicate a command.
 66. As an Issue #3 validator, I want validation evidence handed separately to the SourceRevision observation boundary, so that revalidation never mutates physical storage truth.
 67. As a recovery operator, I want Profile A and Profile B distinguished by fence/watermark evidence, so that a best-effort backup cannot be mistaken for a coherent recovery point.
+68. As a recovery operator, I want fence-controlled operations ticketed and drained, so that every mutation is observably classified before watermark `W`.
+69. As an upload operator, I want contradictory crash evidence to enter reconciliation-required state, so that ordinary retries cannot resume or overwrite ambiguous bytes.
 
 ## Numbered Acceptance Criteria
 
@@ -1205,17 +1354,21 @@ tests must continue to prove the domain/application framework boundary.
 18. Logical tombstones and physical deletion are separate; physical deletion
     and retention remain approval-gated and no unapproved duration is selected.
 19. Backup/restore uses a finalized Profile A `StorageRecoveryManifest` only
-   after a bounded fence/watermark binds the PostgreSQL recovery boundary and
-   object-volume generation. Profile B is explicitly best-effort; mixed or
-   incomplete recovery remains degraded and unavailable until reconciliation
-   and approval.
+   after the lease-backed quiescent fence drains ticketed operations, records
+   durable watermark `W`, verifies PostgreSQL/object-volume identities and
+   persists coherent integrity evidence. Profile B is explicitly best-effort;
+   mixed or incomplete recovery remains degraded and unavailable until
+   reconciliation and approval.
 20. The test strategy includes the confirmed six seams, shared fake/real
     conformance, bounded streaming, duplicate/retry, cross-tenant identical
     bytes, corruption, restart, orphan, missing-object, tombstone, deletion,
     authorization-before-byte, grant replay/revocation/substitution,
     no-expected-checksum same/different-byte retries, observed-hash crash,
    filename/MIME/path/size/timeout, terminal-abort/resumable-interruption,
-   separate validation-handoff and Profile A/Profile B backup/restore cases.
+   separate validation-handoff, indeterminate-upload reconciliation and
+   Profile A/Profile B backup/restore cases. Tests exercise fence timeout,
+   coordinator crash, stale-token rejection, snapshot/verification failure and
+   guaranteed release behavior.
 21. The specification names Issue #6 ownership and the exact coordination
     boundaries with Issue #7, Issue #3, Issue #4 and Issue #8.
 22. The recommendation compares local filesystem, PostgreSQL bytes,
@@ -1242,17 +1395,27 @@ tests must continue to prove the domain/application framework boundary.
     before streaming; server-generated `object_id`, `upload_id`, generation and
     result references are allocated only after claim/resolve and are recovered
     on replay rather than included in the digest.
-29. `UploadCommandState` distinguishes recoverable `staging`/`interrupted`
-    states from terminal `finalized`, `aborted` and `integrity_conflict` states;
-    explicit abort is stable, cleanup is separate, and a new upload requires a
-    new idempotency key.
+29. `UploadCommandState` distinguishes recoverable `staging`/`interrupted`,
+    blocked `reconciliation_required`, and terminal `finalized`, `aborted` and
+    `integrity_conflict` states; explicit abort is stable, cleanup is separate,
+    and a new upload requires a new idempotency key.
 30. `WriteReceipt` contains only physical storage evidence. Issue #3 validation
     is a separate re-runnable handoff to the Issue #7 observation/admission
     contract and cannot alter immutable bytes or the storage receipt.
 31. A Profile A recovery manifest is finalized only after the bounded backup
-    fence, watermark classification and durable PostgreSQL/object-volume
-    evidence succeed; Profile B is never called coherent and cannot open
+    fence reaches a quiescent barrier, drains ticketed operations, records the
+    durable PostgreSQL watermark `W`, and persists verified PostgreSQL/object-
+    volume evidence; timeout, stale coordinator, release or verification failure
+    cannot become coherent. Profile B is never called coherent and cannot open
     readiness without reconciliation and approval.
+32. `StorageRecoveryManifest` records the fence epoch, barrier/fence state,
+    watermark, component identities and completion states, drained/orphaned/
+    indeterminate counts and final coherent/incomplete/failed status without
+    private data.
+33. `UploadCommandState.reconciliation_required` is blocked and inaccessible;
+    only trusted reconciliation may transition it to `interrupted`, `finalized`,
+    `integrity_conflict` or `aborted`, while ordinary retry cannot create,
+    resume, abort, finalize or overwrite an ambiguous upload.
 
 ## Suggested Implementation Slices
 
@@ -1264,7 +1427,8 @@ tests must continue to prove the domain/application framework boundary.
    namespaces, streaming, digest verification and overwrite prevention.
 4. Add application orchestration for receipt handoff and idempotency using the
    existing Issue #8 Unit of Work, without implementing Issue #7 repositories.
-5. Add filesystem restart, crash-window, orphan and restore integration tests.
+5. Add filesystem restart, crash-window, orphan, indeterminate-state and
+   restore integration tests, including the ticketed Profile A fence matrix.
 6. Add PostgreSQL receipt/reference persistence when Issue #7 defines its
    canonical records and migration ownership.
 7. Add reconciliation and controlled deletion only after retention/approval
@@ -1319,6 +1483,12 @@ complete Issue #6 durable storage.
 - **Backup split-brain**: use Profile A's bounded fence and watermark before
   calling a manifest coherent; classify Profile B as best-effort, reconcile
   mixed generations in isolation and keep readiness closed until approval.
+- **Stale backup coordinator**: use lease expiry, strictly increasing
+  `fence_epoch` and token checks on every fence-controlled mutation; stale
+  holders cannot release or mutate a newer attempt.
+- **Indeterminate upload state**: block ordinary retry and content reads, use
+  durable-evidence reconciliation, and keep cleanup separate from terminal
+  abort.
 
 ## Out of Scope
 
@@ -1343,9 +1513,10 @@ complete Issue #6 durable storage.
 2. Are machine/power-loss tests available in the deployment environment, or must
    readiness depend on a stronger S3-compatible adapter?
 3. Which approved backup product and snapshot primitive can implement the
-   bounded Profile A fence/watermark, and what restore point objectives cover
-   PostgreSQL receipts and finalized objects as one coherent recovery point?
-   If none can, what Profile B data-loss/reprocessing window is accepted?
+   bounded Profile A fence/watermark, durable operation tickets and lease
+   takeover, and what restore point objectives cover PostgreSQL receipts and
+   finalized objects as one coherent recovery point? If none can, what Profile B
+   data-loss/reprocessing window is accepted?
 4. What retention durations, legal holds, historical-revision obligations and
    deletion approvals apply to original bytes, staged objects, backups and
    quarantined/rejected content?
