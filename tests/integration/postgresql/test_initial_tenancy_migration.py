@@ -48,7 +48,8 @@ INITIAL_REVISION = "20261009_01"
 RLS_REVISION = "20261009_02"
 IDEMPOTENCY_REVISION = "20261010_03"
 OUTBOX_REVISION = "20261010_04"
-HEAD_REVISION = "20261010_05"
+PRE_K0_REVISION = "20261010_05"
+HEAD_REVISION = "20261010_06"
 WORKSPACE_A = UUID("20000000-0000-0000-0000-000000000001")
 WORKSPACE_B = UUID("20000000-0000-0000-0000-000000000002")
 ENVIRONMENT_A = UUID("30000000-0000-0000-0000-000000000001")
@@ -123,6 +124,13 @@ async def migrated_database(
             )
         )
     await asyncio.to_thread(upgrade_database, migration, revision=OUTBOX_REVISION)
+    async with _connection(migration.url) as connection:
+        retained_revisions.append(
+            await connection.scalar(
+                text("SELECT version_num FROM spine.alembic_version")
+            )
+        )
+    await asyncio.to_thread(upgrade_database, migration, revision=PRE_K0_REVISION)
     async with _connection(migration.url) as connection:
         retained_revisions.append(
             await connection.scalar(
@@ -439,6 +447,7 @@ async def test_initial_tenancy_revision_upgrades_to_current_head_and_owned_schem
         RLS_REVISION,
         IDEMPOTENCY_REVISION,
         OUTBOX_REVISION,
+        PRE_K0_REVISION,
     )
     assert heads == [HEAD_REVISION]
     assert owner == MIGRATION_ROLE
@@ -814,6 +823,38 @@ async def test_idempotency_receipt_result_can_be_completed_exactly_once(
                     "digest": "b" * 64,
                 },
             )
+            await connection.commit()
+
+        with pytest.raises(IntegrityError) as error:
+            async with _connection(migrated_database.migration.url) as connection:
+                await connection.execute(
+                    text(
+                        "UPDATE spine.idempotency_receipts SET workspace_id = :workspace_id "
+                        "WHERE receipt_id = :receipt_id"
+                    ),
+                    {"receipt_id": receipt_id, "workspace_id": WORKSPACE_B},
+                )
+        assert (
+            error.value.orig.diag.constraint_name
+            == "ck_idempotency_receipt_scope_immutable"
+        )
+
+        with pytest.raises(ProgrammingError):
+            async with _connection(migrated_database.runtime_url) as connection:
+                await _set_tenant_context(connection, workspace_id=WORKSPACE_A)
+                await connection.execute(
+                    text(
+                        "UPDATE spine.idempotency_receipts SET environment_id = :environment_id "
+                        "WHERE receipt_id = :receipt_id"
+                    ),
+                    {
+                        "receipt_id": receipt_id,
+                        "environment_id": ENVIRONMENT_A,
+                    },
+                )
+
+        async with _connection(migrated_database.runtime_url) as connection:
+            await _set_tenant_context(connection, workspace_id=WORKSPACE_A)
             await connection.execute(
                 text(
                     "UPDATE spine.idempotency_receipts SET "
@@ -1200,6 +1241,437 @@ async def test_runtime_grants_are_minimal_and_tables_remain_migration_owned(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_k0_receipt_integrity_objects_are_catalogued_and_restricted(
+    migrated_database: MigratedDatabase,
+) -> None:
+    async with _connection(migrated_database.migration.url) as connection:
+        functions = {
+            row.proname: (
+                row.owner,
+                row.language,
+                row.volatility,
+                row.security_definer,
+                tuple(row.config or ()),
+                row.public_execute,
+                row.runtime_execute,
+                row.definition,
+            )
+            for row in (
+                await connection.execute(
+                    text(
+                        "SELECT procedure.proname, pg_get_userbyid(procedure.proowner) "
+                        "AS owner, language.lanname AS language, "
+                        "procedure.provolatile AS volatility, procedure.prosecdef "
+                        "AS security_definer, procedure.proconfig AS config, "
+                        "pg_get_functiondef(procedure.oid) AS definition, "
+                        "has_function_privilege('public', procedure.oid, 'EXECUTE') "
+                        "AS public_execute, has_function_privilege(:runtime, "
+                        "procedure.oid, 'EXECUTE') AS runtime_execute "
+                        "FROM pg_proc AS procedure JOIN pg_namespace AS namespace "
+                        "ON namespace.oid = procedure.pronamespace "
+                        "JOIN pg_language AS language ON language.oid = procedure.prolang "
+                        "WHERE namespace.nspname = 'spine' AND procedure.proname IN "
+                        "('validate_issue7_receipt_scope', "
+                        "'reject_idempotency_receipt_scope_update', "
+                        "'validate_idempotency_receipt_tenant', "
+                        "'enforce_idempotency_receipt_scope_immutable')"
+                    ),
+                    {"runtime": RUNTIME_ROLE},
+                )
+            ).mappings()
+        }
+        trigger = (
+            await connection.execute(
+                text(
+                    "SELECT trigger.tgname, pg_get_userbyid(relation.relowner) AS owner, "
+                    "trigger.tgenabled, trigger.tgdeferrable, trigger.tginitdeferred, "
+                    "trigger.tgtype, pg_get_triggerdef(trigger.oid) AS definition "
+                    "FROM pg_trigger AS trigger JOIN pg_class AS relation "
+                    "ON relation.oid = trigger.tgrelid "
+                    "JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace "
+                    "WHERE namespace.nspname = 'spine' AND relation.relname = "
+                    "'idempotency_receipts' AND NOT trigger.tgisinternal"
+                )
+            )
+        ).mappings().all()
+
+    assert set(functions) == {
+        "validate_issue7_receipt_scope",
+        "reject_idempotency_receipt_scope_update",
+    }
+    for owner, language, volatility, security_definer, config, public_execute, runtime_execute, definition in functions.values():
+        assert owner == MIGRATION_ROLE
+        assert language == "plpgsql"
+        assert volatility == "v"
+        assert security_definer is False
+        assert config == ("search_path=pg_catalog, spine",)
+        assert public_execute is False
+        assert runtime_execute is False
+        if "validate_issue7_receipt_scope" in definition:
+            assert "FOR KEY SHARE" in definition
+
+    assert len(trigger) == 2
+    scope_trigger = next(
+        row for row in trigger if row.tgname == "trg_idempotency_receipts_scope_immutable"
+    )
+    assert scope_trigger.owner == MIGRATION_ROLE
+    assert scope_trigger.tgenabled == "O"
+    assert scope_trigger.tgdeferrable is False
+    assert scope_trigger.tginitdeferred is False
+    assert "BEFORE UPDATE OF workspace_id, environment_id" in scope_trigger.definition
+    assert "reject_idempotency_receipt_scope_update" in scope_trigger.definition
+    assert scope_trigger.tgtype == 19
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_k0_migration_downgrades_and_reupgrades_cleanly(
+    migrated_database: MigratedDatabase,
+) -> None:
+    await asyncio.to_thread(
+        upgrade_database,
+        migrated_database.migration,
+        revision=PRE_K0_REVISION,
+    )
+    async with _connection(migrated_database.migration.url) as connection:
+        assert await connection.scalar(
+            text("SELECT to_regprocedure('spine.validate_issue7_receipt_scope()')")
+        ) is None
+        assert await connection.scalar(
+            text("SELECT version_num FROM spine.alembic_version")
+        ) == PRE_K0_REVISION
+
+    await asyncio.to_thread(upgrade_database, migrated_database.migration)
+    async with _connection(migrated_database.migration.url) as connection:
+        assert await connection.scalar(
+            text("SELECT to_regprocedure('spine.validate_issue7_receipt_scope()')")
+        ) is not None
+        assert await connection.scalar(
+            text("SELECT version_num FROM spine.alembic_version")
+        ) == HEAD_REVISION
+
+
+@pytest_asyncio.fixture
+async def k0_child_fixture(
+    migrated_database: MigratedDatabase,
+) -> AsyncIterator[None]:
+    async with _connection(migrated_database.migration.url) as connection:
+        await connection.execute(
+            text(
+                "CREATE TABLE spine.k0_receipt_reference_fixture ("
+                "fixture_id uuid PRIMARY KEY, workspace_id uuid NOT NULL, "
+                "environment_id uuid, idempotency_receipt_id uuid)"
+            )
+        )
+        await connection.execute(
+            text(
+                "GRANT INSERT, SELECT ON spine.k0_receipt_reference_fixture "
+                f"TO {RUNTIME_ROLE}"
+            )
+        )
+        await connection.execute(
+            text(
+                "CREATE CONSTRAINT TRIGGER trg_k0_fixture_receipt_tenant "
+                "AFTER INSERT OR UPDATE ON spine.k0_receipt_reference_fixture "
+                "DEFERRABLE INITIALLY DEFERRED FOR EACH ROW "
+                "EXECUTE FUNCTION spine.validate_issue7_receipt_scope()"
+            )
+        )
+        trigger = (
+            await connection.execute(
+                text(
+                    "SELECT trigger.tgtype, trigger.tgdeferrable, "
+                    "trigger.tginitdeferred, pg_get_triggerdef(trigger.oid) AS definition "
+                    "FROM pg_trigger AS trigger JOIN pg_class AS relation "
+                    "ON relation.oid = trigger.tgrelid "
+                    "JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace "
+                    "WHERE namespace.nspname = 'spine' AND relation.relname = "
+                    "'k0_receipt_reference_fixture' AND trigger.tgname = "
+                    "'trg_k0_fixture_receipt_tenant'"
+                )
+            )
+        ).one()
+        assert trigger.tgtype == 21
+        assert trigger.tgdeferrable is True
+        assert trigger.tginitdeferred is True
+        assert "AFTER INSERT OR UPDATE" in trigger.definition
+        assert "FOR EACH ROW" in trigger.definition
+        assert "validate_issue7_receipt_scope" in trigger.definition
+        await connection.commit()
+    try:
+        yield
+    finally:
+        async with _connection(migrated_database.migration.url) as connection:
+            await connection.execute(
+                text("DROP TABLE IF EXISTS spine.k0_receipt_reference_fixture")
+            )
+            await connection.execute(
+                text(
+                    "DELETE FROM spine.idempotency_receipts "
+                    "WHERE operation_name = 'k0.fixture'"
+                )
+            )
+            await connection.commit()
+
+
+async def _insert_environment_receipt(
+    database: MigratedDatabase,
+    *,
+    receipt_id: UUID,
+    workspace_id: UUID,
+    environment_id: UUID | None,
+) -> None:
+    async with _connection(database.migration.url) as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO spine.idempotency_receipts "
+                "(receipt_id, workspace_id, environment_id, operation_name, "
+                "operation_schema_version, idempotency_key, digest_algorithm_version, "
+                "command_digest) VALUES (:receipt_id, :workspace_id, :environment_id, "
+                "'k0.fixture', 1, :idempotency_key, 'spine.command-digest.v1', "
+                ":command_digest)"
+            ),
+            {
+                "receipt_id": receipt_id,
+                "workspace_id": workspace_id,
+                "environment_id": environment_id,
+                "idempotency_key": str(receipt_id),
+                "command_digest": "a" * 64,
+            },
+        )
+        await connection.commit()
+
+
+async def _insert_k0_child(
+    database: MigratedDatabase,
+    *,
+    fixture_id: UUID,
+    workspace_id: UUID,
+    environment_id: UUID | None,
+    receipt_id: UUID | None,
+    commit: bool = True,
+) -> None:
+    async with _connection(database.runtime_url) as connection:
+        await _set_tenant_context(
+            connection,
+            workspace_id=WORKSPACE_A,
+            environment_id=ENVIRONMENT_A,
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO spine.k0_receipt_reference_fixture "
+                "(fixture_id, workspace_id, environment_id, idempotency_receipt_id) "
+                "VALUES (:fixture_id, :workspace_id, :environment_id, :receipt_id)"
+            ),
+            {
+                "fixture_id": fixture_id,
+                "workspace_id": workspace_id,
+                "environment_id": environment_id,
+                "receipt_id": receipt_id,
+            },
+        )
+        if commit:
+            await connection.commit()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_k0_deferred_validator_accepts_same_tenant_receipt(
+    migrated_database: MigratedDatabase,
+    tenant_rows: None,
+    k0_child_fixture: None,
+) -> None:
+    receipt_id = UUID("51000000-0000-0000-0000-000000000101")
+    await _insert_environment_receipt(
+        migrated_database,
+        receipt_id=receipt_id,
+        workspace_id=WORKSPACE_A,
+        environment_id=ENVIRONMENT_A,
+    )
+    await _insert_k0_child(
+        migrated_database,
+        fixture_id=UUID("52000000-0000-0000-0000-000000000101"),
+        workspace_id=WORKSPACE_A,
+        environment_id=ENVIRONMENT_A,
+        receipt_id=receipt_id,
+    )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_k0_deferred_validator_rollback_removes_child_and_retry_succeeds(
+    migrated_database: MigratedDatabase,
+    tenant_rows: None,
+    k0_child_fixture: None,
+) -> None:
+    receipt_id = UUID("51000000-0000-0000-0000-000000000108")
+    await _insert_environment_receipt(
+        migrated_database,
+        receipt_id=receipt_id,
+        workspace_id=WORKSPACE_A,
+        environment_id=ENVIRONMENT_A,
+    )
+    async with _connection(migrated_database.runtime_url) as connection:
+        await _set_tenant_context(
+            connection,
+            workspace_id=WORKSPACE_A,
+            environment_id=ENVIRONMENT_A,
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO spine.k0_receipt_reference_fixture "
+                "(fixture_id, workspace_id, environment_id, idempotency_receipt_id) "
+                "VALUES (:fixture_id, :workspace_id, :environment_id, :receipt_id)"
+            ),
+            {
+                "fixture_id": UUID("52000000-0000-0000-0000-000000000108"),
+                "workspace_id": WORKSPACE_B,
+                "environment_id": ENVIRONMENT_A,
+                "receipt_id": receipt_id,
+            },
+        )
+        with pytest.raises(DBAPIError):
+            await connection.commit()
+        await connection.rollback()
+        await connection.execute(
+            text(
+                "INSERT INTO spine.k0_receipt_reference_fixture "
+                "(fixture_id, workspace_id, environment_id, idempotency_receipt_id) "
+                "VALUES (:fixture_id, :workspace_id, :environment_id, :receipt_id)"
+            ),
+            {
+                "fixture_id": UUID("52000000-0000-0000-0000-000000000109"),
+                "workspace_id": WORKSPACE_A,
+                "environment_id": ENVIRONMENT_A,
+                "receipt_id": receipt_id,
+            },
+        )
+        await connection.commit()
+
+    async with _connection(migrated_database.migration.url) as connection:
+        count = await connection.scalar(
+            text(
+                "SELECT count(*) FROM spine.k0_receipt_reference_fixture "
+                "WHERE idempotency_receipt_id = :receipt_id"
+            ),
+            {"receipt_id": receipt_id},
+        )
+    assert count == 1
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("workspace_id", "environment_id", "receipt_id"),
+    (
+        (WORKSPACE_B, ENVIRONMENT_A, "foreign_workspace"),
+        (WORKSPACE_A, ENVIRONMENT_A_SECOND, "foreign_environment"),
+        (WORKSPACE_A, None, "null_environment"),
+        (WORKSPACE_A, ENVIRONMENT_A, "missing"),
+        (WORKSPACE_A, ENVIRONMENT_A, "workspace_scoped"),
+        (WORKSPACE_A, ENVIRONMENT_A, "hidden"),
+    ),
+)
+async def test_k0_deferred_validator_rejects_foreign_or_unavailable_receipt(
+    migrated_database: MigratedDatabase,
+    tenant_rows: None,
+    k0_child_fixture: None,
+    workspace_id: UUID,
+    environment_id: UUID | None,
+    receipt_id: str,
+) -> None:
+    receipt_uuid = UUID("51000000-0000-0000-0000-000000000102")
+    receipt_ids = {
+        "foreign_workspace": UUID("51000000-0000-0000-0000-000000000102"),
+        "foreign_environment": UUID("51000000-0000-0000-0000-000000000103"),
+        "null_environment": UUID("51000000-0000-0000-0000-000000000104"),
+        "hidden": UUID("51000000-0000-0000-0000-000000000105"),
+        "workspace_scoped": UUID("51000000-0000-0000-0000-000000000106"),
+    }
+    if receipt_id in receipt_ids:
+        receipt_uuid = receipt_ids[receipt_id]
+        await _insert_environment_receipt(
+            migrated_database,
+            receipt_id=receipt_uuid,
+            workspace_id=WORKSPACE_A,
+            environment_id=(None if receipt_id == "workspace_scoped" else ENVIRONMENT_A),
+        )
+    if receipt_id == "hidden":
+        async with _connection(migrated_database.runtime_url) as connection:
+            await _set_tenant_context(
+                connection,
+                workspace_id=WORKSPACE_B,
+                environment_id=ENVIRONMENT_B,
+            )
+            with pytest.raises(DBAPIError) as error:
+                await connection.execute(
+                    text(
+                        "INSERT INTO spine.k0_receipt_reference_fixture "
+                        "(fixture_id, workspace_id, environment_id, idempotency_receipt_id) "
+                        "VALUES (:fixture_id, :workspace_id, :environment_id, :receipt_id)"
+                    ),
+                    {
+                        "fixture_id": UUID("52000000-0000-0000-0000-000000000102"),
+                        "workspace_id": WORKSPACE_A,
+                        "environment_id": ENVIRONMENT_A,
+                        "receipt_id": receipt_uuid,
+                    },
+                )
+                await connection.commit()
+            await connection.rollback()
+        assert str(receipt_uuid) not in str(error.value)
+        return
+
+    selected_receipt = receipt_ids.get(receipt_id)
+    with pytest.raises(DBAPIError) as error:
+        await _insert_k0_child(
+            migrated_database,
+            fixture_id=UUID("52000000-0000-0000-0000-000000000102"),
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            receipt_id=selected_receipt,
+        )
+    assert str(receipt_uuid) not in str(error.value)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_k0_deferred_validator_fails_closed_for_malformed_tenant_settings(
+    migrated_database: MigratedDatabase,
+    tenant_rows: None,
+    k0_child_fixture: None,
+) -> None:
+    receipt_id = UUID("51000000-0000-0000-0000-000000000107")
+    await _insert_environment_receipt(
+        migrated_database,
+        receipt_id=receipt_id,
+        workspace_id=WORKSPACE_A,
+        environment_id=ENVIRONMENT_A,
+    )
+    with pytest.raises(DBAPIError) as error:
+        async with _connection(migrated_database.runtime_url) as connection:
+            await connection.execute(
+                text("SELECT set_config('spine.workspace_id', 'not-a-workspace', true)")
+            )
+            await connection.execute(
+                text("SELECT set_config('spine.environment_id', :value, true)"),
+                {"value": str(ENVIRONMENT_A)},
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.k0_receipt_reference_fixture "
+                    "(fixture_id, workspace_id, environment_id, idempotency_receipt_id) "
+                    "VALUES (:fixture_id, :workspace_id, :environment_id, :receipt_id)"
+                ),
+                {
+                    "fixture_id": UUID("52000000-0000-0000-0000-000000000107"),
+                    "workspace_id": WORKSPACE_A,
+                    "environment_id": ENVIRONMENT_A,
+                    "receipt_id": receipt_id,
+                },
+            )
+            await connection.commit()
+    assert str(receipt_id) not in str(error.value)
+    assert str(WORKSPACE_A) not in str(error.value)
+    assert str(ENVIRONMENT_A) not in str(error.value)
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_workspace_rls_hides_and_rejects_another_workspace_rows(
     migrated_database: MigratedDatabase,
     tenant_rows: None,
@@ -1380,6 +1852,11 @@ async def test_missing_or_malformed_settings_fail_closed_without_identifiers(
         "CREATE TABLE spine.runtime_ddl_attempt (id integer)",
         "ALTER TABLE spine.workspaces DISABLE ROW LEVEL SECURITY",
         "DROP POLICY pol_workspaces_tenant_isolation ON spine.workspaces",
+        "ALTER TABLE spine.idempotency_receipts DISABLE TRIGGER "
+        "trg_idempotency_receipts_scope_immutable",
+        "ALTER FUNCTION spine.validate_issue7_receipt_scope() "
+        "RENAME TO k0_validator_replaced",
+        "DROP FUNCTION spine.validate_issue7_receipt_scope()",
         "ALTER ROLE spine_runtime BYPASSRLS",
         "SET ROLE spine_migration",
     ],
@@ -1618,6 +2095,7 @@ async def test_every_retained_revision_upgrades_to_one_final_head(
         RLS_REVISION,
         IDEMPOTENCY_REVISION,
         OUTBOX_REVISION,
+        PRE_K0_REVISION,
     )
     try:
         for starting_revision in starting_revisions:
