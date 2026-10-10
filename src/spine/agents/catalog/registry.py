@@ -18,6 +18,7 @@ from spine.domain.capabilities import CapabilityDefinition
 
 if TYPE_CHECKING:
     from spine.agents.catalog.resolver import ResolvedAgentBinding
+    from spine.agents.runtime.context import AgentExecutionContextFactory
 
 
 _IMPLEMENTATION_KEY = re.compile(r"[a-z][a-z0-9_.-]{0,127}\Z")
@@ -183,7 +184,7 @@ class _BoundAgentHandler:
         "_selected",
         "_context",
         "_admission",
-        "_trusted_authority",
+        "_trusted_factory",
         "_resolved_binding",
     )
 
@@ -193,13 +194,13 @@ class _BoundAgentHandler:
         selected: _RegisteredHandler,
         context: AgentExecutionContext,
         admission: AgentExecutionContextAdmission,
-        trusted_authority: object,
+        trusted_factory: AgentExecutionContextFactory,
         resolved_binding: ResolvedAgentBinding,
     ) -> None:
         self._selected = selected
         self._context = context
         self._admission = admission
-        self._trusted_authority = trusted_authority
+        self._trusted_factory = trusted_factory
         self._resolved_binding = resolved_binding
 
     async def invoke(
@@ -213,7 +214,7 @@ class _BoundAgentHandler:
             self._admission.verify_selection(
                 context,
                 self._resolved_binding,
-                self._trusted_authority,
+                self._trusted_factory,
             )
             self._admission.verify_request(request, context)
         except Exception:
@@ -237,10 +238,9 @@ def _is_factory(value: Any) -> bool:
 class HandlerRegistry:
     """A composition-root-owned registry with an explicit finalization boundary."""
 
-    def __init__(self, *, execution_admission_authority: object | None = None) -> None:
+    def __init__(self) -> None:
         self._registrations: dict[tuple[UUID, str], _HandlerRegistration] = {}
         self._finalized = False
-        self._execution_admission_authority = execution_admission_authority
 
     def register_handler(
         self,
@@ -326,21 +326,28 @@ class HandlerRegistry:
         admission: AgentExecutionContextAdmission,
         resolved_binding: ResolvedAgentBinding,
     ) -> AgentHandler[Any, Any]:
-        """Bind one registry selection to a current trusted admission.
+        """Reject direct execution-gate assembly through the catalog API."""
 
-        This is the composition-owned execution gate. The registry's
-        composition-bound authority must be the same authority captured by the
-        factory that issued the admission. The returned
-        handler keeps the approved two-argument public contract while retaining
-        the privileged admission outside user-defined handler arguments.
-        """
+        del handler, context, admission, resolved_binding
+        raise HandlerRegistryError(
+            "handler execution must use the trusted infrastructure composition"
+        )
+
+    def _bind_composed_execution(
+        self,
+        *,
+        handler: AgentHandler[Any, Any],
+        context: AgentExecutionContext,
+        admission: AgentExecutionContextAdmission,
+        resolved_binding: ResolvedAgentBinding,
+        trusted_factory: AgentExecutionContextFactory,
+    ) -> AgentHandler[Any, Any]:
+        """Bind a selection for the infrastructure-owned execution runtime."""
 
         if type(handler) is not _RegisteredHandler:
             raise HandlerRegistryError("handler selection is not registry-bound")
         if type(admission) is not AgentExecutionContextAdmission:
             raise HandlerRegistryError("handler execution admission is invalid")
-        if self._execution_admission_authority is None:
-            raise HandlerRegistryError("handler execution admission is unavailable")
         if handler is not getattr(resolved_binding, "handler", None):
             raise HandlerRegistryError("handler selection is not pinned")
         if handler.registration != getattr(resolved_binding, "registration", None):
@@ -349,7 +356,7 @@ class HandlerRegistry:
             admission.verify_selection(
                 context,
                 resolved_binding,
-                self._execution_admission_authority,
+                trusted_factory,
             )
         except Exception:
             raise HandlerRegistryError("handler execution admission is invalid") from None
@@ -357,7 +364,7 @@ class HandlerRegistry:
             selected=handler,
             context=context,
             admission=admission,
-            trusted_authority=self._execution_admission_authority,
+            trusted_factory=trusted_factory,
             resolved_binding=resolved_binding,
         )
 

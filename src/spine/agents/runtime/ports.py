@@ -95,8 +95,9 @@ class CanonicalTrustedAuthorizationContextVerifier:
     """Composition-owned verifier base for production execution admission.
 
     The implementation is supplied by the infrastructure authorization
-    boundary. A structural verifier remains suitable for plain construction
-    tests, but cannot issue an admission accepted by the execution gate.
+    boundary. Structural and nominal test verifiers may support plain
+    construction tests, but a verifier alone cannot issue an admission
+    accepted by the protected execution gate.
     """
 
     def verify(

@@ -6,7 +6,9 @@ from spine.infrastructure.auth.composition import (
 )
 from spine.infrastructure.auth.agent_runtime import (
     RequestAgentAuthorizationVerifier,
+    TrustedAgentExecutionRuntime,
     compose_agent_execution_context_factory,
+    compose_agent_execution_runtime,
 )
 from spine.infrastructure.auth.oidc import (
     OIDCAuthenticationRuntime,
@@ -36,6 +38,8 @@ __all__ = [
     "OIDCReadinessStatus",
     "RequestAuthorizationComposer",
     "RequestAgentAuthorizationVerifier",
+    "TrustedAgentExecutionRuntime",
     "compose_agent_execution_context_factory",
+    "compose_agent_execution_runtime",
     "TrustedRequestContextBoundary",
 ]

@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from spine.agents.runtime.context import AgentExecutionContextFactory
+from typing import TYPE_CHECKING, Any
+
+from spine.agents.catalog.registry import HandlerRegistry
+from spine.agents.runtime.contracts import AgentExecutionContext
+from spine.agents.runtime.context import (
+    AgentExecutionContextAdmission,
+    AgentExecutionContextFactory,
+)
+from spine.agents.runtime.protocol import AgentHandler
 from spine.agents.runtime.ports import (
     CanonicalTrustedAuthorizationContextVerifier,
     ExecutionScopeValidator,
@@ -18,11 +26,8 @@ from spine.infrastructure.auth.trusted_context import (
     TrustedRequestContextBoundary,
 )
 
-
-class _ProductionExecutionAdmissionAuthority:
-    """Composition-owned identity shared by the factory and execution gate."""
-
-    __slots__ = ()
+if TYPE_CHECKING:
+    from spine.agents.catalog.resolver import ResolvedAgentBinding
 
 
 class RequestAgentAuthorizationVerifier(CanonicalTrustedAuthorizationContextVerifier):
@@ -76,6 +81,77 @@ class RequestAgentAuthorizationVerifier(CanonicalTrustedAuthorizationContextVeri
             raise ValueError("authorization context is invalid") from None
 
 
+class TrustedAgentExecutionRuntime:
+    """Atomic #72-backed composition of one factory and one registry gate."""
+
+    __slots__ = ("_factory", "_registry")
+
+    def __init__(
+        self,
+        *,
+        boundary: TrustedRequestContextBoundary,
+        authorized: AuthorizedRequest,
+        scope_validator: ExecutionScopeValidator,
+        expected_route_policy: RouteAuthorizationPolicy,
+        registry: HandlerRegistry,
+    ) -> None:
+        if type(boundary) is not TrustedRequestContextBoundary:
+            raise TypeError("request boundary must use the canonical implementation")
+        if type(authorized) is not AuthorizedRequest:
+            raise TypeError("authorized request must use the canonical contract")
+        if type(registry) is not HandlerRegistry:
+            raise TypeError("handler registry must use the canonical implementation")
+        self._factory = _create_factory(
+            boundary=boundary,
+            authorized=authorized,
+            scope_validator=scope_validator,
+            expected_route_policy=expected_route_policy,
+        )
+        self._registry = registry
+
+    @property
+    def factory(self) -> AgentExecutionContextFactory:
+        """Return the plain-data factory paired with this protected gate."""
+
+        return self._factory
+
+    def bind_for_execution(
+        self,
+        *,
+        handler: AgentHandler[Any, Any],
+        context: AgentExecutionContext,
+        admission: AgentExecutionContextAdmission,
+        resolved_binding: ResolvedAgentBinding,
+    ) -> AgentHandler[Any, Any]:
+        """Bind one exact registry selection to the live #72 request."""
+
+        return self._registry._bind_composed_execution(
+            handler=handler,
+            context=context,
+            admission=admission,
+            resolved_binding=resolved_binding,
+            trusted_factory=self._factory,
+        )
+
+
+def _create_factory(
+    *,
+    boundary: TrustedRequestContextBoundary,
+    authorized: AuthorizedRequest,
+    scope_validator: ExecutionScopeValidator,
+    expected_route_policy: RouteAuthorizationPolicy,
+) -> AgentExecutionContextFactory:
+    verifier = RequestAgentAuthorizationVerifier(
+        boundary=boundary,
+        authorized=authorized,
+    )
+    return AgentExecutionContextFactory(
+        authorization_verifier=verifier,
+        scope_validator=scope_validator,
+        expected_route_policy=expected_route_policy,
+    )
+
+
 def compose_agent_execution_context_factory(
     *,
     boundary: TrustedRequestContextBoundary,
@@ -83,27 +159,42 @@ def compose_agent_execution_context_factory(
     scope_validator: ExecutionScopeValidator,
     expected_route_policy: RouteAuthorizationPolicy,
 ) -> AgentExecutionContextFactory:
-    """Bind Issue #108 to one live, canonical Issue #72 request boundary.
+    """Create a #72-backed plain-data factory for one request session.
 
-    Test fakes may exercise plain context construction, but production
-    admission is assembled through this composition-owned function so the
-    concrete verifier always delegates to the active #72 lifecycle boundary.
+    Use ``compose_agent_execution_runtime`` when the factory must be paired
+    with a protected registry execution gate.
     """
 
-    verifier = RequestAgentAuthorizationVerifier(
+    return _create_factory(
         boundary=boundary,
         authorized=authorized,
-    )
-    factory = AgentExecutionContextFactory(
-        authorization_verifier=verifier,
         scope_validator=scope_validator,
         expected_route_policy=expected_route_policy,
     )
-    factory._bind_composition_authority(_ProductionExecutionAdmissionAuthority())
-    return factory
+
+
+def compose_agent_execution_runtime(
+    *,
+    boundary: TrustedRequestContextBoundary,
+    authorized: AuthorizedRequest,
+    scope_validator: ExecutionScopeValidator,
+    expected_route_policy: RouteAuthorizationPolicy,
+    registry: HandlerRegistry,
+) -> TrustedAgentExecutionRuntime:
+    """Create the only supported production factory/registry pairing."""
+
+    return TrustedAgentExecutionRuntime(
+        boundary=boundary,
+        authorized=authorized,
+        scope_validator=scope_validator,
+        expected_route_policy=expected_route_policy,
+        registry=registry,
+    )
 
 
 __all__ = [
     "RequestAgentAuthorizationVerifier",
+    "TrustedAgentExecutionRuntime",
     "compose_agent_execution_context_factory",
+    "compose_agent_execution_runtime",
 ]

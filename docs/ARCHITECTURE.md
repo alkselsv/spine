@@ -1367,12 +1367,16 @@ before user code runs. Authorization contexts, verifiers, bindings, provider
 configuration, credentials and opaque provenance never cross the handler
 argument boundary.
 
-The production composition root also binds the registry gate to a private
-authority identity created alongside the real Issue #72 verifier. The factory
-and gate must use that same composition-owned identity; a plain-data factory,
-structural verifier, nominal verifier subclass or admission from another
-composition cannot be consumed by the production gate. The registry rechecks
-that binding and the live Issue #72 request immediately before invocation.
+The production composition root atomically creates a
+`TrustedAgentExecutionRuntime` from the real Issue #72 boundary, the canonical
+request, the plain-data factory and the finalized registry. The runtime retains
+the exact factory instance that it created and uses that instance when it
+rechecks an admission immediately before invocation. There is no transferable
+authority token, public factory binder or registry authority parameter: a
+plain-data factory, structural verifier, nominal verifier subclass or
+admission from another composition cannot be consumed by the protected gate.
+The catalog's direct execution method fails closed; only the infrastructure
+composition can produce the guarded two-argument handler.
 
 Run and Artifact identifiers are structurally validated and preserved here;
 authoritative ownership and handoff/persistence checks remain with the owning

@@ -9,7 +9,12 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
-from spine.agents.catalog import AgentImplementationRegistration, ResolvedAgentBinding
+from spine.agents.catalog import (
+    AgentImplementationRegistration,
+    HandlerRegistry,
+    HandlerRegistryError,
+    ResolvedAgentBinding,
+)
 from spine.agents.runtime import (
     AgentExecutionContext,
     AgentExecutionContextFactory,
@@ -283,13 +288,10 @@ def make_context(
 def make_admitted_context(
     *,
     binding: ResolvedAgentBinding | None = None,
-    admission_authority: object | None = None,
-) -> tuple[AgentExecutionContext, object, FakeVerifier, object]:
+) -> tuple[AgentExecutionContext, object, FakeVerifier, AgentExecutionContextFactory]:
     authorized, resolution = authorized_context()
     binding = binding or resolved_binding()
     verifier = FakeVerifier(authorized)
-    if admission_authority is None:
-        admission_authority = object()
     factory = AgentExecutionContextFactory(
         authorization_verifier=verifier,
         scope_validator=FakeScopeValidator(
@@ -298,7 +300,6 @@ def make_admitted_context(
         ),
         expected_route_policy=authorized.route_policy,
     )
-    factory._bind_composition_authority(admission_authority)
     context = factory.create(
         authorized_context=authorized,
         authorization_resolution=resolution,
@@ -322,7 +323,7 @@ def make_admitted_context(
         resolved_binding=binding,
         permitted_tool_grants=TrustedToolGrantSet(grants=("documents.read",)),
     )
-    return context, admission, verifier, admission_authority
+    return context, admission, verifier, factory
 
 
 def test_factory_constructs_detached_context_for_each_authorized_scope() -> None:
@@ -497,7 +498,7 @@ def test_structural_verifier_cannot_issue_execution_admission() -> None:
         )
 
 
-def test_nominal_noop_verifier_cannot_issue_execution_admission() -> None:
+def test_nominal_noop_verifier_cannot_create_a_catalog_execution_gate() -> None:
     context = make_context()
     authorized, resolution = authorized_context()
     factory = AgentExecutionContextFactory(
@@ -508,15 +509,20 @@ def test_nominal_noop_verifier_cannot_issue_execution_admission() -> None:
         ),
         expected_route_policy=authorized.route_policy,
     )
-    assert factory.execution_admission_authority is None
+    admission = factory.admission_for(
+        context=context,
+        authorized_context=authorized,
+        authorization_resolution=resolution,
+        resolved_binding=resolved_binding(),
+        permitted_tool_grants=TrustedToolGrantSet(grants=("documents.read",)),
+    )
 
-    with pytest.raises(ValueError, match="execution admission is unavailable"):
-        factory.admission_for(
+    with pytest.raises(HandlerRegistryError, match="trusted infrastructure"):
+        HandlerRegistry().bind_for_execution(
+            handler=Handler(),
             context=context,
-            authorized_context=authorized,
-            authorization_resolution=resolution,
+            admission=admission,
             resolved_binding=resolved_binding(),
-            permitted_tool_grants=TrustedToolGrantSet(grants=("documents.read",)),
         )
 
 

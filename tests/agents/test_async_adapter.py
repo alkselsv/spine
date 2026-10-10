@@ -76,8 +76,7 @@ def admitted_context() -> tuple[AgentExecutionContext, AgentExecutionContextAdmi
 def bound_adapter(function):
     selected = resolved_binding()
     adapted = adapt_async_function(function)
-    authority = object()
-    registry = HandlerRegistry(execution_admission_authority=authority)
+    registry = HandlerRegistry()
     registry.register_handler(registration=selected.registration, handler=adapted)
     registry.finalize()
     registered = registry.construct(
@@ -85,16 +84,14 @@ def bound_adapter(function):
         version=selected.agent_version,
     )
     selected = replace(selected, handler=registered)
-    execution_context, admission, _, _ = make_admitted_context(
-        binding=selected,
-        admission_authority=authority,
-    )
+    execution_context, admission, _, factory = make_admitted_context(binding=selected)
     return (
-        registry.bind_for_execution(
+        registry._bind_composed_execution(
             handler=registered,
             context=execution_context,
             admission=admission,
             resolved_binding=selected,
+            trusted_factory=factory,
         ),
         execution_context,
     )
@@ -349,8 +346,7 @@ async def test_admission_cannot_bind_a_different_registered_handler() -> None:
         return OutputModel(answer="second")
 
     selected = resolved_binding()
-    authority = object()
-    first_registry = HandlerRegistry(execution_admission_authority=authority)
+    first_registry = HandlerRegistry()
     first_registry.register_handler(
         registration=selected.registration,
         handler=adapt_async_function(first),
@@ -361,12 +357,9 @@ async def test_admission_cannot_bind_a_different_registered_handler() -> None:
         version=selected.agent_version,
     )
     selected = replace(selected, handler=first_selected)
-    execution_context, admission, _, _ = make_admitted_context(
-        binding=selected,
-        admission_authority=authority,
-    )
+    execution_context, admission, _, factory = make_admitted_context(binding=selected)
 
-    second_registry = HandlerRegistry(execution_admission_authority=authority)
+    second_registry = HandlerRegistry()
     second_registry.register_handler(
         registration=selected.registration,
         handler=adapt_async_function(second),
@@ -378,17 +371,18 @@ async def test_admission_cannot_bind_a_different_registered_handler() -> None:
     )
 
     with pytest.raises(HandlerRegistryError, match="pinned"):
-        second_registry.bind_for_execution(
+        second_registry._bind_composed_execution(
             handler=second_selected,
             context=execution_context,
             admission=admission,
             resolved_binding=selected,
+            trusted_factory=factory,
         )
     assert calls == 0
 
 
 @pytest.mark.asyncio
-async def test_admission_cannot_bind_through_a_different_execution_authority() -> None:
+async def test_admission_cannot_bind_through_a_different_execution_factory() -> None:
     calls = 0
 
     async def handler(
@@ -401,8 +395,7 @@ async def test_admission_cannot_bind_through_a_different_execution_authority() -
         return OutputModel(answer="must not run")
 
     selected = resolved_binding()
-    authority = object()
-    registry = HandlerRegistry(execution_admission_authority=authority)
+    registry = HandlerRegistry()
     registry.register_handler(
         registration=selected.registration,
         handler=adapt_async_function(handler),
@@ -413,18 +406,16 @@ async def test_admission_cannot_bind_through_a_different_execution_authority() -
         version=selected.agent_version,
     )
     selected = replace(selected, handler=registered)
-    execution_context, admission, _, _ = make_admitted_context(
-        binding=selected,
-        admission_authority=authority,
-    )
+    execution_context, admission, _, factory = make_admitted_context(binding=selected)
 
-    registry = HandlerRegistry(execution_admission_authority=object())
+    second_factory = make_admitted_context()[3]
     with pytest.raises(HandlerRegistryError, match="admission"):
-        registry.bind_for_execution(
+        registry._bind_composed_execution(
             handler=registered,
             context=execution_context,
             admission=admission,
             resolved_binding=selected,
+            trusted_factory=second_factory,
         )
 
     assert calls == 0
