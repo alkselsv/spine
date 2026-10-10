@@ -2,16 +2,25 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+import re
+import secrets
+import threading
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from spine.application.persistence.command_digest import COMMAND_DIGEST_ALGORITHM_VERSION
+
+from .errors import InvalidReadGrant
+
 
 _DIGEST = r"[0-9a-f]{64}"
 _IDENTIFIER = r"[a-z][a-z0-9_.:-]{0,63}"
+_IDENTIFIER_PATTERN = re.compile(_IDENTIFIER)
 PositiveInt = Annotated[int, Field(gt=0)]
 NonNegativeInt = Annotated[int, Field(ge=0)]
 DigestHex = Annotated[str, Field(pattern=_DIGEST)]
@@ -114,6 +123,12 @@ class PreWriteRequestDigest(StorageModel):
     algorithm_version: BoundedIdentifier
     digest_hex: DigestHex
 
+    @model_validator(mode="after")
+    def validate_algorithm_version(self) -> PreWriteRequestDigest:
+        if self.algorithm_version != COMMAND_DIGEST_ALGORITHM_VERSION:
+            raise ValueError("unsupported Issue #8 command digest algorithm version")
+        return self
+
 
 class ObservedContentIdentity(StorageModel):
     """Digest and length observed from the actual streamed bytes."""
@@ -163,6 +178,10 @@ class WriteReceipt(StorageModel):
             raise ValueError("receipt digest evidence is inconsistent")
         if self.verification.observed_length != self.observed_content.observed_byte_length:
             raise ValueError("receipt length evidence is inconsistent")
+        if self.object_reference.digest_hex != self.observed_content.observed_sha256:
+            raise ValueError("reference digest evidence is inconsistent")
+        if self.object_reference.byte_length != self.observed_content.observed_byte_length:
+            raise ValueError("reference length evidence is inconsistent")
         if self.finalized_at.tzinfo is None:
             raise ValueError("finalized_at must be timezone-aware")
         return self
@@ -263,28 +282,169 @@ class UploadCommandState(StorageModel):
         )
 
 
-class AuthorizedOriginalReadGrant(StorageModel):
-    """Trusted one-shot grant; possession of an object reference is not authority."""
-
-    grant_id: UUID
+@dataclass(frozen=True, slots=True)
+class _ReadGrantBinding:
     workspace_id: UUID
     environment_id: UUID | None
     source_revision_id: UUID
     object_reference: ObjectReference
-    purpose: BoundedIdentifier
-    authorization_decision_version: OpaqueText
+    purpose: str
+    authorization_decision_version: str
     expires_at: datetime
 
-    @model_validator(mode="after")
-    def validate_grant(self) -> AuthorizedOriginalReadGrant:
-        ids = (self.grant_id, self.workspace_id, self.source_revision_id)
-        if any(identifier.int == 0 for identifier in ids):
-            raise ValueError("grant identities must be non-zero")
-        if self.environment_id is not None and self.environment_id.int == 0:
-            raise ValueError("environment_id must be non-zero")
-        if self.expires_at.tzinfo is None:
-            raise ValueError("expires_at must be timezone-aware")
-        return self
+
+_GRANT_CREATION_TOKEN = object()
+
+
+class AuthorizedOriginalReadGrant:
+    """Opaque process-local capability for one authorized bounded read."""
+
+    __slots__ = ("__registry", "__token")
+
+    def __init__(
+        self,
+        *,
+        registry: AuthorizedReadGrantRegistry,
+        token: bytes,
+        _creation_token: object,
+    ) -> None:
+        if _creation_token is not _GRANT_CREATION_TOKEN:
+            raise TypeError("read grants must be issued by AuthorizedReadGrantRegistry")
+        self.__registry = registry
+        self.__token = token
+
+    def __repr__(self) -> str:
+        return "<AuthorizedOriginalReadGrant opaque one-shot capability>"
+
+    def __copy__(self) -> AuthorizedOriginalReadGrant:
+        raise TypeError("read grants cannot be copied")
+
+    def __deepcopy__(self, memo: dict[int, object]) -> AuthorizedOriginalReadGrant:
+        raise TypeError("read grants cannot be copied")
+
+    def __getstate__(self) -> None:
+        raise TypeError("read grants cannot be serialized")
+
+    def __reduce__(self) -> None:
+        raise TypeError("read grants cannot be serialized")
+
+    def _belongs_to(self, registry: AuthorizedReadGrantRegistry) -> bool:
+        return self.__registry is registry
+
+    def _token(self) -> bytes:
+        return self.__token
+
+
+class AuthorizedReadGrantRegistry:
+    """Process-local issuer and one-shot consumer for read capabilities."""
+
+    def __init__(self) -> None:
+        self.__records: dict[bytes, _ReadGrantBinding] = {}
+        self.__lock = threading.RLock()
+
+    def issue(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID | None,
+        source_revision_id: UUID,
+        object_reference: ObjectReference,
+        purpose: str,
+        authorization_decision_version: str,
+        expires_at: datetime,
+    ) -> AuthorizedOriginalReadGrant:
+        _validate_grant_binding(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            source_revision_id=source_revision_id,
+            object_reference=object_reference,
+            purpose=purpose,
+            authorization_decision_version=authorization_decision_version,
+            expires_at=expires_at,
+        )
+        token = secrets.token_bytes(32)
+        binding = _ReadGrantBinding(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            source_revision_id=source_revision_id,
+            object_reference=object_reference,
+            purpose=purpose,
+            authorization_decision_version=authorization_decision_version,
+            expires_at=expires_at,
+        )
+        with self.__lock:
+            self.__records[token] = binding
+        return AuthorizedOriginalReadGrant(
+            registry=self,
+            token=token,
+            _creation_token=_GRANT_CREATION_TOKEN,
+        )
+
+    def consume(
+        self,
+        grant: AuthorizedOriginalReadGrant,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID | None,
+        source_revision_id: UUID,
+        object_reference: ObjectReference,
+        now: datetime | None = None,
+    ) -> _ReadGrantBinding:
+        if not isinstance(grant, AuthorizedOriginalReadGrant) or not grant._belongs_to(self):
+            raise InvalidReadGrant()
+        with self.__lock:
+            binding = self.__records.pop(grant._token(), None)
+        if binding is None:
+            raise InvalidReadGrant()
+        current_time = now or datetime.now(timezone.utc)
+        if current_time.tzinfo is None or current_time >= binding.expires_at:
+            raise InvalidReadGrant()
+        if (
+            binding.workspace_id != workspace_id
+            or binding.environment_id != environment_id
+            or binding.source_revision_id != source_revision_id
+            or binding.object_reference != object_reference
+        ):
+            raise InvalidReadGrant()
+        return binding
+
+
+def _validate_grant_binding(
+    *,
+    workspace_id: UUID,
+    environment_id: UUID | None,
+    source_revision_id: UUID,
+    object_reference: ObjectReference,
+    purpose: str,
+    authorization_decision_version: str,
+    expires_at: datetime,
+) -> None:
+    if (
+        not isinstance(workspace_id, UUID)
+        or not isinstance(source_revision_id, UUID)
+        or workspace_id.int == 0
+        or source_revision_id.int == 0
+    ):
+        raise ValueError("grant identities must be non-zero")
+    if environment_id is not None and (
+        not isinstance(environment_id, UUID) or environment_id.int == 0
+    ):
+        raise ValueError("environment_id must be non-zero")
+    if not isinstance(object_reference, ObjectReference):
+        raise ValueError("object_reference must be an ObjectReference")
+    if not isinstance(purpose, str):
+        raise ValueError("grant purpose must be a bounded identifier")
+    if _IDENTIFIER_PATTERN.fullmatch(purpose) is None:
+        raise ValueError("grant purpose must be a bounded identifier")
+    if (
+        not isinstance(authorization_decision_version, str)
+        or not authorization_decision_version
+        or len(authorization_decision_version) > 256
+        or _IDENTIFIER_PATTERN.fullmatch(authorization_decision_version) is None
+    ):
+        raise ValueError("authorization decision version is invalid")
+    if not isinstance(expires_at, datetime) or expires_at.tzinfo is None:
+        raise ValueError("expires_at must be timezone-aware")
 
 
 class ReconciliationInventoryEntry(StorageModel):
@@ -308,12 +468,12 @@ class DeletionApproval(StorageModel):
     """Application-issued proof that a physical deletion may be attempted."""
 
     command_id: UUID
-    approval_reference: OpaqueText
+    approval_reference: UUID
 
     @model_validator(mode="after")
     def validate_id(self) -> DeletionApproval:
-        if self.command_id.int == 0:
-            raise ValueError("command_id must be non-zero")
+        if self.command_id.int == 0 or self.approval_reference.int == 0:
+            raise ValueError("deletion approval identities must be non-zero")
         return self
 
 
@@ -323,6 +483,7 @@ class DeletionResult(StorageModel):
 
 __all__ = [
     "AuthorizedOriginalReadGrant",
+    "AuthorizedReadGrantRegistry",
     "DeletionApproval",
     "DeletionResult",
     "DigestAlgorithm",

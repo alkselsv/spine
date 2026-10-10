@@ -25,6 +25,7 @@ class StorageErrorCategory(str, Enum):
     STORAGE_INTEGRITY_INDETERMINATE = "storage_integrity_indeterminate"
     RECOVERY_EVIDENCE_CHAIN_CONFLICT = "recovery_evidence_chain_conflict"
     RECOVERY_EVIDENCE_INDETERMINATE = "recovery_evidence_indeterminate"
+    INVALID_READ_GRANT = "invalid_read_grant"
 
 
 class StorageRetryability(str, Enum):
@@ -107,6 +108,10 @@ _CATEGORIES = {
     ),
     "RecoveryEvidenceIndeterminate": (
         StorageErrorCategory.RECOVERY_EVIDENCE_INDETERMINATE,
+        StorageRetryability.NOT_RETRYABLE,
+    ),
+    "InvalidReadGrant": (
+        StorageErrorCategory.INVALID_READ_GRANT,
         StorageRetryability.NOT_RETRYABLE,
     ),
 }

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import copy
+import pickle
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import pytest
@@ -8,6 +10,8 @@ from pydantic import ValidationError
 
 from spine.infrastructure.object_storage.contracts import (
     AuthorizedOriginalReadGrant,
+    AuthorizedReadGrantRegistry,
+    DeletionApproval,
     IntegrityResult,
     IntegrityStatus,
     ObjectReference,
@@ -20,6 +24,7 @@ from spine.infrastructure.object_storage.contracts import (
     UploadCommandStateName,
     WriteReceipt,
 )
+from spine.infrastructure.object_storage.errors import InvalidReadGrant
 
 
 ZERO = UUID(int=0)
@@ -142,6 +147,24 @@ def test_verified_receipt_contains_only_consistent_physical_evidence() -> None:
             finalized_at=datetime.now(timezone.utc),
         )
 
+    for update in ({"digest_hex": OTHER_DIGEST}, {"byte_length": 1}):
+        mismatched_reference = reference().model_copy(update=update)
+        with pytest.raises(ValidationError):
+            WriteReceipt(
+                schema_version=1,
+                upload_id=uuid4(),
+                object_reference=mismatched_reference,
+                observed_content=observed,
+                verification=IntegrityResult(
+                    status=IntegrityStatus.VERIFIED,
+                    algorithm="sha256",
+                    observed_digest=DIGEST,
+                    observed_length=0,
+                ),
+                storage_status="finalized_verified",
+                finalized_at=datetime.now(timezone.utc),
+            )
+
 
 def test_upload_state_allows_only_documented_transitions() -> None:
     state = UploadCommandState(
@@ -161,14 +184,146 @@ def test_upload_state_allows_only_documented_transitions() -> None:
 
 
 def test_grant_requires_explicit_scope_and_aware_expiry() -> None:
-    with pytest.raises(ValidationError):
-        AuthorizedOriginalReadGrant(
-            grant_id=ZERO,
+    with pytest.raises(TypeError):
+        AuthorizedOriginalReadGrant()  # type: ignore[call-arg]
+
+    workspace_id = uuid4()
+    source_revision_id = uuid4()
+    object_reference = reference()
+    registry = AuthorizedReadGrantRegistry()
+    grant = registry.issue(
+        workspace_id=workspace_id,
+        environment_id=None,
+        source_revision_id=source_revision_id,
+        object_reference=object_reference,
+        purpose="read.original.v1",
+        authorization_decision_version="policy-v1",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+    )
+    assert not hasattr(grant, "model_dump")
+    with pytest.raises(TypeError):
+        copy.copy(grant)
+    with pytest.raises((TypeError, pickle.PicklingError)):
+        pickle.dumps(grant)
+    with pytest.raises(InvalidReadGrant):
+        registry.consume(
+            grant,
+            workspace_id=workspace_id,
+            environment_id=None,
+            source_revision_id=source_revision_id,
+            object_reference=object_reference.model_copy(update={"storage_generation": uuid4()}),
+        )
+
+
+def test_grant_is_one_shot_and_restart_invalidates_old_registry() -> None:
+    workspace_id = uuid4()
+    source_revision_id = uuid4()
+    object_reference = reference()
+    registry = AuthorizedReadGrantRegistry()
+    grant = registry.issue(
+        workspace_id=workspace_id,
+        environment_id=None,
+        source_revision_id=source_revision_id,
+        object_reference=object_reference,
+        purpose="read.original.v1",
+        authorization_decision_version="policy-v1",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+    )
+    registry.consume(
+        grant,
+        workspace_id=workspace_id,
+        environment_id=None,
+        source_revision_id=source_revision_id,
+        object_reference=object_reference,
+    )
+    with pytest.raises(InvalidReadGrant):
+        registry.consume(
+            grant,
+            workspace_id=workspace_id,
+            environment_id=None,
+            source_revision_id=source_revision_id,
+            object_reference=object_reference,
+        )
+
+    replacement = AuthorizedReadGrantRegistry().issue(
+        workspace_id=workspace_id,
+        environment_id=None,
+        source_revision_id=source_revision_id,
+        object_reference=object_reference,
+        purpose="read.original.v1",
+        authorization_decision_version="policy-v1",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+    )
+    with pytest.raises(InvalidReadGrant):
+        registry.consume(
+            replacement,
+            workspace_id=workspace_id,
+            environment_id=None,
+            source_revision_id=source_revision_id,
+            object_reference=object_reference,
+        )
+
+
+def test_grant_rejects_expiry_and_scope_or_generation_substitution() -> None:
+    workspace_id = uuid4()
+    source_revision_id = uuid4()
+    object_reference = reference()
+    registry = AuthorizedReadGrantRegistry()
+    expired = registry.issue(
+        workspace_id=workspace_id,
+        environment_id=None,
+        source_revision_id=source_revision_id,
+        object_reference=object_reference,
+        purpose="read.original.v1",
+        authorization_decision_version="policy-v1",
+        expires_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+    )
+    with pytest.raises(InvalidReadGrant):
+        registry.consume(
+            expired,
+            workspace_id=workspace_id,
+            environment_id=None,
+            source_revision_id=source_revision_id,
+            object_reference=object_reference,
+        )
+
+    substituted = registry.issue(
+        workspace_id=workspace_id,
+        environment_id=None,
+        source_revision_id=source_revision_id,
+        object_reference=object_reference,
+        purpose="read.original.v1",
+        authorization_decision_version="policy-v1",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+    )
+    with pytest.raises(InvalidReadGrant):
+        registry.consume(
+            substituted,
             workspace_id=uuid4(),
             environment_id=None,
-            source_revision_id=uuid4(),
-            object_reference=reference(),
-            purpose="read.original.v1",
-            authorization_decision_version="policy-v1",
-            expires_at=datetime.now(timezone.utc),
+            source_revision_id=source_revision_id,
+            object_reference=object_reference.model_copy(
+                update={"storage_generation": uuid4()}
+            ),
         )
+
+
+def test_digest_rejects_unknown_issue8_algorithm_version() -> None:
+    with pytest.raises(ValidationError):
+        PreWriteRequestDigest(
+            algorithm="sha256",
+            algorithm_version="spine.command-digest.v999",
+            digest_hex=DIGEST,
+        )
+
+
+def test_deletion_approval_accepts_only_typed_safe_identifier() -> None:
+    approval = DeletionApproval(command_id=uuid4(), approval_reference=uuid4())
+    assert isinstance(approval.approval_reference, UUID)
+    for unsafe in (
+        "https://storage.example/object?token=secret",
+        "/var/lib/spine/object",
+        "Bearer-secret-token",
+    ):
+        with pytest.raises(ValidationError):
+            DeletionApproval(command_id=uuid4(), approval_reference=unsafe)
