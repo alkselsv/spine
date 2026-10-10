@@ -47,7 +47,8 @@ RUNTIME_PASSWORD = "runtime-test-secret"
 INITIAL_REVISION = "20261009_01"
 RLS_REVISION = "20261009_02"
 IDEMPOTENCY_REVISION = "20261010_03"
-HEAD_REVISION = "20261010_04"
+OUTBOX_REVISION = "20261010_04"
+HEAD_REVISION = "20261010_05"
 WORKSPACE_A = UUID("20000000-0000-0000-0000-000000000001")
 WORKSPACE_B = UUID("20000000-0000-0000-0000-000000000002")
 ENVIRONMENT_A = UUID("30000000-0000-0000-0000-000000000001")
@@ -115,6 +116,13 @@ async def migrated_database(
             )
         )
     await asyncio.to_thread(upgrade_database, migration, revision=IDEMPOTENCY_REVISION)
+    async with _connection(migration.url) as connection:
+        retained_revisions.append(
+            await connection.scalar(
+                text("SELECT version_num FROM spine.alembic_version")
+            )
+        )
+    await asyncio.to_thread(upgrade_database, migration, revision=OUTBOX_REVISION)
     async with _connection(migration.url) as connection:
         retained_revisions.append(
             await connection.scalar(
@@ -203,6 +211,213 @@ async def _set_tenant_context(
         )
 
 
+async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> None:
+    tables = set(
+        (
+            await connection.execute(
+                text("SELECT tablename FROM pg_tables WHERE schemaname = 'spine'")
+            )
+        ).scalars()
+    )
+    constraints = set(
+        (
+            await connection.execute(
+                text(
+                    "SELECT conname FROM pg_constraint AS constraint_record "
+                    "JOIN pg_namespace AS namespace "
+                    "ON namespace.oid = constraint_record.connamespace "
+                    "WHERE namespace.nspname = 'spine'"
+                )
+            )
+        ).scalars()
+    )
+    indexes = set(
+        (
+            await connection.execute(
+                text("SELECT indexname FROM pg_indexes WHERE schemaname = 'spine'")
+            )
+        ).scalars()
+    )
+    owners = set(
+        (
+            await connection.execute(
+                text("SELECT tableowner FROM pg_tables WHERE schemaname = 'spine'")
+            )
+        ).scalars()
+    )
+    rls = {
+        row.relname: (row.relrowsecurity, row.relforcerowsecurity)
+        for row in (
+            await connection.execute(
+                text(
+                    "SELECT relation.relname, relation.relrowsecurity, "
+                    "relation.relforcerowsecurity FROM pg_class AS relation "
+                    "JOIN pg_namespace AS namespace "
+                    "ON namespace.oid = relation.relnamespace "
+                    "WHERE namespace.nspname = 'spine' AND relation.relkind = 'r'"
+                )
+            )
+        )
+        if row.relname != "alembic_version"
+    }
+    policies = {
+        (row.table_name, row.policy_name): (
+            tuple(row.roles),
+            row.using_expression,
+            row.check_expression,
+        )
+        for row in (
+            await connection.execute(
+                text(
+                    "SELECT relation.relname AS table_name, policy.polname "
+                    "AS policy_name, ARRAY(SELECT role.rolname FROM pg_roles AS role "
+                    "WHERE role.oid = ANY(policy.polroles)) AS roles, "
+                    "pg_get_expr(policy.polqual, policy.polrelid) AS using_expression, "
+                    "pg_get_expr(policy.polwithcheck, policy.polrelid) "
+                    "AS check_expression FROM pg_policy AS policy "
+                    "JOIN pg_class AS relation ON relation.oid = policy.polrelid "
+                    "JOIN pg_namespace AS namespace "
+                    "ON namespace.oid = relation.relnamespace "
+                    "WHERE namespace.nspname = 'spine'"
+                )
+            )
+        )
+    }
+    privilege_names = ("select_ok", "insert_ok", "update_ok", "delete_ok")
+    privileges = {
+        row.table_name: tuple(row[name] for name in privilege_names)
+        for row in (
+            await connection.execute(
+                text(
+                    "SELECT relation.relname AS table_name, "
+                    "has_table_privilege(:role, relation.oid, 'SELECT') AS select_ok, "
+                    "has_table_privilege(:role, relation.oid, 'INSERT') AS insert_ok, "
+                    "has_table_privilege(:role, relation.oid, 'UPDATE') AS update_ok, "
+                    "has_table_privilege(:role, relation.oid, 'DELETE') AS delete_ok "
+                    "FROM pg_class AS relation JOIN pg_namespace AS namespace "
+                    "ON namespace.oid = relation.relnamespace "
+                    "WHERE namespace.nspname = 'spine' AND relation.relkind = 'r'"
+                ),
+                {"role": RUNTIME_ROLE},
+            )
+        ).mappings()
+    }
+    receipt_update_columns = {
+        row.column_name
+        for row in (
+            await connection.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'spine' "
+                    "AND table_name = 'idempotency_receipts' "
+                    "AND has_column_privilege(:role, "
+                    "'spine.idempotency_receipts', column_name, 'UPDATE')"
+                ),
+                {"role": RUNTIME_ROLE},
+            )
+        ).mappings()
+    }
+    revision = await connection.scalar(
+        text("SELECT version_num FROM spine.alembic_version")
+    )
+
+    assert revision == HEAD_REVISION
+    assert tables == {
+        "alembic_version",
+        "environments",
+        "idempotency_receipts",
+        "initial_workspace_bootstrap",
+        "outbox_intents",
+        "workspaces",
+    }
+    assert constraints == {
+        "alembic_version_pkc",
+        "ck_environments_display_name_not_empty",
+        "ck_environments_kind",
+        "ck_idempotency_receipts_command_digest_sha256",
+        "ck_idempotency_receipts_idempotency_key_length",
+        "ck_idempotency_receipts_operation_schema_version_positive",
+        "ck_idempotency_receipts_result_complete",
+        "ck_initial_workspace_bootstrap_singleton",
+        "ck_outbox_intents_aggregate_complete",
+        "ck_outbox_intents_event_schema_version_positive",
+        "ck_outbox_intents_event_type_identifier",
+        "ck_outbox_intents_payload_object",
+        "ck_outbox_intents_producer_deduplication_id_length",
+        "ck_workspaces_display_name_not_empty",
+        "ck_workspaces_slug_not_empty",
+        "fk_environments_workspace_id_workspaces",
+        "fk_idempotency_receipts_scope_environments",
+        "fk_idempotency_receipts_workspace_id_workspaces",
+        "fk_initial_workspace_bootstrap_workspace_id_workspaces",
+        "fk_outbox_intents_scope_environments",
+        "fk_outbox_intents_workspace_id_workspaces",
+        "pk_environments",
+        "pk_idempotency_receipts",
+        "pk_initial_workspace_bootstrap",
+        "pk_outbox_intents",
+        "pk_workspaces",
+        "uq_environments_workspace_id_id",
+        "uq_initial_workspace_bootstrap_action_id",
+        "uq_initial_workspace_bootstrap_workspace_id",
+        "uq_workspaces_slug",
+    }
+    assert indexes == {
+        "alembic_version_pkc",
+        "ix_environments_workspace_id",
+        "pk_environments",
+        "pk_idempotency_receipts",
+        "pk_initial_workspace_bootstrap",
+        "pk_outbox_intents",
+        "pk_workspaces",
+        "uq_environments_workspace_id_id",
+        "uq_idempotency_receipts_environment_key",
+        "uq_idempotency_receipts_workspace_key",
+        "uq_initial_workspace_bootstrap_action_id",
+        "uq_initial_workspace_bootstrap_workspace_id",
+        "uq_outbox_intents_environment_producer",
+        "uq_outbox_intents_workspace_producer",
+        "uq_workspaces_slug",
+    }
+    assert owners == {MIGRATION_ROLE}
+    expected_rls = {
+        "workspaces": (True, True),
+        "environments": (True, True),
+        "idempotency_receipts": (True, True),
+        "initial_workspace_bootstrap": (True, True),
+        "outbox_intents": (True, True),
+    }
+    assert rls == expected_rls
+    assert set(policies) == {
+        (table_name, f"pol_{table_name}_{policy_kind}")
+        for table_name in expected_rls
+        for policy_kind in ("tenant_isolation", "migration_maintenance")
+    }
+    for table_name in expected_rls:
+        tenant_policy = policies[(table_name, f"pol_{table_name}_tenant_isolation")]
+        assert tenant_policy[0] == (RUNTIME_ROLE,)
+        assert tenant_policy[1] is not None
+        assert tenant_policy[2] is not None
+        assert policies[(table_name, f"pol_{table_name}_migration_maintenance")] == (
+            (MIGRATION_ROLE,),
+            "true",
+            "true",
+        )
+    assert privileges == {
+        "alembic_version": (True, False, False, False),
+        "workspaces": (True, True, True, True),
+        "environments": (True, True, True, True),
+        "idempotency_receipts": (True, True, False, False),
+        "initial_workspace_bootstrap": (False, False, False, False),
+        "outbox_intents": (False, True, False, False),
+    }
+    assert receipt_update_columns == {
+        "result_type",
+        "result_id",
+        "result_schema_version",
+    }
+
+
 @pytest.mark.asyncio(loop_scope="session")
 async def test_initial_tenancy_revision_upgrades_to_current_head_and_owned_schema(
     migrated_database: MigratedDatabase,
@@ -223,6 +438,7 @@ async def test_initial_tenancy_revision_upgrades_to_current_head_and_owned_schem
         INITIAL_REVISION,
         RLS_REVISION,
         IDEMPOTENCY_REVISION,
+        OUTBOX_REVISION,
     )
     assert heads == [HEAD_REVISION]
     assert owner == MIGRATION_ROLE
@@ -880,8 +1096,9 @@ async def test_runtime_grants_are_minimal_and_tables_remain_migration_owned(
                         "ON namespace.oid = relation.relnamespace "
                         "WHERE namespace.nspname = 'spine' "
                         "AND relation.relname IN "
-                        "('workspaces', 'environments', 'idempotency_receipts', "
-                        "'initial_workspace_bootstrap', 'outbox_intents')"
+                        "('alembic_version', 'workspaces', 'environments', "
+                        "'idempotency_receipts', 'initial_workspace_bootstrap', "
+                        "'outbox_intents')"
                     ),
                     {"role": RUNTIME_ROLE},
                 )
@@ -898,8 +1115,9 @@ async def test_runtime_grants_are_minimal_and_tables_remain_migration_owned(
                         "ON namespace.oid = relation.relnamespace "
                         "WHERE namespace.nspname = 'spine' "
                         "AND relation.relname IN "
-                        "('workspaces', 'environments', 'idempotency_receipts', "
-                        "'initial_workspace_bootstrap', 'outbox_intents')"
+                        "('alembic_version', 'workspaces', 'environments', "
+                        "'idempotency_receipts', 'initial_workspace_bootstrap', "
+                        "'outbox_intents')"
                     )
                 )
             )
@@ -930,6 +1148,15 @@ async def test_runtime_grants_are_minimal_and_tables_remain_migration_owned(
         }
 
     assert privileges["workspaces"] == (True, True, True, True, False, False, False)
+    assert privileges["alembic_version"] == (
+        True,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+    )
     assert privileges["environments"] == (True, True, True, True, False, False, False)
     assert privileges["idempotency_receipts"] == (
         True,
@@ -959,6 +1186,7 @@ async def test_runtime_grants_are_minimal_and_tables_remain_migration_owned(
         False,
     )
     assert owners == {
+        "alembic_version": MIGRATION_ROLE,
         "workspaces": MIGRATION_ROLE,
         "environments": MIGRATION_ROLE,
         "idempotency_receipts": MIGRATION_ROLE,
@@ -1216,6 +1444,34 @@ async def test_real_preflight_rejects_unsafe_role_without_schema_changes(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_real_preflight_rejects_runtime_write_access_to_revision_table(
+    migrated_database: MigratedDatabase,
+) -> None:
+    async with _connection(migrated_database.migration.url) as connection:
+        revision_before = await connection.scalar(
+            text("SELECT version_num FROM spine.alembic_version")
+        )
+        await connection.execute(
+            text("GRANT UPDATE ON spine.alembic_version TO spine_runtime")
+        )
+        await connection.commit()
+    try:
+        with pytest.raises(MigrationPreflightError):
+            await asyncio.to_thread(upgrade_database, migrated_database.migration)
+    finally:
+        async with _connection(migrated_database.migration.url) as connection:
+            await connection.execute(
+                text("REVOKE UPDATE ON spine.alembic_version FROM spine_runtime")
+            )
+            await connection.commit()
+    async with _connection(migrated_database.migration.url) as connection:
+        revision_after = await connection.scalar(
+            text("SELECT version_num FROM spine.alembic_version")
+        )
+    assert revision_after == revision_before
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_initial_workspace_is_created_once_by_sealed_audited_action(
     migrated_database: MigratedDatabase,
 ) -> None:
@@ -1271,11 +1527,15 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         source / "versions" / "20261010_04_outbox_intents.py",
         target / "versions" / "20261010_04_outbox_intents.py",
     )
-    (target / "versions" / "20261010_05_injected_failure.py").write_text(
+    shutil.copy(
+        source / "versions" / "20261010_05_runtime_readiness.py",
+        target / "versions" / "20261010_05_runtime_readiness.py",
+    )
+    (target / "versions" / "20261010_06_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261010_05'\n"
-        "down_revision = '20261010_04'\n"
+        "revision = '20261010_06'\n"
+        "down_revision = '20261010_05'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"
@@ -1346,3 +1606,41 @@ async def test_unknown_revision_is_rejected_without_schema_changes(
             text("SELECT count(*) FROM spine.workspaces")
         )
     assert workspaces_after == workspaces_before
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_every_retained_revision_upgrades_to_one_final_head(
+    migrated_database: MigratedDatabase,
+) -> None:
+    starting_revisions: tuple[str | None, ...] = (
+        None,
+        INITIAL_REVISION,
+        RLS_REVISION,
+        IDEMPOTENCY_REVISION,
+        OUTBOX_REVISION,
+    )
+    try:
+        for starting_revision in starting_revisions:
+            async with _connection(migrated_database.migration.url) as connection:
+                await connection.execute(text("DROP SCHEMA spine CASCADE"))
+                await connection.commit()
+
+            if starting_revision is not None:
+                await asyncio.to_thread(
+                    upgrade_database,
+                    migrated_database.migration,
+                    revision=starting_revision,
+                )
+                async with _connection(migrated_database.migration.url) as connection:
+                    assert await connection.scalar(
+                        text("SELECT version_num FROM spine.alembic_version")
+                    ) == starting_revision
+
+            await asyncio.to_thread(upgrade_database, migrated_database.migration)
+            async with _connection(migrated_database.migration.url) as connection:
+                await _assert_final_catalog_after_upgrade(connection)
+    finally:
+        async with _connection(migrated_database.migration.url) as connection:
+            await connection.execute(text("DROP SCHEMA IF EXISTS spine CASCADE"))
+            await connection.commit()
+        await asyncio.to_thread(upgrade_database, migrated_database.migration)

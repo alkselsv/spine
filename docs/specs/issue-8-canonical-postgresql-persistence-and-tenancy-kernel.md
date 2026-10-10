@@ -1,6 +1,6 @@
 # R1 Canonical PostgreSQL Persistence and Tenancy Kernel
 
-Status: draft for maintainer approval; not yet published to the issue tracker.
+Status: approved and implemented through Issues #40-#48.
 
 Originating issue: GitHub Issue #8, "[R0 blocker] Establish PostgreSQL
 persistence and migration foundations."
@@ -79,8 +79,8 @@ authentication, API, or workflow schemas that will consume this foundation.
   their domain schemas to later ingestion work.
 - Completed Issue #14, recorded in ADR 0018, fixes canonical revision,
   tombstone, publication, activation, rollback, and `as_of` semantics.
-- Issue #8 has no blocking issues and directly blocks Issues #4, #5, #6, and #7.
-  It has no comments or child issues.
+- Issue #8 was decomposed into Issues #40-#48. Their implementation and final
+  qualification establish the kernel consumed by Issues #4, #5, #6, and #7.
 
 ## Solution
 

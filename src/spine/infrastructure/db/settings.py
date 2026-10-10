@@ -111,6 +111,7 @@ class RuntimeDatabaseSettings(_DatabaseSettings):
     )
 
     url: SecretStr = Field(repr=False)
+    runtime_role: str = "spine_runtime"
     pool_size: int = Field(default=5, ge=1, le=100)
     max_overflow: int = Field(default=5, ge=0, le=100)
     pool_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
@@ -119,6 +120,13 @@ class RuntimeDatabaseSettings(_DatabaseSettings):
     transaction_retry_limit: int = Field(default=3, ge=1, le=10)
 
     _supported_url = field_validator("url")(_validate_postgresql_url)
+
+    @field_validator("runtime_role")
+    @classmethod
+    def _safe_runtime_role(cls, value: str) -> str:
+        if not POSTGRESQL_IDENTIFIER.fullmatch(value):
+            raise ValueError("runtime role must be a safe lowercase identifier")
+        return value
 
 
 class MigrationDatabaseSettings(_DatabaseSettings):

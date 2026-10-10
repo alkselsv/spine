@@ -8,7 +8,7 @@ from uuid import UUID
 
 import pytest
 import pytest_asyncio
-from pydantic import SecretStr
+from pydantic import BaseModel, ConfigDict, SecretStr
 from sqlalchemy import event, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
@@ -127,6 +127,13 @@ class OneConnectionHarness:
     engine: AsyncEngine
     migration_url: SecretStr
     workspace_statement_started: asyncio.Event
+
+
+class EnvironmentCreatedPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    environment: OpaqueObjectReference
+    lifecycle_state: str
 
 
 class TransactionGate:
@@ -881,6 +888,266 @@ async def test_receipt_and_canonical_mutation_roll_back_together(
         )
         assert isinstance(retry, OwnedIdempotencyClaim)
         await uow.rollback()
+
+
+@pytest.mark.parametrize(
+    ("stage", "offset"),
+    (
+        ("after_receipt", 0),
+        ("after_mutation", 10),
+        ("after_outbox", 20),
+        ("during_flush", 30),
+        ("before_commit", 40),
+        ("during_commit", 50),
+    ),
+)
+async def test_combined_command_failure_leaves_no_receipt_mutation_or_outbox(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+    stage: str,
+    offset: int,
+) -> None:
+    workspace_id = synthetic_uuid(2400 + offset)
+    environment_id = synthetic_uuid(2401 + offset)
+    event_id = synthetic_uuid(2402 + offset)
+    trace_id = synthetic_uuid(2403 + offset)
+    key = IdempotencyKey(f"combined-failure-{stage}")
+    await persist_idempotency_workspace(postgresql_adapter, workspace_id)
+
+    engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=synthetic_uuid(2404 + offset),
+        secret=f"issue-48-{stage}-secret-for-testing-only".encode(),
+    )
+    context = boundary.interactive(
+        scope=WorkspaceScope(workspace_id=workspace_id),
+        acting_subject_id=synthetic_uuid(2405 + offset),
+        purpose=PersistencePurpose("combined_command_test"),
+        operation=PersistenceOperation("workspace_repository"),
+        trace_id=trace_id,
+    )
+    outbox_events = create_outbox_event_registry()
+    outbox_events.register(
+        event_type="environment.created",
+        schema_version=1,
+        payload_type=EnvironmentCreatedPayload,
+    )
+    persistence = PostgreSQLPersistence(
+        session_factory=lambda: FailureInjectingSession(session_factory(), stage),  # type: ignore[arg-type]
+        context_verifier=boundary,
+        outbox_events=outbox_events,
+    )
+    environment = Environment(
+        id=environment_id,
+        workspace_id=workspace_id,
+        kind=EnvironmentKind.STAGING,
+        display_name=f"Failure {stage}",
+    )
+    expected_result = idempotency_result_ref(environment_id)
+    intent = outbox_events.build_intent(
+        event_id=event_id,
+        workspace_id=workspace_id,
+        event_type="environment.created",
+        schema_version=1,
+        payload=EnvironmentCreatedPayload(
+            environment=OpaqueObjectReference(
+                object_type="environment",
+                object_id=environment_id,
+                schema_version=1,
+            ),
+            lifecycle_state="active",
+        ),
+        producer_deduplication_id=f"environment:{environment_id}",
+        trace_id=trace_id,
+    )
+    expected_error = {
+        "during_flush": PersistenceUnavailableError,
+        "during_commit": UnexpectedPersistenceError,
+    }.get(stage, RuntimeError)
+
+    try:
+        with pytest.raises(expected_error):
+            async with persistence.uow_factory(context) as uow:
+                claim = await uow.idempotency.claim(
+                    operation_schema_version=OPERATION_SCHEMA_VERSION,
+                    key=key,
+                    digest=idempotency_command_digest(context.operation),
+                )
+                assert isinstance(claim, OwnedIdempotencyClaim)
+                if stage == "after_receipt":
+                    raise RuntimeError("synthetic failure after receipt")
+                await uow.environments.add(environment)
+                if stage == "after_mutation":
+                    raise RuntimeError("synthetic failure after mutation")
+                await uow.outbox.append(intent)
+                if stage == "after_outbox":
+                    raise RuntimeError("synthetic failure after outbox")
+                await uow.idempotency.complete(claim, expected_result)
+                if stage == "before_commit":
+                    raise RuntimeError("synthetic failure before commit")
+                await uow.commit()
+
+        migration_engine = create_async_engine(
+            postgresql_contract_database.migration_url.get_secret_value(),
+            hide_parameters=True,
+        )
+        try:
+            async with migration_engine.connect() as connection:
+                persisted = (
+                    await connection.execute(
+                        text(
+                            "SELECT "
+                            "EXISTS(SELECT 1 FROM spine.idempotency_receipts "
+                            "WHERE workspace_id = :workspace_id "
+                            "AND idempotency_key = :key), "
+                            "EXISTS(SELECT 1 FROM spine.environments "
+                            "WHERE id = :environment_id), "
+                            "EXISTS(SELECT 1 FROM spine.outbox_intents "
+                            "WHERE event_id = :event_id)"
+                        ),
+                        {
+                            "workspace_id": workspace_id,
+                            "key": key.value,
+                            "environment_id": environment_id,
+                            "event_id": event_id,
+                        },
+                    )
+                ).one()
+            assert tuple(persisted) == (False, False, False)
+        finally:
+            await migration_engine.dispose()
+    finally:
+        await engine.dispose()
+
+
+async def test_lost_commit_response_replays_one_combined_effect(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    class LostResponseError(RuntimeError):
+        pass
+
+    workspace_id = synthetic_uuid(2470)
+    environment_id = synthetic_uuid(2471)
+    event_id = synthetic_uuid(2472)
+    trace_id = synthetic_uuid(2473)
+    key = IdempotencyKey("combined-lost-response")
+    await persist_idempotency_workspace(postgresql_adapter, workspace_id)
+
+    engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=synthetic_uuid(2474),
+        secret=b"issue-48-lost-response-secret-for-testing-only",
+    )
+    context = boundary.interactive(
+        scope=WorkspaceScope(workspace_id=workspace_id),
+        acting_subject_id=synthetic_uuid(2475),
+        purpose=PersistencePurpose("combined_command_test"),
+        operation=PersistenceOperation("workspace_repository"),
+        trace_id=trace_id,
+    )
+    outbox_events = create_outbox_event_registry()
+    outbox_events.register(
+        event_type="environment.created",
+        schema_version=1,
+        payload_type=EnvironmentCreatedPayload,
+    )
+    persistence = PostgreSQLPersistence(
+        session_factory=session_factory,
+        context_verifier=boundary,
+        outbox_events=outbox_events,
+    )
+    environment = Environment(
+        id=environment_id,
+        workspace_id=workspace_id,
+        kind=EnvironmentKind.PRODUCTION,
+        display_name="Committed once",
+    )
+    result = idempotency_result_ref(environment_id)
+    digest = idempotency_command_digest(context.operation)
+    intent = outbox_events.build_intent(
+        event_id=event_id,
+        workspace_id=workspace_id,
+        event_type="environment.created",
+        schema_version=1,
+        payload=EnvironmentCreatedPayload(
+            environment=OpaqueObjectReference(
+                object_type="environment",
+                object_id=environment_id,
+                schema_version=1,
+            ),
+            lifecycle_state="active",
+        ),
+        producer_deduplication_id=f"environment:{environment_id}",
+        trace_id=trace_id,
+    )
+
+    try:
+        with pytest.raises(LostResponseError):
+            async with persistence.uow_factory(context) as uow:
+                claim = await uow.idempotency.claim(
+                    operation_schema_version=OPERATION_SCHEMA_VERSION,
+                    key=key,
+                    digest=digest,
+                )
+                assert isinstance(claim, OwnedIdempotencyClaim)
+                await uow.environments.add(environment)
+                await uow.outbox.append(intent)
+                await uow.idempotency.complete(claim, result)
+                await uow.commit()
+                raise LostResponseError("response lost after commit")
+
+        async with persistence.uow_factory(context) as uow:
+            replay = await uow.idempotency.claim(
+                operation_schema_version=OPERATION_SCHEMA_VERSION,
+                key=key,
+                digest=digest,
+            )
+            assert isinstance(replay, IdempotencyReplay)
+            assert replay.result == result
+            await uow.commit()
+
+        migration_engine = create_async_engine(
+            postgresql_contract_database.migration_url.get_secret_value(),
+            hide_parameters=True,
+        )
+        try:
+            async with migration_engine.connect() as connection:
+                counts = (
+                    await connection.execute(
+                        text(
+                            "SELECT "
+                            "(SELECT count(*) FROM spine.idempotency_receipts "
+                            "WHERE workspace_id = :workspace_id "
+                            "AND idempotency_key = :key), "
+                            "(SELECT count(*) FROM spine.environments "
+                            "WHERE id = :environment_id), "
+                            "(SELECT count(*) FROM spine.outbox_intents "
+                            "WHERE event_id = :event_id)"
+                        ),
+                        {
+                            "workspace_id": workspace_id,
+                            "key": key.value,
+                            "environment_id": environment_id,
+                            "event_id": event_id,
+                        },
+                    )
+                ).one()
+            assert tuple(counts) == (1, 1, 1)
+        finally:
+            await migration_engine.dispose()
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.parametrize("raise_error", (False, True), ids=("normal", "exception"))
