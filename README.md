@@ -161,6 +161,7 @@ domain
 src/spine/
   domain/          чистые бизнес-модели и инварианты
   application/     команды, запросы и policies
+  auth/            identity и request-authorization contracts
   api/             FastAPI control plane и legacy Q&A endpoints
   connectors/      интеграции с внешними источниками
   ingestion/       целевой ingestion и identity resolution
@@ -197,6 +198,8 @@ acceptance и поэтому не является release gate.
 - [Архитектура](docs/ARCHITECTURE.md) — границы системы и целевая модель.
 - [Roadmap](docs/ROADMAP.md) — порядок релизов, scope и exit criteria.
 - [Продуктовые кейсы](docs/cases/) — исходные требования.
+- [Auth contracts](docs/auth-contracts.md) — identity, route policy и
+  authorization-directory seam.
 - [Настройки engineering skills](docs/agents/) — issue tracker, triage и domain
   documentation workflow.
 - [Skills Matt Pocock](docs/agents/matt-pocock-skills.md) — выбор skill и примеры
