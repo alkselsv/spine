@@ -11,6 +11,7 @@ import pytest_asyncio
 from pydantic import SecretStr
 from sqlalchemy import event, text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -25,12 +26,17 @@ from spine.application.persistence.context import (
     TrustedPersistenceContext,
     WorkspaceScope,
 )
-from spine.application.persistence.errors import ConstraintConflictError
+from spine.application.persistence.errors import (
+    ConstraintConflictError,
+    PersistenceUnavailableError,
+    UnexpectedPersistenceError,
+)
 from spine.application.persistence.idempotency import (
     IdempotencyKey,
     IdempotencyReplay,
     OwnedIdempotencyClaim,
 )
+from spine.application.persistence.outbox import OpaqueObjectReference
 from spine.domain.common import EnvironmentKind
 from spine.domain.workspaces import Environment, Workspace
 from spine.infrastructure.db.migrations import upgrade_database
@@ -45,6 +51,20 @@ from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.persistence.postgresql import PostgreSQLPersistence
 from tests.contracts.persistence.adapter import PersistenceAdapter
 from tests.contracts.persistence.ids import synthetic_uuid
+from tests.contracts.persistence.outbox_events import (
+    WorkspaceCreatedPayload,
+    create_outbox_event_registry,
+)
+from tests.contracts.persistence.test_outbox_writer_contract import (
+    test_canonical_mutation_and_intent_become_visible_only_after_commit as contract_outbox_commit,
+    test_duplicate_producer_identity_has_stable_conflict as contract_outbox_producer_conflict,
+    test_environment_intent_requires_matching_environment_scope as contract_outbox_environment_scope,
+    test_intent_scope_must_exactly_match_unit_of_work_scope as contract_outbox_scope,
+    test_missing_event_identity_is_generated_and_returned as contract_outbox_generated_identity,
+    test_rollback_discards_canonical_mutation_and_intent as contract_outbox_rollback,
+    test_trace_mismatch_is_terminal_and_discards_pending_mutation as contract_outbox_trace_scope,
+    workspace as outbox_workspace,
+)
 from tests.contracts.persistence.test_idempotency_repository_contract import (
     OPERATION_SCHEMA_VERSION,
     command_digest as idempotency_command_digest,
@@ -155,6 +175,55 @@ class TransactionControlledSession:
         await self._session.close()
 
 
+class FailureInjectingSession:
+    """Run real PostgreSQL statements, then fail at one transaction boundary."""
+
+    def __init__(self, session: AsyncSession, stage: str) -> None:
+        self._session = session
+        self._stage = stage
+
+    async def begin(self) -> object:
+        return await self._session.begin()
+
+    async def execute(self, statement: object, parameters: object | None = None) -> object:
+        result = await self._session.execute(statement, parameters)
+        table = getattr(statement, "table", None)
+        if self._stage == "during_flush" and getattr(table, "name", None) == "outbox_intents":
+            raise OperationalError(
+                "INSERT INTO spine.outbox_intents",
+                {},
+                RuntimeError("synthetic flush failure"),
+            )
+        return result
+
+    async def commit(self) -> None:
+        if self._stage == "during_commit":
+            await self._session.execute(
+                text(
+                    "CREATE TEMPORARY TABLE commit_failure_parent "
+                    "(id integer PRIMARY KEY) ON COMMIT DROP"
+                )
+            )
+            await self._session.execute(
+                text(
+                    "CREATE TEMPORARY TABLE commit_failure_child "
+                    "(parent_id integer, CONSTRAINT fk_commit_failure_probe "
+                    "FOREIGN KEY (parent_id) REFERENCES commit_failure_parent(id) "
+                    "DEFERRABLE INITIALLY DEFERRED) ON COMMIT DROP"
+                )
+            )
+            await self._session.execute(
+                text("INSERT INTO commit_failure_child (parent_id) VALUES (1)")
+            )
+        await self._session.commit()
+
+    async def rollback(self) -> None:
+        await self._session.rollback()
+
+    async def close(self) -> None:
+        await self._session.close()
+
+
 def _role_url(provision: TestDatabaseProvision, role: str, password: str) -> SecretStr:
     value = make_url(provision.url.get_secret_value()).set(
         username=role,
@@ -233,11 +302,13 @@ async def postgresql_adapter(
         issuer_id=synthetic_uuid(950),
         secret=b"issue-45-postgresql-contract-secret",
     )
+    outbox_events = create_outbox_event_registry()
     persistence = PostgreSQLPersistence(
         session_factory=lambda: TransactionControlledSession(
             session_factory(), transaction_gate
         ),  # type: ignore[arg-type]
         context_verifier=boundary,
+        outbox_events=outbox_events,
     )
 
     def workspace_context(workspace_id: UUID) -> TrustedPersistenceContext:
@@ -285,6 +356,7 @@ async def postgresql_adapter(
             worker_workspace_context=worker_workspace_context,
             environment_context=environment_context,
             hold_transactions=hold_transactions,
+            outbox_events=outbox_events,
         )
     finally:
         await engine.dispose()
@@ -308,6 +380,7 @@ async def one_connection_harness(
         issuer_id=synthetic_uuid(960),
         secret=b"issue-45-one-connection-secret-001",
     )
+    outbox_events = create_outbox_event_registry()
     persistence = PostgreSQLPersistence(
         session_factory=async_sessionmaker(
             engine,
@@ -315,6 +388,7 @@ async def one_connection_harness(
             autoflush=False,
         ),
         context_verifier=boundary,
+        outbox_events=outbox_events,
     )
     workspace_statement_started = asyncio.Event()
 
@@ -367,6 +441,7 @@ async def one_connection_harness(
             trace_id=synthetic_uuid(964),
         ),
         hold_transactions=hold_transactions,
+        outbox_events=outbox_events,
     )
     try:
         yield OneConnectionHarness(
@@ -432,6 +507,125 @@ async def test_postgresql_adapter_satisfies_idempotency_contract(
     contract: ContractTest,
 ) -> None:
     await contract(postgresql_adapter)
+
+
+@pytest.mark.parametrize(
+    "contract",
+    (
+        contract_outbox_commit,
+        contract_outbox_rollback,
+        contract_outbox_scope,
+        contract_outbox_environment_scope,
+        contract_outbox_producer_conflict,
+        contract_outbox_generated_identity,
+        contract_outbox_trace_scope,
+    ),
+    ids=lambda contract: contract.__name__.removeprefix("test_"),
+)
+async def test_postgresql_adapter_satisfies_outbox_contract(
+    postgresql_adapter: PersistenceAdapter,
+    contract: ContractTest,
+) -> None:
+    await contract(postgresql_adapter)
+
+
+@pytest.mark.parametrize(
+    ("stage", "offset"),
+    (
+        ("after_mutation", 0),
+        ("after_append", 10),
+        ("during_flush", 20),
+        ("before_commit", 30),
+        ("during_commit", 40),
+    ),
+)
+async def test_real_postgresql_failure_rolls_back_mutation_and_outbox_intent(
+    postgresql_contract_database: PostgreSQLContractDatabase,
+    stage: str,
+    offset: int,
+) -> None:
+    engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=synthetic_uuid(2250 + offset),
+        secret=f"issue-47-{stage}-failure-secret".encode(),
+    )
+    workspace_id = synthetic_uuid(2260 + offset)
+    event_id = synthetic_uuid(2261 + offset)
+    trace_id = synthetic_uuid(2262 + offset)
+    context = boundary.interactive(
+        scope=WorkspaceScope(workspace_id=workspace_id),
+        acting_subject_id=synthetic_uuid(2263 + offset),
+        purpose=PersistencePurpose("outbox_failure_test"),
+        operation=PersistenceOperation("workspace_repository"),
+        trace_id=trace_id,
+    )
+    outbox_events = create_outbox_event_registry()
+    persistence = PostgreSQLPersistence(
+        session_factory=lambda: FailureInjectingSession(session_factory(), stage),  # type: ignore[arg-type]
+        context_verifier=boundary,
+        outbox_events=outbox_events,
+    )
+    expected_intent = outbox_events.build_intent(
+        event_id=event_id,
+        workspace_id=workspace_id,
+        event_type="workspace.created",
+        schema_version=1,
+        payload=WorkspaceCreatedPayload(
+            workspace=OpaqueObjectReference(
+                object_type="workspace",
+                object_id=workspace_id,
+                schema_version=1,
+            ),
+            lifecycle_state="active",
+        ),
+        producer_deduplication_id=f"failure:{stage}",
+        trace_id=trace_id,
+    )
+    expected_error = {
+        "during_flush": PersistenceUnavailableError,
+        "during_commit": UnexpectedPersistenceError,
+    }.get(stage, RuntimeError)
+
+    try:
+        with pytest.raises(expected_error):
+            async with persistence.uow_factory(context) as uow:
+                await uow.workspaces.add(outbox_workspace(workspace_id))
+                if stage == "after_mutation":
+                    raise RuntimeError("synthetic failure after mutation")
+                await uow.outbox.append(expected_intent)
+                if stage == "after_append":
+                    raise RuntimeError("synthetic failure after append")
+                if stage == "before_commit":
+                    await asyncio.sleep(0)
+                    raise RuntimeError("synthetic failure before commit")
+                await uow.commit()
+
+        migration_engine = create_async_engine(
+            postgresql_contract_database.migration_url.get_secret_value(),
+            hide_parameters=True,
+        )
+        try:
+            async with migration_engine.connect() as connection:
+                persisted = (
+                    await connection.execute(
+                        text(
+                            "SELECT "
+                            "EXISTS(SELECT 1 FROM spine.workspaces WHERE id = :workspace_id), "
+                            "EXISTS(SELECT 1 FROM spine.outbox_intents WHERE event_id = :event_id)"
+                        ),
+                        {"workspace_id": workspace_id, "event_id": event_id},
+                    )
+                ).one()
+            assert tuple(persisted) == (False, False)
+        finally:
+            await migration_engine.dispose()
+    finally:
+        await engine.dispose()
 
 
 async def test_concurrent_duplicate_claims_have_one_owner_and_stable_replay(
@@ -534,6 +728,7 @@ async def test_receipt_identity_collision_keeps_primary_key_conflict_meaning(
     persistence = PostgreSQLPersistence(
         session_factory=async_sessionmaker(engine, expire_on_commit=False),
         context_verifier=boundary,
+        outbox_events=create_outbox_event_registry(),
         receipt_id_factory=lambda: receipt_id,
     )
     context = boundary.interactive(

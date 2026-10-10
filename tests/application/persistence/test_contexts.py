@@ -19,6 +19,7 @@ from spine.application.persistence.context import (
 )
 from spine.application.persistence.errors import InvalidPersistenceContextError
 from spine.domain.common import EnvironmentKind
+from spine.application.persistence.outbox import OutboxEventRegistry
 from spine.domain.workspaces import Environment, Workspace
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.persistence.contexts import create_initial_workspace_bootstrap_authority
@@ -364,7 +365,7 @@ def test_application_contract_exposes_no_unrestricted_authority_issuer() -> None
 def test_constructed_context_cannot_open_uow() -> None:
     forged = object.__new__(TrustedPersistenceContext)
     object.__setattr__(forged, "scope", WorkspaceScope(workspace_id=WORKSPACE_ID))
-    persistence = InMemoryPersistence(context_verifier=boundary())
+    persistence = InMemoryPersistence(outbox_events=OutboxEventRegistry(), context_verifier=boundary())
 
     with pytest.raises(InvalidPersistenceContextError, match="Persistence context is invalid"):
         persistence.uow_factory(forged)
@@ -394,7 +395,7 @@ def test_context_from_another_authority_boundary_is_rejected() -> None:
     with pytest.raises(InvalidPersistenceContextError, match="Persistence context is invalid"):
         boundary().verify(context)
 
-    persistence = InMemoryPersistence(context_verifier=boundary())
+    persistence = InMemoryPersistence(outbox_events=OutboxEventRegistry(), context_verifier=boundary())
     with pytest.raises(InvalidPersistenceContextError, match="Persistence context is invalid"):
         persistence.uow_factory(context)
 
@@ -436,7 +437,7 @@ def test_provenance_binds_every_authority_field(changes: dict[str, object]) -> N
 @pytest.mark.asyncio
 async def test_context_mutated_after_uow_creation_is_rejected_on_entry() -> None:
     context = interactive_context()
-    persistence = InMemoryPersistence(context_verifier=boundary())
+    persistence = InMemoryPersistence(outbox_events=OutboxEventRegistry(), context_verifier=boundary())
     uow = persistence.uow_factory(context)
     object.__setattr__(context.scope, "workspace_id", OTHER_WORKSPACE_ID)
 
@@ -461,7 +462,7 @@ async def test_uow_entry_rejects_different_valid_authority_from_same_boundary() 
         operation=OPERATION,
         trace_id=TRACE_ID,
     )
-    persistence = InMemoryPersistence(context_verifier=authority)
+    persistence = InMemoryPersistence(outbox_events=OutboxEventRegistry(), context_verifier=authority)
     uow = persistence.uow_factory(source)
     object.__setattr__(source, "scope", replacement.scope)
     object.__setattr__(source, "provenance", replacement.provenance)
@@ -555,7 +556,7 @@ async def test_context_mutated_while_entry_waits_never_gains_authority(
     transaction_lock = _EntrySignalingLock()
     authority = boundary()
     bootstrap_authority = create_initial_workspace_bootstrap_authority()
-    persistence = InMemoryPersistence(
+    persistence = InMemoryPersistence(outbox_events=OutboxEventRegistry(),
         context_verifier=authority,
         bootstrap_authority=bootstrap_authority,
         transaction_lock=transaction_lock,
@@ -620,7 +621,7 @@ async def test_context_mutated_while_entry_waits_never_gains_authority(
 async def test_stateful_context_cannot_escalate_uow_authority() -> None:
     authority = boundary()
     bootstrap_authority = create_initial_workspace_bootstrap_authority()
-    persistence = InMemoryPersistence(
+    persistence = InMemoryPersistence(outbox_events=OutboxEventRegistry(),
         context_verifier=authority,
         bootstrap_authority=bootstrap_authority,
     )
@@ -665,7 +666,7 @@ async def test_stateful_context_cannot_escalate_uow_authority() -> None:
 async def test_source_mutation_after_uow_acceptance_does_not_change_authority() -> None:
     authority = boundary()
     bootstrap_authority = create_initial_workspace_bootstrap_authority()
-    persistence = InMemoryPersistence(
+    persistence = InMemoryPersistence(outbox_events=OutboxEventRegistry(),
         context_verifier=authority,
         bootstrap_authority=bootstrap_authority,
     )

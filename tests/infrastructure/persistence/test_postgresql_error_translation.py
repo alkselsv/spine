@@ -8,6 +8,7 @@ from spine.application.persistence.errors import (
     IdempotencyConflictError,
     IncompatibleSchemaError,
     OptimisticConflictError,
+    OutboxConflictError,
     PersistenceUnavailableError,
     TransactionDeadlockError,
     TransactionSerializationError,
@@ -123,6 +124,26 @@ class ProviderError(Exception):
             ),
             ConstraintConflictError,
             "Environment does not belong to Workspace.",
+        ),
+        (
+            IntegrityError(
+                "protected SQL",
+                {"secret": "protected"},
+                ProviderError(
+                    constraint_name="uq_outbox_intents_environment_producer"
+                ),
+            ),
+            OutboxConflictError,
+            "Outbox producer identity already exists.",
+        ),
+        (
+            IntegrityError(
+                "protected SQL",
+                {"secret": "protected"},
+                ProviderError(constraint_name="pk_outbox_intents"),
+            ),
+            OutboxConflictError,
+            "Outbox event identity already exists.",
         ),
         (
             SQLAlchemyTimeoutError("pool detail"),

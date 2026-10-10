@@ -16,6 +16,7 @@ from spine.application.persistence.errors import (
     UnitOfWorkLifecycleError,
 )
 from spine.domain.common import EnvironmentKind
+from spine.application.persistence.outbox import OutboxEventRegistry
 from spine.domain.workspaces import Environment, Workspace
 from spine.infrastructure.persistence.contexts import (
     TrustedContextBoundary,
@@ -140,7 +141,7 @@ class CommitFailingEnvironment(Environment):
 async def configured_persistence() -> tuple[InMemoryPersistence, TrustedContextBoundary]:
     context_authority = authority()
     bootstrap_authority = create_initial_workspace_bootstrap_authority()
-    persistence = InMemoryPersistence(
+    persistence = InMemoryPersistence(outbox_events=OutboxEventRegistry(),
         context_verifier=context_authority,
         bootstrap_authority=bootstrap_authority,
     )
@@ -154,7 +155,7 @@ async def configured_persistence() -> tuple[InMemoryPersistence, TrustedContextB
 @pytest.mark.asyncio
 async def test_bootstrap_copy_failure_is_sanitized_and_leaves_store_uninitialized() -> None:
     bootstrap_authority = create_initial_workspace_bootstrap_authority()
-    persistence = InMemoryPersistence(
+    persistence = InMemoryPersistence(outbox_events=OutboxEventRegistry(),
         context_verifier=authority(),
         bootstrap_authority=bootstrap_authority,
     )

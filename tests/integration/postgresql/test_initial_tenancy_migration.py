@@ -46,7 +46,8 @@ MIGRATION_PASSWORD = "migration-test-secret"
 RUNTIME_PASSWORD = "runtime-test-secret"
 INITIAL_REVISION = "20261009_01"
 RLS_REVISION = "20261009_02"
-HEAD_REVISION = "20261010_03"
+IDEMPOTENCY_REVISION = "20261010_03"
+HEAD_REVISION = "20261010_04"
 WORKSPACE_A = UUID("20000000-0000-0000-0000-000000000001")
 WORKSPACE_B = UUID("20000000-0000-0000-0000-000000000002")
 ENVIRONMENT_A = UUID("30000000-0000-0000-0000-000000000001")
@@ -107,6 +108,13 @@ async def migrated_database(
             )
         )
     await asyncio.to_thread(upgrade_database, migration, revision=RLS_REVISION)
+    async with _connection(migration.url) as connection:
+        retained_revisions.append(
+            await connection.scalar(
+                text("SELECT version_num FROM spine.alembic_version")
+            )
+        )
+    await asyncio.to_thread(upgrade_database, migration, revision=IDEMPOTENCY_REVISION)
     async with _connection(migration.url) as connection:
         retained_revisions.append(
             await connection.scalar(
@@ -211,7 +219,11 @@ async def test_initial_tenancy_revision_upgrades_to_current_head_and_owned_schem
                 "WHERE nspname = 'spine'"
             )
         )
-    assert migrated_database.retained_revisions == (INITIAL_REVISION, RLS_REVISION)
+    assert migrated_database.retained_revisions == (
+        INITIAL_REVISION,
+        RLS_REVISION,
+        IDEMPOTENCY_REVISION,
+    )
     assert heads == [HEAD_REVISION]
     assert owner == MIGRATION_ROLE
 
@@ -282,6 +294,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "environments",
         "idempotency_receipts",
         "initial_workspace_bootstrap",
+        "outbox_intents",
         "workspaces",
     }
     assert constraints == {
@@ -295,6 +308,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "fk_idempotency_receipts_scope_environments",
         "fk_idempotency_receipts_workspace_id_workspaces",
         "fk_initial_workspace_bootstrap_workspace_id_workspaces",
+        "fk_outbox_intents_scope_environments",
+        "fk_outbox_intents_workspace_id_workspaces",
         "ck_idempotency_receipts_command_digest_sha256",
         "ck_idempotency_receipts_idempotency_key_length",
         "ck_idempotency_receipts_operation_schema_version_positive",
@@ -302,6 +317,12 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "pk_environments",
         "pk_idempotency_receipts",
         "pk_initial_workspace_bootstrap",
+        "ck_outbox_intents_aggregate_complete",
+        "ck_outbox_intents_event_schema_version_positive",
+        "ck_outbox_intents_event_type_identifier",
+        "ck_outbox_intents_payload_object",
+        "ck_outbox_intents_producer_deduplication_id_length",
+        "pk_outbox_intents",
         "pk_workspaces",
         "uq_environments_workspace_id_id",
         "uq_initial_workspace_bootstrap_action_id",
@@ -332,6 +353,20 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         ("idempotency_receipts", "result_schema_version"),
         ("idempotency_receipts", "result_type"),
         ("idempotency_receipts", "workspace_id"),
+        ("outbox_intents", "aggregate_id"),
+        ("outbox_intents", "aggregate_schema_version"),
+        ("outbox_intents", "aggregate_type"),
+        ("outbox_intents", "causation_id"),
+        ("outbox_intents", "correlation_id"),
+        ("outbox_intents", "created_at"),
+        ("outbox_intents", "environment_id"),
+        ("outbox_intents", "event_id"),
+        ("outbox_intents", "event_schema_version"),
+        ("outbox_intents", "event_type"),
+        ("outbox_intents", "payload"),
+        ("outbox_intents", "producer_deduplication_id"),
+        ("outbox_intents", "trace_id"),
+        ("outbox_intents", "workspace_id"),
         ("workspaces", "created_at"),
         ("workspaces", "display_name"),
         ("workspaces", "id"),
@@ -339,11 +374,18 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
     }
     assert columns[("workspaces", "id")] == ("uuid", "NO", None)
     assert columns[("environments", "id")] == ("uuid", "NO", None)
+    event_id_type, event_id_nullable, event_id_default = columns[
+        ("outbox_intents", "event_id")
+    ]
+    assert event_id_type == "uuid"
+    assert event_id_nullable == "NO"
+    assert event_id_default is not None and "gen_random_uuid()" in event_id_default
     for table in (
         "workspaces",
         "environments",
         "idempotency_receipts",
         "initial_workspace_bootstrap",
+        "outbox_intents",
     ):
         data_type, nullable, default = columns[(table, "created_at")]
         assert data_type == "timestamp with time zone"
@@ -355,12 +397,15 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "pk_environments",
         "pk_idempotency_receipts",
         "pk_initial_workspace_bootstrap",
+        "pk_outbox_intents",
         "pk_workspaces",
         "uq_environments_workspace_id_id",
         "uq_idempotency_receipts_environment_key",
         "uq_idempotency_receipts_workspace_key",
         "uq_initial_workspace_bootstrap_action_id",
         "uq_initial_workspace_bootstrap_workspace_id",
+        "uq_outbox_intents_environment_producer",
+        "uq_outbox_intents_workspace_producer",
         "uq_workspaces_slug",
     }
     assert owners == {MIGRATION_ROLE}
@@ -407,6 +452,122 @@ async def test_idempotency_receipt_composite_owner_rejects_mismatched_environmen
                     "workspace_id": WORKSPACE_A,
                     "environment_id": ENVIRONMENT_B,
                     "digest": "a" * 64,
+                },
+            )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_outbox_intent_composite_owner_rejects_mismatched_environment(
+    migrated_database: MigratedDatabase,
+    tenant_rows: None,
+) -> None:
+    with pytest.raises(IntegrityError) as error:
+        async with _connection(migrated_database.migration.url) as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.outbox_intents "
+                    "(event_id, workspace_id, environment_id, event_type, "
+                    "event_schema_version, payload, trace_id) VALUES "
+                    "(:event_id, :workspace_id, :environment_id, "
+                    "'workspace.created', 1, '{}'::jsonb, :trace_id)"
+                ),
+                {
+                    "event_id": UUID("52000000-0000-0000-0000-000000000001"),
+                    "workspace_id": WORKSPACE_A,
+                    "environment_id": ENVIRONMENT_B,
+                    "trace_id": UUID("52000000-0000-0000-0000-000000000002"),
+                },
+            )
+    assert (
+        error.value.orig.diag.constraint_name
+        == "fk_outbox_intents_scope_environments"
+    )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_outbox_intent_is_immutable_after_insert(
+    migrated_database: MigratedDatabase,
+    tenant_rows: None,
+) -> None:
+    workspace_id = WORKSPACE_A
+    event_id = UUID("52000000-0000-0000-0000-000000000011")
+    async with _connection(migrated_database.migration.url) as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO spine.outbox_intents "
+                "(event_id, workspace_id, event_type, event_schema_version, "
+                "payload, trace_id) VALUES "
+                "(:event_id, :workspace_id, 'workspace.created', 1, "
+                "'{}'::jsonb, :trace_id)"
+            ),
+            {
+                "event_id": event_id,
+                "workspace_id": workspace_id,
+                "trace_id": UUID("52000000-0000-0000-0000-000000000012"),
+            },
+        )
+        await connection.commit()
+
+    for statement in (
+        "UPDATE spine.outbox_intents SET event_schema_version = 2 "
+        "WHERE event_id = :event_id",
+        "DELETE FROM spine.outbox_intents WHERE event_id = :event_id",
+    ):
+        with pytest.raises(IntegrityError) as error:
+            async with _connection(migrated_database.migration.url) as connection:
+                await connection.execute(text(statement), {"event_id": event_id})
+        assert error.value.orig.diag.constraint_name == "ck_outbox_intents_immutable"
+
+    async with _connection(migrated_database.migration.url) as connection:
+        await connection.execute(
+            text(
+                "ALTER TABLE spine.outbox_intents "
+                "DISABLE TRIGGER trg_outbox_intents_immutable"
+            )
+        )
+        await connection.execute(
+            text("DELETE FROM spine.outbox_intents WHERE event_id = :event_id"),
+            {"event_id": event_id},
+        )
+        await connection.execute(
+            text(
+                "ALTER TABLE spine.outbox_intents "
+                "ENABLE TRIGGER trg_outbox_intents_immutable"
+            )
+        )
+        await connection.commit()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_outbox_runtime_grant_and_rls_allow_only_scoped_insert(
+    migrated_database: MigratedDatabase,
+    tenant_rows: None,
+) -> None:
+    with pytest.raises(ProgrammingError):
+        async with _connection(migrated_database.runtime_url) as connection:
+            await _set_tenant_context(connection, workspace_id=WORKSPACE_A)
+            await connection.execute(text("SELECT event_id FROM spine.outbox_intents"))
+
+    with pytest.raises(DBAPIError):
+        async with _connection(migrated_database.runtime_url) as connection:
+            await _set_tenant_context(
+                connection,
+                workspace_id=WORKSPACE_A,
+                environment_id=ENVIRONMENT_A_SECOND,
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.outbox_intents "
+                    "(event_id, workspace_id, environment_id, event_type, "
+                    "event_schema_version, payload, trace_id) VALUES "
+                    "(:event_id, :workspace_id, :environment_id, "
+                    "'workspace.created', 1, '{}'::jsonb, :trace_id)"
+                ),
+                {
+                    "event_id": UUID("52000000-0000-0000-0000-000000000020"),
+                    "workspace_id": WORKSPACE_A,
+                    "environment_id": ENVIRONMENT_A,
+                    "trace_id": UUID("52000000-0000-0000-0000-000000000021"),
                 },
             )
 
@@ -612,7 +773,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "WHERE namespace.nspname = 'spine' "
                         "AND relation.relname IN "
                         "('workspaces', 'environments', 'idempotency_receipts', "
-                        "'initial_workspace_bootstrap')"
+                        "'initial_workspace_bootstrap', 'outbox_intents')"
                     )
                 )
             )
@@ -647,6 +808,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "environments": (True, True),
         "idempotency_receipts": (True, True),
         "initial_workspace_bootstrap": (True, True),
+        "outbox_intents": (True, True),
     }
     assert set(policies) == {
         (table_name, f"pol_{table_name}_{policy_kind}")
@@ -677,6 +839,12 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
     ][1]
     assert "spine.environment_id" in policies[
         ("idempotency_receipts", "pol_idempotency_receipts_tenant_isolation")
+    ][2]
+    assert "spine.environment_id" in policies[
+        ("outbox_intents", "pol_outbox_intents_tenant_isolation")
+    ][1]
+    assert "spine.environment_id" in policies[
+        ("outbox_intents", "pol_outbox_intents_tenant_isolation")
     ][2]
 
 
@@ -713,7 +881,7 @@ async def test_runtime_grants_are_minimal_and_tables_remain_migration_owned(
                         "WHERE namespace.nspname = 'spine' "
                         "AND relation.relname IN "
                         "('workspaces', 'environments', 'idempotency_receipts', "
-                        "'initial_workspace_bootstrap')"
+                        "'initial_workspace_bootstrap', 'outbox_intents')"
                     ),
                     {"role": RUNTIME_ROLE},
                 )
@@ -731,7 +899,7 @@ async def test_runtime_grants_are_minimal_and_tables_remain_migration_owned(
                         "WHERE namespace.nspname = 'spine' "
                         "AND relation.relname IN "
                         "('workspaces', 'environments', 'idempotency_receipts', "
-                        "'initial_workspace_bootstrap')"
+                        "'initial_workspace_bootstrap', 'outbox_intents')"
                     )
                 )
             )
@@ -781,11 +949,21 @@ async def test_runtime_grants_are_minimal_and_tables_remain_migration_owned(
         False,
         False,
     )
+    assert privileges["outbox_intents"] == (
+        False,
+        True,
+        False,
+        False,
+        False,
+        False,
+        False,
+    )
     assert owners == {
         "workspaces": MIGRATION_ROLE,
         "environments": MIGRATION_ROLE,
         "idempotency_receipts": MIGRATION_ROLE,
         "initial_workspace_bootstrap": MIGRATION_ROLE,
+        "outbox_intents": MIGRATION_ROLE,
     }
     assert {
         column for column, allowed in receipt_update_columns.items() if allowed
@@ -1089,11 +1267,15 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         source / "versions" / "20261010_03_idempotency_receipts.py",
         target / "versions" / "20261010_03_idempotency_receipts.py",
     )
-    (target / "versions" / "20261010_04_injected_failure.py").write_text(
+    shutil.copy(
+        source / "versions" / "20261010_04_outbox_intents.py",
+        target / "versions" / "20261010_04_outbox_intents.py",
+    )
+    (target / "versions" / "20261010_05_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261010_04'\n"
-        "down_revision = '20261010_03'\n"
+        "revision = '20261010_05'\n"
+        "down_revision = '20261010_04'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

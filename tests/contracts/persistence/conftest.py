@@ -24,6 +24,7 @@ from spine.infrastructure.persistence.in_memory import InMemoryPersistence
 
 from .adapter import PersistenceAdapter
 from .ids import synthetic_uuid
+from .outbox_events import create_outbox_event_registry
 
 
 AdapterFactory = Callable[[], Awaitable[PersistenceAdapter]]
@@ -36,8 +37,10 @@ async def create_in_memory_adapter() -> PersistenceAdapter:
         secret=b"issue-40-contract-boundary-secret-01",
     )
     bootstrap_authority = create_initial_workspace_bootstrap_authority()
+    outbox_events = create_outbox_event_registry()
     persistence = InMemoryPersistence(
         context_verifier=boundary,
+        outbox_events=outbox_events,
         bootstrap_authority=bootstrap_authority,
         transaction_lock=transaction_lock,
     )
@@ -97,6 +100,7 @@ async def create_in_memory_adapter() -> PersistenceAdapter:
         worker_workspace_context=worker_workspace_context,
         environment_context=environment_context,
         hold_transactions=hold_transactions,
+        outbox_events=outbox_events,
     )
 
 

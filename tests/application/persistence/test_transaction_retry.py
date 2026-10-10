@@ -21,6 +21,7 @@ from spine.application.persistence import (
     run_transaction_with_retry,
 )
 from spine.domain.common import EnvironmentKind
+from spine.application.persistence.outbox import OutboxEventRegistry
 from spine.domain.workspaces import Environment, Workspace
 from spine.infrastructure.persistence.contexts import (
     TrustedContextBoundary,
@@ -53,7 +54,7 @@ async def test_retry_restarts_complete_unit_of_work_and_commits_one_effect(
         secret=b"issue-46-complete-transaction-retry",
     )
     bootstrap_authority = create_initial_workspace_bootstrap_authority()
-    persistence = InMemoryPersistence(
+    persistence = InMemoryPersistence(outbox_events=OutboxEventRegistry(),
         context_verifier=boundary,
         bootstrap_authority=bootstrap_authority,
     )
@@ -140,7 +141,7 @@ async def test_retry_exhaustion_stops_after_three_complete_unit_of_work_attempts
         secret=b"issue-46-complete-transaction-exhaustion",
     )
     bootstrap_authority = create_initial_workspace_bootstrap_authority()
-    persistence = InMemoryPersistence(
+    persistence = InMemoryPersistence(outbox_events=OutboxEventRegistry(),
         context_verifier=boundary,
         bootstrap_authority=bootstrap_authority,
     )
@@ -188,7 +189,7 @@ async def test_declared_external_side_effect_prevents_second_transaction_attempt
         secret=b"issue-46-external-side-effect-retry",
     )
     bootstrap_authority = create_initial_workspace_bootstrap_authority()
-    persistence = InMemoryPersistence(
+    persistence = InMemoryPersistence(outbox_events=OutboxEventRegistry(),
         context_verifier=boundary,
         bootstrap_authority=bootstrap_authority,
     )

@@ -10,7 +10,7 @@ from types import TracebackType
 from typing import NoReturn
 from uuid import UUID, uuid4
 
-from sqlalchemy import insert, select, text, update
+from sqlalchemy import func, insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 
 from spine.application.persistence.command_digest import CommandDigest
@@ -36,6 +36,11 @@ from spine.application.persistence.idempotency import (
     OwnedIdempotencyClaim,
     idempotency_conflict,
 )
+from spine.application.persistence.outbox import (
+    OutboxEventRegistry,
+    OutboxIntent,
+    validate_outbox_intent_for_context,
+)
 from spine.domain.common import EnvironmentKind
 from spine.domain.workspaces import Environment, Workspace
 from spine.infrastructure.db.engine import SessionFactory
@@ -45,6 +50,7 @@ from spine.infrastructure.persistence.postgresql_errors import (
 from spine.infrastructure.persistence.postgresql_mappings import (
     environments as _ENVIRONMENTS,
     idempotency_receipts as _IDEMPOTENCY_RECEIPTS,
+    outbox_intents as _OUTBOX_INTENTS,
     workspaces as _WORKSPACES,
 )
 
@@ -362,6 +368,45 @@ class _PostgreSQLIdempotencyRepository:
         )
 
 
+class _PostgreSQLOutboxWriter:
+    def __init__(self, uow: "PostgreSQLTenantUnitOfWork") -> None:
+        self._uow = uow
+
+    async def append(self, intent: OutboxIntent) -> UUID:
+        self._uow._guard_active()
+        try:
+            intent = validate_outbox_intent_for_context(
+                intent,
+                registry=self._uow._outbox_events,
+                scope=self._uow.scope,
+                trace_id=self._uow._trace_id_snapshot(),
+            )
+        except BaseException as error:
+            await self._uow._fail(error)
+        aggregate = intent.aggregate
+        values = {
+            "workspace_id": intent.workspace_id,
+            "environment_id": intent.environment_id,
+            "event_type": intent.event_type,
+            "event_schema_version": intent.schema_version,
+            "aggregate_type": aggregate.object_type if aggregate else None,
+            "aggregate_id": aggregate.object_id if aggregate else None,
+            "aggregate_schema_version": aggregate.schema_version if aggregate else None,
+            "producer_deduplication_id": intent.producer_deduplication_id,
+            "payload": intent.payload_json(),
+            "trace_id": intent.trace_id,
+            "correlation_id": intent.correlation_id,
+            "causation_id": intent.causation_id,
+        }
+        event_id = intent.event_id
+        if event_id is None:
+            generated = await self._uow._execute(select(func.gen_random_uuid()))
+            event_id = generated.scalar_one()
+        values["event_id"] = event_id
+        await self._uow._execute(insert(_OUTBOX_INTENTS).values(**values).inline())
+        return event_id
+
+
 class PostgreSQLTenantUnitOfWork:
     """Own one PostgreSQL session and transaction for one trusted operation."""
 
@@ -373,20 +418,24 @@ class PostgreSQLTenantUnitOfWork:
         context_snapshot: TrustedPersistenceContext,
         context_verifier: TrustedContextVerifier,
         receipt_id_factory: Callable[[], UUID],
+        outbox_events: OutboxEventRegistry,
     ) -> None:
         self._session_factory = session_factory
         self._source_context = source_context
         self._context_snapshot = context_snapshot
         self._context_verifier = context_verifier
         self._receipt_id_factory = receipt_id_factory
+        self._outbox_events = outbox_events
         self._scope: PersistenceScope | None = None
         self._operation: PersistenceOperation | None = None
+        self._trace_id: UUID | None = None
         self._session = None
         self._lifecycle = _Lifecycle.NEW
         self._owner: asyncio.Task[object] | None = None
         self._workspaces = _PostgreSQLWorkspaceRepository(self)
         self._environments = _PostgreSQLEnvironmentRepository(self)
         self._idempotency = _PostgreSQLIdempotencyRepository(self)
+        self._outbox = _PostgreSQLOutboxWriter(self)
         self._owned_claims: dict[UUID, OwnedIdempotencyClaim] = {}
 
     @property
@@ -411,11 +460,22 @@ class PostgreSQLTenantUnitOfWork:
         self._guard_active()
         return self._idempotency
 
+    @property
+    def outbox(self) -> _PostgreSQLOutboxWriter:
+        self._guard_active()
+        return self._outbox
+
     def _operation_snapshot(self) -> PersistenceOperation:
         self._guard_active()
         if self._operation is None:
             raise UnitOfWorkLifecycleError("Unit of Work is not active.")
         return self._operation
+
+    def _trace_id_snapshot(self) -> UUID:
+        self._guard_active()
+        if self._trace_id is None:
+            raise UnitOfWorkLifecycleError("Unit of Work is not active.")
+        return self._trace_id
 
     async def __aenter__(self) -> "PostgreSQLTenantUnitOfWork":
         if self._lifecycle is not _Lifecycle.NEW:
@@ -435,6 +495,7 @@ class PostgreSQLTenantUnitOfWork:
             await self._bind_context(snapshot)
             self._scope = snapshot.scope
             self._operation = PersistenceOperation(snapshot.operation.value)
+            self._trace_id = snapshot.trace_id
             if isinstance(snapshot.scope, EnvironmentScope):
                 await self._validate_environment_scope(snapshot.scope)
         except BaseException as error:
@@ -581,6 +642,7 @@ class PostgreSQLTenantUnitOfWork:
         session = self._session
         self._scope = None
         self._operation = None
+        self._trace_id = None
         self._owned_claims.clear()
         if session is not None:
             try:
@@ -604,6 +666,7 @@ class PostgreSQLTenantUnitOfWork:
         session = self._session
         self._scope = None
         self._operation = None
+        self._trace_id = None
         self._owned_claims.clear()
         self._session = None
         self._lifecycle = _Lifecycle.CLOSED
@@ -620,11 +683,13 @@ class PostgreSQLTenantUnitOfWorkFactory:
         *,
         session_factory: SessionFactory,
         context_verifier: TrustedContextVerifier,
+        outbox_events: OutboxEventRegistry,
         receipt_id_factory: Callable[[], UUID] = uuid4,
     ) -> None:
         self._session_factory = session_factory
         self._context_verifier = context_verifier
         self._receipt_id_factory = receipt_id_factory
+        self._outbox_events = outbox_events
 
     def __call__(
         self, context: TrustedPersistenceContext
@@ -638,6 +703,7 @@ class PostgreSQLTenantUnitOfWorkFactory:
             context_snapshot=snapshot,
             context_verifier=self._context_verifier,
             receipt_id_factory=self._receipt_id_factory,
+            outbox_events=self._outbox_events,
         )
 
 
@@ -649,12 +715,14 @@ class PostgreSQLPersistence:
         *,
         session_factory: SessionFactory,
         context_verifier: TrustedContextVerifier,
+        outbox_events: OutboxEventRegistry,
         receipt_id_factory: Callable[[], UUID] = uuid4,
     ) -> None:
         self.tenant_uow_factory = PostgreSQLTenantUnitOfWorkFactory(
             session_factory=session_factory,
             context_verifier=context_verifier,
             receipt_id_factory=receipt_id_factory,
+            outbox_events=outbox_events,
         )
         self.uow_factory = self.tenant_uow_factory
 

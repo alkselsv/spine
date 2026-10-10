@@ -6,6 +6,7 @@ from typing import AsyncContextManager
 from uuid import UUID
 
 from spine.application.persistence.context import TrustedPersistenceContext
+from spine.application.persistence.outbox import OutboxEventRegistry
 from spine.application.persistence.unit_of_work import UnitOfWorkFactory
 
 
@@ -18,3 +19,4 @@ class PersistenceAdapter:
     worker_workspace_context: Callable[[UUID], TrustedPersistenceContext]
     environment_context: Callable[[UUID, UUID], TrustedPersistenceContext]
     hold_transactions: Callable[[], AsyncContextManager[None]]
+    outbox_events: OutboxEventRegistry

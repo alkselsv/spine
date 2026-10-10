@@ -16,6 +16,7 @@ from spine.application.persistence.errors import (
     InvalidPersistenceContextError,
     UnitOfWorkLifecycleError,
 )
+from spine.application.persistence.outbox import OutboxEventRegistry
 from spine.domain.workspaces import Workspace
 from spine.infrastructure.persistence.contexts import (
     TrustedContextBoundary,
@@ -58,7 +59,7 @@ def context(
 @pytest.mark.asyncio
 async def test_ordinary_uow_cannot_create_initial_workspace() -> None:
     authority = boundary()
-    persistence = InMemoryPersistence(context_verifier=authority)
+    persistence = InMemoryPersistence(outbox_events=OutboxEventRegistry(), context_verifier=authority)
     uow = persistence.uow_factory(context(authority, INITIAL_WORKSPACE_ID))
 
     with pytest.raises(InvalidBootstrapAuthorityError, match="not authorized"):
@@ -73,7 +74,7 @@ async def test_ordinary_uow_cannot_create_initial_workspace() -> None:
 async def test_authorized_bootstrap_establishes_exactly_one_initial_workspace() -> None:
     context_authority = boundary()
     bootstrap_authority = create_initial_workspace_bootstrap_authority()
-    persistence = InMemoryPersistence(
+    persistence = InMemoryPersistence(outbox_events=OutboxEventRegistry(),
         context_verifier=context_authority,
         bootstrap_authority=bootstrap_authority,
     )
@@ -97,7 +98,7 @@ async def test_bootstrap_rejects_authority_from_another_composition_root() -> No
     context_authority = boundary()
     expected_authority = create_initial_workspace_bootstrap_authority()
     caller_authority = create_initial_workspace_bootstrap_authority()
-    persistence = InMemoryPersistence(
+    persistence = InMemoryPersistence(outbox_events=OutboxEventRegistry(),
         context_verifier=context_authority,
         bootstrap_authority=expected_authority,
     )
@@ -110,7 +111,7 @@ async def test_bootstrap_rejects_authority_from_another_composition_root() -> No
 
 @pytest.mark.asyncio
 async def test_unconfigured_bootstrap_rejects_missing_authority() -> None:
-    persistence = InMemoryPersistence(context_verifier=boundary())
+    persistence = InMemoryPersistence(outbox_events=OutboxEventRegistry(), context_verifier=boundary())
 
     with pytest.raises(InvalidBootstrapAuthorityError, match="not authorized"):
         await persistence.initial_workspace_bootstrap.create_initial_workspace(
@@ -119,7 +120,7 @@ async def test_unconfigured_bootstrap_rejects_missing_authority() -> None:
 
 
 def test_bootstrap_authority_cannot_be_used_as_tenant_context() -> None:
-    persistence = InMemoryPersistence(context_verifier=boundary())
+    persistence = InMemoryPersistence(outbox_events=OutboxEventRegistry(), context_verifier=boundary())
     bootstrap_authority = create_initial_workspace_bootstrap_authority()
 
     with pytest.raises(InvalidPersistenceContextError, match="Persistence context is invalid"):
@@ -128,7 +129,7 @@ def test_bootstrap_authority_cannot_be_used_as_tenant_context() -> None:
 
 def test_ordinary_uow_exposes_no_bootstrap_or_cross_tenant_repository() -> None:
     authority = boundary()
-    persistence = InMemoryPersistence(context_verifier=authority)
+    persistence = InMemoryPersistence(outbox_events=OutboxEventRegistry(), context_verifier=authority)
     uow = persistence.uow_factory(context(authority, INITIAL_WORKSPACE_ID))
 
     assert not hasattr(uow, "bootstrap")

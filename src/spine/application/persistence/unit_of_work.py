@@ -11,6 +11,7 @@ from spine.application.persistence.repositories import (
     IdempotencyRepository,
     WorkspaceRepository,
 )
+from spine.application.persistence.outbox import OutboxWriter
 
 
 class TenantUnitOfWork(Protocol):
@@ -41,6 +42,9 @@ class TenantUnitOfWorkFactory(Protocol):
 class UnitOfWork(TenantUnitOfWork, Protocol):
     @property
     def idempotency(self) -> IdempotencyRepository: ...
+
+    @property
+    def outbox(self) -> OutboxWriter: ...
 
     async def __aenter__(self) -> "UnitOfWork": ...
 
