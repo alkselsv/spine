@@ -507,6 +507,10 @@ The port translates provider failures into stable categories:
   type; this is not a MIME trust decision.
 - `StorageConfigurationError`: adapter configuration is invalid or unsafe.
 - `StorageIntegrityIndeterminate`: restart/recovery cannot prove state.
+- `RecoveryEvidenceChainConflict`: an append has a stale sequence, previous
+  digest, duplicate sequence or other serialized-chain conflict.
+- `RecoveryEvidenceIndeterminate`: restored or queried invalidation evidence is
+  missing, mixed, unknown or fails contiguous hash-chain verification.
 
 Errors crossing the application boundary contain category, safe retryability,
 trace ID and stable sanitized detail. They exclude bytes, path, bucket, URL,
@@ -994,26 +998,61 @@ manifest:
 
 ```text
 RecoveryEvidenceInvalidation
-  invalidation_id: opaque UUID
-  original_manifest_id: opaque UUID
+  manifest_id: opaque UUID
+  record_sequence: positive durable integer scoped to manifest_id
+  previous_record_sequence: positive durable integer | null
+  previous_record_digest: lowercase hex | null
+  event_kind: invalidated | superseded
   reason_category: typed evidence-failure category
   affected_component_or_evidence_identity: sanitized opaque identity
   observed_at: server timestamp
   verifier_or_operation_reference: sanitized opaque reference
   safe_diagnostic_details: bounded sanitized details
-  supersedes_sequence: durable sequence | null
+  replacement_manifest_id: opaque UUID | null # required for superseded
+  record_schema_version: positive integer
   integrity_algorithm: sha256
   record_digest: lowercase hex
 ```
 
 This append-only record is operational evidence about the trust status of an
-existing manifest, not a second backup or source-lifecycle authority. The
-current operational trust view is derived from the immutable manifest and the
-latest valid invalidation/supersession records. A manifest with a valid
-invalidation record is not a currently trusted restore source until repaired or
-replaced and approved. The original manifest remains available for historical
-inspection and is never erased, hidden or rewritten. Invalidation is distinct
-from live fence release failure.
+existing manifest, not a second backup or source-lifecycle authority. The first
+record for a manifest has `record_sequence = 1` and null previous fields. Each
+later record has exactly the next contiguous sequence, names
+`previous_record_sequence = record_sequence - 1`, and stores the exact digest
+of that previous record. Record allocation and append are serialized through
+the approved durable PostgreSQL coordination boundary for that manifest. A
+concurrent writer that loses the sequence race reloads the current chain and
+retries with the next sequence or returns a typed conflict; it never overwrites
+an existing record. Records are immutable after commit, and a later record
+never deletes or rewrites any earlier record. Timestamps never choose ordering.
+
+The record digest covers the normalized record schema version, manifest ID,
+sequence/link fields, event kind, reason, affected evidence identity, observed
+time, verifier/operation reference, replacement manifest when required and
+safe diagnostic details. `replacement_manifest_id` is null for `invalidated`
+and mandatory for `superseded`. There is no optional supersession sequence.
+
+The current operational trust view is derived only from the immutable manifest
+and the latest record in a fully verified contiguous chain. The evaluator loads
+the manifest and all records for its manifest ID, verifies each record's
+integrity and the hash-linked sequence from 1, and fails closed with
+`indeterminate` if any record is missing, duplicated, conflicting, unknown,
+non-contiguous or has an invalid previous digest, schema/event kind or
+replacement reference. With a valid empty chain, trust follows the manifest
+and profile evidence. With latest event `invalidated`, the manifest remains
+historical evidence but is not trusted for restore/readiness. With latest event
+`superseded`, the original remains historical evidence and the referenced
+replacement manifest is the only current candidate, subject to validating its
+own chain and evidence. A superseded or invalidated manifest cannot become
+trusted again by rewriting an old record. Repair/replacement creates new
+append-only evidence and, where appropriate, a new immutable manifest.
+Readiness is never reopened from an unverified chain.
+
+The chain is owned at the boundary level: Issue #6 defines the evidence and
+trust contract; Issue #18/operations owns the writer and workflow; Issue #8
+provides durable PostgreSQL transaction mechanics; restore/readiness consumes
+the derived trust view. The chain is not SourceRevision lifecycle state and
+does not replace ADR 0018.
 
 The operational coordination records are conceptually:
 
@@ -1252,6 +1291,21 @@ the live `BackupFenceLease.fence_state`:
 | Object present without receipt at `W` | `coherent` with orphan warning if all receipts at `W` have verified objects | `validating` → `releasing` | Yes after validation | Keep inaccessible as orphan candidate; never infer provenance; report sanitized warning and use approved cleanup | Not readable; coherent manifest may still be used for isolated validation |
 | Operator cancellation | `failed` | `releasing` → `released` or `release_degraded` | Yes when safe | Treat all partial artifacts as non-authoritative; start a new attempt if needed | Not allowed from cancelled attempt |
 
+The invalidation-chain failure matrix is:
+
+| Chain event | Durable result | Derived trust/readiness | Safe recovery |
+| --- | --- | --- | --- |
+| Two concurrent invalidation writers | One contiguous sequence commits; the losing append is not committed | Trust follows the committed chain | Losing writer reloads the chain and retries or returns typed conflict; no record is overwritten |
+| Stale writer with an old previous sequence/digest | Append rejected with typed sequence or digest conflict; existing chain unchanged | Existing valid trust view remains in force | Reload the chain and retry with the next sequence |
+| Missing sequence or non-contiguous chain | No repair by inference; existing records remain immutable | `indeterminate`; restore/readiness fails closed | Operator/reconciliation restores the missing evidence or creates an approved replacement manifest |
+| Duplicate sequence or duplicate event with a different digest | Append rejected; committed history unchanged | `indeterminate` if conflicting records are present in the restored view | Preserve both observed artifacts for diagnosis; do not choose by timestamp |
+| Wrong previous digest | Append rejected or restored chain marked invalid | `indeterminate`; readiness remains closed | Repair the evidence set or create an approved replacement; never rewrite the prior record |
+| Unknown schema version or event kind | Append rejected; unknown restored record is not ignored | `indeterminate`; readiness remains closed | Deploy a compatible verifier or create an approved replacement |
+| `superseded` event references missing or invalid replacement manifest | Event may remain committed evidence, but it cannot establish a replacement candidate | `indeterminate` or untrusted; readiness remains closed | Restore/validate the replacement or create a new approved recovery set |
+| Database crash before append commit | No new record exists; prior chain is unchanged | Prior verified trust view remains in force | Retry append using the next sequence after reloading the chain |
+| Database crash after append commit | The committed record remains immutable and must be discoverable after restart | Recompute the chain; do not append a duplicate for the same sequence | Continue from the committed chain or return a typed duplicate/conflict |
+| Backup/restore omits part of the chain or mixes generations | Chain verification fails; omitted or mixed records are not silently ignored | `indeterminate`; restored readiness is forbidden | Restore a complete matching chain or use an approved replacement manifest |
+
 The live service is not made globally unready solely because a backup attempt
 failed unless Issue #18/operations policy requires it. The failed attempt never
 satisfies recovery readiness; a restored environment remains non-ready until
@@ -1354,8 +1408,10 @@ order, SQLAlchemy mappings, directory names or provider SDK behavior.
    boundary/generation matching, checksum verification, missing-object
    degradation, append-only evidence invalidation and readiness gating. It
    separately inspects the live `BackupFenceLease` without treating it as
-   manifest evidence. Retention and physical deletion tests verify approval and
-   idempotency, but do not assert an unapproved retention duration.
+   manifest evidence. It verifies contiguous invalidation-chain ordering,
+   hash links, replacement references and fail-closed trust derivation.
+   Retention and physical deletion tests verify approval and idempotency, but do
+   not assert an unapproved retention duration.
 
 Required scenarios include oversized input, unsafe filename, path traversal,
 client MIME spoofing, timeout, bounded memory/backpressure, checksum mismatch,
@@ -1371,6 +1427,11 @@ different-byte retries, pre/post-finalization retries, observed-hash crash
    backup fence, race ticket admission against activation/quiescence, recover
    durable tickets after coordinator restart and keep readiness closed for
    Profile B, an invalidated recovery set or an unverified Profile A restore.
+   Chain tests cover concurrent writers producing sequences 1 and 2, stale
+   sequence conflicts, valid chains, missing/duplicate/conflicting records,
+   wrong previous digests, unknown event kinds, invalid replacement manifests,
+   database crash before/after append commit, mixed/truncated restored chains,
+   historical manifest preservation and fail-closed readiness.
 
 Repository gates remain:
 
@@ -1461,6 +1522,9 @@ tests must continue to prove the domain/application framework boundary.
 73. As an operations owner, I want live fence release state separate from immutable manifest status, so that release failure cannot rewrite a coherent recovery point.
 74. As a recovery operator, I want evidence invalidation recorded append-only,
     so that a failed trust assessment cannot erase the historical manifest.
+75. As a recovery operator, I want invalidation evidence hash-linked in a
+    contiguous durable chain, so that restore trust cannot depend on timestamps
+    or an in-memory ordering guess.
 
 ## Numbered Acceptance Criteria
 
@@ -1610,6 +1674,14 @@ tests must continue to prove the domain/application framework boundary.
     append-only invalidation/supersession evidence; an invalidated recovery set
     remains historical evidence but cannot be trusted for restore until repaired,
     replaced and approved.
+39. `RecoveryEvidenceInvalidation` has a contiguous manifest-scoped sequence,
+    mandatory previous-sequence/digest links, immutable record digests, explicit
+    event kind and replacement-reference rules; concurrent or stale append
+    attempts cannot overwrite committed history.
+40. Restore/readiness verifies the complete chain from sequence 1 and fails
+    closed on missing, duplicate, conflicting, unknown, non-contiguous or
+    mixed-generation records, invalid previous digests, invalid replacements or
+    database recovery gaps; timestamps never determine the latest event.
 
 ## Suggested Implementation Slices
 
@@ -1740,6 +1812,10 @@ complete Issue #6 durable storage.
     will perform the immediate policy/lifecycle-version recheck before one-shot
     grant consumption? The gateway must remain in-process and must not become a
     new distributed capability service.
+14. Which approved Issue #18 operational verifier and PostgreSQL coordination
+    transaction will append and retain the manifest-scoped invalidation chain,
+    validate replacement manifests and expose sanitized chain-integrity
+    diagnostics without allowing an unverified replacement to reopen readiness?
 
 ## Further Notes
 
