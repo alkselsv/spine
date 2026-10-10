@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from enum import Enum, auto
 from types import TracebackType
@@ -13,6 +13,11 @@ from uuid import UUID, uuid4
 from sqlalchemy import func, insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 
+from spine.application.diagnostics.audit import (
+    AuditEventRegistry,
+    same_logical_audit_event,
+    validate_audit_event_for_context,
+)
 from spine.application.persistence.command_digest import CommandDigest
 from spine.application.persistence.context import (
     EnvironmentScope,
@@ -23,6 +28,7 @@ from spine.application.persistence.context import (
     WorkspaceScope,
 )
 from spine.application.persistence.errors import (
+    AuditConflictError,
     IdempotencyConflictError,
     InvalidPersistenceContextError,
     PersistenceError,
@@ -41,13 +47,15 @@ from spine.application.persistence.outbox import (
     OutboxIntent,
     validate_outbox_intent_for_context,
 )
-from spine.domain.common import EnvironmentKind
+from spine.domain.audit import AuditEvent, AuditObjectReference, AuditOutcome
+from spine.domain.common import ContextOrigin, EnvironmentKind
 from spine.domain.workspaces import Environment, Workspace
 from spine.infrastructure.db.engine import SessionFactory
 from spine.infrastructure.persistence.postgresql_errors import (
     translate_persistence_error,
 )
 from spine.infrastructure.persistence.postgresql_mappings import (
+    audit_events as _AUDIT_EVENTS,
     environments as _ENVIRONMENTS,
     idempotency_receipts as _IDEMPOTENCY_RECEIPTS,
     outbox_intents as _OUTBOX_INTENTS,
@@ -76,6 +84,67 @@ class _Lifecycle(Enum):
     COMMITTED = auto()
     ROLLED_BACK = auto()
     CLOSED = auto()
+
+
+class PostgreSQLTransactionStage(Enum):
+    """Stable transaction boundaries exposed to diagnostics and test probes."""
+
+    BEFORE_AUDIT_IDENTITY = auto()
+    AFTER_AUDIT_FLUSH = auto()
+    BEFORE_COMMIT = auto()
+
+
+PostgreSQLTransactionProbe = Callable[
+    [PostgreSQLTransactionStage], Awaitable[None]
+]
+
+
+async def _ignore_transaction_stage(stage: PostgreSQLTransactionStage) -> None:
+    del stage
+
+
+def _audit_event_from_row(
+    row: object,
+    *,
+    registry: AuditEventRegistry,
+) -> AuditEvent:
+    payload_snapshot = row.payload
+    if not isinstance(payload_snapshot, Mapping):
+        raise ValueError("Persisted Audit Event payload is invalid.")
+    payload = registry.restore_payload(
+        event_type=row.event_type,
+        schema_version=row.schema_version,
+        payload_snapshot=payload_snapshot,
+    )
+    target = None
+    if row.target_id is not None:
+        target = AuditObjectReference(
+            object_type=row.target_type,
+            object_id=row.target_id,
+            schema_version=row.target_schema_version,
+        )
+    return registry.validate(
+        AuditEvent(
+            audit_event_id=row.audit_event_id,
+            event_type=row.event_type,
+            schema_version=row.schema_version,
+            workspace_id=row.workspace_id,
+            environment_id=row.environment_id,
+            origin=ContextOrigin(row.origin),
+            acting_subject_id=row.acting_subject_id,
+            service_principal_id=row.service_principal_id,
+            trace_id=row.trace_id,
+            correlation_id=row.correlation_id,
+            causation_id=row.causation_id,
+            occurred_at=row.occurred_at,
+            appended_at=row.appended_at,
+            target=target,
+            outcome=AuditOutcome(row.outcome),
+            reason=row.reason,
+            producer_deduplication_id=row.producer_deduplication_id,
+            payload=payload,
+        )
+    )
 
 
 class _PostgreSQLWorkspaceRepository:
@@ -407,6 +476,51 @@ class _PostgreSQLOutboxWriter:
         return event_id
 
 
+class _PostgreSQLAuditWriter:
+    def __init__(self, uow: "PostgreSQLTenantUnitOfWork") -> None:
+        self._uow = uow
+
+    async def append(self, event: AuditEvent) -> UUID:
+        self._uow._guard_active()
+        try:
+            canonical = validate_audit_event_for_context(
+                event,
+                registry=self._uow._audit_events,
+                context=self._uow._context_snapshot_active(),
+            )
+        except BaseException as error:
+            await self._uow._fail(error)
+
+        duplicate = await self._uow._find_audit_by_producer(canonical)
+        if duplicate is not None:
+            if same_logical_audit_event(duplicate, canonical):
+                assert duplicate.audit_event_id is not None
+                return duplicate.audit_event_id
+            await self._uow._fail(
+                AuditConflictError(
+                    "Audit producer identity conflicts with an event."
+                )
+            )
+
+        audit_event_id = canonical.audit_event_id
+        if audit_event_id is None:
+            await self._uow._run_transaction_probe(
+                PostgreSQLTransactionStage.BEFORE_AUDIT_IDENTITY
+            )
+            generated = await self._uow._execute(select(func.gen_random_uuid()))
+            audit_event_id = generated.scalar_one()
+        if await self._uow._find_audit_by_id(audit_event_id) is not None:
+            await self._uow._fail(
+                AuditConflictError("Audit Event identity already exists.")
+            )
+        self._uow._pending_audit_events[audit_event_id] = (
+            canonical.detached_snapshot(
+                update={"audit_event_id": audit_event_id}
+            )
+        )
+        return audit_event_id
+
+
 class PostgreSQLTenantUnitOfWork:
     """Own one PostgreSQL session and transaction for one trusted operation."""
 
@@ -419,6 +533,8 @@ class PostgreSQLTenantUnitOfWork:
         context_verifier: TrustedContextVerifier,
         receipt_id_factory: Callable[[], UUID],
         outbox_events: OutboxEventRegistry,
+        audit_events: AuditEventRegistry,
+        transaction_probe: PostgreSQLTransactionProbe,
     ) -> None:
         self._session_factory = session_factory
         self._source_context = source_context
@@ -426,9 +542,12 @@ class PostgreSQLTenantUnitOfWork:
         self._context_verifier = context_verifier
         self._receipt_id_factory = receipt_id_factory
         self._outbox_events = outbox_events
+        self._audit_events = audit_events
+        self._transaction_probe = transaction_probe
         self._scope: PersistenceScope | None = None
         self._operation: PersistenceOperation | None = None
         self._trace_id: UUID | None = None
+        self._active_context: TrustedPersistenceContext | None = None
         self._session = None
         self._lifecycle = _Lifecycle.NEW
         self._owner: asyncio.Task[object] | None = None
@@ -436,7 +555,9 @@ class PostgreSQLTenantUnitOfWork:
         self._environments = _PostgreSQLEnvironmentRepository(self)
         self._idempotency = _PostgreSQLIdempotencyRepository(self)
         self._outbox = _PostgreSQLOutboxWriter(self)
+        self._audit = _PostgreSQLAuditWriter(self)
         self._owned_claims: dict[UUID, OwnedIdempotencyClaim] = {}
+        self._pending_audit_events: dict[UUID, AuditEvent] = {}
 
     @property
     def scope(self) -> PersistenceScope:
@@ -465,6 +586,17 @@ class PostgreSQLTenantUnitOfWork:
         self._guard_active()
         return self._outbox
 
+    @property
+    def audit(self) -> _PostgreSQLAuditWriter:
+        self._guard_active()
+        return self._audit
+
+    def _context_snapshot_active(self) -> TrustedPersistenceContext:
+        self._guard_active()
+        if self._active_context is None:
+            raise UnitOfWorkLifecycleError("Unit of Work is not active.")
+        return self._active_context
+
     def _operation_snapshot(self) -> PersistenceOperation:
         self._guard_active()
         if self._operation is None:
@@ -476,6 +608,110 @@ class PostgreSQLTenantUnitOfWork:
         if self._trace_id is None:
             raise UnitOfWorkLifecycleError("Unit of Work is not active.")
         return self._trace_id
+
+    def _audit_scope_predicates(self) -> tuple[object, ...]:
+        scope = self.scope
+        environment_predicate = (
+            _AUDIT_EVENTS.c.environment_id == scope.environment_id
+            if isinstance(scope, EnvironmentScope)
+            else _AUDIT_EVENTS.c.environment_id.is_(None)
+        )
+        return (
+            _AUDIT_EVENTS.c.workspace_id == scope.workspace_id,
+            environment_predicate,
+        )
+
+    async def _find_audit_by_id(
+        self,
+        audit_event_id: UUID,
+    ) -> AuditEvent | None:
+        pending = self._pending_audit_events.get(audit_event_id)
+        if pending is not None:
+            return pending
+        result = await self._execute(
+            select(_AUDIT_EVENTS).where(
+                _AUDIT_EVENTS.c.audit_event_id == audit_event_id,
+                *self._audit_scope_predicates(),
+            )
+        )
+        row = result.mappings().one_or_none()
+        if row is None:
+            return None
+        try:
+            return _audit_event_from_row(row, registry=self._audit_events)
+        except BaseException as error:
+            await self._fail(error)
+
+    async def _find_audit_by_producer(
+        self,
+        event: AuditEvent,
+    ) -> AuditEvent | None:
+        producer_id = event.producer_deduplication_id
+        if producer_id is None:
+            return None
+        for pending in self._pending_audit_events.values():
+            if (
+                pending.event_type == event.event_type
+                and pending.producer_deduplication_id == producer_id
+                and pending.workspace_id == event.workspace_id
+                and pending.environment_id == event.environment_id
+            ):
+                return pending
+        result = await self._execute(
+            select(_AUDIT_EVENTS).where(
+                _AUDIT_EVENTS.c.event_type == event.event_type,
+                _AUDIT_EVENTS.c.producer_deduplication_id == producer_id,
+                *self._audit_scope_predicates(),
+            )
+        )
+        row = result.mappings().one_or_none()
+        if row is None:
+            return None
+        try:
+            return _audit_event_from_row(row, registry=self._audit_events)
+        except BaseException as error:
+            await self._fail(error)
+
+    async def _flush_audit_events(self) -> None:
+        pending_events = tuple(self._pending_audit_events.values())
+        for event in pending_events:
+            target = event.target
+            inserted = await self._execute(
+                postgresql_insert(_AUDIT_EVENTS)
+                .values(
+                    audit_event_id=event.audit_event_id,
+                    workspace_id=event.workspace_id,
+                    environment_id=event.environment_id,
+                    event_type=event.event_type,
+                    schema_version=event.schema_version,
+                    origin=event.origin.value,
+                    acting_subject_id=event.acting_subject_id,
+                    service_principal_id=event.service_principal_id,
+                    trace_id=event.trace_id,
+                    correlation_id=event.correlation_id,
+                    causation_id=event.causation_id,
+                    occurred_at=event.occurred_at,
+                    target_type=target.object_type if target else None,
+                    target_id=target.object_id if target else None,
+                    target_schema_version=(target.schema_version if target else None),
+                    outcome=event.outcome.value,
+                    reason=event.reason,
+                    producer_deduplication_id=event.producer_deduplication_id,
+                    payload=event.payload_json(),
+                )
+                .on_conflict_do_nothing()
+                .returning(_AUDIT_EVENTS.c.audit_event_id)
+            )
+            if inserted.scalar_one_or_none() is None:
+                await self._fail(
+                    AuditConflictError(
+                        "Audit Event identity or producer identity already exists."
+                    )
+                )
+        if pending_events:
+            await self._run_transaction_probe(
+                PostgreSQLTransactionStage.AFTER_AUDIT_FLUSH
+            )
 
     async def __aenter__(self) -> "PostgreSQLTenantUnitOfWork":
         if self._lifecycle is not _Lifecycle.NEW:
@@ -496,6 +732,7 @@ class PostgreSQLTenantUnitOfWork:
             self._scope = snapshot.scope
             self._operation = PersistenceOperation(snapshot.operation.value)
             self._trace_id = snapshot.trace_id
+            self._active_context = snapshot
             if isinstance(snapshot.scope, EnvironmentScope):
                 await self._validate_environment_scope(snapshot.scope)
         except BaseException as error:
@@ -524,6 +761,8 @@ class PostgreSQLTenantUnitOfWork:
                     "Owned idempotency claims must be completed before commit."
                 )
             )
+        await self._flush_audit_events()
+        await self._run_transaction_probe(PostgreSQLTransactionStage.BEFORE_COMMIT)
         assert self._session is not None
         try:
             await self._session.commit()
@@ -531,6 +770,7 @@ class PostgreSQLTenantUnitOfWork:
             await self._terminate(error)
         self._lifecycle = _Lifecycle.COMMITTED
         self._owned_claims.clear()
+        self._pending_audit_events.clear()
 
     async def rollback(self) -> None:
         self._guard_owner()
@@ -545,6 +785,7 @@ class PostgreSQLTenantUnitOfWork:
             await self._terminate(error)
         self._lifecycle = _Lifecycle.ROLLED_BACK
         self._owned_claims.clear()
+        self._pending_audit_events.clear()
 
     def _guard_owner(self) -> None:
         if self._owner is None or asyncio.current_task() is not self._owner:
@@ -634,6 +875,16 @@ class PostgreSQLTenantUnitOfWork:
         assert self._session is not None
         return await self._session.execute(statement, parameters)
 
+    async def _run_transaction_probe(
+        self,
+        stage: PostgreSQLTransactionStage,
+    ) -> None:
+        self._guard_active()
+        try:
+            await self._transaction_probe(stage)
+        except BaseException as error:
+            await self._terminate(error)
+
     async def _fail(self, error: BaseException) -> NoReturn:
         await self._terminate(error)
 
@@ -643,7 +894,9 @@ class PostgreSQLTenantUnitOfWork:
         self._scope = None
         self._operation = None
         self._trace_id = None
+        self._active_context = None
         self._owned_claims.clear()
+        self._pending_audit_events.clear()
         if session is not None:
             try:
                 await session.rollback()
@@ -667,7 +920,9 @@ class PostgreSQLTenantUnitOfWork:
         self._scope = None
         self._operation = None
         self._trace_id = None
+        self._active_context = None
         self._owned_claims.clear()
+        self._pending_audit_events.clear()
         self._session = None
         self._lifecycle = _Lifecycle.CLOSED
         if session is not None:
@@ -684,12 +939,16 @@ class PostgreSQLTenantUnitOfWorkFactory:
         session_factory: SessionFactory,
         context_verifier: TrustedContextVerifier,
         outbox_events: OutboxEventRegistry,
+        audit_events: AuditEventRegistry,
+        transaction_probe: PostgreSQLTransactionProbe,
         receipt_id_factory: Callable[[], UUID] = uuid4,
     ) -> None:
         self._session_factory = session_factory
         self._context_verifier = context_verifier
         self._receipt_id_factory = receipt_id_factory
         self._outbox_events = outbox_events
+        self._audit_events = audit_events
+        self._transaction_probe = transaction_probe
 
     def __call__(
         self, context: TrustedPersistenceContext
@@ -704,7 +963,26 @@ class PostgreSQLTenantUnitOfWorkFactory:
             context_verifier=self._context_verifier,
             receipt_id_factory=self._receipt_id_factory,
             outbox_events=self._outbox_events,
+            audit_events=self._audit_events,
+            transaction_probe=self._transaction_probe,
         )
+
+
+class PostgreSQLAuditReader:
+    """Minimal tenant-scoped read-by-opaque-ID audit seam."""
+
+    def __init__(self, uow_factory: PostgreSQLTenantUnitOfWorkFactory) -> None:
+        self._uow_factory = uow_factory
+
+    async def resolve(
+        self,
+        context: TrustedPersistenceContext,
+        audit_event_id: UUID,
+    ) -> AuditEvent | None:
+        if not isinstance(audit_event_id, UUID) or audit_event_id.int == 0:
+            raise InvalidPersistenceContextError("Persistence context is invalid.")
+        async with self._uow_factory(context) as uow:
+            return await uow._find_audit_by_id(audit_event_id)
 
 
 class PostgreSQLPersistence:
@@ -716,20 +994,32 @@ class PostgreSQLPersistence:
         session_factory: SessionFactory,
         context_verifier: TrustedContextVerifier,
         outbox_events: OutboxEventRegistry,
+        audit_events: AuditEventRegistry | None = None,
+        transaction_probe: PostgreSQLTransactionProbe = _ignore_transaction_stage,
         receipt_id_factory: Callable[[], UUID] = uuid4,
     ) -> None:
+        selected_audit_events = (
+            audit_events or AuditEventRegistry.with_default_families()
+        )
+        selected_audit_events.require_sealed()
         self.tenant_uow_factory = PostgreSQLTenantUnitOfWorkFactory(
             session_factory=session_factory,
             context_verifier=context_verifier,
             receipt_id_factory=receipt_id_factory,
             outbox_events=outbox_events,
+            audit_events=selected_audit_events,
+            transaction_probe=transaction_probe,
         )
         self.uow_factory = self.tenant_uow_factory
+        self.audit_reader = PostgreSQLAuditReader(self.tenant_uow_factory)
 
 
 __all__ = [
     "PostgreSQLPersistence",
+    "PostgreSQLAuditReader",
     "PostgreSQLTenantUnitOfWork",
     "PostgreSQLTenantUnitOfWorkFactory",
+    "PostgreSQLTransactionProbe",
+    "PostgreSQLTransactionStage",
     "translate_persistence_error",
 ]

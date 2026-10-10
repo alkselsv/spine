@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -394,6 +394,42 @@ class AuditEventRegistry:
         if not self._sealed:
             raise RuntimeError("Audit Event registry is not sealed.")
 
+    def restore_payload(
+        self,
+        *,
+        event_type: str,
+        schema_version: int,
+        payload_snapshot: Mapping[str, object],
+    ) -> BaseModel:
+        """Revalidate one persisted JSON snapshot without exposing its values."""
+
+        self.require_sealed()
+        definition = self._definitions.get((event_type, schema_version))
+        if definition is None:
+            raise UnsupportedAuditEventError(
+                "Audit Event type, version, or payload is not registered."
+            )
+        try:
+            serialized = json.dumps(
+                dict(payload_snapshot),
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            return definition.payload_type.model_validate_json(
+                serialized,
+                strict=True,
+            )
+        except (
+            PydanticSerializationError,
+            TypeError,
+            ValidationError,
+            ValueError,
+        ):
+            raise UnsupportedAuditEventError(
+                "Audit Event values do not match the registered schema."
+            ) from None
+
     def register(
         self,
         *,
@@ -558,6 +594,30 @@ class AuditWriter(Protocol):
     """Append-only audit interface exposed by a purpose-specific Unit of Work."""
 
     async def append(self, event: AuditEvent) -> UUID: ...
+
+
+def same_logical_audit_event(left: AuditEvent, right: AuditEvent) -> bool:
+    """Compare producer-owned event content while ignoring storage identities."""
+
+    return (
+        left.event_type == right.event_type
+        and left.schema_version == right.schema_version
+        and left.workspace_id == right.workspace_id
+        and left.environment_id == right.environment_id
+        and left.origin is right.origin
+        and left.acting_subject_id == right.acting_subject_id
+        and left.service_principal_id == right.service_principal_id
+        and left.trace_id == right.trace_id
+        and left.correlation_id == right.correlation_id
+        and left.causation_id == right.causation_id
+        and left.occurred_at == right.occurred_at
+        and left.target == right.target
+        and left.outcome is right.outcome
+        and left.reason == right.reason
+        and left.producer_deduplication_id
+        == right.producer_deduplication_id
+        and left.payload_json() == right.payload_json()
+    )
 
 
 class AuditReader(Protocol):

@@ -14,6 +14,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from spine.application.diagnostics.audit import (
     AuditEvent,
     AuditEventRegistry,
+    same_logical_audit_event,
     validate_audit_event_for_context,
 )
 from spine.application.persistence.bootstrap import (
@@ -400,7 +401,7 @@ class _AuditWriter:
             )
             duplicate = self._uow._resolve_audit_producer_identity(canonical)
             if duplicate is not None:
-                if self._uow._same_logical_audit_event(duplicate, canonical):
+                if same_logical_audit_event(duplicate, canonical):
                     assert duplicate.audit_event_id is not None
                     return duplicate.audit_event_id
                 self._uow._fail(
@@ -787,28 +788,6 @@ class InMemoryUnitOfWork:
             and left.event_type == right.event_type
             and left.producer_deduplication_id
             == right.producer_deduplication_id
-        )
-
-    @staticmethod
-    def _same_logical_audit_event(left: AuditEvent, right: AuditEvent) -> bool:
-        return (
-            left.event_type == right.event_type
-            and left.schema_version == right.schema_version
-            and left.workspace_id == right.workspace_id
-            and left.environment_id == right.environment_id
-            and left.origin is right.origin
-            and left.acting_subject_id == right.acting_subject_id
-            and left.service_principal_id == right.service_principal_id
-            and left.trace_id == right.trace_id
-            and left.correlation_id == right.correlation_id
-            and left.causation_id == right.causation_id
-            and left.occurred_at == right.occurred_at
-            and left.target == right.target
-            and left.outcome is right.outcome
-            and left.reason == right.reason
-            and left.producer_deduplication_id
-            == right.producer_deduplication_id
-            and left.payload_json() == right.payload_json()
         )
 
     def _resolve_audit_producer_identity(

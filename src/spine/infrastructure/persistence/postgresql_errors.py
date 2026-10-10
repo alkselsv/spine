@@ -10,6 +10,7 @@ from sqlalchemy.exc import (
 )
 
 from spine.application.persistence.errors import (
+    AuditConflictError,
     ConstraintConflictError,
     IncompatibleSchemaError,
     IdempotencyConflictError,
@@ -76,6 +77,16 @@ _OUTBOX_CONSTRAINT_MESSAGES = {
     ),
 }
 
+_AUDIT_CONSTRAINT_MESSAGES = {
+    "pk_audit_events": "Audit Event identity already exists.",
+    "uq_audit_events_workspace_producer": (
+        "Audit producer identity already exists."
+    ),
+    "uq_audit_events_environment_producer": (
+        "Audit producer identity already exists."
+    ),
+}
+
 
 def translate_persistence_error(error: BaseException) -> PersistenceError:
     """Translate provider failures without retaining SQL or bound values."""
@@ -103,6 +114,8 @@ def translate_persistence_error(error: BaseException) -> PersistenceError:
             )
         if constraint_name in _OUTBOX_CONSTRAINT_MESSAGES:
             return OutboxConflictError(_OUTBOX_CONSTRAINT_MESSAGES[constraint_name])
+        if constraint_name in _AUDIT_CONSTRAINT_MESSAGES:
+            return AuditConflictError(_AUDIT_CONSTRAINT_MESSAGES[constraint_name])
         message = _CONSTRAINT_MESSAGES.get(
             constraint_name,
             "Persistence constraint rejected the operation.",

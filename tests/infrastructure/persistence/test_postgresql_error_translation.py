@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy.exc import DBAPIError, IntegrityError, TimeoutError as SQLAlchemyTimeoutError
 
 from spine.application.persistence.errors import (
+    AuditConflictError,
     ConstraintConflictError,
     IdempotencyConflictError,
     IncompatibleSchemaError,
@@ -144,6 +145,17 @@ class ProviderError(Exception):
             ),
             OutboxConflictError,
             "Outbox event identity already exists.",
+        ),
+        (
+            IntegrityError(
+                "protected SQL",
+                {"secret": "protected"},
+                ProviderError(
+                    constraint_name="uq_audit_events_environment_producer"
+                ),
+            ),
+            AuditConflictError,
+            "Audit producer identity already exists.",
         ),
         (
             SQLAlchemyTimeoutError("pool detail"),
