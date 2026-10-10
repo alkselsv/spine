@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from spine.infrastructure.object_storage.contracts import (
     AuthorizedOriginalReadGrant,
     AuthorizedReadGrantRegistry,
+    ConsumedOriginalReadLease,
     DeletionApproval,
     IntegrityResult,
     IntegrityStatus,
@@ -229,7 +230,17 @@ def test_grant_is_one_shot_and_restart_invalidates_old_registry() -> None:
         authorization_decision_version="policy-v1",
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
     )
-    registry.consume(
+    replacement_registry = AuthorizedReadGrantRegistry()
+    with pytest.raises(InvalidReadGrant):
+        replacement_registry.consume(
+            grant,
+            workspace_id=workspace_id,
+            environment_id=None,
+            source_revision_id=source_revision_id,
+            object_reference=object_reference,
+        )
+
+    lease = registry.consume(
         grant,
         workspace_id=workspace_id,
         environment_id=None,
@@ -244,8 +255,15 @@ def test_grant_is_one_shot_and_restart_invalidates_old_registry() -> None:
             source_revision_id=source_revision_id,
             object_reference=object_reference,
         )
+    assert registry.consume_read_lease(lease).object_reference == object_reference
 
-    replacement = AuthorizedReadGrantRegistry().issue(
+
+def test_raw_read_requires_consumed_lease_and_consumes_it_once() -> None:
+    workspace_id = uuid4()
+    source_revision_id = uuid4()
+    object_reference = reference()
+    registry = AuthorizedReadGrantRegistry()
+    grant = registry.issue(
         workspace_id=workspace_id,
         environment_id=None,
         source_revision_id=source_revision_id,
@@ -255,13 +273,83 @@ def test_grant_is_one_shot_and_restart_invalidates_old_registry() -> None:
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
     )
     with pytest.raises(InvalidReadGrant):
-        registry.consume(
-            replacement,
-            workspace_id=workspace_id,
-            environment_id=None,
-            source_revision_id=source_revision_id,
-            object_reference=object_reference,
+        registry.consume_read_lease(grant)  # type: ignore[arg-type]
+
+    lease = registry.consume(
+        grant,
+        workspace_id=workspace_id,
+        environment_id=None,
+        source_revision_id=source_revision_id,
+        object_reference=object_reference,
+    )
+    assert isinstance(lease, ConsumedOriginalReadLease)
+    with pytest.raises(TypeError):
+        ConsumedOriginalReadLease()  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        copy.copy(lease)
+    with pytest.raises((TypeError, pickle.PicklingError)):
+        pickle.dumps(lease)
+
+    class RawReadFake:
+        def open_bounded_read(
+            self, consumed_lease: ConsumedOriginalReadLease, *, max_bytes: int
+        ) -> list[bytes]:
+            assert max_bytes > 0
+            registry.consume_read_lease(consumed_lease)
+            return [b""]
+
+    assert RawReadFake().open_bounded_read(lease, max_bytes=1) == [b""]
+    with pytest.raises(InvalidReadGrant):
+        registry.consume_read_lease(lease)
+
+
+def test_consumed_read_lease_rejects_wrong_registry_and_expiry() -> None:
+    workspace_id = uuid4()
+    source_revision_id = uuid4()
+    object_reference = reference()
+    registry = AuthorizedReadGrantRegistry()
+    grant = registry.issue(
+        workspace_id=workspace_id,
+        environment_id=None,
+        source_revision_id=source_revision_id,
+        object_reference=object_reference,
+        purpose="read.original.v1",
+        authorization_decision_version="policy-v1",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+    )
+    lease = registry.consume(
+        grant,
+        workspace_id=workspace_id,
+        environment_id=None,
+        source_revision_id=source_revision_id,
+        object_reference=object_reference,
+    )
+    with pytest.raises(InvalidReadGrant):
+        AuthorizedReadGrantRegistry().consume_read_lease(lease)
+
+    expired_registry = AuthorizedReadGrantRegistry()
+    expired_grant = expired_registry.issue(
+        workspace_id=workspace_id,
+        environment_id=None,
+        source_revision_id=source_revision_id,
+        object_reference=object_reference,
+        purpose="read.original.v1",
+        authorization_decision_version="policy-v1",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+    )
+    expired_lease = expired_registry.consume(
+        expired_grant,
+        workspace_id=workspace_id,
+        environment_id=None,
+        source_revision_id=source_revision_id,
+        object_reference=object_reference,
+    )
+    with pytest.raises(InvalidReadGrant):
+        expired_registry.consume_read_lease(
+            expired_lease, now=datetime.now(timezone.utc) + timedelta(minutes=6)
         )
+    with pytest.raises(InvalidReadGrant):
+        expired_registry.consume_read_lease(expired_lease)
 
 
 def test_grant_rejects_expiry_and_scope_or_generation_substitution() -> None:

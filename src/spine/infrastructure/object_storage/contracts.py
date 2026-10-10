@@ -335,11 +335,51 @@ class AuthorizedOriginalReadGrant:
         return self.__token
 
 
+class ConsumedOriginalReadLease:
+    """Opaque process-local capability created only after grant consumption."""
+
+    __slots__ = ("__registry", "__token")
+
+    def __init__(
+        self,
+        *,
+        registry: AuthorizedReadGrantRegistry,
+        token: bytes,
+        _creation_token: object,
+    ) -> None:
+        if _creation_token is not _GRANT_CREATION_TOKEN:
+            raise TypeError("read leases must be created by AuthorizedReadGrantRegistry")
+        self.__registry = registry
+        self.__token = token
+
+    def __repr__(self) -> str:
+        return "<ConsumedOriginalReadLease opaque one-shot capability>"
+
+    def __copy__(self) -> ConsumedOriginalReadLease:
+        raise TypeError("read leases cannot be copied")
+
+    def __deepcopy__(self, memo: dict[int, object]) -> ConsumedOriginalReadLease:
+        raise TypeError("read leases cannot be copied")
+
+    def __getstate__(self) -> None:
+        raise TypeError("read leases cannot be serialized")
+
+    def __reduce__(self) -> None:
+        raise TypeError("read leases cannot be serialized")
+
+    def _belongs_to(self, registry: AuthorizedReadGrantRegistry) -> bool:
+        return self.__registry is registry
+
+    def _token(self) -> bytes:
+        return self.__token
+
+
 class AuthorizedReadGrantRegistry:
     """Process-local issuer and one-shot consumer for read capabilities."""
 
     def __init__(self) -> None:
         self.__records: dict[bytes, _ReadGrantBinding] = {}
+        self.__lease_records: dict[bytes, _ReadGrantBinding] = {}
         self.__lock = threading.RLock()
 
     def issue(
@@ -389,7 +429,7 @@ class AuthorizedReadGrantRegistry:
         source_revision_id: UUID,
         object_reference: ObjectReference,
         now: datetime | None = None,
-    ) -> _ReadGrantBinding:
+    ) -> ConsumedOriginalReadLease:
         if not isinstance(grant, AuthorizedOriginalReadGrant) or not grant._belongs_to(self):
             raise InvalidReadGrant()
         with self.__lock:
@@ -405,6 +445,32 @@ class AuthorizedReadGrantRegistry:
             or binding.source_revision_id != source_revision_id
             or binding.object_reference != object_reference
         ):
+            raise InvalidReadGrant()
+        lease_token = secrets.token_bytes(32)
+        with self.__lock:
+            self.__lease_records[lease_token] = binding
+        return ConsumedOriginalReadLease(
+            registry=self,
+            token=lease_token,
+            _creation_token=_GRANT_CREATION_TOKEN,
+        )
+
+    def consume_read_lease(
+        self,
+        lease: ConsumedOriginalReadLease,
+        *,
+        now: datetime | None = None,
+    ) -> _ReadGrantBinding:
+        """Consume a lease at the internal raw-read adapter boundary."""
+
+        if not isinstance(lease, ConsumedOriginalReadLease) or not lease._belongs_to(self):
+            raise InvalidReadGrant()
+        with self.__lock:
+            binding = self.__lease_records.pop(lease._token(), None)
+        if binding is None:
+            raise InvalidReadGrant()
+        current_time = now or datetime.now(timezone.utc)
+        if current_time.tzinfo is None or current_time >= binding.expires_at:
             raise InvalidReadGrant()
         return binding
 
@@ -484,6 +550,7 @@ class DeletionResult(StorageModel):
 __all__ = [
     "AuthorizedOriginalReadGrant",
     "AuthorizedReadGrantRegistry",
+    "ConsumedOriginalReadLease",
     "DeletionApproval",
     "DeletionResult",
     "DigestAlgorithm",

@@ -7,7 +7,7 @@ from typing import Protocol
 from uuid import UUID
 
 from .contracts import (
-    AuthorizedOriginalReadGrant,
+    ConsumedOriginalReadLease,
     DeletionApproval,
     DeletionResult,
     IntegrityResult,
@@ -49,7 +49,7 @@ class OriginalObjectStore(Protocol):
 
     def open_bounded_read(
         self,
-        grant: AuthorizedOriginalReadGrant,
+        lease: ConsumedOriginalReadLease,
         *,
         max_bytes: int,
     ) -> AsyncIterator[bytes]: ...

@@ -3,9 +3,11 @@ from __future__ import annotations
 import inspect
 import ast
 from pathlib import Path
+from typing import get_type_hints
 
 from spine.infrastructure.object_storage import (
     AuthorizedOriginalReadService,
+    ConsumedOriginalReadLease,
     FenceActive,
     ObjectUnavailable,
     OriginalObjectStore,
@@ -49,6 +51,12 @@ def test_storage_port_is_public_but_has_no_raw_reference_read() -> None:
         for name, _ in inspect.getmembers(AuthorizedOriginalReadService)
         if not name.startswith("_")
     }
+
+
+def test_raw_read_port_accepts_only_consumed_lease() -> None:
+    hints = get_type_hints(OriginalObjectStore.open_bounded_read)
+    assert hints["lease"] is ConsumedOriginalReadLease
+
 
 def test_contract_modules_have_only_provider_neutral_imports() -> None:
     package = Path(__file__).parents[3] / "src" / "spine" / "infrastructure" / "object_storage"
