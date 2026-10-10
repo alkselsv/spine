@@ -1,0 +1,1 @@
+"""Infrastructure diagnostics adapter tests."""

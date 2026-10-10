@@ -68,6 +68,18 @@ class ArchitectureScaffoldTests(unittest.TestCase):
         )
         self.assert_no_framework_imports(contracts_root)
 
+    def test_application_diagnostics_contracts_have_no_framework_imports(self) -> None:
+        diagnostics_root = (
+            Path(__file__).parents[1] / "src" / "spine" / "application" / "diagnostics"
+        )
+        self.assert_no_framework_imports(diagnostics_root)
+
+    def test_infrastructure_diagnostics_adapters_have_no_framework_imports(self) -> None:
+        adapters_root = (
+            Path(__file__).parents[1] / "src" / "spine" / "infrastructure" / "diagnostics"
+        )
+        self.assert_no_framework_imports(adapters_root)
+
 
 if __name__ == "__main__":
     unittest.main()
