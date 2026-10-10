@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from spine.application.diagnostics import (
     DuplicateErrorCodeError,
     DuplicateExceptionMappingError,
+    ErrorRegistryConfigurationError,
     Retryability,
     StructuredError,
     StructuredErrorRegistry,
@@ -49,7 +50,7 @@ def test_structured_error_v1_is_frozen_and_has_only_public_fields() -> None:
     with pytest.raises(ValidationError):
         StructuredError(
             code="spine.persistence.unavailable",
-            safe_message="safe",
+            safe_message="Persistence is temporarily unavailable.",
             retryability="never",
             trace_id=synthetic_uuid(1),
             secret="forbidden",
@@ -59,8 +60,8 @@ def test_structured_error_v1_is_frozen_and_has_only_public_fields() -> None:
 @pytest.mark.parametrize("retryability", list(Retryability))
 def test_structured_error_accepts_only_declared_retryability_values(retryability: Retryability) -> None:
     error = StructuredError(
-        code="spine.test.failure",
-        safe_message="A safe failure.",
+        code="spine.internal.unexpected",
+        safe_message="An unexpected internal error occurred.",
         retryability=retryability,
         trace_id=synthetic_uuid(1),
     )
@@ -72,8 +73,8 @@ def test_structured_error_rejects_invalid_schema_and_codes() -> None:
     with pytest.raises(ValidationError):
         StructuredError(
             schema_version=2,
-            code="spine.test.failure",
-            safe_message="safe",
+            code="spine.internal.unexpected",
+            safe_message="An unexpected internal error occurred.",
             retryability=Retryability.NEVER,
             trace_id=synthetic_uuid(1),
         )
@@ -81,7 +82,66 @@ def test_structured_error_rejects_invalid_schema_and_codes() -> None:
     with pytest.raises(ValidationError):
         StructuredError(
             code="unsafe code",
-            safe_message="safe",
+            safe_message="An unexpected internal error occurred.",
+            retryability=Retryability.NEVER,
+            trace_id=synthetic_uuid(1),
+        )
+
+
+@pytest.mark.parametrize("unsafe_message", ERROR_LEAK_CORPUS)
+def test_structured_error_rejects_untrusted_safe_message(unsafe_message: str) -> None:
+    with pytest.raises(ValidationError):
+        StructuredError(
+            code="spine.persistence.unavailable",
+            safe_message=unsafe_message,
+            retryability=Retryability.AFTER_DELAY,
+            trace_id=synthetic_uuid(1),
+        )
+
+
+def test_structured_error_model_validate_rejects_injected_message() -> None:
+    with pytest.raises(ValidationError):
+        StructuredError.model_validate(
+            {
+                "schema_version": 1,
+                "code": "spine.persistence.unavailable",
+                "safe_message": "SELECT password FROM credentials",
+                "retryability": "after_delay",
+                "trace_id": synthetic_uuid(1),
+            }
+        )
+
+
+def test_structured_error_rejects_mismatched_registered_code_and_message() -> None:
+    with pytest.raises(ValidationError):
+        StructuredError(
+            code="spine.persistence.unavailable",
+            safe_message="An unexpected internal error occurred.",
+            retryability=Retryability.AFTER_DELAY,
+            trace_id=synthetic_uuid(1),
+        )
+
+
+def test_structured_error_copy_revalidates_safe_message() -> None:
+    error = StructuredError(
+        code="spine.persistence.unavailable",
+        safe_message="Persistence is temporarily unavailable.",
+        retryability=Retryability.AFTER_DELAY,
+        trace_id=synthetic_uuid(1),
+    )
+
+    with pytest.raises(ValidationError):
+        error.model_copy(update={"safe_message": "Bearer production-token"})
+
+    with pytest.raises(ValidationError):
+        error.copy(update={"safe_message": "Bearer production-token"})
+
+
+def test_structured_error_disables_unvalidated_model_construct() -> None:
+    with pytest.raises(TypeError):
+        StructuredError.model_construct(
+            code="spine.persistence.unavailable",
+            safe_message="protected document text",
             retryability=Retryability.NEVER,
             trace_id=synthetic_uuid(1),
         )
@@ -139,15 +199,45 @@ def test_unknown_error_is_generic_without_inspecting_or_leaking_exception() -> N
 
 def test_registry_rejects_ambiguous_duplicate_exception_mappings() -> None:
     registry = StructuredErrorRegistry()
-    registry.register(PersistenceError, "spine.persistence.failure", "safe", Retryability.NEVER)
+    registry.register(
+        PersistenceError,
+        "spine.persistence.failure",
+        "Persistence operation failed.",
+        Retryability.NEVER,
+    )
 
     with pytest.raises(DuplicateExceptionMappingError):
-        registry.register(PersistenceError, "spine.persistence.other", "safe", Retryability.NEVER)
+        registry.register(
+            PersistenceError,
+            "spine.persistence.unavailable",
+            "Persistence is temporarily unavailable.",
+            Retryability.AFTER_DELAY,
+        )
 
 
 def test_registry_rejects_duplicate_codes() -> None:
     registry = StructuredErrorRegistry()
-    registry.register(PersistenceError, "spine.persistence.failure", "safe", Retryability.NEVER)
+    registry.register(
+        PersistenceError,
+        "spine.persistence.failure",
+        "Persistence operation failed.",
+        Retryability.NEVER,
+    )
 
     with pytest.raises(DuplicateErrorCodeError):
-        registry.register(ValueError, "spine.persistence.failure", "other", Retryability.NEVER)
+        registry.register(
+            ValueError,
+            "spine.persistence.failure",
+            "Persistence operation failed.",
+            Retryability.NEVER,
+        )
+
+
+def test_registry_rejects_unallowlisted_safe_message() -> None:
+    with pytest.raises(ErrorRegistryConfigurationError):
+        StructuredErrorRegistry().register(
+            ValueError,
+            "spine.persistence.failure",
+            "SELECT password FROM credentials",
+            Retryability.NEVER,
+        )

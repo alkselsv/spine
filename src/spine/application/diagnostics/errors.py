@@ -5,10 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import re
-from typing import Literal
+from collections.abc import Mapping
+from types import MappingProxyType
+from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from spine.application.diagnostics.context import DiagnosticContext
 from spine.application.persistence.errors import (
@@ -32,6 +34,24 @@ from spine.application.persistence.outbox import UnsupportedOutboxEventError
 
 _CODE_PATTERN = re.compile(r"^spine\.[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$")
 _MAX_CODE_LENGTH = 96
+_SAFE_MESSAGE_BY_CODE = MappingProxyType({
+    "spine.internal.unexpected": "An unexpected internal error occurred.",
+    "spine.persistence.failure": "Persistence operation failed.",
+    "spine.persistence.invalid_context": "Persistence context is invalid.",
+    "spine.persistence.invalid_bootstrap_authority": "Bootstrap authority is invalid.",
+    "spine.persistence.unavailable": "Persistence is temporarily unavailable.",
+    "spine.persistence.retryable_failure": "The persistence operation may be retried.",
+    "spine.persistence.deadlock": "The transaction encountered a temporary conflict.",
+    "spine.persistence.serialization": "The transaction encountered a temporary conflict.",
+    "spine.persistence.optimistic_conflict": "The operation conflicts with a newer version.",
+    "spine.persistence.constraint_conflict": "The operation conflicts with a persistence constraint.",
+    "spine.persistence.idempotency_conflict": "The idempotency key conflicts with an existing command.",
+    "spine.persistence.outbox_conflict": "The outbox operation conflicts with an existing event.",
+    "spine.persistence.incompatible_schema": "The persistence schema is incompatible.",
+    "spine.persistence.unexpected": "The persistence operation failed unexpectedly.",
+    "spine.persistence.unit_of_work_lifecycle": "The persistence operation has an invalid lifecycle.",
+    "spine.persistence.unsupported_outbox_event": "The outbox event is not supported.",
+})
 
 
 class Retryability(str, Enum):
@@ -43,9 +63,18 @@ class Retryability(str, Enum):
 
 
 class StructuredError(BaseModel):
-    """The allowlisted public error envelope for schema version one."""
+    """The allowlisted public error envelope for schema version one.
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    Safe messages are static code/message pairs owned by this module. Registry
+    configuration must use one of those pairs; arbitrary caller text is not a
+    valid public error value.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        revalidate_instances="always",
+    )
 
     schema_version: Literal[1] = 1
     code: str = Field(min_length=1, max_length=_MAX_CODE_LENGTH)
@@ -66,6 +95,53 @@ class StructuredError(BaseModel):
         if value.int == 0:
             raise ValueError("trace_id must be non-zero")
         return value
+
+    @model_validator(mode="after")
+    def validate_safe_message_pair(self) -> StructuredError:
+        if _SAFE_MESSAGE_BY_CODE.get(self.code) != self.safe_message:
+            raise ValueError("safe_message is not approved for code")
+        return self
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> StructuredError:
+        """Copy only through the same validation as ordinary construction."""
+
+        copied = super().model_copy(update=update, deep=deep)
+        return type(self).model_validate(copied.model_dump())
+
+    def copy(
+        self,
+        *,
+        include: Any = None,
+        exclude: Any = None,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> StructuredError:
+        """Keep Pydantic's deprecated copy API on the validated path too."""
+
+        values = self.model_dump(include=include, exclude=exclude)
+        if update:
+            values.update(update)
+        if deep:
+            copied = super().model_copy(deep=True)
+            values = copied.model_dump(include=include, exclude=exclude)
+            if update:
+                values.update(update)
+        return type(self).model_validate(values)
+
+    @classmethod
+    def model_construct(
+        cls,
+        _fields_set: set[str] | None = None,
+        **values: Any,
+    ) -> StructuredError:
+        """Prevent Pydantic's explicitly unvalidated construction shortcut."""
+
+        raise TypeError("StructuredError.model_construct is not supported")
 
 
 class ErrorRegistryConfigurationError(ValueError):
@@ -167,3 +243,5 @@ def _validate_mapping_values(code: str, safe_message: str) -> None:
         raise ErrorRegistryConfigurationError("error code is not a bounded namespaced identifier")
     if not 1 <= len(safe_message) <= 256:
         raise ErrorRegistryConfigurationError("safe message must be bounded and non-empty")
+    if _SAFE_MESSAGE_BY_CODE.get(code) != safe_message:
+        raise ErrorRegistryConfigurationError("code/message pair is not allowlisted")
