@@ -28,6 +28,11 @@ from spine.application.persistence.command_digest import digest_command
 from spine.application.persistence.repositories import SourceObservationCommand
 from spine.application.persistence.errors import IdempotencyConflictError, ObservationCommandDigestMismatchError, RevisionDigestMismatchError
 from spine.domain.sources.errors import RevisionDigestMismatchError as DomainRevisionDigestMismatchError
+from tests.contracts.persistence.source_canonical_vectors import (
+    INVALID_LANGUAGE_TAGS,
+    LANGUAGE_VECTORS,
+    UNICODE_VECTORS,
+)
 
 
 
@@ -141,16 +146,7 @@ def test_language_profile_normalizes_lowercase_and_accepts_registered_forms() ->
     assert RevisionMetadata(document_language="i-klingon").document_language == "i-klingon"
 
 
-@pytest.mark.parametrize(
-    ("tag", "expected"),
-    [
-        ("gsw", "gsw"),
-        ("en-419", "en-419"),
-        ("sl-ROZAJ-BISKE", "sl-rozaj-biske"),
-        ("en-u-ca-gregory", "en-u-ca-gregory"),
-        ("i-klingon", "i-klingon"),
-    ],
-)
+@pytest.mark.parametrize(("tag", "expected"), LANGUAGE_VECTORS)
 def test_vendored_bcp47_registry_vectors(tag: str, expected: str) -> None:
     from spine.domain.sources.profile import normalize_language_tag
 
@@ -176,11 +172,12 @@ def test_vendored_profile_contains_complete_registry_tables() -> None:
     assert len(VARIANT_TAGS) > 100
 
 
-def test_registry_rejects_unknown_region() -> None:
+@pytest.mark.parametrize("tag", INVALID_LANGUAGE_TAGS)
+def test_registry_rejects_unregistered_or_inapplicable_tags(tag: str) -> None:
     from spine.domain.sources.profile import normalize_language_tag
 
     with pytest.raises(ValueError):
-        normalize_language_tag("en-zz")
+        normalize_language_tag(tag)
 
 
 @pytest.mark.parametrize(
@@ -193,11 +190,60 @@ def test_canonical_unicode_golden_vectors(value: str, expected: str) -> None:
     assert normalize_nfc(value) == expected
 
 
-def test_pinned_profile_table_digests_are_independent_literals() -> None:
-    from spine.domain.sources.profile import BCP47_TABLE_DIGEST, UNICODE_TABLE_DIGEST
+@pytest.mark.parametrize(("value", "expected"), UNICODE_VECTORS)
+def test_shared_canonical_unicode_vectors(value: str, expected: str) -> None:
+    from spine.domain.sources.profile import normalize_nfc
 
-    assert UNICODE_TABLE_DIGEST == "d769555163fd558132c9035e6ab04c6afc75b6140d88810de311c6b4126470b8"
-    assert BCP47_TABLE_DIGEST == "2eef87039e0d1fcdca86f772c8efd906d65910171987181542f5064f64a1ca48"
+    assert normalize_nfc(value) == expected
+
+
+def test_pinned_profile_table_digests_are_independent_literals() -> None:
+    import hashlib
+    import json
+
+    from spine.domain.sources.profile import BCP47_TABLE_DIGEST, UNICODE_TABLE_DIGEST
+    from spine.domain.sources.profile_data import BCP47_DATA, UNICODE_DATA
+    from spine.domain.sources.profile_extensions import EXTENSION_TABLE_DIGEST
+
+    def digest(value: object) -> str:
+        return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    assert digest(UNICODE_DATA) == UNICODE_TABLE_DIGEST
+    registry_digest = digest(BCP47_DATA)
+    combined_digest = digest({"bcp47_registry": registry_digest, "extension_table": EXTENSION_TABLE_DIGEST})
+    assert combined_digest == BCP47_TABLE_DIGEST
+
+
+def test_pinned_profile_rejects_tampered_artifact() -> None:
+    import base64
+    import json
+    import zlib
+
+    from spine.domain.sources.profile_data import ProfileIntegrityError, _decode
+
+    encoded = base64.b85encode(
+        zlib.compress(json.dumps({"tampered": True}).encode())
+    ).decode()
+    with pytest.raises(ProfileIntegrityError, match="digest mismatch"):
+        _decode(encoded, "0" * 64, "test")
+
+
+def test_pinned_extension_registry_digest_matches_artifact() -> None:
+    import hashlib
+    import json
+
+    from spine.domain.sources.profile_extensions import (
+        EXTENSION_DATA,
+        EXTENSION_TABLE_DIGEST,
+    )
+
+    canonical = json.dumps(
+        EXTENSION_DATA,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    assert hashlib.sha256(canonical).hexdigest() == EXTENSION_TABLE_DIGEST
 
 
 def test_pinned_profile_normalizes_nfc_and_profile_whitespace() -> None:
@@ -230,7 +276,7 @@ def test_revision_digest_excludes_observed_time() -> None:
 
 
 def test_revision_digest_matches_pinned_golden_vector() -> None:
-    assert revision_digest(valid_revision(source())) == "3ee2e85a2d69deed9d0b380a51ae7bd05af70a50055149363247bcaba42fd0b6"
+    assert revision_digest(valid_revision(source())) == "379e908c510b50ee4a5e6d7b42884be269c0fc75373d14470ffbd1bfc568ba1b"
 
 
 def command(source_object: SourceObject, source_revision: SourceRevision, source_provenance: SourceRevisionProvenance, key: str) -> SourceObservationCommand:

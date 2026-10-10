@@ -1,1 +1,1 @@
-"""Application tests."""
+"""Application contract tests."""

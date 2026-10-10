@@ -66,6 +66,8 @@ from tests.contracts.persistence.test_outbox_writer_contract import (
     workspace as outbox_workspace,
 )
 from tests.contracts.persistence.test_source_observation_contract import (
+    test_changed_revision_metadata_creates_new_immutable_revision as contract_source_metadata_change,
+    test_source_identity_rejects_mixed_connector_and_upload_identity as contract_source_identity_validation,
     test_same_observation_key_with_changed_digest_conflicts as contract_source_observation_digest_conflict,
     test_observation_rollback_removes_source_revision_and_provenance as contract_source_observation_rollback,
     test_source_identity_modes_remain_distinct as contract_source_identity_modes,
@@ -562,6 +564,8 @@ async def test_postgresql_adapter_satisfies_outbox_contract(
         contract_source_observation_revision_reuse,
         contract_source_observation_digest_conflict,
         contract_source_identity_modes,
+        contract_source_identity_validation,
+        contract_source_metadata_change,
         contract_source_reappearance,
         contract_source_content_reappearance_rejected,
         contract_source_observation_rollback,

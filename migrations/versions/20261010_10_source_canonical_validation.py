@@ -8,6 +8,7 @@ from sqlalchemy.dialects import postgresql
 
 from spine.domain.sources.profile import BCP47_TABLE_DIGEST, UNICODE_TABLE_DIGEST
 from spine.domain.sources.profile_data import BCP47_DATA, UNICODE_DATA
+from spine.domain.sources.profile_extensions import EXTENSION_DATA, EXTENSION_TABLE_DIGEST
 from spine.infrastructure.db.settings import MigrationDatabaseSettings
 
 
@@ -66,8 +67,9 @@ def _install_profile_tables(runtime: str, migration: str) -> None:
         "source_canonical_bcp47",
         sa.Column("category", sa.Text(), nullable=False),
         sa.Column("subtag", sa.Text(), nullable=False),
-        sa.PrimaryKeyConstraint("category", "subtag", name="pk_source_canonical_bcp47"),
-        sa.CheckConstraint("category IN ('language', 'extlang', 'script', 'region', 'variant', 'special')", name="ck_source_canonical_bcp47_category"),
+        sa.Column("prefix", sa.Text(), nullable=False),
+        sa.PrimaryKeyConstraint("category", "subtag", "prefix", name="pk_source_canonical_bcp47"),
+        sa.CheckConstraint("category IN ('language', 'extlang', 'script', 'region', 'variant', 'special', 'extension')", name="ck_source_canonical_bcp47_category"),
         schema=SCHEMA,
     )
 
@@ -81,7 +83,8 @@ def _install_profile_tables(runtime: str, migration: str) -> None:
         tables,
         [
             {"table_name": "unicode", "table_version": "15.1.0", "table_digest": UNICODE_TABLE_DIGEST},
-            {"table_name": "bcp47", "table_version": "2025-10-14", "table_digest": BCP47_TABLE_DIGEST},
+            {"table_name": "bcp47", "table_version": "2025-10-14+2026-09-17", "table_digest": BCP47_TABLE_DIGEST},
+            {"table_name": "bcp47_extensions", "table_version": EXTENSION_DATA["registry_version"], "table_digest": EXTENSION_TABLE_DIGEST},
         ],
     )
 
@@ -131,11 +134,29 @@ def _install_profile_tables(runtime: str, migration: str) -> None:
         "source_canonical_bcp47",
         sa.column("category", sa.Text()),
         sa.column("subtag", sa.Text()),
+        sa.column("prefix", sa.Text()),
     )
     rows = []
-    for category in ("languages", "extlangs", "scripts", "regions", "variants", "special"):
-        sql_category = "language" if category == "languages" else category[:-1] if category != "special" else category
-        rows.extend({"category": sql_category, "subtag": value.lower()} for value in BCP47_DATA[category])
+    for record in BCP47_DATA["records"]:
+        record_type = record.get("Type", [None])[0]
+        if record_type in {"grandfathered", "redundant"}:
+            category = "special"
+            values = record.get("Tag", [])
+        elif record_type in {"language", "extlang", "script", "region", "variant"}:
+            category = record_type
+            values = record.get("Subtag", [])
+        else:
+            continue
+        for value in values:
+            prefixes = [prefix.lower() for prefix in record.get("Prefix", [])] or ["*"]
+            rows.extend(
+                {"category": category, "subtag": value.lower(), "prefix": prefix}
+                for prefix in prefixes
+            )
+    rows.extend(
+        {"category": "extension", "subtag": value, "prefix": "*"}
+        for value in EXTENSION_DATA["extensions"]
+    )
     op.bulk_insert(bcp47, rows)
 
     for table in ("source_canonical_tables", "source_canonical_unicode", "source_canonical_compositions", "source_canonical_bcp47"):
@@ -324,7 +345,7 @@ def _install_canonical_functions(runtime: str) -> None:
                 IF extlang_count > 3 THEN
                     RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
                 END IF;
-                IF NOT EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 WHERE category = 'extlang' AND subtag = parts[index_value]) THEN
+                IF NOT EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 WHERE category = 'extlang' AND subtag = parts[index_value] AND (prefix = '*' OR prefix = array_to_string(parts[1:index_value - 1], '-'))) THEN
                     RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
                 END IF;
                 index_value := index_value + 1;
@@ -342,7 +363,7 @@ def _install_canonical_functions(runtime: str) -> None:
                 index_value := index_value + 1;
             END IF;
             WHILE index_value <= cardinality(parts) AND parts[index_value] ~ '^(?:[0-9][a-z0-9]{{3}}|[a-z0-9]{{5,8}})$' LOOP
-                IF NOT EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 WHERE category = 'variant' AND subtag = parts[index_value]) OR parts[index_value] = ANY(seen) THEN
+                IF NOT EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 WHERE category = 'variant' AND subtag = parts[index_value] AND (prefix = '*' OR prefix = array_to_string(parts[1:index_value - 1], '-'))) OR parts[index_value] = ANY(seen) THEN
                     RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
                 END IF;
                 seen := array_append(seen, parts[index_value]);
@@ -358,7 +379,7 @@ def _install_canonical_functions(runtime: str) -> None:
                         index_value := index_value + 1;
                     END LOOP;
                 ELSE
-                    IF prefix !~ '^[0-9a-wy-z]$' OR prefix = ANY(seen) THEN RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514'; END IF;
+                    IF prefix !~ '^[0-9a-wy-z]$' OR prefix = ANY(seen) OR NOT EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 WHERE category = 'extension' AND subtag = prefix) THEN RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514'; END IF;
                     seen := array_append(seen, prefix);
                     index_value := index_value + 1;
                     IF index_value > cardinality(parts) OR parts[index_value] !~ '^[a-z0-9]{{2,8}}$' THEN RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514'; END IF;

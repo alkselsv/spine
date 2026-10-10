@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 
 from .profile_data import (
     BCP47_DATA,
     BCP47_REGISTRY_VERSION,
+    BCP47_REGISTRY_DIGEST,
     BCP47_TABLE_DIGEST,
     UNICODE_DATA,
     UNICODE_TABLE_DIGEST,
     UNICODE_TABLE_VERSION,
 )
+from .profile_extensions import REGISTERED_EXTENSION_SINGLETONS
+from .profile_extensions import EXTENSION_TABLE_DIGEST
 
 REVISION_PROFILE = "r1-c14n-2026-10"
 REVISION_SCHEMA = "source-revision:v1"
@@ -25,6 +30,34 @@ REGION_TAGS = frozenset(BCP47_DATA["regions"])
 VARIANT_TAGS = frozenset(BCP47_DATA["variants"])
 GRANDFATHERED_TAGS = frozenset(BCP47_DATA["special"])
 UNICODE_WHITESPACE_CODEPOINTS = tuple(UNICODE_DATA["whitespace"])
+
+_combined_bcp47_digest = hashlib.sha256(
+    json.dumps(
+        {"bcp47_registry": BCP47_REGISTRY_DIGEST, "extension_table": EXTENSION_TABLE_DIGEST},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+).hexdigest()
+if _combined_bcp47_digest != BCP47_TABLE_DIGEST:
+    raise RuntimeError("Pinned BCP47 profile digest mismatch.")
+
+
+def _registry_prefixes(record_type: str) -> dict[str, frozenset[str]]:
+    prefixes: dict[str, set[str]] = {}
+    for record in BCP47_DATA["records"]:
+        if record.get("Type") != [record_type]:
+            continue
+        subtags = record.get("Subtag") or record.get("Tag")
+        if not subtags:
+            continue
+        prefixes[subtags[0].lower()] = {
+            prefix.lower() for prefix in record.get("Prefix", [])
+        } or {"*"}
+    return {subtag: frozenset(values) for subtag, values in prefixes.items()}
+
+
+_EXTLANG_PREFIXES = _registry_prefixes("extlang")
+_VARIANT_PREFIXES = _registry_prefixes("variant")
 
 _DECOMPOSITIONS = {int(key): tuple(value) for key, value in UNICODE_DATA["decomp"].items()}
 _COMBINING_CLASSES = {int(key): value for key, value in UNICODE_DATA["ccc"].items()}
@@ -124,6 +157,12 @@ def normalize_language_tag(value: str) -> str:
     index = 1
     extlang_count = 0
     while index < len(pieces) and _EXTLANG.fullmatch(pieces[index]) and lowered[index] in EXTLANG_TAGS and extlang_count < 3:
+        prefix = "-".join(lowered[:index])
+        if (
+            prefix not in _EXTLANG_PREFIXES[lowered[index]]
+            and "*" not in _EXTLANG_PREFIXES[lowered[index]]
+        ):
+            raise ValueError("document_language is not a valid BCP 47 tag")
         extlang_count += 1
         index += 1
     if index < len(pieces) and _SCRIPT.fullmatch(pieces[index]) and lowered[index] in {tag.lower() for tag in SCRIPT_TAGS}:
@@ -138,7 +177,15 @@ def normalize_language_tag(value: str) -> str:
     seen_variants: set[str] = set()
     while index < len(pieces) and _VARIANT.fullmatch(pieces[index]):
         variant = lowered[index]
-        if variant not in VARIANT_TAGS or variant in seen_variants:
+        prefix = "-".join(lowered[:index])
+        if (
+            variant not in VARIANT_TAGS
+            or variant in seen_variants
+            or (
+                prefix not in _VARIANT_PREFIXES[variant]
+                and "*" not in _VARIANT_PREFIXES[variant]
+            )
+        ):
             raise ValueError("document_language is not a valid BCP 47 tag")
         seen_variants.add(variant)
         index += 1
@@ -149,7 +196,11 @@ def normalize_language_tag(value: str) -> str:
             if index >= len(pieces) or any(not 1 <= len(part) <= 8 or not part.isalnum() for part in pieces[index:]):
                 raise ValueError("document_language is not a valid BCP 47 tag")
             return "-".join(lowered)
-        if not _SINGLETON.fullmatch(pieces[index]) or lowered[index] in seen_extensions:
+        if (
+            not _SINGLETON.fullmatch(pieces[index])
+            or lowered[index] not in REGISTERED_EXTENSION_SINGLETONS
+            or lowered[index] in seen_extensions
+        ):
             raise ValueError("document_language is not a valid BCP 47 tag")
         seen_extensions.add(lowered[index])
         index += 1
@@ -163,6 +214,7 @@ def normalize_language_tag(value: str) -> str:
 
 __all__ = [
     "BCP47_REGISTRY_VERSION",
+    "BCP47_REGISTRY_DIGEST",
     "BCP47_TABLE_DIGEST",
     "GRANDFATHERED_TAGS",
     "OBSERVATION_SCHEMA",

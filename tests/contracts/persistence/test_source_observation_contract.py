@@ -206,6 +206,58 @@ async def test_source_identity_modes_remain_distinct(persistence_adapter: Persis
 
 
 @pytest.mark.asyncio
+async def test_source_identity_rejects_mixed_connector_and_upload_identity(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    with pytest.raises(ValueError):
+        SourceObject(
+            source_object_id=synthetic_uuid(7070),
+            workspace_id=synthetic_uuid(7071),
+            environment_id=synthetic_uuid(7072),
+            source_kind="document",
+            identity_mode=IdentityMode.UPLOAD,
+            connection_id=synthetic_uuid(7073),
+            external_namespace="provider",
+            external_generation="generation-1",
+            external_object_id="object-1",
+            upload_identity="upload-1",
+            created_at=NOW,
+        )
+
+
+@pytest.mark.asyncio
+async def test_changed_revision_metadata_creates_new_immutable_revision(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id, environment_id = synthetic_uuid(7080), synthetic_uuid(7081)
+    await prepare(persistence_adapter, workspace_id, environment_id)
+    source_object = source(workspace_id, environment_id)
+    first_revision = revision(source_object, synthetic_uuid(7082))
+    changed_values = first_revision.model_dump()
+    changed_values.pop("revision_digest")
+    changed_values["revision_id"] = synthetic_uuid(7083)
+    changed_values["revision_metadata"] = RevisionMetadata(embedded_title="Changed title")
+    changed_values["revision_metadata_digest"] = canonical_revision_metadata_digest(changed_values["revision_metadata"])
+    second_revision = content_revision(**changed_values)
+    async with persistence_adapter.uow_factory(persistence_adapter.source_context(workspace_id, environment_id)) as uow:
+        first = await uow.sources.record_observation(SourceObservationCommand.create(
+            source=source_object,
+            revision=first_revision,
+            provenance=provenance(source_object, first_revision.revision_id, "event-1"),
+            idempotency_key=IdempotencyKey("metadata-key-1"),
+        ))
+        second = await uow.sources.record_observation(SourceObservationCommand.create(
+            source=source_object,
+            revision=second_revision,
+            provenance=provenance(source_object, second_revision.revision_id, "event-2"),
+            idempotency_key=IdempotencyKey("metadata-key-2"),
+        ))
+        await uow.commit()
+    assert first.revision.revision_id != second.revision.revision_id
+    assert first.revision.revision_digest != second.revision.revision_digest
+
+
+@pytest.mark.asyncio
 async def test_tombstone_reappearance_requires_tombstone_predecessor(persistence_adapter: PersistenceAdapter) -> None:
     workspace_id, environment_id = synthetic_uuid(7040), synthetic_uuid(7041)
     await prepare(persistence_adapter, workspace_id, environment_id)

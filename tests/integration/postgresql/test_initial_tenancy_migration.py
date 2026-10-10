@@ -38,6 +38,11 @@ from spine.infrastructure.db.test_harness import TestDatabaseProvision
 from spine.infrastructure.persistence.contexts import (
     create_initial_workspace_bootstrap_authority,
 )
+from tests.contracts.persistence.source_canonical_vectors import (
+    INVALID_LANGUAGE_TAGS,
+    LANGUAGE_VECTORS,
+    UNICODE_VECTORS,
+)
 
 
 pytestmark = pytest.mark.postgresql
@@ -399,16 +404,6 @@ async def test_source_canonical_validation_is_profile_bound(
     """Register the database-owned profile seam for real PostgreSQL execution."""
 
     async with _connection(migrated_database.migration.url) as connection:
-        result = await connection.execute(
-            text(
-                "SELECT prosrc FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
-                "WHERE n.nspname = 'spine' AND p.proname = 'validate_source_revision_canonical'"
-            )
-        )
-        source = (await result.scalar_one()).lower()
-        assert "normalize" in source
-        assert "d769555163fd558132c9035e6ab04c6afc75b6140d88810de311c6b4126470b8" in source
-        assert "2eef87039e0d1fcdca86f772c8efd906d65910171987181542f5064f64a1ca48" in source
         profile_rows = {
             row.table_name: (row.table_version, row.table_digest)
             for row in (
@@ -419,7 +414,8 @@ async def test_source_canonical_validation_is_profile_bound(
         }
         assert profile_rows == {
             "unicode": ("15.1.0", "d769555163fd558132c9035e6ab04c6afc75b6140d88810de311c6b4126470b8"),
-            "bcp47": ("2025-10-14", "2eef87039e0d1fcdca86f772c8efd906d65910171987181542f5064f64a1ca48"),
+            "bcp47": ("2025-10-14+2026-09-17", "83bc00ba28d0441265f93e630c4524fa03651ac02f0919e32685756b06134b82"),
+            "bcp47_extensions": ("2026-09-17", "ffa82e8366c930f65f7bace633603d3eaae85436c24853d465edda71193958a1"),
         }
         privileges = await connection.execute(
             text(
@@ -451,6 +447,33 @@ async def test_source_canonical_validation_is_profile_bound(
             await connection.execute(
                 text("SELECT spine.source_canonical_language('en-zz')")
             )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_canonicalization_matches_shared_vectors(
+    migrated_database: MigratedDatabase,
+    tenant_rows: None,
+) -> None:
+    async with _connection(migrated_database.migration.url) as connection:
+        for value, expected in UNICODE_VECTORS:
+            actual = await connection.scalar(
+                text("SELECT spine.source_canonical_nfc(:value)"),
+                {"value": value},
+            )
+            assert actual == expected
+        for language, expected in LANGUAGE_VECTORS:
+            actual = await connection.scalar(
+                text("SELECT spine.source_canonical_language(:language)"),
+                {"language": language},
+            )
+            assert actual == expected
+        for language in INVALID_LANGUAGE_TAGS:
+            with pytest.raises((IntegrityError, DBAPIError)):
+                await connection.execute(
+                    text("SELECT spine.source_canonical_language(:language)"),
+                    {"language": language},
+                )
+            await connection.rollback()
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -488,7 +511,7 @@ async def test_direct_sql_cannot_bypass_source_canonical_validation(
         "reference": reference,
         "sha": "a" * 64,
         "unicode_digest": "d769555163fd558132c9035e6ab04c6afc75b6140d88810de311c6b4126470b8",
-        "bcp_digest": "2eef87039e0d1fcdca86f772c8efd906d65910171987181542f5064f64a1ca48",
+        "bcp_digest": "83bc00ba28d0441265f93e630c4524fa03651ac02f0919e32685756b06134b82",
     }
     async with _connection(migrated_database.migration.url) as connection:
         await connection.execute(insert_source, common)
@@ -748,24 +771,6 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
     assert set(policies) == {
         (table_name, f"pol_{table_name}_{policy_kind}")
         for table_name in standard_tenant_rls_tables
-=======
-        "source_canonical_tables": (False, False),
-        "source_canonical_unicode": (False, False),
-        "source_canonical_compositions": (False, False),
-        "source_canonical_bcp47": (False, False),
-    }
-    assert rls == expected_rls
-    expected_policy_tables = {
-        "workspaces",
-        "environments",
-        "idempotency_receipts",
-        "initial_workspace_bootstrap",
-        "outbox_intents",
-    }
-    assert set(policies) == {
-        (table_name, f"pol_{table_name}_{policy_kind}")
-        for table_name in expected_policy_tables
->>>>>>> a82889e (fix: enforce pinned canonicalization in PostgreSQL)
         for policy_kind in ("tenant_isolation", "migration_maintenance")
     } | {
         ("audit_events", "pol_audit_events_tenant_read"),

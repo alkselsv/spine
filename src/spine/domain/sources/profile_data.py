@@ -3,12 +3,23 @@ Generated offline from the versioned upstream registries; never fetched at runti
 """
 from __future__ import annotations
 import base64,json,zlib
-def _decode(value: str)->dict:
- return json.loads(zlib.decompress(base64.b85decode("".join(value.split()))).decode())
+import hashlib
+
+class ProfileIntegrityError(RuntimeError):
+ """The checked-in canonicalization profile was changed without its digest."""
+
+def _decode(value: str, expected_digest: str, artifact_name: str)->dict:
+ data=json.loads(zlib.decompress(base64.b85decode("".join(value.split()))).decode())
+ canonical=json.dumps(data,ensure_ascii=False,sort_keys=True,separators=(",",":")).encode()
+ actual=hashlib.sha256(canonical).hexdigest()
+ if actual != expected_digest:
+  raise ProfileIntegrityError(f"Pinned {artifact_name} profile digest mismatch.")
+ return data
 UNICODE_TABLE_VERSION="15.1.0"
 UNICODE_TABLE_DIGEST="d769555163fd558132c9035e6ab04c6afc75b6140d88810de311c6b4126470b8"
 BCP47_REGISTRY_VERSION="2025-10-14"
-BCP47_TABLE_DIGEST="2eef87039e0d1fcdca86f772c8efd906d65910171987181542f5064f64a1ca48"
+BCP47_REGISTRY_DIGEST="2eef87039e0d1fcdca86f772c8efd906d65910171987181542f5064f64a1ca48"
+BCP47_TABLE_DIGEST="83bc00ba28d0441265f93e630c4524fa03651ac02f0919e32685756b06134b82"
 UNICODE_DATA=_decode("""
 c-m!s+pexFj@`TL>!s-94D~8or6{T{DSeTyRyv1^R=s<$#~3zq<z`NXKfvZ_1BU-U|M=VA{`SXT{_~Gg+OGAFzm#7$IKKABUuydh?oW7R_zBJot_<!Bo(Rr<
 V;l>uo*Az`p74Ca>k02CoH?%XJ>l|%>l1EI_~HAMVm-xJPdV08koA;g&4=%N_|Av#eE80X?|k^qhwps&&WG=O_^yZVdibt~?|S&Ihwn<hr*unPCP95cV^6rj
@@ -194,7 +205,7 @@ q!dt2QoM$D&76HfaQ{V#&`~ZWOXS_<QdUwRPfK}Vx$l<pU^96k4B1-BhIw{pi(u1s@0om2w|k|u7?3;b
 <g<gj8$a$PyAO-FdwxWgTcRB-XRl86>E&QCYj8O%F)ba(sd|BZ+VV>$*aSVX_QM|Ni32Wdfu4A7^yG3Exa5op91AAm8rsS+lxRFxikiR_>=<e^cD_(_ta5;J
 T?5==B?H_;i#T3is87#-rP=|mvDQKS7ONZJ9_txkEOw%9Icwwa?VrE?_}~BbuYdc;zx@5b{-3}9&;R(>fBf4YfBB<~|5E<T_s6e4{_lVP*Z=kR|M>U+_P4)V
 l3(U%SALlrojrH>%ii_6TJo3uB*-tDf9;QXh1k@0XI}ebC$x6DRop4b-Waat*He8)_^f+1|6|?C$HQKiLA~1QpZ^b%r@hV
-""")
+""", UNICODE_TABLE_DIGEST, "Unicode")
 BCP47_DATA=_decode("""
 c-n;BPm}w|ww>p%a^j4wYuVulJ2X>RV~;#jXut$W5KLqu3z;PT=*#=?$!c{UU0rLE(Oo|lu!$<{wcfQ8tpED=`_YzLp6cKK!+-w!?Y92?fBE|@JguMaIwb3l
 b+;bY^Sh1@YyGbGU>&TZHGkKKuRo^m`YKkhFJ4)^a`T$aSvLQ=IsSHi*Lt@)S9OHyl~p}&ulX$B^;G%U|J&Km@9RVOz9u|oYy7US@4triTUGe+-#_0ohW7fd
@@ -1459,4 +1470,4 @@ rAQe`H8Eq#N~RepmKEvkle#LWE;d`1MWiq<P5PiJMuN|Ytz^diD_NDf55F|*LAH&bz7jlL+8&zITHM_n
 ?S?IBe(-$+rW@B4k=3#&tIpkOr*13*p{t1?eOgtB-vKR6PbeJxJ%?Q-Etr|rchci!?!_|ql5&mW>Ox<RmX{BZD~qF7hhLJShA1}3Xjwb*9zw@YtCD(txgl<|
 A|Y~GmReM~<LS+@<)}5<z<N<*CpdOlCnJr>r=)1Ovo$DNZgpgINz=;M<wN3Dd+y{A8kikpZuMicMv$Iqs<O?s4iiVqgRN0xc8s)OG_sa)cSa9^W-NP;+(@aS
 qRB|(np`PyORccFQ|t!O(yp7bwujoRWHHrQMt2!K*g7C<S)`lZb6YSGPSI-T!QcPx{{em2^78
-""")
+""", BCP47_REGISTRY_DIGEST, "BCP47")
