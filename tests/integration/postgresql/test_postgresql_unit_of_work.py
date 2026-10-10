@@ -26,6 +26,11 @@ from spine.application.persistence.context import (
     WorkspaceScope,
 )
 from spine.application.persistence.errors import ConstraintConflictError
+from spine.application.persistence.idempotency import (
+    IdempotencyKey,
+    IdempotencyReplay,
+    OwnedIdempotencyClaim,
+)
 from spine.domain.common import EnvironmentKind
 from spine.domain.workspaces import Environment, Workspace
 from spine.infrastructure.db.migrations import upgrade_database
@@ -40,6 +45,19 @@ from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.persistence.postgresql import PostgreSQLPersistence
 from tests.contracts.persistence.adapter import PersistenceAdapter
 from tests.contracts.persistence.ids import synthetic_uuid
+from tests.contracts.persistence.test_idempotency_repository_contract import (
+    OPERATION_SCHEMA_VERSION,
+    command_digest as idempotency_command_digest,
+    persist_workspace as persist_idempotency_workspace,
+    result_ref as idempotency_result_ref,
+    test_claim_complete_and_replay_return_same_result_reference as contract_idempotency_replay,
+    test_completing_replay_unknown_or_already_completed_claim_fails as contract_idempotency_completion_conflict,
+    test_differently_scoped_claim_cannot_complete as contract_idempotency_scope,
+    test_incomplete_owned_claim_prevents_commit_and_rolls_back as contract_idempotency_incomplete,
+    test_independent_workspaces_environments_and_keys_do_not_collide as contract_idempotency_independent_scopes,
+    test_rollback_discards_claim_and_completed_receipt as contract_idempotency_rollback,
+    test_same_key_with_different_digest_raises_stable_conflict as contract_idempotency_digest_conflict,
+)
 from tests.contracts.persistence.test_environment_repository_contract import (
     test_duplicate_environment_identity_raises_typed_conflict as contract_duplicate_environment,
     test_environment_cannot_be_added_for_another_workspace as contract_environment_scope,
@@ -262,7 +280,7 @@ async def postgresql_adapter(
 
     try:
         yield PersistenceAdapter(
-            uow_factory=persistence.tenant_uow_factory,
+            uow_factory=persistence.uow_factory,
             workspace_context=workspace_context,
             worker_workspace_context=worker_workspace_context,
             environment_context=environment_context,
@@ -335,7 +353,7 @@ async def one_connection_harness(
         yield
 
     adapter = PersistenceAdapter(
-        uow_factory=persistence.tenant_uow_factory,
+        uow_factory=persistence.uow_factory,
         workspace_context=workspace_context,
         worker_workspace_context=worker_workspace_context,
         environment_context=lambda workspace_id, environment_id: boundary.worker(
@@ -394,6 +412,280 @@ async def test_postgresql_adapter_satisfies_shared_contract(
     contract: ContractTest,
 ) -> None:
     await contract(postgresql_adapter)
+
+
+@pytest.mark.parametrize(
+    "contract",
+    (
+        contract_idempotency_replay,
+        contract_idempotency_digest_conflict,
+        contract_idempotency_independent_scopes,
+        contract_idempotency_incomplete,
+        contract_idempotency_rollback,
+        contract_idempotency_completion_conflict,
+        contract_idempotency_scope,
+    ),
+    ids=lambda contract: contract.__name__.removeprefix("test_"),
+)
+async def test_postgresql_adapter_satisfies_idempotency_contract(
+    postgresql_adapter: PersistenceAdapter,
+    contract: ContractTest,
+) -> None:
+    await contract(postgresql_adapter)
+
+
+async def test_concurrent_duplicate_claims_have_one_owner_and_stable_replay(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(1730)
+    environment_id = synthetic_uuid(1731)
+    await persist_idempotency_workspace(postgresql_adapter, workspace_id)
+    context = postgresql_adapter.workspace_context(workspace_id)
+    key = IdempotencyKey("concurrent-duplicate-key")
+    digest = idempotency_command_digest(context.operation)
+    expected = idempotency_result_ref(environment_id)
+    environment = Environment(
+        id=environment_id,
+        workspace_id=workspace_id,
+        kind=EnvironmentKind.PRODUCTION,
+        display_name="Concurrent production",
+    )
+    start = asyncio.Event()
+
+    async def submit() -> object:
+        await start.wait()
+        async with postgresql_adapter.uow_factory(context) as uow:
+            outcome = await uow.idempotency.claim(
+                operation_schema_version=OPERATION_SCHEMA_VERSION,
+                key=key,
+                digest=digest,
+            )
+            if isinstance(outcome, OwnedIdempotencyClaim):
+                await uow.environments.add(environment)
+                await uow.idempotency.complete(outcome, expected)
+            await uow.commit()
+            return outcome
+
+    first = asyncio.create_task(submit())
+    second = asyncio.create_task(submit())
+    start.set()
+    outcomes = await asyncio.gather(first, second)
+
+    assert sum(isinstance(value, OwnedIdempotencyClaim) for value in outcomes) == 1
+    replays = [value for value in outcomes if isinstance(value, IdempotencyReplay)]
+    assert len(replays) == 1
+    assert replays[0].result == expected
+
+    async with postgresql_adapter.uow_factory(context) as uow:
+        assert await uow.environments.resolve(environment_id) == environment
+        replay = await uow.idempotency.claim(
+            operation_schema_version=OPERATION_SCHEMA_VERSION,
+            key=key,
+            digest=digest,
+        )
+        assert isinstance(replay, IdempotencyReplay)
+        assert replay.result == expected
+        await uow.commit()
+
+
+async def test_receipt_identity_collision_keeps_primary_key_conflict_meaning(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    workspace_id = synthetic_uuid(1732)
+    receipt_id = synthetic_uuid(1733)
+    await persist_idempotency_workspace(postgresql_adapter, workspace_id)
+    migration_engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    try:
+        async with migration_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.idempotency_receipts "
+                    "(receipt_id, workspace_id, operation_name, "
+                    "operation_schema_version, idempotency_key, "
+                    "digest_algorithm_version, command_digest, result_type, "
+                    "result_id, result_schema_version) VALUES "
+                    "(:receipt_id, :workspace_id, 'workspace_repository', 1, "
+                    "'occupied-receipt-id', 'spine.command-digest.v1', :digest, "
+                    "'proposal', :result_id, 1)"
+                ),
+                {
+                    "receipt_id": receipt_id,
+                    "workspace_id": workspace_id,
+                    "digest": "c" * 64,
+                    "result_id": synthetic_uuid(1734),
+                },
+            )
+    finally:
+        await migration_engine.dispose()
+
+    engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=synthetic_uuid(1735),
+        secret=b"issue-46-receipt-identity-collision",
+    )
+    persistence = PostgreSQLPersistence(
+        session_factory=async_sessionmaker(engine, expire_on_commit=False),
+        context_verifier=boundary,
+        receipt_id_factory=lambda: receipt_id,
+    )
+    context = boundary.interactive(
+        scope=WorkspaceScope(workspace_id=workspace_id),
+        acting_subject_id=synthetic_uuid(1736),
+        purpose=PersistencePurpose("receipt_collision_test"),
+        operation=PersistenceOperation("workspace_repository"),
+        trace_id=synthetic_uuid(1737),
+    )
+    try:
+        with pytest.raises(
+            ConstraintConflictError,
+            match="Idempotency receipt identity already exists",
+        ):
+            async with persistence.uow_factory(context) as uow:
+                await uow.idempotency.claim(
+                    operation_schema_version=OPERATION_SCHEMA_VERSION,
+                    key=IdempotencyKey("different-key-same-receipt-id"),
+                    digest=idempotency_command_digest(context.operation),
+                )
+    finally:
+        await engine.dispose()
+
+
+async def test_waiting_duplicate_becomes_owner_after_first_owner_rolls_back(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(1740)
+    await persist_idempotency_workspace(postgresql_adapter, workspace_id)
+    context = postgresql_adapter.workspace_context(workspace_id)
+    key = IdempotencyKey("owner-rollback-key")
+    digest = idempotency_command_digest(context.operation)
+    expected = idempotency_result_ref(synthetic_uuid(1741))
+    owner_claimed = asyncio.Event()
+    allow_rollback = asyncio.Event()
+
+    async def fail_owner() -> None:
+        async with postgresql_adapter.uow_factory(context) as uow:
+            claim = await uow.idempotency.claim(
+                operation_schema_version=OPERATION_SCHEMA_VERSION,
+                key=key,
+                digest=digest,
+            )
+            assert isinstance(claim, OwnedIdempotencyClaim)
+            owner_claimed.set()
+            await allow_rollback.wait()
+            raise RuntimeError("synthetic owner failure")
+
+    async def retry_after_owner() -> object:
+        await owner_claimed.wait()
+        async with postgresql_adapter.uow_factory(context) as uow:
+            claim = await uow.idempotency.claim(
+                operation_schema_version=OPERATION_SCHEMA_VERSION,
+                key=key,
+                digest=digest,
+            )
+            assert isinstance(claim, OwnedIdempotencyClaim)
+            await uow.idempotency.complete(claim, expected)
+            await uow.commit()
+            return claim
+
+    failed_owner = asyncio.create_task(fail_owner())
+    successor = asyncio.create_task(retry_after_owner())
+    await owner_claimed.wait()
+    allow_rollback.set()
+    failed, succeeded = await asyncio.gather(
+        failed_owner,
+        successor,
+        return_exceptions=True,
+    )
+
+    assert isinstance(failed, RuntimeError)
+    assert isinstance(succeeded, OwnedIdempotencyClaim)
+
+
+async def test_receipt_result_and_canonical_mutation_replay_as_one_effect(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(1750)
+    environment_id = synthetic_uuid(1751)
+    await persist_idempotency_workspace(postgresql_adapter, workspace_id)
+    context = postgresql_adapter.workspace_context(workspace_id)
+    key = IdempotencyKey("canonical-mutation-key")
+    digest = idempotency_command_digest(context.operation)
+    expected = idempotency_result_ref(environment_id)
+    environment = Environment(
+        id=environment_id,
+        workspace_id=workspace_id,
+        kind=EnvironmentKind.PRODUCTION,
+        display_name="Production",
+    )
+
+    async def execute() -> str:
+        async with postgresql_adapter.uow_factory(context) as uow:
+            outcome = await uow.idempotency.claim(
+                operation_schema_version=OPERATION_SCHEMA_VERSION,
+                key=key,
+                digest=digest,
+            )
+            if isinstance(outcome, IdempotencyReplay):
+                assert outcome.result == expected
+                await uow.commit()
+                return "replayed"
+            assert isinstance(outcome, OwnedIdempotencyClaim)
+            await uow.environments.add(environment)
+            await uow.idempotency.complete(outcome, expected)
+            await uow.commit()
+            return "owned"
+
+    assert await execute() == "owned"
+    assert await execute() == "replayed"
+    async with postgresql_adapter.uow_factory(context) as uow:
+        assert await uow.environments.resolve(environment_id) == environment
+
+
+async def test_receipt_and_canonical_mutation_roll_back_together(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(1760)
+    environment_id = synthetic_uuid(1761)
+    await persist_idempotency_workspace(postgresql_adapter, workspace_id)
+    context = postgresql_adapter.workspace_context(workspace_id)
+    key = IdempotencyKey("atomic-rollback-key")
+    digest = idempotency_command_digest(context.operation)
+    expected = idempotency_result_ref(environment_id)
+    environment = Environment(
+        id=environment_id,
+        workspace_id=workspace_id,
+        kind=EnvironmentKind.STAGING,
+        display_name="Staging",
+    )
+
+    async with postgresql_adapter.uow_factory(context) as uow:
+        claim = await uow.idempotency.claim(
+            operation_schema_version=OPERATION_SCHEMA_VERSION,
+            key=key,
+            digest=digest,
+        )
+        assert isinstance(claim, OwnedIdempotencyClaim)
+        await uow.environments.add(environment)
+        await uow.idempotency.complete(claim, expected)
+        await uow.rollback()
+
+    async with postgresql_adapter.uow_factory(context) as uow:
+        assert await uow.environments.resolve(environment_id) is None
+        retry = await uow.idempotency.claim(
+            operation_schema_version=OPERATION_SCHEMA_VERSION,
+            key=key,
+            digest=digest,
+        )
+        assert isinstance(retry, OwnedIdempotencyClaim)
+        await uow.rollback()
 
 
 @pytest.mark.parametrize("raise_error", (False, True), ids=("normal", "exception"))

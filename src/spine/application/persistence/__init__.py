@@ -51,6 +51,7 @@ from spine.application.persistence.repositories import (
 from spine.application.persistence.retry import (
     RetryEligibility,
     TransactionRetryPolicy,
+    run_transaction_with_retry,
     run_with_transaction_retry,
 )
 from spine.application.persistence.unit_of_work import (
@@ -103,5 +104,6 @@ __all__ = [
     "WorkspaceRepository",
     "canonical_command_bytes",
     "digest_command",
+    "run_transaction_with_retry",
     "run_with_transaction_retry",
 ]

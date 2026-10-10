@@ -6,7 +6,8 @@ environment, and the first canonical Workspace and Environment tables. Issue
 #44 adds forced tenant RLS and the minimum ordinary runtime privileges; it does
 not add application repositories or trusted context binding. Issue #45 adds the
 production SQLAlchemy Unit of Work, trusted transaction-context binding, and
-purpose-specific Workspace and Environment repositories.
+purpose-specific Workspace and Environment repositories. Issue #46 adds
+tenant-scoped PostgreSQL idempotency receipts and complete-transaction retry.
 
 ## Supported stack
 
@@ -47,11 +48,11 @@ are consumed only by explicit operator commands.
 
 `PostgreSQLPersistence` is assembled from
 `DatabaseRuntime.resources.session_factory` and a composition-root-owned
-`TrustedContextVerifier`. Its `tenant_uow_factory` creates a single-use async
-Unit of Work for the Workspace and Environment repository port; #46 extends
-that narrower port with PostgreSQL idempotency before exposing the complete
-`UnitOfWorkFactory`. Entering creates exactly one async session and one explicit
-`READ COMMITTED` transaction. Before a repository can execute, the adapter
+`TrustedContextVerifier`. Its `uow_factory` creates a single-use complete async
+Unit of Work for the Workspace, Environment, and idempotency repository ports;
+`tenant_uow_factory` remains a compatibility alias for the narrower #45 seam.
+Entering creates exactly one async session and one explicit `READ COMMITTED`
+transaction. Before a repository can execute, the adapter
 re-verifies the context proof and binds Workspace, optional Environment, acting
 subject, service principal, purpose, operation, and trace as parameterized
 transaction-local PostgreSQL settings.
@@ -73,6 +74,39 @@ rollback, and close the owned session before returning a stable redacted
 application error. Deadlock and serialization failures retain distinct retryable
 categories; retry orchestration remains outside this adapter.
 
+## Idempotency receipts and transaction retry
+
+Revision `20261010_03` adds immutable receipt identity and digest fields plus a
+single completion transition to an opaque result reference. Workspace-scoped
+and Environment-scoped commands use separate partial unique indexes, so a
+nullable Environment cannot weaken uniqueness. Environment receipts also carry
+a composite Workspace/Environment foreign key. Forced RLS applies both scope
+identifiers; runtime credentials receive `SELECT` and `INSERT`, plus column-level
+`UPDATE` only for the three result-reference fields. A database trigger permits
+exactly one `NULL → complete reference` transition and rejects rewriting or
+clearing a completed receipt even when SQL bypasses the repository adapter.
+
+`claim()` inserts a pending receipt inside the caller's transaction. PostgreSQL
+unique-index arbitration serializes concurrent duplicates: a loser waits for
+the owner, then either reads its committed opaque reference or becomes the owner
+after rollback. A Unit of Work cannot commit while one of its owned claims is
+incomplete. Receipts never store protected response content and replay does not
+preserve authorization; the consuming use case resolves the reference under
+current policy.
+
+`run_transaction_with_retry()` creates a fresh Unit of Work for every attempt
+and commits only after the complete callback succeeds. It retries only translated
+deadlock or serialization failures when the operation is idempotent, has an
+idempotency key, is reproducible, and declares no irreversible external side
+effect. The default remains three total attempts; exhaustion is returned to the
+workflow layer rather than becoming a durable loop.
+
+The receipt migration follows `20261009_02` and is the sole current Alembic
+head. The parallel outbox ticket must rebase on the then-current `main` and place
+its revision after `20261010_03` (or add an intentional merge revision if both
+histories have already been published). The integrated repository must retain
+exactly one linear head and rerun the complete migration suite.
+
 ## Operator bootstrap and migration
 
 Provisioning has three separate authorities:
@@ -81,8 +115,8 @@ Provisioning has three separate authorities:
 - `spine_migration` owns the application database and `spine` schema and applies
   revisions;
 - `spine_runtime` is a non-owner login with `NOBYPASSRLS`, no role-creation
-  capability, schema `USAGE`, and only RLS-guarded DML on the canonical Workspace
-  and Environment tables.
+  capability, schema `USAGE`, and only RLS-guarded DML on the canonical Workspace,
+  Environment, and idempotency-receipt tables.
 
 Set the operator-only values in the environment of a trusted deployment step,
 not in an application runtime:
@@ -138,7 +172,9 @@ Every migration that creates a tenant-owned table must classify it explicitly:
   transaction-local `spine.workspace_id` and `spine.environment_id`.
 
 The initial `workspaces` and sealed bootstrap records are workspace-only. The
-canonical `environments` table is environment-scoped. Missing or malformed
+canonical `environments` table is environment-scoped. Idempotency receipts use
+workspace scope when `environment_id` is null and environment scope otherwise,
+with separate uniqueness indexes for the two cases. Missing or malformed
 required settings match no rows and fail write checks. Policies must define both
 `USING` and `WITH CHECK`, and tenant tables must use both `ENABLE ROW LEVEL
 SECURITY` and `FORCE ROW LEVEL SECURITY`. The same revision must install the

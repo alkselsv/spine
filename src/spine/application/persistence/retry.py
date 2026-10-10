@@ -7,10 +7,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TypeVar
 
+from spine.application.persistence.context import TrustedPersistenceContext
 from spine.application.persistence.errors import (
     TransactionDeadlockError,
     TransactionSerializationError,
 )
+from spine.application.persistence.unit_of_work import UnitOfWork, UnitOfWorkFactory
 
 
 _ResultT = TypeVar("_ResultT")
@@ -82,3 +84,26 @@ async def run_with_transaction_retry(
                 raise
             await effective_policy.sleep(effective_policy.delay(attempt))
             attempt += 1
+
+
+async def run_transaction_with_retry(
+    uow_factory: UnitOfWorkFactory,
+    context: TrustedPersistenceContext,
+    operation: Callable[[UnitOfWork, int], Awaitable[_ResultT]],
+    *,
+    eligibility: RetryEligibility,
+    policy: TransactionRetryPolicy | None = None,
+) -> _ResultT:
+    """Retry an operation by recreating and committing its complete Unit of Work."""
+
+    async def execute_attempt(attempt: int) -> _ResultT:
+        async with uow_factory(context) as uow:
+            result = await operation(uow, attempt)
+            await uow.commit()
+            return result
+
+    return await run_with_transaction_retry(
+        execute_attempt,
+        eligibility=eligibility,
+        policy=policy,
+    )
