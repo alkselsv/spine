@@ -7,8 +7,8 @@ import sqlalchemy as sa
 
 
 
-revision = "20261010_09"
-down_revision = "20261010_08"
+revision = "20261010_11"
+down_revision = "20261010_10"
 branch_labels = None
 depends_on = None
 SCHEMA = "spine"

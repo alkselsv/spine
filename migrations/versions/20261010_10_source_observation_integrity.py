@@ -7,8 +7,8 @@ from alembic import op
 from spine.infrastructure.db.settings import MigrationDatabaseSettings
 
 
-revision = "20261010_08"
-down_revision = "20261010_07"
+revision = "20261010_10"
+down_revision = "20261010_09"
 branch_labels = None
 depends_on = None
 SCHEMA = "spine"

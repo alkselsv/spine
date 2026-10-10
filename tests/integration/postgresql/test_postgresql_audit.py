@@ -543,7 +543,7 @@ async def test_audit_catalog_has_named_append_only_tenant_contract(
     assert tuple(privileges) == (True, True, False, False)
     assert triggers == {"trg_audit_events_immutable"}
     assert public_can_execute is False
-    assert revision == "20261010_08"
+    assert revision == "20261010_12"
 
 
 async def test_runtime_cannot_update_or_delete_audit_events(

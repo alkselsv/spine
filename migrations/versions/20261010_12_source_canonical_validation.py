@@ -12,8 +12,8 @@ from spine.domain.sources.profile_extensions import EXTENSION_DATA, EXTENSION_TA
 from spine.infrastructure.db.settings import MigrationDatabaseSettings
 
 
-revision = "20261010_10"
-down_revision = "20261010_09"
+revision = "20261010_12"
+down_revision = "20261010_11"
 branch_labels = None
 depends_on = None
 SCHEMA = "spine"

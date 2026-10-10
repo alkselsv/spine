@@ -2964,26 +2964,13 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         source / "versions" / "20261010_06_receipt_tenant_integrity.py",
         target / "versions" / "20261010_06_receipt_tenant_integrity.py",
     )
-    shutil.copy(
-        source / "versions" / "20261010_07_authorization_directory.py",
-        target / "versions" / "20261010_07_authorization_directory.py",
-    )
-    shutil.copy(
-        source / "versions" / "20261010_08_audit_events.py",
-        target / "versions" / "20261010_08_audit_events.py",
-    )
-    (target / "versions" / "20261010_09_injected_failure.py").write_text(
-        "from alembic import op\n"
-        "import sqlalchemy as sa\n"
-        "revision = '20261010_09'\n"
-        "down_revision = '20261010_08'\n"
     for revision_file in (
         "20261010_07_authorization_directory.py",
         "20261010_08_audit_events.py",
-        "20261010_07_source_observations.py",
-        "20261010_08_source_observation_integrity.py",
-        "20261010_09_source_profile_identity.py",
-        "20261010_10_source_canonical_validation.py",
+        "20261010_09_source_observations.py",
+        "20261010_10_source_observation_integrity.py",
+        "20261010_11_source_profile_identity.py",
+        "20261010_12_source_canonical_validation.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "20261010_13_injected_failure.py").write_text(
