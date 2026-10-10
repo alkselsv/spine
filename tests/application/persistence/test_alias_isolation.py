@@ -11,6 +11,7 @@ from spine.application.persistence.context import (
 )
 from spine.application.persistence.errors import UnexpectedPersistenceError
 from spine.domain.common import EnvironmentKind
+from spine.application.persistence.outbox import OutboxEventRegistry
 from spine.domain.workspaces import Environment, Workspace
 from spine.infrastructure.persistence.contexts import (
     TrustedContextBoundary,
@@ -61,7 +62,7 @@ def workspace_context(authority: TrustedContextBoundary):
 async def configured() -> tuple[InMemoryPersistence, TrustedContextBoundary]:
     authority = boundary()
     bootstrap = create_initial_workspace_bootstrap_authority()
-    persistence = InMemoryPersistence(
+    persistence = InMemoryPersistence(outbox_events=OutboxEventRegistry(),
         context_verifier=authority,
         bootstrap_authority=bootstrap,
     )
@@ -213,7 +214,7 @@ async def test_polymorphic_environment_copy_cannot_enter_persistent_state() -> N
 async def test_bootstrap_detaches_input_workspace() -> None:
     authority = boundary()
     bootstrap = create_initial_workspace_bootstrap_authority()
-    persistence = InMemoryPersistence(
+    persistence = InMemoryPersistence(outbox_events=OutboxEventRegistry(),
         context_verifier=authority,
         bootstrap_authority=bootstrap,
     )

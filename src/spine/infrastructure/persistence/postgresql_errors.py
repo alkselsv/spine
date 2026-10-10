@@ -14,6 +14,7 @@ from spine.application.persistence.errors import (
     IncompatibleSchemaError,
     IdempotencyConflictError,
     OptimisticConflictError,
+    OutboxConflictError,
     PersistenceError,
     PersistenceUnavailableError,
     TransactionDeadlockError,
@@ -65,6 +66,16 @@ _IDEMPOTENCY_CONSTRAINTS = {
     "uq_idempotency_receipts_environment_key",
 }
 
+_OUTBOX_CONSTRAINT_MESSAGES = {
+    "pk_outbox_intents": "Outbox event identity already exists.",
+    "uq_outbox_intents_workspace_producer": (
+        "Outbox producer identity already exists."
+    ),
+    "uq_outbox_intents_environment_producer": (
+        "Outbox producer identity already exists."
+    ),
+}
+
 
 def translate_persistence_error(error: BaseException) -> PersistenceError:
     """Translate provider failures without retaining SQL or bound values."""
@@ -90,6 +101,8 @@ def translate_persistence_error(error: BaseException) -> PersistenceError:
             return IdempotencyConflictError(
                 "Idempotency key conflicts with existing command."
             )
+        if constraint_name in _OUTBOX_CONSTRAINT_MESSAGES:
+            return OutboxConflictError(_OUTBOX_CONSTRAINT_MESSAGES[constraint_name])
         message = _CONSTRAINT_MESSAGES.get(
             constraint_name,
             "Persistence constraint rejected the operation.",

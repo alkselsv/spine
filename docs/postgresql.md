@@ -8,6 +8,8 @@ not add application repositories or trusted context binding. Issue #45 adds the
 production SQLAlchemy Unit of Work, trusted transaction-context binding, and
 purpose-specific Workspace and Environment repositories. Issue #46 adds
 tenant-scoped PostgreSQL idempotency receipts and complete-transaction retry.
+Issue #47 adds typed, allowlisted transactional outbox intents that commit with
+canonical mutations.
 
 ## Supported stack
 
@@ -49,7 +51,7 @@ are consumed only by explicit operator commands.
 `PostgreSQLPersistence` is assembled from
 `DatabaseRuntime.resources.session_factory` and a composition-root-owned
 `TrustedContextVerifier`. Its `uow_factory` creates a single-use complete async
-Unit of Work for the Workspace, Environment, and idempotency repository ports;
+Unit of Work for the Workspace, Environment, idempotency, and outbox ports;
 `tenant_uow_factory` remains a compatibility alias for the narrower #45 seam.
 Entering creates exactly one async session and one explicit `READ COMMITTED`
 transaction. Before a repository can execute, the adapter
@@ -101,11 +103,37 @@ idempotency key, is reproducible, and declares no irreversible external side
 effect. The default remains three total attempts; exhaustion is returned to the
 workflow layer rather than becoming a durable loop.
 
-The receipt migration follows `20261009_02` and is the sole current Alembic
-head. The parallel outbox ticket must rebase on the then-current `main` and place
-its revision after `20261010_03` (or add an intentional merge revision if both
-histories have already been published). The integrated repository must retain
-exactly one linear head and rerun the complete migration suite.
+## Transactional outbox intents
+
+Revision `20261010_04` is the single Alembic head and follows the merged
+idempotency revision `20261010_03`. It adds immutable outbox intents with a
+globally stable event ID, exact tenant scope, versioned event identity, optional
+opaque aggregate reference, producer deduplication identity, minimal JSON
+payload, and trace/correlation/causation references. Workspace and Environment
+producer identities use separate partial unique indexes, and Environment rows
+carry the composite Workspace/Environment foreign key. The event identity has a
+database default; when a producer omits it, the PostgreSQL writer obtains one
+from `gen_random_uuid()` in the same transaction before its insert.
+
+The application composition root supplies an `OutboxEventRegistry`. Producers
+register an exact event-type/schema-version pair with a Pydantic payload model
+configured with `extra="forbid"` and `frozen=True`; the writer rejects
+schemas with mutable nested field types, unregistered events, or mismatched
+payloads before persistence. Payload schemas use opaque object references and
+safe transition metadata. After strict validation the registry captures one
+canonical JSON snapshot, which adapters persist without reserializing live model
+state. The kernel does not scan arbitrary JSON for secrets, and it does not
+implement claim, dispatch, acknowledgement, retries, cleanup, audit processing,
+or workflow state.
+
+`UnitOfWork.outbox.append()` validates exact scope and trusted trace lineage and
+inserts through the same transaction as canonical repositories. Runtime
+credentials have only `INSERT` on the outbox table. Forced RLS guards the insert,
+named constraints translate
+duplicate event and producer identities, and a database trigger rejects update
+or delete even for migration-authority SQL. Shared fake/PostgreSQL contracts and
+real-PostgreSQL failure injection cover rollback after canonical mutation,
+after append, during statement flush, before commit, and during commit.
 
 ## Operator bootstrap and migration
 
@@ -116,7 +144,7 @@ Provisioning has three separate authorities:
   revisions;
 - `spine_runtime` is a non-owner login with `NOBYPASSRLS`, no role-creation
   capability, schema `USAGE`, and only RLS-guarded DML on the canonical Workspace,
-  Environment, and idempotency-receipt tables.
+  Environment, idempotency-receipt, and outbox-intent tables.
 
 Set the operator-only values in the environment of a trusted deployment step,
 not in an application runtime:
@@ -174,7 +202,8 @@ Every migration that creates a tenant-owned table must classify it explicitly:
 The initial `workspaces` and sealed bootstrap records are workspace-only. The
 canonical `environments` table is environment-scoped. Idempotency receipts use
 workspace scope when `environment_id` is null and environment scope otherwise,
-with separate uniqueness indexes for the two cases. Missing or malformed
+with separate uniqueness indexes for the two cases. Outbox intents follow the
+same nullable-scope convention and allow runtime `INSERT` only. Missing or malformed
 required settings match no rows and fail write checks. Policies must define both
 `USING` and `WITH CHECK`, and tenant tables must use both `ENABLE ROW LEVEL
 SECURITY` and `FORCE ROW LEVEL SECURITY`. The same revision must install the

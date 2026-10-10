@@ -67,14 +67,27 @@ operation clear staged mutations and make the Unit of Work terminal while
 preserving the original exception or cancellation. Expected absence remains a
 normal `None` result and does not invalidate the transaction.
 
-The in-memory adapter reconstructs fresh canonical Workspace and Environment
-instances at every persistence boundary (staging, snapshots, publication, and
-reads) rather than trusting polymorphic copy hooks. No caller-owned mutable
-domain instance or nested value is retained by committed state, and repository
-results never expose mutable committed state. It publishes prepared state
-atomically only on explicit commit. It is intended for deterministic application
-and shared adapter-contract tests; it does not emulate PostgreSQL RLS, locks,
-isolation levels, pooling, or provider failures.
+`UnitOfWork.outbox` accepts only immutable intents built and revalidated through
+an explicit `OutboxEventRegistry`. Each registered event type/schema version has
+one producer-owned Pydantic payload schema with `extra="forbid"`. The writer
+requires those schemas to be frozen and recursively composed only from immutable
+field types; mutable containers such as lists and dictionaries are rejected at
+registration. The intent's Workspace, optional Environment, and trace identity
+must exactly equal the trusted Unit of Work context. It joins the current
+transaction and returns the stable event identity; PostgreSQL generates that
+identity when the producer omits it. Duplicate event or producer identities
+raise `OutboxConflictError`. It never publishes, claims, acknowledges, retries,
+or stores workflow state. Registry validation also creates an immutable canonical
+JSON snapshot; persistence never reserializes live Pydantic or computed/private
+model state.
+
+The in-memory adapter reconstructs fresh canonical Workspace, Environment, and
+outbox-intent values at every persistence boundary (staging, snapshots,
+publication, and reads) rather than retaining caller-owned mutable data. It
+publishes prepared canonical records, receipts, and intents atomically only on
+explicit commit. It is intended for deterministic application and shared
+adapter-contract tests; it does not emulate PostgreSQL RLS, locks, isolation
+levels, pooling, or provider failures.
 
 ## Extending the Unit of Work
 

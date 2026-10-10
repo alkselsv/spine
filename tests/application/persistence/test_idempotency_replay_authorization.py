@@ -22,6 +22,7 @@ from spine.application.persistence.idempotency import (
     OpaqueResultReference,
     OwnedIdempotencyClaim,
 )
+from spine.application.persistence.outbox import OutboxEventRegistry
 from spine.domain.workspaces import Workspace
 from spine.infrastructure.persistence.contexts import (
     TrustedContextBoundary,
@@ -98,7 +99,7 @@ async def test_replay_revalidates_current_authorization_and_stores_only_referenc
         secret=b"issue-41-replay-authorization-secret",
     )
     bootstrap_authority = create_initial_workspace_bootstrap_authority()
-    persistence = InMemoryPersistence(
+    persistence = InMemoryPersistence(outbox_events=OutboxEventRegistry(),
         context_verifier=boundary,
         bootstrap_authority=bootstrap_authority,
     )
@@ -130,7 +131,7 @@ async def test_same_key_and_digest_under_different_trusted_operation_does_not_re
         secret=b"issue-41-operation-isolation-secret",
     )
     bootstrap_authority = create_initial_workspace_bootstrap_authority()
-    persistence = InMemoryPersistence(
+    persistence = InMemoryPersistence(outbox_events=OutboxEventRegistry(),
         context_verifier=boundary,
         bootstrap_authority=bootstrap_authority,
     )

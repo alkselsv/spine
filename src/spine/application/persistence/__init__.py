@@ -28,6 +28,7 @@ from spine.application.persistence.errors import (
     InvalidBootstrapAuthorityError,
     InvalidPersistenceContextError,
     OptimisticConflictError,
+    OutboxConflictError,
     PersistenceError,
     PersistenceUnavailableError,
     RetryablePersistenceError,
@@ -42,6 +43,13 @@ from spine.application.persistence.idempotency import (
     IdempotencyReplay,
     OpaqueResultReference,
     OwnedIdempotencyClaim,
+)
+from spine.application.persistence.outbox import (
+    OpaqueObjectReference,
+    OutboxEventRegistry,
+    OutboxIntent,
+    OutboxWriter,
+    UnsupportedOutboxEventError,
 )
 from spine.application.persistence.repositories import (
     EnvironmentRepository,
@@ -85,6 +93,11 @@ __all__ = [
     "PersistenceOperation",
     "PersistencePurpose",
     "OpaqueResultReference",
+    "OpaqueObjectReference",
+    "OutboxEventRegistry",
+    "OutboxConflictError",
+    "OutboxIntent",
+    "OutboxWriter",
     "OwnedIdempotencyClaim",
     "RetryEligibility",
     "TransactionRetryPolicy",
@@ -98,6 +111,7 @@ __all__ = [
     "UnitOfWork",
     "UnitOfWorkFactory",
     "UnitOfWorkLifecycleError",
+    "UnsupportedOutboxEventError",
     "UnsupportedCommandValueError",
     "UnexpectedPersistenceError",
     "WorkspaceScope",

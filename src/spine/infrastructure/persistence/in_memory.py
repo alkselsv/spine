@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from types import TracebackType
 from typing import NoReturn, TypeVar
-from uuid import NAMESPACE_URL, UUID, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from spine.application.persistence.bootstrap import (
     InitialWorkspaceBootstrapAuthority,
@@ -26,6 +26,7 @@ from spine.application.persistence.errors import (
     IdempotencyConflictError,
     InvalidBootstrapAuthorityError,
     InvalidPersistenceContextError,
+    OutboxConflictError,
     PersistenceError,
     UnexpectedPersistenceError,
     UnitOfWorkLifecycleError,
@@ -39,6 +40,11 @@ from spine.application.persistence.idempotency import (
     idempotency_conflict,
 )
 from spine.application.persistence.command_digest import CommandDigest
+from spine.application.persistence.outbox import (
+    OutboxEventRegistry,
+    OutboxIntent,
+    validate_outbox_intent_for_context,
+)
 from spine.domain.workspaces import Environment, Workspace
 
 
@@ -51,6 +57,7 @@ class _StoreState:
     workspaces: dict[UUID, Workspace]
     environments: dict[UUID, Environment]
     idempotency_receipts: dict["_ReceiptKey", "_IdempotencyReceipt"]
+    outbox_intents: dict[UUID, OutboxIntent]
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,7 +79,12 @@ class _IdempotencyReceipt:
 
 class _Store:
     def __init__(self, *, transaction_lock: asyncio.Lock | None = None) -> None:
-        self.state = _StoreState(workspaces={}, environments={}, idempotency_receipts={})
+        self.state = _StoreState(
+            workspaces={},
+            environments={},
+            idempotency_receipts={},
+            outbox_intents={},
+        )
         self.lock = transaction_lock or asyncio.Lock()
         self.initialized = False
         self.bootstrap_sealed = False
@@ -88,6 +100,10 @@ class _Store:
     @property
     def idempotency_receipts(self) -> dict[_ReceiptKey, _IdempotencyReceipt]:
         return self.state.idempotency_receipts
+
+    @property
+    def outbox_intents(self) -> dict[UUID, OutboxIntent]:
+        return self.state.outbox_intents
 
 
 def _workspace_copy(value: Workspace) -> Workspace:
@@ -307,6 +323,38 @@ class _IdempotencyRepository:
         self._uow._repository_call(repository_operation)
 
 
+class _OutboxWriter:
+    def __init__(self, uow: "InMemoryUnitOfWork") -> None:
+        self._uow = uow
+
+    async def append(self, intent: OutboxIntent) -> UUID:
+        self._uow._guard_active()
+
+        def repository_operation() -> UUID:
+            canonical = validate_outbox_intent_for_context(
+                intent,
+                registry=self._uow._outbox_events,
+                scope=self._uow.scope,
+                trace_id=self._uow._trace_id_snapshot(),
+            )
+            event_id = canonical.event_id or self._uow._event_id_factory()
+            if self._uow._resolve_outbox_intent(event_id) is not None:
+                self._uow._fail(
+                    OutboxConflictError("Outbox event identity already exists.")
+                )
+            if self._uow._has_producer_identity(canonical):
+                self._uow._fail(
+                    OutboxConflictError(
+                        "Outbox producer identity already exists."
+                    )
+                )
+            copied = canonical.model_copy(deep=True, update={"event_id": event_id})
+            self._uow._pending_outbox_intents[event_id] = copied
+            return event_id
+
+        return self._uow._repository_call(repository_operation)
+
+
 class InMemoryUnitOfWork:
     def __init__(
         self,
@@ -314,6 +362,8 @@ class InMemoryUnitOfWork:
         source_context: TrustedPersistenceContext,
         context_snapshot: TrustedPersistenceContext,
         context_verifier: TrustedContextVerifier,
+        outbox_events: OutboxEventRegistry,
+        event_id_factory: Callable[[], UUID],
     ) -> None:
         if not isinstance(source_context, TrustedPersistenceContext):
             raise InvalidPersistenceContextError("Persistence context is invalid.")
@@ -321,20 +371,26 @@ class InMemoryUnitOfWork:
         self._source_context = source_context
         self._context_snapshot = context_snapshot
         self._context_verifier = context_verifier
+        self._outbox_events = outbox_events
+        self._event_id_factory = event_id_factory
         self._scope: PersistenceScope | None = None
         self._operation: PersistenceOperation | None = None
+        self._trace_id: UUID | None = None
         self._initialized = False
         self._lifecycle = _Lifecycle.NEW
         self._owner: asyncio.Task[object] | None = None
         self._base_workspaces: dict[UUID, Workspace] = {}
         self._base_environments: dict[UUID, Environment] = {}
         self._base_receipts: dict[_ReceiptKey, _IdempotencyReceipt] = {}
+        self._base_outbox_intents: dict[UUID, OutboxIntent] = {}
         self._pending_workspaces: dict[UUID, Workspace] = {}
         self._pending_environments: dict[UUID, Environment] = {}
         self._pending_receipts: dict[_ReceiptKey, _IdempotencyReceipt] = {}
+        self._pending_outbox_intents: dict[UUID, OutboxIntent] = {}
         self._workspaces = _WorkspaceRepository(self)
         self._environments = _EnvironmentRepository(self)
         self._idempotency = _IdempotencyRepository(self)
+        self._outbox = _OutboxWriter(self)
 
     @property
     def workspaces(self) -> _WorkspaceRepository:
@@ -351,11 +407,22 @@ class InMemoryUnitOfWork:
         self._guard_active()
         return self._idempotency
 
+    @property
+    def outbox(self) -> _OutboxWriter:
+        self._guard_active()
+        return self._outbox
+
     def _operation_snapshot(self) -> PersistenceOperation:
         self._guard_active()
         if self._operation is None:
             raise UnitOfWorkLifecycleError("Unit of Work is not active.")
         return self._operation
+
+    def _trace_id_snapshot(self) -> UUID:
+        self._guard_active()
+        if self._trace_id is None:
+            raise UnitOfWorkLifecycleError("Unit of Work is not active.")
+        return self._trace_id
 
     @property
     def scope(self) -> PersistenceScope:
@@ -386,6 +453,10 @@ class InMemoryUnitOfWork:
                 self._base_receipts = {
                     key: _receipt_copy(value)
                     for key, value in self._store.idempotency_receipts.items()
+                }
+                self._base_outbox_intents = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.outbox_intents.items()
                 }
                 self._initialized = self._store.initialized
                 if not self._initialized:
@@ -447,10 +518,21 @@ class InMemoryUnitOfWork:
                         for key, value in self._pending_receipts.items()
                     }
                 )
+                prepared_outbox_intents = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.outbox_intents.items()
+                }
+                prepared_outbox_intents.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_outbox_intents.items()
+                    }
+                )
                 self._store.state = _StoreState(
                     workspaces=prepared_workspaces,
                     environments=prepared_environments,
                     idempotency_receipts=prepared_receipts,
+                    outbox_intents=prepared_outbox_intents,
                 )
         except BaseException as error:
             self._raise_terminal(error)
@@ -466,6 +548,7 @@ class InMemoryUnitOfWork:
         self._pending_workspaces.clear()
         self._pending_environments.clear()
         self._pending_receipts.clear()
+        self._pending_outbox_intents.clear()
         self._lifecycle = _Lifecycle.ROLLED_BACK
 
     def _guard_owner(self) -> None:
@@ -499,6 +582,7 @@ class InMemoryUnitOfWork:
         if isinstance(scope, WorkspaceScope):
             self._scope = WorkspaceScope(workspace_id=scope.workspace_id)
             self._operation = PersistenceOperation(context_snapshot.operation.value)
+            self._trace_id = context_snapshot.trace_id
             return
         if not isinstance(scope, EnvironmentScope):
             raise InvalidPersistenceContextError("Persistence context is invalid.")
@@ -510,6 +594,7 @@ class InMemoryUnitOfWork:
             environment_id=scope.environment_id,
         )
         self._operation = PersistenceOperation(context_snapshot.operation.value)
+        self._trace_id = context_snapshot.trace_id
 
     def _validate_commit(self) -> None:
         if self._pending_workspaces and not self._store.initialized:
@@ -520,6 +605,11 @@ class InMemoryUnitOfWork:
             raise ConstraintConflictError("Environment identity already exists.")
         if self._pending_receipts.keys() & self._store.idempotency_receipts.keys():
             raise IdempotencyConflictError("Idempotency key conflicts with existing command.")
+        if self._pending_outbox_intents.keys() & self._store.outbox_intents.keys():
+            raise OutboxConflictError("Outbox event identity already exists.")
+        for intent in self._pending_outbox_intents.values():
+            if self._store_has_producer_identity(intent):
+                raise OutboxConflictError("Outbox producer identity already exists.")
         incomplete = [
             receipt for receipt in self._pending_receipts.values() if receipt.result is None
         ]
@@ -534,6 +624,11 @@ class InMemoryUnitOfWork:
                 "Idempotency digest does not match the trusted operation."
             )
         available_workspaces = self._store.workspaces.keys() | self._pending_workspaces.keys()
+        if any(
+            intent.workspace_id not in available_workspaces
+            for intent in self._pending_outbox_intents.values()
+        ):
+            raise ConstraintConflictError("Owning Workspace does not exist.")
         if any(
             environment.workspace_id not in available_workspaces
             for environment in self._pending_environments.values()
@@ -550,6 +645,36 @@ class InMemoryUnitOfWork:
 
     def _resolve_receipt(self, key: _ReceiptKey) -> _IdempotencyReceipt | None:
         return self._pending_receipts.get(key) or self._base_receipts.get(key)
+
+    def _resolve_outbox_intent(self, event_id: UUID) -> OutboxIntent | None:
+        return self._pending_outbox_intents.get(event_id) or self._base_outbox_intents.get(
+            event_id
+        )
+
+    @staticmethod
+    def _same_producer_identity(left: OutboxIntent, right: OutboxIntent) -> bool:
+        return (
+            left.producer_deduplication_id is not None
+            and left.workspace_id == right.workspace_id
+            and left.environment_id == right.environment_id
+            and left.event_type == right.event_type
+            and left.producer_deduplication_id == right.producer_deduplication_id
+        )
+
+    def _has_producer_identity(self, intent: OutboxIntent) -> bool:
+        return any(
+            self._same_producer_identity(existing, intent)
+            for existing in (
+                *self._base_outbox_intents.values(),
+                *self._pending_outbox_intents.values(),
+            )
+        )
+
+    def _store_has_producer_identity(self, intent: OutboxIntent) -> bool:
+        return any(
+            self._same_producer_identity(existing, intent)
+            for existing in self._store.outbox_intents.values()
+        )
 
     def _receipt_key(
         self,
@@ -572,11 +697,14 @@ class InMemoryUnitOfWork:
         self._base_workspaces.clear()
         self._base_environments.clear()
         self._base_receipts.clear()
+        self._base_outbox_intents.clear()
         self._pending_workspaces.clear()
         self._pending_environments.clear()
         self._pending_receipts.clear()
+        self._pending_outbox_intents.clear()
         self._scope = None
         self._operation = None
+        self._trace_id = None
 
     def _fail(self, error: Exception) -> NoReturn:
         self._raise_terminal(error)
@@ -611,9 +739,17 @@ def _receipt_copy(value: _IdempotencyReceipt) -> _IdempotencyReceipt:
 
 
 class _InMemoryUnitOfWorkFactory:
-    def __init__(self, store: _Store, context_verifier: TrustedContextVerifier) -> None:
+    def __init__(
+        self,
+        store: _Store,
+        context_verifier: TrustedContextVerifier,
+        outbox_events: OutboxEventRegistry,
+        event_id_factory: Callable[[], UUID],
+    ) -> None:
         self._store = store
         self._context_verifier = context_verifier
+        self._outbox_events = outbox_events
+        self._event_id_factory = event_id_factory
 
     def __call__(self, context: TrustedPersistenceContext) -> InMemoryUnitOfWork:
         if not isinstance(context, TrustedPersistenceContext):
@@ -624,6 +760,8 @@ class _InMemoryUnitOfWorkFactory:
             context,
             context_snapshot,
             self._context_verifier,
+            self._outbox_events,
+            self._event_id_factory,
         )
 
 
@@ -664,11 +802,18 @@ class InMemoryPersistence:
         self,
         *,
         context_verifier: TrustedContextVerifier,
+        outbox_events: OutboxEventRegistry,
         bootstrap_authority: InitialWorkspaceBootstrapAuthority | None = None,
         transaction_lock: asyncio.Lock | None = None,
+        event_id_factory: Callable[[], UUID] = uuid4,
     ) -> None:
         store = _Store(transaction_lock=transaction_lock)
-        self.uow_factory = _InMemoryUnitOfWorkFactory(store, context_verifier)
+        self.uow_factory = _InMemoryUnitOfWorkFactory(
+            store,
+            context_verifier,
+            outbox_events,
+            event_id_factory,
+        )
         self.initial_workspace_bootstrap = _InMemoryInitialWorkspaceBootstrap(
             store, bootstrap_authority
         )

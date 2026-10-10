@@ -46,6 +46,10 @@ class IdempotencyConflictError(ConstraintConflictError):
     """An idempotency key was reused for different command content or scope."""
 
 
+class OutboxConflictError(ConstraintConflictError):
+    """An outbox event or producer deduplication identity already exists."""
+
+
 class IncompatibleSchemaError(PersistenceError):
     """The canonical store schema is incompatible with this application."""
 

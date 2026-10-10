@@ -1,6 +1,7 @@
 """Infrastructure-only SQLAlchemy mappings for canonical tenant records."""
 
-from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table, Text
+from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table, Text, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
 
 
@@ -40,5 +41,35 @@ idempotency_receipts = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
 )
 
+outbox_intents = Table(
+    "outbox_intents",
+    metadata,
+    Column(
+        "event_id",
+        PostgreSQLUUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    ),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("event_type", Text, nullable=False),
+    Column("event_schema_version", Integer, nullable=False),
+    Column("aggregate_type", Text, nullable=True),
+    Column("aggregate_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("aggregate_schema_version", Integer, nullable=True),
+    Column("producer_deduplication_id", Text, nullable=True),
+    Column("payload", JSONB, nullable=False),
+    Column("trace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("correlation_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("causation_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
 
-__all__ = ["environments", "idempotency_receipts", "metadata", "workspaces"]
+
+__all__ = [
+    "environments",
+    "idempotency_receipts",
+    "metadata",
+    "outbox_intents",
+    "workspaces",
+]

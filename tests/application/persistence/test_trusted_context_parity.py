@@ -12,6 +12,7 @@ from spine.application.persistence.context import (
 )
 from spine.application.persistence.errors import InvalidPersistenceContextError
 from spine.domain.common import EnvironmentKind
+from spine.application.persistence.outbox import OutboxEventRegistry
 from spine.domain.workspaces import Environment, Workspace
 from spine.infrastructure.persistence.contexts import (
     TrustedContextBoundary,
@@ -33,7 +34,7 @@ SECRET = b"issue-40-parity-context-secret-00001"
 async def configured_persistence() -> tuple[InMemoryPersistence, TrustedContextBoundary]:
     boundary = TrustedContextBoundary.for_testing(issuer_id=ISSUER_ID, secret=SECRET)
     bootstrap_authority = create_initial_workspace_bootstrap_authority()
-    persistence = InMemoryPersistence(
+    persistence = InMemoryPersistence(outbox_events=OutboxEventRegistry(),
         context_verifier=boundary,
         bootstrap_authority=bootstrap_authority,
     )

@@ -16,6 +16,7 @@ from spine.application.persistence.errors import (
     PersistenceUnavailableError,
     UnitOfWorkLifecycleError,
 )
+from spine.application.persistence.outbox import OutboxEventRegistry
 from spine.domain.workspaces import Workspace
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.persistence.postgresql import PostgreSQLPersistence
@@ -78,7 +79,7 @@ def persistence(session: ControlledSession) -> tuple[PostgreSQLPersistence, obje
         issuer_id=UUID("45000000-0000-0000-0000-000000000002"),
         secret=b"issue-45-failure-cleanup-secret-01",
     )
-    adapter = PostgreSQLPersistence(
+    adapter = PostgreSQLPersistence(outbox_events=OutboxEventRegistry(),
         session_factory=lambda: session,  # type: ignore[arg-type]
         context_verifier=boundary,
     )
