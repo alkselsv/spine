@@ -605,6 +605,156 @@ async def test_denied_required_audit_never_releases_protected_effect(
 
 
 @pytest.mark.asyncio
+async def test_denied_required_audit_failure_still_never_releases_effect(
+    persistence_adapter: AuditPersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(2350)
+    protected_object_id = synthetic_uuid(2351)
+    context = persistence_adapter.workspace_context(workspace_id)
+    event = persistence_adapter.audit_events.build_event(
+        workspace_id=workspace_id,
+        event_type="access.decision",
+        schema_version=1,
+        payload=AccessDecisionAuditPayload(
+            purpose="answer_question",
+            operation="read_content",
+        ),
+        origin=context.origin,
+        acting_subject_id=context.acting_subject_id,
+        service_principal_id=context.service_principal_id,
+        trace_id=context.trace_id,
+        occurred_at=datetime(2026, 2, 3, 4, 4, tzinfo=timezone.utc),
+        outcome=AuditOutcome.DENIED,
+        reason="authorization_denied",
+        target=AuditObjectReference(
+            object_type="document",
+            object_id=protected_object_id,
+            schema_version=1,
+        ),
+    )
+    released = False
+
+    async def release(_audit_event_id):
+        nonlocal released
+        released = True
+
+    persistence_adapter.fail_next_audit_append()
+    with pytest.raises(PersistenceUnavailableError) as captured:
+        await RequiredAuditCoordinator(
+            persistence_adapter.uow_factory
+        ).release_after_audit(
+            context=context,
+            event=event,
+            release=release,
+        )
+
+    assert released is False
+    assert str(protected_object_id) not in str(captured.value)
+
+
+@pytest.mark.asyncio
+async def test_rejected_required_audit_never_releases_protected_effect(
+    persistence_adapter: AuditPersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(2330)
+    context = persistence_adapter.workspace_context(workspace_id)
+    async with persistence_adapter.uow_factory(context) as setup:
+        await setup.workspaces.add(
+            Workspace(
+                id=workspace_id,
+                slug="required-audit-rejected",
+                display_name="Required Audit Rejected",
+            )
+        )
+        await setup.commit()
+    event = persistence_adapter.audit_events.build_event(
+        workspace_id=workspace_id,
+        event_type="command.outcome",
+        schema_version=1,
+        payload=CommandAuditPayload(command_type="protected.release"),
+        origin=context.origin,
+        acting_subject_id=context.acting_subject_id,
+        service_principal_id=context.service_principal_id,
+        trace_id=context.trace_id,
+        occurred_at=datetime(2026, 2, 3, 4, 4, tzinfo=timezone.utc),
+        outcome=AuditOutcome.REJECTED,
+        reason="policy_rejected",
+    )
+    released = False
+
+    async def release(_audit_event_id):
+        nonlocal released
+        released = True
+
+    with pytest.raises(AuthorizationDeniedError):
+        await RequiredAuditCoordinator(
+            persistence_adapter.uow_factory
+        ).release_after_audit(
+            context=context,
+            event=event,
+            release=release,
+        )
+
+    assert released is False
+
+
+@pytest.mark.asyncio
+async def test_allowed_required_audit_releases_without_leaking_target_metadata(
+    persistence_adapter: AuditPersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(2340)
+    audit_event_id = synthetic_uuid(2341)
+    protected_object_id = synthetic_uuid(2342)
+    context = persistence_adapter.workspace_context(workspace_id)
+    async with persistence_adapter.uow_factory(context) as setup:
+        await setup.workspaces.add(
+            Workspace(
+                id=workspace_id,
+                slug="required-audit-allowed",
+                display_name="Required Audit Allowed",
+            )
+        )
+        await setup.commit()
+    event = persistence_adapter.audit_events.build_event(
+        audit_event_id=audit_event_id,
+        workspace_id=workspace_id,
+        event_type="access.decision",
+        schema_version=1,
+        payload=AccessDecisionAuditPayload(
+            purpose="answer_question",
+            operation="read_content",
+        ),
+        origin=context.origin,
+        acting_subject_id=context.acting_subject_id,
+        service_principal_id=context.service_principal_id,
+        trace_id=context.trace_id,
+        occurred_at=datetime(2026, 2, 3, 4, 4, tzinfo=timezone.utc),
+        outcome=AuditOutcome.ALLOWED,
+        reason="authorization_allowed",
+        target=AuditObjectReference(
+            object_type="document",
+            object_id=protected_object_id,
+            schema_version=1,
+        ),
+    )
+
+    async def release(committed_audit_event_id):
+        assert committed_audit_event_id == audit_event_id
+        return "released"
+
+    result = await RequiredAuditCoordinator(
+        persistence_adapter.uow_factory
+    ).release_after_audit(
+        context=context,
+        event=event,
+        release=release,
+    )
+
+    assert result == "released"
+    assert str(protected_object_id) not in result
+
+
+@pytest.mark.asyncio
 async def test_historical_audit_event_cannot_authorize_a_new_unit_of_work(
     persistence_adapter: AuditPersistenceAdapter,
 ) -> None:

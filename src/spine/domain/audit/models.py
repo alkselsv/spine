@@ -110,7 +110,7 @@ class CanonicalTransitionAuditPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     transition: AuditIdentifier
-    object: AuditObjectReference
+    object_reference: AuditObjectReference
 
     @field_validator("transition")
     @classmethod

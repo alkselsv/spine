@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from enum import Enum
@@ -69,6 +70,7 @@ _FORBIDDEN_PAYLOAD_FIELD_TERMS = frozenset(
         "filename",
         "message",
         "payload",
+        "password",
         "prompt",
         "provider",
         "question",
@@ -78,6 +80,7 @@ _FORBIDDEN_PAYLOAD_FIELD_TERMS = frozenset(
         "stack",
         "token",
         "traceback",
+        "text",
         "url",
     }
 )
@@ -96,10 +99,22 @@ _IMMUTABLE_SCALARS = (
     timedelta,
 )
 _ResultT = TypeVar("_ResultT")
+_RELEASABLE_AUDIT_OUTCOMES = frozenset(
+    {
+        AuditOutcome.ACCEPTED,
+        AuditOutcome.ALLOWED,
+    }
+)
 
 
 class UnsupportedAuditEventError(PersistenceError):
     """An event type/version or payload schema is not allowlisted."""
+
+
+@dataclass(frozen=True, slots=True)
+class _AuditEventDefinition:
+    payload_type: type[BaseModel]
+    allowed_outcomes: frozenset[AuditOutcome]
 
 
 def _require_identifier(value: str, *, field_name: str) -> str:
@@ -179,18 +194,24 @@ def _has_no_content_bearing_field_names(
     for name, field in payload_type.model_fields.items():
         if any(term in name.lower() for term in _FORBIDDEN_PAYLOAD_FIELD_TERMS):
             return False
-        annotation = field.annotation
-        if (
-            isinstance(annotation, type)
-            and issubclass(annotation, BaseModel)
-            and not issubclass(annotation, AuditObjectReference)
-            and not _has_no_content_bearing_field_names(
-                annotation,
+        for nested_model in _nested_model_types(field.annotation):
+            if issubclass(nested_model, AuditObjectReference):
+                continue
+            if not _has_no_content_bearing_field_names(
+                nested_model,
                 checked_models=checked,
-            )
-        ):
-            return False
+            ):
+                return False
     return True
+
+
+def _nested_model_types(annotation: object) -> tuple[type[BaseModel], ...]:
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return (annotation,)
+    nested: list[type[BaseModel]] = []
+    for argument in get_args(annotation):
+        nested.extend(_nested_model_types(argument))
+    return tuple(nested)
 
 
 def _is_safe_payload_annotation(
@@ -245,10 +266,7 @@ class AuditEventRegistry:
     """Explicit allowlist of producer-owned Audit Event payload schemas."""
 
     def __init__(self) -> None:
-        self._payload_types: dict[tuple[str, int], type[BaseModel]] = {}
-        self._allowed_outcomes: dict[
-            tuple[str, int], frozenset[AuditOutcome]
-        ] = {}
+        self._definitions: dict[tuple[str, int], _AuditEventDefinition] = {}
         self._sealed = False
 
     @classmethod
@@ -306,7 +324,7 @@ class AuditEventRegistry:
     def seal(self) -> None:
         """Finish construction so runtime definitions cannot change."""
 
-        if not self._payload_types:
+        if not self._definitions:
             raise ValueError("Audit Event registry must not be empty.")
         self._sealed = True
 
@@ -355,32 +373,32 @@ class AuditEventRegistry:
                 "Audit payload schemas must not contain content-bearing fields."
             )
         key = (event_type, schema_version)
-        existing = self._payload_types.get(key)
-        existing_outcomes = self._allowed_outcomes.get(key)
-        if existing is not None and (
-            existing is not payload_type or existing_outcomes != allowed_outcomes
-        ):
+        definition = _AuditEventDefinition(
+            payload_type=payload_type,
+            allowed_outcomes=allowed_outcomes,
+        )
+        existing = self._definitions.get(key)
+        if existing is not None and existing != definition:
             raise ValueError("Audit Event type and schema version are already registered.")
-        self._payload_types[key] = payload_type
-        self._allowed_outcomes[key] = allowed_outcomes
+        self._definitions[key] = definition
 
     def validate(self, event: AuditEvent) -> AuditEvent:
         """Return a detached snapshot after revalidating its registered schema."""
 
         self.require_sealed()
-        expected = self._payload_types.get((event.event_type, event.schema_version))
-        if expected is None or type(event.payload) is not expected:
+        definition = self._definitions.get(
+            (event.event_type, event.schema_version)
+        )
+        if definition is None or type(event.payload) is not definition.payload_type:
             raise UnsupportedAuditEventError(
                 "Audit Event type, version, or payload is not registered."
             )
-        if event.outcome not in self._allowed_outcomes[
-            (event.event_type, event.schema_version)
-        ]:
+        if event.outcome not in definition.allowed_outcomes:
             raise UnsupportedAuditEventError(
                 "Audit Event outcome is not registered for this event family."
             )
         try:
-            canonical_payload = expected.model_validate(
+            canonical_payload = definition.payload_type.model_validate(
                 event.payload.model_dump(
                     mode="python",
                     round_trip=True,
@@ -516,7 +534,7 @@ class RequiredAuditCoordinator:
         async with self._uow_factory(context) as uow:
             audit_event_id = await uow.audit.append(event)
             await uow.commit()
-        if event.outcome is AuditOutcome.DENIED:
+        if event.outcome not in _RELEASABLE_AUDIT_OUTCOMES:
             raise AuthorizationDeniedError()
         return await release(audit_event_id)
 

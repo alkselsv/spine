@@ -46,8 +46,67 @@ def test_registered_command_event_is_a_detached_immutable_snapshot() -> None:
     assert event.payload_json() == {"command_type": "workspace.create"}
     assert event.audit_event_id is None
     assert event.appended_at is None
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError) as captured:
         event.outcome = AuditOutcome.REJECTED  # type: ignore[misc]
+    assert captured.value.errors()[0]["type"] == "frozen_instance"
+
+
+@pytest.mark.parametrize(
+    ("origin", "acting_subject_id", "service_principal_id"),
+    (
+        (ContextOrigin.INTERACTIVE, None, None),
+        (ContextOrigin.WORKER, None, None),
+        (ContextOrigin.WORKER, synthetic_uuid(4), synthetic_uuid(5)),
+    ),
+)
+def test_audit_envelope_rejects_actor_scope_inconsistent_with_origin(
+    origin: ContextOrigin,
+    acting_subject_id: UUID | None,
+    service_principal_id: UUID | None,
+) -> None:
+    registry = AuditEventRegistry.with_default_families()
+
+    with pytest.raises(ValidationError):
+        registry.build_event(
+            workspace_id=synthetic_uuid(1),
+            event_type="command.outcome",
+            schema_version=1,
+            payload=CommandAuditPayload(command_type="workspace.create"),
+            origin=origin,
+            acting_subject_id=acting_subject_id,
+            service_principal_id=service_principal_id,
+            trace_id=synthetic_uuid(3),
+            occurred_at=datetime(2026, 1, 2, 3, 4, tzinfo=timezone.utc),
+            outcome=AuditOutcome.ACCEPTED,
+            reason="command_valid",
+        )
+
+
+def test_audit_envelope_preserves_only_an_opaque_immutable_target() -> None:
+    target = AuditObjectReference(
+        object_type="document",
+        object_id=synthetic_uuid(6),
+        schema_version=1,
+    )
+    event = AuditEventRegistry.with_default_families().build_event(
+        workspace_id=synthetic_uuid(1),
+        event_type="command.outcome",
+        schema_version=1,
+        payload=CommandAuditPayload(command_type="workspace.create"),
+        origin=ContextOrigin.INTERACTIVE,
+        acting_subject_id=synthetic_uuid(2),
+        service_principal_id=None,
+        trace_id=synthetic_uuid(3),
+        occurred_at=datetime(2026, 1, 2, 3, 4, tzinfo=timezone.utc),
+        outcome=AuditOutcome.ACCEPTED,
+        reason="command_valid",
+        target=target,
+    )
+
+    assert event.target == target
+    assert event.target is not target
+    with pytest.raises(ValidationError):
+        event.target.object_type = "secret"  # type: ignore[misc,union-attr]
 
 
 def test_registry_rejects_payload_with_mutable_fields() -> None:
@@ -91,7 +150,7 @@ def test_registry_rejects_payload_with_unbounded_string_field() -> None:
             "canonical.transition",
             CanonicalTransitionAuditPayload(
                 transition="workspace.activated",
-                object=AuditObjectReference(
+                object_reference=AuditObjectReference(
                     object_type="workspace",
                     object_id=synthetic_uuid(10),
                     schema_version=1,
@@ -176,6 +235,41 @@ def test_registry_rejects_content_bearing_payload_field_name() -> None:
             event_type="unsafe.prompt",
             schema_version=1,
             payload_type=PromptPayload,
+            allowed_outcomes=frozenset({AuditOutcome.ACCEPTED}),
+        )
+
+
+def test_registry_rejects_sensitive_field_in_optional_nested_payload() -> None:
+    class SensitiveDetails(BaseModel):
+        model_config = ConfigDict(extra="forbid", frozen=True)
+
+        prompt: AuditIdentifier
+
+    class WrapperPayload(BaseModel):
+        model_config = ConfigDict(extra="forbid", frozen=True)
+
+        details: SensitiveDetails | None
+
+    with pytest.raises(ValueError, match="content-bearing"):
+        AuditEventRegistry().register(
+            event_type="unsafe.nested_prompt",
+            schema_version=1,
+            payload_type=WrapperPayload,
+            allowed_outcomes=frozenset({AuditOutcome.ACCEPTED}),
+        )
+
+
+def test_registry_rejects_password_field_name() -> None:
+    class PasswordPayload(BaseModel):
+        model_config = ConfigDict(extra="forbid", frozen=True)
+
+        password: AuditIdentifier
+
+    with pytest.raises(ValueError, match="content-bearing"):
+        AuditEventRegistry().register(
+            event_type="unsafe.password",
+            schema_version=1,
+            payload_type=PasswordPayload,
             allowed_outcomes=frozenset({AuditOutcome.ACCEPTED}),
         )
 
