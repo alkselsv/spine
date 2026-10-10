@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import TracebackType
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.application.persistence.repositories import (
@@ -12,6 +12,9 @@ from spine.application.persistence.repositories import (
     WorkspaceRepository,
 )
 from spine.application.persistence.outbox import OutboxWriter
+
+if TYPE_CHECKING:
+    from spine.application.diagnostics.audit import AuditWriter
 
 
 class TenantUnitOfWork(Protocol):
@@ -45,6 +48,9 @@ class UnitOfWork(TenantUnitOfWork, Protocol):
 
     @property
     def outbox(self) -> OutboxWriter: ...
+
+    @property
+    def audit(self) -> "AuditWriter": ...
 
     async def __aenter__(self) -> "UnitOfWork": ...
 

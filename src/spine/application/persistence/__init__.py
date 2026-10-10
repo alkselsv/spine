@@ -22,6 +22,7 @@ from spine.application.persistence.command_digest import (
     digest_command,
 )
 from spine.application.persistence.errors import (
+    AuditConflictError,
     ConstraintConflictError,
     IdempotencyConflictError,
     IncompatibleSchemaError,
@@ -70,6 +71,7 @@ from spine.application.persistence.unit_of_work import (
 )
 
 __all__ = [
+    "AuditConflictError",
     "ContextOrigin",
     "COMMAND_DIGEST_ALGORITHM_VERSION",
     "CommandDigest",

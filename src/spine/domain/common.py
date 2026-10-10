@@ -125,6 +125,13 @@ class ActorKind(str, Enum):
     SERVICE = "service"
 
 
+class ContextOrigin(str, Enum):
+    """Trusted execution origin for actor and service attribution rules."""
+
+    INTERACTIVE = "interactive"
+    WORKER = "worker"
+
+
 class ActorRef(DefinitionModel):
     """A first-class assignee or initiator of work."""
 

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import AsyncContextManager
+from typing import AsyncContextManager, Awaitable
 from uuid import UUID
 
+from spine.application.diagnostics.audit import AuditEvent, AuditEventRegistry
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.application.persistence.outbox import OutboxEventRegistry
 from spine.application.persistence.unit_of_work import UnitOfWorkFactory
@@ -20,3 +21,14 @@ class PersistenceAdapter:
     environment_context: Callable[[UUID, UUID], TrustedPersistenceContext]
     hold_transactions: Callable[[], AsyncContextManager[None]]
     outbox_events: OutboxEventRegistry
+
+
+@dataclass(frozen=True)
+class AuditPersistenceAdapter(PersistenceAdapter):
+    """In-memory audit capabilities owned by Issue #63 contract tests."""
+
+    audit_events: AuditEventRegistry
+    read_audit_event: Callable[
+        [TrustedPersistenceContext, UUID], Awaitable[AuditEvent | None]
+    ]
+    fail_next_audit_append: Callable[[], None]

@@ -50,6 +50,10 @@ class OutboxConflictError(ConstraintConflictError):
     """An outbox event or producer deduplication identity already exists."""
 
 
+class AuditConflictError(ConstraintConflictError):
+    """An audit identity conflicts with an existing immutable event."""
+
+
 class IncompatibleSchemaError(PersistenceError):
     """The canonical store schema is incompatible with this application."""
 

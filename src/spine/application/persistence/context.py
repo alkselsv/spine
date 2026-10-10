@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Protocol, TypeAlias
 from uuid import UUID
 
 from spine.application.persistence.errors import InvalidPersistenceContextError
+from spine.domain.common import ContextOrigin
 
 
 _POLICY_IDENTIFIER = re.compile(r"[a-z][a-z0-9_.:-]{0,63}")
@@ -78,11 +78,6 @@ class EnvironmentScope:
 
 
 PersistenceScope: TypeAlias = WorkspaceScope | EnvironmentScope
-
-
-class ContextOrigin(str, Enum):
-    INTERACTIVE = "interactive"
-    WORKER = "worker"
 
 
 @dataclass(frozen=True, slots=True)

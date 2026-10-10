@@ -12,8 +12,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from spine.application.diagnostics.audit import UnsupportedAuditEventError
 from spine.application.diagnostics.context import DiagnosticContext
 from spine.application.persistence.errors import (
+    AuditConflictError,
     ConstraintConflictError,
     IdempotencyConflictError,
     IncompatibleSchemaError,
@@ -47,10 +49,12 @@ _SAFE_MESSAGE_BY_CODE = MappingProxyType({
     "spine.persistence.constraint_conflict": "The operation conflicts with a persistence constraint.",
     "spine.persistence.idempotency_conflict": "The idempotency key conflicts with an existing command.",
     "spine.persistence.outbox_conflict": "The outbox operation conflicts with an existing event.",
+    "spine.persistence.audit_conflict": "The audit operation conflicts with an existing event.",
     "spine.persistence.incompatible_schema": "The persistence schema is incompatible.",
     "spine.persistence.unexpected": "The persistence operation failed unexpectedly.",
     "spine.persistence.unit_of_work_lifecycle": "The persistence operation has an invalid lifecycle.",
     "spine.persistence.unsupported_outbox_event": "The outbox event is not supported.",
+    "spine.persistence.unsupported_audit_event": "The audit event is not supported.",
 })
 
 
@@ -228,10 +232,12 @@ def build_default_error_registry() -> StructuredErrorRegistry:
         (ConstraintConflictError, "spine.persistence.constraint_conflict", "The operation conflicts with a persistence constraint.", Retryability.NEVER),
         (IdempotencyConflictError, "spine.persistence.idempotency_conflict", "The idempotency key conflicts with an existing command.", Retryability.NEVER),
         (OutboxConflictError, "spine.persistence.outbox_conflict", "The outbox operation conflicts with an existing event.", Retryability.NEVER),
+        (AuditConflictError, "spine.persistence.audit_conflict", "The audit operation conflicts with an existing event.", Retryability.NEVER),
         (IncompatibleSchemaError, "spine.persistence.incompatible_schema", "The persistence schema is incompatible.", Retryability.NEVER),
         (UnexpectedPersistenceError, "spine.persistence.unexpected", "The persistence operation failed unexpectedly.", Retryability.NEVER),
         (UnitOfWorkLifecycleError, "spine.persistence.unit_of_work_lifecycle", "The persistence operation has an invalid lifecycle.", Retryability.NEVER),
         (UnsupportedOutboxEventError, "spine.persistence.unsupported_outbox_event", "The outbox event is not supported.", Retryability.NEVER),
+        (UnsupportedAuditEventError, "spine.persistence.unsupported_audit_event", "The audit event is not supported.", Retryability.NEVER),
     )
     for exception_type, code, safe_message, retryability in mappings:
         registry.register(exception_type, code, safe_message, retryability)
