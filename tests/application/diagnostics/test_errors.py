@@ -14,7 +14,9 @@ from spine.application.diagnostics import (
     StructuredErrorRegistry,
     build_default_error_registry,
 )
+from spine.application.diagnostics.audit import UnsupportedAuditEventError
 from spine.application.persistence.errors import (
+    AuditConflictError,
     ConstraintConflictError,
     IdempotencyConflictError,
     IncompatibleSchemaError,
@@ -161,10 +163,12 @@ def test_structured_error_disables_unvalidated_model_construct() -> None:
         (ConstraintConflictError, "spine.persistence.constraint_conflict", Retryability.NEVER),
         (IdempotencyConflictError, "spine.persistence.idempotency_conflict", Retryability.NEVER),
         (OutboxConflictError, "spine.persistence.outbox_conflict", Retryability.NEVER),
+        (AuditConflictError, "spine.persistence.audit_conflict", Retryability.NEVER),
         (IncompatibleSchemaError, "spine.persistence.incompatible_schema", Retryability.NEVER),
         (UnexpectedPersistenceError, "spine.persistence.unexpected", Retryability.NEVER),
         (UnitOfWorkLifecycleError, "spine.persistence.unit_of_work_lifecycle", Retryability.NEVER),
         (UnsupportedOutboxEventError, "spine.persistence.unsupported_outbox_event", Retryability.NEVER),
+        (UnsupportedAuditEventError, "spine.persistence.unsupported_audit_event", Retryability.NEVER),
     ],
 )
 def test_default_registry_maps_each_persistence_category(

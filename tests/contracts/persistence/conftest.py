@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from uuid import UUID
 
 import pytest
@@ -15,6 +16,7 @@ from spine.application.persistence.context import (
     TrustedPersistenceContext,
     WorkspaceScope,
 )
+from spine.application.diagnostics.audit import AuditEventRegistry
 from spine.domain.workspaces import Workspace
 from spine.infrastructure.persistence.contexts import (
     TrustedContextBoundary,
@@ -22,7 +24,7 @@ from spine.infrastructure.persistence.contexts import (
 )
 from spine.infrastructure.persistence.in_memory import InMemoryPersistence
 
-from .adapter import PersistenceAdapter
+from .adapter import AuditPersistenceAdapter, PersistenceAdapter
 from .ids import synthetic_uuid
 from .outbox_events import create_outbox_event_registry
 
@@ -30,7 +32,7 @@ from .outbox_events import create_outbox_event_registry
 AdapterFactory = Callable[[], Awaitable[PersistenceAdapter]]
 
 
-async def create_in_memory_adapter() -> PersistenceAdapter:
+async def create_in_memory_adapter() -> AuditPersistenceAdapter:
     transaction_lock = asyncio.Lock()
     boundary = TrustedContextBoundary.for_testing(
         issuer_id=synthetic_uuid(900),
@@ -38,11 +40,15 @@ async def create_in_memory_adapter() -> PersistenceAdapter:
     )
     bootstrap_authority = create_initial_workspace_bootstrap_authority()
     outbox_events = create_outbox_event_registry()
+    audit_events = AuditEventRegistry.with_default_families()
     persistence = InMemoryPersistence(
         context_verifier=boundary,
         outbox_events=outbox_events,
+        audit_events=audit_events,
         bootstrap_authority=bootstrap_authority,
         transaction_lock=transaction_lock,
+        audit_clock=lambda: datetime(2026, 2, 3, 4, 5, tzinfo=timezone.utc),
+        audit_event_id_factory=lambda: synthetic_uuid(908),
     )
     await persistence.initial_workspace_bootstrap.create_initial_workspace(
         bootstrap_authority,
@@ -94,13 +100,16 @@ async def create_in_memory_adapter() -> PersistenceAdapter:
         finally:
             transaction_lock.release()
 
-    return PersistenceAdapter(
+    return AuditPersistenceAdapter(
         uow_factory=persistence.uow_factory,
         workspace_context=workspace_context,
         worker_workspace_context=worker_workspace_context,
         environment_context=environment_context,
         hold_transactions=hold_transactions,
         outbox_events=outbox_events,
+        audit_events=audit_events,
+        read_audit_event=persistence.audit_reader.resolve,
+        fail_next_audit_append=persistence.fail_next_audit_append,
     )
 
 
