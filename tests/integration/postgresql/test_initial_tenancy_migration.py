@@ -26,6 +26,7 @@ from spine.infrastructure.db.initial_workspace import (
 )
 from spine.infrastructure.db.migrations import (
     MigrationPreflightError,
+    locate_migration_assets,
     upgrade_database,
 )
 from spine.infrastructure.db.operator import bootstrap_database_roles
@@ -1327,11 +1328,11 @@ async def test_k0_receipt_integrity_objects_are_catalogued_and_restricted(
 async def test_k0_migration_downgrades_and_reupgrades_cleanly(
     migrated_database: MigratedDatabase,
 ) -> None:
-    await asyncio.to_thread(
-        upgrade_database,
-        migrated_database.migration,
-        revision=PRE_K0_REVISION,
-    )
+    config_path, script_location = locate_migration_assets()
+    config = Config(str(config_path))
+    config.set_main_option("script_location", str(script_location))
+    config.attributes["migration_settings"] = migrated_database.migration
+    await asyncio.to_thread(command.downgrade, config, PRE_K0_REVISION)
     async with _connection(migrated_database.migration.url) as connection:
         assert await connection.scalar(
             text("SELECT to_regprocedure('spine.validate_issue7_receipt_scope()')")
@@ -1530,6 +1531,11 @@ async def test_k0_deferred_validator_rollback_removes_child_and_retry_succeeds(
         with pytest.raises(DBAPIError):
             await connection.commit()
         await connection.rollback()
+        await _set_tenant_context(
+            connection,
+            workspace_id=WORKSPACE_A,
+            environment_id=ENVIRONMENT_A,
+        )
         await connection.execute(
             text(
                 "INSERT INTO spine.k0_receipt_reference_fixture "
@@ -2008,11 +2014,15 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         source / "versions" / "20261010_05_runtime_readiness.py",
         target / "versions" / "20261010_05_runtime_readiness.py",
     )
-    (target / "versions" / "20261010_06_injected_failure.py").write_text(
+    shutil.copy(
+        source / "versions" / "20261010_06_receipt_tenant_integrity.py",
+        target / "versions" / "20261010_06_receipt_tenant_integrity.py",
+    )
+    (target / "versions" / "20261010_07_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261010_06'\n"
-        "down_revision = '20261010_05'\n"
+        "revision = '20261010_07'\n"
+        "down_revision = '20261010_06'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"
