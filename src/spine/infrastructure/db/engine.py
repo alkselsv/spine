@@ -5,18 +5,17 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import Protocol
 
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from spine.infrastructure.db.settings import (
     REDACTED_DATABASE_URL,
     POSTGRESQL_SEARCH_PATH_OPTIONS,
-    SUPPORTED_POSTGRESQL_MAJOR,
     RuntimeDatabaseSettings,
 )
+from spine.infrastructure.db.readiness import verify_database_readiness
 
 
 class DisposableAsyncEngine(Protocol):
@@ -27,16 +26,6 @@ EngineFactory = Callable[..., DisposableAsyncEngine]
 SessionFactory = Callable[..., AsyncSession]
 SessionFactoryBuilder = Callable[..., SessionFactory]
 ReadinessCheck = Callable[[DisposableAsyncEngine], Awaitable[None]]
-
-
-async def _verify_supported_postgresql(engine: DisposableAsyncEngine) -> None:
-    async_engine = cast(AsyncEngine, engine)
-    async with async_engine.connect() as connection:
-        major = await connection.scalar(
-            text("SELECT current_setting('server_version_num')::integer / 10000")
-        )
-    if major != SUPPORTED_POSTGRESQL_MAJOR:
-        raise RuntimeError("unsupported PostgreSQL server identity")
 
 
 class DatabaseStartupError(RuntimeError):
@@ -63,7 +52,7 @@ class DatabaseRuntime:
         *,
         engine_factory: EngineFactory = create_async_engine,
         session_factory_builder: SessionFactoryBuilder = async_sessionmaker,
-        readiness_check: ReadinessCheck = _verify_supported_postgresql,
+        readiness_check: ReadinessCheck | None = None,
     ) -> None:
         self._engine_factory = engine_factory
         self._session_factory_builder = session_factory_builder
@@ -103,7 +92,10 @@ class DatabaseRuntime:
                     },
                     hide_parameters=True,
                 )
-                await self._readiness_check(engine)
+                if self._readiness_check is None:
+                    await verify_database_readiness(engine, settings)
+                else:
+                    await self._readiness_check(engine)
                 session_factory = self._session_factory_builder(
                     engine,
                     expire_on_commit=False,

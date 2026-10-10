@@ -137,8 +137,12 @@ def collect_migration_preflight(
             "EXISTS (SELECT 1 FROM pg_class AS tenant_table "
             "WHERE tenant_table.relnamespace = namespace.oid "
             "AND tenant_table.relkind IN ('r', 'p') "
+            "AND ((tenant_table.relname = :version_table "
             "AND has_table_privilege(runtime.oid, tenant_table.oid, "
-            "'SELECT,INSERT,UPDATE,DELETE') "
+            "'INSERT,UPDATE,DELETE')) "
+            "OR (tenant_table.relname <> :version_table "
+            "AND has_table_privilege(runtime.oid, tenant_table.oid, "
+            "'SELECT,INSERT,UPDATE,DELETE'))) "
             "AND (NOT tenant_table.relrowsecurity "
             "OR NOT tenant_table.relforcerowsecurity "
             "OR tenant_table.relowner = runtime.oid)) "
@@ -154,6 +158,7 @@ def collect_migration_preflight(
             "migration_role": migration_role,
             "runtime_role": runtime_role,
             "schema_name": SPINE_SCHEMA,
+            "version_table": ALEMBIC_VERSION_TABLE,
         },
     ).mappings().one()
     return MigrationPreflightState(**row)

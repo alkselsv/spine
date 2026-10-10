@@ -13,6 +13,15 @@ from spine.infrastructure.db.test_harness import (
 pytestmark = pytest.mark.postgresql
 
 
+async def _engine_only_readiness(engine: object) -> None:
+    async with engine.connect() as connection:  # type: ignore[attr-defined]
+        major = await connection.scalar(
+            text("SELECT current_setting('server_version_num')::integer / 10000")
+        )
+    if major != 17:
+        raise RuntimeError("unsupported PostgreSQL major")
+
+
 def _runtime_settings(
     provision: DatabaseProvision,
     **overrides: object,
@@ -32,7 +41,7 @@ def _runtime_settings(
 async def test_real_postgresql_connectivity_uses_supported_major(
     postgresql_provision: DatabaseProvision,
 ) -> None:
-    runtime = DatabaseRuntime()
+    runtime = DatabaseRuntime(readiness_check=_engine_only_readiness)
     resources = await runtime.start(_runtime_settings(postgresql_provision))
 
     async with resources.engine.connect() as connection:  # type: ignore[attr-defined]
@@ -48,7 +57,7 @@ async def test_real_postgresql_connectivity_uses_supported_major(
 async def test_runtime_transactions_use_read_committed_isolation(
     postgresql_provision: DatabaseProvision,
 ) -> None:
-    runtime = DatabaseRuntime()
+    runtime = DatabaseRuntime(readiness_check=_engine_only_readiness)
     resources = await runtime.start(_runtime_settings(postgresql_provision))
 
     async with resources.engine.connect() as connection:  # type: ignore[attr-defined]
@@ -62,7 +71,7 @@ async def test_runtime_transactions_use_read_committed_isolation(
 async def test_real_postgresql_pool_is_bounded_and_disposal_is_deterministic(
     postgresql_provision: DatabaseProvision,
 ) -> None:
-    runtime = DatabaseRuntime()
+    runtime = DatabaseRuntime(readiness_check=_engine_only_readiness)
     resources = await runtime.start(_runtime_settings(postgresql_provision))
     engine = resources.engine
     first = await engine.connect()  # type: ignore[attr-defined]
@@ -83,7 +92,7 @@ async def test_real_postgresql_pool_is_bounded_and_disposal_is_deterministic(
 async def test_async_session_factory_returns_operation_owned_sessions(
     postgresql_provision: DatabaseProvision,
 ) -> None:
-    runtime = DatabaseRuntime()
+    runtime = DatabaseRuntime(readiness_check=_engine_only_readiness)
     resources = await runtime.start(_runtime_settings(postgresql_provision))
     session_factory = resources.session_factory
 

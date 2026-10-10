@@ -9,7 +9,9 @@ production SQLAlchemy Unit of Work, trusted transaction-context binding, and
 purpose-specific Workspace and Environment repositories. Issue #46 adds
 tenant-scoped PostgreSQL idempotency receipts and complete-transaction retry.
 Issue #47 adds typed, allowlisted transactional outbox intents that commit with
-canonical mutations.
+canonical mutations. Issue #48 adds exact-head runtime readiness, the final
+migration/catalog audit, composed receipt-mutation-outbox recovery tests, and
+the mandatory persistence-kernel release gate.
 
 ## Supported stack
 
@@ -30,6 +32,7 @@ Runtime and migration credentials have separate configuration surfaces:
 
 ```dotenv
 SPINE_DATABASE_URL=postgresql+psycopg://runtime_user:secret@db/spine
+SPINE_DATABASE_RUNTIME_ROLE=spine_runtime
 SPINE_DATABASE_POOL_SIZE=5
 SPINE_DATABASE_MAX_OVERFLOW=5
 SPINE_DATABASE_POOL_TIMEOUT_SECONDS=30
@@ -176,7 +179,9 @@ current user, database owner, role separation, runtime privileges, memberships,
 unsafe database/schema/table access, forced RLS protection, and existing schema
 owner before it changes the schema. Runtime and migration connections use the
 controlled search path `pg_catalog,spine`. The Alembic version table is
-`spine.alembic_version`, and the committed history has one linear head.
+`spine.alembic_version`, and the committed history has one linear head:
+`20261010_05`. This final migration grants the runtime role read-only access to
+the revision identity; it grants no schema mutation authority or tenant data.
 
 `spine-db-bootstrap-workspace` is a one-time migration-authority action. It
 atomically inserts the first Workspace and an operator audit record, then seals
@@ -185,9 +190,14 @@ does not grant document-content authority. Ordinary runtime credentials cannot
 invoke it or access its tables.
 
 Application startup never creates roles or schemas, invokes Alembic, or calls
-`metadata.create_all`. A missing role, wrong database/schema owner, privileged
-runtime role, or unknown migration state is an operator error, not something
-startup repairs.
+`metadata.create_all`. Readiness succeeds only when PostgreSQL major 17 is in
+use, the database reports exactly head `20261010_05`, the connected user is the
+configured restricted runtime role, required grants and forced RLS are intact,
+and transaction-local Workspace/Environment context can be bound. Empty,
+older, newer, unknown, and multiple-head states fail closed; the newly created
+engine is disposed and the revision is not changed. A missing role, wrong
+database/schema owner, privileged runtime role, or incompatible migration state
+is an operator error, not something startup repairs.
 
 ## Tenant RLS convention
 
@@ -285,3 +295,38 @@ and the gate reports the failure.
 
 URLs, passwords, marker values, and usernames are excluded from settings
 representations and harness errors.
+
+Run the release gate with:
+
+```bash
+make test-release
+```
+
+It runs the complete suite including real PostgreSQL, compilation, and
+`git diff --check`. `make verify` additionally synchronizes the declared
+development environment first. For a quicker local loop only:
+
+```bash
+make test-fast
+```
+
+The latter prints that PostgreSQL acceptance has not run and is never sufficient
+for release or ticket completion.
+
+## Deployment prerequisites and recovery
+
+The deployment must provide PostgreSQL 17, operator authority for the one-time
+database/role bootstrap, separately stored migration and runtime credentials,
+and durable backup/restore appropriate to its environment. Spine does not
+provision the server, network policy, TLS certificates, secret manager, backup
+backend, or container runtime. Production rollout must run operator bootstrap
+and `spine-db-migrate` before starting the application with runtime credentials.
+
+If readiness reports an incompatible revision, stop the application and inspect
+`spine.alembic_version` with migration authority. Apply the supported forward
+migration; do not stamp or edit the version table manually. For a failed
+transactional migration, fix the cause and rerun it—the previous revision and
+schema remain authoritative. For an irreversible future change, restore the
+deployment backup or apply its documented corrective forward migration. The
+sealed initial-Workspace bootstrap remains one-time and is not a general tenant
+recovery or content-access mechanism.

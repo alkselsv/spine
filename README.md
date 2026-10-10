@@ -179,15 +179,15 @@ tests/             автоматические проверки
 Установите development-зависимости и запустите проверки:
 
 ```bash
-uv sync --extra dev
-uv run pytest -q
-uv run python -m compileall -q src tests
+make verify
 ```
 
 Полный набор тестов включает обязательный real-PostgreSQL gate. Поддерживаемая
 версия, operator bootstrap, отдельные runtime/migration/test настройки,
 Alembic-команды и безопасный explicit-URL режим описаны в
 [PostgreSQL bootstrap, migrations, runtime and test harness](docs/postgresql.md).
+Для короткого локального цикла `make test-fast` явно пропускает PostgreSQL
+acceptance и поэтому не является release gate.
 
 Перед архитектурными или межмодульными изменениями прочитайте
 [AGENTS.md](AGENTS.md).

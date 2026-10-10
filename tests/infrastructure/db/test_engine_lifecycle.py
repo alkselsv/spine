@@ -91,6 +91,34 @@ async def test_start_creates_one_bounded_engine_and_async_session_factory() -> N
 
 
 @pytest.mark.asyncio
+async def test_default_startup_readiness_receives_validated_runtime_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = RecordingEngine()
+    checked: list[tuple[object, RuntimeDatabaseSettings]] = []
+
+    async def readiness_check(
+        created_engine: object,
+        settings: RuntimeDatabaseSettings,
+    ) -> None:
+        checked.append((created_engine, settings))
+
+    monkeypatch.setattr(
+        "spine.infrastructure.db.engine.verify_database_readiness",
+        readiness_check,
+    )
+    settings = runtime_settings(runtime_role="spine_runtime")
+    runtime = DatabaseRuntime(
+        engine_factory=lambda _url, **_kwargs: engine,
+        session_factory_builder=lambda _engine, **_kwargs: object,
+    )
+
+    await runtime.start(settings)
+
+    assert checked == [(engine, settings)]
+
+
+@pytest.mark.asyncio
 async def test_start_never_invokes_alembic_or_creates_schema(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

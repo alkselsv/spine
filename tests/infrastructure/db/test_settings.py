@@ -30,6 +30,21 @@ def test_runtime_settings_are_frozen_and_reject_unknown_fields() -> None:
     assert "migration_user" not in rendered
 
 
+def test_runtime_settings_require_safe_expected_runtime_role() -> None:
+    settings = RuntimeDatabaseSettings(
+        url=RUNTIME_URL,
+        runtime_role="spine_runtime",
+    )
+
+    assert settings.runtime_role == "spine_runtime"
+
+    with pytest.raises(ValidationError):
+        RuntimeDatabaseSettings(
+            url=RUNTIME_URL,
+            runtime_role='unsafe"role',
+        )
+
+
 def test_database_settings_representations_redact_credentials() -> None:
     settings = RuntimeDatabaseSettings(url=RUNTIME_URL)
 
