@@ -202,6 +202,24 @@ async def verify_database_readiness(
             if not _runtime_table_privileges_are_safe(tables):
                 raise DatabaseReadinessError("database runtime privileges are not ready")
 
+            resolver_privileges = (
+                await connection.execute(
+                    text(
+                        "SELECT has_function_privilege(current_user, "
+                        "'spine.resolve_current_authorization_snapshot"
+                        "(text,text,uuid,uuid)', 'EXECUTE') AS runtime_execute, "
+                        "has_function_privilege('public', "
+                        "'spine.resolve_current_authorization_snapshot"
+                        "(text,text,uuid,uuid)', 'EXECUTE') AS public_execute"
+                    )
+                )
+            ).mappings().one()
+            if (
+                not resolver_privileges.runtime_execute
+                or resolver_privileges.public_execute
+            ):
+                raise DatabaseReadinessError("database runtime privileges are not ready")
+
             receipt_columns = (
                 await connection.execute(
                     text(
@@ -311,6 +329,55 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
             tenant_scoped=True,
             select=False,
             insert=True,
+            update=False,
+            delete=False,
+        ),
+        "canonical_human_identities": ExpectedTablePrivileges(
+            tenant_scoped=False,
+            select=False,
+            insert=False,
+            update=False,
+            delete=False,
+        ),
+        "canonical_human_identity_states": ExpectedTablePrivileges(
+            tenant_scoped=False,
+            select=False,
+            insert=False,
+            update=False,
+            delete=False,
+        ),
+        "authentication_alias_bindings": ExpectedTablePrivileges(
+            tenant_scoped=False,
+            select=False,
+            insert=False,
+            update=False,
+            delete=False,
+        ),
+        "workspace_memberships": ExpectedTablePrivileges(
+            tenant_scoped=True,
+            select=False,
+            insert=False,
+            update=False,
+            delete=False,
+        ),
+        "environment_memberships": ExpectedTablePrivileges(
+            tenant_scoped=True,
+            select=False,
+            insert=False,
+            update=False,
+            delete=False,
+        ),
+        "environment_role_bindings": ExpectedTablePrivileges(
+            tenant_scoped=True,
+            select=False,
+            insert=False,
+            update=False,
+            delete=False,
+        ),
+        "authorization_generations": ExpectedTablePrivileges(
+            tenant_scoped=True,
+            select=False,
+            insert=False,
             update=False,
             delete=False,
         ),

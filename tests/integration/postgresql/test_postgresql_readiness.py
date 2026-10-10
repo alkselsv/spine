@@ -28,7 +28,7 @@ MIGRATION_ROLE = "spine_migration"
 RUNTIME_ROLE = "spine_runtime"
 MIGRATION_PASSWORD = "migration-readiness-secret"
 RUNTIME_PASSWORD = "runtime-readiness-secret"
-HEAD_REVISION = "20261010_06"
+HEAD_REVISION = "20261010_07"
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,6 +211,32 @@ async def test_missing_required_runtime_privilege_fails_readiness(
         async with _connection(readiness_database.migration_url) as connection:
             await connection.execute(
                 text("GRANT INSERT ON spine.outbox_intents TO spine_runtime")
+            )
+            await connection.commit()
+
+    assert runtime.resources is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_missing_authorization_resolver_execute_fails_readiness(
+    readiness_database: ReadinessDatabase,
+) -> None:
+    signature = (
+        "spine.resolve_current_authorization_snapshot(text,text,uuid,uuid)"
+    )
+    async with _connection(readiness_database.migration_url) as connection:
+        await connection.execute(
+            text(f"REVOKE EXECUTE ON FUNCTION {signature} FROM spine_runtime")
+        )
+        await connection.commit()
+    runtime = DatabaseRuntime()
+    try:
+        with pytest.raises(DatabaseStartupError, match="database startup failed"):
+            await runtime.start(_runtime_settings(readiness_database.runtime_url))
+    finally:
+        async with _connection(readiness_database.migration_url) as connection:
+            await connection.execute(
+                text(f"GRANT EXECUTE ON FUNCTION {signature} TO spine_runtime")
             )
             await connection.commit()
 
