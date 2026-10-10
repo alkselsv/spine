@@ -317,6 +317,11 @@ The trusted representation of one real human to which all known authentication
 aliases are mapped for authorization and independent-approval decisions.
 _Avoid_: OIDC subject, username, account
 
+**Authentication Alias**:
+A provider-scoped external identity, identified by issuer and subject, that may
+map to a Canonical Human Identity but grants no authority by itself.
+_Avoid_: User, Canonical Human Identity, role
+
 **Trusted Authorization Context**:
 The server-derived acting identity, service principal, purpose and operation
 against which an access decision is made and immutably recorded.
