@@ -5,12 +5,14 @@ from spine.domain.audit.models import (
     AuditEvent,
     AuditFieldKind,
     AuditIdentifier,
+    AuditVersion,
     AuditObjectReference,
     AuditOutcome,
     CanonicalTransitionAuditPayload,
     CommandAuditPayload,
     FeedbackAuditPayload,
     OutboxDeliveryAuditPayload,
+    RequestAccessDecisionAuditPayload,
 )
 
 __all__ = [
@@ -18,10 +20,12 @@ __all__ = [
     "AuditEvent",
     "AuditFieldKind",
     "AuditIdentifier",
+    "AuditVersion",
     "AuditObjectReference",
     "AuditOutcome",
     "CanonicalTransitionAuditPayload",
     "CommandAuditPayload",
     "FeedbackAuditPayload",
     "OutboxDeliveryAuditPayload",
+    "RequestAccessDecisionAuditPayload",
 ]

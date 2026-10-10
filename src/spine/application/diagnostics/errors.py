@@ -32,11 +32,21 @@ from spine.application.persistence.errors import (
     UnitOfWorkLifecycleError,
 )
 from spine.application.persistence.outbox import UnsupportedOutboxEventError
+from spine.auth.errors import (
+    AuthenticationUnavailableError,
+    AuthorizationDeniedError,
+    AuthorizationUnavailableError,
+    InvalidAuthenticationError,
+)
 
 
 _CODE_PATTERN = re.compile(r"^spine\.[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$")
 _MAX_CODE_LENGTH = 96
 _SAFE_MESSAGE_BY_CODE = MappingProxyType({
+    "spine.authentication.invalid": "Authentication is invalid.",
+    "spine.authentication.unavailable": "Authentication is temporarily unavailable.",
+    "spine.authorization.denied": "Authorization is denied.",
+    "spine.authorization.unavailable": "Authorization is temporarily unavailable.",
     "spine.internal.unexpected": "An unexpected internal error occurred.",
     "spine.persistence.failure": "Persistence operation failed.",
     "spine.persistence.invalid_context": "Persistence context is invalid.",
@@ -221,6 +231,30 @@ def build_default_error_registry() -> StructuredErrorRegistry:
 
     registry = StructuredErrorRegistry()
     mappings = (
+        (
+            InvalidAuthenticationError,
+            "spine.authentication.invalid",
+            "Authentication is invalid.",
+            Retryability.NEVER,
+        ),
+        (
+            AuthenticationUnavailableError,
+            "spine.authentication.unavailable",
+            "Authentication is temporarily unavailable.",
+            Retryability.AFTER_DELAY,
+        ),
+        (
+            AuthorizationDeniedError,
+            "spine.authorization.denied",
+            "Authorization is denied.",
+            Retryability.NEVER,
+        ),
+        (
+            AuthorizationUnavailableError,
+            "spine.authorization.unavailable",
+            "Authorization is temporarily unavailable.",
+            Retryability.AFTER_DELAY,
+        ),
         (PersistenceError, "spine.persistence.failure", "Persistence operation failed.", Retryability.NEVER),
         (InvalidPersistenceContextError, "spine.persistence.invalid_context", "Persistence context is invalid.", Retryability.NEVER),
         (InvalidBootstrapAuthorityError, "spine.persistence.invalid_bootstrap_authority", "Bootstrap authority is invalid.", Retryability.NEVER),
