@@ -12,6 +12,7 @@ from sqlalchemy.exc import (
 from spine.application.persistence.errors import (
     ConstraintConflictError,
     IncompatibleSchemaError,
+    IdempotencyConflictError,
     OptimisticConflictError,
     PersistenceError,
     PersistenceUnavailableError,
@@ -35,6 +36,33 @@ _CONSTRAINT_MESSAGES = {
         "Environment data violates persistence constraints."
     ),
     "fk_environments_workspace_id_workspaces": "Owning Workspace does not exist.",
+    "fk_idempotency_receipts_workspace_id_workspaces": (
+        "Owning Workspace does not exist."
+    ),
+    "fk_idempotency_receipts_scope_environments": (
+        "Environment does not belong to Workspace."
+    ),
+    "pk_idempotency_receipts": "Idempotency receipt identity already exists.",
+    "ck_idempotency_receipts_operation_schema_version_positive": (
+        "Idempotency receipt violates persistence constraints."
+    ),
+    "ck_idempotency_receipts_idempotency_key_length": (
+        "Idempotency receipt violates persistence constraints."
+    ),
+    "ck_idempotency_receipts_command_digest_sha256": (
+        "Idempotency receipt violates persistence constraints."
+    ),
+    "ck_idempotency_receipts_result_complete": (
+        "Idempotency receipt violates persistence constraints."
+    ),
+    "ck_idempotency_receipts_single_completion": (
+        "Idempotency receipt is already completed."
+    ),
+}
+
+_IDEMPOTENCY_CONSTRAINTS = {
+    "uq_idempotency_receipts_workspace_key",
+    "uq_idempotency_receipts_environment_key",
 }
 
 
@@ -58,6 +86,10 @@ def translate_persistence_error(error: BaseException) -> PersistenceError:
     if isinstance(error, IntegrityError):
         diagnostic = getattr(original, "diag", None)
         constraint_name = getattr(diagnostic, "constraint_name", None)
+        if constraint_name in _IDEMPOTENCY_CONSTRAINTS:
+            return IdempotencyConflictError(
+                "Idempotency key conflicts with existing command."
+            )
         message = _CONSTRAINT_MESSAGES.get(
             constraint_name,
             "Persistence constraint rejected the operation.",

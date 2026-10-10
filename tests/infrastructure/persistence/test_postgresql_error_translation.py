@@ -5,6 +5,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError, TimeoutError as SQLAlchem
 
 from spine.application.persistence.errors import (
     ConstraintConflictError,
+    IdempotencyConflictError,
     IncompatibleSchemaError,
     OptimisticConflictError,
     PersistenceUnavailableError,
@@ -100,6 +101,28 @@ class ProviderError(Exception):
             ),
             ConstraintConflictError,
             "Workspace data violates persistence constraints.",
+        ),
+        (
+            IntegrityError(
+                "protected SQL",
+                {"secret": "protected"},
+                ProviderError(
+                    constraint_name="uq_idempotency_receipts_environment_key"
+                ),
+            ),
+            IdempotencyConflictError,
+            "Idempotency key conflicts with existing command.",
+        ),
+        (
+            IntegrityError(
+                "protected SQL",
+                {"secret": "protected"},
+                ProviderError(
+                    constraint_name="fk_idempotency_receipts_scope_environments"
+                ),
+            ),
+            ConstraintConflictError,
+            "Environment does not belong to Workspace.",
         ),
         (
             SQLAlchemyTimeoutError("pool detail"),

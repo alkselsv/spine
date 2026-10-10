@@ -3,24 +3,38 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from enum import Enum, auto
 from types import TracebackType
 from typing import NoReturn
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from sqlalchemy import insert, select, text
+from sqlalchemy import insert, select, text, update
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 
+from spine.application.persistence.command_digest import CommandDigest
 from spine.application.persistence.context import (
     EnvironmentScope,
+    PersistenceOperation,
     PersistenceScope,
     TrustedContextVerifier,
     TrustedPersistenceContext,
     WorkspaceScope,
 )
 from spine.application.persistence.errors import (
+    IdempotencyConflictError,
     InvalidPersistenceContextError,
     PersistenceError,
     UnitOfWorkLifecycleError,
+)
+from spine.application.persistence.idempotency import (
+    IdempotencyClaimResult,
+    IdempotencyKey,
+    IdempotencyReplay,
+    OpaqueResultReference,
+    OwnedIdempotencyClaim,
+    idempotency_conflict,
 )
 from spine.domain.common import EnvironmentKind
 from spine.domain.workspaces import Environment, Workspace
@@ -30,6 +44,7 @@ from spine.infrastructure.persistence.postgresql_errors import (
 )
 from spine.infrastructure.persistence.postgresql_mappings import (
     environments as _ENVIRONMENTS,
+    idempotency_receipts as _IDEMPOTENCY_RECEIPTS,
     workspaces as _WORKSPACES,
 )
 
@@ -116,34 +131,38 @@ class _PostgreSQLEnvironmentRepository:
             await self._uow._fail(
                 InvalidPersistenceContextError("Persistence context is invalid.")
             )
-        await self._uow._bind_environment(environment.id)
-        await self._uow._execute(
-            insert(_ENVIRONMENTS).values(
-                id=environment.id,
-                workspace_id=environment.workspace_id,
-                kind=environment.kind.value,
-                display_name=environment.display_name,
+        async with self._uow._temporary_environment_binding(environment.id):
+            await self._uow._execute(
+                insert(_ENVIRONMENTS).values(
+                    id=environment.id,
+                    workspace_id=environment.workspace_id,
+                    kind=environment.kind.value,
+                    display_name=environment.display_name,
+                )
             )
-        )
 
     async def resolve(self, environment_id: UUID) -> Environment | None:
         self._uow._guard_active()
         scope = self._uow.scope
         if isinstance(scope, EnvironmentScope) and environment_id != scope.environment_id:
             return None
-        if isinstance(scope, WorkspaceScope):
-            await self._uow._bind_environment(environment_id)
-        result = await self._uow._execute(
-            select(
-                _ENVIRONMENTS.c.id,
-                _ENVIRONMENTS.c.workspace_id,
-                _ENVIRONMENTS.c.kind,
-                _ENVIRONMENTS.c.display_name,
-            ).where(
-                _ENVIRONMENTS.c.id == environment_id,
-                _ENVIRONMENTS.c.workspace_id == scope.workspace_id,
-            )
+        binding = (
+            self._uow._temporary_environment_binding(environment_id)
+            if isinstance(scope, WorkspaceScope)
+            else self._uow._preserve_environment_binding()
         )
+        async with binding:
+            result = await self._uow._execute(
+                select(
+                    _ENVIRONMENTS.c.id,
+                    _ENVIRONMENTS.c.workspace_id,
+                    _ENVIRONMENTS.c.kind,
+                    _ENVIRONMENTS.c.display_name,
+                ).where(
+                    _ENVIRONMENTS.c.id == environment_id,
+                    _ENVIRONMENTS.c.workspace_id == scope.workspace_id,
+                )
+            )
         row = result.mappings().one_or_none()
         if row is None:
             return None
@@ -152,6 +171,194 @@ class _PostgreSQLEnvironmentRepository:
             workspace_id=row.workspace_id,
             kind=EnvironmentKind(row.kind),
             display_name=row.display_name,
+        )
+
+
+class _PostgreSQLIdempotencyRepository:
+    def __init__(self, uow: "PostgreSQLTenantUnitOfWork") -> None:
+        self._uow = uow
+
+    async def claim(
+        self,
+        *,
+        operation_schema_version: int,
+        key: IdempotencyKey,
+        digest: CommandDigest,
+    ) -> IdempotencyClaimResult:
+        self._uow._guard_active()
+        operation = self._uow._operation_snapshot()
+        if (
+            digest.operation != operation
+            or digest.operation_schema_version != operation_schema_version
+        ):
+            await self._uow._fail(
+                IdempotencyConflictError(
+                    "Idempotency digest does not match the trusted operation."
+                )
+            )
+
+        scope = self._uow.scope
+        environment_id = (
+            scope.environment_id if isinstance(scope, EnvironmentScope) else None
+        )
+        receipt_id = self._uow._receipt_id_factory()
+        values = {
+            "receipt_id": receipt_id,
+            "workspace_id": scope.workspace_id,
+            "environment_id": environment_id,
+            "operation_name": operation.value,
+            "operation_schema_version": operation_schema_version,
+            "idempotency_key": key.value,
+            "digest_algorithm_version": digest.algorithm_version,
+            "command_digest": digest.value,
+        }
+        uniqueness_columns = [
+            _IDEMPOTENCY_RECEIPTS.c.workspace_id,
+            _IDEMPOTENCY_RECEIPTS.c.operation_name,
+            _IDEMPOTENCY_RECEIPTS.c.operation_schema_version,
+            _IDEMPOTENCY_RECEIPTS.c.idempotency_key,
+        ]
+        if environment_id is None:
+            conflict_columns = uniqueness_columns
+            conflict_predicate = _IDEMPOTENCY_RECEIPTS.c.environment_id.is_(None)
+        else:
+            conflict_columns = [
+                _IDEMPOTENCY_RECEIPTS.c.workspace_id,
+                _IDEMPOTENCY_RECEIPTS.c.environment_id,
+                *uniqueness_columns[1:],
+            ]
+            conflict_predicate = _IDEMPOTENCY_RECEIPTS.c.environment_id.is_not(None)
+        inserted = await self._uow._execute(
+            postgresql_insert(_IDEMPOTENCY_RECEIPTS)
+            .values(**values)
+            .on_conflict_do_nothing(
+                index_elements=conflict_columns,
+                index_where=conflict_predicate,
+            )
+            .returning(_IDEMPOTENCY_RECEIPTS.c.receipt_id)
+        )
+        owned_receipt_id = inserted.scalar_one_or_none()
+        if owned_receipt_id is not None:
+            claim = OwnedIdempotencyClaim(
+                kind="owned",
+                receipt_id=owned_receipt_id,
+                operation=operation,
+                operation_schema_version=operation_schema_version,
+                key=key,
+                digest=digest,
+            )
+            self._uow._owned_claims[owned_receipt_id] = claim
+            return claim
+
+        existing = await self._uow._execute(
+            select(
+                _IDEMPOTENCY_RECEIPTS.c.receipt_id,
+                _IDEMPOTENCY_RECEIPTS.c.digest_algorithm_version,
+                _IDEMPOTENCY_RECEIPTS.c.command_digest,
+                _IDEMPOTENCY_RECEIPTS.c.result_type,
+                _IDEMPOTENCY_RECEIPTS.c.result_id,
+                _IDEMPOTENCY_RECEIPTS.c.result_schema_version,
+            ).where(*self._key_predicates(operation, operation_schema_version, key))
+        )
+        row = existing.mappings().one_or_none()
+        if row is None:
+            await self._uow._fail(idempotency_conflict())
+        if (
+            row.digest_algorithm_version != digest.algorithm_version
+            or row.command_digest != digest.value
+        ):
+            await self._uow._fail(idempotency_conflict())
+        if (
+            row.result_type is None
+            or row.result_id is None
+            or row.result_schema_version is None
+        ):
+            await self._uow._fail(
+                IdempotencyConflictError("Idempotency key is already claimed.")
+            )
+        return IdempotencyReplay(
+            kind="replay",
+            receipt_id=row.receipt_id,
+            operation=operation,
+            operation_schema_version=operation_schema_version,
+            key=key,
+            result=OpaqueResultReference(
+                result_type=row.result_type,
+                result_id=row.result_id,
+                schema_version=row.result_schema_version,
+            ),
+        )
+
+    async def complete(
+        self,
+        claim: OwnedIdempotencyClaim,
+        result: OpaqueResultReference,
+    ) -> None:
+        self._uow._guard_active()
+        if not isinstance(claim, OwnedIdempotencyClaim):
+            await self._uow._fail(
+                IdempotencyConflictError(
+                    "Only an owned idempotency claim can complete."
+                )
+            )
+        owned = self._uow._owned_claims.get(claim.receipt_id)
+        if owned != claim or claim.operation != self._uow._operation_snapshot():
+            await self._uow._fail(
+                IdempotencyConflictError("Idempotency claim cannot be completed.")
+            )
+        if (
+            claim.digest.operation != claim.operation
+            or claim.digest.operation_schema_version != claim.operation_schema_version
+        ):
+            await self._uow._fail(
+                IdempotencyConflictError("Idempotency claim cannot be completed.")
+            )
+        completed = await self._uow._execute(
+            update(_IDEMPOTENCY_RECEIPTS)
+            .where(
+                _IDEMPOTENCY_RECEIPTS.c.receipt_id == claim.receipt_id,
+                _IDEMPOTENCY_RECEIPTS.c.result_id.is_(None),
+                *self._key_predicates(
+                    claim.operation,
+                    claim.operation_schema_version,
+                    claim.key,
+                ),
+                _IDEMPOTENCY_RECEIPTS.c.digest_algorithm_version
+                == claim.digest.algorithm_version,
+                _IDEMPOTENCY_RECEIPTS.c.command_digest == claim.digest.value,
+            )
+            .values(
+                result_type=result.result_type,
+                result_id=result.result_id,
+                result_schema_version=result.schema_version,
+            )
+            .returning(_IDEMPOTENCY_RECEIPTS.c.receipt_id)
+        )
+        if completed.scalar_one_or_none() is None:
+            await self._uow._fail(
+                IdempotencyConflictError("Idempotency claim cannot be completed.")
+            )
+        del self._uow._owned_claims[claim.receipt_id]
+
+    def _key_predicates(
+        self,
+        operation: PersistenceOperation,
+        operation_schema_version: int,
+        key: IdempotencyKey,
+    ) -> tuple[object, ...]:
+        scope = self._uow.scope
+        environment_predicate = (
+            _IDEMPOTENCY_RECEIPTS.c.environment_id == scope.environment_id
+            if isinstance(scope, EnvironmentScope)
+            else _IDEMPOTENCY_RECEIPTS.c.environment_id.is_(None)
+        )
+        return (
+            _IDEMPOTENCY_RECEIPTS.c.workspace_id == scope.workspace_id,
+            environment_predicate,
+            _IDEMPOTENCY_RECEIPTS.c.operation_name == operation.value,
+            _IDEMPOTENCY_RECEIPTS.c.operation_schema_version
+            == operation_schema_version,
+            _IDEMPOTENCY_RECEIPTS.c.idempotency_key == key.value,
         )
 
 
@@ -165,17 +372,22 @@ class PostgreSQLTenantUnitOfWork:
         source_context: TrustedPersistenceContext,
         context_snapshot: TrustedPersistenceContext,
         context_verifier: TrustedContextVerifier,
+        receipt_id_factory: Callable[[], UUID],
     ) -> None:
         self._session_factory = session_factory
         self._source_context = source_context
         self._context_snapshot = context_snapshot
         self._context_verifier = context_verifier
+        self._receipt_id_factory = receipt_id_factory
         self._scope: PersistenceScope | None = None
+        self._operation: PersistenceOperation | None = None
         self._session = None
         self._lifecycle = _Lifecycle.NEW
         self._owner: asyncio.Task[object] | None = None
         self._workspaces = _PostgreSQLWorkspaceRepository(self)
         self._environments = _PostgreSQLEnvironmentRepository(self)
+        self._idempotency = _PostgreSQLIdempotencyRepository(self)
+        self._owned_claims: dict[UUID, OwnedIdempotencyClaim] = {}
 
     @property
     def scope(self) -> PersistenceScope:
@@ -194,6 +406,17 @@ class PostgreSQLTenantUnitOfWork:
         self._guard_active()
         return self._environments
 
+    @property
+    def idempotency(self) -> _PostgreSQLIdempotencyRepository:
+        self._guard_active()
+        return self._idempotency
+
+    def _operation_snapshot(self) -> PersistenceOperation:
+        self._guard_active()
+        if self._operation is None:
+            raise UnitOfWorkLifecycleError("Unit of Work is not active.")
+        return self._operation
+
     async def __aenter__(self) -> "PostgreSQLTenantUnitOfWork":
         if self._lifecycle is not _Lifecycle.NEW:
             raise UnitOfWorkLifecycleError(
@@ -211,6 +434,7 @@ class PostgreSQLTenantUnitOfWork:
             await self._session.begin()
             await self._bind_context(snapshot)
             self._scope = snapshot.scope
+            self._operation = PersistenceOperation(snapshot.operation.value)
             if isinstance(snapshot.scope, EnvironmentScope):
                 await self._validate_environment_scope(snapshot.scope)
         except BaseException as error:
@@ -233,12 +457,19 @@ class PostgreSQLTenantUnitOfWork:
 
     async def commit(self) -> None:
         self._guard_active()
+        if self._owned_claims:
+            await self._fail(
+                UnitOfWorkLifecycleError(
+                    "Owned idempotency claims must be completed before commit."
+                )
+            )
         assert self._session is not None
         try:
             await self._session.commit()
         except BaseException as error:
             await self._terminate(error)
         self._lifecycle = _Lifecycle.COMMITTED
+        self._owned_claims.clear()
 
     async def rollback(self) -> None:
         self._guard_owner()
@@ -252,6 +483,7 @@ class PostgreSQLTenantUnitOfWork:
         except BaseException as error:
             await self._terminate(error)
         self._lifecycle = _Lifecycle.ROLLED_BACK
+        self._owned_claims.clear()
 
     def _guard_owner(self) -> None:
         if self._owner is None or asyncio.current_task() is not self._owner:
@@ -263,6 +495,9 @@ class PostgreSQLTenantUnitOfWork:
         self._guard_owner()
         if self._lifecycle is not _Lifecycle.ACTIVE:
             raise UnitOfWorkLifecycleError("Unit of Work is not active.")
+
+    def _is_active(self) -> bool:
+        return self._lifecycle is _Lifecycle.ACTIVE
 
     async def _bind_context(self, context: TrustedPersistenceContext) -> None:
         scope = context.scope
@@ -298,6 +533,32 @@ class PostgreSQLTenantUnitOfWork:
             {"environment_id": str(environment_id)},
         )
 
+    async def _restore_environment_binding(self) -> None:
+        scope = self.scope
+        environment_id = (
+            str(scope.environment_id) if isinstance(scope, EnvironmentScope) else ""
+        )
+        await self._execute(
+            _BIND_ENVIRONMENT,
+            {"environment_id": environment_id},
+        )
+
+    @asynccontextmanager
+    async def _temporary_environment_binding(
+        self,
+        environment_id: UUID,
+    ) -> AsyncIterator[None]:
+        await self._bind_environment(environment_id)
+        try:
+            yield
+        finally:
+            if self._is_active():
+                await self._restore_environment_binding()
+
+    @asynccontextmanager
+    async def _preserve_environment_binding(self) -> AsyncIterator[None]:
+        yield
+
     async def _execute(self, statement: object, parameters: object | None = None):
         self._guard_active()
         assert self._session is not None
@@ -319,6 +580,8 @@ class PostgreSQLTenantUnitOfWork:
         self._lifecycle = _Lifecycle.CLOSED
         session = self._session
         self._scope = None
+        self._operation = None
+        self._owned_claims.clear()
         if session is not None:
             try:
                 await session.rollback()
@@ -340,6 +603,8 @@ class PostgreSQLTenantUnitOfWork:
     async def _close(self) -> None:
         session = self._session
         self._scope = None
+        self._operation = None
+        self._owned_claims.clear()
         self._session = None
         self._lifecycle = _Lifecycle.CLOSED
         if session is not None:
@@ -355,9 +620,11 @@ class PostgreSQLTenantUnitOfWorkFactory:
         *,
         session_factory: SessionFactory,
         context_verifier: TrustedContextVerifier,
+        receipt_id_factory: Callable[[], UUID] = uuid4,
     ) -> None:
         self._session_factory = session_factory
         self._context_verifier = context_verifier
+        self._receipt_id_factory = receipt_id_factory
 
     def __call__(
         self, context: TrustedPersistenceContext
@@ -370,6 +637,7 @@ class PostgreSQLTenantUnitOfWorkFactory:
             source_context=context,
             context_snapshot=snapshot,
             context_verifier=self._context_verifier,
+            receipt_id_factory=self._receipt_id_factory,
         )
 
 
@@ -381,11 +649,14 @@ class PostgreSQLPersistence:
         *,
         session_factory: SessionFactory,
         context_verifier: TrustedContextVerifier,
+        receipt_id_factory: Callable[[], UUID] = uuid4,
     ) -> None:
         self.tenant_uow_factory = PostgreSQLTenantUnitOfWorkFactory(
             session_factory=session_factory,
             context_verifier=context_verifier,
+            receipt_id_factory=receipt_id_factory,
         )
+        self.uow_factory = self.tenant_uow_factory
 
 
 __all__ = [

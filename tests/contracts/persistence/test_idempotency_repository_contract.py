@@ -28,11 +28,11 @@ def command_digest(operation: PersistenceOperation, amount: str = "12.3400"):
     return digest_command(
         operation=operation,
         operation_schema_version=OPERATION_SCHEMA_VERSION,
-        payload={"amount": Decimal(amount), "customer_id": synthetic_uuid(401)},
+        payload={"amount": Decimal(amount), "customer_id": synthetic_uuid(1401)},
     )
 
 
-def result_ref(result_id: UUID = synthetic_uuid(501)) -> OpaqueResultReference:
+def result_ref(result_id: UUID = synthetic_uuid(1501)) -> OpaqueResultReference:
     return OpaqueResultReference(
         result_type="proposal",
         result_id=result_id,
@@ -41,7 +41,11 @@ def result_ref(result_id: UUID = synthetic_uuid(501)) -> OpaqueResultReference:
 
 
 def workspace(workspace_id: UUID) -> Workspace:
-    return Workspace(id=workspace_id, slug="northwind", display_name="Northwind")
+    return Workspace(
+        id=workspace_id,
+        slug=f"northwind-{workspace_id.hex[-12:]}",
+        display_name="Northwind",
+    )
 
 
 async def persist_workspace(adapter: PersistenceAdapter, workspace_id: UUID) -> None:
@@ -73,7 +77,7 @@ async def persist_environment(
 async def test_claim_complete_and_replay_return_same_result_reference(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
-    workspace_id = synthetic_uuid(101)
+    workspace_id = synthetic_uuid(1101)
     await persist_workspace(persistence_adapter, workspace_id)
     context = persistence_adapter.workspace_context(workspace_id)
     key = IdempotencyKey("transport-key-1")
@@ -107,7 +111,7 @@ async def test_claim_complete_and_replay_return_same_result_reference(
 async def test_same_key_with_different_digest_raises_stable_conflict(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
-    workspace_id = synthetic_uuid(102)
+    workspace_id = synthetic_uuid(1102)
     await persist_workspace(persistence_adapter, workspace_id)
     context = persistence_adapter.workspace_context(workspace_id)
     key = IdempotencyKey("transport-key-2")
@@ -135,10 +139,10 @@ async def test_same_key_with_different_digest_raises_stable_conflict(
 async def test_independent_workspaces_environments_and_keys_do_not_collide(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
-    workspace_id = synthetic_uuid(103)
-    other_workspace_id = synthetic_uuid(104)
-    environment_id = synthetic_uuid(201)
-    other_environment_id = synthetic_uuid(202)
+    workspace_id = synthetic_uuid(1103)
+    other_workspace_id = synthetic_uuid(1104)
+    environment_id = synthetic_uuid(1201)
+    other_environment_id = synthetic_uuid(1202)
     await persist_workspace(persistence_adapter, workspace_id)
     await persist_workspace(persistence_adapter, other_workspace_id)
     await persist_environment(persistence_adapter, workspace_id, environment_id)
@@ -161,7 +165,7 @@ async def test_independent_workspaces_environments_and_keys_do_not_collide(
                 digest=digest,
             )
             assert isinstance(claim, OwnedIdempotencyClaim)
-            await uow.idempotency.complete(claim, result_ref(synthetic_uuid(600 + index)))
+            await uow.idempotency.complete(claim, result_ref(synthetic_uuid(1600 + index)))
             await uow.commit()
 
     workspace_context = persistence_adapter.workspace_context(workspace_id)
@@ -178,7 +182,7 @@ async def test_independent_workspaces_environments_and_keys_do_not_collide(
 async def test_incomplete_owned_claim_prevents_commit_and_rolls_back(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
-    workspace_id = synthetic_uuid(105)
+    workspace_id = synthetic_uuid(1105)
     await persist_workspace(persistence_adapter, workspace_id)
     context = persistence_adapter.workspace_context(workspace_id)
     key = IdempotencyKey("incomplete-key")
@@ -207,7 +211,7 @@ async def test_incomplete_owned_claim_prevents_commit_and_rolls_back(
 async def test_rollback_discards_claim_and_completed_receipt(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
-    workspace_id = synthetic_uuid(106)
+    workspace_id = synthetic_uuid(1106)
     await persist_workspace(persistence_adapter, workspace_id)
     context = persistence_adapter.workspace_context(workspace_id)
     key = IdempotencyKey("rollback-key")
@@ -236,7 +240,7 @@ async def test_rollback_discards_claim_and_completed_receipt(
 async def test_completing_replay_unknown_or_already_completed_claim_fails(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
-    workspace_id = synthetic_uuid(107)
+    workspace_id = synthetic_uuid(1107)
     await persist_workspace(persistence_adapter, workspace_id)
     context = persistence_adapter.workspace_context(workspace_id)
     key = IdempotencyKey("completion-conflict-key")
@@ -259,9 +263,9 @@ async def test_completing_replay_unknown_or_already_completed_claim_fails(
             digest=digest,
         )
         assert isinstance(claim, OwnedIdempotencyClaim)
-        await uow.idempotency.complete(claim, result_ref(synthetic_uuid(503)))
+        await uow.idempotency.complete(claim, result_ref(synthetic_uuid(1503)))
         with pytest.raises(IdempotencyConflictError, match="cannot be completed"):
-            await uow.idempotency.complete(claim, result_ref(synthetic_uuid(504)))
+            await uow.idempotency.complete(claim, result_ref(synthetic_uuid(1504)))
 
     async with persistence_adapter.uow_factory(context) as uow:
         replay = await uow.idempotency.claim(
@@ -275,7 +279,7 @@ async def test_completing_replay_unknown_or_already_completed_claim_fails(
 
     unknown_claim = OwnedIdempotencyClaim(
         kind="owned",
-        receipt_id=synthetic_uuid(999),
+        receipt_id=synthetic_uuid(1999),
         operation=context.operation,
         operation_schema_version=OPERATION_SCHEMA_VERSION,
         key=IdempotencyKey("unknown-key"),
@@ -290,8 +294,8 @@ async def test_completing_replay_unknown_or_already_completed_claim_fails(
 async def test_differently_scoped_claim_cannot_complete(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
-    workspace_id = synthetic_uuid(108)
-    other_workspace_id = synthetic_uuid(109)
+    workspace_id = synthetic_uuid(1108)
+    other_workspace_id = synthetic_uuid(1109)
     await persist_workspace(persistence_adapter, workspace_id)
     await persist_workspace(persistence_adapter, other_workspace_id)
     context = persistence_adapter.workspace_context(workspace_id)
