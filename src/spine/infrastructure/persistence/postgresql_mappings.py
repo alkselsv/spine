@@ -95,6 +95,70 @@ audit_events = Table(
     Column("payload", JSONB, nullable=False),
 )
 
+source_objects = Table(
+    "source_objects", metadata,
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_kind", Text, nullable=False),
+    Column("identity_mode", Text, nullable=False),
+    Column("connection_id", PostgreSQLUUID(as_uuid=True)),
+    Column("external_namespace", Text),
+    Column("external_generation", Text),
+    Column("external_object_id", Text),
+    Column("upload_identity", Text),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+
+source_revisions = Table(
+    "source_revisions", metadata,
+    Column("revision_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("revision_digest", Text, nullable=False),
+    Column("revision_schema_version", Text, nullable=False),
+    Column("canonicalization_profile", Text, nullable=False),
+    Column("unicode_table_digest", Text, nullable=False),
+    Column("bcp47_table_digest", Text, nullable=False),
+    Column("revision_metadata_schema", Text, nullable=False),
+    Column("revision_metadata", JSONB),
+    Column("revision_metadata_digest", Text),
+    Column("original_reference", JSONB),
+    Column("original_sha256", Text),
+    Column("byte_length", Integer),
+    Column("media_type", Text),
+    Column("reappearance_after_tombstone_revision_id", PostgreSQLUUID(as_uuid=True)),
+    Column("deletion_reason", Text),
+    Column("deletion_provenance", Text),
+    Column("observed_at", DateTime(timezone=True), nullable=False),
+)
+
+source_revision_provenance = Table(
+    "source_revision_provenance", metadata,
+    Column("provenance_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("producer_kind", Text, nullable=False),
+    Column("producer_reference", Text, nullable=False),
+    Column("event_identity", Text, nullable=False),
+    Column("event_digest", Text, nullable=False),
+    Column("connection_id", PostgreSQLUUID(as_uuid=True)),
+    Column("upload_command_reference", Text),
+    Column("origin_locator_kind", Text),
+    Column("origin_locator_value", Text),
+    Column("origin_locator_schema", Text),
+    Column("origin_locator_digest", Text),
+    Column("order_scheme", Text),
+    Column("order_token", Text),
+    Column("observer_service", Text, nullable=False),
+    Column("received_at", DateTime(timezone=True), nullable=False),
+    Column("observed_at", DateTime(timezone=True), nullable=False),
+)
+
 
 __all__ = [
     "audit_events",
@@ -103,4 +167,7 @@ __all__ = [
     "metadata",
     "outbox_intents",
     "workspaces",
+    "source_objects",
+    "source_revisions",
+    "source_revision_provenance",
 ]

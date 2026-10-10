@@ -25,6 +25,7 @@ from spine.infrastructure.object_storage.contracts import (
     UploadCommandStateName,
     WriteReceipt,
 )
+from spine.domain.sources.original_reference import ObjectReference as DomainObjectReference, StorageModel as DomainStorageModel
 from spine.infrastructure.object_storage.errors import InvalidReadGrant
 
 
@@ -42,6 +43,11 @@ def reference() -> ObjectReference:
         digest_hex=DIGEST,
         byte_length=0,
     )
+
+
+def test_original_reference_type_is_shared_with_source_domain() -> None:
+    assert ObjectReference is DomainObjectReference
+    assert issubclass(ObjectReference, DomainStorageModel)
 
 
 def test_models_are_immutable_and_reject_unknown_fields() -> None:

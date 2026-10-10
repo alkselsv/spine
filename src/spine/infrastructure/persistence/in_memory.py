@@ -37,9 +37,12 @@ from spine.application.persistence.errors import (
     OutboxConflictError,
     PersistenceError,
     PersistenceUnavailableError,
+    ObservationIntegrityConflictError,
+    ObservationCommandDigestMismatchError,
     UnexpectedPersistenceError,
     UnitOfWorkLifecycleError,
 )
+from spine.application.persistence.errors import RevisionDigestMismatchError
 from spine.application.persistence.idempotency import (
     IdempotencyClaimResult,
     IdempotencyKey,
@@ -48,6 +51,10 @@ from spine.application.persistence.idempotency import (
     OwnedIdempotencyClaim,
     idempotency_conflict,
 )
+from spine.application.persistence.repositories import (
+    SourceObservationCommand,
+    SourceObservationResult,
+)
 from spine.application.persistence.command_digest import CommandDigest
 from spine.application.persistence.outbox import (
     OutboxEventRegistry,
@@ -55,6 +62,9 @@ from spine.application.persistence.outbox import (
     validate_outbox_intent_for_context,
 )
 from spine.domain.workspaces import Environment, Workspace
+from spine.domain.sources import SourceObject, SourceRevision, SourceRevisionProvenance
+from spine.domain.sources.canonicalization import assert_revision_digest
+from spine.domain.sources.errors import RevisionDigestMismatchError as DomainRevisionDigestMismatchError
 
 
 _ResultT = TypeVar("_ResultT")
@@ -67,6 +77,9 @@ class _StoreState:
     environments: dict[UUID, Environment]
     idempotency_receipts: dict["_ReceiptKey", "_IdempotencyReceipt"]
     outbox_intents: dict[UUID, OutboxIntent]
+    source_objects: dict[UUID, SourceObject]
+    source_revisions: dict[UUID, SourceRevision]
+    source_provenance: dict[UUID, SourceRevisionProvenance]
     audit_events: dict[UUID, AuditEvent]
 
 
@@ -94,9 +107,13 @@ class _Store:
             environments={},
             idempotency_receipts={},
             outbox_intents={},
+            source_objects={},
+            source_revisions={},
+            source_provenance={},
             audit_events={},
         )
         self.lock = transaction_lock or asyncio.Lock()
+        self.observation_lock = asyncio.Lock()
         self.initialized = False
         self.bootstrap_sealed = False
         self.fail_next_audit_append = False
@@ -116,6 +133,18 @@ class _Store:
     @property
     def outbox_intents(self) -> dict[UUID, OutboxIntent]:
         return self.state.outbox_intents
+
+    @property
+    def source_objects(self) -> dict[UUID, SourceObject]:
+        return self.state.source_objects
+
+    @property
+    def source_revisions(self) -> dict[UUID, SourceRevision]:
+        return self.state.source_revisions
+
+    @property
+    def source_provenance(self) -> dict[UUID, SourceRevisionProvenance]:
+        return self.state.source_provenance
 
     @property
     def audit_events(self) -> dict[UUID, AuditEvent]:
@@ -142,8 +171,6 @@ def _environment_copy(value: Environment) -> Environment:
 
 
 def _audit_event_copy(value: AuditEvent) -> AuditEvent:
-    """Rebuild a canonical Audit Event without retaining caller-owned models."""
-
     if type(value) is not AuditEvent:
         raise TypeError("Unsupported Audit Event implementation.")
     return value.detached_snapshot()
@@ -231,6 +258,220 @@ class _EnvironmentRepository:
             if isinstance(scope, EnvironmentScope) and environment.id != scope.environment_id:
                 return None
             return _environment_copy(environment)
+
+        return self._uow._repository_call(operation)
+
+
+class _SourceObservationRepository:
+    def __init__(self, uow: "InMemoryUnitOfWork") -> None:
+        self._uow = uow
+
+    def _scope_check(self, workspace_id: UUID, environment_id: UUID) -> None:
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope) or (
+            scope.workspace_id != workspace_id or scope.environment_id != environment_id
+        ):
+            self._uow._fail(InvalidPersistenceContextError("Persistence context is invalid."))
+
+    def _objects(self) -> dict[UUID, SourceObject]:
+        return self._uow._base_source_objects | self._uow._pending_source_objects
+
+    def _revisions(self) -> dict[UUID, SourceRevision]:
+        return self._uow._base_source_revisions | self._uow._pending_source_revisions
+
+    def _provenance(self) -> dict[UUID, SourceRevisionProvenance]:
+        return self._uow._base_source_provenance | self._uow._pending_source_provenance
+
+    async def resolve_or_create_source(self, source: SourceObject) -> SourceObject:
+        self._uow._guard_active()
+
+        def operation() -> SourceObject:
+            self._scope_check(source.workspace_id, source.environment_id)
+            by_id = self._objects().get(source.source_object_id)
+            if by_id is not None and by_id != source:
+                self._uow._fail(ConstraintConflictError("Source identity conflict."))
+            for existing in self._objects().values():
+                if (
+                    existing.workspace_id == source.workspace_id
+                    and existing.environment_id == source.environment_id
+                    and existing.identity_mode == source.identity_mode
+                    and existing.connection_id == source.connection_id
+                    and existing.external_namespace == source.external_namespace
+                    and existing.external_generation == source.external_generation
+                    and existing.external_object_id == source.external_object_id
+                    and existing.upload_identity == source.upload_identity
+                ):
+                    return existing.model_copy(deep=True)
+            self._uow._pending_source_objects[source.source_object_id] = source.model_copy(deep=True)
+            return source.model_copy(deep=True)
+
+        return self._uow._repository_call(operation)
+
+    async def record_observation(self, command: SourceObservationCommand) -> SourceObservationResult:
+        self._uow._guard_active()
+
+        if not self._uow._source_observation_lock_held:
+            await self._uow._store.observation_lock.acquire()
+            self._uow._source_observation_lock_held = True
+
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=1,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        expected_digest = command.expected_digest(self._uow._operation_snapshot())
+        if expected_digest != command.digest:
+            self._uow._fail(ObservationCommandDigestMismatchError("Source observation command digest is invalid."))
+        if isinstance(claim, IdempotencyReplay):
+            def replay_operation() -> SourceObservationResult:
+                revision = self._revisions().get(claim.result.result_id)
+                if revision is None:
+                    self._uow._fail(ConstraintConflictError("Observation replay is unavailable."))
+                source = self._objects().get(revision.source_object_id)
+                provenance = next(
+                    (
+                        item for item in self._provenance().values()
+                        if item.revision_id == revision.revision_id
+                        and item.producer_kind == command.provenance.producer_kind
+                        and item.producer_reference == command.provenance.producer_reference
+                        and item.event_identity == command.provenance.event_identity
+                    ),
+                    None,
+                )
+                if source is None or provenance is None:
+                    self._uow._fail(ConstraintConflictError("Observation replay is unavailable."))
+                return SourceObservationResult(
+                    source=source.model_copy(deep=True), revision=revision.model_copy(deep=True),
+                    provenance=provenance.model_copy(deep=True), replay=True,
+                    claim=claim, result_reference=claim.result,
+                )
+            return self._uow._repository_call(replay_operation)
+
+        revision = command.revision
+        provenance = command.provenance
+        source_input = command.source
+        resolved_source = await self.resolve_or_create_source(source_input)
+        if resolved_source.source_object_id != revision.source_object_id:
+            self._uow._fail(ConstraintConflictError("Source observation is invalid."))
+
+        def operation() -> SourceObservationResult:
+            try:
+                assert_revision_digest(revision)
+            except DomainRevisionDigestMismatchError as error:
+                self._uow._fail(RevisionDigestMismatchError(str(error)))
+            self._scope_check(revision.workspace_id, revision.environment_id)
+            if revision.source_object_id != source_input.source_object_id:
+                self._uow._fail(ConstraintConflictError("Source observation is invalid."))
+            if (
+                provenance.workspace_id != revision.workspace_id
+                or provenance.environment_id != revision.environment_id
+                or provenance.source_object_id != revision.source_object_id
+                or provenance.revision_id != revision.revision_id
+            ):
+                self._uow._fail(ConstraintConflictError("Source observation is invalid."))
+            source = self._objects().get(revision.source_object_id)
+            if source is None:
+                self._uow._fail(ConstraintConflictError("Source observation is invalid."))
+            if revision.reappearance_after_tombstone_revision_id is not None:
+                predecessor = self._revisions().get(revision.reappearance_after_tombstone_revision_id)
+                if predecessor is None or predecessor.kind.value != "tombstone" or predecessor.source_object_id != revision.source_object_id:
+                    self._uow._fail(ConstraintConflictError("Source observation is invalid."))
+            event_key = (provenance.producer_kind, provenance.producer_reference, provenance.event_identity)
+            for existing_provenance in self._provenance().values():
+                existing_key = (
+                    existing_provenance.producer_kind,
+                    existing_provenance.producer_reference,
+                    existing_provenance.event_identity,
+                )
+                if existing_key == event_key:
+                    if existing_provenance.event_digest != provenance.event_digest:
+                        self._uow._fail(ObservationIntegrityConflictError("Source observation conflicts."))
+                    existing_revision = self._revisions()[existing_provenance.revision_id]
+                    result = SourceObservationResult(
+                        source=source.model_copy(deep=True),
+                        revision=existing_revision.model_copy(deep=True),
+                        provenance=existing_provenance.model_copy(deep=True),
+                        replay=False, claim=claim,
+                        result_reference=OpaqueResultReference(
+                            result_type="source_revision", result_id=existing_revision.revision_id, schema_version=1
+                        ),
+                    )
+                    return result
+            for existing_revision in self._revisions().values():
+                if (
+                    existing_revision.workspace_id == revision.workspace_id
+                    and existing_revision.environment_id == revision.environment_id
+                    and existing_revision.source_object_id == revision.source_object_id
+                    and existing_revision.revision_digest == revision.revision_digest
+                ):
+                    revision_to_return = existing_revision
+                    break
+            else:
+                by_id = self._revisions().get(revision.revision_id)
+                if by_id is not None and by_id != revision:
+                    self._uow._fail(ConstraintConflictError("Source revision conflict."))
+                self._uow._pending_source_revisions[revision.revision_id] = revision.model_copy(deep=True)
+                revision_to_return = revision
+            existing_provenance = self._provenance().get(provenance.provenance_id)
+            if existing_provenance is not None and existing_provenance != provenance:
+                self._uow._fail(ConstraintConflictError("Source provenance conflict."))
+            self._uow._pending_source_provenance[provenance.provenance_id] = provenance.model_copy(deep=True)
+            return SourceObservationResult(
+                source=source.model_copy(deep=True),
+                revision=revision_to_return.model_copy(deep=True),
+                provenance=provenance.model_copy(deep=True),
+                replay=False, claim=claim,
+                result_reference=OpaqueResultReference(
+                    result_type="source_revision", result_id=revision_to_return.revision_id, schema_version=1
+                ),
+            )
+        result = self._uow._repository_call(operation)
+        await self._uow.idempotency.complete(claim, result.result_reference)
+        return result
+
+    async def resolve_revision(self, revision_id: UUID) -> SourceRevision | None:
+        self._uow._guard_active()
+        return self._uow._repository_call(
+            lambda: (
+                self._revisions()[revision_id].model_copy(deep=True)
+                if revision_id in self._revisions()
+                and self._revisions()[revision_id].workspace_id == self._uow.scope.workspace_id
+                and isinstance(self._uow.scope, EnvironmentScope)
+                and self._revisions()[revision_id].environment_id == self._uow.scope.environment_id
+                else None
+            )
+        )
+
+
+class _AuditWriter:
+    def __init__(self, uow: "InMemoryUnitOfWork") -> None:
+        self._uow = uow
+
+    async def append(self, event: AuditEvent) -> UUID:
+        self._uow._guard_active()
+
+        def operation() -> UUID:
+            if self._uow._store.fail_next_audit_append:
+                self._uow._store.fail_next_audit_append = False
+                self._uow._fail(PersistenceUnavailableError("Persistence is temporarily unavailable."))
+            canonical = validate_audit_event_for_context(
+                event,
+                registry=self._uow._audit_events,
+                context=self._uow._context_snapshot_active(),
+            )
+            duplicate = self._uow._resolve_audit_producer_identity(canonical)
+            if duplicate is not None:
+                if same_logical_audit_event(duplicate, canonical):
+                    assert duplicate.audit_event_id is not None
+                    return duplicate.audit_event_id
+                self._uow._fail(AuditConflictError("Audit producer identity conflicts with an event."))
+            audit_event_id = canonical.audit_event_id or self._uow._audit_event_id_factory()
+            if self._uow._resolve_audit_event(audit_event_id) is not None:
+                self._uow._fail(AuditConflictError("Audit Event identity already exists."))
+            self._uow._pending_audit_events[audit_event_id] = canonical.detached_snapshot(
+                update={"audit_event_id": audit_event_id, "appended_at": self._uow._audit_clock()}
+            )
+            return audit_event_id
 
         return self._uow._repository_call(operation)
 
@@ -379,53 +620,6 @@ class _OutboxWriter:
         return self._uow._repository_call(repository_operation)
 
 
-class _AuditWriter:
-    def __init__(self, uow: "InMemoryUnitOfWork") -> None:
-        self._uow = uow
-
-    async def append(self, event: AuditEvent) -> UUID:
-        self._uow._guard_active()
-
-        def repository_operation() -> UUID:
-            if self._uow._store.fail_next_audit_append:
-                self._uow._store.fail_next_audit_append = False
-                self._uow._fail(
-                    PersistenceUnavailableError(
-                        "Persistence is temporarily unavailable."
-                    )
-                )
-            canonical = validate_audit_event_for_context(
-                event,
-                registry=self._uow._audit_events,
-                context=self._uow._context_snapshot_active(),
-            )
-            duplicate = self._uow._resolve_audit_producer_identity(canonical)
-            if duplicate is not None:
-                if same_logical_audit_event(duplicate, canonical):
-                    assert duplicate.audit_event_id is not None
-                    return duplicate.audit_event_id
-                self._uow._fail(
-                    AuditConflictError("Audit producer identity conflicts with an event.")
-                )
-            audit_event_id = (
-                canonical.audit_event_id or self._uow._audit_event_id_factory()
-            )
-            if self._uow._resolve_audit_event(audit_event_id) is not None:
-                self._uow._fail(
-                    AuditConflictError("Audit Event identity already exists.")
-                )
-            stored = canonical.detached_snapshot(
-                update={
-                    "audit_event_id": audit_event_id,
-                    "appended_at": self._uow._audit_clock(),
-                }
-            )
-            self._uow._pending_audit_events[audit_event_id] = stored
-            return audit_event_id
-
-        return self._uow._repository_call(repository_operation)
-
-
 class InMemoryUnitOfWork:
     def __init__(
         self,
@@ -444,6 +638,7 @@ class InMemoryUnitOfWork:
         self._store = store
         self._source_context = source_context
         self._context_snapshot = context_snapshot
+        self._active_context: TrustedPersistenceContext | None = None
         self._context_verifier = context_verifier
         self._outbox_events = outbox_events
         self._event_id_factory = event_id_factory
@@ -453,7 +648,6 @@ class InMemoryUnitOfWork:
         self._scope: PersistenceScope | None = None
         self._operation: PersistenceOperation | None = None
         self._trace_id: UUID | None = None
-        self._active_context: TrustedPersistenceContext | None = None
         self._initialized = False
         self._lifecycle = _Lifecycle.NEW
         self._owner: asyncio.Task[object] | None = None
@@ -461,16 +655,24 @@ class InMemoryUnitOfWork:
         self._base_environments: dict[UUID, Environment] = {}
         self._base_receipts: dict[_ReceiptKey, _IdempotencyReceipt] = {}
         self._base_outbox_intents: dict[UUID, OutboxIntent] = {}
+        self._base_source_objects: dict[UUID, SourceObject] = {}
+        self._base_source_revisions: dict[UUID, SourceRevision] = {}
+        self._base_source_provenance: dict[UUID, SourceRevisionProvenance] = {}
         self._base_audit_events: dict[UUID, AuditEvent] = {}
         self._pending_workspaces: dict[UUID, Workspace] = {}
         self._pending_environments: dict[UUID, Environment] = {}
         self._pending_receipts: dict[_ReceiptKey, _IdempotencyReceipt] = {}
         self._pending_outbox_intents: dict[UUID, OutboxIntent] = {}
+        self._pending_source_objects: dict[UUID, SourceObject] = {}
+        self._pending_source_revisions: dict[UUID, SourceRevision] = {}
+        self._pending_source_provenance: dict[UUID, SourceRevisionProvenance] = {}
         self._pending_audit_events: dict[UUID, AuditEvent] = {}
+        self._source_observation_lock_held = False
         self._workspaces = _WorkspaceRepository(self)
         self._environments = _EnvironmentRepository(self)
         self._idempotency = _IdempotencyRepository(self)
         self._outbox = _OutboxWriter(self)
+        self._sources = _SourceObservationRepository(self)
         self._audit = _AuditWriter(self)
 
     @property
@@ -494,21 +696,26 @@ class InMemoryUnitOfWork:
         return self._outbox
 
     @property
+    def sources(self) -> _SourceObservationRepository:
+        self._guard_active()
+        return self._sources
+
+    @property
     def audit(self) -> _AuditWriter:
         self._guard_active()
         return self._audit
-
-    def _context_snapshot_active(self) -> TrustedPersistenceContext:
-        self._guard_active()
-        if self._active_context is None:
-            raise UnitOfWorkLifecycleError("Unit of Work is not active.")
-        return self._active_context
 
     def _operation_snapshot(self) -> PersistenceOperation:
         self._guard_active()
         if self._operation is None:
             raise UnitOfWorkLifecycleError("Unit of Work is not active.")
         return self._operation
+
+    def _context_snapshot_active(self) -> TrustedPersistenceContext:
+        self._guard_active()
+        if self._active_context is None:
+            raise UnitOfWorkLifecycleError("Unit of Work is not active.")
+        return self._active_context
 
     def _trace_id_snapshot(self) -> UUID:
         self._guard_active()
@@ -550,9 +757,17 @@ class InMemoryUnitOfWork:
                     key: value.model_copy(deep=True)
                     for key, value in self._store.outbox_intents.items()
                 }
+                self._base_source_objects = {
+                    key: value.model_copy(deep=True) for key, value in self._store.source_objects.items()
+                }
+                self._base_source_revisions = {
+                    key: value.model_copy(deep=True) for key, value in self._store.source_revisions.items()
+                }
+                self._base_source_provenance = {
+                    key: value.model_copy(deep=True) for key, value in self._store.source_provenance.items()
+                }
                 self._base_audit_events = {
-                    key: _audit_event_copy(value)
-                    for key, value in self._store.audit_events.items()
+                    key: _audit_event_copy(value) for key, value in self._store.audit_events.items()
                 }
                 self._initialized = self._store.initialized
                 if not self._initialized:
@@ -560,6 +775,7 @@ class InMemoryUnitOfWork:
                         "Initial bootstrap is not authorized."
                     )
                 self._validate_context(context_snapshot)
+                self._active_context = context_snapshot
         except BaseException as error:
             self._raise_terminal(error)
         self._lifecycle = _Lifecycle.ACTIVE
@@ -624,26 +840,44 @@ class InMemoryUnitOfWork:
                         for key, value in self._pending_outbox_intents.items()
                     }
                 )
+                prepared_source_objects = {
+                    key: value.model_copy(deep=True) for key, value in self._store.source_objects.items()
+                }
+                prepared_source_objects.update(
+                    {key: value.model_copy(deep=True) for key, value in self._pending_source_objects.items()}
+                )
+                prepared_source_revisions = {
+                    key: value.model_copy(deep=True) for key, value in self._store.source_revisions.items()
+                }
+                prepared_source_revisions.update(
+                    {key: value.model_copy(deep=True) for key, value in self._pending_source_revisions.items()}
+                )
+                prepared_source_provenance = {
+                    key: value.model_copy(deep=True) for key, value in self._store.source_provenance.items()
+                }
+                prepared_source_provenance.update(
+                    {key: value.model_copy(deep=True) for key, value in self._pending_source_provenance.items()}
+                )
                 prepared_audit_events = {
-                    key: _audit_event_copy(value)
-                    for key, value in self._store.audit_events.items()
+                    key: _audit_event_copy(value) for key, value in self._store.audit_events.items()
                 }
                 prepared_audit_events.update(
-                    {
-                        key: _audit_event_copy(value)
-                        for key, value in self._pending_audit_events.items()
-                    }
+                    {key: _audit_event_copy(value) for key, value in self._pending_audit_events.items()}
                 )
                 self._store.state = _StoreState(
                     workspaces=prepared_workspaces,
                     environments=prepared_environments,
                     idempotency_receipts=prepared_receipts,
                     outbox_intents=prepared_outbox_intents,
+                    source_objects=prepared_source_objects,
+                    source_revisions=prepared_source_revisions,
+                    source_provenance=prepared_source_provenance,
                     audit_events=prepared_audit_events,
                 )
         except BaseException as error:
             self._raise_terminal(error)
         self._lifecycle = _Lifecycle.COMMITTED
+        self._release_source_observation_lock()
         self._clear_transaction()
 
     async def rollback(self) -> None:
@@ -656,8 +890,12 @@ class InMemoryUnitOfWork:
         self._pending_environments.clear()
         self._pending_receipts.clear()
         self._pending_outbox_intents.clear()
+        self._pending_source_objects.clear()
+        self._pending_source_revisions.clear()
+        self._pending_source_provenance.clear()
         self._pending_audit_events.clear()
         self._lifecycle = _Lifecycle.ROLLED_BACK
+        self._release_source_observation_lock()
 
     def _guard_owner(self) -> None:
         if self._owner is None or asyncio.current_task() is not self._owner:
@@ -675,6 +913,7 @@ class InMemoryUnitOfWork:
             self._raise_terminal(error)
 
     def _raise_terminal(self, error: BaseException) -> NoReturn:
+        self._release_source_observation_lock()
         self._lifecycle = _Lifecycle.CLOSED
         self._clear_transaction()
         if isinstance(error, asyncio.CancelledError):
@@ -686,8 +925,6 @@ class InMemoryUnitOfWork:
         raise error
 
     def _validate_context(self, context_snapshot: TrustedPersistenceContext) -> None:
-        context_snapshot.validate_shape()
-        self._active_context = context_snapshot
         scope = context_snapshot.scope
         if isinstance(scope, WorkspaceScope):
             self._scope = WorkspaceScope(workspace_id=scope.workspace_id)
@@ -725,9 +962,7 @@ class InMemoryUnitOfWork:
         for event in self._pending_audit_events.values():
             duplicate = self._store_audit_producer_identity(event)
             if duplicate is not None:
-                raise AuditConflictError(
-                    "Audit producer identity already exists."
-                )
+                raise AuditConflictError("Audit producer identity already exists.")
         incomplete = [
             receipt for receipt in self._pending_receipts.values() if receipt.result is None
         ]
@@ -745,11 +980,6 @@ class InMemoryUnitOfWork:
         if any(
             intent.workspace_id not in available_workspaces
             for intent in self._pending_outbox_intents.values()
-        ):
-            raise ConstraintConflictError("Owning Workspace does not exist.")
-        if any(
-            event.workspace_id not in available_workspaces
-            for event in self._pending_audit_events.values()
         ):
             raise ConstraintConflictError("Owning Workspace does not exist.")
         if any(
@@ -775,9 +1005,7 @@ class InMemoryUnitOfWork:
         )
 
     def _resolve_audit_event(self, audit_event_id: UUID) -> AuditEvent | None:
-        return self._pending_audit_events.get(
-            audit_event_id
-        ) or self._base_audit_events.get(audit_event_id)
+        return self._pending_audit_events.get(audit_event_id) or self._base_audit_events.get(audit_event_id)
 
     @staticmethod
     def _same_audit_producer_identity(left: AuditEvent, right: AuditEvent) -> bool:
@@ -786,38 +1014,24 @@ class InMemoryUnitOfWork:
             and left.workspace_id == right.workspace_id
             and left.environment_id == right.environment_id
             and left.event_type == right.event_type
-            and left.producer_deduplication_id
-            == right.producer_deduplication_id
+            and left.producer_deduplication_id == right.producer_deduplication_id
         )
 
-    def _resolve_audit_producer_identity(
-        self, event: AuditEvent
-    ) -> AuditEvent | None:
+    def _resolve_audit_producer_identity(self, event: AuditEvent) -> AuditEvent | None:
         if event.producer_deduplication_id is None:
             return None
         return next(
-            (
-                existing
-                for existing in (
-                    *self._base_audit_events.values(),
-                    *self._pending_audit_events.values(),
-                )
-                if self._same_audit_producer_identity(existing, event)
-            ),
+            (existing for existing in (*self._base_audit_events.values(), *self._pending_audit_events.values())
+             if self._same_audit_producer_identity(existing, event)),
             None,
         )
 
-    def _store_audit_producer_identity(
-        self, event: AuditEvent
-    ) -> AuditEvent | None:
+    def _store_audit_producer_identity(self, event: AuditEvent) -> AuditEvent | None:
         if event.producer_deduplication_id is None:
             return None
         return next(
-            (
-                existing
-                for existing in self._store.audit_events.values()
-                if self._same_audit_producer_identity(existing, event)
-            ),
+            (existing for existing in self._store.audit_events.values()
+             if self._same_audit_producer_identity(existing, event)),
             None,
         )
 
@@ -868,11 +1082,17 @@ class InMemoryUnitOfWork:
         self._base_environments.clear()
         self._base_receipts.clear()
         self._base_outbox_intents.clear()
+        self._base_source_objects.clear()
+        self._base_source_revisions.clear()
+        self._base_source_provenance.clear()
         self._base_audit_events.clear()
         self._pending_workspaces.clear()
         self._pending_environments.clear()
         self._pending_receipts.clear()
         self._pending_outbox_intents.clear()
+        self._pending_source_objects.clear()
+        self._pending_source_revisions.clear()
+        self._pending_source_provenance.clear()
         self._pending_audit_events.clear()
         self._scope = None
         self._operation = None
@@ -881,6 +1101,11 @@ class InMemoryUnitOfWork:
 
     def _fail(self, error: Exception) -> NoReturn:
         self._raise_terminal(error)
+
+    def _release_source_observation_lock(self) -> None:
+        if self._source_observation_lock_held:
+            self._source_observation_lock_held = False
+            self._store.observation_lock.release()
 
 
 def _receipt_id(key: _ReceiptKey) -> UUID:
@@ -948,21 +1173,13 @@ class _InMemoryUnitOfWorkFactory:
 
 
 class _InMemoryAuditReader:
-    def __init__(
-        self,
-        store: _Store,
-        context_verifier: TrustedContextVerifier,
-    ) -> None:
+    def __init__(self, store: _Store, context_verifier: TrustedContextVerifier) -> None:
         self._store = store
         self._context_verifier = context_verifier
 
     async def resolve(
-        self,
-        context: TrustedPersistenceContext,
-        audit_event_id: UUID,
+        self, context: TrustedPersistenceContext, audit_event_id: UUID
     ) -> AuditEvent | None:
-        if not isinstance(audit_event_id, UUID) or audit_event_id.int == 0:
-            raise InvalidPersistenceContextError("Persistence context is invalid.")
         snapshot = self._context_verifier.verify(context)
         snapshot.validate_shape()
         async with self._store.lock:
@@ -971,15 +1188,9 @@ class _InMemoryAuditReader:
                 return None
             scope = snapshot.scope
             if isinstance(scope, WorkspaceScope):
-                allowed = (
-                    event.workspace_id == scope.workspace_id
-                    and event.environment_id is None
-                )
+                allowed = event.workspace_id == scope.workspace_id and event.environment_id is None
             elif isinstance(scope, EnvironmentScope):
-                allowed = (
-                    event.workspace_id == scope.workspace_id
-                    and event.environment_id == scope.environment_id
-                )
+                allowed = event.workspace_id == scope.workspace_id and event.environment_id == scope.environment_id
             else:
                 allowed = False
             return _audit_event_copy(event) if allowed else None
@@ -1023,16 +1234,14 @@ class InMemoryPersistence:
         *,
         context_verifier: TrustedContextVerifier,
         outbox_events: OutboxEventRegistry,
-        audit_events: AuditEventRegistry | None = None,
         bootstrap_authority: InitialWorkspaceBootstrapAuthority | None = None,
         transaction_lock: asyncio.Lock | None = None,
         event_id_factory: Callable[[], UUID] = uuid4,
+        audit_events: AuditEventRegistry | None = None,
         audit_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         audit_event_id_factory: Callable[[], UUID] = uuid4,
     ) -> None:
-        selected_audit_events = (
-            audit_events or AuditEventRegistry.with_default_families()
-        )
+        selected_audit_events = audit_events or AuditEventRegistry.with_default_families()
         selected_audit_events.require_sealed()
         store = _Store(transaction_lock=transaction_lock)
         self.uow_factory = _InMemoryUnitOfWorkFactory(
@@ -1044,12 +1253,10 @@ class InMemoryPersistence:
             audit_clock,
             audit_event_id_factory,
         )
-        self.audit_reader = _InMemoryAuditReader(store, context_verifier)
         self.initial_workspace_bootstrap = _InMemoryInitialWorkspaceBootstrap(
             store, bootstrap_authority
         )
+        self.audit_reader = _InMemoryAuditReader(store, context_verifier)
 
     def fail_next_audit_append(self) -> None:
-        """Inject one deterministic append failure for contract tests."""
-
         self.uow_factory._store.fail_next_audit_append = True

@@ -76,6 +76,21 @@ class ArchitectureScaffoldTests(unittest.TestCase):
         domain_root = Path(__file__).parents[1] / "src" / "spine" / "domain"
         self.assert_no_framework_imports(domain_root)
 
+    def test_domain_layer_has_no_application_or_infrastructure_imports(self) -> None:
+        domain_root = Path(__file__).parents[1] / "src" / "spine" / "domain"
+        for path in domain_root.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            imports = []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    imports.extend(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    imports.append(node.module)
+            self.assertFalse(
+                any(name.startswith("spine.application") or name.startswith("spine.infrastructure") for name in imports),
+                f"outer-layer import in {path}",
+            )
+
     def test_application_persistence_contracts_have_no_framework_imports(self) -> None:
         contracts_root = (
             Path(__file__).parents[1] / "src" / "spine" / "application" / "persistence"

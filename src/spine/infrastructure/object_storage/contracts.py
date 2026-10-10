@@ -11,9 +11,10 @@ from enum import Enum
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
 from spine.application.persistence.command_digest import COMMAND_DIGEST_ALGORITHM_VERSION
+from spine.domain.sources.original_reference import ObjectReference, StorageModel
 
 from .errors import InvalidReadGrant
 
@@ -26,12 +27,6 @@ NonNegativeInt = Annotated[int, Field(ge=0)]
 DigestHex = Annotated[str, Field(pattern=_DIGEST)]
 BoundedIdentifier = Annotated[str, Field(min_length=1, max_length=64, pattern=_IDENTIFIER)]
 OpaqueText = Annotated[str, Field(min_length=1, max_length=256)]
-
-
-class StorageModel(BaseModel):
-    """Strict immutable boundary model used by every storage contract."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
 class DigestAlgorithm(str, Enum):
@@ -56,23 +51,6 @@ class IntegrityStatus(str, Enum):
     MISMATCH = "mismatch"
     UNAVAILABLE = "unavailable"
     INDETERMINATE = "indeterminate"
-
-
-class ObjectReference(StorageModel):
-    """Opaque identity for one immutable physical byte generation."""
-
-    schema_version: PositiveInt
-    object_id: UUID
-    storage_generation: UUID
-    digest_algorithm: Literal["sha256"]
-    digest_hex: DigestHex
-    byte_length: NonNegativeInt
-
-    @model_validator(mode="after")
-    def validate_ids(self) -> ObjectReference:
-        if self.object_id.int == 0 or self.storage_generation.int == 0:
-            raise ValueError("object identities must be non-zero")
-        return self
 
 
 class OriginalUploadCommandInput(StorageModel):
@@ -565,6 +543,7 @@ __all__ = [
     "PreWriteRequestDigest",
     "ReconciliationInventoryEntry",
     "StorageStatus",
+    "StorageModel",
     "UploadCommandState",
     "UploadCommandStateName",
     "WriteReceipt",

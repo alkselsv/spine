@@ -10,6 +10,7 @@ from spine.application.persistence.repositories import (
     EnvironmentRepository,
     IdempotencyRepository,
     WorkspaceRepository,
+    SourceObservationRepository,
 )
 from spine.application.persistence.outbox import OutboxWriter
 
@@ -43,6 +44,8 @@ class TenantUnitOfWorkFactory(Protocol):
 
 
 class UnitOfWork(TenantUnitOfWork, Protocol):
+    @property
+    def sources(self) -> SourceObservationRepository: ...
     @property
     def idempotency(self) -> IdempotencyRepository: ...
 
