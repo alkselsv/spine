@@ -1,0 +1,63 @@
+"""Framework-independent ports consumed by local agent handlers."""
+
+from __future__ import annotations
+
+from typing import Generic, Protocol, TypeVar, runtime_checkable
+from uuid import UUID
+
+EventT = TypeVar("EventT")
+
+
+@runtime_checkable
+class CancellationToken(Protocol):
+    """A cooperative, run-scoped cancellation observation port."""
+
+    @property
+    def is_cancelled(self) -> bool:
+        """Whether cancellation has been requested for the current run."""
+
+    def raise_if_cancelled(self) -> None:
+        """Raise the caller's cancellation outcome when cancellation is observed."""
+
+
+@runtime_checkable
+class EventSink(Protocol, Generic[EventT]):
+    """Port for safe execution observations owned by the diagnostics boundary."""
+
+    async def emit(self, event: EventT) -> None:
+        """Accept one already-validated, disclosure-safe execution event."""
+
+
+@runtime_checkable
+class AuthorizationContextView(Protocol):
+    """Minimal data view supplied by Issue #69/#108 authorization boundaries.
+
+    Implementations are issued and verified outside the local contract layer.
+    Structural compatibility and deterministic fakes make this a testable
+    port; satisfying the protocol alone is not proof of authorization.
+    """
+
+    @property
+    def workspace_id(self) -> UUID:
+        """Trusted Workspace scope."""
+
+    @property
+    def environment_id(self) -> UUID:
+        """Trusted Environment scope."""
+
+    @property
+    def acting_subject_id(self) -> UUID | None:
+        """Trusted human/actor identity, when the request is interactive."""
+
+    @property
+    def service_principal_id(self) -> UUID | None:
+        """Trusted service identity, when the request is worker-owned."""
+
+    @property
+    def authorization_generation(self) -> int:
+        """Authorization-directory generation used for stale-context checks."""
+
+
+# Existing consumers use this approved port name. Keep it as an alias while
+# making the non-authoritative view semantics explicit above.
+TrustedExecutionIdentity = AuthorizationContextView
