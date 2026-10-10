@@ -1954,6 +1954,14 @@ web/
 
 Зависимости направлены внутрь: domain не импортирует FastAPI, Cognee, Temporal или конкретный database adapter.
 
+`src/spine/auth/` является framework-independent application seam для
+аутентификации и request authorization. Он может зависеть только от стабильных
+application/domain contracts; FastAPI, provider SDK, PostgreSQL/SQLAlchemy и
+другие infrastructure adapters зависят от него снаружи. Публичный seam содержит
+закрытые identity/scope/policy contracts и purpose-specific ports, но не выдаёт
+trusted request context: opaque issuance и verification принадлежат trusted
+composition root.
+
 ## 16. Рекомендуемый стек
 
 - Python, FastAPI, Pydantic.
