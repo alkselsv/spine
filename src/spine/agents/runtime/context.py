@@ -2,7 +2,9 @@
 
 The module consumes Issue #69 authorization contracts but does not issue them.
 Production wiring must provide the Issue #72 verifier and an authoritative
-scope validator.  Deterministic fakes may implement those ports in tests.
+scope validator. Deterministic structural fakes may implement those ports for
+plain data-construction tests; only the composition-owned canonical verifier
+base can issue an execution admission.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from spine.agents.runtime.contracts import (
 )
 from spine.agents.runtime.ports import (
     CancellationToken,
+    CanonicalTrustedAuthorizationContextVerifier,
     ExecutionScopeValidator,
     EventSink,
     TrustedAuthorizationContextVerifier,
@@ -125,6 +128,35 @@ class AgentExecutionContextAdmission:
             or candidate.event_sink is not context.event_sink
         ):
             raise ValueError("execution context admission does not match")
+
+    def verify_selection(
+        self,
+        context: AgentExecutionContext,
+        resolved_binding: ResolvedAgentBinding,
+    ) -> None:
+        """Revalidate the exact pinned selection attached to this admission."""
+
+        if resolved_binding is not self._resolved_binding:
+            raise ValueError("execution selection admission does not match")
+        self.verify(context)
+
+    def verify_request(
+        self,
+        request: Any,
+        context: AgentExecutionContext,
+    ) -> None:
+        """Require a request to carry the admitted capability and schemas."""
+
+        from spine.agents.runtime.contracts import AgentRequest
+
+        if not isinstance(request, AgentRequest):
+            raise ValueError("execution request is invalid")
+        self.verify(context)
+        if (
+            request.capability != context.capability
+            or request.schema_identity != context.schema_identity
+        ):
+            raise ValueError("execution request does not match pinned capability")
 
 
 class AgentExecutionContextFactory:
@@ -245,16 +277,9 @@ class AgentExecutionContextFactory:
                 permitted_tool_grants=permitted_tool_grants,
                 agent_version=selected_version,
             )
-            if context_profile is not None and (
-                selected_version.context_profile is not None
-                and context_profile != selected_version.context_profile
-            ):
+            if context_profile != selected_version.context_profile:
                 raise ValueError
-            selected_context_profile = (
-                selected_version.context_profile
-                if context_profile is None
-                else context_profile
-            )
+            selected_context_profile = selected_version.context_profile
             trusted_identity = ExecutionIdentitySnapshot(
                 workspace_id=authorization_resolution.scope.workspace_id,
                 environment_id=authorization_resolution.scope.environment_id,
@@ -303,14 +328,22 @@ class AgentExecutionContextFactory:
     ) -> AgentExecutionContextAdmission:
         """Bind current trusted authorization to one constructed context.
 
-        The returned admission is the only supported execution input for the
-        async adapter. It is deliberately separate from the serializable
-        context data and must be checked again at handler consumption time.
+        The returned admission is deliberately separate from serializable
+        context data and must be checked again by the registry gate at handler
+        consumption time. Direct adapters and unbound registry selections
+        fail closed.
         """
 
         if type(context) is not AgentExecutionContext:
             raise AgentExecutionContextConstructionError(
                 "execution context is invalid."
+            )
+        if not isinstance(
+            self._authorization_verifier,
+            CanonicalTrustedAuthorizationContextVerifier,
+        ):
+            raise AgentExecutionContextConstructionError(
+                "execution admission is unavailable."
             )
         admission = AgentExecutionContextAdmission(
             factory=self,

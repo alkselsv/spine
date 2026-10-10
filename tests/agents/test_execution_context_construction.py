@@ -13,6 +13,7 @@ from spine.agents.catalog import AgentImplementationRegistration, ResolvedAgentB
 from spine.agents.runtime import (
     AgentExecutionContext,
     AgentExecutionContextFactory,
+    CanonicalTrustedAuthorizationContextVerifier,
     CapabilitySchemaIdentity,
     ExecutionIdentitySnapshot,
     TrustedToolGrantSet,
@@ -83,7 +84,7 @@ class FakeScopeValidator:
             raise ValueError("execution scope is invalid")
 
 
-class FakeVerifier:
+class FakeVerifier(CanonicalTrustedAuthorizationContextVerifier):
     def __init__(self, expected_context: AuthorizedRequestContext[DiagnosticContext]) -> None:
         self.expected_context = expected_context
         self.calls = 0
@@ -98,6 +99,15 @@ class FakeVerifier:
             raise ValueError("authorization context is invalid")
         if resolution.scope != context.scope:
             raise ValueError("authorization context is invalid")
+
+
+class StructuralNoopVerifier:
+    def verify(
+        self,
+        context: AuthorizedRequestContext[DiagnosticContext],
+        resolution: AuthorizationResolution,
+    ) -> None:
+        del context, resolution
 
 
 class Handler:
@@ -261,9 +271,12 @@ def make_context(
     ).create(**values)
 
 
-def make_admitted_context() -> tuple[AgentExecutionContext, object, FakeVerifier]:
+def make_admitted_context(
+    *,
+    binding: ResolvedAgentBinding | None = None,
+) -> tuple[AgentExecutionContext, object, FakeVerifier]:
     authorized, resolution = authorized_context()
-    binding = resolved_binding()
+    binding = binding or resolved_binding()
     verifier = FakeVerifier(authorized)
     factory = AgentExecutionContextFactory(
         authorization_verifier=verifier,
@@ -323,8 +336,11 @@ def test_factory_admission_rechecks_exact_context_and_current_authorization() ->
     context, admission, verifier = make_admitted_context()
 
     admission.verify(context)
+    assert context.trusted_identity.authorization_generation == 7
 
-    assert verifier.calls == 3
+    verifier.expected_context = MagicMock(spec=AuthorizedRequestContext)
+    with pytest.raises(ValueError, match="execution context is invalid"):
+        admission.verify(context)
 
 
 def test_factory_admission_rejects_reconstructed_context() -> None:
@@ -447,6 +463,27 @@ def test_factory_requires_trusted_verification_and_scope_authority() -> None:
         )
 
 
+def test_structural_verifier_cannot_issue_execution_admission() -> None:
+    context = make_context()
+    authorized, resolution = authorized_context()
+    factory = AgentExecutionContextFactory(
+        authorization_verifier=StructuralNoopVerifier(),
+        scope_validator=FakeScopeValidator(
+            environment_kinds={(uid(1), uid(2)): EnvironmentKind.DEVELOPMENT},
+            expected_generation=7,
+        ),
+        expected_route_policy=authorized.route_policy,
+    )
+    with pytest.raises(ValueError, match="execution admission is unavailable"):
+        factory.admission_for(
+            context=context,
+            authorized_context=authorized,
+            authorization_resolution=resolution,
+            resolved_binding=resolved_binding(),
+            permitted_tool_grants=TrustedToolGrantSet(grants=("documents.read",)),
+        )
+
+
 def test_authorization_resolution_alone_cannot_mint_context() -> None:
     _, resolution = authorized_context()
 
@@ -501,6 +538,11 @@ def test_factory_rejects_schema_identity_substitution() -> None:
             selected_binding=resolved_binding(),
             schema_identity=mismatched_schema,
         )
+
+
+def test_factory_rejects_profile_when_pinned_version_has_no_profile() -> None:
+    with pytest.raises(ValueError, match="execution context is invalid"):
+        make_context(context_profile="caller-selected-profile")
 
 
 @pytest.mark.parametrize(

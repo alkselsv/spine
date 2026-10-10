@@ -21,7 +21,6 @@ from spine.agents.runtime import (
     EventSink,
     TrustedExecutionIdentity,
     TrustedExecutionIdentitySnapshot,
-    TrustedExecutionAdmission,
     invocation_context_from_invocation,
     agent_result_from_response,
     typed_request_from_invocation,
@@ -407,10 +406,8 @@ def test_ports_are_structural_protocols() -> None:
             self,
             request: AgentRequest[InputModel],
             execution_context: AgentExecutionContext,
-            *,
-            admission: TrustedExecutionAdmission,
         ) -> AgentResponse[OutputModel]:
-            del request, execution_context, admission
+            del request, execution_context
             return response(output=OutputModel(answer="42"))
 
     assert isinstance(Handler(), AgentHandler)

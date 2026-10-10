@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from spine.agents.runtime.ports import TrustedAuthorizationContextVerifier
+from spine.agents.runtime.context import AgentExecutionContextFactory
+from spine.agents.runtime.ports import (
+    CanonicalTrustedAuthorizationContextVerifier,
+    ExecutionScopeValidator,
+)
 from spine.application.diagnostics import DiagnosticContext
 from spine.auth.contracts import (
     AuthorizedRequestContext,
     AuthorizationResolution,
+    RouteAuthorizationPolicy,
 )
 from spine.infrastructure.auth.trusted_context import (
     AuthorizedRequest,
@@ -14,7 +19,7 @@ from spine.infrastructure.auth.trusted_context import (
 )
 
 
-class RequestAgentAuthorizationVerifier(TrustedAuthorizationContextVerifier):
+class RequestAgentAuthorizationVerifier(CanonicalTrustedAuthorizationContextVerifier):
     """Revalidate one exact active #72 request before agent execution.
 
     The bridge retains neither credentials nor a serialized proof. It holds the
@@ -65,4 +70,32 @@ class RequestAgentAuthorizationVerifier(TrustedAuthorizationContextVerifier):
             raise ValueError("authorization context is invalid") from None
 
 
-__all__ = ["RequestAgentAuthorizationVerifier"]
+def compose_agent_execution_context_factory(
+    *,
+    boundary: TrustedRequestContextBoundary,
+    authorized: AuthorizedRequest,
+    scope_validator: ExecutionScopeValidator,
+    expected_route_policy: RouteAuthorizationPolicy,
+) -> AgentExecutionContextFactory:
+    """Bind Issue #108 to one live, canonical Issue #72 request boundary.
+
+    Test fakes may exercise plain context construction, but production
+    admission is assembled through this composition-owned function so the
+    concrete verifier always delegates to the active #72 lifecycle boundary.
+    """
+
+    verifier = RequestAgentAuthorizationVerifier(
+        boundary=boundary,
+        authorized=authorized,
+    )
+    return AgentExecutionContextFactory(
+        authorization_verifier=verifier,
+        scope_validator=scope_validator,
+        expected_route_policy=expected_route_policy,
+    )
+
+
+__all__ = [
+    "RequestAgentAuthorizationVerifier",
+    "compose_agent_execution_context_factory",
+]

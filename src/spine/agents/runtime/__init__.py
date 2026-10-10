@@ -16,6 +16,7 @@ from spine.agents.runtime.contracts import (
 from spine.agents.runtime.adapters import adapt_async_function
 from spine.agents.runtime.ports import (
     AuthorizationContextView,
+    CanonicalTrustedAuthorizationContextVerifier,
     CancellationToken,
     EventSink,
     ExecutionScopeValidator,
@@ -40,6 +41,7 @@ __all__ = [
     "AgentRequest",
     "AgentResponse",
     "AuthorizationContextView",
+    "CanonicalTrustedAuthorizationContextVerifier",
     "AgentRuntime",
     "CancellationToken",
     "EventSink",

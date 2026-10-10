@@ -1347,6 +1347,35 @@ AgentHandler[InputT, OutputT]:
     → AgentResponse[OutputT]
 ```
 
+The two-argument handler contract is deliberately separate from execution
+authority. `AgentExecutionContext` and `ExecutionIdentitySnapshot` are plain,
+detached, sanitized data; constructing, copying or deserializing either value
+does not authenticate a request. Issue #72 remains the canonical source of
+authorization provenance, request-local lifecycle and task ownership. The
+composition root binds that live boundary to the runtime through an execution
+admission gate and revalidates it immediately before invoking a handler.
+
+The gate retains the privileged admission and the exact `ResolvedAgentBinding`
+privately. It selects a handler only from the finalized registry, checks the
+current Workspace/Environment, acting identity, authorization generation,
+route purpose and operation, pinned AgentVersion, capability and input/output
+schema identities, context profile and tool-grant ceiling, and then calls the
+handler with only `(AgentRequest, AgentExecutionContext)`. An unbound adapter or
+registry selection fails closed. Requests with a different capability or
+schema, and handlers different from the admitted registration, are rejected
+before user code runs. Authorization contexts, verifiers, bindings, provider
+configuration, credentials and opaque provenance never cross the handler
+argument boundary.
+
+Run and Artifact identifiers are structurally validated and preserved here;
+authoritative ownership and handoff/persistence checks remain with the owning
+workflow/application boundary and Issue #109. Diagnostic event emission,
+cancellation execution, replay/idempotency, retries and compatibility-facade
+behavior remain deferred to Issues #110–#115. Production admission must be
+assembled through the infrastructure composition bound to the real Issue #72
+`TrustedRequestContextBoundary`; structural fakes are test-only construction
+inputs and cannot be used as production admission sources.
+
 Одна `AgentVersion` может объединять несколько связанных handlers, но workflow step вызывает ровно один capability. Каждому capability соответствует отдельный типизированный handler; универсальный строковый router внутри реализации не является interface платформы.
 
 Внешние agent endpoints, сторонний Agent SDK, package trust и transport protocol не входят в текущий scope четырёх приоритетных кейсов. Runtime seam должен позволить позднее добавить remote adapter без изменения workflow и capability contracts. Когда появится подтверждённый кейс внешнего агента, отдельно выбираются protocol, manifest, health, cancellation, artifact transfer и certification; Agno не становится обязательной зависимостью Spine.

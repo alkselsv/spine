@@ -10,7 +10,6 @@ from typing import Annotated, Any, Generic, TypeVar, Union, get_args, get_origin
 from pydantic import TypeAdapter, ValidationError
 from pydantic.errors import PydanticErrorMixin
 
-from spine.agents.runtime.context import AgentExecutionContextAdmission
 from spine.agents.runtime.contracts import AgentExecutionContext, AgentRequest, AgentResponse
 from spine.agents.runtime.protocol import AgentHandler
 from spine.domain.agents.contracts import AgentResult
@@ -24,7 +23,6 @@ def adapt_async_function(
     *,
     input_type: Any | None = None,
     output_type: Any | None = None,
-    admission: AgentExecutionContextAdmission | None = None,
 ) -> AgentHandler[InputT, OutputT]:
     """Adapt one explicitly typed coroutine to the local handler protocol.
 
@@ -36,10 +34,9 @@ def adapt_async_function(
     ``input_type`` and ``output_type`` let an explicit composition root pin the
     contract when it has authoritative metadata beyond the function's
     annotations. They are checked against the annotations; they do not alter
-    the request or response contracts. ``admission`` is mandatory for
-    execution and is rechecked before every call; there is no permissive
-    default because an ``AgentExecutionContext`` is plain data, not proof of
-    current authorization.
+    the request or response contracts. The returned handler is an unbound
+    selection and fails closed when invoked directly. A trusted registry gate
+    calls its private selected-handler seam after admission and request checks.
     """
 
     contract = _inspect_function(function)
@@ -54,7 +51,6 @@ def adapt_async_function(
         function=function,
         input_type=input_type if input_type is not None else declared_input,
         output_type=output_type if output_type is not None else declared_output,
-        admission=admission,
     )
 
 
@@ -67,12 +63,10 @@ class _AsyncFunctionHandler(Generic[InputT, OutputT]):
         function: Callable[..., Awaitable[Any]],
         input_type: Any,
         output_type: Any,
-        admission: AgentExecutionContextAdmission | None,
     ) -> None:
         self._function = function
         self._input_type = input_type
         self._output_type = output_type
-        self._admission = admission
         self._input_adapter = _type_adapter(input_type)
         self._output_adapter = _type_adapter(output_type)
 
@@ -80,31 +74,23 @@ class _AsyncFunctionHandler(Generic[InputT, OutputT]):
         self,
         request: AgentRequest[InputT],
         context: AgentExecutionContext,
-        *,
-        admission: AgentExecutionContextAdmission | None = None,
     ) -> AgentResponse[OutputT]:
-        """Invoke without retaining either call's request or execution context."""
+        """Reject direct execution without a trusted registry gate."""
+
+        del request, context
+        raise TypeError("handler requires a trusted execution gate")
+
+    async def _invoke_selected(
+        self,
+        request: AgentRequest[InputT],
+        context: AgentExecutionContext,
+    ) -> AgentResponse[OutputT]:
+        """Run the selected coroutine after the external gate has admitted it."""
 
         if not isinstance(request, AgentRequest):
             raise TypeError("async handler requires an AgentRequest")
         if not isinstance(context, AgentExecutionContext):
             raise TypeError("async handler requires an AgentExecutionContext")
-
-        if (
-            self._admission is not None
-            and admission is not None
-            and admission is not self._admission
-        ):
-            raise TypeError("async handler received a different execution admission")
-        admission = self._admission or admission
-        if admission is None:
-            raise TypeError("async handler requires trusted execution admission")
-        if type(admission) is not AgentExecutionContextAdmission:
-            raise TypeError("async handler requires a factory-issued execution admission")
-        try:
-            admission.verify(context)
-        except Exception:
-            raise TypeError("async handler execution context is not admitted") from None
 
         try:
             self._validate_input(request.input)

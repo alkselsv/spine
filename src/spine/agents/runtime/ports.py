@@ -91,6 +91,22 @@ class TrustedAuthorizationContextVerifier(Protocol):
         """Raise when the context was not issued and verified by the root."""
 
 
+class CanonicalTrustedAuthorizationContextVerifier:
+    """Composition-owned verifier base for production execution admission.
+
+    The implementation is supplied by the infrastructure authorization
+    boundary. A structural verifier remains suitable for plain construction
+    tests, but cannot issue an admission accepted by the execution gate.
+    """
+
+    def verify(
+        self,
+        context: AuthorizedRequestContext[DiagnosticContext],
+        resolution: AuthorizationResolution,
+    ) -> None:
+        raise NotImplementedError
+
+
 @runtime_checkable
 class TrustedExecutionAdmission(Protocol):
     """Current authorization admission required immediately before execution.
@@ -120,6 +136,7 @@ class ExecutionScopeValidator(Protocol):
 __all__ = [
     "AuthorizationContextView",
     "CancellationToken",
+    "CanonicalTrustedAuthorizationContextVerifier",
     "EventSink",
     "ExecutionScopeValidator",
     "TrustedAuthorizationContextVerifier",

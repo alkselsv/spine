@@ -4,7 +4,6 @@ from typing import Generic, Protocol, TypeVar, runtime_checkable
 from uuid import UUID
 
 from spine.agents.runtime.contracts import AgentExecutionContext, AgentRequest, AgentResponse
-from spine.agents.runtime.context import AgentExecutionContextAdmission
 from spine.domain.agents.contracts import AgentInvocation, AgentResult
 from spine.domain.agents.models import AgentVersion
 
@@ -20,8 +19,6 @@ class AgentHandler(Protocol, Generic[InputT, OutputT]):
         self,
         request: AgentRequest[InputT],
         context: AgentExecutionContext,
-        *,
-        admission: AgentExecutionContextAdmission | None = None,
     ) -> AgentResponse[OutputT]: ...
 
 
