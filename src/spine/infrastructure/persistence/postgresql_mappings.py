@@ -65,8 +65,39 @@ outbox_intents = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
 )
 
+audit_events = Table(
+    "audit_events",
+    metadata,
+    Column(
+        "audit_event_id",
+        PostgreSQLUUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    ),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("event_type", Text, nullable=False),
+    Column("schema_version", Integer, nullable=False),
+    Column("origin", String(16), nullable=False),
+    Column("acting_subject_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("service_principal_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("trace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("correlation_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("causation_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("occurred_at", DateTime(timezone=True), nullable=False),
+    Column("appended_at", DateTime(timezone=True), nullable=False),
+    Column("target_type", Text, nullable=True),
+    Column("target_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("target_schema_version", Integer, nullable=True),
+    Column("outcome", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("producer_deduplication_id", Text, nullable=True),
+    Column("payload", JSONB, nullable=False),
+)
+
 
 __all__ = [
+    "audit_events",
     "environments",
     "idempotency_receipts",
     "metadata",

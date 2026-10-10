@@ -51,7 +51,8 @@ IDEMPOTENCY_REVISION = "20261010_03"
 OUTBOX_REVISION = "20261010_04"
 PRE_K0_REVISION = "20261010_05"
 K0_REVISION = "20261010_06"
-HEAD_REVISION = "20261010_07"
+AUTHORIZATION_REVISION = "20261010_07"
+HEAD_REVISION = "20261010_08"
 WORKSPACE_A = UUID("20000000-0000-0000-0000-000000000001")
 WORKSPACE_B = UUID("20000000-0000-0000-0000-000000000002")
 ENVIRONMENT_A = UUID("30000000-0000-0000-0000-000000000001")
@@ -176,6 +177,54 @@ AUTHORIZATION_DIRECTORY_COLUMNS = {
     for column in ("workspace_id", "environment_id", "generation", "updated_at")
 }
 
+AUDIT_CONSTRAINTS = {
+    "ck_audit_events_actor_scope",
+    "ck_audit_events_event_type_identifier",
+    "ck_audit_events_origin",
+    "ck_audit_events_outcome_identifier",
+    "ck_audit_events_payload_object",
+    "ck_audit_events_producer_identifier",
+    "ck_audit_events_reason_identifier",
+    "ck_audit_events_schema_version_positive",
+    "ck_audit_events_target_complete",
+    "fk_audit_events_scope_environments",
+    "fk_audit_events_workspace_id_workspaces",
+    "pk_audit_events",
+}
+AUDIT_INDEXES = {
+    "ix_audit_events_tenant_appended_at",
+    "ix_audit_events_workspace_target",
+    "ix_audit_events_workspace_trace_id",
+    "pk_audit_events",
+    "uq_audit_events_environment_producer",
+    "uq_audit_events_workspace_producer",
+}
+AUDIT_COLUMNS = {
+    ("audit_events", column)
+    for column in (
+        "audit_event_id",
+        "workspace_id",
+        "environment_id",
+        "event_type",
+        "schema_version",
+        "origin",
+        "acting_subject_id",
+        "service_principal_id",
+        "trace_id",
+        "correlation_id",
+        "causation_id",
+        "occurred_at",
+        "appended_at",
+        "target_type",
+        "target_id",
+        "target_schema_version",
+        "outcome",
+        "reason",
+        "producer_deduplication_id",
+        "payload",
+    )
+}
+
 
 @dataclass(frozen=True, slots=True)
 class MigratedDatabase:
@@ -258,6 +307,17 @@ async def migrated_database(
             )
         )
     await asyncio.to_thread(upgrade_database, migration, revision=K0_REVISION)
+    async with _connection(migration.url) as connection:
+        retained_revisions.append(
+            await connection.scalar(
+                text("SELECT version_num FROM spine.alembic_version")
+            )
+        )
+    await asyncio.to_thread(
+        upgrade_database,
+        migration,
+        revision=AUTHORIZATION_REVISION,
+    )
     async with _connection(migration.url) as connection:
         retained_revisions.append(
             await connection.scalar(
@@ -459,6 +519,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
     assert revision == HEAD_REVISION
     assert tables == {
         "alembic_version",
+        "audit_events",
         "authentication_alias_bindings",
         "authorization_generations",
         "canonical_human_identities",
@@ -503,7 +564,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "uq_initial_workspace_bootstrap_action_id",
         "uq_initial_workspace_bootstrap_workspace_id",
         "uq_workspaces_slug",
-    } | AUTHORIZATION_DIRECTORY_CONSTRAINTS
+    } | AUTHORIZATION_DIRECTORY_CONSTRAINTS | AUDIT_CONSTRAINTS
     assert indexes == {
         "alembic_version_pkc",
         "ix_environments_workspace_id",
@@ -520,7 +581,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "uq_outbox_intents_environment_producer",
         "uq_outbox_intents_workspace_producer",
         "uq_workspaces_slug",
-    } | AUTHORIZATION_DIRECTORY_INDEXES
+    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
         "workspaces": (True, True),
@@ -535,6 +596,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "canonical_human_identities": (False, False),
         "canonical_human_identity_states": (False, False),
         "authentication_alias_bindings": (False, False),
+        "audit_events": (True, True),
     }
     assert rls == expected_rls
     tenant_rls_tables = {
@@ -542,12 +604,17 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         for table_name, flags in expected_rls.items()
         if flags == (True, True)
     }
+    standard_tenant_rls_tables = tenant_rls_tables - {"audit_events"}
     assert set(policies) == {
         (table_name, f"pol_{table_name}_{policy_kind}")
-        for table_name in tenant_rls_tables
+        for table_name in standard_tenant_rls_tables
         for policy_kind in ("tenant_isolation", "migration_maintenance")
+    } | {
+        ("audit_events", "pol_audit_events_tenant_read"),
+        ("audit_events", "pol_audit_events_tenant_append"),
+        ("audit_events", "pol_audit_events_migration_maintenance"),
     }
-    for table_name in tenant_rls_tables:
+    for table_name in standard_tenant_rls_tables:
         tenant_policy = policies[(table_name, f"pol_{table_name}_tenant_isolation")]
         assert tenant_policy[0] == (RUNTIME_ROLE,)
         assert tenant_policy[1] is not None
@@ -557,8 +624,20 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
             "true",
             "true",
         )
+    audit_read = policies[("audit_events", "pol_audit_events_tenant_read")]
+    audit_append = policies[("audit_events", "pol_audit_events_tenant_append")]
+    assert audit_read[0] == (RUNTIME_ROLE,)
+    assert audit_read[1] is not None and audit_read[2] is None
+    assert audit_append[0] == (RUNTIME_ROLE,)
+    assert audit_append[1] is None and audit_append[2] is not None
+    assert policies[("audit_events", "pol_audit_events_migration_maintenance")] == (
+        (MIGRATION_ROLE,),
+        "true",
+        "true",
+    )
     assert privileges == {
         "alembic_version": (True, False, False, False),
+        "audit_events": (True, True, False, False),
         "workspaces": (True, True, True, True),
         "environments": (True, True, True, True),
         "idempotency_receipts": (True, True, False, False),
@@ -602,6 +681,7 @@ async def test_initial_tenancy_revision_upgrades_to_current_head_and_owned_schem
         OUTBOX_REVISION,
         PRE_K0_REVISION,
         K0_REVISION,
+        AUTHORIZATION_REVISION,
     )
     assert heads == [HEAD_REVISION]
     assert owner == MIGRATION_ROLE
@@ -670,6 +750,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         )
     assert tables == {
         "alembic_version",
+        "audit_events",
         "authentication_alias_bindings",
         "authorization_generations",
         "canonical_human_identities",
@@ -714,7 +795,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "uq_initial_workspace_bootstrap_action_id",
         "uq_initial_workspace_bootstrap_workspace_id",
         "uq_workspaces_slug",
-    } | AUTHORIZATION_DIRECTORY_CONSTRAINTS
+    } | AUTHORIZATION_DIRECTORY_CONSTRAINTS | AUDIT_CONSTRAINTS
     assert set(columns) == {
         ("alembic_version", "version_num"),
         ("environments", "created_at"),
@@ -757,7 +838,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         ("workspaces", "display_name"),
         ("workspaces", "id"),
         ("workspaces", "slug"),
-    } | AUTHORIZATION_DIRECTORY_COLUMNS
+    } | AUTHORIZATION_DIRECTORY_COLUMNS | AUDIT_COLUMNS
     assert columns[("workspaces", "id")] == ("uuid", "NO", None)
     assert columns[("environments", "id")] == ("uuid", "NO", None)
     event_id_type, event_id_nullable, event_id_default = columns[
@@ -766,6 +847,12 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
     assert event_id_type == "uuid"
     assert event_id_nullable == "NO"
     assert event_id_default is not None and "gen_random_uuid()" in event_id_default
+    audit_id_type, audit_id_nullable, audit_id_default = columns[
+        ("audit_events", "audit_event_id")
+    ]
+    assert audit_id_type == "uuid"
+    assert audit_id_nullable == "NO"
+    assert audit_id_default is not None and "gen_random_uuid()" in audit_id_default
     for table in (
         "workspaces",
         "environments",
@@ -777,6 +864,12 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         assert data_type == "timestamp with time zone"
         assert nullable == "NO"
         assert default is not None and "CURRENT_TIMESTAMP" in default.upper()
+    appended_type, appended_nullable, appended_default = columns[
+        ("audit_events", "appended_at")
+    ]
+    assert appended_type == "timestamp with time zone"
+    assert appended_nullable == "NO"
+    assert appended_default is not None and "CURRENT_TIMESTAMP" in appended_default.upper()
     assert indexes == {
         "alembic_version_pkc",
         "ix_environments_workspace_id",
@@ -793,7 +886,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "uq_outbox_intents_environment_producer",
         "uq_outbox_intents_workspace_producer",
         "uq_workspaces_slug",
-    } | AUTHORIZATION_DIRECTORY_INDEXES
+    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES
     assert owners == {MIGRATION_ROLE}
 
 
@@ -1217,7 +1310,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "JOIN pg_class AS relation ON relation.oid = policy.polrelid "
                         "JOIN pg_namespace AS namespace "
                         "ON namespace.oid = relation.relnamespace "
-                        "WHERE namespace.nspname = 'spine'"
+                        "WHERE namespace.nspname = 'spine' "
+                        "AND relation.relname <> 'audit_events'"
                     )
                 )
             )
@@ -2188,11 +2282,15 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         source / "versions" / "20261010_07_authorization_directory.py",
         target / "versions" / "20261010_07_authorization_directory.py",
     )
-    (target / "versions" / "20261010_08_injected_failure.py").write_text(
+    shutil.copy(
+        source / "versions" / "20261010_08_audit_events.py",
+        target / "versions" / "20261010_08_audit_events.py",
+    )
+    (target / "versions" / "20261010_09_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261010_08'\n"
-        "down_revision = '20261010_07'\n"
+        "revision = '20261010_09'\n"
+        "down_revision = '20261010_08'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"
@@ -2277,6 +2375,7 @@ async def test_every_retained_revision_upgrades_to_one_final_head(
         OUTBOX_REVISION,
         PRE_K0_REVISION,
         K0_REVISION,
+        AUTHORIZATION_REVISION,
     )
     try:
         for starting_revision in starting_revisions:

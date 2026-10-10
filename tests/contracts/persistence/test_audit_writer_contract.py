@@ -66,10 +66,10 @@ async def test_audit_event_becomes_visible_only_after_explicit_commit(
 
     assert stored is not None
     assert stored.audit_event_id == audit_event_id
-    assert stored.appended_at == datetime(
-        2026, 2, 3, 4, 5, tzinfo=timezone.utc
-    )
+    assert stored.appended_at is not None
+    assert stored.appended_at.tzinfo is not None
     assert stored.payload_json() == {"command_type": "workspace.create"}
+    assert await persistence_adapter.read_audit_event(context, audit_event_id) == stored
 
 
 @pytest.mark.asyncio
@@ -294,6 +294,61 @@ async def test_duplicate_producer_identity_returns_original_audit_event(
     assert await persistence_adapter.read_audit_event(
         context, synthetic_uuid(2252)
     ) is None
+
+
+@pytest.mark.asyncio
+async def test_conflicting_producer_identity_raises_stable_audit_conflict(
+    persistence_adapter: AuditPersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(2255)
+    context = persistence_adapter.workspace_context(workspace_id)
+    async with persistence_adapter.uow_factory(context) as setup:
+        await setup.workspaces.add(
+            Workspace(
+                id=workspace_id,
+                slug="audit-producer-conflict",
+                display_name="Audit Producer Conflict",
+            )
+        )
+        await setup.commit()
+
+    def event(*, audit_event_id, reason):
+        return persistence_adapter.audit_events.build_event(
+            audit_event_id=audit_event_id,
+            workspace_id=workspace_id,
+            event_type="command.outcome",
+            schema_version=1,
+            payload=CommandAuditPayload(command_type="workspace.inspect"),
+            origin=context.origin,
+            acting_subject_id=context.acting_subject_id,
+            service_principal_id=context.service_principal_id,
+            trace_id=context.trace_id,
+            occurred_at=datetime(2026, 2, 3, 4, 4, tzinfo=timezone.utc),
+            outcome=AuditOutcome.COMPLETED,
+            reason=reason,
+            producer_deduplication_id="workspace.inspect:command-2255",
+        )
+
+    async with persistence_adapter.uow_factory(context) as first:
+        await first.audit.append(
+            event(
+                audit_event_id=synthetic_uuid(2256),
+                reason="inspection_completed",
+            )
+        )
+        await first.commit()
+
+    with pytest.raises(
+        AuditConflictError,
+        match="Audit producer identity conflicts with an event",
+    ):
+        async with persistence_adapter.uow_factory(context) as conflicting:
+            await conflicting.audit.append(
+                event(
+                    audit_event_id=synthetic_uuid(2257),
+                    reason="inspection_rejected",
+                )
+            )
 
 
 @pytest.mark.asyncio

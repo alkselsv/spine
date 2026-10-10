@@ -297,6 +297,13 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
             update=False,
             delete=False,
         ),
+        "audit_events": ExpectedTablePrivileges(
+            tenant_scoped=True,
+            select=True,
+            insert=True,
+            update=False,
+            delete=False,
+        ),
         "workspaces": ExpectedTablePrivileges(
             tenant_scoped=True,
             select=True,
