@@ -836,7 +836,7 @@ async def test_idempotency_receipt_result_can_be_completed_exactly_once(
                 )
         assert (
             error.value.orig.diag.constraint_name
-            == "ck_idempotency_receipts_scope_immutable"
+            == "ck_idempotency_receipt_scope_immutable"
         )
 
         with pytest.raises(ProgrammingError):
@@ -1254,6 +1254,7 @@ async def test_k0_receipt_integrity_objects_are_catalogued_and_restricted(
                 tuple(row.config or ()),
                 row.public_execute,
                 row.runtime_execute,
+                row.definition,
             )
             for row in (
                 await connection.execute(
@@ -1262,6 +1263,7 @@ async def test_k0_receipt_integrity_objects_are_catalogued_and_restricted(
                         "AS owner, language.lanname AS language, "
                         "procedure.provolatile AS volatility, procedure.prosecdef "
                         "AS security_definer, procedure.proconfig AS config, "
+                        "pg_get_functiondef(procedure.oid) AS definition, "
                         "has_function_privilege('public', procedure.oid, 'EXECUTE') "
                         "AS public_execute, has_function_privilege(:runtime, "
                         "procedure.oid, 'EXECUTE') AS runtime_execute "
@@ -1269,7 +1271,9 @@ async def test_k0_receipt_integrity_objects_are_catalogued_and_restricted(
                         "ON namespace.oid = procedure.pronamespace "
                         "JOIN pg_language AS language ON language.oid = procedure.prolang "
                         "WHERE namespace.nspname = 'spine' AND procedure.proname IN "
-                        "('validate_idempotency_receipt_tenant', "
+                        "('validate_issue7_receipt_scope', "
+                        "'reject_idempotency_receipt_scope_update', "
+                        "'validate_idempotency_receipt_tenant', "
                         "'enforce_idempotency_receipt_scope_immutable')"
                     ),
                     {"runtime": RUNTIME_ROLE},
@@ -1292,10 +1296,10 @@ async def test_k0_receipt_integrity_objects_are_catalogued_and_restricted(
         ).mappings().all()
 
     assert set(functions) == {
-        "validate_idempotency_receipt_tenant",
-        "enforce_idempotency_receipt_scope_immutable",
+        "validate_issue7_receipt_scope",
+        "reject_idempotency_receipt_scope_update",
     }
-    for owner, language, volatility, security_definer, config, public_execute, runtime_execute in functions.values():
+    for owner, language, volatility, security_definer, config, public_execute, runtime_execute, definition in functions.values():
         assert owner == MIGRATION_ROLE
         assert language == "plpgsql"
         assert volatility == "v"
@@ -1303,6 +1307,8 @@ async def test_k0_receipt_integrity_objects_are_catalogued_and_restricted(
         assert config == ("search_path=pg_catalog, spine",)
         assert public_execute is False
         assert runtime_execute is False
+        if "validate_issue7_receipt_scope" in definition:
+            assert "FOR KEY SHARE" in definition
 
     assert len(trigger) == 2
     scope_trigger = next(
@@ -1312,8 +1318,9 @@ async def test_k0_receipt_integrity_objects_are_catalogued_and_restricted(
     assert scope_trigger.tgenabled == "O"
     assert scope_trigger.tgdeferrable is False
     assert scope_trigger.tginitdeferred is False
-    assert "BEFORE UPDATE" in scope_trigger.definition
-    assert "enforce_idempotency_receipt_scope_immutable" in scope_trigger.definition
+    assert "BEFORE UPDATE OF workspace_id, environment_id" in scope_trigger.definition
+    assert "reject_idempotency_receipt_scope_update" in scope_trigger.definition
+    assert scope_trigger.tgtype == 19
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -1327,7 +1334,7 @@ async def test_k0_migration_downgrades_and_reupgrades_cleanly(
     )
     async with _connection(migrated_database.migration.url) as connection:
         assert await connection.scalar(
-            text("SELECT to_regprocedure('spine.validate_idempotency_receipt_tenant()')")
+            text("SELECT to_regprocedure('spine.validate_issue7_receipt_scope()')")
         ) is None
         assert await connection.scalar(
             text("SELECT version_num FROM spine.alembic_version")
@@ -1336,7 +1343,7 @@ async def test_k0_migration_downgrades_and_reupgrades_cleanly(
     await asyncio.to_thread(upgrade_database, migrated_database.migration)
     async with _connection(migrated_database.migration.url) as connection:
         assert await connection.scalar(
-            text("SELECT to_regprocedure('spine.validate_idempotency_receipt_tenant()')")
+            text("SELECT to_regprocedure('spine.validate_issue7_receipt_scope()')")
         ) is not None
         assert await connection.scalar(
             text("SELECT version_num FROM spine.alembic_version")
@@ -1366,7 +1373,7 @@ async def k0_child_fixture(
                 "CREATE CONSTRAINT TRIGGER trg_k0_fixture_receipt_tenant "
                 "AFTER INSERT OR UPDATE ON spine.k0_receipt_reference_fixture "
                 "DEFERRABLE INITIALLY DEFERRED FOR EACH ROW "
-                "EXECUTE FUNCTION spine.validate_idempotency_receipt_tenant()"
+                "EXECUTE FUNCTION spine.validate_issue7_receipt_scope()"
             )
         )
         trigger = (
@@ -1388,7 +1395,7 @@ async def k0_child_fixture(
         assert trigger.tginitdeferred is True
         assert "AFTER INSERT OR UPDATE" in trigger.definition
         assert "FOR EACH ROW" in trigger.definition
-        assert "validate_idempotency_receipt_tenant" in trigger.definition
+        assert "validate_issue7_receipt_scope" in trigger.definition
         await connection.commit()
     try:
         yield
@@ -1847,9 +1854,9 @@ async def test_missing_or_malformed_settings_fail_closed_without_identifiers(
         "DROP POLICY pol_workspaces_tenant_isolation ON spine.workspaces",
         "ALTER TABLE spine.idempotency_receipts DISABLE TRIGGER "
         "trg_idempotency_receipts_scope_immutable",
-        "ALTER FUNCTION spine.validate_idempotency_receipt_tenant() "
+        "ALTER FUNCTION spine.validate_issue7_receipt_scope() "
         "RENAME TO k0_validator_replaced",
-        "DROP FUNCTION spine.validate_idempotency_receipt_tenant()",
+        "DROP FUNCTION spine.validate_issue7_receipt_scope()",
         "ALTER ROLE spine_runtime BYPASSRLS",
         "SET ROLE spine_migration",
     ],

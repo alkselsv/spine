@@ -20,8 +20,8 @@ depends_on = None
 
 SCHEMA = "spine"
 RECEIPT_TABLE = "idempotency_receipts"
-VALIDATOR = "validate_idempotency_receipt_tenant"
-SCOPE_GUARD = "enforce_idempotency_receipt_scope_immutable"
+VALIDATOR = "validate_issue7_receipt_scope"
+SCOPE_GUARD = "reject_idempotency_receipt_scope_update"
 SCOPE_TRIGGER = "trg_idempotency_receipts_scope_immutable"
 
 
@@ -37,21 +37,26 @@ def upgrade() -> None:
         SECURITY INVOKER
         SET search_path = pg_catalog, {SCHEMA}
         AS $function$
+        DECLARE
+            receipt_workspace uuid;
+            receipt_environment uuid;
         BEGIN
+            SELECT receipt.workspace_id, receipt.environment_id
+              INTO receipt_workspace, receipt_environment
+              FROM {SCHEMA}."{RECEIPT_TABLE}" AS receipt
+             WHERE receipt.receipt_id = NEW.idempotency_receipt_id
+             FOR KEY SHARE;
+
             IF NEW.workspace_id IS NULL
                OR NEW.environment_id IS NULL
                OR NEW.idempotency_receipt_id IS NULL
-               OR NOT EXISTS (
-                   SELECT 1
-                   FROM {SCHEMA}."{RECEIPT_TABLE}" AS receipt
-                   WHERE receipt.receipt_id = NEW.idempotency_receipt_id
-                     AND receipt.workspace_id = NEW.workspace_id
-                     AND receipt.environment_id = NEW.environment_id
-               )
+               OR NOT FOUND
+               OR receipt_workspace IS DISTINCT FROM NEW.workspace_id
+               OR receipt_environment IS DISTINCT FROM NEW.environment_id
             THEN
-                RAISE EXCEPTION 'Idempotency receipt tenant validation failed.'
+                RAISE EXCEPTION 'Receipt scope conflict.'
                     USING ERRCODE = '23514',
-                          CONSTRAINT = 'ck_idempotency_receipt_tenant_match';
+                          CONSTRAINT = 'ck_issue7_receipt_scope';
             END IF;
             RETURN NEW;
         END;
@@ -72,25 +77,21 @@ def upgrade() -> None:
         SET search_path = pg_catalog, {SCHEMA}
         AS $function$
         BEGIN
-            IF NEW.workspace_id IS DISTINCT FROM OLD.workspace_id
-               OR NEW.environment_id IS DISTINCT FROM OLD.environment_id
-            THEN
-                RAISE EXCEPTION 'Idempotency receipt tenant scope is immutable.'
-                    USING ERRCODE = '23514',
-                          CONSTRAINT = 'ck_idempotency_receipts_scope_immutable';
-            END IF;
-            RETURN NEW;
+            RAISE EXCEPTION 'Idempotency receipt scope is immutable.'
+                USING ERRCODE = '23514',
+                      CONSTRAINT = 'ck_idempotency_receipt_scope_immutable';
         END;
         $function$
         """
     )
     op.execute(
         f"COMMENT ON FUNCTION {SCHEMA}.{SCOPE_GUARD}() IS "
-        "'Prevents relabeling an idempotency receipt after insertion.'"
+        "'Rejects every update that targets an idempotency receipt tenant scope column.'"
     )
     op.execute(
         f"CREATE TRIGGER {SCOPE_TRIGGER} "
-        f"BEFORE UPDATE ON {qualified_receipts} FOR EACH ROW "
+        f"BEFORE UPDATE OF workspace_id, environment_id ON {qualified_receipts} "
+        f"FOR EACH ROW "
         f"EXECUTE FUNCTION {SCHEMA}.{SCOPE_GUARD}()"
     )
     op.execute(
