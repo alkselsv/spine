@@ -6,12 +6,14 @@ from uuid import UUID
 import pytest
 from pydantic import BaseModel, ConfigDict
 
+from spine.agents.runtime.contracts import _VERIFIED_IDENTITY_TOKEN
 from spine.agents.runtime import (
     AgentExecutionContext,
     AgentHandler,
     AgentRequest,
     AgentResponse,
     CapabilitySchemaIdentity,
+    TrustedExecutionIdentitySnapshot,
     adapt_async_function,
 )
 from spine.application.diagnostics import DiagnosticContext
@@ -85,7 +87,14 @@ def context() -> AgentExecutionContext:
         workspace_id=uid(1),
         environment_id=uid(2),
         environment=EnvironmentKind.DEVELOPMENT,
-        trusted_identity=FakeTrustedIdentity(),
+        trusted_identity=TrustedExecutionIdentitySnapshot._from_verified_authorization(
+            _issuance_token=_VERIFIED_IDENTITY_TOKEN,
+            workspace_id=uid(1),
+            environment_id=uid(2),
+            acting_subject_id=uid(3),
+            service_principal_id=None,
+            authorization_generation=1,
+        ),
         work_item_id=uid(30),
         workflow_run_id=uid(31),
         step_run_id=uid(32),

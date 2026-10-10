@@ -10,10 +10,18 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from datetime import datetime
+import re
 from typing import Any, Generic, TypeVar
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, PrivateAttr, field_validator, model_validator
+from pydantic import (
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 from pydantic.json_schema import SkipJsonSchema
 
 from spine.application.diagnostics import DiagnosticContext, StructuredError
@@ -25,12 +33,26 @@ from spine.agents.runtime.ports import (
     AuthorizationContextView,
     CancellationToken,
     EventSink,
-    TrustedExecutionIdentity,
 )
 
 
 InputT = TypeVar("InputT")
 OutputT = TypeVar("OutputT")
+_TOOL_GRANT_IDENTIFIER = re.compile(r"[a-z][a-z0-9_.:-]{0,127}")
+_VERIFIED_IDENTITY_TOKEN = object()
+_SENSITIVE_RUNTIME_KEYS = frozenset(
+    {
+        "access_token",
+        "authorization",
+        "bearer",
+        "claims",
+        "credential",
+        "credentials",
+        "password",
+        "secret",
+        "token",
+    }
+)
 
 
 class _ValidatedRuntimeModel(SpineModel):
@@ -118,6 +140,29 @@ class CapabilitySchemaIdentity(_ValidatedRuntimeModel):
         return self
 
 
+class TrustedToolGrantSet(_ValidatedRuntimeModel):
+    """Composition-owned effective grants, detached before handler execution.
+
+    This is an input contract for governance/composition code, not proof of
+    authorization. The construction boundary still intersects it with the
+    pinned version's grants and never places credentials in the context.
+    """
+
+    grants: tuple[str, ...] = ()
+
+    @field_validator("grants")
+    @classmethod
+    def validate_grants(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(
+            not isinstance(grant, str) or _TOOL_GRANT_IDENTIFIER.fullmatch(grant) is None
+            for grant in value
+        ):
+            raise ValueError("tool grants are invalid")
+        if len(set(value)) != len(value):
+            raise ValueError("tool grants must be unique")
+        return value
+
+
 class AgentRequest(_ValidatedRuntimeModel, Generic[InputT]):
     """A typed handler input for one already-resolved Capability contract."""
 
@@ -190,7 +235,8 @@ class ExecutionIdentitySnapshot(_ValidatedRuntimeModel):
 
     This model is data, not proof of authorization. Direct construction is
     intentionally possible for deterministic contract tests, but an actual
-    runtime must obtain and verify the source view through Issue #69/#108.
+    runtime must obtain and verify the canonical Issue #69 context through the
+    Issue #108 construction boundary.
     """
 
     model_config = ConfigDict(
@@ -212,12 +258,28 @@ class ExecutionIdentitySnapshot(_ValidatedRuntimeModel):
         cls,
         value: AuthorizationContextView,
     ) -> ExecutionIdentitySnapshot:
+        del value
+        raise TypeError("identity snapshots require trusted authorization verification")
+
+    @classmethod
+    def _from_verified_authorization(
+        cls,
+        *,
+        _issuance_token: object,
+        workspace_id: UUID,
+        environment_id: UUID,
+        acting_subject_id: UUID | None,
+        service_principal_id: UUID | None,
+        authorization_generation: int,
+    ) -> ExecutionIdentitySnapshot:
+        if _issuance_token is not _VERIFIED_IDENTITY_TOKEN:
+            raise TypeError("identity snapshots require trusted authorization verification")
         snapshot = cls(
-            workspace_id=value.workspace_id,
-            environment_id=value.environment_id,
-            acting_subject_id=value.acting_subject_id,
-            service_principal_id=value.service_principal_id,
-            authorization_generation=value.authorization_generation,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            acting_subject_id=acting_subject_id,
+            service_principal_id=service_principal_id,
+            authorization_generation=authorization_generation,
         )
         object.__setattr__(snapshot, "_authorization_port_issued", True)
         return snapshot
@@ -281,6 +343,12 @@ class AgentExecutionContext(_ValidatedRuntimeModel):
     cancellation: SkipJsonSchema[CancellationToken] = Field(exclude=True, repr=False)
     event_sink: SkipJsonSchema[EventSink] = Field(exclude=True, repr=False)
 
+    @field_serializer("agent_version")
+    def serialize_agent_version(self, value: AgentVersion) -> dict[str, Any]:
+        """Expose the pin without serializing runtime/provider configuration."""
+
+        return value.model_dump(exclude={"runtime_config"})
+
     @field_validator(
         "workspace_id",
         "environment_id",
@@ -304,15 +372,13 @@ class AgentExecutionContext(_ValidatedRuntimeModel):
     @classmethod
     def snapshot_trusted_identity(
         cls,
-        value: TrustedExecutionIdentity | TrustedExecutionIdentitySnapshot,
+        value: TrustedExecutionIdentitySnapshot,
     ) -> ExecutionIdentitySnapshot:
         if isinstance(value, ExecutionIdentitySnapshot):
             if not value._authorization_port_issued:
                 raise ValueError("identity snapshots are data, not authorization provenance")
             return value
-        if not isinstance(value, AuthorizationContextView):
-            raise ValueError("trusted_identity must be supplied by the authorization context port")
-        return ExecutionIdentitySnapshot.from_authorization_context(value)
+        raise ValueError("trusted identity requires trusted authorization verification")
 
     @field_validator("cancellation")
     @classmethod
@@ -338,6 +404,20 @@ class AgentExecutionContext(_ValidatedRuntimeModel):
             raise ValueError("agent version does not support capability")
         _validate_capability_schema(self.capability)
         _require_matching_schema_identity(self.capability, self.schema_identity)
+        _validate_tool_grants(self.agent_version.tool_grants, "agent version")
+        _validate_tool_grants(self.permitted_tool_capabilities, "permitted")
+        _validate_runtime_config(self.agent_version.runtime_config)
+        if not set(self.permitted_tool_capabilities).issubset(self.agent_version.tool_grants):
+            raise ValueError("permitted tool grants exceed agent version grants")
+        if self.deadline is not None and (
+            self.deadline.tzinfo is None or self.deadline.utcoffset() is None
+        ):
+            raise ValueError("deadline must be timezone-aware")
+        if (
+            self.agent_version.context_profile is not None
+            and self.context_profile != self.agent_version.context_profile
+        ):
+            raise ValueError("context profile does not match agent version")
         if (
             self.agent_version.id.int == 0
             or self.agent_version.agent_id.int == 0
@@ -491,3 +571,29 @@ def _require_matching_schema_identity(
 def _validate_artifact_ids(artifact_ids: tuple[UUID, ...]) -> None:
     if any(identifier.int == 0 for identifier in artifact_ids):
         raise ValueError("artifact identifiers must be non-zero")
+
+
+def _validate_tool_grants(grants: tuple[str, ...], label: str) -> None:
+    if any(
+        not isinstance(grant, str) or _TOOL_GRANT_IDENTIFIER.fullmatch(grant) is None
+        for grant in grants
+    ) or len(set(grants)) != len(grants):
+        raise ValueError(f"{label} tool grants are invalid")
+
+
+def _validate_runtime_config(value: Mapping[str, Any]) -> None:
+    """Reject credentials, tokens, and provider claims from handler context data."""
+
+    for key, nested in value.items():
+        if isinstance(key, str) and key.lower() in _SENSITIVE_RUNTIME_KEYS:
+            raise ValueError("agent runtime configuration contains protected data")
+        if isinstance(nested, Mapping):
+            _validate_runtime_config(nested)
+        elif isinstance(nested, (tuple, list, frozenset, set)):
+            for item in nested:
+                if isinstance(item, Mapping):
+                    _validate_runtime_config(item)
+                elif isinstance(item, str) and item.lower().startswith(("bearer ", "basic ")):
+                    raise ValueError("agent runtime configuration contains protected data")
+        elif isinstance(nested, str) and nested.lower().startswith(("bearer ", "basic ")):
+            raise ValueError("agent runtime configuration contains protected data")
