@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from asyncio import CancelledError
 from dataclasses import dataclass, field
 from uuid import UUID
 
@@ -9,6 +10,7 @@ from pydantic import BaseModel, ConfigDict
 from spine.agents.catalog import (
     AgentBindingCatalog,
     AgentBindingResolver,
+    AgentImplementationRegistration,
     BindingResolutionError,
     BindingResolutionRequest,
     DeploymentSelectionPolicy,
@@ -65,21 +67,30 @@ class MalformedHandler:
 
 
 def capability(*, identity_seed: int = 10) -> CapabilityDefinition:
+    return capability_with_schema(identity_seed=identity_seed)
+
+
+def capability_with_schema(
+    *,
+    identity_seed: int = 10,
+    input_version: str = "1",
+    output_version: str = "1",
+) -> CapabilityDefinition:
     return CapabilityDefinition(
         id=uid(identity_seed),
         key="answer_question",
         display_name="Answer question",
-        input_schema=SchemaRef(name="answer_question.input", version="1"),
-        output_schema=SchemaRef(name="answer_question.output", version="1"),
+        input_schema=SchemaRef(name="answer_question.input", version=input_version),
+        output_schema=SchemaRef(name="answer_question.output", version=output_version),
     )
 
 
 def version(
     *,
     version_id: int = 20,
-    implementation_key: str = "qa.answer.local",
     runtime: AgentRuntimeKind = AgentRuntimeKind.CODE,
     capabilities: tuple[str, ...] = ("answer_question",),
+    runtime_config: dict[str, object] | None = None,
 ) -> AgentVersion:
     return AgentVersion(
         id=uid(version_id),
@@ -87,7 +98,7 @@ def version(
         version="2026.10.1",
         runtime=runtime,
         capabilities=capabilities,
-        runtime_config={"implementation_key": implementation_key},
+        runtime_config=runtime_config or {"profile": "deterministic-test"},
     )
 
 
@@ -160,19 +171,39 @@ def identity() -> CapabilitySchemaIdentity:
     return CapabilitySchemaIdentity.from_capability(capability())
 
 
+def registration(
+    *,
+    selected_version: AgentVersion | None = None,
+    selected_capability: CapabilityDefinition | None = None,
+    implementation_key: str = "qa.answer.local",
+) -> AgentImplementationRegistration:
+    selected_version = selected_version or version()
+    selected_capability = selected_capability or capability()
+    return AgentImplementationRegistration(
+        agent_version_id=selected_version.id,
+        agent_id=selected_version.agent_id,
+        runtime=selected_version.runtime,
+        implementation_key=implementation_key,
+        capability=selected_capability,
+        schema_identity=CapabilitySchemaIdentity.from_capability(selected_capability),
+    )
+
+
 def registry_with_factory(
     *,
-    implementation_key: str = "qa.answer.local",
+    selected_version: AgentVersion | None = None,
     selected_capability: CapabilityDefinition | None = None,
     factory=None,
 ) -> HandlerRegistry:
+    selected_version = selected_version or version()
     selected_capability = selected_capability or capability()
     factory = factory or (lambda selected_version: StructuralHandler())
     registry = HandlerRegistry()
     registry.register_factory(
-        implementation_key=implementation_key,
-        capability=selected_capability,
-        schema_identity=CapabilitySchemaIdentity.from_capability(selected_capability),
+        registration=registration(
+            selected_version=selected_version,
+            selected_capability=selected_capability,
+        ),
         factory=factory,
     )
     registry.finalize()
@@ -183,13 +214,30 @@ def resolution_request(
     *,
     selected_capability: CapabilityDefinition | None = None,
     environment: EnvironmentKind = EnvironmentKind.DEVELOPMENT,
-    allowed_stages: frozenset[DeploymentStage] = frozenset({DeploymentStage.DEVELOPMENT}),
 ) -> BindingResolutionRequest:
     return BindingResolutionRequest(
         workspace_id=uid(1),
         environment=environment,
         capability=selected_capability or capability(),
-        deployment_policy=DeploymentSelectionPolicy(allowed_stages=allowed_stages),
+    )
+
+
+def deployment_policy(
+    allowed_stages: frozenset[DeploymentStage] = frozenset({DeploymentStage.DEVELOPMENT}),
+) -> DeploymentSelectionPolicy:
+    return DeploymentSelectionPolicy(allowed_stages=allowed_stages)
+
+
+def resolver_for(
+    catalog: InMemoryCatalog,
+    registry: HandlerRegistry,
+    *,
+    policy: DeploymentSelectionPolicy | None = None,
+) -> AgentBindingResolver:
+    return AgentBindingResolver(
+        catalog=catalog,
+        registry=registry,
+        approved_deployment_policy=policy or deployment_policy(),
     )
 
 
@@ -197,22 +245,18 @@ def test_registry_registers_structural_handler_and_constructs_after_finalize() -
     handler = StructuralHandler()
     registry = HandlerRegistry()
     registry.register_handler(
-        implementation_key="qa.answer.local",
-        capability=capability(),
-        schema_identity=identity(),
+        registration=registration(),
         handler=handler,
     )
 
     with pytest.raises(HandlerRegistryError):
         registry.construct(
-            implementation_key="qa.answer.local",
             capability=capability(),
             version=version(),
         )
 
     registry.finalize()
     assert registry.construct(
-        implementation_key="qa.answer.local",
         capability=capability(),
         version=version(),
     ) is handler
@@ -229,17 +273,14 @@ def test_registry_accepts_explicit_async_function_adapter() -> None:
     adapted = adapt_async_function(handler)
     registry = HandlerRegistry()
     registry.register_handler(
-        implementation_key="qa.answer.async",
-        capability=capability(),
-        schema_identity=identity(),
+        registration=registration(implementation_key="qa.answer.async"),
         handler=adapted,
     )
     registry.finalize()
 
     assert registry.construct(
-        implementation_key="qa.answer.async",
         capability=capability(),
-        version=version(implementation_key="qa.answer.async"),
+        version=version(),
     ) is adapted
 
 
@@ -254,7 +295,6 @@ def test_registry_factory_receives_pinned_version_and_does_not_invoke_handler() 
     selected_version = version()
 
     handler = registry.construct(
-        implementation_key="qa.answer.local",
         capability=capability(),
         version=selected_version,
     )
@@ -273,11 +313,7 @@ def test_registry_factory_receives_pinned_version_and_does_not_invoke_handler() 
 )
 def test_registry_rejects_duplicate_capability_registration(method, value) -> None:
     registry = HandlerRegistry()
-    kwargs = {
-        "implementation_key": "qa.answer.local",
-        "capability": capability(),
-        "schema_identity": identity(),
-    }
+    kwargs = {"registration": registration()}
     registration_value = {"handler" if method == "register_handler" else "factory": value}
     getattr(registry, method)(**kwargs, **registration_value)
 
@@ -294,9 +330,28 @@ def test_registry_rejects_incompatible_schema_mapping() -> None:
 
     with pytest.raises(HandlerRegistryError, match="schema"):
         registry.register_factory(
-            implementation_key="qa.answer.local",
-            capability=selected_capability,
-            schema_identity=mismatched_identity,
+            registration=AgentImplementationRegistration(
+                agent_version_id=version().id,
+                agent_id=version().agent_id,
+                runtime=version().runtime,
+                implementation_key="qa.answer.local",
+                capability=selected_capability,
+                schema_identity=mismatched_identity,
+            ),
+            factory=lambda selected_version: StructuralHandler(),
+        )
+
+
+def test_registry_rejects_version_identity_mismatch() -> None:
+    registry = HandlerRegistry()
+    registry.register_factory(
+        registration=registration(),
+        factory=lambda selected_version: StructuralHandler(),
+    )
+
+    with pytest.raises(HandlerRegistryError, match="duplicate"):
+        registry.register_factory(
+            registration=registration(implementation_key="qa.answer.other"),
             factory=lambda selected_version: StructuralHandler(),
         )
 
@@ -306,7 +361,6 @@ def test_registry_rejects_construct_request_with_mismatched_schema_identity() ->
 
     with pytest.raises(HandlerRegistryError, match="schema"):
         registry.construct(
-            implementation_key="qa.answer.local",
             capability=capability(identity_seed=11),
             version=version(),
         )
@@ -317,30 +371,22 @@ def test_registry_rejects_missing_or_invalid_factories_and_handlers() -> None:
 
     with pytest.raises(HandlerRegistryError):
         registry.register_factory(
-            implementation_key="qa.answer.local",
-            capability=capability(),
-            schema_identity=identity(),
+            registration=registration(),
             factory=None,
         )
     with pytest.raises(HandlerRegistryError):
         registry.register_handler(
-            implementation_key="qa.answer.invalid",
-            capability=capability(),
-            schema_identity=identity(),
+            registration=registration(implementation_key="qa.answer.invalid"),
             handler=object(),
         )
     with pytest.raises(HandlerRegistryError):
         registry.register_handler(
-            implementation_key="qa.answer.malformed",
-            capability=capability(),
-            schema_identity=identity(),
+            registration=registration(implementation_key="qa.answer.malformed"),
             handler=MalformedHandler(),
         )
     with pytest.raises(HandlerRegistryError):
         registry.register_factory(
-            implementation_key="qa.answer.malformed",
-            capability=capability(),
-            schema_identity=identity(),
+            registration=registration(implementation_key="qa.answer.malformed"),
             factory=lambda: StructuralHandler(),
         )
 
@@ -354,22 +400,32 @@ def test_registry_sanitizes_factory_failures() -> None:
 
     with pytest.raises(HandlerRegistryError) as error:
         registry.construct(
-            implementation_key="qa.answer.local",
             capability=capability(),
             version=version(),
         )
 
     assert str(error.value) == "local handler construction failed"
     assert "secret" not in str(error.value)
+    assert isinstance(error.value.__cause__, RuntimeError)
+    assert "secret" in str(error.value.__cause__)
+
+
+def test_registry_does_not_swallow_factory_cancellation() -> None:
+    def cancelled_factory(selected_version: AgentVersion) -> StructuralHandler:
+        del selected_version
+        raise CancelledError
+
+    registry = registry_with_factory(factory=cancelled_factory)
+
+    with pytest.raises(CancelledError):
+        registry.construct(capability=capability(), version=version())
 
 
 @pytest.mark.parametrize("implementation_key", ("module:handler", "../handler", "handler.py"))
 def test_registry_rejects_executable_import_path_keys(implementation_key: str) -> None:
     with pytest.raises(HandlerRegistryError):
         HandlerRegistry().register_factory(
-            implementation_key=implementation_key,
-            capability=capability(),
-            schema_identity=identity(),
+            registration=registration(implementation_key=implementation_key),
             factory=lambda selected_version: StructuralHandler(),
         )
 
@@ -380,28 +436,72 @@ def test_registries_are_isolated_and_finalization_prevents_order_dependence() ->
 
     with pytest.raises(HandlerRegistryError):
         second.construct(
-            implementation_key="qa.answer.local",
             capability=capability(),
             version=version(),
         )
     with pytest.raises(HandlerRegistryError):
         first.register_factory(
-            implementation_key="qa.answer.other",
-            capability=capability(identity_seed=11),
-            schema_identity=CapabilitySchemaIdentity.from_capability(capability(identity_seed=11)),
+            registration=registration(
+                selected_version=version(version_id=22),
+                selected_capability=capability(identity_seed=11),
+                implementation_key="qa.answer.other",
+            ),
             factory=lambda selected_version: StructuralHandler(),
         )
 
 
-def test_resolver_selects_exact_scope_and_approved_deployment() -> None:
-    selected_version = version()
-    registry = registry_with_factory()
+def test_runtime_config_cannot_select_another_registered_implementation() -> None:
+    other_version = version(version_id=22)
+    selected_version = version(
+        runtime_config={"implementation_key": "qa.answer.other"},
+    )
+    approved_registration = registration(selected_version=selected_version)
+    registry = HandlerRegistry()
+    registry.register_factory(
+        registration=approved_registration,
+        factory=lambda selected_version: StructuralHandler(),
+    )
+    registry.register_factory(
+        registration=registration(
+            selected_version=other_version,
+            implementation_key="qa.answer.other",
+        ),
+        factory=lambda selected_version: StructuralHandler(),
+    )
+    registry.finalize()
+
+    handler = registry.construct(capability=capability(), version=selected_version)
+
+    assert isinstance(handler, AgentHandler)
+    assert registry.registration_for(
+        capability=capability(), version=selected_version
+    ).implementation_key == approved_registration.implementation_key
+
+
+def test_registered_implementation_is_pinned_to_agent_version() -> None:
+    first_version = version()
+    second_version = version(version_id=22)
+    registry = HandlerRegistry()
+    registry.register_factory(
+        registration=registration(selected_version=first_version),
+        factory=lambda selected_version: StructuralHandler(),
+    )
+    registry.finalize()
+
+    with pytest.raises(HandlerRegistryError, match="implementation"):
+        registry.construct(capability=capability(), version=second_version)
+
+
+@pytest.mark.parametrize("runtime", (AgentRuntimeKind.CODE, AgentRuntimeKind.LLM))
+def test_resolver_selects_registered_local_runtime(runtime: AgentRuntimeKind) -> None:
+    selected_version = version(runtime=runtime)
+    registry = registry_with_factory(selected_version=selected_version)
     catalog = InMemoryCatalog(
         bindings=(binding(),),
         versions={selected_version.id: selected_version},
         deployments=(deployment(),),
     )
-    resolver = AgentBindingResolver(catalog=catalog, registry=registry)
+    resolver = resolver_for(catalog, registry)
 
     resolved = resolver.resolve(resolution_request())
 
@@ -413,14 +513,42 @@ def test_resolver_selects_exact_scope_and_approved_deployment() -> None:
     assert isinstance(resolved.handler, AgentHandler)
 
 
+@pytest.mark.parametrize("runtime", (AgentRuntimeKind.CODE, AgentRuntimeKind.LLM))
+def test_resolver_rejects_version_specific_schema_mismatch(
+    runtime: AgentRuntimeKind,
+) -> None:
+    selected_version = version(version_id=22, runtime=runtime)
+    schema_v2 = capability_with_schema(input_version="2", output_version="2")
+    registry = HandlerRegistry()
+    registry.register_factory(
+        registration=registration(
+            selected_version=selected_version,
+            selected_capability=schema_v2,
+        ),
+        factory=lambda selected_version: StructuralHandler(),
+    )
+    registry.finalize()
+    catalog = InMemoryCatalog(
+        bindings=(binding(version_id=22),),
+        versions={selected_version.id: selected_version},
+        deployments=(deployment(version_id=22),),
+    )
+
+    with pytest.raises(BindingResolutionError, match="schema"):
+        resolver_for(catalog, registry).resolve(resolution_request())
+
+    resolved = resolver_for(catalog, registry).resolve(
+        resolution_request(selected_capability=schema_v2)
+    )
+    assert resolved.schema_identity == CapabilitySchemaIdentity.from_capability(schema_v2)
+
+
 def test_resolver_does_not_infer_binding_priority_winner() -> None:
     selected_version = version()
     second_version = version(version_id=22)
     registry = HandlerRegistry()
     registry.register_factory(
-        implementation_key="qa.answer.local",
-        capability=capability(),
-        schema_identity=identity(),
+        registration=registration(selected_version=selected_version),
         factory=lambda selected_version: StructuralHandler(),
     )
     registry.finalize()
@@ -431,7 +559,7 @@ def test_resolver_does_not_infer_binding_priority_winner() -> None:
     )
 
     with pytest.raises(BindingResolutionError, match="ambiguous"):
-        AgentBindingResolver(catalog=catalog, registry=registry).resolve(resolution_request())
+        resolver_for(catalog, registry).resolve(resolution_request())
 
 
 @pytest.mark.parametrize(
@@ -456,7 +584,7 @@ def test_resolver_rejects_missing_unknown_or_disabled_selection(
     catalog: InMemoryCatalog,
     message: str,
 ) -> None:
-    resolver = AgentBindingResolver(catalog=catalog, registry=registry_with_factory())
+    resolver = resolver_for(catalog, registry_with_factory())
 
     with pytest.raises(BindingResolutionError, match=message):
         resolver.resolve(resolution_request())
@@ -469,7 +597,7 @@ def test_resolver_rejects_zero_traffic_and_conflicting_deployments() -> None:
         versions={selected_version.id: selected_version},
         deployments=(deployment(traffic_percentage=0),),
     )
-    resolver = AgentBindingResolver(catalog=catalog, registry=registry_with_factory())
+    resolver = resolver_for(catalog, registry_with_factory())
 
     with pytest.raises(BindingResolutionError, match="deployment"):
         resolver.resolve(resolution_request())
@@ -486,7 +614,7 @@ def test_resolver_rejects_unsupported_runtime_and_missing_capability() -> None:
         versions={external_version.id: external_version},
         deployments=(deployment(),),
     )
-    resolver = AgentBindingResolver(catalog=catalog, registry=registry_with_factory())
+    resolver = resolver_for(catalog, registry_with_factory())
     with pytest.raises(BindingResolutionError, match="runtime"):
         resolver.resolve(resolution_request())
 
@@ -496,20 +624,33 @@ def test_resolver_rejects_unsupported_runtime_and_missing_capability() -> None:
         resolver.resolve(resolution_request())
 
 
-def test_resolver_rejects_unregistered_or_executable_implementation_key() -> None:
-    selected_version = version(implementation_key="qa.answer.unknown")
+def test_resolver_rejects_unregistered_llm_implementation() -> None:
+    selected_version = version(version_id=22, runtime=AgentRuntimeKind.LLM)
     catalog = InMemoryCatalog(
-        bindings=(binding(),),
+        bindings=(binding(version_id=22),),
         versions={selected_version.id: selected_version},
-        deployments=(deployment(),),
+        deployments=(deployment(version_id=22),),
     )
-    resolver = AgentBindingResolver(catalog=catalog, registry=registry_with_factory())
+
+    with pytest.raises(BindingResolutionError, match="implementation"):
+        resolver_for(catalog, registry_with_factory()).resolve(resolution_request())
+
+
+def test_resolver_rejects_unregistered_or_executable_implementation_key() -> None:
+    selected_version = version(version_id=22)
+    catalog = InMemoryCatalog(
+        bindings=(binding(version_id=22),),
+        versions={selected_version.id: selected_version},
+        deployments=(deployment(version_id=22),),
+    )
+    resolver = resolver_for(catalog, registry_with_factory())
 
     with pytest.raises(BindingResolutionError, match="implementation"):
         resolver.resolve(resolution_request())
 
-    executable = version(implementation_key="module:handler")
-    catalog.versions = {executable.id: executable}
+    catalog.versions = {version(version_id=23).id: version(version_id=23)}
+    catalog.bindings = (binding(version_id=23),)
+    catalog.deployments = (deployment(version_id=23),)
     with pytest.raises(BindingResolutionError, match="implementation"):
         resolver.resolve(resolution_request())
 
@@ -526,7 +667,7 @@ def test_resolver_rejects_cross_scope_candidates_without_fallback() -> None:
         versions={selected_version.id: selected_version},
         deployments=(deployment(),),
     )
-    resolver = AgentBindingResolver(catalog=catalog, registry=registry_with_factory())
+    resolver = resolver_for(catalog, registry_with_factory())
 
     with pytest.raises(BindingResolutionError, match="binding"):
         resolver.resolve(resolution_request())
@@ -541,20 +682,26 @@ def test_resolver_rejects_incompatible_deployment_policy() -> None:
     )
 
     with pytest.raises(BindingResolutionError, match="deployment"):
-        AgentBindingResolver(catalog=catalog, registry=registry_with_factory()).resolve(
-            resolution_request(allowed_stages=frozenset({DeploymentStage.PRODUCTION}))
+        resolver_for(
+            catalog,
+            registry_with_factory(),
+            policy=deployment_policy(
+                frozenset({DeploymentStage.PRODUCTION}),
+            ),
+        ).resolve(
+            resolution_request()
         )
 
 
 def test_resolver_pins_resolution_against_later_catalog_mutation() -> None:
     selected_version = version()
-    replacement = version(version_id=22, implementation_key="qa.answer.replacement")
+    replacement = version(version_id=22)
     catalog = InMemoryCatalog(
         bindings=(binding(),),
         versions={selected_version.id: selected_version},
         deployments=(deployment(),),
     )
-    resolved = AgentBindingResolver(catalog=catalog, registry=registry_with_factory()).resolve(
+    resolved = resolver_for(catalog, registry_with_factory()).resolve(
         resolution_request()
     )
 
@@ -571,9 +718,6 @@ def test_binding_resolution_requests_reject_zero_workspace_ids() -> None:
             workspace_id=UUID(int=0),
             environment=EnvironmentKind.DEVELOPMENT,
             capability=capability(),
-            deployment_policy=DeploymentSelectionPolicy(
-                allowed_stages=frozenset({DeploymentStage.DEVELOPMENT})
-            ),
         )
 
 

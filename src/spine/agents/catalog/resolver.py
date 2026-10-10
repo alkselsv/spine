@@ -8,7 +8,12 @@ from typing import Any
 from uuid import UUID
 
 from spine.agents.catalog.ports import AgentBindingCatalog
-from spine.agents.catalog.registry import HandlerRegistry, HandlerRegistryError
+from spine.agents.catalog.registry import (
+    AgentImplementationRegistration,
+    HandlerRegistry,
+    HandlerRegistryError,
+    HandlerSchemaError,
+)
 from spine.agents.runtime import AgentHandler, CapabilitySchemaIdentity
 from spine.domain.agents import (
     AgentBinding,
@@ -27,7 +32,12 @@ class BindingResolutionError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class DeploymentSelectionPolicy:
-    """The approved deployment stages accepted by one resolution request."""
+    """Deployment stages approved by trusted composition/governance code.
+
+    This value is policy input, not proof of authentication or authorization.
+    It must be assembled outside the invocation payload by the owning
+    composition/governance boundary.
+    """
 
     allowed_stages: frozenset[DeploymentStage]
 
@@ -42,12 +52,11 @@ class DeploymentSelectionPolicy:
 
 @dataclass(frozen=True, slots=True)
 class BindingResolutionRequest:
-    """Exact scope and capability requested by a composition boundary."""
+    """Exact scope and capability requested by an invocation boundary."""
 
     workspace_id: UUID
     environment: EnvironmentKind
     capability: CapabilityDefinition
-    deployment_policy: DeploymentSelectionPolicy
 
     def __post_init__(self) -> None:
         if not isinstance(self.workspace_id, UUID) or self.workspace_id.int == 0:
@@ -56,10 +65,6 @@ class BindingResolutionRequest:
             raise ValueError("binding resolution environment is invalid")
         if not isinstance(self.capability, CapabilityDefinition):
             raise ValueError("binding resolution capability is invalid")
-        if not isinstance(self.deployment_policy, DeploymentSelectionPolicy):
-            raise ValueError("binding resolution policy is invalid")
-
-
 @dataclass(frozen=True, slots=True)
 class ResolvedAgentBinding:
     """One immutable, pinned local selection for subsequent runtime execution."""
@@ -71,6 +76,7 @@ class ResolvedAgentBinding:
     binding: AgentBinding
     deployment: AgentDeployment
     agent_version: AgentVersion
+    registration: AgentImplementationRegistration
     implementation_key: str
     handler: AgentHandler[Any, Any]
 
@@ -84,9 +90,18 @@ class AgentBindingResolver:
     candidates fail closed as ambiguous.
     """
 
-    def __init__(self, *, catalog: AgentBindingCatalog, registry: HandlerRegistry) -> None:
+    def __init__(
+        self,
+        *,
+        catalog: AgentBindingCatalog,
+        registry: HandlerRegistry,
+        approved_deployment_policy: DeploymentSelectionPolicy,
+    ) -> None:
+        if not isinstance(approved_deployment_policy, DeploymentSelectionPolicy):
+            raise ValueError("binding resolution policy is invalid")
         self._catalog = catalog
         self._registry = registry
+        self._approved_deployment_policy = approved_deployment_policy
 
     def resolve(self, request: BindingResolutionRequest) -> ResolvedAgentBinding:
         bindings = self._read(
@@ -125,7 +140,7 @@ class AgentBindingResolver:
                 and item.workspace_id == request.workspace_id
                 and item.environment is request.environment
                 and item.agent_version_id == candidate.agent_version_id
-                and item.stage in request.deployment_policy.allowed_stages
+                and item.stage in self._approved_deployment_policy.allowed_stages
                 and item.stage is not DeploymentStage.DISABLED
                 and item.traffic_percentage > 0
             )
@@ -149,18 +164,22 @@ class AgentBindingResolver:
             raise BindingResolutionError("local agent binding selection is ambiguous")
 
         selected_binding, selected_deployment, selected_version = eligible[0]
-        if selected_version.runtime is not AgentRuntimeKind.CODE:
+        if selected_version.runtime is AgentRuntimeKind.EXTERNAL:
             raise BindingResolutionError("local agent runtime is unsupported")
         if request.capability.key not in selected_version.capabilities:
             raise BindingResolutionError("local agent capability is unsupported")
 
-        implementation_key = selected_version.runtime_config.get("implementation_key")
         try:
-            handler = self._registry.construct(
-                implementation_key=implementation_key,
+            registration = self._registry.registration_for(
                 capability=request.capability,
                 version=selected_version,
             )
+            handler = self._registry.construct(
+                capability=request.capability,
+                version=selected_version,
+            )
+        except HandlerSchemaError:
+            raise BindingResolutionError("local agent schema is incompatible") from None
         except HandlerRegistryError:
             raise BindingResolutionError("local agent implementation is unavailable") from None
 
@@ -172,7 +191,8 @@ class AgentBindingResolver:
             binding=selected_binding,
             deployment=selected_deployment,
             agent_version=selected_version,
-            implementation_key=implementation_key,
+            registration=registration,
+            implementation_key=registration.implementation_key,
             handler=handler,
         )
 

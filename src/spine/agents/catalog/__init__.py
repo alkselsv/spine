@@ -2,8 +2,11 @@
 
 from spine.agents.catalog.ports import AgentBindingCatalog
 from spine.agents.catalog.registry import (
+    AgentImplementationRegistration,
+    HandlerConstructionError,
     HandlerRegistry,
     HandlerRegistryError,
+    HandlerSchemaError,
     is_valid_implementation_key,
 )
 from spine.agents.catalog.resolver import (
@@ -17,11 +20,14 @@ from spine.agents.catalog.resolver import (
 __all__ = [
     "AgentBindingCatalog",
     "AgentBindingResolver",
+    "AgentImplementationRegistration",
     "BindingResolutionError",
     "BindingResolutionRequest",
     "DeploymentSelectionPolicy",
+    "HandlerConstructionError",
     "HandlerRegistry",
     "HandlerRegistryError",
+    "HandlerSchemaError",
     "ResolvedAgentBinding",
     "is_valid_implementation_key",
 ]

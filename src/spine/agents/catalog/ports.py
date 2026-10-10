@@ -1,4 +1,10 @@
-"""Read-only ports used by local agent binding resolution."""
+"""Read-only ports used by local agent binding resolution.
+
+The current port is synchronous because Issue #107 uses deterministic
+in-memory catalogs. A persistence-backed implementation may provide an async
+adapter when its underlying store requires asynchronous I/O; that integration
+is outside this registry seam.
+"""
 
 from __future__ import annotations
 
