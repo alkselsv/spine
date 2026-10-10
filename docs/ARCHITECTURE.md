@@ -2133,6 +2133,9 @@ detectors без специальных обходов в platform core.
 - [ADR-020](adr/0020-canonical-audit-and-diagnostic-separation.md): canonical
   append-only Audit Events, disclosure-safe Diagnostic Events и отдельное
   operational state для at-least-once outbox delivery.
+- [ADR-021](adr/0021-provider-neutral-oidc-and-canonical-request-authorization.md):
+  provider-neutral OIDC JWT authentication, canonical human mapping и trusted
+  Workspace/Environment request authorization.
 - ADR-TBD: artifact schemas и handoff evaluation protocol.
 - ADR-012: business outcome attribution и cost accounting.
 - ADR-013: future third-party Agent SDK, package trust и certification после появления подтверждённого внешнего кейса.
