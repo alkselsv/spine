@@ -5,16 +5,22 @@ from datetime import datetime, timezone
 import pytest
 
 from spine.application.diagnostics.audit import (
+    AccessDecisionAuditPayload,
     AuditOutcome,
+    AuditObjectReference,
     CommandAuditPayload,
     OutboxDeliveryAuditPayload,
     RequiredAuditCoordinator,
     UnsupportedAuditEventError,
 )
-from spine.application.persistence import OpaqueObjectReference
-from spine.application.persistence.errors import AuditConflictError, PersistenceUnavailableError
-from spine.application.persistence.errors import InvalidPersistenceContextError
 from spine.application.persistence.context import ContextOrigin
+from spine.application.persistence import OpaqueObjectReference
+from spine.application.persistence.errors import (
+    AuditConflictError,
+    InvalidPersistenceContextError,
+    PersistenceUnavailableError,
+)
+from spine.auth.errors import AuthorizationDeniedError
 from spine.domain.workspaces import Workspace
 
 from .adapter import AuditPersistenceAdapter
@@ -325,7 +331,7 @@ async def test_audit_reader_does_not_reveal_event_to_another_workspace(
         occurred_at=datetime(2026, 2, 3, 4, 4, tzinfo=timezone.utc),
         outcome=AuditOutcome.REJECTED,
         reason="access_denied",
-        target=OpaqueObjectReference(
+        target=AuditObjectReference(
             object_type="workspace",
             object_id=workspace_id,
             schema_version=1,
@@ -534,3 +540,110 @@ async def test_exit_without_commit_discards_audit_event(
     assert await persistence_adapter.read_audit_event(
         context, audit_event_id
     ) is None
+
+
+@pytest.mark.asyncio
+async def test_denied_required_audit_never_releases_protected_effect(
+    persistence_adapter: AuditPersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(2310)
+    audit_event_id = synthetic_uuid(2311)
+    protected_object_id = synthetic_uuid(2312)
+    context = persistence_adapter.workspace_context(workspace_id)
+    async with persistence_adapter.uow_factory(context) as setup:
+        await setup.workspaces.add(
+            Workspace(
+                id=workspace_id,
+                slug="required-audit-denied",
+                display_name="Required Audit Denied",
+            )
+        )
+        await setup.commit()
+    event = persistence_adapter.audit_events.build_event(
+        audit_event_id=audit_event_id,
+        workspace_id=workspace_id,
+        event_type="access.decision",
+        schema_version=1,
+        payload=AccessDecisionAuditPayload(
+            purpose="answer_question",
+            operation="read_content",
+        ),
+        origin=context.origin,
+        acting_subject_id=context.acting_subject_id,
+        service_principal_id=context.service_principal_id,
+        trace_id=context.trace_id,
+        occurred_at=datetime(2026, 2, 3, 4, 4, tzinfo=timezone.utc),
+        outcome=AuditOutcome.DENIED,
+        reason="authorization_denied",
+        target=AuditObjectReference(
+            object_type="document",
+            object_id=protected_object_id,
+            schema_version=1,
+        ),
+    )
+    released = False
+
+    async def release(_audit_event_id):
+        nonlocal released
+        released = True
+        return "protected result"
+
+    with pytest.raises(AuthorizationDeniedError) as captured:
+        await RequiredAuditCoordinator(
+            persistence_adapter.uow_factory
+        ).release_after_audit(
+            context=context,
+            event=event,
+            release=release,
+        )
+
+    assert released is False
+    assert str(protected_object_id) not in str(captured.value)
+    assert await persistence_adapter.read_audit_event(
+        context, audit_event_id
+    ) is not None
+
+
+@pytest.mark.asyncio
+async def test_historical_audit_event_cannot_authorize_a_new_unit_of_work(
+    persistence_adapter: AuditPersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(2320)
+    audit_event_id = synthetic_uuid(2321)
+    context = persistence_adapter.workspace_context(workspace_id)
+    async with persistence_adapter.uow_factory(context) as setup:
+        await setup.workspaces.add(
+            Workspace(
+                id=workspace_id,
+                slug="historical-audit-not-authority",
+                display_name="Historical Audit Is Not Authority",
+            )
+        )
+        await setup.commit()
+    event = persistence_adapter.audit_events.build_event(
+        audit_event_id=audit_event_id,
+        workspace_id=workspace_id,
+        event_type="access.decision",
+        schema_version=1,
+        payload=AccessDecisionAuditPayload(
+            purpose="answer_question",
+            operation="read_content",
+        ),
+        origin=context.origin,
+        acting_subject_id=context.acting_subject_id,
+        service_principal_id=context.service_principal_id,
+        trace_id=context.trace_id,
+        occurred_at=datetime(2026, 2, 3, 4, 4, tzinfo=timezone.utc),
+        outcome=AuditOutcome.ALLOWED,
+        reason="authorization_allowed",
+    )
+    async with persistence_adapter.uow_factory(context) as uow:
+        await uow.audit.append(event)
+        await uow.commit()
+    historical_event = await persistence_adapter.read_audit_event(
+        context, audit_event_id
+    )
+    assert historical_event is not None
+
+    with pytest.raises(InvalidPersistenceContextError):
+        persistence_adapter.uow_factory(historical_event)  # type: ignore[arg-type]

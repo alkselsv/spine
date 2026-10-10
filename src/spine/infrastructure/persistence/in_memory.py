@@ -145,27 +145,7 @@ def _audit_event_copy(value: AuditEvent) -> AuditEvent:
 
     if type(value) is not AuditEvent:
         raise TypeError("Unsupported Audit Event implementation.")
-    return AuditEvent(
-        audit_event_id=value.audit_event_id,
-        event_type=value.event_type,
-        schema_version=value.schema_version,
-        workspace_id=value.workspace_id,
-        environment_id=value.environment_id,
-        origin=value.origin,
-        acting_subject_id=value.acting_subject_id,
-        service_principal_id=value.service_principal_id,
-        trace_id=value.trace_id,
-        correlation_id=value.correlation_id,
-        causation_id=value.causation_id,
-        occurred_at=value.occurred_at,
-        appended_at=value.appended_at,
-        target=value.target.model_copy(deep=True) if value.target is not None else None,
-        outcome=value.outcome,
-        reason=value.reason,
-        producer_deduplication_id=value.producer_deduplication_id,
-        payload=value.payload.model_copy(deep=True),
-        payload_snapshot=value.payload_snapshot,
-    )
+    return value.detached_snapshot()
 
 
 class _Lifecycle(Enum):
@@ -433,13 +413,11 @@ class _AuditWriter:
                 self._uow._fail(
                     AuditConflictError("Audit Event identity already exists.")
                 )
-            stored = _audit_event_copy(
-                canonical.model_copy(
-                    update={
-                        "audit_event_id": audit_event_id,
-                        "appended_at": self._uow._audit_clock(),
-                    },
-                )
+            stored = canonical.detached_snapshot(
+                update={
+                    "audit_event_id": audit_event_id,
+                    "appended_at": self._uow._audit_clock(),
+                }
             )
             self._uow._pending_audit_events[audit_event_id] = stored
             return audit_event_id
@@ -1073,13 +1051,17 @@ class InMemoryPersistence:
         audit_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         audit_event_id_factory: Callable[[], UUID] = uuid4,
     ) -> None:
+        selected_audit_events = (
+            audit_events or AuditEventRegistry.with_default_families()
+        )
+        selected_audit_events.require_sealed()
         store = _Store(transaction_lock=transaction_lock)
         self.uow_factory = _InMemoryUnitOfWorkFactory(
             store,
             context_verifier,
             outbox_events,
             event_id_factory,
-            audit_events or AuditEventRegistry.with_default_families(),
+            selected_audit_events,
             audit_clock,
             audit_event_id_factory,
         )

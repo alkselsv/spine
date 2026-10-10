@@ -9,13 +9,15 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from spine.application.diagnostics.audit import (
     AccessDecisionAuditPayload,
     AuditEventRegistry,
+    AuditIdentifier,
+    AuditObjectReference,
     AuditOutcome,
     CanonicalTransitionAuditPayload,
     CommandAuditPayload,
     FeedbackAuditPayload,
     OutboxDeliveryAuditPayload,
+    UnsupportedAuditEventError,
 )
-from spine.application.persistence import OpaqueObjectReference
 from spine.application.persistence.context import ContextOrigin
 
 
@@ -61,6 +63,7 @@ def test_registry_rejects_payload_with_mutable_fields() -> None:
             event_type="unsafe.event",
             schema_version=1,
             payload_type=UnsafePayload,
+            allowed_outcomes=frozenset({AuditOutcome.ACCEPTED}),
         )
 
 
@@ -77,6 +80,7 @@ def test_registry_rejects_payload_with_unbounded_string_field() -> None:
             event_type="unsafe.content",
             schema_version=1,
             payload_type=ContentBearingPayload,
+            allowed_outcomes=frozenset({AuditOutcome.ACCEPTED}),
         )
 
 
@@ -87,7 +91,7 @@ def test_registry_rejects_payload_with_unbounded_string_field() -> None:
             "canonical.transition",
             CanonicalTransitionAuditPayload(
                 transition="workspace.activated",
-                object=OpaqueObjectReference(
+                object=AuditObjectReference(
                     object_type="workspace",
                     object_id=synthetic_uuid(10),
                     schema_version=1,
@@ -158,4 +162,53 @@ def test_audit_envelope_rejects_content_bearing_producer_identity() -> None:
             outcome=AuditOutcome.ACCEPTED,
             reason="command_valid",
             producer_deduplication_id="Bearer protected-token",
+        )
+
+
+def test_registry_rejects_content_bearing_payload_field_name() -> None:
+    class PromptPayload(BaseModel):
+        model_config = ConfigDict(extra="forbid", frozen=True)
+
+        prompt: AuditIdentifier
+
+    with pytest.raises(ValueError, match="content-bearing"):
+        AuditEventRegistry().register(
+            event_type="unsafe.prompt",
+            schema_version=1,
+            payload_type=PromptPayload,
+            allowed_outcomes=frozenset({AuditOutcome.ACCEPTED}),
+        )
+
+
+def test_registry_rejects_outcome_from_another_event_family() -> None:
+    registry = AuditEventRegistry.with_default_families()
+
+    with pytest.raises(UnsupportedAuditEventError, match="outcome"):
+        registry.build_event(
+            workspace_id=synthetic_uuid(40),
+            event_type="access.decision",
+            schema_version=1,
+            payload=AccessDecisionAuditPayload(
+                purpose="answer_question",
+                operation="read_content",
+            ),
+            origin=ContextOrigin.INTERACTIVE,
+            acting_subject_id=synthetic_uuid(41),
+            service_principal_id=None,
+            trace_id=synthetic_uuid(42),
+            occurred_at=datetime(2026, 1, 2, 3, 4, tzinfo=timezone.utc),
+            outcome=AuditOutcome.COMPLETED,
+            reason="invalid_family_outcome",
+        )
+
+
+def test_default_registry_cannot_be_mutated_after_construction() -> None:
+    registry = AuditEventRegistry.with_default_families()
+
+    with pytest.raises(RuntimeError, match="sealed"):
+        registry.register(
+            event_type="command.secondary",
+            schema_version=1,
+            payload_type=CommandAuditPayload,
+            allowed_outcomes=frozenset({AuditOutcome.ACCEPTED}),
         )

@@ -23,12 +23,8 @@ from uuid import UUID
 
 from pydantic import (
     BaseModel,
-    ConfigDict,
-    Field,
     StringConstraints,
     ValidationError,
-    field_validator,
-    model_validator,
 )
 from pydantic_core import PydanticSerializationError
 
@@ -42,11 +38,49 @@ from spine.application.persistence.errors import (
     InvalidPersistenceContextError,
     PersistenceError,
 )
-from spine.application.persistence.outbox import OpaqueObjectReference
+from spine.auth.errors import AuthorizationDeniedError
+from spine.domain.audit import (
+    AccessDecisionAuditPayload,
+    AuditEvent,
+    AuditIdentifier,
+    AuditObjectReference,
+    AuditOutcome,
+    CanonicalTransitionAuditPayload,
+    CommandAuditPayload,
+    FeedbackAuditPayload,
+    OutboxDeliveryAuditPayload,
+)
+from spine.domain.audit.models import AUDIT_IDENTIFIER_PATTERN
 
 
-_IDENTIFIER_PATTERN = r"^[a-z][a-z0-9_.:-]{0,127}$"
+_IDENTIFIER_PATTERN = AUDIT_IDENTIFIER_PATTERN
 _IDENTIFIER = re.compile(_IDENTIFIER_PATTERN)
+_FORBIDDEN_PAYLOAD_FIELD_TERMS = frozenset(
+    {
+        "answer",
+        "body",
+        "chain_of_thought",
+        "content",
+        "credential",
+        "document",
+        "error",
+        "exception",
+        "excerpt",
+        "filename",
+        "message",
+        "payload",
+        "prompt",
+        "provider",
+        "question",
+        "raw",
+        "secret",
+        "sql",
+        "stack",
+        "token",
+        "traceback",
+        "url",
+    }
+)
 _IMMUTABLE_SCALARS = (
     NoneType,
     str,
@@ -62,14 +96,6 @@ _IMMUTABLE_SCALARS = (
     timedelta,
 )
 _ResultT = TypeVar("_ResultT")
-AuditIdentifier = Annotated[
-    str,
-    StringConstraints(
-        min_length=1,
-        max_length=128,
-        pattern=_IDENTIFIER_PATTERN,
-    ),
-]
 
 
 class UnsupportedAuditEventError(PersistenceError):
@@ -79,12 +105,6 @@ class UnsupportedAuditEventError(PersistenceError):
 def _require_identifier(value: str, *, field_name: str) -> str:
     if _IDENTIFIER.fullmatch(value) is None:
         raise ValueError(f"{field_name} must be a bounded identifier.")
-    return value
-
-
-def _require_non_zero_uuid(value: UUID | None, *, field_name: str) -> UUID | None:
-    if value is not None and value.int == 0:
-        raise ValueError(f"{field_name} must be a non-zero UUID.")
     return value
 
 
@@ -147,6 +167,32 @@ def _has_only_bounded_safe_fields(payload_type: type[BaseModel]) -> bool:
     )
 
 
+def _has_no_content_bearing_field_names(
+    payload_type: type[BaseModel],
+    *,
+    checked_models: set[type[BaseModel]] | None = None,
+) -> bool:
+    checked = checked_models if checked_models is not None else set()
+    if payload_type in checked:
+        return True
+    checked.add(payload_type)
+    for name, field in payload_type.model_fields.items():
+        if any(term in name.lower() for term in _FORBIDDEN_PAYLOAD_FIELD_TERMS):
+            return False
+        annotation = field.annotation
+        if (
+            isinstance(annotation, type)
+            and issubclass(annotation, BaseModel)
+            and not issubclass(annotation, AuditObjectReference)
+            and not _has_no_content_bearing_field_names(
+                annotation,
+                checked_models=checked,
+            )
+        ):
+            return False
+    return True
+
+
 def _is_safe_payload_annotation(
     annotation: object,
     *,
@@ -171,7 +217,7 @@ def _is_safe_payload_annotation(
                 or _IDENTIFIER.fullmatch(member.value) is not None
                 for member in annotation.__members__.values()
             )
-        if issubclass(annotation, OpaqueObjectReference):
+        if issubclass(annotation, AuditObjectReference):
             return True
         if issubclass(annotation, BaseModel):
             return _has_only_bounded_safe_fields(annotation)
@@ -195,218 +241,78 @@ def _is_safe_payload_annotation(
     return False
 
 
-class AuditOutcome(str, Enum):
-    """Safe outcome codes shared by the initial Audit Event families."""
-
-    ACCEPTED = "accepted"
-    REJECTED = "rejected"
-    REPLAYED = "replayed"
-    COMPLETED = "completed"
-    COMMITTED = "committed"
-    ALLOWED = "allowed"
-    DENIED = "denied"
-    SUCCEEDED = "succeeded"
-    RETRY_SCHEDULED = "retry_scheduled"
-    QUARANTINED = "quarantined"
-    RECORDED = "recorded"
-
-
-class CommandAuditPayload(BaseModel):
-    """Safe command-family payload."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    command_type: AuditIdentifier
-
-    @field_validator("command_type")
-    @classmethod
-    def validate_command_type(cls, value: str) -> str:
-        return _require_identifier(value, field_name="command_type")
-
-
-class CanonicalTransitionAuditPayload(BaseModel):
-    """Safe canonical-transition payload with an opaque object identity."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    transition: AuditIdentifier
-    object: OpaqueObjectReference
-
-    @field_validator("transition")
-    @classmethod
-    def validate_transition(cls, value: str) -> str:
-        return _require_identifier(value, field_name="transition")
-
-
-class AccessDecisionAuditPayload(BaseModel):
-    """Safe access-decision payload without protected target content."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    purpose: AuditIdentifier
-    operation: AuditIdentifier
-
-    @field_validator("purpose", "operation")
-    @classmethod
-    def validate_policy_identifier(cls, value: str, info: Any) -> str:
-        return _require_identifier(value, field_name=info.field_name)
-
-
-class OutboxDeliveryAuditPayload(BaseModel):
-    """Safe delivery-attempt payload."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    outbox_event_id: UUID
-    attempt_id: UUID
-    attempt_number: int
-
-    @field_validator("outbox_event_id", "attempt_id")
-    @classmethod
-    def validate_delivery_identifier(cls, value: UUID, info: Any) -> UUID:
-        checked = _require_non_zero_uuid(value, field_name=info.field_name)
-        assert checked is not None
-        return checked
-
-    @field_validator("attempt_number")
-    @classmethod
-    def validate_attempt_number(cls, value: int) -> int:
-        if isinstance(value, bool) or value <= 0:
-            raise ValueError("attempt_number must be a positive integer.")
-        return value
-
-
-class FeedbackAuditPayload(BaseModel):
-    """Safe feedback-family payload."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    feedback_type: AuditIdentifier
-
-    @field_validator("feedback_type")
-    @classmethod
-    def validate_feedback_type(cls, value: str) -> str:
-        return _require_identifier(value, field_name="feedback_type")
-
-
-class AuditEvent(BaseModel):
-    """Detached immutable snapshot accepted only through an event registry."""
-
-    model_config = ConfigDict(
-        extra="forbid",
-        frozen=True,
-        arbitrary_types_allowed=True,
-        revalidate_instances="always",
-    )
-
-    audit_event_id: UUID | None = None
-    event_type: str
-    schema_version: int
-    workspace_id: UUID
-    environment_id: UUID | None = None
-    origin: ContextOrigin
-    acting_subject_id: UUID | None = None
-    service_principal_id: UUID | None = None
-    trace_id: UUID
-    correlation_id: UUID | None = None
-    causation_id: UUID | None = None
-    occurred_at: datetime
-    appended_at: datetime | None = None
-    target: OpaqueObjectReference | None = None
-    outcome: AuditOutcome
-    reason: str
-    producer_deduplication_id: str | None = None
-    payload: BaseModel
-    payload_snapshot: bytes | None = Field(default=None, exclude=True, repr=False)
-
-    @field_validator("event_type", "reason")
-    @classmethod
-    def validate_identifier(cls, value: str, info: Any) -> str:
-        return _require_identifier(value, field_name=info.field_name)
-
-    @field_validator("schema_version")
-    @classmethod
-    def validate_schema_version(cls, value: int) -> int:
-        if isinstance(value, bool) or value <= 0:
-            raise ValueError("schema_version must be a positive integer.")
-        return value
-
-    @field_validator(
-        "audit_event_id",
-        "workspace_id",
-        "environment_id",
-        "acting_subject_id",
-        "service_principal_id",
-        "trace_id",
-        "correlation_id",
-        "causation_id",
-    )
-    @classmethod
-    def validate_identifiers(cls, value: UUID | None, info: Any) -> UUID | None:
-        return _require_non_zero_uuid(value, field_name=info.field_name)
-
-    @field_validator("occurred_at", "appended_at")
-    @classmethod
-    def validate_timestamp(cls, value: datetime | None) -> datetime | None:
-        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
-            raise ValueError("audit timestamps must be timezone-aware.")
-        return value
-
-    @field_validator("producer_deduplication_id")
-    @classmethod
-    def validate_producer_identity(cls, value: str | None) -> str | None:
-        if value is not None:
-            _require_identifier(
-                value,
-                field_name="producer_deduplication_id",
-            )
-        return value
-
-    @model_validator(mode="after")
-    def validate_actor_scope(self) -> AuditEvent:
-        if self.origin is ContextOrigin.INTERACTIVE:
-            if self.acting_subject_id is None:
-                raise ValueError("interactive audit events require an acting subject.")
-        elif self.origin is ContextOrigin.WORKER:
-            if self.acting_subject_id is not None or self.service_principal_id is None:
-                raise ValueError(
-                    "worker audit events require only a service principal."
-                )
-        return self
-
-    def payload_json(self) -> dict[str, Any]:
-        """Return the registry-validated payload in JSON-compatible form."""
-
-        if self.payload_snapshot is None:
-            raise ValueError("Audit Event payload has not been registry validated.")
-        payload = json.loads(self.payload_snapshot)
-        if not isinstance(payload, dict):
-            raise ValueError("Audit Event payload must serialize as an object.")
-        return payload
-
-
 class AuditEventRegistry:
     """Explicit allowlist of producer-owned Audit Event payload schemas."""
 
     def __init__(self) -> None:
         self._payload_types: dict[tuple[str, int], type[BaseModel]] = {}
+        self._allowed_outcomes: dict[
+            tuple[str, int], frozenset[AuditOutcome]
+        ] = {}
+        self._sealed = False
 
     @classmethod
     def with_default_families(cls) -> AuditEventRegistry:
         registry = cls()
-        for event_type, payload_type in (
-            ("command.outcome", CommandAuditPayload),
-            ("canonical.transition", CanonicalTransitionAuditPayload),
-            ("access.decision", AccessDecisionAuditPayload),
-            ("outbox.delivery", OutboxDeliveryAuditPayload),
-            ("feedback.recorded", FeedbackAuditPayload),
+        for event_type, payload_type, allowed_outcomes in (
+            (
+                "command.outcome",
+                CommandAuditPayload,
+                frozenset(
+                    {
+                        AuditOutcome.ACCEPTED,
+                        AuditOutcome.REJECTED,
+                        AuditOutcome.REPLAYED,
+                        AuditOutcome.COMPLETED,
+                    }
+                ),
+            ),
+            (
+                "canonical.transition",
+                CanonicalTransitionAuditPayload,
+                frozenset({AuditOutcome.COMMITTED}),
+            ),
+            (
+                "access.decision",
+                AccessDecisionAuditPayload,
+                frozenset({AuditOutcome.ALLOWED, AuditOutcome.DENIED}),
+            ),
+            (
+                "outbox.delivery",
+                OutboxDeliveryAuditPayload,
+                frozenset(
+                    {
+                        AuditOutcome.SUCCEEDED,
+                        AuditOutcome.RETRY_SCHEDULED,
+                        AuditOutcome.QUARANTINED,
+                    }
+                ),
+            ),
+            (
+                "feedback.recorded",
+                FeedbackAuditPayload,
+                frozenset({AuditOutcome.RECORDED}),
+            ),
         ):
             registry.register(
                 event_type=event_type,
                 schema_version=1,
                 payload_type=payload_type,
+                allowed_outcomes=allowed_outcomes,
             )
+        registry.seal()
         return registry
+
+    def seal(self) -> None:
+        """Finish construction so runtime definitions cannot change."""
+
+        if not self._payload_types:
+            raise ValueError("Audit Event registry must not be empty.")
+        self._sealed = True
+
+    def require_sealed(self) -> None:
+        if not self._sealed:
+            raise RuntimeError("Audit Event registry is not sealed.")
 
     def register(
         self,
@@ -414,7 +320,10 @@ class AuditEventRegistry:
         event_type: str,
         schema_version: int,
         payload_type: type[BaseModel],
+        allowed_outcomes: frozenset[AuditOutcome],
     ) -> None:
+        if self._sealed:
+            raise RuntimeError("Audit Event registry is sealed.")
         event_type = _require_identifier(event_type, field_name="event_type")
         if isinstance(schema_version, bool) or schema_version <= 0:
             raise ValueError("schema_version must be a positive integer.")
@@ -424,6 +333,12 @@ class AuditEventRegistry:
             raise ValueError('Audit payload schemas must configure extra="forbid".')
         if payload_type.model_config.get("frozen") is not True:
             raise ValueError("Audit payload schemas must be frozen.")
+        if (
+            type(allowed_outcomes) is not frozenset
+            or not allowed_outcomes
+            or any(type(outcome) is not AuditOutcome for outcome in allowed_outcomes)
+        ):
+            raise ValueError("Audit Event outcomes must be a non-empty frozen set.")
         if not _is_deeply_immutable_annotation(
             payload_type,
             checked_models=set(),
@@ -435,19 +350,34 @@ class AuditEventRegistry:
             raise ValueError(
                 "Audit payload schemas must contain only bounded safe fields."
             )
+        if not _has_no_content_bearing_field_names(payload_type):
+            raise ValueError(
+                "Audit payload schemas must not contain content-bearing fields."
+            )
         key = (event_type, schema_version)
         existing = self._payload_types.get(key)
-        if existing is not None and existing is not payload_type:
+        existing_outcomes = self._allowed_outcomes.get(key)
+        if existing is not None and (
+            existing is not payload_type or existing_outcomes != allowed_outcomes
+        ):
             raise ValueError("Audit Event type and schema version are already registered.")
         self._payload_types[key] = payload_type
+        self._allowed_outcomes[key] = allowed_outcomes
 
     def validate(self, event: AuditEvent) -> AuditEvent:
         """Return a detached snapshot after revalidating its registered schema."""
 
+        self.require_sealed()
         expected = self._payload_types.get((event.event_type, event.schema_version))
         if expected is None or type(event.payload) is not expected:
             raise UnsupportedAuditEventError(
                 "Audit Event type, version, or payload is not registered."
+            )
+        if event.outcome not in self._allowed_outcomes[
+            (event.event_type, event.schema_version)
+        ]:
+            raise UnsupportedAuditEventError(
+                "Audit Event outcome is not registered for this event family."
             )
         try:
             canonical_payload = expected.model_validate(
@@ -465,7 +395,7 @@ class AuditEventRegistry:
                 separators=(",", ":"),
             ).encode("utf-8")
             canonical_target = (
-                OpaqueObjectReference.model_validate(
+                AuditObjectReference.model_validate(
                     event.target.model_dump(
                         mode="python",
                         round_trip=True,
@@ -476,26 +406,12 @@ class AuditEventRegistry:
                 if event.target is not None
                 else None
             )
-            return AuditEvent(
-                audit_event_id=event.audit_event_id,
-                event_type=event.event_type,
-                schema_version=event.schema_version,
-                workspace_id=event.workspace_id,
-                environment_id=event.environment_id,
-                origin=event.origin,
-                acting_subject_id=event.acting_subject_id,
-                service_principal_id=event.service_principal_id,
-                trace_id=event.trace_id,
-                correlation_id=event.correlation_id,
-                causation_id=event.causation_id,
-                occurred_at=event.occurred_at,
-                appended_at=event.appended_at,
-                target=canonical_target,
-                outcome=event.outcome,
-                reason=event.reason,
-                producer_deduplication_id=event.producer_deduplication_id,
-                payload=canonical_payload,
-                payload_snapshot=serialized_payload,
+            return event.detached_snapshot(
+                update={
+                    "target": canonical_target,
+                    "payload": canonical_payload,
+                    "payload_snapshot": serialized_payload,
+                }
             )
         except (
             PydanticSerializationError,
@@ -524,7 +440,7 @@ class AuditEventRegistry:
         environment_id: UUID | None = None,
         correlation_id: UUID | None = None,
         causation_id: UUID | None = None,
-        target: OpaqueObjectReference | None = None,
+        target: AuditObjectReference | None = None,
         producer_deduplication_id: str | None = None,
         audit_event_id: UUID | None = None,
     ) -> AuditEvent:
@@ -600,6 +516,8 @@ class RequiredAuditCoordinator:
         async with self._uow_factory(context) as uow:
             audit_event_id = await uow.audit.append(event)
             await uow.commit()
+        if event.outcome is AuditOutcome.DENIED:
+            raise AuthorizationDeniedError()
         return await release(audit_event_id)
 
 
