@@ -43,6 +43,14 @@ ERROR_LEAK_CORPUS = (
     "Traceback (most recent call last):\n  File '/srv/app.py', line 1",
 )
 
+DIAGNOSTIC_LEAK_CORPUS = ERROR_LEAK_CORPUS + (
+    "production-token",
+    "raw failure from provider",
+    "system prompt containing customer instructions",
+    "answer copied from a protected source",
+    "chain_of_thought hidden model reasoning",
+)
+
 
 def assert_safe_structured_error(error: StructuredError) -> None:
     """Assert the public envelope has only its allowlisted fields."""

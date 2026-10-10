@@ -1,4 +1,9 @@
-"""Infrastructure adapters for trusted diagnostic context ingress."""
+"""Infrastructure adapters for trusted diagnostic ingress and safe sinks."""
+
+from spine.infrastructure.diagnostics.sinks import (
+    JsonLoggingDiagnosticSink,
+    RecordingDiagnosticSink,
+)
 
 from spine.infrastructure.diagnostics.traceparent import (
     InvalidTraceParentError,
@@ -10,6 +15,8 @@ from spine.infrastructure.diagnostics.traceparent import (
 
 __all__ = [
     "InvalidTraceParentError",
+    "JsonLoggingDiagnosticSink",
+    "RecordingDiagnosticSink",
     "TraceParent",
     "context_from_traceparent",
     "format_traceparent",
