@@ -29,12 +29,12 @@ class EventSink(Protocol, Generic[EventT]):
 
 
 @runtime_checkable
-class TrustedExecutionIdentity(Protocol):
-    """Minimal structural view of Issue #69's trusted authorization context.
+class AuthorizationContextView(Protocol):
+    """Minimal data view supplied by Issue #69/#108 authorization boundaries.
 
-    Implementations are issued and verified by the authorization boundary. The
-    agent runtime only consumes this view; it cannot construct authority from
-    invocation payloads or diagnostic identifiers.
+    Implementations are issued and verified outside the local contract layer.
+    Structural compatibility and deterministic fakes make this a testable
+    port; satisfying the protocol alone is not proof of authorization.
     """
 
     @property
@@ -56,3 +56,8 @@ class TrustedExecutionIdentity(Protocol):
     @property
     def authorization_generation(self) -> int:
         """Authorization-directory generation used for stale-context checks."""
+
+
+# Existing consumers use this approved port name. Keep it as an alias while
+# making the non-authoritative view semantics explicit above.
+TrustedExecutionIdentity = AuthorizationContextView

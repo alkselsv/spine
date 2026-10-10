@@ -7,7 +7,13 @@ from uuid import UUID, uuid4
 
 from pydantic import Field, field_validator
 
-from spine.domain.common import ActorRef, DefinitionModel, EnvironmentKind, FrozenDict
+from spine.domain.common import (
+    ActorRef,
+    DefinitionModel,
+    EnvironmentKind,
+    FrozenDict,
+    ValidatedDefinitionModel,
+)
 
 
 class AgentRuntimeKind(str, Enum):
@@ -32,7 +38,7 @@ class AgentDefinition(DefinitionModel):
     description: str = ""
 
 
-class AgentVersion(DefinitionModel):
+class AgentVersion(ValidatedDefinitionModel):
     id: UUID = Field(default_factory=uuid4)
     agent_id: UUID
     version: str

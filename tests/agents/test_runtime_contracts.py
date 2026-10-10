@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import ast
+from copy import copy, deepcopy
+import json
 from pathlib import Path
 from uuid import UUID
 
@@ -9,16 +11,19 @@ import pytest
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from spine.agents.runtime import (
+    AgentInvocationContext,
     AgentExecutionContext,
     AgentHandler,
     AgentRequest,
     AgentResponse,
+    CapabilitySchemaIdentity,
     CancellationToken,
     EventSink,
     TrustedExecutionIdentity,
     TrustedExecutionIdentitySnapshot,
-    agent_request_from_invocation,
+    invocation_context_from_invocation,
     agent_result_from_response,
+    typed_request_from_invocation,
 )
 from spine.application.diagnostics import DiagnosticContext, Retryability, StructuredError
 from spine.domain.agents import (
@@ -34,6 +39,101 @@ from spine.domain.common import ActorKind, ActorRef, EnvironmentKind, FrozenDict
 
 def uid(value: int) -> UUID:
     return UUID(int=value)
+
+
+def test_frozen_dict_supports_default_construction_and_copy() -> None:
+    empty = FrozenDict()
+    original = FrozenDict({"nested": {"values": [1, {"flag": True}]}})
+
+    assert empty == {}
+    assert copy(original) == original
+    copied = deepcopy(original)
+    assert copied == original
+    assert isinstance(copied["nested"], FrozenDict)
+    assert isinstance(copied["nested"]["values"], tuple)
+    with pytest.raises(TypeError):
+        copied["nested"]["values"] += (2,)  # type: ignore[index]
+
+
+def test_shared_immutable_models_revalidate_supported_copy_paths() -> None:
+    schema = SchemaRef(name="question", version="1", json_schema={"properties": {"x": 1}})
+    agent = version()
+
+    for copied in (
+        schema.model_copy(update={"json_schema": {"unsafe": []}}),
+        schema.copy(update={"json_schema": {"unsafe": []}}),
+        schema.model_copy(deep=True),
+        agent.model_copy(update={"runtime_config": {"unsafe": []}}),
+        agent.copy(update={"runtime_config": {"unsafe": []}}),
+        agent.model_copy(deep=True),
+    ):
+        assert isinstance(copied, type(schema) if isinstance(copied, SchemaRef) else type(agent))
+        frozen_value = copied.json_schema if isinstance(copied, SchemaRef) else copied.runtime_config
+        assert isinstance(frozen_value, FrozenDict)
+        with pytest.raises(TypeError):
+            frozen_value["unsafe"] = []  # type: ignore[index]
+
+    round_tripped_schema = SchemaRef.model_validate(schema.model_dump())
+    round_tripped_agent = AgentVersion.model_validate(agent.model_dump())
+    assert isinstance(round_tripped_schema.json_schema, FrozenDict)
+    assert isinstance(round_tripped_agent.runtime_config, FrozenDict)
+    assert json.loads(schema.model_dump_json())["json_schema"] == {"properties": {"x": 1}}
+
+    with pytest.raises(TypeError):
+        SchemaRef.model_construct(name="question", version="1", json_schema={"unsafe": []})
+    with pytest.raises(TypeError):
+        AgentVersion.model_construct(
+            agent_id=uid(21),
+            version="2026.10.1",
+            runtime=AgentRuntimeKind.CODE,
+            capabilities=("answer_question",),
+            runtime_config={"unsafe": []},
+        )
+
+
+def test_runtime_context_has_a_data_only_serialization_boundary() -> None:
+    execution_context = context()
+    serialized = execution_context.model_dump()
+
+    assert "cancellation" not in serialized
+    assert "event_sink" not in serialized
+    assert json.loads(execution_context.model_dump_json())["workspace_id"] == str(uid(1))
+    assert "cancellation" not in AgentExecutionContext.model_json_schema()["properties"]
+    copied = execution_context.model_copy(deep=True)
+    assert copied.workspace_id == execution_context.workspace_id
+    with pytest.raises(ValidationError):
+        AgentExecutionContext.model_validate(serialized)
+
+
+def test_schema_identity_must_match_capability_but_unknown_versions_remain_structural() -> None:
+    mismatched = CapabilitySchemaIdentity.from_capability(capability()).model_copy(
+        update={"input_schema": SchemaRef(name="other.input", version="99")}
+    )
+
+    with pytest.raises(ValidationError, match="schema identity"):
+        AgentRequest(
+            capability=capability(),
+            schema_identity=mismatched,
+            input=InputModel(question="q"),
+        )
+    with pytest.raises(ValidationError, match="schema identity"):
+        context(schema_identity=mismatched)
+
+    future_version = version().model_copy(update={"version": "future-release"})
+    assert context(execution_version=future_version).agent_version.version == "future-release"
+
+
+def test_identity_snapshot_is_data_not_authorization_proof() -> None:
+    snapshot = TrustedExecutionIdentitySnapshot(
+        workspace_id=uid(1),
+        environment_id=uid(2),
+        acting_subject_id=uid(3),
+        authorization_generation=1,
+    )
+
+    assert not hasattr(snapshot, "issue_authority")
+    with pytest.raises(ValidationError, match="authorization provenance"):
+        context(trusted_identity=snapshot)
 
 
 class InputModel(BaseModel):
@@ -107,6 +207,7 @@ def context(
         "step_run_id": uid(32),
         "agent_run_id": uid(33),
         "capability": capability(),
+        "schema_identity": CapabilitySchemaIdentity.from_capability(capability()),
         "agent_version": execution_version or version(),
         "idempotency_key": "qa:30:1",
         "diagnostic_context": DiagnosticContext(trace_id=uid(40)),
@@ -121,13 +222,28 @@ def context(
     return AgentExecutionContext(**values)
 
 
+def response(
+    *,
+    output: OutputModel | None = None,
+    error: StructuredError | None = None,
+) -> AgentResponse[OutputModel]:
+    return AgentResponse(
+        schema_identity=CapabilitySchemaIdentity.from_capability(capability()),
+        output=output,
+        error=error,
+    )
+
+
 def test_agent_request_and_response_preserve_generic_types() -> None:
     request = AgentRequest[InputModel](
         capability=capability(),
         input=InputModel(question="What is the answer?"),
         constraints={"max_sources": 3},
     )
-    response = AgentResponse[OutputModel](output=OutputModel(answer="42"))
+    response = AgentResponse[OutputModel](
+        schema_identity=CapabilitySchemaIdentity.from_capability(capability()),
+        output=OutputModel(answer="42"),
+    )
 
     assert isinstance(request.input, InputModel)
     assert isinstance(response.output, OutputModel)
@@ -143,6 +259,19 @@ def test_agent_request_and_response_preserve_generic_types() -> None:
     assert isinstance(request.capability.input_schema.json_schema["nested"], FrozenDict)
 
 
+def test_generic_contracts_reject_values_that_do_not_match_declared_types() -> None:
+    with pytest.raises(ValidationError):
+        AgentRequest[InputModel](
+            capability=capability(),
+            input={"answer": "q"},
+        )
+    with pytest.raises(ValidationError):
+        AgentResponse[OutputModel](
+            schema_identity=CapabilitySchemaIdentity.from_capability(capability()),
+            output="42",
+        )
+
+
 def test_public_contracts_are_frozen_and_reject_extra_fields() -> None:
     request = AgentRequest[InputModel](capability=capability(), input=InputModel(question="q"))
 
@@ -155,7 +284,11 @@ def test_public_contracts_are_frozen_and_reject_extra_fields() -> None:
             unexpected=True,
         )
     with pytest.raises(ValidationError):
-        AgentResponse[OutputModel](output=OutputModel(answer="42"), unexpected=True)
+        AgentResponse[OutputModel](
+            schema_identity=CapabilitySchemaIdentity.from_capability(capability()),
+            output=OutputModel(answer="42"),
+            unexpected=True,
+        )
     with pytest.raises(ValidationError):
         request.model_copy(update={"input": {"question": "changed", "extra": True}})
     with pytest.raises(ValidationError):
@@ -173,8 +306,8 @@ def test_response_rejects_mixed_output_and_structured_error() -> None:
     )
 
     with pytest.raises(ValidationError):
-        AgentResponse[OutputModel](output=OutputModel(answer="42"), error=error)
-    assert AgentResponse[OutputModel](error=error).output is None
+        response(output=OutputModel(answer="42"), error=error)
+    assert response(error=error).output is None
 
 
 def test_runtime_contract_rejects_empty_schema_identity() -> None:
@@ -250,7 +383,7 @@ def test_compatibility_mapping_rejects_capability_substitution() -> None:
     )
 
     with pytest.raises(ValueError, match="capability"):
-        agent_request_from_invocation(
+        typed_request_from_invocation(
             invocation,
             capability=capability(),
             input=InputModel(question="q"),
@@ -268,7 +401,7 @@ def test_ports_are_structural_protocols() -> None:
             execution_context: AgentExecutionContext,
         ) -> AgentResponse[OutputModel]:
             del request, execution_context
-            return AgentResponse(output=OutputModel(answer="42"))
+            return response(output=OutputModel(answer="42"))
 
     assert isinstance(Handler(), AgentHandler)
 
@@ -303,16 +436,22 @@ def test_compatibility_mappings_preserve_legacy_invocation_and_result_envelopes(
         constraints={"max_sources": 3},
         idempotency_key="qa:30:1",
     )
-    request = agent_request_from_invocation(
+    request = typed_request_from_invocation(
         invocation,
         capability=capability(),
         input=InputModel(question="q"),
     )
-    response = AgentResponse(output=OutputModel(answer="42"))
-    result = agent_result_from_response(response, output_artifact_ids=(uid(70),))
+    handler_response = response(output=OutputModel(answer="42"))
+    result = agent_result_from_response(handler_response, output_artifact_ids=(uid(70),))
+    invocation_context = invocation_context_from_invocation(invocation)
 
     assert request.capability.key == invocation.capability
     assert request.constraints == invocation.constraints
+    assert invocation_context.work_item_id == invocation.work_item_id
+    assert invocation_context.step_run_id == invocation.step_run_id
+    assert invocation_context.acting_on_behalf_of == invocation.acting_on_behalf_of
+    assert invocation_context.input_artifact_ids == invocation.input_artifact_ids
+    assert invocation_context.idempotency_key == invocation.idempotency_key
     assert isinstance(result, AgentResult)
     assert result.status is AgentRunStatus.SUCCEEDED
     assert result.output_artifact_ids == (uid(70),)
@@ -320,7 +459,37 @@ def test_compatibility_mappings_preserve_legacy_invocation_and_result_envelopes(
 
 def test_compatibility_mapping_requires_persisted_outputs_for_success() -> None:
     with pytest.raises(ValueError, match="persisted output"):
-        agent_result_from_response(AgentResponse(output=OutputModel(answer="42")))
+        agent_result_from_response(response(output=OutputModel(answer="42")))
+
+
+@pytest.mark.parametrize("status", (AgentRunStatus.FAILED, AgentRunStatus.CANCELLED))
+def test_compatibility_mapping_rejects_non_success_without_error(status: AgentRunStatus) -> None:
+    with pytest.raises(ValueError, match="requires a structured error"):
+        agent_result_from_response(response(output=OutputModel(answer="42")), status=status)
+
+
+def test_compatibility_mapping_rejects_failure_with_output_artifacts() -> None:
+    error = StructuredError(
+        code="spine.internal.unexpected",
+        safe_message="An unexpected internal error occurred.",
+        retryability=Retryability.NEVER,
+        trace_id=uid(82),
+    )
+
+    with pytest.raises(ValueError, match="cannot contain output"):
+        agent_result_from_response(
+            response(error=error),
+            output_artifact_ids=(uid(70),),
+            status=AgentRunStatus.FAILED,
+        )
+
+
+def test_compatibility_mapping_rejects_zero_output_artifact_id() -> None:
+    with pytest.raises(ValueError, match="artifact identifiers"):
+        agent_result_from_response(
+            response(output=OutputModel(answer="42")),
+            output_artifact_ids=(UUID(int=0),),
+        )
 
 
 def test_compatibility_mapping_preserves_safe_structured_error() -> None:
@@ -331,7 +500,7 @@ def test_compatibility_mapping_preserves_safe_structured_error() -> None:
         trace_id=uid(80),
     )
 
-    result = agent_result_from_response(AgentResponse[OutputModel](error=error))
+    result = agent_result_from_response(response(error=error))
 
     assert result.status is AgentRunStatus.FAILED
     assert result.error == error.safe_message
@@ -346,7 +515,7 @@ def test_compatibility_mapping_preserves_existing_non_success_status() -> None:
     )
 
     result = agent_result_from_response(
-        AgentResponse[OutputModel](error=error),
+        response(error=error),
         status=AgentRunStatus.CANCELLED,
     )
 
