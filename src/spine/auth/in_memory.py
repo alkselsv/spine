@@ -2,28 +2,41 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from enum import Enum
-from uuid import UUID
+from typing import TypeVar
+from uuid import NAMESPACE_URL, UUID, uuid5
 
-from pydantic import Field, ValidationError, field_validator
+from pydantic import Field, field_validator
 
 from spine.auth.contracts import (
     AuthenticatedAlias,
     AuthenticationAlias,
     AuthorizationResolution,
     AuthorizationRole,
-    AuthorizationScopeRequirement,
     RequestedAuthorizationScope,
     RouteAuthorizationPolicy,
-    _snapshot_route_authorization_policy,
 )
-from spine.auth.errors import AuthorizationDeniedError, AuthorizationUnavailableError
+from spine.auth.directory import RepositoryAuthorizationDirectory
+from spine.auth.errors import AuthorizationUnavailableError
+from spine.auth.records import (
+    AuthenticationAliasBinding,
+    AuthorizationDirectoryRecords,
+    AuthorizationGeneration,
+    AuthorizationRecordProvenance,
+    AuthorizationRecordStatus,
+    CanonicalHumanIdentity,
+    CurrentAuthorizationSnapshot,
+    EnvironmentMembership,
+    EnvironmentOwnership,
+    EnvironmentRoleBinding,
+    WorkspaceMembership,
+)
 from spine.domain.common import DefinitionModel
 
 
 class AuthorizationRecordState(str, Enum):
-    """Current state of one logical in-memory authorization record."""
+    """Compatibility fixture state retained from ticket #69."""
 
     ACTIVE = "active"
     DISABLED = "disabled"
@@ -31,7 +44,7 @@ class AuthorizationRecordState(str, Enum):
 
 
 class InMemoryAuthorizationEntry(DefinitionModel):
-    """One deterministic resolver fixture, not a canonical persistence record."""
+    """Compatibility aggregate for existing #69 callers and tests."""
 
     alias: AuthenticationAlias
     canonical_human_identity_id: UUID
@@ -60,20 +73,143 @@ class InMemoryAuthorizationEntry(DefinitionModel):
         return value
 
 
+_RecordT = TypeVar("_RecordT")
+
+
+class InMemoryAuthorizationSnapshotRepository:
+    """Resolve current logical records without exposing enumeration operations."""
+
+    def __init__(
+        self,
+        records: AuthorizationDirectoryRecords,
+        *,
+        available: bool = True,
+    ) -> None:
+        if type(records) is not AuthorizationDirectoryRecords:
+            raise TypeError("authorization records must use the canonical contract")
+        self._records = AuthorizationDirectoryRecords.model_validate(
+            records.model_dump(mode="python")
+        )
+        self._available = available
+        _validate_record_versions(self._records)
+
+    async def resolve_current_snapshot(
+        self,
+        alias: AuthenticationAlias,
+        requested_scope: RequestedAuthorizationScope,
+    ) -> CurrentAuthorizationSnapshot | None:
+        if not self._available:
+            raise AuthorizationUnavailableError()
+
+        alias_binding = _latest(
+            (
+                record
+                for record in self._records.alias_bindings
+                if record.alias == alias
+            ),
+            lambda record: record.version,
+        )
+        if (
+            alias_binding is None
+            or alias_binding.status is not AuthorizationRecordStatus.ACTIVE
+        ):
+            return None
+        identity_id = alias_binding.canonical_human_identity_id
+
+        identity = _latest(
+            (
+                record
+                for record in self._records.identities
+                if record.identity_id == identity_id
+            ),
+            lambda record: record.version,
+        )
+        workspace_membership = _latest(
+            (
+                record
+                for record in self._records.workspace_memberships
+                if record.workspace_id == requested_scope.workspace_id
+                and record.canonical_human_identity_id == identity_id
+            ),
+            lambda record: record.version,
+        )
+        environment_membership = _latest(
+            (
+                record
+                for record in self._records.environment_memberships
+                if record.workspace_id == requested_scope.workspace_id
+                and record.environment_id == requested_scope.environment_id
+                and record.canonical_human_identity_id == identity_id
+            ),
+            lambda record: record.version,
+        )
+        role_binding = _latest(
+            (
+                record
+                for record in self._records.role_bindings
+                if record.workspace_id == requested_scope.workspace_id
+                and record.environment_id == requested_scope.environment_id
+                and record.canonical_human_identity_id == identity_id
+                and record.role is AuthorizationRole.ADMINISTRATOR
+            ),
+            lambda record: record.version,
+        )
+        generation = next(
+            (
+                record
+                for record in self._records.generations
+                if record.workspace_id == requested_scope.workspace_id
+                and record.environment_id == requested_scope.environment_id
+            ),
+            None,
+        )
+        owner = next(
+            (
+                record
+                for record in self._records.environment_owners
+                if record.environment_id == requested_scope.environment_id
+            ),
+            None,
+        )
+        required = (identity, workspace_membership, environment_membership, role_binding)
+        if any(
+            record is None or record.status is not AuthorizationRecordStatus.ACTIVE
+            for record in required
+        ):
+            return None
+        if (
+            generation is None
+            or owner is None
+            or owner.workspace_id != requested_scope.workspace_id
+        ):
+            return None
+
+        return CurrentAuthorizationSnapshot(
+            canonical_human_identity_id=identity_id,
+            workspace_id=requested_scope.workspace_id,
+            environment_id=requested_scope.environment_id,
+            roles=frozenset({AuthorizationRole.ADMINISTRATOR}),
+            authorization_generation=generation.generation,
+        )
+
+
 class InMemoryAuthorizationDirectory:
-    """Resolve an immutable seed snapshot through the production directory port."""
+    """Resolve either canonical records or legacy aggregate fixtures."""
 
     def __init__(
         self,
         *,
-        entries: Iterable[InMemoryAuthorizationEntry],
+        records: AuthorizationDirectoryRecords | None = None,
+        entries: Iterable[InMemoryAuthorizationEntry] | None = None,
         available: bool = True,
     ) -> None:
-        snapshots = tuple(_snapshot_entry(entry) for entry in entries)
-        _validate_alias_identity_mapping(snapshots)
-        _validate_unique_scope_entries(snapshots)
-        self._entries = snapshots
-        self._available = available
+        if (records is None) == (entries is None):
+            raise TypeError("provide exactly one authorization record source")
+        if records is None:
+            records = _records_from_entries(tuple(entries or ()))
+        self._directory = RepositoryAuthorizationDirectory(
+            InMemoryAuthorizationSnapshotRepository(records, available=available)
+        )
 
     async def resolve_request_authority(
         self,
@@ -81,103 +217,188 @@ class InMemoryAuthorizationDirectory:
         requested_scope: RequestedAuthorizationScope,
         route_policy: RouteAuthorizationPolicy,
     ) -> AuthorizationResolution:
-        if not self._available:
-            raise AuthorizationUnavailableError()
-
-        try:
-            alias_snapshot = _snapshot_authenticated_alias(authenticated_alias)
-            scope_snapshot = _snapshot_requested_scope(requested_scope)
-            policy_snapshot = _snapshot_route_authorization_policy(route_policy)
-        except (AttributeError, TypeError, ValidationError, ValueError):
-            raise AuthorizationDeniedError() from None
-
-        if (
-            policy_snapshot.required_scope
-            is not AuthorizationScopeRequirement.WORKSPACE_ENVIRONMENT
-        ):
-            raise AuthorizationDeniedError()
-
-        matches = [entry for entry in self._entries if entry.alias == alias_snapshot.alias]
-        scoped = [
-            entry
-            for entry in matches
-            if entry.workspace_id == scope_snapshot.workspace_id
-            and entry.environment_id == scope_snapshot.environment_id
-        ]
-        if len(scoped) != 1:
-            raise AuthorizationDeniedError()
-
-        entry = scoped[0]
-        active_states = (
-            entry.identity_state,
-            entry.alias_state,
-            entry.workspace_membership_state,
-            entry.environment_membership_state,
-            entry.role_binding_state,
+        return await self._directory.resolve_request_authority(
+            authenticated_alias,
+            requested_scope,
+            route_policy,
         )
-        if any(state is not AuthorizationRecordState.ACTIVE for state in active_states):
-            raise AuthorizationDeniedError()
-        if entry.environment_workspace_id != scope_snapshot.workspace_id:
-            raise AuthorizationDeniedError()
-        if entry.snapshot_generation != entry.current_generation:
-            raise AuthorizationDeniedError()
-        if not policy_snapshot.required_roles.issubset(entry.roles):
-            raise AuthorizationDeniedError()
 
-        return AuthorizationResolution(
-            acting_subject_id=entry.canonical_human_identity_id,
-            scope=scope_snapshot,
-            roles=policy_snapshot.required_roles,
-            authorization_generation=entry.current_generation,
-            authentication_configuration_version=(
-                alias_snapshot.authentication_configuration_version
+
+def _latest(
+    records: Iterable[_RecordT],
+    version: Callable[[_RecordT], int],
+) -> _RecordT | None:
+    return max(records, key=version, default=None)
+
+
+def _validate_record_versions(records: AuthorizationDirectoryRecords) -> None:
+    collections_and_keys: tuple[tuple[Iterable[object], Callable[[object], object]], ...] = (
+        (records.identities, lambda item: (item.identity_id, item.version)),  # type: ignore[attr-defined]
+        (records.alias_bindings, lambda item: (item.alias, item.version)),  # type: ignore[attr-defined]
+        (
+            records.workspace_memberships,
+            lambda item: (  # type: ignore[attr-defined]
+                item.workspace_id,
+                item.canonical_human_identity_id,
+                item.version,
             ),
+        ),
+        (
+            records.environment_memberships,
+            lambda item: (  # type: ignore[attr-defined]
+                item.workspace_id,
+                item.environment_id,
+                item.canonical_human_identity_id,
+                item.version,
+            ),
+        ),
+        (
+            records.role_bindings,
+            lambda item: (  # type: ignore[attr-defined]
+                item.workspace_id,
+                item.environment_id,
+                item.canonical_human_identity_id,
+                item.role,
+                item.version,
+            ),
+        ),
+        (
+            records.generations,
+            lambda item: (item.workspace_id, item.environment_id),  # type: ignore[attr-defined]
+        ),
+        (records.environment_owners, lambda item: item.environment_id),  # type: ignore[attr-defined]
+    )
+    for collection, key in collections_and_keys:
+        seen: set[object] = set()
+        for item in collection:
+            item_key = key(item)
+            if item_key in seen:
+                raise ValueError("authorization record versions must be unique")
+            seen.add(item_key)
+
+
+def _fixture_uuid(kind: str, *parts: object) -> UUID:
+    value = ":".join(("spine-auth-fixture", kind, *(str(part) for part in parts)))
+    return uuid5(NAMESPACE_URL, value)
+
+
+def _provenance(kind: str, *parts: object) -> AuthorizationRecordProvenance:
+    return AuthorizationRecordProvenance(
+        change_id=_fixture_uuid("change", kind, *parts),
+        recorded_by="in-memory-compatibility-fixture",
+    )
+
+
+def _status(state: AuthorizationRecordState) -> AuthorizationRecordStatus:
+    if state is AuthorizationRecordState.ACTIVE:
+        return AuthorizationRecordStatus.ACTIVE
+    return AuthorizationRecordStatus.DISABLED
+
+
+def _records_from_entries(
+    entries: tuple[InMemoryAuthorizationEntry, ...],
+) -> AuthorizationDirectoryRecords:
+    _validate_alias_identity_mapping(entries)
+    _validate_unique_scope_entries(entries)
+    identities: dict[UUID, CanonicalHumanIdentity] = {}
+    aliases: dict[AuthenticationAlias, AuthenticationAliasBinding] = {}
+    workspaces: dict[tuple[UUID, UUID], WorkspaceMembership] = {}
+    environments: dict[tuple[UUID, UUID, UUID], EnvironmentMembership] = {}
+    roles: dict[tuple[UUID, UUID, UUID], EnvironmentRoleBinding] = {}
+    generations: dict[tuple[UUID, UUID], AuthorizationGeneration] = {}
+    owners: dict[UUID, EnvironmentOwnership] = {}
+
+    for entry in entries:
+        if entry.identity_state is not AuthorizationRecordState.MISSING:
+            identities.setdefault(
+                entry.canonical_human_identity_id,
+                CanonicalHumanIdentity(
+                    identity_id=entry.canonical_human_identity_id,
+                    version=1,
+                    status=_status(entry.identity_state),
+                    provenance=_provenance(
+                        "identity", entry.canonical_human_identity_id
+                    ),
+                ),
+            )
+        if entry.alias_state is not AuthorizationRecordState.MISSING:
+            aliases.setdefault(
+                entry.alias,
+                AuthenticationAliasBinding(
+                    binding_id=_fixture_uuid(
+                        "alias", entry.alias.issuer, entry.alias.subject
+                    ),
+                    alias=entry.alias,
+                    canonical_human_identity_id=entry.canonical_human_identity_id,
+                    version=1,
+                    status=_status(entry.alias_state),
+                    provenance=_provenance(
+                        "alias", entry.alias.issuer, entry.alias.subject
+                    ),
+                ),
+            )
+        workspace_key = (entry.workspace_id, entry.canonical_human_identity_id)
+        if entry.workspace_membership_state is not AuthorizationRecordState.MISSING:
+            workspaces[workspace_key] = WorkspaceMembership(
+                membership_id=_fixture_uuid("workspace-membership", *workspace_key),
+                workspace_id=entry.workspace_id,
+                canonical_human_identity_id=entry.canonical_human_identity_id,
+                version=1,
+                status=_status(entry.workspace_membership_state),
+                provenance=_provenance("workspace-membership", *workspace_key),
+            )
+        environment_key = (
+            entry.workspace_id,
+            entry.environment_id,
+            entry.canonical_human_identity_id,
+        )
+        if entry.environment_membership_state is not AuthorizationRecordState.MISSING:
+            environments[environment_key] = EnvironmentMembership(
+                membership_id=_fixture_uuid(
+                    "environment-membership", *environment_key
+                ),
+                workspace_id=entry.workspace_id,
+                environment_id=entry.environment_id,
+                canonical_human_identity_id=entry.canonical_human_identity_id,
+                version=1,
+                status=_status(entry.environment_membership_state),
+                provenance=_provenance("environment-membership", *environment_key),
+            )
+        if (
+            entry.role_binding_state is not AuthorizationRecordState.MISSING
+            and AuthorizationRole.ADMINISTRATOR in entry.roles
+        ):
+            roles[environment_key] = EnvironmentRoleBinding(
+                binding_id=_fixture_uuid("role-binding", *environment_key),
+                workspace_id=entry.workspace_id,
+                environment_id=entry.environment_id,
+                canonical_human_identity_id=entry.canonical_human_identity_id,
+                role=AuthorizationRole.ADMINISTRATOR,
+                version=1,
+                status=_status(entry.role_binding_state),
+                provenance=_provenance("role-binding", *environment_key),
+            )
+        if entry.snapshot_generation == entry.current_generation:
+            generations[(entry.workspace_id, entry.environment_id)] = (
+                AuthorizationGeneration(
+                    workspace_id=entry.workspace_id,
+                    environment_id=entry.environment_id,
+                    generation=entry.current_generation,
+                )
+            )
+        owners[entry.environment_id] = EnvironmentOwnership(
+            workspace_id=entry.environment_workspace_id,
+            environment_id=entry.environment_id,
         )
 
-
-def _snapshot_entry(entry: InMemoryAuthorizationEntry) -> InMemoryAuthorizationEntry:
-    if type(entry) is not InMemoryAuthorizationEntry:
-        raise TypeError("authorization entries must use the canonical contract")
-    return InMemoryAuthorizationEntry(
-        alias=AuthenticationAlias(
-            issuer=entry.alias.issuer,
-            subject=entry.alias.subject,
-        ),
-        canonical_human_identity_id=entry.canonical_human_identity_id,
-        identity_state=entry.identity_state,
-        alias_state=entry.alias_state,
-        workspace_id=entry.workspace_id,
-        workspace_membership_state=entry.workspace_membership_state,
-        environment_id=entry.environment_id,
-        environment_workspace_id=entry.environment_workspace_id,
-        environment_membership_state=entry.environment_membership_state,
-        roles=frozenset(entry.roles),
-        role_binding_state=entry.role_binding_state,
-        snapshot_generation=entry.snapshot_generation,
-        current_generation=entry.current_generation,
-    )
-
-
-def _snapshot_authenticated_alias(value: AuthenticatedAlias) -> AuthenticatedAlias:
-    if type(value) is not AuthenticatedAlias or type(value.alias) is not AuthenticationAlias:
-        raise TypeError("authenticated alias must use the canonical contract")
-    return AuthenticatedAlias(
-        alias=AuthenticationAlias(
-            issuer=value.alias.issuer,
-            subject=value.alias.subject,
-        ),
-        authentication_configuration_version=value.authentication_configuration_version,
-    )
-
-
-def _snapshot_requested_scope(
-    value: RequestedAuthorizationScope,
-) -> RequestedAuthorizationScope:
-    if type(value) is not RequestedAuthorizationScope:
-        raise TypeError("requested scope must use the canonical contract")
-    return RequestedAuthorizationScope(
-        workspace_id=value.workspace_id,
-        environment_id=value.environment_id,
+    return AuthorizationDirectoryRecords(
+        identities=tuple(identities.values()),
+        alias_bindings=tuple(aliases.values()),
+        workspace_memberships=tuple(workspaces.values()),
+        environment_memberships=tuple(environments.values()),
+        role_bindings=tuple(roles.values()),
+        generations=tuple(generations.values()),
+        environment_owners=tuple(owners.values()),
     )
 
 
@@ -210,4 +431,5 @@ __all__ = [
     "AuthorizationRecordState",
     "InMemoryAuthorizationDirectory",
     "InMemoryAuthorizationEntry",
+    "InMemoryAuthorizationSnapshotRepository",
 ]

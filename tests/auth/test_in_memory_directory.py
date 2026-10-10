@@ -226,3 +226,18 @@ def test_in_memory_directory_rejects_alias_mapped_to_two_identities() -> None:
         InMemoryAuthorizationDirectory(
             entries=(entry(), entry(canonical_human_identity_id=OTHER_IDENTITY_ID))
         )
+
+
+def test_in_memory_directory_rejects_duplicate_scope_entries() -> None:
+    stale = entry(snapshot_generation=6)
+    incomplete_current = entry(
+        identity_state=AuthorizationRecordState.MISSING,
+        alias_state=AuthorizationRecordState.MISSING,
+        workspace_membership_state=AuthorizationRecordState.MISSING,
+        environment_membership_state=AuthorizationRecordState.MISSING,
+        roles=frozenset(),
+        role_binding_state=AuthorizationRecordState.MISSING,
+    )
+
+    with pytest.raises(ValueError, match="scope entries must be unique"):
+        InMemoryAuthorizationDirectory(entries=(stale, incomplete_current))

@@ -50,12 +50,131 @@ RLS_REVISION = "20261009_02"
 IDEMPOTENCY_REVISION = "20261010_03"
 OUTBOX_REVISION = "20261010_04"
 PRE_K0_REVISION = "20261010_05"
-HEAD_REVISION = "20261010_06"
+K0_REVISION = "20261010_06"
+HEAD_REVISION = "20261010_07"
 WORKSPACE_A = UUID("20000000-0000-0000-0000-000000000001")
 WORKSPACE_B = UUID("20000000-0000-0000-0000-000000000002")
 ENVIRONMENT_A = UUID("30000000-0000-0000-0000-000000000001")
 ENVIRONMENT_A_SECOND = UUID("30000000-0000-0000-0000-000000000002")
 ENVIRONMENT_B = UUID("30000000-0000-0000-0000-000000000003")
+
+AUTHORIZATION_DIRECTORY_TABLES = {
+    "authentication_alias_bindings",
+    "authorization_generations",
+    "canonical_human_identities",
+    "canonical_human_identity_states",
+    "environment_memberships",
+    "environment_role_bindings",
+    "workspace_memberships",
+}
+AUTHORIZATION_DIRECTORY_CONSTRAINTS = {
+    "ck_authentication_alias_bindings_issuer_length",
+    "ck_authentication_alias_bindings_recorded_by_length",
+    "ck_authentication_alias_bindings_status",
+    "ck_authentication_alias_bindings_subject_length",
+    "ck_authentication_alias_bindings_version_positive",
+    "ck_authorization_generations_generation_positive",
+    "ck_canonical_human_identities_created_by_length",
+    "ck_canonical_human_identity_states_recorded_by_length",
+    "ck_canonical_human_identity_states_status",
+    "ck_canonical_human_identity_states_version_positive",
+    "ck_environment_memberships_recorded_by_length",
+    "ck_environment_memberships_status",
+    "ck_environment_memberships_version_positive",
+    "ck_environment_role_bindings_recorded_by_length",
+    "ck_environment_role_bindings_role",
+    "ck_environment_role_bindings_status",
+    "ck_environment_role_bindings_version_positive",
+    "ck_workspace_memberships_recorded_by_length",
+    "ck_workspace_memberships_status",
+    "ck_workspace_memberships_version_positive",
+    "fk_alias_bindings_identity",
+    "fk_authorization_generations_scope_environments",
+    "fk_environment_memberships_identity",
+    "fk_environment_memberships_scope_environments",
+    "fk_environment_role_bindings_identity",
+    "fk_environment_role_bindings_scope_environments",
+    "fk_identity_states_identity",
+    "fk_workspace_memberships_identity",
+    "fk_workspace_memberships_workspace_id_workspaces",
+    "pk_authentication_alias_bindings",
+    "pk_authorization_generations",
+    "pk_canonical_human_identities",
+    "pk_canonical_human_identity_states",
+    "pk_environment_memberships",
+    "pk_environment_role_bindings",
+    "pk_workspace_memberships",
+    "uq_authentication_alias_bindings_alias_version",
+    "uq_authentication_alias_bindings_change_id",
+    "uq_canonical_human_identities_created_change_id",
+    "uq_canonical_human_identity_states_change_id",
+    "uq_environment_memberships_change_id",
+    "uq_environment_memberships_scope_version",
+    "uq_environment_role_bindings_change_id",
+    "uq_environment_role_bindings_scope_role_version",
+    "uq_workspace_memberships_change_id",
+    "uq_workspace_memberships_scope_version",
+}
+AUTHORIZATION_DIRECTORY_INDEXES = {
+    "ix_environment_memberships_current_lookup",
+    "ix_environment_role_bindings_current_lookup",
+    "ix_workspace_memberships_current_lookup",
+    "pk_authentication_alias_bindings",
+    "pk_authorization_generations",
+    "pk_canonical_human_identities",
+    "pk_canonical_human_identity_states",
+    "pk_environment_memberships",
+    "pk_environment_role_bindings",
+    "pk_workspace_memberships",
+    "uq_authentication_alias_bindings_alias_version",
+    "uq_authentication_alias_bindings_change_id",
+    "uq_canonical_human_identities_created_change_id",
+    "uq_canonical_human_identity_states_change_id",
+    "uq_environment_memberships_change_id",
+    "uq_environment_memberships_scope_version",
+    "uq_environment_role_bindings_change_id",
+    "uq_environment_role_bindings_scope_role_version",
+    "uq_workspace_memberships_change_id",
+    "uq_workspace_memberships_scope_version",
+}
+AUTHORIZATION_DIRECTORY_COLUMNS = {
+    ("canonical_human_identities", column)
+    for column in ("identity_id", "created_change_id", "created_by", "created_at")
+} | {
+    ("canonical_human_identity_states", column)
+    for column in (
+        "identity_id", "version", "status", "change_id", "recorded_by", "recorded_at"
+    )
+} | {
+    ("authentication_alias_bindings", column)
+    for column in (
+        "binding_id", "issuer", "subject", "canonical_human_identity_id",
+        "version", "status", "change_id", "recorded_by", "recorded_at",
+    )
+} | {
+    ("workspace_memberships", column)
+    for column in (
+        "membership_id", "workspace_id", "canonical_human_identity_id",
+        "version", "status", "change_id", "recorded_by", "recorded_at",
+    )
+} | {
+    ("environment_memberships", column)
+    for column in (
+        "membership_id", "workspace_id", "environment_id",
+        "canonical_human_identity_id", "version", "status", "change_id",
+        "recorded_by", "recorded_at",
+    )
+} | {
+    ("environment_role_bindings", column)
+    for column in (
+        "binding_id", "workspace_id", "environment_id",
+        "canonical_human_identity_id", "role", "version", "status",
+        "change_id", "recorded_by", "recorded_at",
+    )
+} | {
+    ("authorization_generations", column)
+    for column in ("workspace_id", "environment_id", "generation", "updated_at")
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +251,13 @@ async def migrated_database(
             )
         )
     await asyncio.to_thread(upgrade_database, migration, revision=PRE_K0_REVISION)
+    async with _connection(migration.url) as connection:
+        retained_revisions.append(
+            await connection.scalar(
+                text("SELECT version_num FROM spine.alembic_version")
+            )
+        )
+    await asyncio.to_thread(upgrade_database, migration, revision=K0_REVISION)
     async with _connection(migration.url) as connection:
         retained_revisions.append(
             await connection.scalar(
@@ -333,10 +459,17 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
     assert revision == HEAD_REVISION
     assert tables == {
         "alembic_version",
+        "authentication_alias_bindings",
+        "authorization_generations",
+        "canonical_human_identities",
+        "canonical_human_identity_states",
+        "environment_memberships",
+        "environment_role_bindings",
         "environments",
         "idempotency_receipts",
         "initial_workspace_bootstrap",
         "outbox_intents",
+        "workspace_memberships",
         "workspaces",
     }
     assert constraints == {
@@ -370,7 +503,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "uq_initial_workspace_bootstrap_action_id",
         "uq_initial_workspace_bootstrap_workspace_id",
         "uq_workspaces_slug",
-    }
+    } | AUTHORIZATION_DIRECTORY_CONSTRAINTS
     assert indexes == {
         "alembic_version_pkc",
         "ix_environments_workspace_id",
@@ -387,7 +520,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "uq_outbox_intents_environment_producer",
         "uq_outbox_intents_workspace_producer",
         "uq_workspaces_slug",
-    }
+    } | AUTHORIZATION_DIRECTORY_INDEXES
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
         "workspaces": (True, True),
@@ -395,14 +528,26 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "idempotency_receipts": (True, True),
         "initial_workspace_bootstrap": (True, True),
         "outbox_intents": (True, True),
+        "workspace_memberships": (True, True),
+        "environment_memberships": (True, True),
+        "environment_role_bindings": (True, True),
+        "authorization_generations": (True, True),
+        "canonical_human_identities": (False, False),
+        "canonical_human_identity_states": (False, False),
+        "authentication_alias_bindings": (False, False),
     }
     assert rls == expected_rls
+    tenant_rls_tables = {
+        table_name
+        for table_name, flags in expected_rls.items()
+        if flags == (True, True)
+    }
     assert set(policies) == {
         (table_name, f"pol_{table_name}_{policy_kind}")
-        for table_name in expected_rls
+        for table_name in tenant_rls_tables
         for policy_kind in ("tenant_isolation", "migration_maintenance")
     }
-    for table_name in expected_rls:
+    for table_name in tenant_rls_tables:
         tenant_policy = policies[(table_name, f"pol_{table_name}_tenant_isolation")]
         assert tenant_policy[0] == (RUNTIME_ROLE,)
         assert tenant_policy[1] is not None
@@ -419,6 +564,13 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "idempotency_receipts": (True, True, False, False),
         "initial_workspace_bootstrap": (False, False, False, False),
         "outbox_intents": (False, True, False, False),
+        "authentication_alias_bindings": (False, False, False, False),
+        "authorization_generations": (False, False, False, False),
+        "canonical_human_identities": (False, False, False, False),
+        "canonical_human_identity_states": (False, False, False, False),
+        "environment_memberships": (False, False, False, False),
+        "environment_role_bindings": (False, False, False, False),
+        "workspace_memberships": (False, False, False, False),
     }
     assert receipt_update_columns == {
         "result_type",
@@ -449,6 +601,7 @@ async def test_initial_tenancy_revision_upgrades_to_current_head_and_owned_schem
         IDEMPOTENCY_REVISION,
         OUTBOX_REVISION,
         PRE_K0_REVISION,
+        K0_REVISION,
     )
     assert heads == [HEAD_REVISION]
     assert owner == MIGRATION_ROLE
@@ -517,10 +670,17 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         )
     assert tables == {
         "alembic_version",
+        "authentication_alias_bindings",
+        "authorization_generations",
+        "canonical_human_identities",
+        "canonical_human_identity_states",
+        "environment_memberships",
+        "environment_role_bindings",
         "environments",
         "idempotency_receipts",
         "initial_workspace_bootstrap",
         "outbox_intents",
+        "workspace_memberships",
         "workspaces",
     }
     assert constraints == {
@@ -554,7 +714,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "uq_initial_workspace_bootstrap_action_id",
         "uq_initial_workspace_bootstrap_workspace_id",
         "uq_workspaces_slug",
-    }
+    } | AUTHORIZATION_DIRECTORY_CONSTRAINTS
     assert set(columns) == {
         ("alembic_version", "version_num"),
         ("environments", "created_at"),
@@ -597,7 +757,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         ("workspaces", "display_name"),
         ("workspaces", "id"),
         ("workspaces", "slug"),
-    }
+    } | AUTHORIZATION_DIRECTORY_COLUMNS
     assert columns[("workspaces", "id")] == ("uuid", "NO", None)
     assert columns[("environments", "id")] == ("uuid", "NO", None)
     event_id_type, event_id_nullable, event_id_default = columns[
@@ -633,7 +793,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "uq_outbox_intents_environment_producer",
         "uq_outbox_intents_workspace_producer",
         "uq_workspaces_slug",
-    }
+    } | AUTHORIZATION_DIRECTORY_INDEXES
     assert owners == {MIGRATION_ROLE}
 
 
@@ -1031,7 +1191,9 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "WHERE namespace.nspname = 'spine' "
                         "AND relation.relname IN "
                         "('workspaces', 'environments', 'idempotency_receipts', "
-                        "'initial_workspace_bootstrap', 'outbox_intents')"
+                        "'initial_workspace_bootstrap', 'outbox_intents', "
+                        "'workspace_memberships', 'environment_memberships', "
+                        "'environment_role_bindings', 'authorization_generations')"
                     )
                 )
             )
@@ -1067,6 +1229,10 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "idempotency_receipts": (True, True),
         "initial_workspace_bootstrap": (True, True),
         "outbox_intents": (True, True),
+        "workspace_memberships": (True, True),
+        "environment_memberships": (True, True),
+        "environment_role_bindings": (True, True),
+        "authorization_generations": (True, True),
     }
     assert set(policies) == {
         (table_name, f"pol_{table_name}_{policy_kind}")
@@ -2018,11 +2184,15 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         source / "versions" / "20261010_06_receipt_tenant_integrity.py",
         target / "versions" / "20261010_06_receipt_tenant_integrity.py",
     )
-    (target / "versions" / "20261010_07_injected_failure.py").write_text(
+    shutil.copy(
+        source / "versions" / "20261010_07_authorization_directory.py",
+        target / "versions" / "20261010_07_authorization_directory.py",
+    )
+    (target / "versions" / "20261010_08_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261010_07'\n"
-        "down_revision = '20261010_06'\n"
+        "revision = '20261010_08'\n"
+        "down_revision = '20261010_07'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"
@@ -2106,6 +2276,7 @@ async def test_every_retained_revision_upgrades_to_one_final_head(
         IDEMPOTENCY_REVISION,
         OUTBOX_REVISION,
         PRE_K0_REVISION,
+        K0_REVISION,
     )
     try:
         for starting_revision in starting_revisions:
