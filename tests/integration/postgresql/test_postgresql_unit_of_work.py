@@ -71,6 +71,7 @@ from tests.contracts.persistence.test_source_observation_contract import (
     test_source_identity_modes_remain_distinct as contract_source_identity_modes,
     test_source_observation_replay_is_stable as contract_source_observation_replay,
     test_source_observation_reuses_revision_for_new_provenance as contract_source_observation_revision_reuse,
+    test_content_reappearance_requires_tombstone_predecessor as contract_source_content_reappearance_rejected,
     test_tombstone_reappearance_requires_tombstone_predecessor as contract_source_reappearance,
 )
 from tests.contracts.persistence.test_idempotency_repository_contract import (
@@ -562,6 +563,7 @@ async def test_postgresql_adapter_satisfies_outbox_contract(
         contract_source_observation_digest_conflict,
         contract_source_identity_modes,
         contract_source_reappearance,
+        contract_source_content_reappearance_rejected,
         contract_source_observation_rollback,
     ),
     ids=lambda contract: contract.__name__.removeprefix("test_"),

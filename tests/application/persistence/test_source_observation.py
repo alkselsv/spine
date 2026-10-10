@@ -346,3 +346,20 @@ def test_arbitrary_original_reference_is_rejected() -> None:
                 "original_reference": "https://example.invalid/object",
             }
         )
+
+
+@pytest.mark.parametrize("field", ("object_id", "storage_generation"))
+def test_zero_uuid_original_reference_is_rejected(field: str) -> None:
+    reference = ObjectReference(
+        schema_version=1,
+        object_id=synthetic_uuid(102),
+        storage_generation=synthetic_uuid(103),
+        digest_algorithm="sha256",
+        digest_hex="c" * 64,
+        byte_length=4,
+    )
+    with pytest.raises(ValueError):
+        ObjectReference.model_validate(
+            reference.model_dump(mode="python")
+            | {field: UUID(int=0)}
+        )

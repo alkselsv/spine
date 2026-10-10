@@ -5,7 +5,7 @@ from uuid import UUID
 
 import pytest
 
-from spine.application.persistence.errors import IdempotencyConflictError
+from spine.application.persistence.errors import ConstraintConflictError, IdempotencyConflictError
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.persistence.repositories import SourceObservationCommand
 from spine.domain.common import EnvironmentKind
@@ -228,6 +228,34 @@ async def test_tombstone_reappearance_requires_tombstone_predecessor(persistence
         ))
         await uow.commit()
     assert result.revision.revision_id == reappearance.revision_id
+
+
+@pytest.mark.asyncio
+async def test_content_reappearance_requires_tombstone_predecessor(persistence_adapter: PersistenceAdapter) -> None:
+    workspace_id, environment_id = synthetic_uuid(7060), synthetic_uuid(7061)
+    await prepare(persistence_adapter, workspace_id, environment_id)
+    source_object = source(workspace_id, environment_id)
+    predecessor = revision(source_object, synthetic_uuid(7062))
+    predecessor_provenance = provenance(source_object, predecessor.revision_id, "event-1")
+    invalid_values = predecessor.model_dump()
+    invalid_values.pop("revision_digest")
+    invalid_values["revision_id"] = synthetic_uuid(7063)
+    invalid_values["reappearance_after_tombstone_revision_id"] = predecessor.revision_id
+    invalid_revision = content_revision(**invalid_values)
+    async with persistence_adapter.uow_factory(persistence_adapter.source_context(workspace_id, environment_id)) as uow:
+        await uow.sources.record_observation(SourceObservationCommand.create(
+            source=source_object,
+            revision=predecessor,
+            provenance=predecessor_provenance,
+            idempotency_key=IdempotencyKey("content-predecessor-key"),
+        ))
+        with pytest.raises(ConstraintConflictError):
+            await uow.sources.record_observation(SourceObservationCommand.create(
+                source=source_object,
+                revision=invalid_revision,
+                provenance=provenance(source_object, invalid_revision.revision_id, "event-2"),
+                idempotency_key=IdempotencyKey("content-reappearance-key"),
+            ))
 
 
 @pytest.mark.asyncio

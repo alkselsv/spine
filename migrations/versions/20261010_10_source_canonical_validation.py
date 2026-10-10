@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from alembic import op
 
+from spine.domain.sources.profile import (
+    GRANDFATHERED_TAGS,
+    PRIMARY_LANGUAGE_TAGS,
+    REGION_TAGS,
+    SCRIPT_TAGS,
+)
 from spine.infrastructure.db.settings import MigrationDatabaseSettings
 
 
@@ -19,6 +25,13 @@ def _role(name: str) -> str:
     if not isinstance(settings, MigrationDatabaseSettings):
         raise RuntimeError("migration_settings must be MigrationDatabaseSettings")
     return op.get_bind().dialect.identifier_preparer.quote(getattr(settings, name))
+
+
+def _sql_text_array(values: frozenset[str]) -> str:
+    """Render the pinned profile table as migration-owned SQL data."""
+
+    escaped = ", ".join("'" + value.replace("'", "''") + "'" for value in sorted(values))
+    return f"ARRAY[{escaped}]::pg_catalog.text[]"
 
 
 def upgrade() -> None:
@@ -47,7 +60,17 @@ def upgrade() -> None:
                 IF title IS NOT NULL AND btrim(title, E'\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u2000\\u2001\\u2002\\u2003\\u2004\\u2005\\u2006\\u2007\\u2008\\u2009\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000') = '' THEN
                     RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
                 END IF;
-                IF language_tag IS NOT NULL AND (language_tag <> lower(language_tag) OR language_tag !~ '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$') THEN
+                IF language_tag IS NOT NULL AND (
+                    language_tag <> lower(language_tag)
+                    OR language_tag !~ '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$'
+                    OR lower(language_tag) = ANY({_sql_text_array(GRANDFATHERED_TAGS)}) IS FALSE
+                    AND split_part(language_tag, '-', 1) <> ALL({_sql_text_array(PRIMARY_LANGUAGE_TAGS)})
+                    OR split_part(language_tag, '-', 2) ~ '^[A-Za-z]{{2}}$'
+                    AND upper(split_part(language_tag, '-', 2)) <> ALL({_sql_text_array(REGION_TAGS)})
+                    OR split_part(language_tag, '-', 2) ~ '^[a-z]{{4}}$'
+                    AND initcap(split_part(language_tag, '-', 2)) <> ALL({_sql_text_array(SCRIPT_TAGS)})
+                    AND lower(language_tag) NOT LIKE 'x-%'
+                ) THEN
                     RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
                 END IF;
                 metadata_digest := encode(public.digest(convert_to(
