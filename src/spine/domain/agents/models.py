@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
-from spine.domain.common import ActorRef, DefinitionModel, EnvironmentKind
+from spine.domain.common import ActorRef, DefinitionModel, EnvironmentKind, FrozenDict
 
 
 class AgentRuntimeKind(str, Enum):
@@ -41,7 +42,12 @@ class AgentVersion(DefinitionModel):
     prompt_version: str | None = None
     context_profile: str | None = None
     tool_grants: tuple[str, ...] = ()
-    runtime_config: dict[str, Any] = Field(default_factory=dict)
+    runtime_config: Mapping[str, Any] = Field(default_factory=dict, validate_default=True)
+
+    @field_validator("runtime_config", mode="after")
+    @classmethod
+    def freeze_runtime_config(cls, value: Mapping[str, Any]) -> Mapping[str, Any]:
+        return FrozenDict(value)
 
 
 class AgentBinding(DefinitionModel):
