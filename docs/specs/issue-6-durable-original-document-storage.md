@@ -48,12 +48,17 @@ S3-compatible adapter is a later migration path, not an R1 infrastructure
 requirement.
 
 The protocol deliberately avoids a distributed transaction. The application
-persists an object receipt and canonical SourceRevision in PostgreSQL only after
-the object has been durably finalized and verified. If PostgreSQL rolls back,
-the object is recoverable as an unassociated finalized object and reconciliation
-may remove it only under an approved cleanup policy. If finalization has not
-completed, no PostgreSQL reference is valid. Any missing, mismatched or
-ambiguous object causes fail-closed behavior for content reads and projection.
+persists provisional storage evidence only after the object has been durably
+finalized and verified. PostgreSQL may then persist a durable SourceRevision
+observation and its receipt/reference association; that observation may remain
+unadmitted. The canonical owner records append-only admission disposition
+separately, and a later ADR 0018 transaction controls canonical acceptance and
+current-revision publication. Object storage never admits, accepts, publishes or
+selects a current revision. If PostgreSQL rolls back, the object is recoverable
+as an unassociated finalized object and reconciliation may remove it only under
+an approved cleanup policy. If finalization has not completed, no PostgreSQL
+reference is valid. Any missing, mismatched or ambiguous object causes
+fail-closed behavior for content reads and projection.
 
 ## Architectural Context and Authoritative Sources
 
@@ -179,7 +184,10 @@ The application-facing upload command contains:
 
 ```text
 OriginalUpload
-  upload_id: UUID                  # stable idempotency identity
+  operation_name: stable identifier # Issue #8 operation identity
+  operation_schema_version: version
+  upload_id: UUID                  # Issue #8 caller-supplied idempotency key
+  request_digest: PreWriteRequestDigest
   object_id: UUID                  # server-issued logical object identity
   workspace_id: UUID               # trusted context, not caller authority
   environment_id: UUID | null
@@ -194,10 +202,20 @@ Filename and media type are hints for validation and display; neither becomes a
 storage path or proof of content. The application calculates the digest while
 streaming and treats a client declaration as an expectation to verify, not as
 trusted metadata. The normalized filename is display/provenance metadata owned
-by Issue #3/#7 and is not part of the Issue #6 command digest unless those
+by Issue #3/#7 and is not part of the Issue #6 pre-write request digest unless those
 contracts explicitly make it immutable command meaning.
 
-The canonical semantic command payload is the normalized tuple:
+The request-digest value is:
+
+```text
+PreWriteRequestDigest
+  algorithm: "sha256"
+  algorithm_version: Issue #8 canonical digest version
+  digest_hex: 64 lowercase hex characters
+```
+
+`OriginalUploadCommandPayload` is the validated semantic payload known before
+opening or resuming the stream:
 
 ```text
 OriginalUploadCommandPayload
@@ -207,14 +225,49 @@ OriginalUploadCommandPayload
   object_id: UUID
   expected_sha256: lowercase hex | null
   expected_byte_length: non-negative integer | null
-  validated_content_class: versioned value | null
 ```
 
-The command digest is a deterministic, versioned serialization of exactly this
-payload. It excludes trace IDs, timestamps, retry counters, transport chunking,
-physical paths, credentials and the display filename. A future admission field
-that changes immutable command meaning must be added to this payload version
-before it can affect idempotency.
+The `request_digest` is Issue #8's canonical request digest: SHA-256 over its
+explicitly versioned canonical byte representation containing the operation
+name, operation schema version and this validated semantic payload. Issue #6
+reuses Issue #8's canonicalizer, digest algorithm/version and cross-version test
+vectors; it does not define a second serialization. UUIDs, enums, timestamps,
+lists, object keys, binary references and unsupported values follow the exact
+Issue #8 rules. Trace IDs, timestamps used only for execution, retry counters,
+transport chunking, physical/provider data and display filename are excluded.
+
+The pre-write request digest excludes observed content digest, observed byte
+length and any validated content classification produced only after streaming
+or inspection. A later admission field that changes immutable command meaning
+requires coordination with Issue #8's versioned command contract; it cannot be
+silently appended to this digest.
+
+The distinct post-stream observed content identity is:
+
+```text
+ObservedContentIdentity
+  observed_sha256: lowercase hex
+  observed_byte_length: non-negative integer
+```
+
+It is SHA-256 calculated from the actual streamed bytes and their observed
+length. It is not available when the pre-write request digest is calculated.
+
+`ValidatedContentEvidence` is a bounded, versioned result produced by Issue #3's
+security/format validation after streaming, or by its approved adapter. Issue #6
+may transport it as typed provisional evidence but does not own its validation
+rules. It does not alter the already accepted pre-write request digest; a
+conflicting result is a typed admission/observation conflict and fails closed.
+
+Its conceptual shape is:
+
+```text
+ValidatedContentEvidence
+  schema_version: positive integer
+  producer: Issue #3-owned validator/version reference
+  content_class: bounded versioned value
+  outcome: valid | quarantined | rejected
+```
 
 The immutable receipt is:
 
@@ -222,12 +275,28 @@ The immutable receipt is:
 WriteReceipt
   schema_version: positive integer
   upload_id: UUID
+  request_digest: PreWriteRequestDigest
   object_reference: ObjectReference
-  observed_byte_length: non-negative integer
-  observed_sha256: lowercase hex
+  observed_content: ObservedContentIdentity
+  validated_content_evidence: ValidatedContentEvidence | null
   verification: IntegrityResult
   finalized_at: server timestamp
 ```
+
+The opaque Issue #8 result reference resolves to this storage-owned operational
+state:
+
+```text
+UploadCommandState
+  issue8_receipt_id: opaque UUID
+  request_digest: PreWriteRequestDigest
+  state: staging_available | finalized | aborted | integrity_conflict
+  provisional_receipt: WriteReceipt | null
+```
+
+This state is not a second idempotency identity. Its identity and replay
+behavior come from the Issue #8 receipt; it only records the progress and
+verified result of the physical upload command.
 
 `WriteReceipt` is provisional physical-storage evidence returned by the
 adapter. It is not a PostgreSQL command receipt and does not prove SourceRevision
@@ -237,12 +306,19 @@ provisional receipt only after finalization and verification, and PostgreSQL
 becomes the canonical owner only when it persists the receipt/reference
 association and command receipt.
 
-The canonical PostgreSQL record contains the `upload_id`, command digest,
-workspace/environment scope, object reference, SourceRevision association and
-its lifecycle disposition as owned by Issue #7. Repeated commands with the same
-`upload_id` and command digest reuse the existing verified result; any changed
-semantic field is a digest conflict. PostgreSQL owns this durable idempotency
-receipt; the adapter receipt alone never does.
+The canonical PostgreSQL command/observation records jointly contain the Issue
+#8 operation identity, operation schema version, `upload_id`, pre-write request
+digest, observed content identity, workspace/environment scope, object
+reference, SourceRevision association and its lifecycle disposition as owned by
+Issue #7. The Issue #8 idempotency receipt itself owns the key, request digest
+and opaque result reference; the linked `UploadCommandState` and
+receipt/reference association carry the observed facts. Together they
+distinguish requested expectations from observed facts. Repeated commands with
+the same `upload_id` and request digest reuse the existing verified result; any
+changed pre-write semantic field is an Issue #8 idempotency conflict. A
+different observed content identity after finalization is a typed
+content/idempotency conflict and never replaces the finalized object.
+PostgreSQL owns these durable records; the adapter receipt alone never does.
 
 ### Integrity result
 
@@ -251,15 +327,16 @@ IntegrityResult
   status: verified | mismatch | unavailable | indeterminate
   algorithm: sha256
   expected_digest: digest | null
-  observed_digest: digest | null
+  observed_digest: digest | null  # same fact as WriteReceipt.observed_content.observed_sha256
   expected_length: integer | null
-  observed_length: integer | null
+  observed_length: integer | null  # same fact as WriteReceipt.observed_content.observed_byte_length
 ```
 
 Only `verified` permits a finalized receipt to be associated with a content
 SourceRevision. `mismatch`, `unavailable` and `indeterminate` are non-success
 outcomes. The application must not infer that unavailable verification means
-verified.
+verified. `observed_digest` and `observed_length` are projections of the one
+`ObservedContentIdentity`, not a second content-identity contract.
 
 ### Internal storage port and authorized read service
 
@@ -274,11 +351,15 @@ accepts a trusted persistence context and `SourceRevision` identity, never a
 caller-supplied `ObjectReference`. It resolves the PostgreSQL
 receipt/reference association, evaluates current Access Policy, tombstone,
 admission/disposition, retention and disclosure state, and fails closed for
-missing, stale, conflicting or ambiguous state. Only after those checks does it
-ask the internal port for a stream using this conceptual capability:
+missing, stale, conflicting or ambiguous state. The trusted application read
+gateway owns grant issuance, current-version revalidation, replay prevention
+and the only call path to the adapter's raw read primitive. Only after its
+immediate revalidation does it consume a one-shot grant and ask the internal
+port for a stream.
 
 ```text
-AuthorizedOriginalRead
+AuthorizedOriginalReadGrant (opaque, non-serializable)
+  grant_id: process-local opaque value
   workspace_id: UUID
   environment_id: UUID | null
   source_revision_id: UUID
@@ -288,13 +369,39 @@ AuthorizedOriginalRead
   expires_at: server timestamp
 ```
 
-`AuthorizedOriginalRead` is a short-lived, non-serializable,
-application-internal value. It cannot be constructed from an API payload,
-stored as a user artifact, reused after expiry or used when the current
-authorization decision/version no longer matches. It is a trusted handle for
-one read operation, not continuing authority. The service returns only a
-bounded content stream and safe metadata; it never returns physical paths,
-storage credentials, signed URLs or a reusable capability.
+`AuthorizedOriginalReadGrant` is minted only by the authorized read service or
+trusted gateway. Its fields are binding metadata, not a reconstructible DTO:
+callers cannot construct a valid grant by copying them. It is stored only in a
+process-local one-shot registry or equivalent opaque mechanism, is consumed at
+most once, and is rejected on replay, expiry, scope/generation mismatch or
+authorization/lifecycle-version mismatch. It is never logged with sensitive
+fields, persisted as durable authority, accepted from API/model/tool input or
+returned to a caller. A process restart invalidates all outstanding in-memory
+grants; no distributed capability service is introduced.
+
+The authorized read protocol is:
+
+1. Receive trusted Workspace/Environment context, SourceRevision identity and
+   read purpose.
+2. Resolve the canonical PostgreSQL receipt/reference association and evaluate
+   current Access Policy, SourceRevision disposition, tombstone and disclosure
+   state.
+3. Capture the exact policy/lifecycle decision version.
+4. Immediately before stream creation, re-read or atomically validate that the
+   current policy/version, scope, SourceRevision lifecycle and object generation
+   still match. This check occurs in the trusted gateway's Unit of Work or an
+   equivalent documented PostgreSQL snapshot/lock boundary.
+5. Mint and consume the one-shot opaque grant as one trusted gateway operation.
+6. Open the internal storage stream only after successful consumption; any
+   mismatch, replay, expiry, scope substitution or ambiguous state fails closed
+   before content bytes are returned.
+
+This boundary prevents new stream creation after a policy or tombstone change
+observed before the revalidation/consumption point. It cannot recall bytes
+already delivered by an already-open stream; the stream therefore has bounded
+duration/size and its application read lease ends at the configured limit.
+The service returns only a bounded content stream and safe metadata; it never
+returns physical paths, storage credentials, signed URLs or a reusable grant.
 
 The internal port exposes the following behavior, without prescribing method
 names or provider types:
@@ -305,9 +412,9 @@ names or provider types:
 4. Finalize exactly once after successful validation, with overwrite prevention.
 5. Return a verified provisional `WriteReceipt` or a typed adapter-neutral
    failure.
-6. Open a bounded asynchronous read stream for an `AuthorizedOriginalRead`
-   capability; never expose raw reference reads to untrusted callers or return
-   an unbounded in-memory byte array.
+6. Open a bounded asynchronous read stream for a successfully consumed
+   `AuthorizedOriginalReadGrant`; never expose raw reference reads to untrusted
+   callers or return an unbounded in-memory byte array.
 7. Verify an existing reference's length and digest through a bounded stream.
 8. Enumerate only sanitized reconciliation metadata for a controlled operator
    or worker operation; enumeration is not a read authorization bypass.
@@ -328,7 +435,8 @@ The port translates provider failures into stable categories:
 - `InvalidObjectReference`: malformed, unsupported or internally inconsistent
   reference.
 - `UploadConflict`: upload identity or finalized object conflicts with a
-  different semantic command digest, generation, digest or length.
+  different observed content identity or physical generation after the Issue #8
+  request digest has matched.
 - `UploadNotFound`: staged upload cannot be resumed or finalized.
 - `IntegrityMismatch`: observed bytes do not match expected digest/length.
 - `ObjectNotFound`: finalized object is absent.
@@ -353,12 +461,15 @@ credentials, filename when sensitive, and raw provider messages.
 The adapter owns staging mechanics, immutable finalization, bounded streaming,
 digest calculation, local resource limits, provider error translation,
 physical integrity checks, cleanup mechanics and adapter-specific observability.
-The authorized read service owns PostgreSQL association resolution and all
-authorization checks before it creates an internal read capability. The adapter
-may reject an expired or malformed capability, but it does not interpret ACL
-policy or make a disclosure decision. It does not own authentication, Access
-Policy, SourceRevision state, tenant selection, tombstones, current revision,
-canonical acceptance, retention approval or publication state.
+The authorized read service/trusted application gateway owns PostgreSQL
+association resolution, current-version revalidation, grant issuance and
+one-shot consumption before it calls the adapter. It is the only component
+registered or injected with the adapter's raw read primitive. The adapter may
+reject an expired, malformed or already-consumed opaque grant, but it does not
+interpret ACL policy or make a disclosure decision. It does not own
+authentication, Access Policy, SourceRevision state, tenant selection,
+tombstones, current revision, canonical acceptance, retention approval or
+publication state.
 
 ### Recommended filesystem adapter
 
@@ -443,19 +554,64 @@ port and conformance suite, including its own documented conditional guarantees.
    receipt/reference persistence. Later admission disposition and canonical
    acceptance remain separate ADR 0018 lifecycle decisions.
 
+### Request and observed-content retry protocol
+
+The pre-write request digest and post-stream observed content identity have
+different lifecycles:
+
+1. **First command.** The Issue #8 idempotency key (`upload_id`) and pre-write
+   request digest are claimed in a short tenant-scoped Unit of Work. Because
+   Issue #8 does not allow an owned idempotency claim to remain incomplete over
+   a long byte stream, that transaction completes the receipt with an opaque
+   `UploadCommandState` result reference. The state is a storage command state
+   linked to the Issue #8 receipt identity, not a second idempotency key or
+   competing canonicalization system. A newly owned state may begin staging.
+2. **Retry before finalization.** The same key and request digest resolve the
+   same `UploadCommandState` and resume or
+   inspect the same staged upload. A changed pre-write semantic input produces
+   the Issue #8 typed idempotency conflict. A retry never silently begins an
+   unrelated second staged upload under the same key.
+3. **Finalization.** The adapter calculates `ObservedContentIdentity`, compares
+   it with supplied expected checksum/length when present, binds it to the
+   upload identity, physical generation and validation result, and returns
+   provisional evidence. This does not claim SourceRevision admission or
+   canonical acceptance.
+4. **Retry after finalization.** The same key, request digest and observed
+   content identity reuse the stable verified result. A new stream under the
+   same finalized upload identity cannot overwrite existing bytes. If a retry
+   presents another stream, the implementation may consume and hash it to
+   detect a difference; different observed bytes produce a typed
+   content/idempotency conflict and the existing finalized object remains
+   unchanged. The specification does not require buffering the attempted stream
+   in memory.
+5. **PostgreSQL association.** The Issue #8 command receipt stores the pre-write
+   request digest and opaque `UploadCommandState` result reference; the linked
+   state and receipt/reference association store the verified observed content
+   identity/length. Together they explicitly distinguish requested expectations
+   from observed facts. A crash after observed digest calculation but before
+   this transaction leaves a finalized orphan candidate that can be reused only
+   when all identity and generation checks pass.
+
+`UploadCommandState` is operational storage state associated with the completed
+Issue #8 result reference. It records whether staging is available, finalized,
+aborted or blocked by an integrity/content conflict, plus the provisional
+receipt when one exists. Its state does not admit, reject, quarantine, accept or
+publish a SourceRevision. A replay resolves this state reference and returns the
+stable current result; it never creates a second command receipt.
+
 ### Read
 
 The authorized original-content read service receives trusted
 Workspace/Environment context and a SourceRevision identity. It resolves the
 PostgreSQL receipt/reference association, verifies Workspace/Environment
 isolation, current Access Policy, admission/disposition, tombstone/currentness,
-retention and purpose, and fails closed on any ambiguity. It then creates an
-`AuthorizedOriginalRead` capability and asks the internal port to open a
-bounded stream. The adapter rechecks capability shape/expiry and reference
-integrity as configured, applies read and timeout limits, and streams with
-backpressure. Authorization is not delegated to the adapter, a raw reference
-read is not an application entry point, and a reference or capability alone is
-not continuing authority after policy revocation.
+retention and purpose, and fails closed on any ambiguity. Immediately before
+stream creation it revalidates the current policy/lifecycle version, then mints
+and consumes one `AuthorizedOriginalReadGrant` through the trusted gateway. The
+internal port opens a bounded stream only for that successfully consumed opaque
+grant. Authorization is not delegated to the adapter, a raw reference read is
+not an application entry point, and a reference or grant alone is not
+continuing authority after policy revocation.
 
 ### Verification
 
@@ -528,7 +684,8 @@ physical storage presence.
 
 | State | Canonical authority | Recoverable action | Ordinary content read |
 | --- | --- | --- | --- |
-| Upload command accepted | PostgreSQL command/idempotency receipt | Resume or abort by upload ID | No |
+| Upload command accepted | PostgreSQL Issue #8 command/idempotency receipt with pre-write request digest | Resume or abort by upload ID | No |
+| UploadCommandState | PostgreSQL result reference linked to the Issue #8 receipt | Resolve staging/finalization/conflict state; never infer SourceRevision admission | No |
 | Staged bytes | Object adapter, bounded by upload identity | Resume, abort or reconcile | No |
 | Finalized but unassociated object | Adapter plus reconciliation inventory | Associate only through a matching canonical command, otherwise approved cleanup | No |
 | Durable SourceRevision observation plus receipt/reference | PostgreSQL observation and command receipt | Reconcile against object and lifecycle records | Only after authorized read service |
@@ -542,7 +699,10 @@ physical storage presence.
 | Boundary/failure | Visible result | Safe retry | Recovery owner |
 | --- | --- | --- | --- |
 | Validation fails before staging | No object; typed rejection | Retry only with a new valid command or same idempotency key/content | Application/admission boundary |
+| New command with no expected checksum | Issue #8 request receipt is claimed before staging; observed identity is unknown | Begin one staged upload; do not treat request digest as content identity | Application boundary |
 | Client disconnects during staging | Staged or absent | Resume same upload ID if state is provable; otherwise abort/reconcile | Issue #6 worker/adapter |
+| Retry before finalization, same request key/digest | Existing staged command state | Resume or inspect the same staged upload; never create an unrelated second upload | Application boundary |
+| Retry before finalization, changed request digest | No new logical effect | Return Issue #8 idempotency conflict | Application boundary |
 | Storage write fails | No successful receipt | Retry bounded transient failures; do not claim success | Issue #6 |
 | Digest/length mismatch | Staged bytes quarantined/aborted; no receipt | Same command is a stable mismatch; changed content requires a new identity | Application and adapter |
 | Process crashes before finalize | Staged bytes or unknown state | Reconcile by upload ID; never publish an unverified object | Issue #6 |
@@ -550,12 +710,19 @@ physical storage presence.
 | Observation/receipt transaction rolls back after object finalize | Finalized orphan candidate; no durable observation or association | Retry the PostgreSQL observation operation with same idempotency key; do not rewrite bytes | Issue #7/application |
 | PostgreSQL commits receipt/reference but outbox delivery fails | Durable observation/reference remains; any committed intent is pending | Replay outbox; no second object write | Issue #4/outbox worker |
 | Canonical acceptance/current-revision transaction rolls back | Prior observation/disposition remains; no new current/outbox effect | Retry according to ADR 0018; object remains non-canonical | Issue #7 |
-| Duplicate command, same payload digest | Existing verified result | Return the stable receipt after authorization/revalidation | Application boundary |
-| Duplicate command, different digest/length or any changed semantic field | Integrity/idempotency conflict | Do not overwrite; require a new command identity | Application boundary |
+| Duplicate command, same pre-write request digest | Existing verified result | Return the stable receipt after authorization/revalidation | Application boundary |
+| Retry after finalization, same request digest and observed identity | Existing verified provisional/canonical result | Return the stable result; do not rewrite bytes | Application boundary |
+| Retry after finalization, same request digest but different observed identity | Content/idempotency conflict | Consume/hash attempted stream if needed, preserve existing bytes, require new command identity | Application boundary |
+| Duplicate command, different request digest or any changed semantic field | Issue #8 idempotency conflict | Do not overwrite; require a new command identity | Application boundary |
 | Object missing while receipt exists | Degraded integrity state | Restore/repair only through an approved recovery manifest; otherwise fail closed | Operations plus Issue #6 |
 | Object digest corrupts after receipt | Corruption result | Restore from backup or create a new revision; never serve bytes | Operations plus Issue #6/#7 |
 | Restart during reconciliation | Cursor/checkpoint resumes | Repeat idempotently | Issue #6 worker |
 | Machine/filesystem failure leaves state indeterminate | No proof of complete object or recovery generation | Mark unavailable; require manifest-based backup/restore or operator decision | Operations |
+| Crash after observed hashing before PostgreSQL observation commit | Finalized orphan candidate with provisional observed identity | Reuse only when request digest, observed identity, generation and command identity all match | Issue #6 plus PostgreSQL reconciliation |
+| Policy/lifecycle version changes before grant consumption | Grant rejected; no content byte returned | Re-run authorization from the SourceRevision boundary | Authorized read gateway |
+| One-shot grant replay or expiry | Grant rejected; no content byte returned | Require a new authorization evaluation and grant | Authorized read gateway |
+| Cross-Workspace/Environment/SourceRevision/generation substitution | Scope or generation mismatch; fail closed | No retry with substituted identity | Authorized read gateway |
+| Process restart with outstanding in-memory grants | All outstanding grants invalidated | Require a new authorization evaluation and grant | Authorized read gateway |
 | Tombstone accepted | Historical association retained; ordinary reads fenced | No content retry | Issue #7 |
 | Approved physical deletion repeats | Deleted or already absent | Return stable deletion result | Issue #6 |
 | Unapproved deletion requested | Protected failure | No retry without approval | Application boundary |
@@ -580,9 +747,13 @@ must:
 - apply physical cleanup only after an explicit approved retention/deletion rule;
 - emit safe diagnostics and audit references without private content.
 
-Repair may associate a finalized object only when the command identity, digest,
-length, object identity and intended tenant/revision are all provable. It must
-not guess a SourceObject or merge equal bytes across provenance.
+Repair may associate a finalized object only when the command identity,
+pre-write request digest, observed content identity, generation, object identity
+and intended tenant/revision are all provable. It must not guess a SourceObject
+or merge equal bytes across provenance. A post-stream validation result that
+conflicts with the recorded observation remains quarantined/rejected under its
+canonical owner; reconciliation cannot rewrite the request digest or infer
+admission.
 
 ## Security, Integrity and Privacy Invariants
 
@@ -593,11 +764,14 @@ not guess a SourceObject or merge equal bytes across provenance.
    SourceRevision identity for content reads; raw adapter read operations are
    unreachable from API handlers, tools, model-facing code, citations and
    arbitrary callers.
-4. Access Policy, current authorization and authorization-version validity are
-   evaluated before an internal read capability is created; the adapter is
-   never an ACL authority.
-5. An ObjectReference or expired/revoked internal capability alone cannot
-   disclose content or confer continuing authority.
+4. The trusted gateway revalidates Access Policy, current authorization,
+   SourceRevision lifecycle and authorization-version validity immediately
+   before consuming a one-shot internal grant; the adapter is never an ACL
+   authority.
+5. Grants are opaque, non-serializable, one-shot, scope/generation-bound,
+   expiry-bound and invalidated on process restart. An ObjectReference or
+   expired/revoked/replayed grant alone cannot disclose content or confer
+   continuing authority.
 6. Tombstoned, rejected, quarantined, stale or unauthorized content is not
    disclosed through reads, projections, citations, logs or errors.
 7. SHA-256 and byte length are calculated from streamed bytes; client MIME,
@@ -708,12 +882,14 @@ order, SQLAlchemy mappings, directory names or provider SDK behavior.
    crash behavior, filesystem atomicity, backup integrity or provider failure
    semantics.
 2. **Application-level orchestration seam.** A fake object store and fake Unit
-   of Work exercise the Issue #6 boundary: canonical command-payload digest,
+   of Work exercise the Issue #6 boundary: Issue #8 canonical request digest,
    staged write, provisional receipt, PostgreSQL receipt handoff, observation
-   rollback, duplicate command, changed-semantic-field conflict, crash windows
-   and reconciliation outcomes. This seam does not implement Issue #3's
-   ingestion pipeline or Issue #7's canonical SourceRevision repository; it
-   consumes narrow ports representing those boundaries.
+   rollback, duplicate command, changed-semantic-field conflict, uploads with
+   no expected checksum, same/different observed bytes, retry before and after
+   finalization, crash after observed hashing and reconciliation outcomes. This
+   seam does not implement Issue #3's ingestion pipeline or Issue #7's
+   canonical SourceRevision repository; it consumes narrow ports representing
+   those boundaries.
 3. **Filesystem integration seam.** Temporary storage on the supported platform
    and filesystem proves bounded streaming, exclusive immutable publication,
    process-restart recovery, partial upload handling, orphan reconciliation,
@@ -730,11 +906,14 @@ order, SQLAlchemy mappings, directory names or provider SDK behavior.
 5. **Authorization/security seam.** An application-facing read boundary is
    exercised with two Workspaces and Environments, allowed and denied Access
    Policy outcomes, reference possession without authority, policy revocation,
-   tombstones, expired/authorization-version-mismatched internal capabilities
-   and sanitized failures. The test proves raw adapter reads cannot be reached
-   from untrusted entry points and that reads are invoked only through the
-   authorized application boundary; it must not make the storage adapter an ACL
-   or policy owner.
+   policy revocation between initial authorization and stream creation,
+   tombstones in that window, expired/version-mismatched grants, replayed grants,
+   cross-Workspace/Environment and SourceRevision/ObjectReference/generation
+   substitution, process restart invalidation and sanitized failures. The test
+   proves authorization fails before any content byte is returned, raw adapter
+   reads cannot be reached from untrusted entry points, and reads are invoked
+   only through the authorized application boundary; it must not make the
+   storage adapter an ACL or policy owner.
 6. **Operational/backup seam.** A restore fixture validates receipt/object
    consistency against a `StorageRecoveryManifest`, recovery-boundary/generation
    matching, checksum verification, missing-object degradation and readiness
@@ -747,7 +926,10 @@ duplicate/retried command, changed semantic command fields, identical bytes
 across tenants and revisions,
 partial upload, process restart, orphan cleanup, missing/corrupt object,
 tombstone, approved and unapproved deletion, concurrent no-replace finalize,
-publication-step crashes, and manifest-based backup/restore.
+publication-step crashes, uploads without an expected checksum, same-key
+different-byte retries, pre/post-finalization retries, observed-hash crash
+windows, one-shot grant replay/revocation/substitution and manifest-based
+backup/restore.
 
 Repository gates remain:
 
@@ -813,13 +995,20 @@ tests must continue to prove the domain/application framework boundary.
 48. As a platform maintainer, I want object storage replaceable, so that Cognee, filesystem and future providers remain behind application contracts.
 49. As an application security engineer, I want raw adapter reads hidden behind an authorized read service, so that API handlers and model-facing code cannot turn a reference into disclosure.
 50. As an authorization service, I want a short-lived read capability bound to Workspace, Environment, SourceRevision, purpose and authorization version, so that a capability cannot be reused after policy revocation.
-51. As an idempotency owner, I want a deterministic semantic command digest, so that retries with changed scope, purpose or expected content are rejected consistently.
+51. As an idempotency owner, I want the Issue #8 pre-write request digest, so that retries with changed scope, purpose or expected content are rejected consistently.
 52. As a persistence owner, I want PostgreSQL to own the canonical command receipt, so that provisional adapter evidence cannot be mistaken for canonical SourceRevision state.
 53. As a source-history owner, I want observed, dispositioned and canonically accepted revisions separated, so that storage finalization cannot alter ADR 0018 lifecycle decisions.
 54. As a backup operator, I want one recovery manifest binding PostgreSQL and object-volume identities, so that restore validation can detect mixed generations.
 55. As a backup operator, I want readiness closed for an incomplete or mixed recovery set, so that partial restoration cannot disclose content.
 56. As a storage adapter developer, I want no-replace publication outcomes defined for concurrent finalization, so that a race cannot overwrite an immutable generation.
 57. As a storage adapter developer, I want generation identity semantics explicit, so that exact restore, repair and orphan reassociation cannot confuse physical generations.
+58. As an idempotency owner, I want the pre-write request digest to follow Issue #8 canonicalization, so that storage commands share one conflict and receipt model.
+59. As an ingestion operator, I want observed byte identity stored separately from request identity, so that uploads without expected checksums remain safe and auditable.
+60. As an ingestion operator, I want same-key different-byte retries rejected after hashing without replacing finalized bytes, so that retries cannot corrupt an original.
+61. As an authorization gateway, I want policy and lifecycle versions revalidated immediately before one-shot grant consumption, so that revocation prevents new stream creation.
+62. As an authorization gateway, I want process restart to invalidate outstanding grants, so that in-memory authority cannot survive an uncertain process state.
+63. As a persistence owner, I want the Issue #8 idempotency receipt completed in a short transaction with an opaque upload-state result, so that a long byte stream never holds an incomplete database claim.
+64. As an ingestion operator, I want the upload state linked to the Issue #8 receipt rather than a second idempotency key, so that staged recovery and replay remain one canonical command.
 
 ## Numbered Acceptance Criteria
 
@@ -827,9 +1016,11 @@ tests must continue to prove the domain/application framework boundary.
    storage port with upload, abort/resume, finalize, streaming read, verify,
    reconciliation and controlled deletion behavior.
 2. The specification defines typed `ObjectReference`, `OriginalUpload`,
-   `OriginalUploadCommandPayload`, `WriteReceipt`, `IntegrityResult`,
-   `AuthorizedOriginalRead`, `StorageRecoveryManifest` and adapter-neutral error
-   categories.
+   `OriginalUploadCommandPayload`, `PreWriteRequestDigest`,
+   `ObservedContentIdentity`, `ValidatedContentEvidence`, `WriteReceipt`,
+   `UploadCommandState`, `IntegrityResult`,
+   `AuthorizedOriginalReadGrant`, `StorageRecoveryManifest` and adapter-neutral
+   error categories.
 3. Object references contain no physical path, bucket, provider credential,
    signed URL or private byte content.
 4. SHA-256 and byte length are computed from streamed bytes and verified before
@@ -839,10 +1030,11 @@ tests must continue to prove the domain/application framework boundary.
    generations return a typed conflict, and no partial object is readable.
 6. Identical bytes can be represented independently for different tenants,
    SourceObjects and SourceRevisions; digest equality does not merge provenance.
-7. The application protocol defines a deterministic semantic command digest
-   over trusted scope, purpose, object identity, expected digest/length and
-   validated content classification; excludes transport metadata and display
-   filename; reuses identical results and rejects any changed semantic field.
+7. The application protocol reuses Issue #8's versioned canonical SHA-256
+   request digest and canonicalization rules for pre-write semantic inputs,
+   excluding observed content and post-stream validation; it separately records
+   the SHA-256 observed content identity and reuses identical results while
+   rejecting any changed request field or finalized observed byte identity.
 8. The specification states that PostgreSQL receipt/reference and canonical
    SourceRevision state remain authoritative; object storage does not own source
    identity, history, ACL, tombstone, projection or current-revision state.
@@ -866,8 +1058,9 @@ tests must continue to prove the domain/application framework boundary.
     atomic publication, no-replace behavior, restart/failure behavior and
     backup/restore; it does not claim universal `fsync + rename` durability.
 15. The adapter boundary excludes ACL and policy decisions; raw adapter reads
-   are unreachable from untrusted entry points and content reads require the
-   authorized service with a valid short-lived capability.
+   are unreachable from untrusted entry points and content reads require a
+   one-shot opaque grant minted and consumed by the authorized service after an
+   immediate policy/lifecycle-version revalidation.
 16. Workspace/Environment isolation, reference possession versus authority,
     filename safety, MIME distrust, path traversal prevention, size limits,
     bounded buffers, backpressure, timeout and credential least privilege are
@@ -882,7 +1075,9 @@ tests must continue to prove the domain/application framework boundary.
 20. The test strategy includes the confirmed six seams, shared fake/real
     conformance, bounded streaming, duplicate/retry, cross-tenant identical
     bytes, corruption, restart, orphan, missing-object, tombstone, deletion,
-    authorization, filename/MIME/path/size/timeout and backup/restore cases.
+    authorization-before-byte, grant replay/revocation/substitution,
+    no-expected-checksum same/different-byte retries, observed-hash crash,
+    filename/MIME/path/size/timeout and backup/restore cases.
 21. The specification names Issue #6 ownership and the exact coordination
     boundaries with Issue #7, Issue #3, Issue #4 and Issue #8.
 22. The recommendation compares local filesystem, PostgreSQL bytes,
@@ -894,6 +1089,17 @@ tests must continue to prove the domain/application framework boundary.
 24. The document contains no production implementation, migration, public API,
     ingestion pipeline, audit delivery, cloud deployment, ticket, PR or GitHub
     mutation.
+25. The pre-write request digest is calculated before streaming using Issue #8's
+   canonical request algorithm and completed in a short idempotency transaction;
+   the observed SHA-256 digest and byte length are calculated only from the
+   actual stream and are persisted separately through the linked upload state.
+26. Uploads without an expected checksum have explicit same-key/same-byte,
+    same-key/different-byte, pre-finalization retry, post-finalization retry and
+    post-hash/pre-PostgreSQL-crash behavior without overwriting finalized bytes.
+27. The authorized read gateway revalidates policy/lifecycle immediately before
+    consuming a one-shot opaque grant; replay, expiry, restart, scope,
+    generation, tombstone and version mismatch fail before any content byte is
+    returned.
 
 ## Suggested Implementation Slices
 
@@ -910,9 +1116,10 @@ tests must continue to prove the domain/application framework boundary.
    canonical records and migration ownership.
 7. Add reconciliation and controlled deletion only after retention/approval
    rules are supplied by product, operations and compliance owners.
-8. Integrate the Issue #3 ingestion pipeline and Issue #4 diagnostics through
-   their approved contracts; preserve legacy compatibility paths until tested
-   replacements exist.
+8. Integrate the Issue #3 ingestion pipeline and Issue #4 audit/delivery
+   diagnostics and safe operational signals through their approved contracts;
+   preserve legacy compatibility paths until tested replacements exist. Any UI
+   slice consuming those signals is separate from Issue #6 and Issue #4.
 
 ## Dependency Ordering
 
@@ -927,12 +1134,14 @@ Issue #7 SourceObject/SourceRevision/AccessPolicy repositories
         ↓
 Issue #3 ingestion orchestration
         ↓
-Issue #4 audit/delivery diagnostics and R1 UI integration
+Issue #4 audit-event, delivery-diagnostics and safe-operational-signal contracts
 ```
 
 Issue #6 may define and test its boundary before Issue #7 repositories exist,
 but must not invent their canonical schemas. Issue #14/ADR 0018 remains
-authoritative throughout.
+authoritative throughout. General R1 UI work is a separate interface slice; it
+may consume Issue #4 diagnostics but is not owned by Issue #4 or required to
+complete Issue #6 durable storage.
 
 ## Risks and Mitigations
 
@@ -999,6 +1208,18 @@ authoritative throughout.
 10. Does a future S3-compatible deployment require a new ADR before selection,
     or can the architecture group approve it under this port once the durability
     and backup evidence is available?
+11. Which exact Issue #3 validator/version produces `ValidatedContentEvidence`,
+    and which bounded fields become Issue #7 observation metadata? The result
+    must remain post-stream evidence and must not be added to the Issue #8
+    pre-write request digest without a versioned command-contract decision.
+12. What exact Issue #8 operation name/schema version and result-reference type
+    will Issue #7 use for the upload command receipt? The implementation must
+    reuse the kernel canonicalizer and digest algorithm rather than define a
+    storage-specific idempotency system.
+13. What concrete trusted gateway composition and Unit of Work/snapshot boundary
+    will perform the immediate policy/lifecycle-version recheck before one-shot
+    grant consumption? The gateway must remain in-process and must not become a
+    new distributed capability service.
 
 ## Further Notes
 
