@@ -183,11 +183,21 @@ def test_registry_rejects_unknown_region() -> None:
         normalize_language_tag("en-zz")
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("Cafe\u0301", "Café"), ("\u1100\u1161", "가"), ("A\u030A", "Å")],
+)
+def test_canonical_unicode_golden_vectors(value: str, expected: str) -> None:
+    from spine.domain.sources.profile import normalize_nfc
+
+    assert normalize_nfc(value) == expected
+
+
 def test_pinned_profile_table_digests_are_independent_literals() -> None:
     from spine.domain.sources.profile import BCP47_TABLE_DIGEST, UNICODE_TABLE_DIGEST
 
     assert UNICODE_TABLE_DIGEST == "d769555163fd558132c9035e6ab04c6afc75b6140d88810de311c6b4126470b8"
-    assert BCP47_TABLE_DIGEST == "3cbe3bba5183ce02fa6cc333e0a8d277b3375a8ae4752865c5b2246c6d2ee020"
+    assert BCP47_TABLE_DIGEST == "2eef87039e0d1fcdca86f772c8efd906d65910171987181542f5064f64a1ca48"
 
 
 def test_pinned_profile_normalizes_nfc_and_profile_whitespace() -> None:
@@ -220,7 +230,7 @@ def test_revision_digest_excludes_observed_time() -> None:
 
 
 def test_revision_digest_matches_pinned_golden_vector() -> None:
-    assert revision_digest(valid_revision(source())) == "31403c63ef5c8e3c2ace86ef7fe7bd2ad86643db4b366b765ca9d9edc90aab81"
+    assert revision_digest(valid_revision(source())) == "3ee2e85a2d69deed9d0b380a51ae7bd05af70a50055149363247bcaba42fd0b6"
 
 
 def command(source_object: SourceObject, source_revision: SourceRevision, source_provenance: SourceRevisionProvenance, key: str) -> SourceObservationCommand:

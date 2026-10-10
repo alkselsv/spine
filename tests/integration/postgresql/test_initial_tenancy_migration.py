@@ -408,7 +408,104 @@ async def test_source_canonical_validation_is_profile_bound(
         source = (await result.scalar_one()).lower()
         assert "normalize" in source
         assert "d769555163fd558132c9035e6ab04c6afc75b6140d88810de311c6b4126470b8" in source
-        assert "3cbe3bba5183ce02fa6cc333e0a8d277b3375a8ae4752865c5b2246c6d2ee020" in source
+        assert "2eef87039e0d1fcdca86f772c8efd906d65910171987181542f5064f64a1ca48" in source
+        profile_rows = {
+            row.table_name: (row.table_version, row.table_digest)
+            for row in (
+                await connection.execute(
+                    text("SELECT table_name, table_version, table_digest FROM spine.source_canonical_tables")
+                )
+            )
+        }
+        assert profile_rows == {
+            "unicode": ("15.1.0", "d769555163fd558132c9035e6ab04c6afc75b6140d88810de311c6b4126470b8"),
+            "bcp47": ("2025-10-14", "2eef87039e0d1fcdca86f772c8efd906d65910171987181542f5064f64a1ca48"),
+        }
+        privileges = await connection.execute(
+            text(
+                "SELECT has_table_privilege(:runtime, 'spine.source_canonical_unicode', 'SELECT'), "
+                "has_table_privilege(:runtime, 'spine.source_canonical_unicode', 'INSERT'), "
+                "has_table_privilege(:runtime, 'spine.source_canonical_unicode', 'UPDATE')"
+            ),
+            {"runtime": RUNTIME_ROLE},
+        )
+        assert privileges.one() == (True, False, False)
+        vectors = (
+            ("Cafe\u0301", "Café", "en-US", "en-us"),
+            ("\u1100\u1161", "가", "sl-ROZAJ-BISKE", "sl-rozaj-biske"),
+            ("A\u030A", "Å", "en-u-ca-gregory", "en-u-ca-gregory"),
+        )
+        for value, expected_text, language, expected_language in vectors:
+            canonical_text, canonical_language = (
+                await connection.execute(
+                    text(
+                        "SELECT spine.source_canonical_nfc(:value), "
+                        "spine.source_canonical_language(:language)"
+                    ),
+                    {"value": value, "language": language},
+                )
+            ).one()
+            assert canonical_text == expected_text
+            assert canonical_language == expected_language
+        with pytest.raises((IntegrityError, DBAPIError)):
+            await connection.execute(
+                text("SELECT spine.source_canonical_language('en-zz')")
+            )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_direct_sql_cannot_bypass_source_canonical_validation(
+    migrated_database: MigratedDatabase,
+    tenant_rows: None,
+) -> None:
+    source_id = UUID("40000000-0000-0000-0000-000000000011")
+    revision_id = UUID("40000000-0000-0000-0000-000000000012")
+    reference = (
+        '{"schema_version":1,"object_id":"40000000-0000-0000-0000-000000000013",'
+        '"storage_generation":"40000000-0000-0000-0000-000000000014",'
+        '"digest_algorithm":"sha256","digest_hex":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'
+        '"byte_length":1}'
+    )
+    insert_source = text(
+        "INSERT INTO spine.source_objects "
+        "(source_object_id, workspace_id, environment_id, source_kind, identity_mode, upload_identity, created_at) "
+        "VALUES (:source_id, :workspace_id, :environment_id, 'document', 'upload', 'sql-canonical-test', now())"
+    )
+    insert_revision = text(
+        "INSERT INTO spine.source_revisions "
+        "(revision_id, source_object_id, workspace_id, environment_id, kind, revision_digest, "
+        "revision_schema_version, revision_metadata_schema, revision_metadata, revision_metadata_digest, "
+        "original_reference, original_sha256, byte_length, media_type, observed_at, "
+        "canonicalization_profile, unicode_table_digest, bcp47_table_digest) "
+        "VALUES (:revision_id, :source_id, :workspace_id, :environment_id, 'content', :revision_digest, "
+        "'source-revision:v1', 'revision-metadata:r1-document-v1', CAST(:metadata AS jsonb), :metadata_digest, "
+        "CAST(:reference AS jsonb), :sha, 1, 'text/plain', now(), 'r1-c14n-2026-10', :unicode_digest, :bcp_digest)"
+    )
+    common = {
+        "source_id": source_id,
+        "workspace_id": WORKSPACE_A,
+        "environment_id": ENVIRONMENT_A,
+        "reference": reference,
+        "sha": "a" * 64,
+        "unicode_digest": "d769555163fd558132c9035e6ab04c6afc75b6140d88810de311c6b4126470b8",
+        "bcp_digest": "2eef87039e0d1fcdca86f772c8efd906d65910171987181542f5064f64a1ca48",
+    }
+    async with _connection(migrated_database.migration.url) as connection:
+        await connection.execute(insert_source, common)
+        await connection.commit()
+        try:
+            cases = (
+                {"metadata": '{"embedded_title":"Cafe\\u0301"}', "metadata_digest": "c" * 64, "revision_digest": "b" * 64},
+                {"metadata": '{"embedded_title":"Café","document_language":"en-us"}', "metadata_digest": "4220b54f52008ad8e811d63115836744d69106765438ca9d7fa670f0caa9b536", "revision_digest": "b" * 64},
+            )
+            for case in cases:
+                with pytest.raises((IntegrityError, DBAPIError)):
+                    await connection.execute(insert_revision, {**common, "revision_id": revision_id, **case})
+                    await connection.commit()
+                await connection.rollback()
+        finally:
+            await connection.execute(text("DELETE FROM spine.source_objects WHERE source_object_id = :source_id"), {"source_id": source_id})
+            await connection.commit()
 
 
 async def _set_tenant_context(
@@ -555,6 +652,10 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "outbox_intents",
         "workspace_memberships",
         "workspaces",
+        "source_canonical_tables",
+        "source_canonical_unicode",
+        "source_canonical_compositions",
+        "source_canonical_bcp47",
     }
     assert constraints == {
         "alembic_version_pkc",
@@ -587,6 +688,14 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "uq_initial_workspace_bootstrap_action_id",
         "uq_initial_workspace_bootstrap_workspace_id",
         "uq_workspaces_slug",
+        "pk_source_canonical_tables",
+        "pk_source_canonical_unicode",
+        "pk_source_canonical_compositions",
+        "pk_source_canonical_bcp47",
+        "ck_source_canonical_tables_digest",
+        "ck_source_canonical_unicode_codepoint",
+        "ck_source_canonical_unicode_ccc",
+        "ck_source_canonical_bcp47_category",
     } | AUTHORIZATION_DIRECTORY_CONSTRAINTS | AUDIT_CONSTRAINTS
     assert indexes == {
         "alembic_version_pkc",
@@ -604,6 +713,10 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "uq_outbox_intents_environment_producer",
         "uq_outbox_intents_workspace_producer",
         "uq_workspaces_slug",
+        "pk_source_canonical_tables",
+        "pk_source_canonical_unicode",
+        "pk_source_canonical_compositions",
+        "pk_source_canonical_bcp47",
     } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
@@ -620,6 +733,10 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "canonical_human_identity_states": (False, False),
         "authentication_alias_bindings": (False, False),
         "audit_events": (True, True),
+        "source_canonical_tables": (False, False),
+        "source_canonical_unicode": (False, False),
+        "source_canonical_compositions": (False, False),
+        "source_canonical_bcp47": (False, False),
     }
     assert rls == expected_rls
     tenant_rls_tables = {
@@ -631,6 +748,24 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
     assert set(policies) == {
         (table_name, f"pol_{table_name}_{policy_kind}")
         for table_name in standard_tenant_rls_tables
+=======
+        "source_canonical_tables": (False, False),
+        "source_canonical_unicode": (False, False),
+        "source_canonical_compositions": (False, False),
+        "source_canonical_bcp47": (False, False),
+    }
+    assert rls == expected_rls
+    expected_policy_tables = {
+        "workspaces",
+        "environments",
+        "idempotency_receipts",
+        "initial_workspace_bootstrap",
+        "outbox_intents",
+    }
+    assert set(policies) == {
+        (table_name, f"pol_{table_name}_{policy_kind}")
+        for table_name in expected_policy_tables
+>>>>>>> a82889e (fix: enforce pinned canonicalization in PostgreSQL)
         for policy_kind in ("tenant_isolation", "migration_maintenance")
     } | {
         ("audit_events", "pol_audit_events_tenant_read"),
@@ -673,6 +808,10 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "environment_memberships": (False, False, False, False),
         "environment_role_bindings": (False, False, False, False),
         "workspace_memberships": (False, False, False, False),
+        "source_canonical_tables": (True, False, False, False),
+        "source_canonical_unicode": (True, False, False, False),
+        "source_canonical_compositions": (True, False, False, False),
+        "source_canonical_bcp47": (True, False, False, False),
     }
     assert receipt_update_columns == {
         "result_type",
@@ -722,7 +861,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "SELECT conname FROM pg_constraint AS constraint_record "
                         "JOIN pg_namespace AS namespace "
                         "ON namespace.oid = constraint_record.connamespace "
-                        "WHERE namespace.nspname = 'spine'"
+                        "WHERE namespace.nspname = 'spine' "
+                        "AND constraint_record.conname NOT LIKE '%source_canonical%'"
                     )
                 )
             ).scalars()
@@ -738,7 +878,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                     text(
                         "SELECT table_name, column_name, data_type, is_nullable, "
                         "column_default FROM information_schema.columns "
-                        "WHERE table_schema = 'spine'"
+                        "WHERE table_schema = 'spine' "
+                        "AND table_name NOT LIKE 'source_canonical%'"
                     )
                 )
             ).mappings()
@@ -748,7 +889,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                 await connection.execute(
                     text(
                         "SELECT indexname FROM pg_indexes "
-                        "WHERE schemaname = 'spine'"
+                        "WHERE schemaname = 'spine' "
+                        "AND indexname NOT LIKE 'pk_source_canonical%'"
                     )
                 )
             ).scalars()
@@ -757,7 +899,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
             (
                 await connection.execute(
                     text(
-                        "SELECT tablename FROM pg_tables WHERE schemaname = 'spine'"
+                        "SELECT tablename FROM pg_tables WHERE schemaname = 'spine' "
+                        "AND tablename NOT LIKE 'source_canonical%'"
                     )
                 )
             ).scalars()
@@ -766,7 +909,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
             (
                 await connection.execute(
                     text(
-                        "SELECT tableowner FROM pg_tables WHERE schemaname = 'spine'"
+                        "SELECT tableowner FROM pg_tables WHERE schemaname = 'spine' "
+                        "AND tablename NOT LIKE 'source_canonical%'"
                     )
                 )
             ).scalars()
