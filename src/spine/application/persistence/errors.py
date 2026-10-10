@@ -42,6 +42,14 @@ class ConstraintConflictError(PersistenceError):
     """A known persistence invariant rejected the requested change."""
 
 
+class ObservationIntegrityConflictError(ConstraintConflictError):
+    """An observation identity was reused for different content."""
+
+
+class RevisionDigestMismatchError(ConstraintConflictError):
+    """Revision-bearing fields do not match the supplied canonical digest."""
+
+
 class IdempotencyConflictError(ConstraintConflictError):
     """An idempotency key was reused for different command content or scope."""
 

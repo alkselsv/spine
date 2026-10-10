@@ -32,10 +32,14 @@ from spine.application.persistence.errors import (
     ConstraintConflictError,
     IdempotencyConflictError,
     InvalidPersistenceContextError,
+    ObservationIntegrityConflictError,
     PersistenceError,
     UnitOfWorkLifecycleError,
 )
-from spine.application.persistence.repositories import SourceObservationResult
+from spine.application.persistence.repositories import (
+    SourceObservationCommand,
+    SourceObservationResult,
+)
 from spine.application.persistence.idempotency import (
     IdempotencyClaimResult,
     IdempotencyKey,
@@ -53,6 +57,7 @@ from spine.domain.audit import AuditEvent, AuditObjectReference, AuditOutcome
 from spine.domain.common import ContextOrigin, EnvironmentKind
 from spine.domain.workspaces import Environment, Workspace
 from spine.domain.sources import SourceObject, SourceRevision, SourceRevisionProvenance
+from spine.domain.sources.canonicalization import assert_revision_digest
 from spine.infrastructure.db.engine import SessionFactory
 from spine.infrastructure.persistence.postgresql_errors import (
     translate_persistence_error,
@@ -299,34 +304,113 @@ class _PostgreSQLSourceObservationRepository:
             await self._uow._fail(ConstraintConflictError("Source identity conflict."))
         return SourceObject.model_validate(dict(row))
 
-    async def record_observation(self, revision: SourceRevision, provenance: SourceRevisionProvenance) -> SourceObservationResult:
+    async def record_observation(self, command: SourceObservationCommand) -> SourceObservationResult:
         self._uow._guard_active()
+        revision = command.revision
+        provenance = command.provenance
         self._check_scope(revision.workspace_id, revision.environment_id)
-        if (provenance.source_object_id, provenance.revision_id, provenance.workspace_id, provenance.environment_id) != (revision.source_object_id, revision.revision_id, revision.workspace_id, revision.environment_id):
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=command.digest.operation_schema_version,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+
+        async def resolve(result_reference: OpaqueResultReference, replay: bool) -> SourceObservationResult:
+            rev_row = (await self._uow._execute(select(_SOURCE_REVISIONS).where(
+                _SOURCE_REVISIONS.c.revision_id == result_reference.result_id,
+                _SOURCE_REVISIONS.c.workspace_id == revision.workspace_id,
+                _SOURCE_REVISIONS.c.environment_id == revision.environment_id,
+            ))).mappings().one_or_none()
+            if rev_row is None:
+                await self._uow._fail(ConstraintConflictError("Observation replay is unavailable."))
+            source_row = (await self._uow._execute(select(_SOURCE_OBJECTS).where(
+                _SOURCE_OBJECTS.c.source_object_id == rev_row.source_object_id,
+                _SOURCE_OBJECTS.c.workspace_id == revision.workspace_id,
+                _SOURCE_OBJECTS.c.environment_id == revision.environment_id,
+            ))).mappings().one_or_none()
+            event_row = (await self._uow._execute(select(_SOURCE_PROVENANCE).where(
+                _SOURCE_PROVENANCE.c.revision_id == rev_row.revision_id,
+                _SOURCE_PROVENANCE.c.workspace_id == revision.workspace_id,
+                _SOURCE_PROVENANCE.c.environment_id == revision.environment_id,
+                _SOURCE_PROVENANCE.c.producer_kind == provenance.producer_kind,
+                _SOURCE_PROVENANCE.c.producer_reference == provenance.producer_reference,
+                _SOURCE_PROVENANCE.c.event_identity == provenance.event_identity,
+            ))).mappings().one_or_none()
+            if source_row is None or event_row is None:
+                await self._uow._fail(ConstraintConflictError("Observation replay is unavailable."))
+            return SourceObservationResult(
+                source=SourceObject.model_validate(dict(source_row)),
+                revision=SourceRevision.model_validate(dict(rev_row)),
+                provenance=SourceRevisionProvenance.model_validate(dict(event_row)),
+                replay=replay,
+                claim=claim,
+                result_reference=result_reference,
+            )
+
+        if isinstance(claim, IdempotencyReplay):
+            return await resolve(claim.result, True)
+        try:
+            assert_revision_digest(revision)
+        except PersistenceError as error:
+            await self._uow._fail(error)
+        if (
+            command.source.source_object_id != revision.source_object_id
+            or provenance.source_object_id != revision.source_object_id
+            or provenance.revision_id != revision.revision_id
+            or provenance.workspace_id != revision.workspace_id
+            or provenance.environment_id != revision.environment_id
+        ):
             await self._uow._fail(ConstraintConflictError("Source observation is invalid."))
-        source_row = (await self._uow._execute(select(_SOURCE_OBJECTS).where(_SOURCE_OBJECTS.c.source_object_id == revision.source_object_id, _SOURCE_OBJECTS.c.workspace_id == revision.workspace_id, _SOURCE_OBJECTS.c.environment_id == revision.environment_id))).mappings().one_or_none()
-        if source_row is None:
+        source = await self.resolve_or_create_source(command.source)
+        if source.source_object_id != revision.source_object_id:
             await self._uow._fail(ConstraintConflictError("Source observation is invalid."))
-        event_row = (await self._uow._execute(select(_SOURCE_PROVENANCE).where(_SOURCE_PROVENANCE.c.workspace_id == provenance.workspace_id, _SOURCE_PROVENANCE.c.environment_id == provenance.environment_id, _SOURCE_PROVENANCE.c.producer_kind == provenance.producer_kind, _SOURCE_PROVENANCE.c.producer_reference == provenance.producer_reference, _SOURCE_PROVENANCE.c.event_identity == provenance.event_identity))).mappings().one_or_none()
+
+        event_query = select(_SOURCE_PROVENANCE).where(
+            _SOURCE_PROVENANCE.c.workspace_id == provenance.workspace_id,
+            _SOURCE_PROVENANCE.c.environment_id == provenance.environment_id,
+            _SOURCE_PROVENANCE.c.producer_kind == provenance.producer_kind,
+            _SOURCE_PROVENANCE.c.producer_reference == provenance.producer_reference,
+            _SOURCE_PROVENANCE.c.event_identity == provenance.event_identity,
+        )
+        event_row = (await self._uow._execute(event_query)).mappings().one_or_none()
         if event_row is not None:
             if event_row.event_digest != provenance.event_digest:
-                await self._uow._fail(ConstraintConflictError("Source observation conflicts."))
-            rev_row = (await self._uow._execute(select(_SOURCE_REVISIONS).where(_SOURCE_REVISIONS.c.revision_id == event_row.revision_id))).mappings().one()
-            return SourceObservationResult(source=SourceObject.model_validate(dict(source_row)), revision=SourceRevision.model_validate(dict(rev_row)), provenance=SourceRevisionProvenance.model_validate(dict(event_row)), replay=True)
-        rev_query = select(_SOURCE_REVISIONS).where(_SOURCE_REVISIONS.c.workspace_id == revision.workspace_id, _SOURCE_REVISIONS.c.environment_id == revision.environment_id, _SOURCE_REVISIONS.c.source_object_id == revision.source_object_id, _SOURCE_REVISIONS.c.revision_digest == revision.revision_digest)
+                await self._uow._fail(ObservationIntegrityConflictError("Source observation conflicts."))
+            result = await resolve(
+                OpaqueResultReference(result_type="source_revision", result_id=event_row.revision_id, schema_version=1),
+                False,
+            )
+            await self._uow.idempotency.complete(claim, result.result_reference)
+            return result
+
+        rev_query = select(_SOURCE_REVISIONS).where(
+            _SOURCE_REVISIONS.c.workspace_id == revision.workspace_id,
+            _SOURCE_REVISIONS.c.environment_id == revision.environment_id,
+            _SOURCE_REVISIONS.c.source_object_id == revision.source_object_id,
+            _SOURCE_REVISIONS.c.revision_digest == revision.revision_digest,
+        )
         rev_row = (await self._uow._execute(rev_query)).mappings().one_or_none()
         if rev_row is None:
             values = revision.model_dump(mode="python")
             values["kind"] = revision.kind.value
-            if revision.revision_metadata is not None:
-                values["revision_metadata"] = revision.revision_metadata.model_dump(mode="json")
-            if revision.original_reference is not None and hasattr(revision.original_reference, "model_dump"):
-                values["original_reference"] = revision.original_reference.model_dump(mode="json")
+            values["revision_metadata"] = revision.revision_metadata.model_dump(mode="json") if revision.revision_metadata is not None else None
+            values["original_reference"] = revision.original_reference.model_dump(mode="json") if revision.original_reference is not None else None
             await self._uow._execute(postgresql_insert(_SOURCE_REVISIONS).values(**values).on_conflict_do_nothing(constraint="uq_source_revisions_digest"))
             rev_row = (await self._uow._execute(rev_query)).mappings().one()
-        values = provenance.model_dump(mode="python")
-        await self._uow._execute(postgresql_insert(_SOURCE_PROVENANCE).values(**values))
-        return SourceObservationResult(source=SourceObject.model_validate(dict(source_row)), revision=SourceRevision.model_validate(dict(rev_row)), provenance=provenance, replay=False)
+        await self._uow._execute(
+            postgresql_insert(_SOURCE_PROVENANCE).values(**provenance.model_dump(mode="python")).on_conflict_do_nothing(
+                index_elements=[_SOURCE_PROVENANCE.c.workspace_id, _SOURCE_PROVENANCE.c.environment_id, _SOURCE_PROVENANCE.c.producer_kind, _SOURCE_PROVENANCE.c.producer_reference, _SOURCE_PROVENANCE.c.event_identity]
+            )
+        )
+        event_row = (await self._uow._execute(event_query)).mappings().one()
+        if event_row.event_digest != provenance.event_digest:
+            await self._uow._fail(ObservationIntegrityConflictError("Source observation conflicts."))
+        result = await resolve(
+            OpaqueResultReference(result_type="source_revision", result_id=event_row.revision_id, schema_version=1),
+            False,
+        )
+        await self._uow.idempotency.complete(claim, result.result_reference)
+        return result
 
     async def resolve_revision(self, revision_id: UUID) -> SourceRevision | None:
         self._uow._guard_active()

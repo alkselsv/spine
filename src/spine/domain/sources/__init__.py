@@ -14,10 +14,14 @@ from .canonicalization import (
     REVISION_PROFILE,
     REVISION_SCHEMA,
     SourceObservationCommand,
+    assert_revision_digest,
+    content_revision,
     observation_command_digest,
     revision_canonical_bytes,
     revision_digest,
+    tombstone_revision,
 )
+from .profile import BCP47_TABLE_DIGEST, UNICODE_TABLE_DIGEST
 
 __all__ = [
     "IdentityMode",
@@ -28,10 +32,15 @@ __all__ = [
     "SourceRevision",
     "SourceRevisionProvenance",
     "OBSERVATION_SCHEMA",
+    "BCP47_TABLE_DIGEST",
     "REVISION_PROFILE",
     "REVISION_SCHEMA",
     "SourceObservationCommand",
+    "assert_revision_digest",
+    "content_revision",
     "observation_command_digest",
     "revision_canonical_bytes",
     "revision_digest",
+    "tombstone_revision",
+    "UNICODE_TABLE_DIGEST",
 ]

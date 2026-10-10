@@ -24,6 +24,8 @@ from spine.application.persistence.command_digest import (
 from spine.application.persistence.errors import (
     AuditConflictError,
     ConstraintConflictError,
+    ObservationIntegrityConflictError,
+    RevisionDigestMismatchError,
     IdempotencyConflictError,
     IncompatibleSchemaError,
     InvalidBootstrapAuthorityError,
@@ -57,6 +59,7 @@ from spine.application.persistence.repositories import (
     IdempotencyRepository,
     WorkspaceRepository,
     SourceObservationRepository,
+    SourceObservationCommand,
     SourceObservationResult,
 )
 from spine.application.persistence.retry import (
@@ -80,6 +83,8 @@ __all__ = [
     "EnvironmentScope",
     "EnvironmentRepository",
     "ConstraintConflictError",
+    "ObservationIntegrityConflictError",
+    "RevisionDigestMismatchError",
     "IdempotencyClaimResult",
     "IdempotencyConflictError",
     "IdempotencyKey",
@@ -121,6 +126,7 @@ __all__ = [
     "WorkspaceScope",
     "WorkspaceRepository",
     "SourceObservationRepository",
+    "SourceObservationCommand",
     "SourceObservationResult",
     "canonical_command_bytes",
     "digest_command",

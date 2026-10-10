@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 import asyncio
-from contextlib import asynccontextmanager
+from dataclasses import replace
 from uuid import UUID, NAMESPACE_URL, uuid5
 
 import pytest
@@ -14,6 +14,7 @@ from spine.domain.sources import (
     SourceRevisionProvenance,
 )
 from spine.domain.sources.canonicalization import revision_digest
+from spine.domain.sources.canonicalization import content_revision, tombstone_revision
 from spine.domain.workspaces.models import Environment
 from spine.domain.common import EnvironmentKind
 from spine.infrastructure.object_storage.contracts import ObjectReference
@@ -21,6 +22,10 @@ from spine.infrastructure.persistence.contexts import TrustedContextBoundary, cr
 from spine.infrastructure.persistence.in_memory import InMemoryPersistence
 from spine.application.persistence.context import EnvironmentScope, PersistenceOperation, PersistencePurpose, WorkspaceScope
 from spine.application.persistence.outbox import OutboxEventRegistry
+from spine.application.persistence.idempotency import IdempotencyKey
+from spine.application.persistence.command_digest import digest_command
+from spine.application.persistence.repositories import SourceObservationCommand
+from spine.application.persistence.errors import IdempotencyConflictError, RevisionDigestMismatchError
 
 
 
@@ -43,12 +48,18 @@ def revision(source_object: SourceObject, revision_id: UUID = synthetic_uuid(101
     return SourceRevision(
         revision_id=revision_id, source_object_id=source_object.source_object_id,
         workspace_id=source_object.workspace_id, environment_id=source_object.environment_id,
-        kind=RevisionKind.CONTENT, revision_digest="a" * 64,
+        kind=RevisionKind.CONTENT, revision_digest="0" * 64,
         revision_schema_version="source-revision:v1", revision_metadata_schema="revision-metadata:r1-document-v1",
         revision_metadata=RevisionMetadata(embedded_title="  Title\r\n"), revision_metadata_digest="b" * 64,
         original_reference=ObjectReference(schema_version=1, object_id=synthetic_uuid(102), storage_generation=synthetic_uuid(103), digest_algorithm="sha256", digest_hex="c" * 64, byte_length=4),
         original_sha256="c" * 64, byte_length=4, media_type="text/plain", observed_at=NOW,
     )
+
+
+def valid_revision(source_object: SourceObject, revision_id: UUID = synthetic_uuid(101)) -> SourceRevision:
+    values = revision(source_object, revision_id).model_dump()
+    values.pop("revision_digest")
+    return content_revision(**values)
 
 
 def provenance(source_object: SourceObject, source_revision: SourceRevision, number: int = 1) -> SourceRevisionProvenance:
@@ -86,8 +97,12 @@ async def test_source_observation_reuses_revision_and_appends_provenance(source_
         await uow.commit()
     async with uow_factory(environment_context(workspace_id, environment_id)) as uow:
         resolved = await uow.sources.resolve_or_create_source(source())
-        first = await uow.sources.record_observation(revision(resolved), provenance(resolved, revision(resolved), 1))
-        second = await uow.sources.record_observation(revision(resolved, synthetic_uuid(104)), provenance(resolved, revision(resolved, synthetic_uuid(104)), 2))
+        first_revision = valid_revision(resolved)
+        first_provenance = provenance(resolved, first_revision, 1)
+        first = await uow.sources.record_observation(command(resolved, first_revision, first_provenance, "key-1"))
+        second_revision = valid_revision(resolved, synthetic_uuid(104))
+        second_provenance = provenance(resolved, second_revision, 2)
+        second = await uow.sources.record_observation(command(resolved, second_revision, second_provenance, "key-2"))
         await uow.commit()
     assert first.replay is False
     assert second.replay is False
@@ -106,10 +121,142 @@ def test_source_identity_modes_reject_mixed_fields() -> None:
 
 def test_revision_digest_excludes_observed_time() -> None:
     source_object = source()
-    left = revision(source_object)
+    left = valid_revision(source_object)
     right = left.model_copy(update={"observed_at": NOW.replace(hour=13)})
     assert revision_digest(left) == revision_digest(right)
 
 
 def test_revision_digest_matches_pinned_golden_vector() -> None:
-    assert revision_digest(revision(source())) == "9bd5158728503e75aee153418376f2dd33d37587be4d7bcb47939249a160333e"
+    assert revision_digest(valid_revision(source())) == "f4f27b1eadd4743c93f859c3f00106e444677629262d9e137f7c00bc2990afb3"
+
+
+def command(source_object: SourceObject, source_revision: SourceRevision, source_provenance: SourceRevisionProvenance, key: str) -> SourceObservationCommand:
+    digest = digest_command(
+        operation=PersistenceOperation("source_observation"),
+        operation_schema_version=1,
+        payload={
+            "source_object_id": str(source_object.source_object_id),
+            "revision_digest": source_revision.revision_digest,
+            "event_identity": source_provenance.event_identity,
+        },
+    )
+    return SourceObservationCommand(
+        source=source_object,
+        revision=source_revision,
+        provenance=source_provenance,
+        idempotency_key=IdempotencyKey(key),
+        digest=digest,
+    )
+
+
+@pytest.mark.asyncio
+async def test_observation_replay_uses_opaque_idempotency_result(source_persistence) -> None:
+    uow_factory, workspace_context, environment_context = source_persistence
+    workspace_id, environment_id = synthetic_uuid(901), synthetic_uuid(910)
+    async with uow_factory(workspace_context(workspace_id)) as uow:
+        await uow.environments.add(Environment(id=environment_id, workspace_id=workspace_id, kind=EnvironmentKind.DEVELOPMENT, display_name="dev"))
+        await uow.commit()
+    async with uow_factory(environment_context(workspace_id, environment_id)) as uow:
+        source_object = source()
+        source_revision = valid_revision(source_object)
+        source_provenance = provenance(source_object, source_revision)
+        observation = command(source_object, source_revision, source_provenance, "replay-key")
+        first = await uow.sources.record_observation(observation)
+        second = await uow.sources.record_observation(observation)
+        await uow.commit()
+    assert first.replay is False
+    assert second.replay is True
+    assert first.result_reference == second.result_reference
+    assert first.result_reference.result_type == "source_revision"
+
+
+@pytest.mark.asyncio
+async def test_observation_replay_after_commit_is_stable(source_persistence) -> None:
+    uow_factory, workspace_context, environment_context = source_persistence
+    workspace_id, environment_id = synthetic_uuid(901), synthetic_uuid(910)
+    async with uow_factory(workspace_context(workspace_id)) as uow:
+        await uow.environments.add(Environment(id=environment_id, workspace_id=workspace_id, kind=EnvironmentKind.DEVELOPMENT, display_name="dev"))
+        await uow.commit()
+    source_object = source()
+    source_revision = valid_revision(source_object)
+    source_provenance = provenance(source_object, source_revision)
+    observation = command(source_object, source_revision, source_provenance, "lost-response-key")
+    async with uow_factory(environment_context(workspace_id, environment_id)) as uow:
+        first = await uow.sources.record_observation(observation)
+        await uow.commit()
+    async with uow_factory(environment_context(workspace_id, environment_id)) as uow:
+        replay = await uow.sources.record_observation(observation)
+        await uow.rollback()
+    assert replay.replay is True
+    assert replay.result_reference == first.result_reference
+
+
+@pytest.mark.asyncio
+async def test_changed_observation_digest_is_typed_conflict(source_persistence) -> None:
+    uow_factory, workspace_context, environment_context = source_persistence
+    workspace_id, environment_id = synthetic_uuid(901), synthetic_uuid(910)
+    async with uow_factory(workspace_context(workspace_id)) as uow:
+        await uow.environments.add(Environment(id=environment_id, workspace_id=workspace_id, kind=EnvironmentKind.DEVELOPMENT, display_name="dev"))
+        await uow.commit()
+    async with uow_factory(environment_context(workspace_id, environment_id)) as uow:
+        source_object = source()
+        source_revision = valid_revision(source_object)
+        source_provenance = provenance(source_object, source_revision)
+        observation = command(source_object, source_revision, source_provenance, "conflict-key")
+        await uow.sources.record_observation(observation)
+        changed_digest = digest_command(
+            operation=PersistenceOperation("source_observation"),
+            operation_schema_version=1,
+            payload={"changed": True},
+        )
+        with pytest.raises(IdempotencyConflictError):
+            await uow.sources.record_observation(replace(observation, digest=changed_digest))
+
+
+def test_revision_digest_mismatch_is_rejected() -> None:
+    source_object = source()
+    valid = valid_revision(source_object)
+    from spine.domain.sources.canonicalization import assert_revision_digest
+    for field, value in (
+        ("original_sha256", "d" * 64),
+        ("byte_length", 5),
+        ("media_type", "application/json"),
+        ("revision_metadata", RevisionMetadata(embedded_title="Changed")),
+    ):
+        with pytest.raises(RevisionDigestMismatchError):
+            assert_revision_digest(valid.model_copy(update={field: value}))
+
+
+def test_tombstone_reason_and_forged_digest_are_rejected() -> None:
+    values = revision(source()).model_dump()
+    values.update(
+        {
+            "kind": RevisionKind.TOMBSTONE,
+            "revision_id": synthetic_uuid(105),
+            "original_reference": None,
+            "original_sha256": None,
+            "byte_length": None,
+            "media_type": None,
+            "revision_metadata": None,
+            "revision_metadata_digest": None,
+            "deletion_reason": "source_deleted",
+            "deletion_provenance": "provider-event",
+            "reappearance_after_tombstone_revision_id": None,
+        }
+    )
+    tombstone = tombstone_revision(**{key: value for key, value in values.items() if key != "revision_digest"})
+    from spine.domain.sources.canonicalization import assert_revision_digest
+    with pytest.raises(RevisionDigestMismatchError):
+        assert_revision_digest(tombstone.model_copy(update={"deletion_reason": "provider_deleted"}))
+    with pytest.raises(TypeError):
+        tombstone_revision(**values)
+
+
+def test_arbitrary_original_reference_is_rejected() -> None:
+    with pytest.raises(ValueError):
+        SourceRevision(
+            **{
+                **revision(source()).model_dump(),
+                "original_reference": "https://example.invalid/object",
+            }
+        )

@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
-from spine.domain.workspaces import Environment, Workspace
+from spine.application.persistence.command_digest import CommandDigest
+from spine.application.persistence.idempotency import (
+    IdempotencyClaimResult,
+    IdempotencyKey,
+    OpaqueResultReference,
+)
 from spine.domain.sources import SourceObject, SourceRevision, SourceRevisionProvenance
-from dataclasses import dataclass
+from spine.domain.workspaces import Environment, Workspace
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,16 +22,25 @@ class SourceObservationResult:
     revision: SourceRevision
     provenance: SourceRevisionProvenance
     replay: bool
+    claim: IdempotencyClaimResult
+    result_reference: OpaqueResultReference
+
+
+@dataclass(frozen=True, slots=True)
+class SourceObservationCommand:
+    """Typed source mutation carrying the existing idempotency identity."""
+
+    source: SourceObject
+    revision: SourceRevision
+    provenance: SourceRevisionProvenance
+    idempotency_key: IdempotencyKey
+    digest: CommandDigest
 
 
 class SourceObservationRepository(Protocol):
     async def resolve_or_create_source(self, source: SourceObject) -> SourceObject: ...
 
-    async def record_observation(
-        self,
-        revision: SourceRevision,
-        provenance: SourceRevisionProvenance,
-    ) -> SourceObservationResult: ...
+    async def record_observation(self, command: SourceObservationCommand) -> SourceObservationResult: ...
 
     async def resolve_revision(self, revision_id: UUID) -> SourceRevision | None: ...
 from spine.application.persistence.idempotency import IdempotencyRepository
@@ -47,6 +62,7 @@ __all__ = [
     "EnvironmentRepository",
     "IdempotencyRepository",
     "SourceObservationRepository",
+    "SourceObservationCommand",
     "SourceObservationResult",
     "WorkspaceRepository",
 ]

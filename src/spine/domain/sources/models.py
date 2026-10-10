@@ -5,16 +5,21 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Any
+from typing import Annotated
 from uuid import UUID
 
 from pydantic import ConfigDict, Field, model_validator
 
 from spine.domain.common import DefinitionModel
+from .original_reference import ObjectReference
+from .profile import normalize_language_tag
+
+ALLOWED_TOMBSTONE_REASONS = frozenset(
+    {"source_deleted", "provider_deleted", "legal_erasure", "retention_expired"}
+)
 _IDENTIFIER = re.compile(r"[a-z][a-z0-9_.:-]{0,63}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _MEDIA_TYPE = re.compile(r"[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+\Z")
-_LANGUAGE = re.compile(r"[a-zA-Z]{2,8}(?:-[a-zA-Z0-9]{1,8})*\Z")
 
 BoundedIdentifier = Annotated[str, Field(min_length=1, max_length=64)]
 DigestHex = Annotated[str, Field(pattern=r"[0-9a-f]{64}")]
@@ -52,9 +57,9 @@ class RevisionMetadata(DefinitionModel):
             object.__setattr__(self, "embedded_title", value)
         if self.document_language is not None:
             value = _normalize_text(self.document_language)
-            if not value or _LANGUAGE.fullmatch(value) is None:
+            if not value:
                 raise ValueError("document_language is not a valid BCP 47 tag")
-            object.__setattr__(self, "document_language", value.lower())
+            object.__setattr__(self, "document_language", normalize_language_tag(value))
         return self
 
 
@@ -110,9 +115,7 @@ class SourceRevision(DefinitionModel):
     revision_metadata_schema: BoundedIdentifier
     revision_metadata: RevisionMetadata | None = None
     revision_metadata_digest: DigestHex | None = None
-    # Opaque Issue #6 receipt/reference contract.  The domain deliberately
-    # does not import the infrastructure-owned storage adapter.
-    original_reference: Any = None
+    original_reference: ObjectReference | None = None
     original_sha256: DigestHex | None = None
     byte_length: int | None = Field(default=None, ge=0)
     media_type: str | None = None
@@ -137,12 +140,15 @@ class SourceRevision(DefinitionModel):
                 or self.revision_metadata_digest is None
             ):
                 raise ValueError("content revision requires complete original evidence")
-            reference_digest = getattr(self.original_reference, "digest_hex", None)
-            reference_length = getattr(self.original_reference, "byte_length", None)
-            if reference_digest != self.original_sha256 or reference_length != self.byte_length:
+            if (
+                self.original_reference.digest_hex != self.original_sha256
+                or self.original_reference.byte_length != self.byte_length
+            ):
                 raise ValueError("original evidence does not match content identity")
-            if not _MEDIA_TYPE.fullmatch(self.media_type) or self.media_type != self.media_type.lower():
+            media_type = _normalize_text(self.media_type).lower()
+            if not _MEDIA_TYPE.fullmatch(media_type):
                 raise ValueError("media_type must be lowercase ASCII type/subtype")
+            object.__setattr__(self, "media_type", media_type)
             if self.deletion_reason is not None or self.deletion_provenance is not None:
                 raise ValueError("content revision cannot contain deletion provenance")
         elif self.kind is RevisionKind.TOMBSTONE:
@@ -159,6 +165,8 @@ class SourceRevision(DefinitionModel):
                 )
             ) or self.deletion_reason is None or self.deletion_provenance is None:
                 raise ValueError("tombstone requires deletion provenance and no content")
+            if self.deletion_reason not in ALLOWED_TOMBSTONE_REASONS:
+                raise ValueError("tombstone deletion reason is not allowlisted")
         return self
 
 

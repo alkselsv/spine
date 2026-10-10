@@ -11,12 +11,14 @@ from pydantic import ConfigDict, model_validator
 
 from spine.domain.common import DefinitionModel
 
-from .models import RevisionKind, RevisionMetadata, SourceRevision
-
-
-REVISION_PROFILE = "r1-c14n-2026-10"
-REVISION_SCHEMA = "source-revision:v1"
-OBSERVATION_SCHEMA = "source-observation-command:v1"
+from .models import ALLOWED_TOMBSTONE_REASONS, RevisionKind, RevisionMetadata, SourceRevision
+from .profile import (
+    BCP47_TABLE_DIGEST,
+    OBSERVATION_SCHEMA,
+    REVISION_PROFILE,
+    REVISION_SCHEMA,
+    UNICODE_TABLE_DIGEST,
+)
 
 
 class SourceObservationCommand(DefinitionModel):
@@ -82,6 +84,8 @@ def revision_canonical_bytes(revision: SourceRevision) -> bytes:
     payload: dict[str, Any] = {
         "schema": REVISION_SCHEMA,
         "profile": REVISION_PROFILE,
+        "unicode_table": UNICODE_TABLE_DIGEST,
+        "bcp47_table": BCP47_TABLE_DIGEST,
         "kind": revision.kind.value,
     }
     if revision.kind is RevisionKind.CONTENT:
@@ -90,6 +94,7 @@ def revision_canonical_bytes(revision: SourceRevision) -> bytes:
             "byte_length": str(revision.byte_length),
             "media_type": revision.media_type,
             "metadata_schema": revision.revision_metadata_schema,
+            "metadata_digest": revision.revision_metadata_digest,
             "metadata": _metadata_payload(revision.revision_metadata),
             "reappearance_after_tombstone_revision_id": (
                 str(revision.reappearance_after_tombstone_revision_id)
@@ -107,6 +112,35 @@ def revision_canonical_bytes(revision: SourceRevision) -> bytes:
 
 def revision_digest(revision: SourceRevision) -> str:
     return hashlib.sha256(revision_canonical_bytes(revision)).hexdigest()
+
+
+def content_revision(**fields: object) -> SourceRevision:
+    """Build a content revision and derive its digest from its canonical fields."""
+
+    if "revision_digest" in fields:
+        raise TypeError("revision_digest is produced by the canonical factory")
+    provisional = SourceRevision.model_validate({**fields, "revision_digest": "0" * 64})
+    fields["revision_digest"] = revision_digest(provisional)
+    return SourceRevision.model_validate(fields)
+
+
+def tombstone_revision(**fields: object) -> SourceRevision:
+    """Build a tombstone revision and derive its digest from its canonical fields."""
+
+    if "revision_digest" in fields:
+        raise TypeError("revision_digest is produced by the canonical factory")
+    provisional = SourceRevision.model_validate({**fields, "revision_digest": "0" * 64})
+    fields["revision_digest"] = revision_digest(provisional)
+    return SourceRevision.model_validate(fields)
+
+
+def assert_revision_digest(revision: SourceRevision) -> None:
+    """Reject caller-supplied digests that do not match revision-bearing data."""
+
+    from spine.application.persistence.errors import RevisionDigestMismatchError
+
+    if revision.revision_digest != revision_digest(revision):
+        raise RevisionDigestMismatchError("Revision digest does not match revision data.")
 
 
 def observation_command_digest(command: SourceObservationCommand) -> str:
@@ -133,10 +167,16 @@ def _canonical_json(payload: dict[str, Any]) -> bytes:
 
 __all__ = [
     "OBSERVATION_SCHEMA",
+    "ALLOWED_TOMBSTONE_REASONS",
+    "BCP47_TABLE_DIGEST",
     "REVISION_PROFILE",
     "REVISION_SCHEMA",
+    "UNICODE_TABLE_DIGEST",
     "SourceObservationCommand",
     "observation_command_digest",
+    "assert_revision_digest",
+    "content_revision",
     "revision_canonical_bytes",
     "revision_digest",
+    "tombstone_revision",
 ]

@@ -14,6 +14,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from spine.application.persistence.command_digest import COMMAND_DIGEST_ALGORITHM_VERSION
+from spine.domain.sources.original_reference import ObjectReference
 
 from .errors import InvalidReadGrant
 
@@ -56,23 +57,6 @@ class IntegrityStatus(str, Enum):
     MISMATCH = "mismatch"
     UNAVAILABLE = "unavailable"
     INDETERMINATE = "indeterminate"
-
-
-class ObjectReference(StorageModel):
-    """Opaque identity for one immutable physical byte generation."""
-
-    schema_version: PositiveInt
-    object_id: UUID
-    storage_generation: UUID
-    digest_algorithm: Literal["sha256"]
-    digest_hex: DigestHex
-    byte_length: NonNegativeInt
-
-    @model_validator(mode="after")
-    def validate_ids(self) -> ObjectReference:
-        if self.object_id.int == 0 or self.storage_generation.int == 0:
-            raise ValueError("object identities must be non-zero")
-        return self
 
 
 class OriginalUploadCommandInput(StorageModel):

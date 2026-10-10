@@ -18,7 +18,7 @@ from spine.infrastructure.db.readiness import (
         (("20261011_01",), SchemaRevisionState.NEWER),
         (("unrecognized",), SchemaRevisionState.UNKNOWN),
         (
-            ("20261010_06", "20261010_07"),
+            ("20261010_07", "20261010_08"),
             SchemaRevisionState.MULTIPLE_HEADS,
         ),
     ),

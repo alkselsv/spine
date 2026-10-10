@@ -28,6 +28,7 @@ from spine.application.persistence.errors import (
     InvalidPersistenceContextError,
     OutboxConflictError,
     PersistenceError,
+    ObservationIntegrityConflictError,
     UnexpectedPersistenceError,
     UnitOfWorkLifecycleError,
 )
@@ -39,6 +40,10 @@ from spine.application.persistence.idempotency import (
     OwnedIdempotencyClaim,
     idempotency_conflict,
 )
+from spine.application.persistence.repositories import (
+    SourceObservationCommand,
+    SourceObservationResult,
+)
 from spine.application.persistence.command_digest import CommandDigest
 from spine.application.persistence.outbox import (
     OutboxEventRegistry,
@@ -47,7 +52,7 @@ from spine.application.persistence.outbox import (
 )
 from spine.domain.workspaces import Environment, Workspace
 from spine.domain.sources import SourceObject, SourceRevision, SourceRevisionProvenance
-from spine.application.persistence.repositories import SourceObservationResult
+from spine.domain.sources.canonicalization import assert_revision_digest
 
 
 _ResultT = TypeVar("_ResultT")
@@ -94,6 +99,7 @@ class _Store:
             source_provenance={},
         )
         self.lock = transaction_lock or asyncio.Lock()
+        self.observation_lock = asyncio.Lock()
         self.initialized = False
         self.bootstrap_sealed = False
 
@@ -276,15 +282,58 @@ class _SourceObservationRepository:
 
         return self._uow._repository_call(operation)
 
-    async def record_observation(
-        self,
-        revision: SourceRevision,
-        provenance: SourceRevisionProvenance,
-    ) -> SourceObservationResult:
+    async def record_observation(self, command: SourceObservationCommand) -> SourceObservationResult:
         self._uow._guard_active()
 
+        if not self._uow._source_observation_lock_held:
+            await self._uow._store.observation_lock.acquire()
+            self._uow._source_observation_lock_held = True
+
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=command.digest.operation_schema_version,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        if isinstance(claim, IdempotencyReplay):
+            def replay_operation() -> SourceObservationResult:
+                revision = self._revisions().get(claim.result.result_id)
+                if revision is None:
+                    self._uow._fail(ConstraintConflictError("Observation replay is unavailable."))
+                source = self._objects().get(revision.source_object_id)
+                provenance = next(
+                    (
+                        item for item in self._provenance().values()
+                        if item.revision_id == revision.revision_id
+                        and item.producer_kind == command.provenance.producer_kind
+                        and item.producer_reference == command.provenance.producer_reference
+                        and item.event_identity == command.provenance.event_identity
+                    ),
+                    None,
+                )
+                if source is None or provenance is None:
+                    self._uow._fail(ConstraintConflictError("Observation replay is unavailable."))
+                return SourceObservationResult(
+                    source=source.model_copy(deep=True), revision=revision.model_copy(deep=True),
+                    provenance=provenance.model_copy(deep=True), replay=True,
+                    claim=claim, result_reference=claim.result,
+                )
+            return self._uow._repository_call(replay_operation)
+
+        revision = command.revision
+        provenance = command.provenance
+        source_input = command.source
+        resolved_source = await self.resolve_or_create_source(source_input)
+        if resolved_source.source_object_id != revision.source_object_id:
+            self._uow._fail(ConstraintConflictError("Source observation is invalid."))
+
         def operation() -> SourceObservationResult:
+            try:
+                assert_revision_digest(revision)
+            except PersistenceError as error:
+                self._uow._fail(error)
             self._scope_check(revision.workspace_id, revision.environment_id)
+            if revision.source_object_id != source_input.source_object_id:
+                self._uow._fail(ConstraintConflictError("Source observation is invalid."))
             if (
                 provenance.workspace_id != revision.workspace_id
                 or provenance.environment_id != revision.environment_id
@@ -308,14 +357,18 @@ class _SourceObservationRepository:
                 )
                 if existing_key == event_key:
                     if existing_provenance.event_digest != provenance.event_digest:
-                        self._uow._fail(ConstraintConflictError("Source observation conflicts."))
+                        self._uow._fail(ObservationIntegrityConflictError("Source observation conflicts."))
                     existing_revision = self._revisions()[existing_provenance.revision_id]
-                    return SourceObservationResult(
+                    result = SourceObservationResult(
                         source=source.model_copy(deep=True),
                         revision=existing_revision.model_copy(deep=True),
                         provenance=existing_provenance.model_copy(deep=True),
-                        replay=True,
+                        replay=False, claim=claim,
+                        result_reference=OpaqueResultReference(
+                            result_type="source_revision", result_id=existing_revision.revision_id, schema_version=1
+                        ),
                     )
+                    return result
             for existing_revision in self._revisions().values():
                 if (
                     existing_revision.workspace_id == revision.workspace_id
@@ -339,10 +392,14 @@ class _SourceObservationRepository:
                 source=source.model_copy(deep=True),
                 revision=revision_to_return.model_copy(deep=True),
                 provenance=provenance.model_copy(deep=True),
-                replay=False,
+                replay=False, claim=claim,
+                result_reference=OpaqueResultReference(
+                    result_type="source_revision", result_id=revision_to_return.revision_id, schema_version=1
+                ),
             )
-
-        return self._uow._repository_call(operation)
+        result = self._uow._repository_call(operation)
+        await self._uow.idempotency.complete(claim, result.result_reference)
+        return result
 
     async def resolve_revision(self, revision_id: UUID) -> SourceRevision | None:
         self._uow._guard_active()
@@ -540,6 +597,7 @@ class InMemoryUnitOfWork:
         self._pending_source_objects: dict[UUID, SourceObject] = {}
         self._pending_source_revisions: dict[UUID, SourceRevision] = {}
         self._pending_source_provenance: dict[UUID, SourceRevisionProvenance] = {}
+        self._source_observation_lock_held = False
         self._workspaces = _WorkspaceRepository(self)
         self._environments = _EnvironmentRepository(self)
         self._idempotency = _IdempotencyRepository(self)
@@ -726,6 +784,7 @@ class InMemoryUnitOfWork:
         except BaseException as error:
             self._raise_terminal(error)
         self._lifecycle = _Lifecycle.COMMITTED
+        self._release_source_observation_lock()
         self._clear_transaction()
 
     async def rollback(self) -> None:
@@ -742,6 +801,7 @@ class InMemoryUnitOfWork:
         self._pending_source_revisions.clear()
         self._pending_source_provenance.clear()
         self._lifecycle = _Lifecycle.ROLLED_BACK
+        self._release_source_observation_lock()
 
     def _guard_owner(self) -> None:
         if self._owner is None or asyncio.current_task() is not self._owner:
@@ -759,6 +819,7 @@ class InMemoryUnitOfWork:
             self._raise_terminal(error)
 
     def _raise_terminal(self, error: BaseException) -> NoReturn:
+        self._release_source_observation_lock()
         self._lifecycle = _Lifecycle.CLOSED
         self._clear_transaction()
         if isinstance(error, asyncio.CancelledError):
@@ -906,6 +967,11 @@ class InMemoryUnitOfWork:
 
     def _fail(self, error: Exception) -> NoReturn:
         self._raise_terminal(error)
+
+    def _release_source_observation_lock(self) -> None:
+        if self._source_observation_lock_held:
+            self._source_observation_lock_held = False
+            self._store.observation_lock.release()
 
 
 def _receipt_id(key: _ReceiptKey) -> UUID:
