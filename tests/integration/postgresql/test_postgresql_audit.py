@@ -38,7 +38,10 @@ from spine.infrastructure.db.settings import (
 )
 from spine.infrastructure.db.test_harness import TestDatabaseProvision
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
-from spine.infrastructure.persistence.postgresql import PostgreSQLPersistence
+from spine.infrastructure.persistence.postgresql import (
+    PostgreSQLPersistence,
+    PostgreSQLTransactionStage,
+)
 from spine.domain.workspaces import Workspace
 from tests.contracts.persistence.adapter import AuditPersistenceAdapter
 from tests.contracts.persistence.ids import synthetic_uuid
@@ -92,76 +95,42 @@ class AuditFailureSwitch:
         self.fail_next_generated_identity = True
 
 
-class AuditFailureSession:
-    """Delegate real SQL and inject one sanitized audit-append failure."""
+class AuditFailureProbe:
+    """Inject one sanitized failure at the public audit transaction boundary."""
 
-    def __init__(self, session: object, failure: AuditFailureSwitch) -> None:
-        self._session = session
+    def __init__(self, failure: AuditFailureSwitch) -> None:
         self._failure = failure
 
-    async def begin(self) -> object:
-        return await self._session.begin()
-
-    async def execute(
-        self, statement: object, parameters: object | None = None
-    ) -> object:
+    async def __call__(self, stage: PostgreSQLTransactionStage) -> None:
         if (
             self._failure.fail_next_generated_identity
-            and "gen_random_uuid" in str(statement)
+            and stage is PostgreSQLTransactionStage.BEFORE_AUDIT_IDENTITY
         ):
             self._failure.fail_next_generated_identity = False
             raise OperationalError(
-                "SELECT generated audit identity",
+                "AUDIT_IDENTITY_BOUNDARY",
                 {},
                 RuntimeError("synthetic audit persistence failure"),
             )
-        return await self._session.execute(statement, parameters)
-
-    async def commit(self) -> None:
-        await self._session.commit()
-
-    async def rollback(self) -> None:
-        await self._session.rollback()
-
-    async def close(self) -> None:
-        await self._session.close()
 
 
-class AtomicFailureSession:
-    def __init__(self, session: object, stage: str) -> None:
-        self._session = session
+class AtomicFailureProbe:
+    def __init__(self, stage: str) -> None:
         self._stage = stage
 
-    async def begin(self) -> object:
-        return await self._session.begin()
-
-    async def execute(
-        self, statement: object, parameters: object | None = None
-    ) -> object:
-        result = await self._session.execute(statement, parameters)
-        table = getattr(statement, "table", None)
-        if self._stage == "after_flush" and getattr(table, "name", None) == "audit_events":
+    async def __call__(self, stage: PostgreSQLTransactionStage) -> None:
+        if (
+            self._stage == "after_flush"
+            and stage is PostgreSQLTransactionStage.AFTER_AUDIT_FLUSH
+        ) or (
+            self._stage == "pre_commit"
+            and stage is PostgreSQLTransactionStage.BEFORE_COMMIT
+        ):
             raise OperationalError(
-                "INSERT INTO spine.audit_events",
+                f"AUDIT_TRANSACTION_BOUNDARY:{self._stage}",
                 {},
-                RuntimeError("synthetic audit flush failure"),
+                RuntimeError("synthetic audit transaction failure"),
             )
-        return result
-
-    async def commit(self) -> None:
-        if self._stage == "pre_commit":
-            raise OperationalError(
-                "COMMIT",
-                {},
-                RuntimeError("synthetic pre-commit failure"),
-            )
-        await self._session.commit()
-
-    async def rollback(self) -> None:
-        await self._session.rollback()
-
-    async def close(self) -> None:
-        await self._session.close()
 
 
 def _role_url(provision: TestDatabaseProvision, role: str, password: str) -> SecretStr:
@@ -240,12 +209,11 @@ async def postgresql_audit_adapter(
     audit_events = AuditEventRegistry.with_default_families()
     audit_failure = AuditFailureSwitch()
     persistence = PostgreSQLPersistence(
-        session_factory=lambda: AuditFailureSession(
-            session_factory(), audit_failure
-        ),  # type: ignore[arg-type]
+        session_factory=session_factory,
         context_verifier=boundary,
         outbox_events=outbox_events,
         audit_events=audit_events,
+        transaction_probe=AuditFailureProbe(audit_failure),
     )
 
     def workspace_context(workspace_id: UUID) -> TrustedPersistenceContext:
@@ -721,10 +689,11 @@ async def test_mutation_audit_and_outbox_roll_back_together_at_every_boundary(
         autoflush=False,
     )
     persistence = PostgreSQLPersistence(
-        session_factory=lambda: AtomicFailureSession(base_sessions(), stage),  # type: ignore[arg-type]
+        session_factory=base_sessions,
         context_verifier=boundary,
         outbox_events=outbox_events,
         audit_events=audit_events,
+        transaction_probe=AtomicFailureProbe(stage),
     )
     workspace = Workspace(
         id=workspace_id,
