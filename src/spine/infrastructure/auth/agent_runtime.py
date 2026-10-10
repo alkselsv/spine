@@ -19,6 +19,12 @@ from spine.infrastructure.auth.trusted_context import (
 )
 
 
+class _ProductionExecutionAdmissionAuthority:
+    """Composition-owned identity shared by the factory and execution gate."""
+
+    __slots__ = ()
+
+
 class RequestAgentAuthorizationVerifier(CanonicalTrustedAuthorizationContextVerifier):
     """Revalidate one exact active #72 request before agent execution.
 
@@ -88,11 +94,13 @@ def compose_agent_execution_context_factory(
         boundary=boundary,
         authorized=authorized,
     )
-    return AgentExecutionContextFactory(
+    factory = AgentExecutionContextFactory(
         authorization_verifier=verifier,
         scope_validator=scope_validator,
         expected_route_policy=expected_route_policy,
     )
+    factory._bind_composition_authority(_ProductionExecutionAdmissionAuthority())
+    return factory
 
 
 __all__ = [

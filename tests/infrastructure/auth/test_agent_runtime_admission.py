@@ -1,18 +1,53 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
+from spine.agents.catalog import HandlerRegistry
+from spine.agents.runtime import (
+    AgentExecutionContext,
+    AgentRequest,
+    TrustedToolGrantSet,
+    adapt_async_function,
+)
 from spine.auth import AuthorizationResolution
-from spine.infrastructure.auth import RequestAgentAuthorizationVerifier
+from spine.domain.common import EnvironmentKind
+from spine.infrastructure.auth import (
+    RequestAgentAuthorizationVerifier,
+    compose_agent_execution_context_factory,
+)
 
+from tests.agents.test_async_adapter import InputModel, OutputModel, request
+from tests.agents.test_execution_context_construction import (
+    FakeCancellation,
+    FakeEventSink,
+    resolved_binding,
+    uid,
+)
 from tests.infrastructure.auth.test_request_authorization_composition import (
     composition,
     credentials,
     diagnostic_context,
     scope,
 )
+
+
+class FixedExecutionScope:
+    def __init__(self, *, generation: int, workspace_id, environment_id) -> None:
+        self.generation = generation
+        self.workspace_id = workspace_id
+        self.environment_id = environment_id
+
+    def validate(self, *, scope, environment, authorization_generation) -> None:
+        if (
+            scope.workspace_id != self.workspace_id
+            or scope.environment_id != self.environment_id
+            or environment is not EnvironmentKind.PRODUCTION
+            or authorization_generation != self.generation
+        ):
+            raise ValueError("execution scope is invalid")
 
 
 @pytest.mark.asyncio
@@ -49,3 +84,97 @@ async def test_agent_verifier_rechecks_real_issue72_request_lifecycle() -> None:
 
     with pytest.raises(ValueError, match="authorization context is invalid"):
         verifier.verify(request_context, resolution)
+
+
+@pytest.mark.asyncio
+async def test_real_issue72_composition_binds_the_execution_gate_authority() -> None:
+    composer, _, request_boundary, _ = await composition()
+
+    async with composer.bind_route("knowledge.sources.list").authorize(
+        credentials=credentials(),
+        requested_scope=scope(),
+        diagnostic_context=diagnostic_context(),
+    ) as authorized:
+        request_context = authorized.request_context
+        resolution = AuthorizationResolution(
+            acting_subject_id=request_context.acting_subject_id,
+            scope=request_context.scope,
+            roles=request_context.roles,
+            authorization_generation=request_context.authorization_generation,
+            authentication_configuration_version=(
+                request_context.authentication_configuration_version
+            ),
+        )
+        factory = compose_agent_execution_context_factory(
+            boundary=request_boundary,
+            authorized=authorized,
+            scope_validator=FixedExecutionScope(
+                generation=resolution.authorization_generation,
+                workspace_id=resolution.scope.workspace_id,
+                environment_id=resolution.scope.environment_id,
+            ),
+            expected_route_policy=request_context.route_policy,
+        )
+        authority = factory.execution_admission_authority
+        assert authority is not None
+
+        selected = resolved_binding(
+            selected_workspace_id=resolution.scope.workspace_id,
+            selected_environment=EnvironmentKind.PRODUCTION,
+        )
+        calls: list[tuple[object, AgentExecutionContext]] = []
+
+        async def handler(
+            received_request: AgentRequest[InputModel],
+            received_context: AgentExecutionContext,
+        ) -> OutputModel:
+            calls.append((received_request, received_context))
+            return OutputModel(answer="ok")
+
+        registry = HandlerRegistry(execution_admission_authority=authority)
+        registry.register_handler(
+            registration=selected.registration,
+            handler=adapt_async_function(handler),
+        )
+        registry.finalize()
+        registered = registry.construct(
+            capability=selected.capability,
+            version=selected.agent_version,
+        )
+        selected = replace(selected, handler=registered)
+        context = factory.create(
+            authorized_context=request_context,
+            authorization_resolution=resolution,
+            workspace_id=resolution.scope.workspace_id,
+            environment_id=resolution.scope.environment_id,
+            environment=EnvironmentKind.PRODUCTION,
+            resolved_binding=selected,
+            work_item_id=uid(50),
+            workflow_run_id=uid(51),
+            step_run_id=uid(52),
+            agent_run_id=uid(53),
+            idempotency_key="agent:50:1",
+            permitted_tool_grants=TrustedToolGrantSet(grants=("documents.read",)),
+            cancellation=FakeCancellation(),
+            event_sink=FakeEventSink(),
+        )
+        admission = factory.admission_for(
+            context=context,
+            authorized_context=request_context,
+            authorization_resolution=resolution,
+            resolved_binding=selected,
+            permitted_tool_grants=TrustedToolGrantSet(grants=("documents.read",)),
+        )
+        guarded = registry.bind_for_execution(
+            handler=registered,
+            context=context,
+            admission=admission,
+            resolved_binding=selected,
+        )
+
+        result = await guarded.invoke(request(), context)
+
+        assert result.output == OutputModel(answer="ok")
+        assert len(calls) == 1
+        assert calls[0][0].capability == context.capability
+        assert calls[0][1] is context

@@ -179,7 +179,13 @@ class _RegisteredHandler:
 class _BoundAgentHandler:
     """Two-argument execution gate bound to one registry selection."""
 
-    __slots__ = ("_selected", "_context", "_admission", "_resolved_binding")
+    __slots__ = (
+        "_selected",
+        "_context",
+        "_admission",
+        "_trusted_authority",
+        "_resolved_binding",
+    )
 
     def __init__(
         self,
@@ -187,11 +193,13 @@ class _BoundAgentHandler:
         selected: _RegisteredHandler,
         context: AgentExecutionContext,
         admission: AgentExecutionContextAdmission,
+        trusted_authority: object,
         resolved_binding: ResolvedAgentBinding,
     ) -> None:
         self._selected = selected
         self._context = context
         self._admission = admission
+        self._trusted_authority = trusted_authority
         self._resolved_binding = resolved_binding
 
     async def invoke(
@@ -202,7 +210,11 @@ class _BoundAgentHandler:
         if context is not self._context:
             raise TypeError("handler execution context is not admitted")
         try:
-            self._admission.verify_selection(context, self._resolved_binding)
+            self._admission.verify_selection(
+                context,
+                self._resolved_binding,
+                self._trusted_authority,
+            )
             self._admission.verify_request(request, context)
         except Exception:
             raise TypeError("handler execution context is not admitted") from None
@@ -225,9 +237,10 @@ def _is_factory(value: Any) -> bool:
 class HandlerRegistry:
     """A composition-root-owned registry with an explicit finalization boundary."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, execution_admission_authority: object | None = None) -> None:
         self._registrations: dict[tuple[UUID, str], _HandlerRegistration] = {}
         self._finalized = False
+        self._execution_admission_authority = execution_admission_authority
 
     def register_handler(
         self,
@@ -315,27 +328,36 @@ class HandlerRegistry:
     ) -> AgentHandler[Any, Any]:
         """Bind one registry selection to a current trusted admission.
 
-        This is the composition-owned execution gate. The returned handler
-        keeps the approved two-argument public contract while retaining the
-        privileged admission outside user-defined handler arguments.
+        This is the composition-owned execution gate. The registry's
+        composition-bound authority must be the same authority captured by the
+        factory that issued the admission. The returned
+        handler keeps the approved two-argument public contract while retaining
+        the privileged admission outside user-defined handler arguments.
         """
 
         if type(handler) is not _RegisteredHandler:
             raise HandlerRegistryError("handler selection is not registry-bound")
         if type(admission) is not AgentExecutionContextAdmission:
             raise HandlerRegistryError("handler execution admission is invalid")
+        if self._execution_admission_authority is None:
+            raise HandlerRegistryError("handler execution admission is unavailable")
         if handler is not getattr(resolved_binding, "handler", None):
             raise HandlerRegistryError("handler selection is not pinned")
         if handler.registration != getattr(resolved_binding, "registration", None):
             raise HandlerRegistryError("handler selection is not pinned")
         try:
-            admission.verify_selection(context, resolved_binding)
+            admission.verify_selection(
+                context,
+                resolved_binding,
+                self._execution_admission_authority,
+            )
         except Exception:
             raise HandlerRegistryError("handler execution admission is invalid") from None
         return _BoundAgentHandler(
             selected=handler,
             context=context,
             admission=admission,
+            trusted_authority=self._execution_admission_authority,
             resolved_binding=resolved_binding,
         )
 

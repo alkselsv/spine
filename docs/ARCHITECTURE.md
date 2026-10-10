@@ -1367,6 +1367,13 @@ before user code runs. Authorization contexts, verifiers, bindings, provider
 configuration, credentials and opaque provenance never cross the handler
 argument boundary.
 
+The production composition root also binds the registry gate to a private
+authority identity created alongside the real Issue #72 verifier. The factory
+and gate must use that same composition-owned identity; a plain-data factory,
+structural verifier, nominal verifier subclass or admission from another
+composition cannot be consumed by the production gate. The registry rechecks
+that binding and the live Issue #72 request immediately before invocation.
+
 Run and Artifact identifiers are structurally validated and preserved here;
 authoritative ownership and handoff/persistence checks remain with the owning
 workflow/application boundary and Issue #109. Diagnostic event emission,

@@ -68,7 +68,7 @@ class FakeEventSink:
 
 
 def admitted_context() -> tuple[AgentExecutionContext, AgentExecutionContextAdmission]:
-    execution_context, admission, _ = make_admitted_context()
+    execution_context, admission, _, _ = make_admitted_context()
     assert isinstance(admission, AgentExecutionContextAdmission)
     return execution_context, admission
 
@@ -76,7 +76,8 @@ def admitted_context() -> tuple[AgentExecutionContext, AgentExecutionContextAdmi
 def bound_adapter(function):
     selected = resolved_binding()
     adapted = adapt_async_function(function)
-    registry = HandlerRegistry()
+    authority = object()
+    registry = HandlerRegistry(execution_admission_authority=authority)
     registry.register_handler(registration=selected.registration, handler=adapted)
     registry.finalize()
     registered = registry.construct(
@@ -84,7 +85,10 @@ def bound_adapter(function):
         version=selected.agent_version,
     )
     selected = replace(selected, handler=registered)
-    execution_context, admission, _ = make_admitted_context(binding=selected)
+    execution_context, admission, _, _ = make_admitted_context(
+        binding=selected,
+        admission_authority=authority,
+    )
     return (
         registry.bind_for_execution(
             handler=registered,
@@ -345,7 +349,8 @@ async def test_admission_cannot_bind_a_different_registered_handler() -> None:
         return OutputModel(answer="second")
 
     selected = resolved_binding()
-    first_registry = HandlerRegistry()
+    authority = object()
+    first_registry = HandlerRegistry(execution_admission_authority=authority)
     first_registry.register_handler(
         registration=selected.registration,
         handler=adapt_async_function(first),
@@ -356,9 +361,12 @@ async def test_admission_cannot_bind_a_different_registered_handler() -> None:
         version=selected.agent_version,
     )
     selected = replace(selected, handler=first_selected)
-    execution_context, admission, _ = make_admitted_context(binding=selected)
+    execution_context, admission, _, _ = make_admitted_context(
+        binding=selected,
+        admission_authority=authority,
+    )
 
-    second_registry = HandlerRegistry()
+    second_registry = HandlerRegistry(execution_admission_authority=authority)
     second_registry.register_handler(
         registration=selected.registration,
         handler=adapt_async_function(second),
@@ -376,6 +384,49 @@ async def test_admission_cannot_bind_a_different_registered_handler() -> None:
             admission=admission,
             resolved_binding=selected,
         )
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_admission_cannot_bind_through_a_different_execution_authority() -> None:
+    calls = 0
+
+    async def handler(
+        received_request: AgentRequest[InputModel],
+        received_context: AgentExecutionContext,
+    ) -> OutputModel:
+        nonlocal calls
+        del received_request, received_context
+        calls += 1
+        return OutputModel(answer="must not run")
+
+    selected = resolved_binding()
+    authority = object()
+    registry = HandlerRegistry(execution_admission_authority=authority)
+    registry.register_handler(
+        registration=selected.registration,
+        handler=adapt_async_function(handler),
+    )
+    registry.finalize()
+    registered = registry.construct(
+        capability=selected.capability,
+        version=selected.agent_version,
+    )
+    selected = replace(selected, handler=registered)
+    execution_context, admission, _, _ = make_admitted_context(
+        binding=selected,
+        admission_authority=authority,
+    )
+
+    registry = HandlerRegistry(execution_admission_authority=object())
+    with pytest.raises(HandlerRegistryError, match="admission"):
+        registry.bind_for_execution(
+            handler=registered,
+            context=execution_context,
+            admission=admission,
+            resolved_binding=selected,
+        )
+
     assert calls == 0
 
 

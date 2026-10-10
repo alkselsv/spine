@@ -110,6 +110,15 @@ class StructuralNoopVerifier:
         del context, resolution
 
 
+class NominalNoopVerifier(CanonicalTrustedAuthorizationContextVerifier):
+    def verify(
+        self,
+        context: AuthorizedRequestContext[DiagnosticContext],
+        resolution: AuthorizationResolution,
+    ) -> None:
+        del context, resolution
+
+
 class Handler:
     async def invoke(self, request: object, context: AgentExecutionContext) -> object:
         del request, context
@@ -274,10 +283,13 @@ def make_context(
 def make_admitted_context(
     *,
     binding: ResolvedAgentBinding | None = None,
-) -> tuple[AgentExecutionContext, object, FakeVerifier]:
+    admission_authority: object | None = None,
+) -> tuple[AgentExecutionContext, object, FakeVerifier, object]:
     authorized, resolution = authorized_context()
     binding = binding or resolved_binding()
     verifier = FakeVerifier(authorized)
+    if admission_authority is None:
+        admission_authority = object()
     factory = AgentExecutionContextFactory(
         authorization_verifier=verifier,
         scope_validator=FakeScopeValidator(
@@ -286,6 +298,7 @@ def make_admitted_context(
         ),
         expected_route_policy=authorized.route_policy,
     )
+    factory._bind_composition_authority(admission_authority)
     context = factory.create(
         authorized_context=authorized,
         authorization_resolution=resolution,
@@ -309,7 +322,7 @@ def make_admitted_context(
         resolved_binding=binding,
         permitted_tool_grants=TrustedToolGrantSet(grants=("documents.read",)),
     )
-    return context, admission, verifier
+    return context, admission, verifier, admission_authority
 
 
 def test_factory_constructs_detached_context_for_each_authorized_scope() -> None:
@@ -333,7 +346,7 @@ def test_factory_constructs_detached_context_for_each_authorized_scope() -> None
 
 
 def test_factory_admission_rechecks_exact_context_and_current_authorization() -> None:
-    context, admission, verifier = make_admitted_context()
+    context, admission, verifier, _ = make_admitted_context()
 
     admission.verify(context)
     assert context.trusted_identity.authorization_generation == 7
@@ -344,7 +357,7 @@ def test_factory_admission_rechecks_exact_context_and_current_authorization() ->
 
 
 def test_factory_admission_rejects_reconstructed_context() -> None:
-    context, admission, _ = make_admitted_context()
+    context, admission, _, _ = make_admitted_context()
     reconstructed = context.model_copy()
 
     with pytest.raises(ValueError, match="admission"):
@@ -474,6 +487,29 @@ def test_structural_verifier_cannot_issue_execution_admission() -> None:
         ),
         expected_route_policy=authorized.route_policy,
     )
+    with pytest.raises(ValueError, match="execution admission is unavailable"):
+        factory.admission_for(
+            context=context,
+            authorized_context=authorized,
+            authorization_resolution=resolution,
+            resolved_binding=resolved_binding(),
+            permitted_tool_grants=TrustedToolGrantSet(grants=("documents.read",)),
+        )
+
+
+def test_nominal_noop_verifier_cannot_issue_execution_admission() -> None:
+    context = make_context()
+    authorized, resolution = authorized_context()
+    factory = AgentExecutionContextFactory(
+        authorization_verifier=NominalNoopVerifier(),
+        scope_validator=FakeScopeValidator(
+            environment_kinds={(uid(1), uid(2)): EnvironmentKind.DEVELOPMENT},
+            expected_generation=7,
+        ),
+        expected_route_policy=authorized.route_policy,
+    )
+    assert factory.execution_admission_authority is None
+
     with pytest.raises(ValueError, match="execution admission is unavailable"):
         factory.admission_for(
             context=context,

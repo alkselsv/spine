@@ -57,12 +57,14 @@ class AgentExecutionContextAdmission:
 
     The admission keeps the exact sealed authorization context outside
     ``AgentExecutionContext`` and re-runs the factory checks at consumption
-    time. It is produced only after successful factory construction; copying
-    or reconstructing the plain context does not produce a matching admission.
+    time. It is produced only by a factory assembled with a composition-owned
+    authority; copying or reconstructing the plain context does not produce a
+    matching admission.
     """
 
     __slots__ = (
         "_authorized_context",
+        "_admission_authority",
         "_context",
         "_factory",
         "_permitted_tool_grants",
@@ -81,6 +83,7 @@ class AgentExecutionContextAdmission:
         resolved_binding: ResolvedAgentBinding,
         permitted_tool_grants: TrustedToolGrantSet,
         service_principal_id: UUID | None,
+        admission_authority: object,
         _construction_key: object,
     ) -> None:
         if _construction_key is not _ADMISSION_CONSTRUCTION_KEY:
@@ -88,6 +91,7 @@ class AgentExecutionContextAdmission:
         self._factory = factory
         self._context = context
         self._authorized_context = authorized_context
+        self._admission_authority = admission_authority
         self._resolution = resolution
         self._resolved_binding = resolved_binding
         self._permitted_tool_grants = permitted_tool_grants
@@ -133,10 +137,14 @@ class AgentExecutionContextAdmission:
         self,
         context: AgentExecutionContext,
         resolved_binding: ResolvedAgentBinding,
+        trusted_authority: object,
     ) -> None:
         """Revalidate the exact pinned selection attached to this admission."""
 
-        if resolved_binding is not self._resolved_binding:
+        if (
+            trusted_authority is not self._admission_authority
+            or resolved_binding is not self._resolved_binding
+        ):
             raise ValueError("execution selection admission does not match")
         self.verify(context)
 
@@ -169,11 +177,30 @@ class AgentExecutionContextFactory:
         scope_validator: ExecutionScopeValidator | None,
         expected_route_policy: RouteAuthorizationPolicy | None,
     ) -> None:
-        """Configure trusted ports and the server-selected agent route policy."""
+        """Configure trusted ports and the server-selected agent route policy.
+
+        A factory without a composition-bound authority can construct plain
+        context data for validation tests, but cannot mint an execution
+        admission.
+        """
 
         self._authorization_verifier = authorization_verifier
         self._scope_validator = scope_validator
         self._expected_route_policy = expected_route_policy
+        self._admission_authority: object | None = None
+
+    def _bind_composition_authority(self, authority: object) -> None:
+        """Bind the one authority shared by the trusted factory and registry."""
+
+        if self._admission_authority is not None or authority is None:
+            raise TypeError("execution admission authority is already bound")
+        self._admission_authority = authority
+
+    @property
+    def execution_admission_authority(self) -> object | None:
+        """Return the composition-bound authority for registry gate assembly."""
+
+        return self._admission_authority
 
     def create(
         self,
@@ -329,9 +356,9 @@ class AgentExecutionContextFactory:
         """Bind current trusted authorization to one constructed context.
 
         The returned admission is deliberately separate from serializable
-        context data and must be checked again by the registry gate at handler
-        consumption time. Direct adapters and unbound registry selections
-        fail closed.
+        context data and must be checked again by a registry gate bound to the
+        same composition-owned authority at handler consumption time. Direct
+        adapters and unbound registry selections fail closed.
         """
 
         if type(context) is not AgentExecutionContext:
@@ -345,6 +372,10 @@ class AgentExecutionContextFactory:
             raise AgentExecutionContextConstructionError(
                 "execution admission is unavailable."
             )
+        if self._admission_authority is None:
+            raise AgentExecutionContextConstructionError(
+                "execution admission is unavailable."
+            )
         admission = AgentExecutionContextAdmission(
             factory=self,
             context=context,
@@ -353,6 +384,7 @@ class AgentExecutionContextFactory:
             resolved_binding=resolved_binding,
             permitted_tool_grants=permitted_tool_grants,
             service_principal_id=service_principal_id,
+            admission_authority=self._admission_authority,
             _construction_key=_ADMISSION_CONSTRUCTION_KEY,
         )
         try:
