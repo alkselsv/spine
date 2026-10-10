@@ -336,6 +336,9 @@ def _install_canonical_functions(runtime: str) -> None:
             previous_extension_key text;
             extension_value_count integer;
             extlang_count integer := 0;
+            tlang_extlang_count integer;
+            tlang_seen_variants text[];
+            tlang_start integer;
         BEGIN
             IF input_tag !~ '^[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*$' THEN
                 RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
@@ -419,10 +422,37 @@ def _install_canonical_functions(runtime: str) -> None:
                         END LOOP;
                         IF current_extension_key IS NULL OR extension_value_count = 0 THEN RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514'; END IF;
                     ELSIF extension_singleton = 't' THEN
+                        tlang_extlang_count := 0;
+                        tlang_seen_variants := ARRAY[]::text[];
+                        tlang_start := index_value;
                         IF index_value <= cardinality(parts) AND EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 WHERE category = 'language' AND subtag = parts[index_value]) THEN
                             index_value := index_value + 1;
-                            IF index_value <= cardinality(parts) AND EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 WHERE category = 'script' AND subtag = parts[index_value]) THEN index_value := index_value + 1; END IF;
-                            IF index_value <= cardinality(parts) AND EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 WHERE category = 'region' AND subtag = parts[index_value]) THEN index_value := index_value + 1; END IF;
+                            WHILE index_value <= cardinality(parts) AND parts[index_value] ~ '^[a-z]{{3}}$' LOOP
+                                tlang_extlang_count := tlang_extlang_count + 1;
+                                IF tlang_extlang_count > 3 OR NOT EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 AS registry WHERE registry.category = 'extlang' AND registry.subtag = parts[index_value] AND (registry.prefix = '*' OR registry.prefix = array_to_string(parts[tlang_start:index_value - 1], '-'))) THEN
+                                    RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
+                                END IF;
+                                index_value := index_value + 1;
+                            END LOOP;
+                            IF index_value <= cardinality(parts) AND parts[index_value] ~ '^[a-z]{{4}}$' THEN
+                                IF NOT EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 WHERE category = 'script' AND subtag = parts[index_value]) THEN
+                                    RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
+                                END IF;
+                                index_value := index_value + 1;
+                            END IF;
+                            IF index_value <= cardinality(parts) AND parts[index_value] ~ '^(?:[a-z]{{2}}|[0-9]{{3}})$' THEN
+                                IF parts[index_value] = 'zz' OR NOT EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 WHERE category = 'region' AND subtag = parts[index_value]) THEN
+                                    RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
+                                END IF;
+                                index_value := index_value + 1;
+                            END IF;
+                            WHILE index_value <= cardinality(parts) AND parts[index_value] ~ '^(?:[0-9][a-z0-9]{{3}}|[a-z0-9]{{5,8}})$' LOOP
+                                IF NOT EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 AS registry WHERE registry.category = 'variant' AND registry.subtag = parts[index_value] AND (registry.prefix = '*' OR registry.prefix = array_to_string(parts[tlang_start:index_value - 1], '-'))) OR parts[index_value] = ANY(tlang_seen_variants) THEN
+                                    RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
+                                END IF;
+                                tlang_seen_variants := array_append(tlang_seen_variants, parts[index_value]);
+                                index_value := index_value + 1;
+                            END LOOP;
                         END IF;
                         WHILE index_value <= cardinality(parts) AND parts[index_value] <> ALL(seen) AND parts[index_value] <> 'x' AND parts[index_value] !~ '^[0-9a-wy-z]$' LOOP
                             IF NOT (parts[index_value] ~ '^[a-z0-9]{{2}}$' AND parts[index_value] <> ALL(seen) AND EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 WHERE category = 'extension_key' AND subtag = parts[index_value] AND prefix = 't')) THEN

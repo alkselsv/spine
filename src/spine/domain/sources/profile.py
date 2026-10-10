@@ -156,43 +156,7 @@ def normalize_language_tag(value: str) -> str:
         if len(pieces) < 2 or any(not 1 <= len(part) <= 8 or not part.isalnum() for part in pieces[1:]):
             raise ValueError("document_language is not a valid BCP 47 tag")
         return "-".join(lowered)
-    if not _LANGUAGE.fullmatch(pieces[0]) or lowered[0] not in PRIMARY_LANGUAGE_TAGS:
-        raise ValueError("document_language is not a valid BCP 47 tag")
-    index = 1
-    extlang_count = 0
-    while index < len(pieces) and _EXTLANG.fullmatch(pieces[index]) and lowered[index] in EXTLANG_TAGS and extlang_count < 3:
-        prefix = "-".join(lowered[:index])
-        if (
-            prefix not in _EXTLANG_PREFIXES[lowered[index]]
-            and "*" not in _EXTLANG_PREFIXES[lowered[index]]
-        ):
-            raise ValueError("document_language is not a valid BCP 47 tag")
-        extlang_count += 1
-        index += 1
-    if index < len(pieces) and _SCRIPT.fullmatch(pieces[index]) and lowered[index] in {tag.lower() for tag in SCRIPT_TAGS}:
-        index += 1
-    elif index < len(pieces) and _SCRIPT.fullmatch(pieces[index]):
-        raise ValueError("document_language is not a valid BCP 47 tag")
-    if index < len(pieces) and _REGION.fullmatch(pieces[index]):
-        region = lowered[index]
-        if region not in REGION_TAGS or region == "zz":
-            raise ValueError("document_language is not a valid BCP 47 tag")
-        index += 1
-    seen_variants: set[str] = set()
-    while index < len(pieces) and _VARIANT.fullmatch(pieces[index]):
-        variant = lowered[index]
-        prefix = "-".join(lowered[:index])
-        if (
-            variant not in VARIANT_TAGS
-            or variant in seen_variants
-            or (
-                prefix not in _VARIANT_PREFIXES[variant]
-                and "*" not in _VARIANT_PREFIXES[variant]
-            )
-        ):
-            raise ValueError("document_language is not a valid BCP 47 tag")
-        seen_variants.add(variant)
-        index += 1
+    index = _validate_language_core(lowered, 0)
     seen_extensions: set[str] = set()
     while index < len(pieces):
         if lowered[index] == "x":
@@ -233,10 +197,7 @@ def normalize_language_tag(value: str) -> str:
         elif extension == "t":
             current_key = None
             if index < len(pieces) and lowered[index] in PRIMARY_LANGUAGE_TAGS:
-                first = lowered[index]
-                index += 1
-                while index < len(pieces) and len(pieces[index]) in {4, 2, 3} and lowered[index] not in TRANSFORMED_EXTENSION_VALUES:
-                    index += 1
+                index = _validate_language_core(lowered, index)
             seen_keys: set[str] = set()
             while index < len(pieces) and lowered[index] not in REGISTERED_EXTENSION_SINGLETONS | {"x"}:
                 token = lowered[index]
@@ -253,6 +214,51 @@ def normalize_language_tag(value: str) -> str:
         if index == start:
             raise ValueError("document_language is not a valid BCP 47 tag")
     return "-".join(lowered)
+
+
+def _validate_language_core(parts: list[str], start: int) -> int:
+    """Validate a BCP47 language sequence and return the next unconsumed index."""
+
+    if start >= len(parts) or not _LANGUAGE.fullmatch(parts[start]) or parts[start] not in PRIMARY_LANGUAGE_TAGS:
+        raise ValueError("document_language is not a valid BCP 47 tag")
+    index = start + 1
+    extlang_count = 0
+    while index < len(parts) and _EXTLANG.fullmatch(parts[index]):
+        if parts[index] not in EXTLANG_TAGS or extlang_count >= 3:
+            raise ValueError("document_language is not a valid BCP 47 tag")
+        prefix = "-".join(parts[start:index])
+        if (
+            prefix not in _EXTLANG_PREFIXES[parts[index]]
+            and "*" not in _EXTLANG_PREFIXES[parts[index]]
+        ):
+            raise ValueError("document_language is not a valid BCP 47 tag")
+        extlang_count += 1
+        index += 1
+    if index < len(parts) and _SCRIPT.fullmatch(parts[index]) and parts[index] in {tag.lower() for tag in SCRIPT_TAGS}:
+        index += 1
+    elif index < len(parts) and _SCRIPT.fullmatch(parts[index]):
+        raise ValueError("document_language is not a valid BCP 47 tag")
+    if index < len(parts) and _REGION.fullmatch(parts[index]):
+        region = parts[index]
+        if region not in REGION_TAGS or region == "zz":
+            raise ValueError("document_language is not a valid BCP 47 tag")
+        index += 1
+    seen_variants: set[str] = set()
+    while index < len(parts) and _VARIANT.fullmatch(parts[index]):
+        variant = parts[index]
+        prefix = "-".join(parts[start:index])
+        if (
+            variant not in VARIANT_TAGS
+            or variant in seen_variants
+            or (
+                prefix not in _VARIANT_PREFIXES[variant]
+                and "*" not in _VARIANT_PREFIXES[variant]
+            )
+        ):
+            raise ValueError("document_language is not a valid BCP 47 tag")
+        seen_variants.add(variant)
+        index += 1
+    return index
 
 
 __all__ = [
