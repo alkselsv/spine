@@ -65,6 +65,11 @@ from tests.contracts.persistence.test_outbox_writer_contract import (
     test_trace_mismatch_is_terminal_and_discards_pending_mutation as contract_outbox_trace_scope,
     workspace as outbox_workspace,
 )
+from tests.contracts.persistence.test_source_observation_contract import (
+    test_same_observation_key_with_changed_digest_conflicts as contract_source_observation_digest_conflict,
+    test_source_observation_replay_is_stable as contract_source_observation_replay,
+    test_source_observation_reuses_revision_for_new_provenance as contract_source_observation_revision_reuse,
+)
 from tests.contracts.persistence.test_idempotency_repository_contract import (
     OPERATION_SCHEMA_VERSION,
     command_digest as idempotency_command_digest,
@@ -342,6 +347,15 @@ async def postgresql_adapter(
             trace_id=synthetic_uuid(954),
         )
 
+    def source_context(workspace_id: UUID, environment_id: UUID) -> TrustedPersistenceContext:
+        return boundary.worker(
+            scope=EnvironmentScope(workspace_id=workspace_id, environment_id=environment_id),
+            service_principal_id=synthetic_uuid(957),
+            purpose=PersistencePurpose("contract_test"),
+            operation=PersistenceOperation("source_observation"),
+            trace_id=synthetic_uuid(958),
+        )
+
     def worker_workspace_context(workspace_id: UUID) -> TrustedPersistenceContext:
         return boundary.worker(
             scope=WorkspaceScope(workspace_id=workspace_id),
@@ -364,6 +378,7 @@ async def postgresql_adapter(
             environment_context=environment_context,
             hold_transactions=hold_transactions,
             outbox_events=outbox_events,
+            source_context=source_context,
         )
     finally:
         await engine.dispose()
@@ -530,6 +545,22 @@ async def test_postgresql_adapter_satisfies_idempotency_contract(
     ids=lambda contract: contract.__name__.removeprefix("test_"),
 )
 async def test_postgresql_adapter_satisfies_outbox_contract(
+    postgresql_adapter: PersistenceAdapter,
+    contract: ContractTest,
+) -> None:
+    await contract(postgresql_adapter)
+
+
+@pytest.mark.parametrize(
+    "contract",
+    (
+        contract_source_observation_replay,
+        contract_source_observation_revision_reuse,
+        contract_source_observation_digest_conflict,
+    ),
+    ids=lambda contract: contract.__name__.removeprefix("test_"),
+)
+async def test_postgresql_adapter_satisfies_source_observation_contract(
     postgresql_adapter: PersistenceAdapter,
     contract: ContractTest,
 ) -> None:

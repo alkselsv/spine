@@ -12,9 +12,11 @@ from pydantic import ConfigDict, model_validator
 from spine.domain.common import DefinitionModel
 
 from .models import ALLOWED_TOMBSTONE_REASONS, RevisionKind, RevisionMetadata, SourceRevision
+from .errors import RevisionDigestMismatchError
 from .profile import (
     BCP47_TABLE_DIGEST,
     OBSERVATION_SCHEMA,
+    REVISION_METADATA_SCHEMA,
     REVISION_PROFILE,
     REVISION_SCHEMA,
     UNICODE_TABLE_DIGEST,
@@ -83,9 +85,9 @@ def revision_canonical_bytes(revision: SourceRevision) -> bytes:
 
     payload: dict[str, Any] = {
         "schema": REVISION_SCHEMA,
-        "profile": REVISION_PROFILE,
-        "unicode_table": UNICODE_TABLE_DIGEST,
-        "bcp47_table": BCP47_TABLE_DIGEST,
+        "profile": revision.canonicalization_profile,
+        "unicode_table": revision.unicode_table_digest,
+        "bcp47_table": revision.bcp47_table_digest,
         "kind": revision.kind.value,
     }
     if revision.kind is RevisionKind.CONTENT:
@@ -137,8 +139,6 @@ def tombstone_revision(**fields: object) -> SourceRevision:
 def assert_revision_digest(revision: SourceRevision) -> None:
     """Reject caller-supplied digests that do not match revision-bearing data."""
 
-    from spine.application.persistence.errors import RevisionDigestMismatchError
-
     if revision.revision_digest != revision_digest(revision):
         raise RevisionDigestMismatchError("Revision digest does not match revision data.")
 
@@ -170,6 +170,7 @@ __all__ = [
     "ALLOWED_TOMBSTONE_REASONS",
     "BCP47_TABLE_DIGEST",
     "REVISION_PROFILE",
+    "REVISION_METADATA_SCHEMA",
     "REVISION_SCHEMA",
     "UNICODE_TABLE_DIGEST",
     "SourceObservationCommand",

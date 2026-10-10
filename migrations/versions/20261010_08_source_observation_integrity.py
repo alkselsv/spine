@@ -33,7 +33,7 @@ def upgrade() -> None:
     )
     op.create_check_constraint(
         "ck_source_objects_identity_format", "source_objects",
-        "(identity_mode = 'connector' AND external_namespace OPERATOR(pg_catalog.~) '^[a-z][a-z0-9_.:-]{0,63}$' AND external_generation OPERATOR(pg_catalog.~) '^[a-z][a-z0-9_.:-]{0,63}$' AND external_object_id OPERATOR(pg_catalog.~) '^[a-z][a-z0-9_.:-]{0,63}$') OR (identity_mode = 'upload' AND upload_identity OPERATOR(pg_catalog.~) '^[a-z][a-z0-9_.:-]{0,63}$')",
+        "(identity_mode = 'connector' AND connection_id <> '00000000-0000-0000-0000-000000000000'::pg_catalog.uuid AND external_namespace OPERATOR(pg_catalog.~) '^[a-z][a-z0-9_.:-]{0,63}$' AND external_generation OPERATOR(pg_catalog.~) '^[a-z][a-z0-9_.:-]{0,63}$' AND external_object_id OPERATOR(pg_catalog.~) '^[a-z][a-z0-9_.:-]{0,63}$') OR (identity_mode = 'upload' AND upload_identity OPERATOR(pg_catalog.~) '^[a-z][a-z0-9_.:-]{0,63}$')",
         schema=SCHEMA,
     )
     op.create_check_constraint(
@@ -47,18 +47,28 @@ def upgrade() -> None:
         schema=SCHEMA,
     )
     op.create_check_constraint(
+        "ck_source_revisions_original_reference", "source_revisions",
+        "original_reference IS NULL OR (pg_catalog.jsonb_typeof(original_reference) = 'object' AND (original_reference - 'schema_version' - 'object_id' - 'storage_generation' - 'digest_algorithm' - 'digest_hex' - 'byte_length') = '{}'::pg_catalog.jsonb AND original_reference ?& ARRAY['schema_version', 'object_id', 'storage_generation', 'digest_algorithm', 'digest_hex', 'byte_length'] AND (original_reference->>'schema_version') OPERATOR(pg_catalog.~) '^[1-9][0-9]*$' AND (original_reference->>'object_id') OPERATOR(pg_catalog.~) '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$' AND (original_reference->>'storage_generation') OPERATOR(pg_catalog.~) '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$' AND original_reference->>'digest_algorithm' = 'sha256' AND (original_reference->>'digest_hex') OPERATOR(pg_catalog.~) '^[0-9a-f]{64}$' AND original_reference->>'digest_hex' = original_sha256 AND (original_reference->>'byte_length') OPERATOR(pg_catalog.~) '^[0-9]+$' AND (original_reference->>'byte_length') = byte_length::text)",
+        schema=SCHEMA,
+    )
+    op.create_check_constraint(
         "ck_source_revisions_media_type", "source_revisions",
         "media_type IS NULL OR media_type OPERATOR(pg_catalog.~) '^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$'",
         schema=SCHEMA,
     )
     op.create_check_constraint(
         "ck_source_revisions_metadata_shape", "source_revisions",
-        "revision_metadata IS NULL OR (pg_catalog.jsonb_typeof(revision_metadata) = 'object' AND (revision_metadata - 'embedded_title' - 'document_language') = '{}'::pg_catalog.jsonb)",
+        "revision_metadata IS NULL OR (pg_catalog.jsonb_typeof(revision_metadata) = 'object' AND (revision_metadata - 'embedded_title' - 'document_language') = '{}'::pg_catalog.jsonb AND (revision_metadata->'embedded_title' IS NULL OR pg_catalog.jsonb_typeof(revision_metadata->'embedded_title') IN ('string', 'null')) AND (revision_metadata->'document_language' IS NULL OR pg_catalog.jsonb_typeof(revision_metadata->'document_language') IN ('string', 'null')))",
         schema=SCHEMA,
     )
     op.create_check_constraint(
         "ck_source_revisions_deletion_reason", "source_revisions",
         "deletion_reason IS NULL OR deletion_reason IN ('source_deleted', 'provider_deleted', 'legal_erasure', 'retention_expired')",
+        schema=SCHEMA,
+    )
+    op.create_check_constraint(
+        "ck_source_revisions_deletion_provenance", "source_revisions",
+        "deletion_provenance IS NULL OR deletion_provenance OPERATOR(pg_catalog.~) '^[a-z][a-z0-9_.:-]{0,63}$'",
         schema=SCHEMA,
     )
     op.create_check_constraint(
@@ -101,15 +111,15 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    runtime = _role("runtime_role")
-    op.execute(f"REVOKE ALL PRIVILEGES ON TABLE {SCHEMA}.source_revision_provenance, {SCHEMA}.source_revisions, {SCHEMA}.source_objects FROM {runtime}")
     op.execute(f"DROP TRIGGER IF EXISTS trg_source_reappearance ON {SCHEMA}.source_revisions")
     op.execute(f"DROP FUNCTION IF EXISTS {SCHEMA}.check_source_reappearance()")
     for table, constraint in (
         ("source_revision_provenance", "ck_source_revision_provenance_fields"),
         ("source_revision_provenance", "ck_source_revision_provenance_digest"),
         ("source_revisions", "ck_source_revisions_deletion_reason"),
+        ("source_revisions", "ck_source_revisions_deletion_provenance"),
         ("source_revisions", "ck_source_revisions_metadata_shape"),
+        ("source_revisions", "ck_source_revisions_original_reference"),
         ("source_revisions", "ck_source_revisions_media_type"),
         ("source_revisions", "ck_source_revisions_original_digest"),
         ("source_revisions", "ck_source_revisions_schema_profile"),

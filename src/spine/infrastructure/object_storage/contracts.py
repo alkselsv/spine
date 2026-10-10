@@ -11,10 +11,10 @@ from enum import Enum
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
 from spine.application.persistence.command_digest import COMMAND_DIGEST_ALGORITHM_VERSION
-from spine.domain.sources.original_reference import ObjectReference
+from spine.domain.sources.original_reference import ObjectReference, StorageModel
 
 from .errors import InvalidReadGrant
 
@@ -27,12 +27,6 @@ NonNegativeInt = Annotated[int, Field(ge=0)]
 DigestHex = Annotated[str, Field(pattern=_DIGEST)]
 BoundedIdentifier = Annotated[str, Field(min_length=1, max_length=64, pattern=_IDENTIFIER)]
 OpaqueText = Annotated[str, Field(min_length=1, max_length=256)]
-
-
-class StorageModel(BaseModel):
-    """Strict immutable boundary model used by every storage contract."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
 class DigestAlgorithm(str, Enum):
@@ -549,6 +543,7 @@ __all__ = [
     "PreWriteRequestDigest",
     "ReconciliationInventoryEntry",
     "StorageStatus",
+    "StorageModel",
     "UploadCommandState",
     "UploadCommandStateName",
     "WriteReceipt",

@@ -29,9 +29,11 @@ from spine.application.persistence.errors import (
     OutboxConflictError,
     PersistenceError,
     ObservationIntegrityConflictError,
+    ObservationCommandDigestMismatchError,
     UnexpectedPersistenceError,
     UnitOfWorkLifecycleError,
 )
+from spine.application.persistence.errors import RevisionDigestMismatchError
 from spine.application.persistence.idempotency import (
     IdempotencyClaimResult,
     IdempotencyKey,
@@ -53,6 +55,7 @@ from spine.application.persistence.outbox import (
 from spine.domain.workspaces import Environment, Workspace
 from spine.domain.sources import SourceObject, SourceRevision, SourceRevisionProvenance
 from spine.domain.sources.canonicalization import assert_revision_digest
+from spine.domain.sources.errors import RevisionDigestMismatchError as DomainRevisionDigestMismatchError
 
 
 _ResultT = TypeVar("_ResultT")
@@ -290,10 +293,13 @@ class _SourceObservationRepository:
             self._uow._source_observation_lock_held = True
 
         claim = await self._uow.idempotency.claim(
-            operation_schema_version=command.digest.operation_schema_version,
+            operation_schema_version=1,
             key=command.idempotency_key,
             digest=command.digest,
         )
+        expected_digest = command.expected_digest(self._uow._operation_snapshot())
+        if expected_digest != command.digest:
+            self._uow._fail(ObservationCommandDigestMismatchError("Source observation command digest is invalid."))
         if isinstance(claim, IdempotencyReplay):
             def replay_operation() -> SourceObservationResult:
                 revision = self._revisions().get(claim.result.result_id)
@@ -329,8 +335,8 @@ class _SourceObservationRepository:
         def operation() -> SourceObservationResult:
             try:
                 assert_revision_digest(revision)
-            except PersistenceError as error:
-                self._uow._fail(error)
+            except DomainRevisionDigestMismatchError as error:
+                self._uow._fail(RevisionDigestMismatchError(str(error)))
             self._scope_check(revision.workspace_id, revision.environment_id)
             if revision.source_object_id != source_input.source_object_id:
                 self._uow._fail(ConstraintConflictError("Source observation is invalid."))

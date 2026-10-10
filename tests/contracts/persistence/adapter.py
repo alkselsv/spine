@@ -21,8 +21,6 @@ class PersistenceAdapter:
     environment_context: Callable[[UUID, UUID], TrustedPersistenceContext]
     hold_transactions: Callable[[], AsyncContextManager[None]]
     outbox_events: OutboxEventRegistry
-
-
 @dataclass(frozen=True)
 class AuditPersistenceAdapter(PersistenceAdapter):
     """In-memory audit capabilities owned by Issue #63 contract tests."""
@@ -32,3 +30,4 @@ class AuditPersistenceAdapter(PersistenceAdapter):
         [TrustedPersistenceContext, UUID], Awaitable[AuditEvent | None]
     ]
     fail_next_audit_append: Callable[[], None]
+    source_context: Callable[[UUID, UUID], TrustedPersistenceContext] | None = None

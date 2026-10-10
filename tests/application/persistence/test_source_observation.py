@@ -25,7 +25,8 @@ from spine.application.persistence.outbox import OutboxEventRegistry
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.persistence.command_digest import digest_command
 from spine.application.persistence.repositories import SourceObservationCommand
-from spine.application.persistence.errors import IdempotencyConflictError, RevisionDigestMismatchError
+from spine.application.persistence.errors import IdempotencyConflictError, ObservationCommandDigestMismatchError, RevisionDigestMismatchError
+from spine.domain.sources.errors import RevisionDigestMismatchError as DomainRevisionDigestMismatchError
 
 
 
@@ -119,6 +120,35 @@ def test_source_identity_modes_reject_mixed_fields() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "value",
+    ("EN", " en", "en ", "en US", "en_US", "e", "en-QQQ", "en-u-ca-gregory-u-nu-latn"),
+)
+def test_source_identity_and_language_values_reject_noncanonical_input(value: str) -> None:
+    with pytest.raises(ValueError):
+        SourceObject(
+            source_object_id=synthetic_uuid(1), workspace_id=synthetic_uuid(2), environment_id=synthetic_uuid(3),
+            source_kind="Document", identity_mode=IdentityMode.UPLOAD, upload_identity=value, created_at=NOW,
+        )
+
+
+def test_language_profile_normalizes_lowercase_and_accepts_registered_forms() -> None:
+    assert RevisionMetadata(document_language="en-US").document_language == "en-us"
+    assert RevisionMetadata(document_language="en-US-u-co-phonebk").document_language == "en-us-u-co-phonebk"
+    assert RevisionMetadata(document_language="sl-ROZAJ").document_language == "sl-rozaj"
+    assert RevisionMetadata(document_language="i-klingon").document_language == "i-klingon"
+
+
+def test_connector_identity_rejects_zero_connection_id() -> None:
+    with pytest.raises(ValueError):
+        SourceObject(
+            source_object_id=synthetic_uuid(1), workspace_id=synthetic_uuid(2), environment_id=synthetic_uuid(3),
+            source_kind="document", identity_mode=IdentityMode.CONNECTOR,
+            connection_id=UUID(int=0), external_namespace="provider",
+            external_generation="generation-1", external_object_id="object-1", created_at=NOW,
+        )
+
+
 def test_revision_digest_excludes_observed_time() -> None:
     source_object = source()
     left = valid_revision(source_object)
@@ -131,21 +161,11 @@ def test_revision_digest_matches_pinned_golden_vector() -> None:
 
 
 def command(source_object: SourceObject, source_revision: SourceRevision, source_provenance: SourceRevisionProvenance, key: str) -> SourceObservationCommand:
-    digest = digest_command(
-        operation=PersistenceOperation("source_observation"),
-        operation_schema_version=1,
-        payload={
-            "source_object_id": str(source_object.source_object_id),
-            "revision_digest": source_revision.revision_digest,
-            "event_identity": source_provenance.event_identity,
-        },
-    )
-    return SourceObservationCommand(
+    return SourceObservationCommand.create(
         source=source_object,
         revision=source_revision,
         provenance=source_provenance,
         idempotency_key=IdempotencyKey(key),
-        digest=digest,
     )
 
 
@@ -213,6 +233,30 @@ async def test_changed_observation_digest_is_typed_conflict(source_persistence) 
             await uow.sources.record_observation(replace(observation, digest=changed_digest))
 
 
+@pytest.mark.asyncio
+async def test_forged_observation_digest_is_rejected_before_persistence(source_persistence) -> None:
+    uow_factory, workspace_context, environment_context = source_persistence
+    workspace_id, environment_id = synthetic_uuid(901), synthetic_uuid(910)
+    async with uow_factory(workspace_context(workspace_id)) as uow:
+        await uow.environments.add(Environment(id=environment_id, workspace_id=workspace_id, kind=EnvironmentKind.DEVELOPMENT, display_name="dev"))
+        await uow.commit()
+    async with uow_factory(environment_context(workspace_id, environment_id)) as uow:
+        source_object = source()
+        source_revision = valid_revision(source_object)
+        source_provenance = provenance(source_object, source_revision)
+        valid = command(source_object, source_revision, source_provenance, "forged-key")
+        forged = replace(
+            valid,
+            digest=digest_command(
+                operation=PersistenceOperation("source_observation"),
+                operation_schema_version=1,
+                payload={"unrelated": "payload"},
+            ),
+        )
+        with pytest.raises(ObservationCommandDigestMismatchError):
+            await uow.sources.record_observation(forged)
+
+
 def test_revision_digest_mismatch_is_rejected() -> None:
     source_object = source()
     valid = valid_revision(source_object)
@@ -223,7 +267,7 @@ def test_revision_digest_mismatch_is_rejected() -> None:
         ("media_type", "application/json"),
         ("revision_metadata", RevisionMetadata(embedded_title="Changed")),
     ):
-        with pytest.raises(RevisionDigestMismatchError):
+        with pytest.raises(DomainRevisionDigestMismatchError):
             assert_revision_digest(valid.model_copy(update={field: value}))
 
 
@@ -246,7 +290,7 @@ def test_tombstone_reason_and_forged_digest_are_rejected() -> None:
     )
     tombstone = tombstone_revision(**{key: value for key, value in values.items() if key != "revision_digest"})
     from spine.domain.sources.canonicalization import assert_revision_digest
-    with pytest.raises(RevisionDigestMismatchError):
+    with pytest.raises(DomainRevisionDigestMismatchError):
         assert_revision_digest(tombstone.model_copy(update={"deletion_reason": "provider_deleted"}))
     with pytest.raises(TypeError):
         tombstone_revision(**values)

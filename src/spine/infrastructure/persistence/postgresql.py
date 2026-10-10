@@ -33,9 +33,11 @@ from spine.application.persistence.errors import (
     IdempotencyConflictError,
     InvalidPersistenceContextError,
     ObservationIntegrityConflictError,
+    ObservationCommandDigestMismatchError,
     PersistenceError,
     UnitOfWorkLifecycleError,
 )
+from spine.application.persistence.errors import RevisionDigestMismatchError
 from spine.application.persistence.repositories import (
     SourceObservationCommand,
     SourceObservationResult,
@@ -58,6 +60,7 @@ from spine.domain.common import ContextOrigin, EnvironmentKind
 from spine.domain.workspaces import Environment, Workspace
 from spine.domain.sources import SourceObject, SourceRevision, SourceRevisionProvenance
 from spine.domain.sources.canonicalization import assert_revision_digest
+from spine.domain.sources.errors import RevisionDigestMismatchError as DomainRevisionDigestMismatchError
 from spine.infrastructure.db.engine import SessionFactory
 from spine.infrastructure.persistence.postgresql_errors import (
     translate_persistence_error,
@@ -310,10 +313,13 @@ class _PostgreSQLSourceObservationRepository:
         provenance = command.provenance
         self._check_scope(revision.workspace_id, revision.environment_id)
         claim = await self._uow.idempotency.claim(
-            operation_schema_version=command.digest.operation_schema_version,
+            operation_schema_version=1,
             key=command.idempotency_key,
             digest=command.digest,
         )
+        expected_digest = command.expected_digest(self._uow._operation_snapshot())
+        if expected_digest != command.digest:
+            await self._uow._fail(ObservationCommandDigestMismatchError("Source observation command digest is invalid."))
 
         async def resolve(result_reference: OpaqueResultReference, replay: bool) -> SourceObservationResult:
             rev_row = (await self._uow._execute(select(_SOURCE_REVISIONS).where(
@@ -351,8 +357,8 @@ class _PostgreSQLSourceObservationRepository:
             return await resolve(claim.result, True)
         try:
             assert_revision_digest(revision)
-        except PersistenceError as error:
-            await self._uow._fail(error)
+        except DomainRevisionDigestMismatchError as error:
+            await self._uow._fail(RevisionDigestMismatchError(str(error)))
         if (
             command.source.source_object_id != revision.source_object_id
             or provenance.source_object_id != revision.source_object_id

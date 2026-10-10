@@ -180,7 +180,7 @@ unsafe database/schema/table access, forced RLS protection, and existing schema
 owner before it changes the schema. Runtime and migration connections use the
 controlled search path `pg_catalog,spine`. The Alembic version table is
 `spine.alembic_version`, and the committed history has one linear head:
-`20261010_08`. The source-observation migrations add the source ledger tables and integrity constraints.
+`20261010_09`. The source-observation migrations add the source ledger tables, integrity constraints, and persisted canonicalization profile identity.
 The readiness migration grants the runtime role read-only access
 to the revision identity; K0 adds migration-owned, fixed-search-path receipt
 tenant validation and receipt-scope immutability without adding child tables or
@@ -194,7 +194,7 @@ invoke it or access its tables.
 
 Application startup never creates roles or schemas, invokes Alembic, or calls
 `metadata.create_all`. Readiness succeeds only when PostgreSQL major 17 is in
-use, the database reports exactly head `20261010_08`, the connected user is the
+use, the database reports exactly head `20261010_09`, the connected user is the
 configured restricted runtime role, required grants and forced RLS are intact,
 and transaction-local Workspace/Environment context can be bound. Empty,
 older, newer, unknown, and multiple-head states fail closed; the newly created

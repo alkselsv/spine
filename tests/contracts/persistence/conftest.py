@@ -83,6 +83,15 @@ async def create_in_memory_adapter() -> AuditPersistenceAdapter:
             trace_id=synthetic_uuid(905),
         )
 
+    def source_context(workspace_id: UUID, environment_id: UUID) -> TrustedPersistenceContext:
+        return boundary.worker(
+            scope=EnvironmentScope(workspace_id=workspace_id, environment_id=environment_id),
+            service_principal_id=synthetic_uuid(908),
+            purpose=PersistencePurpose("contract_test"),
+            operation=PersistenceOperation("source_observation"),
+            trace_id=synthetic_uuid(909),
+        )
+
     def worker_workspace_context(workspace_id: UUID) -> TrustedPersistenceContext:
         return boundary.worker(
             scope=WorkspaceScope(workspace_id=workspace_id),
@@ -110,6 +119,7 @@ async def create_in_memory_adapter() -> AuditPersistenceAdapter:
         audit_events=audit_events,
         read_audit_event=persistence.audit_reader.resolve,
         fail_next_audit_append=persistence.fail_next_audit_append,
+        source_context=source_context,
     )
 
 

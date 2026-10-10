@@ -15,7 +15,13 @@ NonNegativeInt = Annotated[int, Field(ge=0)]
 DigestHex = Annotated[str, Field(pattern=_DIGEST)]
 
 
-class ObjectReference(BaseModel):
+class StorageModel(BaseModel):
+    """Shared strict immutable model for the Issue #6 contract family."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+
+class ObjectReference(StorageModel):
     """Opaque identity for one immutable physical byte generation."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -34,4 +40,4 @@ class ObjectReference(BaseModel):
         return self
 
 
-__all__ = ["ObjectReference"]
+__all__ = ["ObjectReference", "StorageModel"]

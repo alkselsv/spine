@@ -50,6 +50,10 @@ class RevisionDigestMismatchError(ConstraintConflictError):
     """Revision-bearing fields do not match the supplied canonical digest."""
 
 
+class ObservationCommandDigestMismatchError(ConstraintConflictError):
+    """Observation command fields do not match the supplied command digest."""
+
+
 class IdempotencyConflictError(ConstraintConflictError):
     """An idempotency key was reused for different command content or scope."""
 

@@ -5,23 +5,22 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from enum import Enum
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import ConfigDict, Field, model_validator
 
 from spine.domain.common import DefinitionModel
 from .original_reference import ObjectReference
-from .profile import normalize_language_tag
+from .profile import BCP47_TABLE_DIGEST, REVISION_METADATA_SCHEMA, REVISION_PROFILE, REVISION_SCHEMA, UNICODE_TABLE_DIGEST, normalize_language_tag
 
 ALLOWED_TOMBSTONE_REASONS = frozenset(
     {"source_deleted", "provider_deleted", "legal_erasure", "retention_expired"}
 )
-_IDENTIFIER = re.compile(r"[a-z][a-z0-9_.:-]{0,63}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _MEDIA_TYPE = re.compile(r"[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+\Z")
 
-BoundedIdentifier = Annotated[str, Field(min_length=1, max_length=64)]
+BoundedIdentifier = Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_.:-]{0,63}$")]
 DigestHex = Annotated[str, Field(pattern=r"[0-9a-f]{64}")]
 
 
@@ -94,6 +93,7 @@ class SourceObject(DefinitionModel):
         if self.identity_mode is IdentityMode.CONNECTOR:
             if any(value is None for value in connector) or self.upload_identity is not None:
                 raise ValueError("connector identity must be complete and exclusive")
+            _nonzero(self.connection_id, "connection_id")
         elif self.identity_mode is IdentityMode.UPLOAD:
             if self.upload_identity is None or any(value is not None for value in connector):
                 raise ValueError("upload identity must be complete and exclusive")
@@ -111,8 +111,11 @@ class SourceRevision(DefinitionModel):
     environment_id: UUID
     kind: RevisionKind
     revision_digest: DigestHex
-    revision_schema_version: BoundedIdentifier
-    revision_metadata_schema: BoundedIdentifier
+    revision_schema_version: Literal[REVISION_SCHEMA]
+    canonicalization_profile: Literal[REVISION_PROFILE] = REVISION_PROFILE
+    unicode_table_digest: Literal[UNICODE_TABLE_DIGEST] = UNICODE_TABLE_DIGEST
+    bcp47_table_digest: Literal[BCP47_TABLE_DIGEST] = BCP47_TABLE_DIGEST
+    revision_metadata_schema: Literal[REVISION_METADATA_SCHEMA]
     revision_metadata: RevisionMetadata | None = None
     revision_metadata_digest: DigestHex | None = None
     original_reference: ObjectReference | None = None
