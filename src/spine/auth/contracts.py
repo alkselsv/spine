@@ -3,29 +3,26 @@
 from __future__ import annotations
 
 from enum import Enum
-import re
 from typing import Generic, TypeVar
 from uuid import UUID
 
 from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
 
 from spine.application.persistence.context import PersistenceOperation, PersistencePurpose
-from spine.domain.common import DefinitionModel
+from spine.domain.common import (
+    DefinitionModel,
+    VersionIdentifier,
+    require_version_identifier,
+)
 
 
-_VERSION_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 DiagnosticContextT = TypeVar("DiagnosticContextT")
+_AUTHORIZED_REQUEST_CONTEXT_IMPLEMENTATION_KEY = object()
 
 
 def _require_non_nil_uuid(value: UUID, *, field_name: str) -> UUID:
     if value.int == 0:
         raise ValueError(f"{field_name} must be a non-nil UUID")
-    return value
-
-
-def _require_configuration_version(value: str) -> str:
-    if _VERSION_IDENTIFIER.fullmatch(value) is None:
-        raise ValueError("authentication configuration version is invalid")
     return value
 
 
@@ -47,12 +44,15 @@ class AuthenticatedAlias(DefinitionModel):
     """Provider-neutral result of successful credential authentication."""
 
     alias: AuthenticationAlias
-    authentication_configuration_version: str
+    authentication_configuration_version: VersionIdentifier
 
     @field_validator("authentication_configuration_version")
     @classmethod
     def _validate_configuration_version(cls, value: str) -> str:
-        return _require_configuration_version(value)
+        return require_version_identifier(
+            value,
+            field_name="authentication_configuration_version",
+        )
 
 
 class AccessTokenCredential(DefinitionModel):
@@ -139,7 +139,7 @@ class AuthorizationResolution(DefinitionModel):
     scope: RequestedAuthorizationScope
     roles: frozenset[AuthorizationRole]
     authorization_generation: int = Field(ge=1)
-    authentication_configuration_version: str
+    authentication_configuration_version: VersionIdentifier
 
     @field_validator("acting_subject_id")
     @classmethod
@@ -149,7 +149,10 @@ class AuthorizationResolution(DefinitionModel):
     @field_validator("authentication_configuration_version")
     @classmethod
     def _validate_configuration_version(cls, value: str) -> str:
-        return _require_configuration_version(value)
+        return require_version_identifier(
+            value,
+            field_name="authentication_configuration_version",
+        )
 
     @model_validator(mode="after")
     def _require_exact_r1_role(self) -> "AuthorizationResolution":
@@ -159,24 +162,31 @@ class AuthorizationResolution(DefinitionModel):
 
 
 class AuthorizedRequestContext(Generic[DiagnosticContextT]):
-    """Sealed read-only shape reserved for trusted composition in ticket #72.
+    """Sealed read-only shape implemented only by trusted composition.
 
-    The contract deliberately has no valid implementation or issuance path in
-    this ticket. This keeps caller data from minting authority while allowing
-    downstream interfaces to depend on one stable field vocabulary. Ticket #72
-    introduces the composition-root-owned implementation, provenance and
-    verifier without changing these read-only properties.
+    The public contract deliberately exposes no constructor, issuance method,
+    provenance type, or verifier. The infrastructure composition root owns the
+    sole implementation and can enable it only with this module's private
+    implementation capability.
     """
 
     __slots__ = ()
 
     def __new__(cls, *args: object, **kwargs: object) -> "AuthorizedRequestContext":
         del args, kwargs
-        raise TypeError("Authorized request contexts require trusted issuance.")
+        if cls is AuthorizedRequestContext:
+            raise TypeError("Authorized request contexts require trusted issuance.")
+        return super().__new__(cls)
 
-    def __init_subclass__(cls, **kwargs: object) -> None:
-        del cls, kwargs
-        raise TypeError("Authorized request context implementations are sealed.")
+    def __init_subclass__(
+        cls,
+        *,
+        _implementation_key: object | None = None,
+        **kwargs: object,
+    ) -> None:
+        del kwargs
+        if _implementation_key is not _AUTHORIZED_REQUEST_CONTEXT_IMPLEMENTATION_KEY:
+            raise TypeError("Authorized request context implementations are sealed.")
 
     @property
     def acting_subject_id(self) -> UUID:

@@ -5,6 +5,7 @@ from spine.application.diagnostics.audit import (
     AuditEvent,
     AuditEventRegistry,
     AuditIdentifier,
+    AuditVersion,
     AuditObjectReference,
     AuditOutcome,
     AuditReader,
@@ -14,6 +15,7 @@ from spine.application.diagnostics.audit import (
     FeedbackAuditPayload,
     OutboxDeliveryAuditPayload,
     RequiredAuditCoordinator,
+    RequestAccessDecisionAuditPayload,
     UnsupportedAuditEventError,
 )
 from spine.application.diagnostics.context import DiagnosticContext, IdentifierSource
@@ -51,6 +53,7 @@ __all__ = [
     "AuditEvent",
     "AuditEventRegistry",
     "AuditIdentifier",
+    "AuditVersion",
     "AuditObjectReference",
     "AuditOutcome",
     "AuditReader",
@@ -80,6 +83,7 @@ __all__ = [
     "OutboxDeliveryDiagnosticState",
     "Retryability",
     "RequiredAuditCoordinator",
+    "RequestAccessDecisionAuditPayload",
     "StructuredError",
     "StructuredErrorRegistry",
     "UnsupportedAuditEventError",

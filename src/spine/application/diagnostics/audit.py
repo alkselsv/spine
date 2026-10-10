@@ -45,14 +45,17 @@ from spine.domain.audit import (
     AuditEvent,
     AuditFieldKind,
     AuditIdentifier,
+    AuditVersion,
     AuditObjectReference,
     AuditOutcome,
     CanonicalTransitionAuditPayload,
     CommandAuditPayload,
     FeedbackAuditPayload,
     OutboxDeliveryAuditPayload,
+    RequestAccessDecisionAuditPayload,
 )
 from spine.domain.audit.models import AUDIT_IDENTIFIER_PATTERN
+from spine.domain.common import VERSION_IDENTIFIER_PATTERN
 
 
 _IDENTIFIER_PATTERN = AUDIT_IDENTIFIER_PATTERN
@@ -274,16 +277,22 @@ def _is_safe_payload_annotation(
     metadata: list[Any] | tuple[Any, ...] = (),
 ) -> bool:
     if annotation is str:
+        allowed_patterns = {
+            AuditFieldKind.IDENTIFIER: _IDENTIFIER_PATTERN,
+            AuditFieldKind.VERSION: VERSION_IDENTIFIER_PATTERN,
+        }
         return any(
-            item is AuditFieldKind.IDENTIFIER for item in metadata
-        ) and any(
-            isinstance(item, StringConstraints)
-            and item.min_length is not None
-            and item.min_length >= 1
-            and item.max_length is not None
-            and item.max_length <= 128
-            and item.pattern == _IDENTIFIER_PATTERN
-            for item in metadata
+            kind in metadata
+            and any(
+                isinstance(item, StringConstraints)
+                and item.min_length is not None
+                and item.min_length >= 1
+                and item.max_length is not None
+                and item.max_length <= 128
+                and item.pattern == pattern
+                for item in metadata
+            )
+            for kind, pattern in allowed_patterns.items()
         )
     if annotation in (UUID, int, bool, Decimal, datetime, date, time, timedelta):
         return True
@@ -380,6 +389,15 @@ class AuditEventRegistry:
                 allowed_outcomes=allowed_outcomes,
                 requires_target=requires_target,
             )
+        registry.register(
+            event_type="access.decision",
+            schema_version=2,
+            payload_type=RequestAccessDecisionAuditPayload,
+            allowed_outcomes=frozenset(
+                {AuditOutcome.ALLOWED, AuditOutcome.DENIED}
+            ),
+            requires_target=False,
+        )
         registry.seal()
         return registry
 

@@ -33,6 +33,12 @@ from spine.application.persistence.errors import (
     UnitOfWorkLifecycleError,
 )
 from spine.application.persistence.outbox import UnsupportedOutboxEventError
+from spine.auth import (
+    AuthenticationUnavailableError,
+    AuthorizationDeniedError,
+    AuthorizationUnavailableError,
+    InvalidAuthenticationError,
+)
 
 from ...contracts.diagnostics.fixtures import ERROR_LEAK_CORPUS, assert_safe_structured_error, diagnostic_context, synthetic_uuid
 
@@ -177,6 +183,44 @@ def test_default_registry_maps_each_persistence_category(
     expected_retryability: Retryability,
 ) -> None:
     result = build_default_error_registry().map(failure_type("sensitive details"), diagnostic_context())
+
+    assert result.code == expected_code
+    assert result.retryability is expected_retryability
+    assert result.trace_id == synthetic_uuid(1)
+    assert_safe_structured_error(result)
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code", "expected_retryability"),
+    [
+        (
+            InvalidAuthenticationError(),
+            "spine.authentication.invalid",
+            Retryability.NEVER,
+        ),
+        (
+            AuthenticationUnavailableError(),
+            "spine.authentication.unavailable",
+            Retryability.AFTER_DELAY,
+        ),
+        (
+            AuthorizationDeniedError(),
+            "spine.authorization.denied",
+            Retryability.NEVER,
+        ),
+        (
+            AuthorizationUnavailableError(),
+            "spine.authorization.unavailable",
+            Retryability.AFTER_DELAY,
+        ),
+    ],
+)
+def test_default_registry_maps_each_auth_category(
+    failure: Exception,
+    expected_code: str,
+    expected_retryability: Retryability,
+) -> None:
+    result = build_default_error_registry().map(failure, diagnostic_context())
 
     assert result.code == expected_code
     assert result.retryability is expected_retryability

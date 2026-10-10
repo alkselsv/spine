@@ -10,8 +10,9 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from spine.domain.common import VersionIdentifier, require_version_identifier
 
-_VERSION_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+
 _SAFE_IDENTIFIER = re.compile(r"[^\s\x00-\x1f\x7f]+")
 _SUPPORTED_ALGORITHMS = frozenset({"RS256"})
 
@@ -29,7 +30,7 @@ class InteractiveClientQualification(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     client_id: str = Field(min_length=1, max_length=512)
-    configuration_version: str = Field(min_length=1, max_length=128)
+    configuration_version: VersionIdentifier
     issuer: str = Field(min_length=1, max_length=2048)
     audience: str = Field(min_length=1, max_length=2048)
     client_credentials_for_audience_disabled: Literal[True]
@@ -45,9 +46,7 @@ class InteractiveClientQualification(BaseModel):
     @field_validator("configuration_version")
     @classmethod
     def _valid_version(cls, value: str) -> str:
-        if _VERSION_IDENTIFIER.fullmatch(value) is None:
-            raise ValueError("authentication configuration version is invalid")
-        return value
+        return require_version_identifier(value, field_name="configuration_version")
 
 
 class OIDCAuthenticationSettings(BaseSettings):
@@ -62,7 +61,7 @@ class OIDCAuthenticationSettings(BaseSettings):
         hide_input_in_errors=True,
     )
 
-    configuration_version: str
+    configuration_version: VersionIdentifier
     issuer: str = Field(min_length=1, max_length=2048)
     audience: str = Field(min_length=1, max_length=2048)
     qualified_interactive_clients: tuple[InteractiveClientQualification, ...]
@@ -79,9 +78,7 @@ class OIDCAuthenticationSettings(BaseSettings):
     @field_validator("configuration_version")
     @classmethod
     def _valid_version(cls, value: str) -> str:
-        if _VERSION_IDENTIFIER.fullmatch(value) is None:
-            raise ValueError("authentication configuration version is invalid")
-        return value
+        return require_version_identifier(value, field_name="configuration_version")
 
     @field_validator("issuer")
     @classmethod

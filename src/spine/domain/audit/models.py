@@ -19,7 +19,12 @@ from pydantic import (
     model_validator,
 )
 
-from spine.domain.common import ContextOrigin
+from spine.domain.common import (
+    ContextOrigin,
+    VERSION_IDENTIFIER_PATTERN,
+    VersionIdentifier,
+    require_version_identifier,
+)
 
 
 AUDIT_IDENTIFIER_PATTERN = r"^[a-z][a-z0-9_.:-]{0,127}$"
@@ -30,6 +35,7 @@ class AuditFieldKind(str, Enum):
     """Explicit semantic classifications accepted in Audit payload schemas."""
 
     IDENTIFIER = "identifier"
+    VERSION = "version"
 
 
 AuditIdentifier = Annotated[
@@ -41,6 +47,8 @@ AuditIdentifier = Annotated[
         pattern=AUDIT_IDENTIFIER_PATTERN,
     ),
 ]
+
+AuditVersion = Annotated[VersionIdentifier, AuditFieldKind.VERSION]
 
 
 def _require_identifier(value: str, *, field_name: str) -> str:
@@ -138,6 +146,27 @@ class AccessDecisionAuditPayload(BaseModel):
     @classmethod
     def validate_policy_identifier(cls, value: str, info: Any) -> str:
         return _require_identifier(value, field_name=info.field_name)
+
+
+class RequestAccessDecisionAuditPayload(BaseModel):
+    """Version-two request access decision with authorization provenance."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    purpose: AuditIdentifier
+    operation: AuditIdentifier
+    authorization_generation: int = Field(ge=1)
+    authentication_configuration_version: AuditVersion
+
+    @field_validator("purpose", "operation")
+    @classmethod
+    def validate_policy_identifier(cls, value: str, info: Any) -> str:
+        return _require_identifier(value, field_name=info.field_name)
+
+    @field_validator("authentication_configuration_version")
+    @classmethod
+    def validate_configuration_version(cls, value: str, info: Any) -> str:
+        return require_version_identifier(value, field_name=info.field_name)
 
 
 class OutboxDeliveryAuditPayload(BaseModel):
