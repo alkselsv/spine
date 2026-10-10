@@ -5,10 +5,14 @@ from __future__ import annotations
 from alembic import op
 
 from spine.domain.sources.profile import (
+    BCP47_TABLE_DIGEST,
+    EXTLANG_TAGS,
     GRANDFATHERED_TAGS,
     PRIMARY_LANGUAGE_TAGS,
     REGION_TAGS,
     SCRIPT_TAGS,
+    UNICODE_TABLE_DIGEST,
+    VARIANT_TAGS,
 )
 from spine.infrastructure.db.settings import MigrationDatabaseSettings
 
@@ -47,31 +51,103 @@ def upgrade() -> None:
             metadata_digest text;
             title text;
             language_tag text;
+            parts text[];
+            token text;
+            seen text[] := ARRAY[]::pg_catalog.text[];
+            i integer;
+            start_index integer;
         BEGIN
             IF NEW.canonicalization_profile <> 'r1-c14n-2026-10'
-               OR NEW.unicode_table_digest <> '12f429d27cedef784dcda284ec37555ac092a05f4665b9fcd335ec36d05ebb8d'
-               OR NEW.bcp47_table_digest <> 'd03ad7c70a60b0d9dcbf80d805ae1308e690f378c93206e3a9af303261a531a6' THEN
+               OR NEW.unicode_table_digest <> '{UNICODE_TABLE_DIGEST}'
+               OR NEW.bcp47_table_digest <> '{BCP47_TABLE_DIGEST}' THEN
                 RAISE EXCEPTION 'Invalid source canonicalization profile.' USING ERRCODE = '23514';
             END IF;
 
             IF NEW.kind = 'content' THEN
                 title := NEW.revision_metadata->>'embedded_title';
                 language_tag := NEW.revision_metadata->>'document_language';
+                IF title IS NOT NULL AND title <> pg_catalog.normalize(title, 'NFC') THEN
+                    RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
+                END IF;
                 IF title IS NOT NULL AND btrim(title, E'\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u2000\\u2001\\u2002\\u2003\\u2004\\u2005\\u2006\\u2007\\u2008\\u2009\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000') = '' THEN
                     RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
                 END IF;
-                IF language_tag IS NOT NULL AND (
-                    language_tag <> lower(language_tag)
-                    OR language_tag !~ '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$'
-                    OR lower(language_tag) = ANY({_sql_text_array(GRANDFATHERED_TAGS)}) IS FALSE
-                    AND split_part(language_tag, '-', 1) <> ALL({_sql_text_array(PRIMARY_LANGUAGE_TAGS)})
-                    OR split_part(language_tag, '-', 2) ~ '^[A-Za-z]{{2}}$'
-                    AND upper(split_part(language_tag, '-', 2)) <> ALL({_sql_text_array(REGION_TAGS)})
-                    OR split_part(language_tag, '-', 2) ~ '^[a-z]{{4}}$'
-                    AND initcap(split_part(language_tag, '-', 2)) <> ALL({_sql_text_array(SCRIPT_TAGS)})
-                    AND lower(language_tag) NOT LIKE 'x-%'
-                ) THEN
-                    RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
+                IF language_tag IS NOT NULL THEN
+                    IF language_tag <> lower(language_tag)
+                       OR language_tag !~ '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$' THEN
+                        RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
+                    END IF;
+                    parts := pg_catalog.string_to_array(language_tag, '-');
+                    IF lower(language_tag) <> ALL({_sql_text_array(GRANDFATHERED_TAGS)}) THEN
+                        IF parts[1] = ANY({_sql_text_array(PRIMARY_LANGUAGE_TAGS)}) IS FALSE AND parts[1] <> 'x' THEN
+                            RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
+                        END IF;
+                        i := 2;
+                        IF parts[1] = 'x' THEN
+                            IF i > pg_catalog.array_length(parts, 1) THEN
+                                RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
+                            END IF;
+                            WHILE i <= pg_catalog.array_length(parts, 1) LOOP
+                                IF parts[i] !~ '^[a-z0-9]{1,8}$' THEN
+                                    RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
+                                END IF;
+                                i := i + 1;
+                            END LOOP;
+                        END IF;
+                        WHILE i <= pg_catalog.array_length(parts, 1)
+                              AND parts[i] ~ '^[a-z]{{3}}$' LOOP
+                            IF parts[i] <> ALL({_sql_text_array(EXTLANG_TAGS)}) THEN
+                                RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
+                            END IF;
+                            i := i + 1;
+                        END LOOP;
+                        IF i <= pg_catalog.array_length(parts, 1) AND parts[i] ~ '^[a-z]{{4}}$' THEN
+                            IF parts[i] <> ALL({_sql_text_array(frozenset(tag.lower() for tag in SCRIPT_TAGS))}) THEN
+                                RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
+                            END IF;
+                            i := i + 1;
+                        END IF;
+                        IF i <= pg_catalog.array_length(parts, 1) AND parts[i] ~ '^(?:[a-z]{{2}}|[0-9]{{3}})$' THEN
+                            IF parts[i] <> ALL({_sql_text_array(REGION_TAGS)}) OR parts[i] = 'zz' THEN
+                                RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
+                            END IF;
+                            i := i + 1;
+                        END IF;
+                        WHILE i <= pg_catalog.array_length(parts, 1) AND parts[i] ~ '^(?:[0-9][a-z0-9]{{3}}|[a-z0-9]{{5,8}})$' LOOP
+                            IF parts[i] <> ALL({_sql_text_array(VARIANT_TAGS)}) OR parts[i] = ANY(seen) THEN
+                                RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
+                            END IF;
+                            seen := pg_catalog.array_append(seen, parts[i]);
+                            i := i + 1;
+                        END LOOP;
+                        WHILE i <= pg_catalog.array_length(parts, 1) LOOP
+                            IF parts[i] = 'x' THEN
+                                i := i + 1;
+                                IF i > pg_catalog.array_length(parts, 1) THEN
+                                    RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
+                                END IF;
+                                WHILE i <= pg_catalog.array_length(parts, 1) LOOP
+                                    IF parts[i] !~ '^[a-z0-9]{{1,8}}$' THEN
+                                        RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
+                                    END IF;
+                                    i := i + 1;
+                                END LOOP;
+                            ELSE
+                                IF parts[i] !~ '^[0-9a-wy-z]$' OR parts[i] = ANY(seen) THEN
+                                    RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
+                                END IF;
+                                seen := pg_catalog.array_append(seen, parts[i]);
+                                i := i + 1;
+                                start_index := i;
+                                WHILE i <= pg_catalog.array_length(parts, 1) AND parts[i] ~ '^[a-z0-9]{{2,8}}$' LOOP
+                                    i := i + 1;
+                                END LOOP;
+                                IF i = start_index THEN
+                                    RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
+                                END IF;
+                            END IF;
+                        END LOOP;
+                    END IF;
                 END IF;
                 metadata_digest := encode(public.digest(convert_to(
                     format('{"document_language":%s,"embedded_title":%s}',

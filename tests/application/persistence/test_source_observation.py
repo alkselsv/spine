@@ -141,11 +141,53 @@ def test_language_profile_normalizes_lowercase_and_accepts_registered_forms() ->
     assert RevisionMetadata(document_language="i-klingon").document_language == "i-klingon"
 
 
+@pytest.mark.parametrize(
+    ("tag", "expected"),
+    [
+        ("gsw", "gsw"),
+        ("en-419", "en-419"),
+        ("sl-ROZAJ-BISKE", "sl-rozaj-biske"),
+        ("en-u-ca-gregory", "en-u-ca-gregory"),
+        ("i-klingon", "i-klingon"),
+    ],
+)
+def test_vendored_bcp47_registry_vectors(tag: str, expected: str) -> None:
+    from spine.domain.sources.profile import normalize_language_tag
+
+    assert normalize_language_tag(tag) == expected
+
+
+def test_vendored_profile_contains_complete_registry_tables() -> None:
+    from spine.domain.sources.profile import (
+        EXTLANG_TAGS,
+        PRIMARY_LANGUAGE_TAGS,
+        REGION_TAGS,
+        SCRIPT_TAGS,
+        VARIANT_TAGS,
+    )
+    from spine.domain.sources.profile_data import UNICODE_DATA
+
+    assert len(UNICODE_DATA["decomp"]) > 2000
+    assert len(UNICODE_DATA["compose"]) > 900
+    assert len(PRIMARY_LANGUAGE_TAGS) > 8000
+    assert len(EXTLANG_TAGS) > 200
+    assert len(SCRIPT_TAGS) > 100
+    assert len(REGION_TAGS) > 200
+    assert len(VARIANT_TAGS) > 100
+
+
+def test_registry_rejects_unknown_region() -> None:
+    from spine.domain.sources.profile import normalize_language_tag
+
+    with pytest.raises(ValueError):
+        normalize_language_tag("en-zz")
+
+
 def test_pinned_profile_table_digests_are_independent_literals() -> None:
     from spine.domain.sources.profile import BCP47_TABLE_DIGEST, UNICODE_TABLE_DIGEST
 
-    assert UNICODE_TABLE_DIGEST == "12f429d27cedef784dcda284ec37555ac092a05f4665b9fcd335ec36d05ebb8d"
-    assert BCP47_TABLE_DIGEST == "d03ad7c70a60b0d9dcbf80d805ae1308e690f378c93206e3a9af303261a531a6"
+    assert UNICODE_TABLE_DIGEST == "d769555163fd558132c9035e6ab04c6afc75b6140d88810de311c6b4126470b8"
+    assert BCP47_TABLE_DIGEST == "3cbe3bba5183ce02fa6cc333e0a8d277b3375a8ae4752865c5b2246c6d2ee020"
 
 
 def test_pinned_profile_normalizes_nfc_and_profile_whitespace() -> None:
@@ -178,7 +220,7 @@ def test_revision_digest_excludes_observed_time() -> None:
 
 
 def test_revision_digest_matches_pinned_golden_vector() -> None:
-    assert revision_digest(valid_revision(source())) == "57bf9852a3ba7b2fe6e4bbddaa009670fe888ca8612ffbdf1400caab08c2138e"
+    assert revision_digest(valid_revision(source())) == "31403c63ef5c8e3c2ace86ef7fe7bd2ad86643db4b366b765ca9d9edc90aab81"
 
 
 def command(source_object: SourceObject, source_revision: SourceRevision, source_provenance: SourceRevisionProvenance, key: str) -> SourceObservationCommand:

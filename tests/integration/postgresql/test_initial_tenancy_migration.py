@@ -367,6 +367,7 @@ async def tenant_rows(migrated_database: MigratedDatabase) -> AsyncIterator[None
             },
         )
         await connection.commit()
+
     yield
     async with _connection(migrated_database.migration.url) as connection:
         await connection.execute(
@@ -388,6 +389,26 @@ async def tenant_rows(migrated_database: MigratedDatabase) -> AsyncIterator[None
             {"workspace_a": WORKSPACE_A, "workspace_b": WORKSPACE_B},
         )
         await connection.commit()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_source_canonical_validation_is_profile_bound(
+    migrated_database: MigratedDatabase,
+    tenant_rows: None,
+) -> None:
+    """Register the database-owned profile seam for real PostgreSQL execution."""
+
+    async with _connection(migrated_database.migration.url) as connection:
+        result = await connection.execute(
+            text(
+                "SELECT prosrc FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+                "WHERE n.nspname = 'spine' AND p.proname = 'validate_source_revision_canonical'"
+            )
+        )
+        source = (await result.scalar_one()).lower()
+        assert "normalize" in source
+        assert "d769555163fd558132c9035e6ab04c6afc75b6140d88810de311c6b4126470b8" in source
+        assert "3cbe3bba5183ce02fa6cc333e0a8d277b3375a8ae4752865c5b2246c6d2ee020" in source
 
 
 async def _set_tenant_context(
