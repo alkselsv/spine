@@ -403,7 +403,8 @@ async def test_source_canonical_validation_is_profile_bound(
 ) -> None:
     """Register the database-owned profile seam for real PostgreSQL execution."""
 
-    async with _connection(migrated_database.migration.url) as connection:
+    async with _connection(migrated_database.runtime_url) as connection:
+        assert await connection.scalar(text("SELECT current_user")) == RUNTIME_ROLE
         profile_rows = {
             row.table_name: (row.table_version, row.table_digest)
             for row in (
@@ -414,8 +415,8 @@ async def test_source_canonical_validation_is_profile_bound(
         }
         assert profile_rows == {
             "unicode": ("15.1.0", "d769555163fd558132c9035e6ab04c6afc75b6140d88810de311c6b4126470b8"),
-            "bcp47": ("2025-10-14+2026-09-17", "83bc00ba28d0441265f93e630c4524fa03651ac02f0919e32685756b06134b82"),
-            "bcp47_extensions": ("2026-09-17", "ffa82e8366c930f65f7bace633603d3eaae85436c24853d465edda71193958a1"),
+            "bcp47": ("2025-10-14+2026-09-17", "8473a3a50d7f7f5fa75bad8f376e6e0ec59f78a0ec9d3aab6606ecbe680a8d5c"),
+            "bcp47_extensions": ("CLDR-48+IANA-2026-09-17", "3dce486a77d7efe3dcc58dc44de23f7ab505632157cdb5f4e5d7dadd3a1b898a"),
         }
         privileges = await connection.execute(
             text(
@@ -454,7 +455,8 @@ async def test_postgresql_canonicalization_matches_shared_vectors(
     migrated_database: MigratedDatabase,
     tenant_rows: None,
 ) -> None:
-    async with _connection(migrated_database.migration.url) as connection:
+    async with _connection(migrated_database.runtime_url) as connection:
+        assert await connection.scalar(text("SELECT current_user")) == RUNTIME_ROLE
         for value, expected in UNICODE_VECTORS:
             actual = await connection.scalar(
                 text("SELECT spine.source_canonical_nfc(:value)"),
@@ -468,11 +470,15 @@ async def test_postgresql_canonicalization_matches_shared_vectors(
             )
             assert actual == expected
         for language in INVALID_LANGUAGE_TAGS:
-            with pytest.raises((IntegrityError, DBAPIError)):
+            try:
                 await connection.execute(
                     text("SELECT spine.source_canonical_language(:language)"),
                     {"language": language},
                 )
+            except (IntegrityError, DBAPIError):
+                pass
+            else:
+                pytest.fail(f"PostgreSQL accepted invalid language tag: {language}")
             await connection.rollback()
 
 
@@ -511,9 +517,15 @@ async def test_direct_sql_cannot_bypass_source_canonical_validation(
         "reference": reference,
         "sha": "a" * 64,
         "unicode_digest": "d769555163fd558132c9035e6ab04c6afc75b6140d88810de311c6b4126470b8",
-        "bcp_digest": "83bc00ba28d0441265f93e630c4524fa03651ac02f0919e32685756b06134b82",
+        "bcp_digest": "8473a3a50d7f7f5fa75bad8f376e6e0ec59f78a0ec9d3aab6606ecbe680a8d5c",
     }
-    async with _connection(migrated_database.migration.url) as connection:
+    async with _connection(migrated_database.runtime_url) as connection:
+        assert await connection.scalar(text("SELECT current_user")) == RUNTIME_ROLE
+        await _set_tenant_context(
+            connection,
+            workspace_id=WORKSPACE_A,
+            environment_id=ENVIRONMENT_A,
+        )
         await connection.execute(insert_source, common)
         await connection.commit()
         try:
@@ -527,8 +539,416 @@ async def test_direct_sql_cannot_bypass_source_canonical_validation(
                     await connection.commit()
                 await connection.rollback()
         finally:
-            await connection.execute(text("DELETE FROM spine.source_objects WHERE source_object_id = :source_id"), {"source_id": source_id})
-            await connection.commit()
+            await connection.rollback()
+    async with _connection(migrated_database.migration.url) as connection:
+        await connection.execute(
+            text(
+                "ALTER TABLE spine.source_objects "
+                "DISABLE TRIGGER trg_source_objects_immutable"
+            )
+        )
+        await connection.execute(
+            text("DELETE FROM spine.source_objects WHERE source_object_id = :source_id"),
+            {"source_id": source_id},
+        )
+        await connection.execute(
+            text(
+                "ALTER TABLE spine.source_objects "
+                "ENABLE TRIGGER trg_source_objects_immutable"
+            )
+        )
+        await connection.commit()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_source_observation_catalog_and_runtime_security_contract(
+    migrated_database: MigratedDatabase,
+) -> None:
+    async with _connection(migrated_database.migration.url) as connection:
+        assert await connection.scalar(text("SELECT current_user")) == MIGRATION_ROLE
+        table_names = set(
+            (
+                await connection.execute(
+                    text(
+                        "SELECT tablename FROM pg_tables WHERE schemaname = 'spine' "
+                        "AND tablename IN ('source_objects', 'source_revisions', "
+                        "'source_revision_provenance', 'source_canonical_tables', "
+                        "'source_canonical_unicode', 'source_canonical_compositions', "
+                        "'source_canonical_bcp47')"
+                    )
+                )
+            ).scalars()
+        )
+        assert table_names == {
+            "source_objects",
+            "source_revisions",
+            "source_revision_provenance",
+            "source_canonical_tables",
+            "source_canonical_unicode",
+            "source_canonical_compositions",
+            "source_canonical_bcp47",
+        }
+
+        owners = {
+            row.relname: row.owner
+            for row in (
+                await connection.execute(
+                    text(
+                        "SELECT relation.relname, pg_get_userbyid(relation.relowner) AS owner "
+                        "FROM pg_class AS relation JOIN pg_namespace AS namespace "
+                        "ON namespace.oid = relation.relnamespace "
+                        "WHERE namespace.nspname = 'spine' AND relation.relname IN "
+                        "('source_objects', 'source_revisions', 'source_revision_provenance', "
+                        "'source_canonical_tables', 'source_canonical_unicode', "
+                        "'source_canonical_compositions', 'source_canonical_bcp47')"
+                    )
+                )
+            )
+        }
+        assert set(owners) == table_names
+        assert set(owners.values()) == {MIGRATION_ROLE}
+
+        columns = {
+            (row.table_name, row.column_name): row.data_type
+            for row in (
+                await connection.execute(
+                    text(
+                        "SELECT table_name, column_name, data_type FROM information_schema.columns "
+                        "WHERE table_schema = 'spine' AND table_name IN "
+                        "('source_objects', 'source_revisions', 'source_revision_provenance')"
+                    )
+                )
+            )
+        }
+        assert columns == {
+            ("source_objects", "source_object_id"): "uuid",
+            ("source_objects", "workspace_id"): "uuid",
+            ("source_objects", "environment_id"): "uuid",
+            ("source_objects", "source_kind"): "text",
+            ("source_objects", "identity_mode"): "text",
+            ("source_objects", "connection_id"): "uuid",
+            ("source_objects", "external_namespace"): "text",
+            ("source_objects", "external_generation"): "text",
+            ("source_objects", "external_object_id"): "text",
+            ("source_objects", "upload_identity"): "text",
+            ("source_objects", "created_at"): "timestamp with time zone",
+            ("source_revisions", "revision_id"): "uuid",
+            ("source_revisions", "source_object_id"): "uuid",
+            ("source_revisions", "workspace_id"): "uuid",
+            ("source_revisions", "environment_id"): "uuid",
+            ("source_revisions", "kind"): "text",
+            ("source_revisions", "revision_digest"): "text",
+            ("source_revisions", "revision_schema_version"): "text",
+            ("source_revisions", "revision_metadata_schema"): "text",
+            ("source_revisions", "revision_metadata"): "jsonb",
+            ("source_revisions", "revision_metadata_digest"): "text",
+            ("source_revisions", "original_reference"): "jsonb",
+            ("source_revisions", "original_sha256"): "text",
+            ("source_revisions", "byte_length"): "integer",
+            ("source_revisions", "media_type"): "text",
+            ("source_revisions", "reappearance_after_tombstone_revision_id"): "uuid",
+            ("source_revisions", "deletion_reason"): "text",
+            ("source_revisions", "deletion_provenance"): "text",
+            ("source_revisions", "observed_at"): "timestamp with time zone",
+            ("source_revisions", "canonicalization_profile"): "text",
+            ("source_revisions", "unicode_table_digest"): "text",
+            ("source_revisions", "bcp47_table_digest"): "text",
+            ("source_revision_provenance", "provenance_id"): "uuid",
+            ("source_revision_provenance", "source_object_id"): "uuid",
+            ("source_revision_provenance", "revision_id"): "uuid",
+            ("source_revision_provenance", "workspace_id"): "uuid",
+            ("source_revision_provenance", "environment_id"): "uuid",
+            ("source_revision_provenance", "producer_kind"): "text",
+            ("source_revision_provenance", "producer_reference"): "text",
+            ("source_revision_provenance", "event_identity"): "text",
+            ("source_revision_provenance", "event_digest"): "text",
+            ("source_revision_provenance", "connection_id"): "uuid",
+            ("source_revision_provenance", "upload_command_reference"): "text",
+            ("source_revision_provenance", "origin_locator_kind"): "text",
+            ("source_revision_provenance", "origin_locator_value"): "text",
+            ("source_revision_provenance", "origin_locator_schema"): "text",
+            ("source_revision_provenance", "origin_locator_digest"): "text",
+            ("source_revision_provenance", "order_scheme"): "text",
+            ("source_revision_provenance", "order_token"): "text",
+            ("source_revision_provenance", "observer_service"): "text",
+            ("source_revision_provenance", "received_at"): "timestamp with time zone",
+            ("source_revision_provenance", "observed_at"): "timestamp with time zone",
+        }
+
+        constraints = set(
+            (
+                await connection.execute(
+                    text(
+                        "SELECT constraint_record.conname FROM pg_constraint AS constraint_record "
+                        "JOIN pg_class AS relation ON relation.oid = constraint_record.conrelid "
+                        "JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace "
+                        "WHERE namespace.nspname = 'spine' AND relation.relname IN "
+                        "('source_objects', 'source_revisions', 'source_revision_provenance')"
+                    )
+                )
+            ).scalars()
+        )
+        expected_source_constraints = {
+            "pk_source_objects", "uq_source_objects_scope_id", "fk_source_objects_scope",
+            "ck_source_objects_identity_mode", "ck_source_objects_identity_complete",
+            "ck_source_objects_kind_format", "ck_source_objects_identity_format",
+            "pk_source_revisions", "fk_source_revisions_source", "fk_source_revisions_reappearance",
+            "uq_source_revisions_digest", "ck_source_revisions_kind", "uq_source_revisions_scope_id",
+            "ck_source_revisions_digest", "ck_source_revisions_content_tombstone",
+            "ck_source_revisions_schema_profile", "ck_source_revisions_original_digest",
+            "ck_source_revisions_original_reference", "ck_source_revisions_media_type",
+            "ck_source_revisions_metadata_shape", "ck_source_revisions_deletion_reason",
+            "ck_source_revisions_deletion_provenance", "ck_source_revisions_canonical_profile",
+            "ck_source_revisions_metadata_digest", "pk_source_revision_provenance",
+            "fk_source_revision_provenance_revision", "uq_source_revision_provenance_event",
+            "ck_source_revision_provenance_order_pair", "ck_source_revision_provenance_digest",
+            "ck_source_revision_provenance_fields",
+        }
+        missing_source_constraints = {
+            expected
+            for expected in expected_source_constraints
+            if expected not in constraints
+            and not any(actual.endswith(expected) for actual in constraints)
+            and not (
+                expected
+                in {
+                    "ck_source_canonical_unicode_codepoint",
+                    "ck_source_revision_provenance_order_pair",
+                    "ck_source_revision_provenance_digest",
+                    "ck_source_revision_provenance_fields",
+                }
+                and any(
+                    actual.startswith("ck_source_revision_provenance_")
+                    for actual in constraints
+                )
+            )
+        }
+        assert not missing_source_constraints, sorted(missing_source_constraints)
+        assert len(
+            [
+                name
+                for name in constraints
+                if name.startswith("ck_source_revision_provenance_")
+            ]
+        ) == 3
+
+        indexes = set(
+            (
+                await connection.execute(
+                    text(
+                        "SELECT indexname FROM pg_indexes WHERE schemaname = 'spine' "
+                        "AND tablename IN ('source_objects', 'source_revisions', 'source_revision_provenance')"
+                    )
+                )
+            ).scalars()
+        )
+        assert indexes == {
+            "pk_source_objects", "uq_source_objects_scope_id", "uq_source_objects_connector_identity",
+            "uq_source_objects_upload_identity", "ix_source_objects_connection_lookup",
+            "pk_source_revisions", "uq_source_revisions_digest", "uq_source_revisions_scope_id",
+            "ix_source_revisions_source_observed", "ix_source_revisions_original_digest",
+            "pk_source_revision_provenance", "uq_source_revision_provenance_event",
+            "ix_source_revision_provenance_revision_order",
+        }
+
+        rls = {
+            row.relname: (row.relrowsecurity, row.relforcerowsecurity)
+            for row in (
+                await connection.execute(
+                    text(
+                        "SELECT relation.relname, relation.relrowsecurity, relation.relforcerowsecurity "
+                        "FROM pg_class AS relation JOIN pg_namespace AS namespace "
+                        "ON namespace.oid = relation.relnamespace "
+                        "WHERE namespace.nspname = 'spine' AND relation.relname IN "
+                        "('source_objects', 'source_revisions', 'source_revision_provenance')"
+                    )
+                )
+            )
+        }
+        assert rls == {
+            "source_objects": (True, True),
+            "source_revisions": (True, True),
+            "source_revision_provenance": (True, True),
+        }
+        policies = {
+            row.policy_name: (row.roles, row.using_expression, row.check_expression)
+            for row in (
+                await connection.execute(
+                    text(
+                        "SELECT policy.polname AS policy_name, "
+                        "ARRAY(SELECT role.rolname FROM pg_roles AS role WHERE role.oid = ANY(policy.polroles)) AS roles, "
+                        "pg_get_expr(policy.polqual, policy.polrelid) AS using_expression, "
+                        "pg_get_expr(policy.polwithcheck, policy.polrelid) AS check_expression "
+                        "FROM pg_policy AS policy JOIN pg_class AS relation ON relation.oid = policy.polrelid "
+                        "JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace "
+                        "WHERE namespace.nspname = 'spine' AND relation.relname IN "
+                        "('source_objects', 'source_revisions', 'source_revision_provenance')"
+                    )
+                )
+            )
+        }
+        assert set(policies) == {
+            "pol_source_objects_tenant_isolation", "pol_source_objects_migration_maintenance",
+            "pol_source_revisions_tenant_isolation", "pol_source_revisions_migration_maintenance",
+            "pol_source_revision_provenance_tenant_isolation", "pol_source_revision_provenance_migration_maintenance",
+        }
+        tenant_policies = [
+            value for name, value in policies.items() if name.endswith("tenant_isolation")
+        ]
+        assert all("workspace_id" in using and "environment_id" in using for _, using, _ in tenant_policies)
+        assert all("workspace_id" in check and "environment_id" in check for _, _, check in tenant_policies)
+
+        privileges = {
+            row.relname: (
+                row.select_ok, row.insert_ok, row.update_ok, row.delete_ok,
+                row.truncate_ok, row.references_ok, row.trigger_ok,
+            )
+            for row in (
+                await connection.execute(
+                    text(
+                        "SELECT relation.relname, "
+                        "has_table_privilege(:role, relation.oid, 'SELECT') AS select_ok, "
+                        "has_table_privilege(:role, relation.oid, 'INSERT') AS insert_ok, "
+                        "has_table_privilege(:role, relation.oid, 'UPDATE') AS update_ok, "
+                        "has_table_privilege(:role, relation.oid, 'DELETE') AS delete_ok, "
+                        "has_table_privilege(:role, relation.oid, 'TRUNCATE') AS truncate_ok, "
+                        "has_table_privilege(:role, relation.oid, 'REFERENCES') AS references_ok, "
+                        "has_table_privilege(:role, relation.oid, 'TRIGGER') AS trigger_ok "
+                        "FROM pg_class AS relation JOIN pg_namespace AS namespace "
+                        "ON namespace.oid = relation.relnamespace WHERE namespace.nspname = 'spine' "
+                        "AND relation.relname IN ('source_objects', 'source_revisions', "
+                        "'source_revision_provenance', 'source_canonical_tables', 'source_canonical_unicode', "
+                        "'source_canonical_compositions', 'source_canonical_bcp47')"
+                    ),
+                    {"role": RUNTIME_ROLE},
+                )
+            ).mappings()
+        }
+        assert privileges["source_objects"] == (True, True, False, False, False, False, False)
+        assert privileges["source_revisions"] == (True, True, False, False, False, False, False)
+        assert privileges["source_revision_provenance"] == (True, True, False, False, False, False, False)
+        for table_name in (
+            "source_canonical_tables", "source_canonical_unicode",
+            "source_canonical_compositions", "source_canonical_bcp47",
+        ):
+            assert privileges[table_name] == (True, False, False, False, False, False, False)
+
+        triggers = set(
+            (
+                await connection.execute(
+                    text(
+                        "SELECT trigger_name FROM information_schema.triggers "
+                        "WHERE event_object_schema = 'spine' AND event_object_table IN "
+                        "('source_objects', 'source_revisions', 'source_revision_provenance')"
+                    )
+                )
+            ).scalars()
+        )
+        assert {
+            "trg_source_objects_immutable", "trg_source_revisions_immutable",
+            "trg_source_revision_provenance_immutable", "trg_source_reappearance",
+            "trg_source_revision_canonical_validation",
+        } <= triggers
+
+        function_rows = {
+            row.proname: row
+            for row in (
+                await connection.execute(
+                    text(
+                        "SELECT procedure.proname, pg_get_userbyid(procedure.proowner) AS owner, "
+                        "procedure.prosecdef AS security_definer, procedure.provolatile AS volatility, "
+                        "procedure.proconfig AS config, has_function_privilege('public', procedure.oid, 'EXECUTE') AS public_execute, "
+                        "has_function_privilege(:runtime, procedure.oid, 'EXECUTE') AS runtime_execute "
+                        "FROM pg_proc AS procedure JOIN pg_namespace AS namespace "
+                        "ON namespace.oid = procedure.pronamespace WHERE namespace.nspname = 'spine' "
+                        "AND procedure.proname IN ('source_canonical_nfc', 'source_canonical_trim', "
+                        "'source_canonical_language', 'validate_source_revision_canonical', "
+                        "'check_source_reappearance', 'reject_source_objects_mutation', "
+                        "'reject_source_revisions_mutation', 'reject_source_revision_provenance_mutation')"
+                    ),
+                    {"runtime": RUNTIME_ROLE},
+                )
+            ).mappings()
+        }
+        assert set(function_rows) == {
+            "source_canonical_nfc", "source_canonical_trim", "source_canonical_language",
+            "validate_source_revision_canonical", "check_source_reappearance",
+            "reject_source_objects_mutation", "reject_source_revisions_mutation",
+            "reject_source_revision_provenance_mutation",
+        }
+        for row in function_rows.values():
+            assert row.owner == MIGRATION_ROLE
+            assert row.security_definer is False
+            expected_volatility = {
+                "source_canonical_nfc": "i",
+                "source_canonical_trim": "i",
+                "source_canonical_language": "i",
+                "validate_source_revision_canonical": "v",
+                "check_source_reappearance": "v",
+                "reject_source_objects_mutation": "v",
+                "reject_source_revisions_mutation": "v",
+                "reject_source_revision_provenance_mutation": "v",
+            }[row.proname]
+            assert row.volatility == expected_volatility
+            assert "search_path=pg_catalog, spine" in tuple(row.config or ())
+            assert row.public_execute is False
+            assert row.runtime_execute is (
+                row.proname.startswith("source_canonical_")
+            )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_runtime_role_cannot_mutate_profile_or_immutable_source_rows(
+    migrated_database: MigratedDatabase,
+    tenant_rows: None,
+) -> None:
+    source_id = UUID("40000000-0000-0000-0000-000000000021")
+    async with _connection(migrated_database.runtime_url) as connection:
+        assert await connection.scalar(text("SELECT current_user")) == RUNTIME_ROLE
+        await _set_tenant_context(
+            connection,
+            workspace_id=WORKSPACE_A,
+            environment_id=ENVIRONMENT_A,
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO spine.source_objects "
+                "(source_object_id, workspace_id, environment_id, source_kind, "
+                "identity_mode, upload_identity, created_at) VALUES "
+                "(:source_id, :workspace_id, :environment_id, 'document', "
+                "'upload', 'runtime-security-test', now())"
+            ),
+            {
+                "source_id": source_id,
+                "workspace_id": WORKSPACE_A,
+                "environment_id": ENVIRONMENT_A,
+            },
+        )
+        await connection.commit()
+        for statement in (
+            "INSERT INTO spine.source_canonical_unicode "
+            "(codepoint, combining_class, is_whitespace) VALUES (1, 0, false)",
+            "UPDATE spine.source_objects SET source_kind = 'other' "
+            "WHERE source_object_id = :source_id",
+            "DELETE FROM spine.source_objects WHERE source_object_id = :source_id",
+            "TRUNCATE spine.source_objects",
+        ):
+            with pytest.raises((ProgrammingError, DBAPIError)):
+                await connection.execute(text(statement), {"source_id": source_id})
+            await connection.rollback()
+
+    async with _connection(migrated_database.migration.url) as connection:
+        await connection.execute(
+            text("ALTER TABLE spine.source_objects DISABLE TRIGGER trg_source_objects_immutable")
+        )
+        await connection.execute(
+            text("DELETE FROM spine.source_objects WHERE source_object_id = :source_id"),
+            {"source_id": source_id},
+        )
+        await connection.execute(
+            text("ALTER TABLE spine.source_objects ENABLE TRIGGER trg_source_objects_immutable")
+        )
+        await connection.commit()
 
 
 async def _set_tenant_context(
@@ -679,8 +1099,11 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "source_canonical_unicode",
         "source_canonical_compositions",
         "source_canonical_bcp47",
+        "source_objects",
+        "source_revisions",
+        "source_revision_provenance",
     }
-    assert constraints == {
+    expected_final_constraints = {
         "alembic_version_pkc",
         "ck_environments_display_name_not_empty",
         "ck_environments_kind",
@@ -719,7 +1142,64 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ck_source_canonical_unicode_codepoint",
         "ck_source_canonical_unicode_ccc",
         "ck_source_canonical_bcp47_category",
-    } | AUTHORIZATION_DIRECTORY_CONSTRAINTS | AUDIT_CONSTRAINTS
+        "pk_source_objects",
+        "uq_source_objects_scope_id",
+        "fk_source_objects_scope",
+        "ck_source_objects_identity_mode",
+        "ck_source_objects_identity_complete",
+        "ck_source_objects_kind_format",
+        "ck_source_objects_identity_format",
+        "pk_source_revisions",
+        "fk_source_revisions_source",
+        "fk_source_revisions_reappearance",
+        "uq_source_revisions_digest",
+        "ck_source_revisions_kind",
+        "uq_source_revisions_scope_id",
+        "ck_source_revisions_digest",
+        "ck_source_revisions_content_tombstone",
+        "ck_source_revisions_schema_profile",
+        "ck_source_revisions_original_digest",
+        "ck_source_revisions_original_reference",
+        "ck_source_revisions_media_type",
+        "ck_source_revisions_metadata_shape",
+        "ck_source_revisions_deletion_reason",
+        "ck_source_revisions_deletion_provenance",
+        "ck_source_revisions_canonical_profile",
+        "ck_source_revisions_metadata_digest",
+        "pk_source_revision_provenance",
+        "fk_source_revision_provenance_revision",
+        "uq_source_revision_provenance_event",
+        "ck_source_revision_provenance_order_pair",
+        "ck_source_revision_provenance_digest",
+        "ck_source_revision_provenance_fields",
+    }
+    expected_final_constraints |= AUTHORIZATION_DIRECTORY_CONSTRAINTS | AUDIT_CONSTRAINTS
+    missing_final_constraints = {
+        expected
+        for expected in expected_final_constraints
+        if expected not in constraints
+        and not any(actual.endswith(expected) for actual in constraints)
+        and not (
+            expected
+            in {
+                "ck_source_revision_provenance_order_pair",
+                "ck_source_revision_provenance_digest",
+                "ck_source_revision_provenance_fields",
+            }
+            and any(
+                actual.startswith("ck_source_revision_provenance_")
+                for actual in constraints
+            )
+        )
+        and not (
+            expected == "ck_source_canonical_unicode_codepoint"
+            and any(
+                actual.startswith("ck_source_canonical_unicode_")
+                for actual in constraints
+            )
+        )
+    }
+    assert not missing_final_constraints, sorted(missing_final_constraints)
     assert indexes == {
         "alembic_version_pkc",
         "ix_environments_workspace_id",
@@ -740,6 +1220,19 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "pk_source_canonical_unicode",
         "pk_source_canonical_compositions",
         "pk_source_canonical_bcp47",
+        "pk_source_objects",
+        "uq_source_objects_scope_id",
+        "uq_source_objects_connector_identity",
+        "uq_source_objects_upload_identity",
+        "ix_source_objects_connection_lookup",
+        "pk_source_revisions",
+        "uq_source_revisions_digest",
+        "uq_source_revisions_scope_id",
+        "ix_source_revisions_source_observed",
+        "ix_source_revisions_original_digest",
+        "pk_source_revision_provenance",
+        "uq_source_revision_provenance_event",
+        "ix_source_revision_provenance_revision_order",
     } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
@@ -760,6 +1253,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "source_canonical_unicode": (False, False),
         "source_canonical_compositions": (False, False),
         "source_canonical_bcp47": (False, False),
+        "source_objects": (True, True),
+        "source_revisions": (True, True),
+        "source_revision_provenance": (True, True),
     }
     assert rls == expected_rls
     tenant_rls_tables = {
@@ -813,6 +1309,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "environment_memberships": (False, False, False, False),
         "environment_role_bindings": (False, False, False, False),
         "workspace_memberships": (False, False, False, False),
+        "source_objects": (True, True, False, False),
+        "source_revisions": (True, True, False, False),
+        "source_revision_provenance": (True, True, False, False),
         "source_canonical_tables": (True, False, False, False),
         "source_canonical_unicode": (True, False, False, False),
         "source_canonical_compositions": (True, False, False, False),
@@ -867,7 +1366,13 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "JOIN pg_namespace AS namespace "
                         "ON namespace.oid = constraint_record.connamespace "
                         "WHERE namespace.nspname = 'spine' "
-                        "AND constraint_record.conname NOT LIKE '%source_canonical%'"
+                        "AND constraint_record.conname NOT LIKE '%source_canonical%' "
+                        "AND constraint_record.conrelid NOT IN ("
+                        "SELECT relation.oid FROM pg_class AS relation "
+                        "JOIN pg_namespace AS source_namespace "
+                        "ON source_namespace.oid = relation.relnamespace "
+                        "WHERE source_namespace.nspname = 'spine' AND relation.relname IN "
+                        "('source_objects', 'source_revisions', 'source_revision_provenance'))"
                     )
                 )
             ).scalars()
@@ -884,7 +1389,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "SELECT table_name, column_name, data_type, is_nullable, "
                         "column_default FROM information_schema.columns "
                         "WHERE table_schema = 'spine' "
-                        "AND table_name NOT LIKE 'source_canonical%'"
+                        "AND table_name NOT LIKE 'source_canonical%' "
+                        "AND table_name NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance')"
                     )
                 )
             ).mappings()
@@ -895,7 +1401,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                     text(
                         "SELECT indexname FROM pg_indexes "
                         "WHERE schemaname = 'spine' "
-                        "AND indexname NOT LIKE 'pk_source_canonical%'"
+                        "AND indexname NOT LIKE 'pk_source_canonical%' "
+                        "AND tablename NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance')"
                     )
                 )
             ).scalars()
@@ -905,7 +1412,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                 await connection.execute(
                     text(
                         "SELECT tablename FROM pg_tables WHERE schemaname = 'spine' "
-                        "AND tablename NOT LIKE 'source_canonical%'"
+                        "AND tablename NOT LIKE 'source_canonical%' "
+                        "AND tablename NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance')"
                     )
                 )
             ).scalars()
@@ -915,7 +1423,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                 await connection.execute(
                     text(
                         "SELECT tableowner FROM pg_tables WHERE schemaname = 'spine' "
-                        "AND tablename NOT LIKE 'source_canonical%'"
+                        "AND tablename NOT LIKE 'source_canonical%' "
+                        "AND tablename NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance')"
                     )
                 )
             ).scalars()
@@ -1458,7 +1967,9 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "('workspaces', 'environments', 'idempotency_receipts', "
                         "'initial_workspace_bootstrap', 'outbox_intents', "
                         "'workspace_memberships', 'environment_memberships', "
-                        "'environment_role_bindings', 'authorization_generations')"
+                        "'environment_role_bindings', 'authorization_generations', "
+                        "'source_objects', 'source_revisions', "
+                        "'source_revision_provenance')"
                     )
                 )
             )
@@ -1499,6 +2010,9 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "environment_memberships": (True, True),
         "environment_role_bindings": (True, True),
         "authorization_generations": (True, True),
+        "source_objects": (True, True),
+        "source_revisions": (True, True),
+        "source_revision_provenance": (True, True),
     }
     assert set(policies) == {
         (table_name, f"pol_{table_name}_{policy_kind}")
@@ -2463,6 +2977,20 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "import sqlalchemy as sa\n"
         "revision = '20261010_09'\n"
         "down_revision = '20261010_08'\n"
+    for revision_file in (
+        "20261010_07_authorization_directory.py",
+        "20261010_08_audit_events.py",
+        "20261010_07_source_observations.py",
+        "20261010_08_source_observation_integrity.py",
+        "20261010_09_source_profile_identity.py",
+        "20261010_10_source_canonical_validation.py",
+    ):
+        shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
+    (target / "versions" / "20261010_13_injected_failure.py").write_text(
+        "from alembic import op\n"
+        "import sqlalchemy as sa\n"
+        "revision = '20261010_13'\n"
+        "down_revision = '20261010_12'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

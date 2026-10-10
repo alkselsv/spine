@@ -15,8 +15,12 @@ from .profile_data import (
     UNICODE_TABLE_DIGEST,
     UNICODE_TABLE_VERSION,
 )
-from .profile_extensions import REGISTERED_EXTENSION_SINGLETONS
-from .profile_extensions import EXTENSION_TABLE_DIGEST
+from .profile_extensions import (
+    EXTENSION_TABLE_DIGEST,
+    REGISTERED_EXTENSION_SINGLETONS,
+    TRANSFORMED_EXTENSION_VALUES,
+    UNICODE_EXTENSION_VALUES,
+)
 
 REVISION_PROFILE = "r1-c14n-2026-10"
 REVISION_SCHEMA = "source-revision:v1"
@@ -203,10 +207,49 @@ def normalize_language_tag(value: str) -> str:
         ):
             raise ValueError("document_language is not a valid BCP 47 tag")
         seen_extensions.add(lowered[index])
+        extension = lowered[index]
         index += 1
         start = index
-        while index < len(pieces) and _SUBTAG.fullmatch(pieces[index]):
-            index += 1
+        if extension == "u":
+            current_key: str | None = None
+            seen_keys: set[str] = set()
+            while index < len(pieces) and lowered[index] not in REGISTERED_EXTENSION_SINGLETONS | {"x"}:
+                token = lowered[index]
+                if len(token) == 2:
+                    if (
+                        token not in UNICODE_EXTENSION_VALUES
+                        or token in seen_keys
+                        or (seen_keys and token <= max(seen_keys))
+                    ):
+                        raise ValueError("document_language is not a valid BCP 47 tag")
+                    current_key = token
+                    seen_keys.add(token)
+                elif (
+                    current_key is None
+                    or token not in UNICODE_EXTENSION_VALUES[current_key]
+                ):
+                    raise ValueError("document_language is not a valid BCP 47 tag")
+                index += 1
+        elif extension == "t":
+            current_key = None
+            if index < len(pieces) and lowered[index] in PRIMARY_LANGUAGE_TAGS:
+                first = lowered[index]
+                index += 1
+                while index < len(pieces) and len(pieces[index]) in {4, 2, 3} and lowered[index] not in TRANSFORMED_EXTENSION_VALUES:
+                    index += 1
+            seen_keys: set[str] = set()
+            while index < len(pieces) and lowered[index] not in REGISTERED_EXTENSION_SINGLETONS | {"x"}:
+                token = lowered[index]
+                if len(token) != 2 or token not in TRANSFORMED_EXTENSION_VALUES or token in seen_keys:
+                    raise ValueError("document_language is not a valid BCP 47 tag")
+                seen_keys.add(token)
+                current_key = token
+                index += 1
+                if index >= len(pieces) or lowered[index] not in TRANSFORMED_EXTENSION_VALUES[current_key]:
+                    raise ValueError("document_language is not a valid BCP 47 tag")
+                index += 1
+        else:
+            raise ValueError("document_language is not a valid BCP 47 tag")
         if index == start:
             raise ValueError("document_language is not a valid BCP 47 tag")
     return "-".join(lowered)

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+import json
 from contextlib import asynccontextmanager
 from enum import Enum, auto
 from types import TracebackType
-from typing import NoReturn
+from typing import Any, NoReturn
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, insert, select, text, update
+from sqlalchemy import func, insert, null, select, text, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 
 from spine.application.diagnostics.audit import (
@@ -275,6 +276,18 @@ class _PostgreSQLSourceObservationRepository:
             raise InvalidPersistenceContextError("Persistence context is invalid.")
         return scope
 
+    @staticmethod
+    def _revision_from_row(row: Mapping[str, Any]) -> SourceRevision:
+        """Validate a row after PostgreSQL has decoded its JSON columns.
+
+        PostgreSQL's JSON decoder returns UUID members nested inside
+        ``original_reference`` as strings, while the Issue #6 reference
+        contract intentionally requires UUID instances at the domain seam.
+        JSON validation preserves that strict contract without weakening the
+        model or introducing a persistence-specific reference type.
+        """
+        return SourceRevision.model_validate_json(json.dumps(dict(row), default=str))
+
     async def resolve_or_create_source(self, source: SourceObject) -> SourceObject:
         self._uow._guard_active()
         self._check_scope(source.workspace_id, source.environment_id)
@@ -346,7 +359,7 @@ class _PostgreSQLSourceObservationRepository:
                 await self._uow._fail(ConstraintConflictError("Observation replay is unavailable."))
             return SourceObservationResult(
                 source=SourceObject.model_validate(dict(source_row)),
-                revision=SourceRevision.model_validate(dict(rev_row)),
+                revision=self._revision_from_row(rev_row),
                 provenance=SourceRevisionProvenance.model_validate(dict(event_row)),
                 replay=replay,
                 claim=claim,
@@ -399,8 +412,8 @@ class _PostgreSQLSourceObservationRepository:
         if rev_row is None:
             values = revision.model_dump(mode="python")
             values["kind"] = revision.kind.value
-            values["revision_metadata"] = revision.revision_metadata.model_dump(mode="json") if revision.revision_metadata is not None else None
-            values["original_reference"] = revision.original_reference.model_dump(mode="json") if revision.original_reference is not None else None
+            values["revision_metadata"] = revision.revision_metadata.model_dump(mode="json") if revision.revision_metadata is not None else null()
+            values["original_reference"] = revision.original_reference.model_dump(mode="json") if revision.original_reference is not None else null()
             await self._uow._execute(postgresql_insert(_SOURCE_REVISIONS).values(**values).on_conflict_do_nothing(constraint="uq_source_revisions_digest"))
             rev_row = (await self._uow._execute(rev_query)).mappings().one()
         await self._uow._execute(
@@ -424,7 +437,7 @@ class _PostgreSQLSourceObservationRepository:
         if not isinstance(scope, EnvironmentScope):
             return None
         row = (await self._uow._execute(select(_SOURCE_REVISIONS).where(_SOURCE_REVISIONS.c.revision_id == revision_id, _SOURCE_REVISIONS.c.workspace_id == scope.workspace_id, _SOURCE_REVISIONS.c.environment_id == scope.environment_id))).mappings().one_or_none()
-        return SourceRevision.model_validate(dict(row)) if row is not None else None
+        return self._revision_from_row(row) if row is not None else None
 
 
 class _PostgreSQLIdempotencyRepository:

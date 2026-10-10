@@ -15,9 +15,27 @@ LANGUAGE_VECTORS = (
     ("zh-cmn-Hans-CN", "zh-cmn-hans-cn"),
     ("sl-ROZAJ-BISKE", "sl-rozaj-biske"),
     ("en-fonipa", "en-fonipa"),
-    ("en-t-foo", "en-t-foo"),
+    ("en-t-en", "en-t-en"),
+    ("en-u-ca-gregory", "en-u-ca-gregory"),
+    ("en-u-nu-latn", "en-u-nu-latn"),
+    ("en-t-en-latn-us", "en-t-en-latn-us"),
+    ("en-u-ca-gregory-t-en", "en-u-ca-gregory-t-en"),
+    ("de-DE-u-ca-gregory-nu-latn", "de-de-u-ca-gregory-nu-latn"),
+    ("sr-Latn-RS-u-co-phonebk", "sr-latn-rs-u-co-phonebk"),
+    ("en-t-d0-ascii", "en-t-d0-ascii"),
     ("x-private", "x-private"),
     ("i-klingon", "i-klingon"),
 )
 
-INVALID_LANGUAGE_TAGS = ("en-zz", "de-biske", "en-z-foo", "en-a-foo")
+INVALID_LANGUAGE_TAGS = (
+    "en-zz",
+    "de-biske",
+    "en-z-foo",
+    "en-a-foo",
+    "en-t-foo",
+    "en-u-zz",
+    "en-u-ca-unknown",
+    "en-u-ca-gregory-ca-buddhist",
+    "en-t-d0-unknown",
+    "en-t-d0-ascii-d0-upper",
+)

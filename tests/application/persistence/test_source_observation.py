@@ -276,7 +276,7 @@ def test_revision_digest_excludes_observed_time() -> None:
 
 
 def test_revision_digest_matches_pinned_golden_vector() -> None:
-    assert revision_digest(valid_revision(source())) == "379e908c510b50ee4a5e6d7b42884be269c0fc75373d14470ffbd1bfc568ba1b"
+    assert revision_digest(valid_revision(source())) == "034a29522bdd6038d6c82f12a8aed04396d30263067ab47d3c3fbac33cd17156"
 
 
 def command(source_object: SourceObject, source_revision: SourceRevision, source_provenance: SourceRevisionProvenance, key: str) -> SourceObservationCommand:

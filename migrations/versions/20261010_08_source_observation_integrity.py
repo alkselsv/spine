@@ -105,7 +105,7 @@ def upgrade() -> None:
             RETURN NEW;
         END; $function$
     """)
-    op.execute(f"CREATE CONSTRAINT TRIGGER trg_source_reappearance AFTER INSERT ON {revisions} DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION {SCHEMA}.check_source_reappearance()")
+    op.execute(f"CREATE CONSTRAINT TRIGGER trg_source_reappearance AFTER INSERT ON {revisions} DEFERRABLE INITIALLY IMMEDIATE FOR EACH ROW EXECUTE FUNCTION {SCHEMA}.check_source_reappearance()")
     op.execute(f"REVOKE ALL ON FUNCTION {SCHEMA}.check_source_reappearance() FROM PUBLIC")
     op.execute(f"REVOKE UPDATE, DELETE, TRUNCATE ON {source_objects}, {revisions}, {provenance} FROM {runtime}")
 

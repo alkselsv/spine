@@ -69,7 +69,7 @@ def _install_profile_tables(runtime: str, migration: str) -> None:
         sa.Column("subtag", sa.Text(), nullable=False),
         sa.Column("prefix", sa.Text(), nullable=False),
         sa.PrimaryKeyConstraint("category", "subtag", "prefix", name="pk_source_canonical_bcp47"),
-        sa.CheckConstraint("category IN ('language', 'extlang', 'script', 'region', 'variant', 'special', 'extension')", name="ck_source_canonical_bcp47_category"),
+        sa.CheckConstraint("category IN ('language', 'extlang', 'script', 'region', 'variant', 'special', 'extension', 'extension_key', 'extension_value')", name="ck_source_canonical_bcp47_category"),
         schema=SCHEMA,
     )
 
@@ -157,6 +157,18 @@ def _install_profile_tables(runtime: str, migration: str) -> None:
         {"category": "extension", "subtag": value, "prefix": "*"}
         for value in EXTENSION_DATA["extensions"]
     )
+    for key, values in EXTENSION_DATA["unicode"].items():
+        rows.append({"category": "extension_key", "subtag": key, "prefix": "u"})
+        rows.extend(
+            {"category": "extension_value", "subtag": f"u:{key}:{value}", "prefix": "u"}
+            for value in values
+        )
+    for key, values in EXTENSION_DATA["transformed"].items():
+        rows.append({"category": "extension_key", "subtag": key, "prefix": "t"})
+        rows.extend(
+            {"category": "extension_value", "subtag": f"t:{key}:{value}", "prefix": "t"}
+            for value in values
+        )
     op.bulk_insert(bcp47, rows)
 
     for table in ("source_canonical_tables", "source_canonical_unicode", "source_canonical_compositions", "source_canonical_bcp47"):
@@ -247,7 +259,7 @@ def _install_canonical_functions(runtime: str) -> None:
             output text;
         BEGIN
             FOR position IN 1..char_length(normalized) LOOP
-                decomposed := decomposed || {SCHEMA}.source_canonical_decompose(unicode(substr(normalized, position, 1)));
+                decomposed := decomposed || {SCHEMA}.source_canonical_decompose(pg_catalog.ascii(substr(normalized, position, 1)));
             END LOOP;
             FOREACH codepoint IN ARRAY decomposed LOOP
                 current_class := {SCHEMA}.source_canonical_combining_class(codepoint);
@@ -298,12 +310,12 @@ def _install_canonical_functions(runtime: str) -> None:
             current_codepoint integer;
         BEGIN
             WHILE first_position <= last_position LOOP
-                current_codepoint := unicode(substr(normalized, first_position, 1));
+                current_codepoint := pg_catalog.ascii(substr(normalized, first_position, 1));
                 EXIT WHEN NOT EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_unicode WHERE codepoint = current_codepoint AND is_whitespace);
                 first_position := first_position + 1;
             END LOOP;
             WHILE last_position >= first_position LOOP
-                current_codepoint := unicode(substr(normalized, last_position, 1));
+                current_codepoint := pg_catalog.ascii(substr(normalized, last_position, 1));
                 EXIT WHEN NOT EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_unicode WHERE codepoint = current_codepoint AND is_whitespace);
                 last_position := last_position - 1;
             END LOOP;
@@ -319,7 +331,10 @@ def _install_canonical_functions(runtime: str) -> None:
             index_value integer := 2;
             token text;
             seen text[] := ARRAY[]::text[];
-            prefix text;
+            extension_singleton text;
+            current_extension_key text;
+            previous_extension_key text;
+            extension_value_count integer;
             extlang_count integer := 0;
         BEGIN
             IF input_tag !~ '^[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*$' THEN
@@ -345,7 +360,7 @@ def _install_canonical_functions(runtime: str) -> None:
                 IF extlang_count > 3 THEN
                     RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
                 END IF;
-                IF NOT EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 WHERE category = 'extlang' AND subtag = parts[index_value] AND (prefix = '*' OR prefix = array_to_string(parts[1:index_value - 1], '-'))) THEN
+                IF NOT EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 AS registry WHERE registry.category = 'extlang' AND registry.subtag = parts[index_value] AND (registry.prefix = '*' OR registry.prefix = array_to_string(parts[1:index_value - 1], '-'))) THEN
                     RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
                 END IF;
                 index_value := index_value + 1;
@@ -363,15 +378,15 @@ def _install_canonical_functions(runtime: str) -> None:
                 index_value := index_value + 1;
             END IF;
             WHILE index_value <= cardinality(parts) AND parts[index_value] ~ '^(?:[0-9][a-z0-9]{{3}}|[a-z0-9]{{5,8}})$' LOOP
-                IF NOT EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 WHERE category = 'variant' AND subtag = parts[index_value] AND (prefix = '*' OR prefix = array_to_string(parts[1:index_value - 1], '-'))) OR parts[index_value] = ANY(seen) THEN
+                IF NOT EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 AS registry WHERE registry.category = 'variant' AND registry.subtag = parts[index_value] AND (registry.prefix = '*' OR registry.prefix = array_to_string(parts[1:index_value - 1], '-'))) OR parts[index_value] = ANY(seen) THEN
                     RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
                 END IF;
                 seen := array_append(seen, parts[index_value]);
                 index_value := index_value + 1;
             END LOOP;
             WHILE index_value <= cardinality(parts) LOOP
-                prefix := parts[index_value];
-                IF prefix = 'x' THEN
+                extension_singleton := parts[index_value];
+                IF extension_singleton = 'x' THEN
                     index_value := index_value + 1;
                     IF index_value > cardinality(parts) THEN RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514'; END IF;
                     WHILE index_value <= cardinality(parts) LOOP
@@ -379,11 +394,51 @@ def _install_canonical_functions(runtime: str) -> None:
                         index_value := index_value + 1;
                     END LOOP;
                 ELSE
-                    IF prefix !~ '^[0-9a-wy-z]$' OR prefix = ANY(seen) OR NOT EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 WHERE category = 'extension' AND subtag = prefix) THEN RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514'; END IF;
-                    seen := array_append(seen, prefix);
+                    IF extension_singleton !~ '^[0-9a-wy-z]$' OR extension_singleton = ANY(seen) OR NOT EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 WHERE category = 'extension' AND subtag = extension_singleton) THEN RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514'; END IF;
+                    seen := array_append(seen, extension_singleton);
                     index_value := index_value + 1;
                     IF index_value > cardinality(parts) OR parts[index_value] !~ '^[a-z0-9]{{2,8}}$' THEN RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514'; END IF;
-                    WHILE index_value <= cardinality(parts) AND parts[index_value] ~ '^[a-z0-9]{{2,8}}$' LOOP index_value := index_value + 1; END LOOP;
+                    current_extension_key := NULL;
+                    previous_extension_key := NULL;
+                    extension_value_count := 0;
+                    IF extension_singleton = 'u' THEN
+                        WHILE index_value <= cardinality(parts) AND parts[index_value] <> ALL(seen) AND parts[index_value] <> 'x' AND parts[index_value] !~ '^[0-9a-wy-z]$' LOOP
+                            IF parts[index_value] ~ '^[a-z0-9]{{2}}$' THEN
+                                IF NOT EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 WHERE category = 'extension_key' AND subtag = parts[index_value] AND prefix = 'u') OR (previous_extension_key IS NOT NULL AND parts[index_value] <= previous_extension_key) THEN
+                                    RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
+                                END IF;
+                                current_extension_key := parts[index_value];
+                                previous_extension_key := current_extension_key;
+                                extension_value_count := 0;
+                            ELSIF current_extension_key IS NULL OR NOT EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 WHERE category = 'extension_value' AND subtag = 'u:' || current_extension_key || ':' || parts[index_value] AND prefix = 'u') THEN
+                                RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
+                            ELSE
+                                extension_value_count := extension_value_count + 1;
+                            END IF;
+                            index_value := index_value + 1;
+                        END LOOP;
+                        IF current_extension_key IS NULL OR extension_value_count = 0 THEN RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514'; END IF;
+                    ELSIF extension_singleton = 't' THEN
+                        IF index_value <= cardinality(parts) AND EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 WHERE category = 'language' AND subtag = parts[index_value]) THEN
+                            index_value := index_value + 1;
+                            IF index_value <= cardinality(parts) AND EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 WHERE category = 'script' AND subtag = parts[index_value]) THEN index_value := index_value + 1; END IF;
+                            IF index_value <= cardinality(parts) AND EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 WHERE category = 'region' AND subtag = parts[index_value]) THEN index_value := index_value + 1; END IF;
+                        END IF;
+                        WHILE index_value <= cardinality(parts) AND parts[index_value] <> ALL(seen) AND parts[index_value] <> 'x' AND parts[index_value] !~ '^[0-9a-wy-z]$' LOOP
+                            IF NOT (parts[index_value] ~ '^[a-z0-9]{{2}}$' AND parts[index_value] <> ALL(seen) AND EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 WHERE category = 'extension_key' AND subtag = parts[index_value] AND prefix = 't')) THEN
+                                RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
+                            END IF;
+                            current_extension_key := parts[index_value];
+                            seen := array_append(seen, current_extension_key);
+                            index_value := index_value + 1;
+                            IF index_value > cardinality(parts) OR NOT EXISTS (SELECT 1 FROM {SCHEMA}.source_canonical_bcp47 WHERE category = 'extension_value' AND subtag = 't:' || current_extension_key || ':' || parts[index_value] AND prefix = 't') THEN
+                                RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
+                            END IF;
+                            index_value := index_value + 1;
+                        END LOOP;
+                    ELSE
+                        RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
+                    END IF;
                 END IF;
             END LOOP;
             RETURN lower(input_tag);
@@ -440,7 +495,7 @@ def _install_revision_trigger(runtime: str) -> None:
                     END IF;
                     language_tag := {SCHEMA}.source_canonical_language(language_tag);
                 END IF;
-                metadata_digest := encode(public.digest(convert_to(format('{{"document_language":%s,"embedded_title":%s}}', coalesce(to_json(language_tag)::text, 'null'), coalesce(to_json(title)::text, 'null')), 'UTF8'), 'sha256'), 'hex');
+                metadata_digest := encode(pg_catalog.sha256(convert_to(format('{{"document_language":%s,"embedded_title":%s}}', coalesce(to_json(language_tag)::text, 'null'), coalesce(to_json(title)::text, 'null')), 'UTF8')), 'hex');
                 IF NEW.revision_metadata_digest <> metadata_digest THEN
                     RAISE EXCEPTION 'Invalid source revision metadata.' USING ERRCODE = '23514';
                 END IF;
@@ -448,7 +503,7 @@ def _install_revision_trigger(runtime: str) -> None:
             ELSE
                 canonical := format('{{"bcp47_table":%s,"kind":%s,"profile":%s,"schema":%s,"tombstone":{{"deletion_fact":"deletion-fact:r1-v1","reason":%s}},"unicode_table":%s}}', to_json(NEW.bcp47_table_digest)::text, to_json(NEW.kind)::text, to_json(NEW.canonicalization_profile)::text, to_json(NEW.revision_schema_version)::text, to_json(NEW.deletion_reason)::text, to_json(NEW.unicode_table_digest)::text);
             END IF;
-            IF encode(public.digest(convert_to(canonical, 'UTF8'), 'sha256'), 'hex') <> NEW.revision_digest THEN
+            IF encode(pg_catalog.sha256(convert_to(canonical, 'UTF8')), 'hex') <> NEW.revision_digest THEN
                 RAISE EXCEPTION 'Invalid source revision digest.' USING ERRCODE = '23514';
             END IF;
             RETURN NEW;
@@ -463,7 +518,6 @@ def _install_revision_trigger(runtime: str) -> None:
 def upgrade() -> None:
     runtime = _role("runtime_role")
     migration = _role("migration_role")
-    op.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
     _install_profile_tables(runtime, migration)
     _install_canonical_functions(runtime)
     _install_revision_trigger(runtime)

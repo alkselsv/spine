@@ -23,7 +23,7 @@ NOW = datetime(2026, 10, 10, 12, 0, tzinfo=timezone.utc)
 
 def source(workspace_id: UUID, environment_id: UUID) -> SourceObject:
     return SourceObject(
-        source_object_id=synthetic_uuid(7001),
+        source_object_id=UUID(int=workspace_id.int + 7001),
         workspace_id=workspace_id,
         environment_id=environment_id,
         source_kind="document",
@@ -35,12 +35,12 @@ def source(workspace_id: UUID, environment_id: UUID) -> SourceObject:
 
 def connector_source(workspace_id: UUID, environment_id: UUID, generation: str) -> SourceObject:
     return SourceObject(
-        source_object_id=synthetic_uuid(7200 + int(generation[-1])),
+        source_object_id=UUID(int=workspace_id.int + 7200 + int(generation[-1])),
         workspace_id=workspace_id,
         environment_id=environment_id,
         source_kind="document",
         identity_mode=IdentityMode.CONNECTOR,
-        connection_id=synthetic_uuid(7201),
+        connection_id=UUID(int=workspace_id.int + 7201),
         external_namespace="contract-provider",
         external_generation=generation,
         external_object_id="object-1",
@@ -77,7 +77,7 @@ def revision(source_object: SourceObject, revision_id: UUID) -> object:
 
 def provenance(source_object: SourceObject, revision_id: UUID, event: str) -> SourceRevisionProvenance:
     return SourceRevisionProvenance(
-        provenance_id=synthetic_uuid(7100 + int(event[-1])),
+        provenance_id=UUID(int=source_object.workspace_id.int + 7100 + int(event[-1])),
         source_object_id=source_object.source_object_id,
         revision_id=revision_id,
         workspace_id=source_object.workspace_id,
@@ -112,7 +112,7 @@ async def prepare(adapter: PersistenceAdapter, workspace_id: UUID, environment_i
         await uow.workspaces.add(
             Workspace(
                 id=workspace_id,
-                slug=f"contract-{workspace_id.hex[:12]}",
+                slug=f"contract-{workspace_id.hex}",
                 display_name="Contract workspace",
             )
         )
