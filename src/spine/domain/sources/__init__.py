@@ -8,21 +8,20 @@ from .models import (
     SourceRevision,
     SourceRevisionProvenance,
     SourceKind,
+    canonical_revision_metadata_digest,
 )
 from .errors import RevisionDigestMismatchError, SourceInvariantError
 from .canonicalization import (
-    OBSERVATION_SCHEMA,
     REVISION_PROFILE,
     REVISION_SCHEMA,
-    SourceObservationCommand,
     assert_revision_digest,
     content_revision,
-    observation_command_digest,
     revision_canonical_bytes,
     revision_digest,
     tombstone_revision,
 )
 from .profile import BCP47_TABLE_DIGEST, REVISION_METADATA_SCHEMA, UNICODE_TABLE_DIGEST
+from .profile import OBSERVATION_SCHEMA
 
 __all__ = [
     "IdentityMode",
@@ -33,16 +32,15 @@ __all__ = [
     "SourceObject",
     "SourceRevision",
     "SourceRevisionProvenance",
+    "canonical_revision_metadata_digest",
     "SourceInvariantError",
     "OBSERVATION_SCHEMA",
     "BCP47_TABLE_DIGEST",
     "REVISION_PROFILE",
     "REVISION_METADATA_SCHEMA",
     "REVISION_SCHEMA",
-    "SourceObservationCommand",
     "assert_revision_digest",
     "content_revision",
-    "observation_command_digest",
     "revision_canonical_bytes",
     "revision_digest",
     "tombstone_revision",

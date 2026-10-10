@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -15,6 +14,7 @@ from typing import Any, Final
 from uuid import UUID
 
 from spine.application.persistence.context import PersistenceOperation
+from spine.domain.sources.profile import normalize_nfc
 
 
 COMMAND_DIGEST_ALGORITHM_VERSION: Final[str] = "spine.command-digest.v1"
@@ -175,7 +175,7 @@ def _canonical_value(value: object) -> Any:
     if isinstance(value, bool):
         return {"type": "bool", "value": value}
     if isinstance(value, str):
-        return {"type": "string", "normalization": "NFC", "value": unicodedata.normalize("NFC", value)}
+        return {"type": "string", "normalization": "NFC", "value": normalize_nfc(value)}
     if isinstance(value, int):
         return {"type": "integer", "value": str(value)}
     if isinstance(value, Decimal):
@@ -207,7 +207,7 @@ def _canonical_mapping(value: Mapping[object, object]) -> dict[str, object]:
     for key, item in value.items():
         if not isinstance(key, str):
             raise UnsupportedCommandValueError("Command object keys must be strings.")
-        normalized_key = unicodedata.normalize("NFC", key)
+        normalized_key = normalize_nfc(key)
         if normalized_key in items:
             raise UnsupportedCommandValueError(
                 "Command object keys must be unique after NFC normalization."

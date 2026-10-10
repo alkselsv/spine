@@ -5,81 +5,22 @@ from __future__ import annotations
 import hashlib
 import json
 from typing import Any
-from uuid import UUID
 
-from pydantic import ConfigDict, model_validator
-
-from spine.domain.common import DefinitionModel
-
-from .models import ALLOWED_TOMBSTONE_REASONS, RevisionKind, RevisionMetadata, SourceRevision
+from .models import (
+    ALLOWED_TOMBSTONE_REASONS,
+    RevisionKind,
+    RevisionMetadata,
+    SourceRevision,
+    canonical_revision_metadata_digest,
+)
 from .errors import RevisionDigestMismatchError
 from .profile import (
     BCP47_TABLE_DIGEST,
-    OBSERVATION_SCHEMA,
     REVISION_METADATA_SCHEMA,
     REVISION_PROFILE,
     REVISION_SCHEMA,
     UNICODE_TABLE_DIGEST,
 )
-
-
-class SourceObservationCommand(DefinitionModel):
-    """Command identity is intentionally separate from revision identity."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    command_id: UUID
-    source_object_id: UUID
-    revision_digest: str
-    original_receipt_id: UUID | None = None
-    original_receipt_digest: str | None = None
-    order_scheme: str | None = None
-    order_token: str | None = None
-    provenance_reference: str
-    producer_kind: str
-    producer_reference: str
-    event_identity: str
-
-    @model_validator(mode="after")
-    def validate_command(self) -> "SourceObservationCommand":
-        if self.command_id.int == 0 or self.source_object_id.int == 0:
-            raise ValueError("command identities must be non-zero")
-        if len(self.revision_digest) != 64 or any(c not in "0123456789abcdef" for c in self.revision_digest):
-            raise ValueError("revision_digest must be a SHA-256 hex value")
-        if (self.original_receipt_id is None) != (self.original_receipt_digest is None):
-            raise ValueError("original receipt identity and digest must be paired")
-        if (self.order_scheme is None) != (self.order_token is None):
-            raise ValueError("order scheme and token must be paired")
-        return self
-
-    def canonical_bytes(self) -> bytes:
-        return _canonical_json(
-            {
-                "schema": OBSERVATION_SCHEMA,
-                "command_id": str(self.command_id),
-                "source_object_id": str(self.source_object_id),
-                "revision_digest": self.revision_digest,
-                "original_receipt_id": (
-                    str(self.original_receipt_id) if self.original_receipt_id else None
-                ),
-                "original_receipt_digest": self.original_receipt_digest,
-                "order": {
-                    "scheme": self.order_scheme,
-                    "token": self.order_token,
-                },
-                "provenance": {
-                    "reference": self.provenance_reference,
-                    "producer_kind": self.producer_kind,
-                    "producer_reference": self.producer_reference,
-                    "event_identity": self.event_identity,
-                },
-            }
-        )
-
-    @property
-    def digest(self) -> str:
-        return hashlib.sha256(self.canonical_bytes()).hexdigest()
-
-
 def revision_canonical_bytes(revision: SourceRevision) -> bytes:
     """Return the exact revision-bearing representation, excluding provenance."""
 
@@ -121,6 +62,16 @@ def content_revision(**fields: object) -> SourceRevision:
 
     if "revision_digest" in fields:
         raise TypeError("revision_digest is produced by the canonical factory")
+    metadata = fields.get("revision_metadata")
+    if isinstance(metadata, dict):
+        metadata = RevisionMetadata.model_validate(metadata)
+        fields["revision_metadata"] = metadata
+    if isinstance(metadata, RevisionMetadata):
+        expected_metadata_digest = canonical_revision_metadata_digest(metadata)
+        supplied_metadata_digest = fields.get("revision_metadata_digest")
+        if supplied_metadata_digest is not None and supplied_metadata_digest != expected_metadata_digest:
+            raise RevisionDigestMismatchError("Revision metadata digest does not match metadata.")
+        fields["revision_metadata_digest"] = expected_metadata_digest
     provisional = SourceRevision.model_validate({**fields, "revision_digest": "0" * 64})
     fields["revision_digest"] = revision_digest(provisional)
     return SourceRevision.model_validate(fields)
@@ -143,10 +94,6 @@ def assert_revision_digest(revision: SourceRevision) -> None:
         raise RevisionDigestMismatchError("Revision digest does not match revision data.")
 
 
-def observation_command_digest(command: SourceObservationCommand) -> str:
-    return command.digest
-
-
 def _metadata_payload(metadata: RevisionMetadata | None) -> dict[str, str | None]:
     if metadata is None:
         return {"document_language": None, "embedded_title": None}
@@ -166,15 +113,12 @@ def _canonical_json(payload: dict[str, Any]) -> bytes:
 
 
 __all__ = [
-    "OBSERVATION_SCHEMA",
     "ALLOWED_TOMBSTONE_REASONS",
     "BCP47_TABLE_DIGEST",
     "REVISION_PROFILE",
     "REVISION_METADATA_SCHEMA",
     "REVISION_SCHEMA",
     "UNICODE_TABLE_DIGEST",
-    "SourceObservationCommand",
-    "observation_command_digest",
     "assert_revision_digest",
     "content_revision",
     "revision_canonical_bytes",

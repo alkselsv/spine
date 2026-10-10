@@ -14,6 +14,7 @@ from spine.application.persistence.idempotency import (
 )
 from spine.application.persistence.context import PersistenceOperation
 from spine.domain.sources import SourceObject, SourceRevision, SourceRevisionProvenance
+from spine.domain.sources.profile import OBSERVATION_SCHEMA
 from spine.domain.workspaces import Environment, Workspace
 
 SOURCE_OBSERVATION_SCHEMA_VERSION = 1
@@ -76,6 +77,7 @@ class SourceObservationCommand:
             operation=operation,
             operation_schema_version=SOURCE_OBSERVATION_SCHEMA_VERSION,
             payload={
+                "schema": OBSERVATION_SCHEMA,
                 "source": {
                     "source_object_id": source.source_object_id,
                     "identity_mode": source.identity_mode,

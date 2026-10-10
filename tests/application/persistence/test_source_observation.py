@@ -12,6 +12,7 @@ from spine.domain.sources import (
     SourceObject,
     SourceRevision,
     SourceRevisionProvenance,
+    canonical_revision_metadata_digest,
 )
 from spine.domain.sources.canonicalization import revision_digest
 from spine.domain.sources.canonicalization import content_revision, tombstone_revision
@@ -51,7 +52,8 @@ def revision(source_object: SourceObject, revision_id: UUID = synthetic_uuid(101
         workspace_id=source_object.workspace_id, environment_id=source_object.environment_id,
         kind=RevisionKind.CONTENT, revision_digest="0" * 64,
         revision_schema_version="source-revision:v1", revision_metadata_schema="revision-metadata:r1-document-v1",
-        revision_metadata=RevisionMetadata(embedded_title="  Title\r\n"), revision_metadata_digest="b" * 64,
+        revision_metadata=RevisionMetadata(embedded_title="  Title\r\n"),
+        revision_metadata_digest=canonical_revision_metadata_digest(RevisionMetadata(embedded_title="  Title\r\n")),
         original_reference=ObjectReference(schema_version=1, object_id=synthetic_uuid(102), storage_generation=synthetic_uuid(103), digest_algorithm="sha256", digest_hex="c" * 64, byte_length=4),
         original_sha256="c" * 64, byte_length=4, media_type="text/plain", observed_at=NOW,
     )
@@ -139,6 +141,25 @@ def test_language_profile_normalizes_lowercase_and_accepts_registered_forms() ->
     assert RevisionMetadata(document_language="i-klingon").document_language == "i-klingon"
 
 
+def test_pinned_profile_table_digests_are_independent_literals() -> None:
+    from spine.domain.sources.profile import BCP47_TABLE_DIGEST, UNICODE_TABLE_DIGEST
+
+    assert UNICODE_TABLE_DIGEST == "12f429d27cedef784dcda284ec37555ac092a05f4665b9fcd335ec36d05ebb8d"
+    assert BCP47_TABLE_DIGEST == "d03ad7c70a60b0d9dcbf80d805ae1308e690f378c93206e3a9af303261a531a6"
+
+
+def test_pinned_profile_normalizes_nfc_and_profile_whitespace() -> None:
+    assert RevisionMetadata(embedded_title="\u00a0Cafe\u0301\u2003").embedded_title == "Café"
+
+
+def test_source_observation_command_has_one_public_owner() -> None:
+    from spine.application.persistence import SourceObservationCommand as exported_command
+    import spine.domain.sources.canonicalization as canonicalization
+
+    assert exported_command is SourceObservationCommand
+    assert not hasattr(canonicalization, "SourceObservationCommand")
+
+
 def test_connector_identity_rejects_zero_connection_id() -> None:
     with pytest.raises(ValueError):
         SourceObject(
@@ -157,7 +178,7 @@ def test_revision_digest_excludes_observed_time() -> None:
 
 
 def test_revision_digest_matches_pinned_golden_vector() -> None:
-    assert revision_digest(valid_revision(source())) == "f4f27b1eadd4743c93f859c3f00106e444677629262d9e137f7c00bc2990afb3"
+    assert revision_digest(valid_revision(source())) == "57bf9852a3ba7b2fe6e4bbddaa009670fe888ca8612ffbdf1400caab08c2138e"
 
 
 def command(source_object: SourceObject, source_revision: SourceRevision, source_provenance: SourceRevisionProvenance, key: str) -> SourceObservationCommand:
@@ -167,6 +188,19 @@ def command(source_object: SourceObject, source_revision: SourceRevision, source
         provenance=source_provenance,
         idempotency_key=IdempotencyKey(key),
     )
+
+
+def test_observation_command_digest_changes_for_each_bearing_field() -> None:
+    source_object = source()
+    source_revision = valid_revision(source_object)
+    source_provenance = provenance(source_object, source_revision)
+    original = command(source_object, source_revision, source_provenance, "digest-fields")
+    variants = (
+        command(source_object.model_copy(update={"upload_identity": "other-upload"}), source_revision, source_provenance, "digest-fields"),
+        command(source_object, source_revision.model_copy(update={"revision_digest": "a" * 64}), source_provenance, "digest-fields"),
+        command(source_object, source_revision, source_provenance.model_copy(update={"event_identity": "other-event"}), "digest-fields"),
+    )
+    assert all(candidate.digest != original.digest for candidate in variants)
 
 
 @pytest.mark.asyncio
@@ -269,6 +303,14 @@ def test_revision_digest_mismatch_is_rejected() -> None:
     ):
         with pytest.raises(DomainRevisionDigestMismatchError):
             assert_revision_digest(valid.model_copy(update={field: value}))
+
+
+def test_revision_metadata_digest_mismatch_is_rejected_by_factory() -> None:
+    values = revision(source()).model_dump()
+    values.pop("revision_digest")
+    values["revision_metadata_digest"] = "a" * 64
+    with pytest.raises(DomainRevisionDigestMismatchError):
+        content_revision(**values)
 
 
 def test_tombstone_reason_and_forged_digest_are_rejected() -> None:

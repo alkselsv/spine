@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+import hashlib
+import json
 from datetime import datetime
 from enum import Enum
 from typing import Annotated, Literal
@@ -12,7 +14,7 @@ from pydantic import ConfigDict, Field, model_validator
 
 from spine.domain.common import DefinitionModel
 from .original_reference import ObjectReference
-from .profile import BCP47_TABLE_DIGEST, REVISION_METADATA_SCHEMA, REVISION_PROFILE, REVISION_SCHEMA, UNICODE_TABLE_DIGEST, normalize_language_tag
+from .profile import BCP47_TABLE_DIGEST, REVISION_METADATA_SCHEMA, REVISION_PROFILE, REVISION_SCHEMA, UNICODE_TABLE_DIGEST, UNICODE_WHITESPACE_CODEPOINTS, normalize_language_tag, normalize_nfc
 
 ALLOWED_TOMBSTONE_REASONS = frozenset(
     {"source_deleted", "provider_deleted", "legal_erasure", "retention_expired"}
@@ -148,6 +150,8 @@ class SourceRevision(DefinitionModel):
                 or self.original_reference.byte_length != self.byte_length
             ):
                 raise ValueError("original evidence does not match content identity")
+            if self.revision_metadata_digest != canonical_revision_metadata_digest(self.revision_metadata):
+                raise ValueError("revision metadata digest does not match metadata")
             media_type = _normalize_text(self.media_type).lower()
             if not _MEDIA_TYPE.fullmatch(media_type):
                 raise ValueError("media_type must be lowercase ASCII type/subtype")
@@ -210,15 +214,20 @@ class SourceRevisionProvenance(DefinitionModel):
 
 
 def _normalize_text(value: str) -> str:
-    import unicodedata
-
     # Unicode 15.1 White_Space is deliberately enumerated so this profile does
     # not inherit a host runtime's changing notion of whitespace.
-    whitespace = "\u0009\u000a\u000b\u000c\u000d\u0020\u0085\u00a0\u1680"
-    whitespace += "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
-    whitespace += "\u2028\u2029\u202f\u205f\u3000"
-    normalized = unicodedata.normalize("NFC", value.replace("\r\n", "\n").replace("\r", "\n"))
+    whitespace = "".join(chr(codepoint) for codepoint in UNICODE_WHITESPACE_CODEPOINTS)
+    normalized = normalize_nfc(value)
     return normalized.strip(whitespace)
+
+
+def canonical_revision_metadata_digest(metadata: RevisionMetadata) -> str:
+    payload = {
+        "document_language": metadata.document_language,
+        "embedded_title": metadata.embedded_title,
+    }
+    canonical = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def _nonzero(value: UUID, name: str) -> None:

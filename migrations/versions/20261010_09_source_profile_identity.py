@@ -24,13 +24,13 @@ def upgrade() -> None:
     op.add_column(
         "source_revisions", sa.Column(
             "unicode_table_digest", sa.Text(), nullable=False,
-            server_default=sa.text("'unicode15.1-whitespace-nfc-v1'"),
+            server_default=sa.text("'12f429d27cedef784dcda284ec37555ac092a05f4665b9fcd335ec36d05ebb8d'"),
         ), schema=SCHEMA,
     )
     op.add_column(
         "source_revisions", sa.Column(
             "bcp47_table_digest", sa.Text(), nullable=False,
-            server_default=sa.text("'bcp47-r1-2026-10'"),
+            server_default=sa.text("'d03ad7c70a60b0d9dcbf80d805ae1308e690f378c93206e3a9af303261a531a6'"),
         ), schema=SCHEMA,
     )
     op.alter_column("source_revisions", "canonicalization_profile", server_default=None, schema=SCHEMA)
@@ -38,7 +38,7 @@ def upgrade() -> None:
     op.alter_column("source_revisions", "bcp47_table_digest", server_default=None, schema=SCHEMA)
     op.create_check_constraint(
         "ck_source_revisions_canonical_profile", "source_revisions",
-        "canonicalization_profile = 'r1-c14n-2026-10' AND unicode_table_digest = 'unicode15.1-whitespace-nfc-v1' AND bcp47_table_digest = 'bcp47-r1-2026-10'",
+         "canonicalization_profile = 'r1-c14n-2026-10' AND unicode_table_digest = '12f429d27cedef784dcda284ec37555ac092a05f4665b9fcd335ec36d05ebb8d' AND bcp47_table_digest = 'd03ad7c70a60b0d9dcbf80d805ae1308e690f378c93206e3a9af303261a531a6'",
         schema=SCHEMA,
     )
     op.create_check_constraint(
