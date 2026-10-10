@@ -47,6 +47,43 @@ Auth failures несут стабильные machine-readable `category` и `re
 которые последующий Structured Error mapper переносит без разбора текста
 исключения.
 
-PostgreSQL records, OIDC/JWKS validation, trusted context issuance, HTTP mapping
-и document Access Policy входят в следующие тикеты спецификации #5 и не являются
-частью этого модуля.
+PostgreSQL records, trusted context issuance, HTTP mapping и document Access
+Policy входят в следующие тикеты спецификации #5 и не являются частью этого
+модуля.
+
+## Production OIDC adapter
+
+`spine.infrastructure.auth.OIDCAuthenticationRuntime` реализует production
+resource-server adapter поверх `AuthenticationPort`. Runtime владеет одним
+лениво используемым async HTTP client, discovery/JWKS cache и refresh lock.
+Composition root обязан вызвать `startup()` согласно `readiness_policy`, передать
+приложению только `runtime.authentication` и закрыть runtime через `aclose()` или
+async context manager.
+
+`OIDCAuthenticationSettings` неизменяемы и версионированы. Каждая запись
+`InteractiveClientQualification` является operator assertion для конкретного
+client ID, exact issuer, audience и configuration version: это user-facing
+client и client-credentials grant для Spine audience на стороне provider
+отключён. R1 принимает только явно квалифицированный `RS256`; расширение
+algorithm allowlist требует отдельной signed-token/JWK matrix. Readiness
+публикует только status, безопасный code, configuration version, issuer origin и
+freshness cache; client IDs, evidence references, keys и provider payload в него
+не попадают.
+
+Offline conformance harness расположен в `tests/infrastructure/auth/`: injected
+transport и clock проверяют discovery, JWKS, подписанные tokens, rotation,
+concurrent refresh, stale-key outage и leak corpus без внешнего provider.
+
+Перед production-включением остаётся обязательной отдельная live qualification
+точной deployment-конфигурации. Оператор должен подтвердить:
+
+- exact issuer metadata и same-origin HTTPS `jwks_uri` без redirects;
+- выпуск RFC 9068 `at+jwt` для exact Spine audience каждым разрешённым client;
+- невозможность получить client-credentials token для этой audience каждым из
+  этих clients;
+- реальную ротацию signing key, expiry/skew behavior и сетевые timeout/failure
+  режимы.
+
+Результат live qualification должен ссылаться на ту же
+`configuration_version`, что загружена в runtime. Ни один реальный issuer или
+client registration в рамках offline-реализации тикета #71 не проверялся.
