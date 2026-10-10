@@ -89,6 +89,18 @@ _FORBIDDEN_PAYLOAD_FIELD_TERMS = frozenset(
         "url",
     }
 )
+_ALWAYS_FORBIDDEN_STRING_FIELD_TERMS = frozenset(
+    {
+        "api_key",
+        "authorization",
+        "connection_string",
+        "cookie",
+        "credential",
+        "password",
+        "secret",
+        "token",
+    }
+)
 _SAFE_IDENTIFIER_FIELD_SUFFIXES = (
     "_code",
     "_id",
@@ -226,6 +238,10 @@ def _is_content_bearing_field_name(name: str, *, annotation: object) -> bool:
     if not _annotation_can_carry_free_text(annotation):
         return False
     normalized = name.lower()
+    if any(
+        term in normalized for term in _ALWAYS_FORBIDDEN_STRING_FIELD_TERMS
+    ):
+        return True
     if normalized.endswith(_SAFE_IDENTIFIER_FIELD_SUFFIXES):
         return False
     return any(term in normalized for term in _FORBIDDEN_PAYLOAD_FIELD_TERMS)

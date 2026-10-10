@@ -309,7 +309,16 @@ def test_registry_rejects_password_field_name() -> None:
 
 @pytest.mark.parametrize(
     "field_name",
-    ("api_key", "connection_string", "cookie", "authorization"),
+    (
+        "api_key",
+        "connection_string",
+        "cookie",
+        "authorization",
+        "authorization_code",
+        "api_key_code",
+        "credential_status",
+        "password_type",
+    ),
 )
 def test_registry_rejects_credential_shaped_field_names(field_name: str) -> None:
     payload_type = create_model(
