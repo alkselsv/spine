@@ -53,6 +53,18 @@ A deterministic workflow step bound directly to a versioned transformation or
 business rule rather than resolved through an Agent Binding.
 _Avoid_: Agent, code agent
 
+### Assurance and diagnostics
+
+**Audit Event**:
+An immutable, versioned record that a meaningful Spine command, decision,
+state transition, retry or feedback outcome occurred in a tenant scope.
+_Avoid_: Log line, trace span, mutable activity history
+
+**Diagnostic Event**:
+A disclosure-safe operational observation used to diagnose execution without
+becoming canonical evidence that a business action or decision occurred.
+_Avoid_: Audit Event, raw exception, provider payload
+
 ### Sources and projections
 
 **Context Graph**:

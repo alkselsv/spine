@@ -2130,6 +2130,9 @@ detectors без специальных обходов в platform core.
 - [ADR-019](adr/0019-grounded-answer-disclosure-contract.md): binary Grounded
   Answer disclosure, claim-level citations, abstention, completeness и current
   disclosure eligibility.
+- [ADR-020](adr/0020-canonical-audit-and-diagnostic-separation.md): canonical
+  append-only Audit Events, disclosure-safe Diagnostic Events и отдельное
+  operational state для at-least-once outbox delivery.
 - ADR-TBD: artifact schemas и handoff evaluation protocol.
 - ADR-012: business outcome attribution и cost accounting.
 - ADR-013: future third-party Agent SDK, package trust и certification после появления подтверждённого внешнего кейса.
