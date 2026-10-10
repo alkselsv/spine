@@ -491,6 +491,9 @@ The port translates provider failures into stable categories:
 - `UploadNotFound`: staged upload cannot be resumed or finalized.
 - `ReconciliationRequired`: durable evidence is contradictory or insufficient;
   ordinary retry, abort and finalize are blocked until trusted reconciliation.
+- `FenceActive`: a fence-controlled mutation cannot obtain an executable ticket
+  because the exclusive backup fence is active; the operation is safe to retry
+  after release with the same command identity.
 - `IntegrityMismatch`: observed bytes do not match expected digest/length.
 - `ObjectNotFound`: finalized object is absent.
 - `ObjectUnavailable`: temporary capacity, I/O or provider unavailability.
@@ -940,7 +943,7 @@ StorageRecoveryManifest
   recovery_set_id: opaque UUID
   fence_epoch: opaque monotonically ordered fencing token
   fence_state: requested | draining | quiescent | snapshotting | validating |
-    finalized | aborting | failed | released
+    releasing | released | release_degraded
   quiescent_barrier: not_reached | reached | invalidated
   postgres_boundary: durable recovery position or snapshot identity
   postgres_recovery_watermark: W | null
@@ -948,12 +951,12 @@ StorageRecoveryManifest
   postgres_component_state: absent | identified | durable | verified | failed
   object_component_state: absent | identified | durable | verified | failed
   profile: coordinated | best_effort
-  creation_state: preparing | incomplete | finalized | failed | invalidated
+  manifest_status: building | incomplete | failed | coherent |
+    invalidated_due_to_evidence_failure
   postgres_backup_identity: opaque backup identity | null
   drained_operation_count: non-negative integer
   orphaned_operation_count: non-negative integer
   indeterminate_operation_count: non-negative integer
-  final_status: coherent | incomplete | failed | null
   integrity_algorithm: sha256
   manifest_digest: lowercase hex
   scope: non-sensitive retention/scope identifier
@@ -968,18 +971,69 @@ storage authority. Its digest covers the normalized manifest fields and the
 recorded component identities. This is a coordination contract, not a claim
 that PostgreSQL and a filesystem can be atomically snapshotted together.
 
+The operational coordination records are conceptually:
+
+```text
+BackupFenceLease
+  deployment_scope_id: trusted single-deployment scope
+  active_fence_epoch: monotonically ordered token | null
+  state: inactive | requested | draining | quiescent | snapshotting |
+    validating | releasing | released | release_degraded
+  cutoff_ticket_sequence: durable sequence | null
+  lease_owner: opaque coordinator identity | null
+  lease_expires_at: server timestamp | null
+```
+
+```text
+FenceOperationTicket
+  ticket_id: opaque UUID
+  deployment_scope_id: trusted scope
+  ticket_sequence: durable monotonically ordered sequence
+  fence_epoch: token observed at admission
+  operation_kind: finalization | association | reference_generation_mutation |
+    deletion_cleanup | repair_reassociation | retention_mutation
+  target_reference: sanitized opaque target/result reference
+  admitted_at: server timestamp
+  state: admitted | executing | terminal_succeeded | terminal_failed |
+    reconciled_orphan | indeterminate | cancelled_before_irreversible_boundary
+  terminal_at: server timestamp | null
+  safe_failure_category: typed category | null
+  correlation_id: approved non-sensitive identifier | null
+```
+
+`BackupFenceLease` and `FenceOperationTicket` are durable coordination records
+owned by the Issue #18 operational subsystem and persisted through the Issue #8
+PostgreSQL Unit of Work boundary. They contain no bytes, physical paths,
+credentials, filenames or sensitive provider errors. They are not
+SourceRevision state, admission/publication authority, storage receipt
+authority, transactional-outbox replacements or source lifecycle sequences.
+Issue #6 defines which storage mutations require tickets and how their outcomes
+affect storage consistency; Issue #18 owns coordination; Issue #8 supplies
+persistence mechanics; Issue #7 remains owner of canonical source/revision
+associations.
+
+The coordinator restart/recovery query reads every durable
+`FenceOperationTicket` in the deployment scope whose `ticket_sequence` is at or
+below the retained cutoff. Manifest counts are only sanitized summaries of
+those records. Ticket evidence needed by a retained manifest cannot be deleted
+by ticket cleanup or retention; the manifest preserves the `fence_epoch` and
+`cutoff_ticket_sequence` needed to locate that evidence. Missing ticket
+evidence, an unknown status, or an indeterminate ticket prevents quiescence.
+This persistence requirement does not make the tickets a source-lifecycle
+store.
+
 ### Profile A: approved coordinated recovery point
 
-Profile A is the only profile allowed to use `creation_state: finalized` with
+Profile A is the only profile allowed to use `manifest_status: coherent` with
 `profile: coordinated` and call the manifest a coherent recovery point. One
-trusted backup coordinator owns the fence for this single deployment. It
-creates a fresh opaque `fence_epoch` that is strictly greater than every prior
-epoch. The epoch is coordination metadata, not a SourceRevision or source
-lifecycle sequence. If the approved PostgreSQL implementation has a durable
-monotonic transaction/outbox mutation sequence, the coordinator reuses it for
-`W`; otherwise the operational implementation must provide an equivalent
-durable monotonic recovery position without creating a competing canonical
-lifecycle authority.
+trusted backup coordinator owns the durable `BackupFenceLease` for this single
+deployment. It creates a fresh opaque `fence_epoch` that is strictly greater
+than every prior epoch. The epoch is coordination metadata, not a
+SourceRevision or source lifecycle sequence. If the approved PostgreSQL
+implementation has a durable monotonic transaction/outbox mutation sequence,
+the coordinator reuses it for `W`; otherwise the operational implementation
+must provide an equivalent durable monotonic recovery position without
+creating a competing canonical lifecycle authority.
 
 The fence controls physical finalization/publication, PostgreSQL
 receipt/reference association, storage-generation/reference metadata mutation,
@@ -993,43 +1047,67 @@ not change that set may continue only when the selected PostgreSQL backup
 mechanism includes it consistently at `W`; storage never gains lifecycle
 authority from this exception.
 
-Every fence-controlled mutation obtains a trusted operation ticket before its
-first irreversible boundary. A ticket admitted before exclusive fence
-activation is pre-fence. It must reach a proven terminal storage/PostgreSQL
-state or a proven reconciled orphan/failed state before quiescence. No new
-ticket is admitted while the fence is active; an attempted operation is
-post-fence and remains blocked or rejected until release. A missing or
-unprovable ticket/terminal state is indeterminate and prevents quiescence.
+Ticket admission and exclusive fence activation use one serialized PostgreSQL
+coordination boundary through the Issue #8 Unit of Work. Every
+fence-controlled mutation first enters a transaction that serializes on the
+single active deployment/scope `BackupFenceLease` using a repository-approved
+row lock, serializable operation or equivalent. If no exclusive fence is
+active, that transaction allocates the next durable `ticket_sequence`, inserts
+the `FenceOperationTicket` bound to the current epoch and operation kind, and
+commits the ticket before the mutation crosses its first irreversible boundary.
+If an exclusive fence is active, it issues no ticket and returns a typed
+fenced/retry-later outcome; physical finalization, association, deletion,
+cleanup, repair and reassociation cannot begin.
 
-The observable ticket has the conceptual shape
-`FenceOperationTicket(ticket_id, fence_epoch, operation_kind, admitted_at,
-scope, status)`. `operation_kind` distinguishes finalization, association,
-reference/generation mutation, deletion/cleanup, repair/reassociation and
-retention-status mutation; `status` is `admitted | completed | rolled_back |
-orphaned | failed | indeterminate`. The ticket contains identifiers and safe
-diagnostics only, never bytes, paths or credentials. Every adapter and
-PostgreSQL participant checks the current epoch before committing a
-fence-controlled mutation.
+Fence activation enters the same serialized boundary. It allocates a strictly
+newer `fence_epoch`, sets the lease to `draining`, records
+`cutoff_ticket_sequence` as the greatest sequence admitted before activation,
+and commits those changes atomically. After that commit no ticket with a
+sequence greater than the cutoff can be admitted while the fence remains
+active. A ticket with sequence at or below the cutoff and admitted before
+activation is pre-fence; an attempted mutation after activation is post-fence
+and receives no executable ticket. There is no gap in which a ticket can be
+admitted unnoticed because admission, activation and cutoff capture share the
+same serialized boundary.
 
-After all pre-fence tickets are drained or classified, the coordinator records
-durable PostgreSQL recovery watermark `W`: the exact recovery position or
-monotonic mutation sequence containing every completed pre-fence
-receipt/reference mutation and excluding every post-fence mutation. The
-quiescent barrier is observable only when no pre-fence ticket is in flight, no
-indeterminate operation exists, and the coordinator has recorded `W`.
+Ticket state transitions are durable updates to the same ticket:
+`admitted → executing → terminal_succeeded | terminal_failed |
+reconciled_orphan | indeterminate`, with
+`cancelled_before_irreversible_boundary` allowed from `admitted`. Crash does
+not erase a ticket. Every participant checks the current epoch before
+committing a fence-controlled mutation. Manifest counts are derived summaries,
+never proof replacing individual ticket evidence.
+
+Quiescence is another operation through the same serialized boundary. The
+coordinator locks/serializes on the current lease, verifies every durable
+pre-fence ticket through the cutoff has a proven terminal/classified state,
+verifies that no indeterminate pre-fence ticket remains and that no newer
+executable ticket exists, captures durable PostgreSQL recovery watermark `W`,
+and persists `quiescent`, the cutoff and `W` atomically. Only after that commit
+may component snapshots begin. `W` is the exact recovery position or monotonic
+mutation sequence containing every completed pre-fence receipt/reference
+mutation and excluding every post-fence mutation. A mere count outside this
+boundary is insufficient.
 
 The object snapshot selected for `W` must contain every retained finalized
 object referenced at `W`, must not depend on post-fence finalizations, and may
 contain an additional unassociated object only as a reconcilable orphan. A
 receipt/reference visible at `W` whose verified object is absent from the object
 snapshot invalidates Profile A; it cannot be silently downgraded to coherent.
+Conversely, an extra finalized object without a PostgreSQL receipt/reference at
+`W` does not invalidate Profile A by itself. It is an inaccessible orphan
+candidate, is reported in sanitized manifest/reconciliation evidence, cannot
+shadow or redirect a referenced object, and is subject to approved cleanup only.
+No Workspace, SourceObject or SourceRevision provenance may be guessed.
 
-The fence state machine is:
+The live fence state machine is:
 
-`requested → draining → quiescent → snapshotting → validating → finalized → released`.
+`requested → draining → quiescent → snapshotting → validating → releasing → released`.
 
 Any timeout, cancellation or component failure transitions through
-`aborting → failed → released`; no failed attempt may enter `finalized`.
+`releasing → release_degraded` or a safe `released` state; no failed attempt
+may enter `manifest_status: coherent`. The manifest status is independent:
+`building → incomplete | failed | coherent | invalidated_due_to_evidence_failure`.
 The coordinator has a bounded lease. Takeover after expiry requires a strictly
 newer `fence_epoch`; stale holders and stale tickets are rejected. A takeover
 either safely resumes the same attempt under the new owner or marks it failed
@@ -1044,7 +1122,9 @@ At `draining`, the coordinator handles crossing operations as follows:
    result prevents Profile A.
 3. An object finalized without a committed PostgreSQL association is either
    associated under its pre-fence ticket or classified as an orphan. It may be
-   in the object snapshot, but `W` must not claim an absent association.
+   in the object snapshot, but `W` must not claim an absent association. This
+   safe extra orphan does not invalidate Profile A coherence and remains
+   inaccessible.
 4. A receipt/reference transaction begun before the fence may commit or roll
    back during drain; `W` is recorded only afterward.
 5. Physical deletion and finalized-object cleanup begun before the fence must
@@ -1057,41 +1137,60 @@ At `draining`, the coordinator handles crossing operations as follows:
 
 The success protocol is:
 
-1. Create the lease-backed `fence_epoch` and enter `requested`/`draining`.
-2. Stop new fence-controlled tickets and drain/classify all pre-fence tickets.
-3. Persist the durable PostgreSQL watermark `W` and mark the quiescent barrier.
+1. In the serialized PostgreSQL coordination transaction, create the durable
+   lease-backed `fence_epoch`, set `draining` and commit the cutoff sequence.
+2. Drain/classify every durable pre-fence ticket through the cutoff; no ticket
+   admission can race this activation or quiescence transaction.
+3. Through the same serialized boundary, verify the ticket set, persist the
+   durable PostgreSQL watermark `W` and atomically mark the barrier `quiescent`.
 4. Enter `snapshotting`; create the object-volume snapshot and PostgreSQL
    backup identities corresponding to `W`.
 5. Enter `validating`; verify both component identities are durable and verify
    every receipt/object at `W`, including retained-byte presence and digest.
 6. Persist and integrity-protect the manifest with drained/orphaned counts,
    zero indeterminate operations and both component identities.
-7. Mark `finalized/coherent`, then release the fence through the guaranteed
-   release path. Restore remains isolated and non-ready until reconciliation.
+7. Atomically persist `manifest_status: coherent` only after all evidence is
+   durable, then enter `releasing`. Release changes live fence state only;
+   restore remains isolated and non-ready until reconciliation.
 
 This is a coordination fence, not an unsupported distributed transaction. The
 exact PostgreSQL backup product, volume snapshot primitive, lease timeout and
 RPO/RTO remain approval-gated.
 
+Once `manifest_status: coherent` is durably persisted, the manifest is
+immutable recovery evidence. A coordinator crash before live fence release
+does not make it incomplete or failed. A newer coordinator obtains a newer
+`fence_epoch`, reads and verifies the coherent manifest, does not repeat
+snapshot creation or mutate the manifest, and completes safe live-fence
+release. If release cannot complete, it sets only live `fence_state:
+release_degraded`, keeps fenced mutations blocked and alerts operations. The
+coherent recovery point remains available for isolated restore validation.
+Only durable evidence that the persisted recovery evidence was wrong or
+corrupted may set `manifest_status:
+invalidated_due_to_evidence_failure`, including component identity mismatch,
+manifest integrity failure, a verified referenced object absent/corrupt at the
+recorded boundary, or a PostgreSQL recovery position mismatch. Release failure
+alone is never evidence invalidation.
+
 The fence failure/recovery matrix is:
 
 | Failure/event | Manifest state | Fence state | Automatic release | Resume/operator action | Restored readiness |
 | --- | --- | --- | --- | --- | --- |
-| Timeout while draining | `incomplete` | `aborting` → `failed` | Yes, through the lease/release path | Inspect tickets; takeover may start a new attempt, but no failed attempt is reused as coherent | Not allowed from this attempt |
-| Coordinator crash in `requested`/`draining` | `incomplete` | Lease expires; stale holder rejected | Takeover or release after bounded lease | Inspect last ticket/watermark state; resume safely or fail and release | Not allowed |
+| Timeout while draining | `incomplete` | `releasing` → `release_degraded` or `released` | Yes, through the lease/release path | Inspect durable tickets; takeover may start a new attempt, but no failed attempt is reused as coherent | Not allowed from this attempt |
+| Coordinator crash in `requested`/`draining` | `incomplete` | Lease expires; stale holder rejected | Takeover or release after bounded lease | Inspect durable ticket/watermark state; resume safely or fail and release | Not allowed |
 | Coordinator crash in `quiescent` | `incomplete` | Lease expires; barrier is not reusable without revalidation | Takeover must revalidate all tickets and `W`, or fail/release | Re-establish quiescence or start a new attempt | Not allowed |
-| Coordinator crash in `finalized` before release | `finalized` with `coherent` status only if all evidence was persisted | Lease expires; release is still required | Newer coordinator verifies manifest, then releases or invalidates it | Restore remains isolated until validation; no second coordinator may snapshot concurrently |
-| Coordinator crash in `snapshotting`/`validating` | `incomplete` | `aborting` → `failed` | Yes after stale-owner fencing | Treat partial snapshots as non-authoritative; operator may create a separate Profile B | Not allowed until isolated restore validation |
-| PostgreSQL backup failure | `failed`, no coherent final status | `aborting` → `released` | Yes | Preserve sanitized evidence; retry as a new attempt | Existing live service policy applies; this attempt cannot satisfy recovery readiness |
-| Object snapshot failure | `failed`, no coherent final status | `aborting` → `released` | Yes | Preserve component identities; retry as a new attempt or explicit Profile B | Not allowed from this attempt |
-| Manifest persistence/integrity failure | `failed` | `aborting` → `released` | Yes | Do not advertise either component set as coherent; operator may discard or separately classify artifacts | Not allowed |
-| Verification failure after snapshots | `failed` | `aborting` → `released` | Yes | Receipt/object mismatch is degraded and fail-closed; repair or operator decision required | Affected objects unavailable; no coherent readiness |
-| Failure to release fence | `failed` | `failed` until takeover/release | Lease expiry enables only a newer token to take over; never silently clear it | Operator inspects stale holder and either completes release or marks attempt failed | Live service policy applies, but fenced mutations remain blocked until safe release |
+| Coordinator crash after coherent persistence before release | `coherent` and immutable | `releasing` or `release_degraded` | Newer coordinator verifies manifest and completes release; it never invalidates coherent evidence | Do not repeat snapshots; keep mutations blocked until release | Coherent manifest remains available for isolated validation |
+| Coordinator crash in `snapshotting`/`validating` | `incomplete` | `releasing` → `release_degraded` or `released` | Yes after stale-owner fencing | Treat partial snapshots as non-authoritative; operator may create a separate Profile B | Not allowed until isolated restore validation |
+| PostgreSQL backup failure | `failed`, no coherent status | `releasing` → `released` or `release_degraded` | Yes when safe | Preserve sanitized evidence; retry as a new attempt | Existing live service policy applies; this attempt cannot satisfy recovery readiness |
+| Object snapshot failure | `failed`, no coherent status | `releasing` → `released` or `release_degraded` | Yes when safe | Preserve component identities; retry as a new attempt or explicit Profile B | Not allowed from this attempt |
+| Manifest persistence/integrity failure | `failed` | `releasing` → `released` or `release_degraded` | Yes when safe | Do not advertise either component set as coherent; operator may discard or separately classify artifacts | Not allowed |
+| Verification failure after snapshots | `failed` or evidence-invalidated | `releasing` → `released` or `release_degraded` | Yes when safe | Receipt/object mismatch is degraded and fail-closed; repair or operator decision required | Affected objects unavailable; no coherent readiness |
+| Failure to release fence | `coherent` if coherence was already persisted, otherwise `failed` | `release_degraded` | Only via newer valid coordinator/lease takeover | Inspect stale holder; keep mutations blocked; complete release without mutating coherent manifest | Coherent manifest remains usable only for isolated validation |
 | Stale coordinator replay | No new manifest effect | Current fence unchanged | Not applicable | Reject by older `fence_epoch`; inspect diagnostics | Unchanged |
-| Cleanup/deletion indeterminate at barrier | `incomplete` | `draining` or `aborting` | Only after proven terminal result or lease takeover | No Profile A; retain bytes and require reconciliation/operator decision | Not allowed |
-| Receipt visible at `W`, object absent from snapshot | `failed` | `aborting` → `released` | Yes | Invalidate Profile A; restore/repair or classify separately | Affected receipt unavailable; no coherent readiness |
-| Object present without receipt at `W` | `incomplete` if otherwise valid | `validating` | Yes after validation | Keep as orphan candidate; never infer provenance; operator may create Profile B explicitly | Not readable until reconciled |
-| Operator cancellation | `failed` or `invalidated` | `aborting` → `released` | Yes | Treat all partial artifacts as non-authoritative; start a new attempt if needed | Not allowed from cancelled attempt |
+| Cleanup/deletion indeterminate at barrier | `incomplete` | `draining` or `releasing` | Only after proven terminal result or lease takeover | No Profile A; retain bytes and require reconciliation/operator decision | Not allowed |
+| Receipt visible at `W`, object absent from snapshot | `invalidated_due_to_evidence_failure` | `releasing` → `released` or `release_degraded` | Yes when safe | Invalidate Profile A; restore/repair or classify separately | Affected receipt unavailable; no coherent readiness |
+| Object present without receipt at `W` | `coherent` with orphan warning if all receipts at `W` have verified objects | `validating` → `releasing` | Yes after validation | Keep inaccessible as orphan candidate; never infer provenance; report sanitized warning and use approved cleanup | Not readable; coherent manifest may still be used for isolated validation |
+| Operator cancellation | `failed` or `invalidated_due_to_evidence_failure` | `releasing` → `released` or `release_degraded` | Yes when safe | Treat all partial artifacts as non-authoritative; start a new attempt if needed | Not allowed from cancelled attempt |
 
 The live service is not made globally unready solely because a backup attempt
 failed unless Issue #18/operations policy requires it. The failed attempt never
@@ -1104,7 +1203,7 @@ every fence-controlled operation checks the current `fence_epoch`.
 ### Profile B: best-effort recovery set
 
 If Profile A cannot be established, an explicit operator action may create a
-separate `profile: best_effort` manifest with `creation_state: incomplete`.
+separate `profile: best_effort` manifest with `manifest_status: incomplete`.
 It records independent component generations, start/end watermarks, fence
 attempt evidence and the possible data-loss or reprocessing window. It is never
 called a coherent recovery point and a failed Profile A attempt is never
@@ -1120,7 +1219,7 @@ deletion in progress are classified by ticket and recorded watermark. Restore
 preserves ADR 0018 observation, disposition and acceptance semantics and never
 guesses SourceRevision provenance.
 
-The approved backup coordinator must store and protect a finalized manifest
+The approved backup coordinator must store and protect a coherent manifest
 under the approved backup system, restore the components according to the
 manifest into an isolated context, reconcile receipts, SourceRevision
 observations, admission dispositions, currentness and physical objects, verify
@@ -1190,10 +1289,11 @@ order, SQLAlchemy mappings, directory names or provider SDK behavior.
    storage adapter an ACL or policy owner.
 6. **Operational/backup seam.** A restore fixture validates receipt/object
    consistency against a `StorageRecoveryManifest`, Profile A fence/watermark
-   evidence, Profile B best-effort classification, recovery-boundary/generation
-   matching, checksum verification, missing-object degradation and readiness
-   gating. Retention and physical deletion tests verify approval and idempotency,
-   but do not assert an unapproved retention duration.
+   evidence, serialized ticket/fence admission, quiescence at `W`, recovery-
+   boundary/generation matching, checksum verification, missing-object
+   degradation and readiness gating. Retention and physical deletion tests
+   verify approval and idempotency, but do not assert an unapproved retention
+   duration.
 
 Required scenarios include oversized input, unsafe filename, path traversal,
 client MIME spoofing, timeout, bounded memory/backpressure, checksum mismatch,
@@ -1206,8 +1306,9 @@ publication-step crashes, uploads without an expected checksum, same-key
 different-byte retries, pre/post-finalization retries, observed-hash crash
    windows, one-shot grant replay/revocation/substitution and Profile A/Profile B
    manifest-based backup/restore. Tests classify operations that cross the
-   backup fence and keep readiness closed for Profile B or an unverified
-   Profile A restore.
+   backup fence, race ticket admission against activation/quiescence, recover
+   durable tickets after coordinator restart and keep readiness closed for
+   Profile B or an unverified Profile A restore.
 
 Repository gates remain:
 
@@ -1292,6 +1393,10 @@ tests must continue to prove the domain/application framework boundary.
 67. As a recovery operator, I want Profile A and Profile B distinguished by fence/watermark evidence, so that a best-effort backup cannot be mistaken for a coherent recovery point.
 68. As a recovery operator, I want fence-controlled operations ticketed and drained, so that every mutation is observably classified before watermark `W`.
 69. As an upload operator, I want contradictory crash evidence to enter reconciliation-required state, so that ordinary retries cannot resume or overwrite ambiguous bytes.
+70. As a backup coordinator, I want ticket admission, fence activation and quiescence serialized through PostgreSQL, so that no mutation crosses an unobserved cutoff.
+71. As a recovery operator, I want durable operation tickets queryable after restart, so that manifest counts never replace barrier evidence.
+72. As a backup operator, I want safe extra finalized orphans reported but inaccessible, so that they do not invalidate a coherent recovery point or gain guessed provenance.
+73. As an operations owner, I want live fence release state separate from immutable manifest status, so that release failure cannot rewrite a coherent recovery point.
 
 ## Numbered Acceptance Criteria
 
@@ -1303,8 +1408,9 @@ tests must continue to prove the domain/application framework boundary.
    `OriginalUploadCommandPayload`, `PreWriteRequestDigest`,
    `ObservedContentIdentity`, `ValidatedContentEvidence`, `WriteReceipt`,
    `UploadCommandState`, `IntegrityResult`,
-   `AuthorizedOriginalReadGrant`, `StorageRecoveryManifest` and adapter-neutral
-   error categories.
+   `AuthorizedOriginalReadGrant`, `StorageRecoveryManifest`, conceptual
+   `BackupFenceLease` and `FenceOperationTicket`, and adapter-neutral error
+   categories including fenced/retry-later behavior.
 3. Object references contain no physical path, bucket, provider credential,
    signed URL or private byte content.
 4. SHA-256 and byte length are computed from streamed bytes and verified before
@@ -1410,12 +1516,27 @@ tests must continue to prove the domain/application framework boundary.
     readiness without reconciliation and approval.
 32. `StorageRecoveryManifest` records the fence epoch, barrier/fence state,
     watermark, component identities and completion states, drained/orphaned/
-    indeterminate counts and final coherent/incomplete/failed status without
+    indeterminate counts and independent `manifest_status`/`fence_state` without
     private data.
 33. `UploadCommandState.reconciliation_required` is blocked and inaccessible;
     only trusted reconciliation may transition it to `interrupted`, `finalized`,
     `integrity_conflict` or `aborted`, while ordinary retry cannot create,
     resume, abort, finalize or overwrite an ambiguous upload.
+34. Operation-ticket admission, exclusive fence activation and quiescence use
+    one serialized durable PostgreSQL coordination boundary; cutoff capture
+    cannot miss a ticket, and post-fence admission receives no executable
+    ticket.
+35. `FenceOperationTicket` records durable sequence, epoch, operation kind,
+    target/result reference and terminal/classification state; coordinator
+    restart queries every ticket through the cutoff, and missing or indeterminate
+    evidence prevents quiescence.
+36. A safe extra finalized object without a receipt/reference at `W` remains an
+    inaccessible reported orphan and does not invalidate Profile A when every
+    canonical reference at `W` has one verified object; a receipt at `W` without
+    its object always invalidates coherence.
+37. `manifest_status: coherent` is immutable after durable evidence persistence;
+    live `fence_state: release_degraded` may block mutations but cannot
+    invalidate or rewrite the coherent manifest without evidence corruption.
 
 ## Suggested Implementation Slices
 
