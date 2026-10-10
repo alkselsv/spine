@@ -12,6 +12,7 @@ from spine.agents.runtime.contracts import (
     invocation_context_from_invocation,
     typed_request_from_invocation,
 )
+from spine.agents.runtime.adapters import adapt_async_function
 from spine.agents.runtime.ports import (
     AuthorizationContextView,
     CancellationToken,
@@ -35,6 +36,7 @@ __all__ = [
     "TrustedExecutionIdentity",
     "TrustedExecutionIdentitySnapshot",
     "agent_result_from_response",
+    "adapt_async_function",
     "invocation_context_from_invocation",
     "typed_request_from_invocation",
 ]
