@@ -1,4 +1,4 @@
-"""Framework-independent diagnostic context and structured error contracts."""
+"""Framework-independent diagnostic, audit, and structured-error contracts."""
 
 from spine.application.diagnostics.audit import (
     AccessDecisionAuditPayload,
@@ -27,6 +27,24 @@ from spine.application.diagnostics.errors import (
     StructuredErrorRegistry,
     build_default_error_registry,
 )
+from spine.application.diagnostics.events import (
+    DIAGNOSTIC_IDENTIFIER_PATTERN,
+    DiagnosticContextMismatchError,
+    DiagnosticEvent,
+    DiagnosticEventRegistry,
+    DiagnosticFailureCode,
+    DiagnosticFieldKind,
+    DiagnosticIdentifier,
+    DiagnosticObjectReference,
+    DiagnosticSeverity,
+    DiagnosticSink,
+    FailureDiagnosticPayload,
+    OutboxDeliveryDiagnosticPayload,
+    OutboxDeliveryDiagnosticState,
+    UnsupportedDiagnosticEventError,
+    emit_diagnostic_safely,
+    validate_diagnostic_event_for_context,
+)
 
 __all__ = [
     "AccessDecisionAuditPayload",
@@ -40,17 +58,33 @@ __all__ = [
     "CanonicalTransitionAuditPayload",
     "CommandAuditPayload",
     "DiagnosticContext",
+    "DiagnosticContextMismatchError",
+    "DiagnosticEvent",
+    "DiagnosticEventRegistry",
+    "DiagnosticFailureCode",
+    "DiagnosticFieldKind",
+    "DiagnosticIdentifier",
+    "DiagnosticObjectReference",
+    "DiagnosticSeverity",
+    "DiagnosticSink",
+    "DIAGNOSTIC_IDENTIFIER_PATTERN",
     "DuplicateErrorCodeError",
     "DuplicateExceptionMappingError",
     "ErrorMapping",
     "ErrorRegistryConfigurationError",
     "IdentifierSource",
     "FeedbackAuditPayload",
+    "FailureDiagnosticPayload",
     "OutboxDeliveryAuditPayload",
+    "OutboxDeliveryDiagnosticPayload",
+    "OutboxDeliveryDiagnosticState",
     "Retryability",
     "RequiredAuditCoordinator",
     "StructuredError",
     "StructuredErrorRegistry",
     "UnsupportedAuditEventError",
+    "UnsupportedDiagnosticEventError",
+    "emit_diagnostic_safely",
+    "validate_diagnostic_event_for_context",
     "build_default_error_registry",
 ]

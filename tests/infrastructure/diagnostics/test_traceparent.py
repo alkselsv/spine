@@ -5,6 +5,7 @@ from uuid import UUID
 
 import pytest
 
+import spine.infrastructure.diagnostics as diagnostics
 from spine.infrastructure.diagnostics.traceparent import (
     InvalidTraceParentError,
     TraceParent,
@@ -17,6 +18,18 @@ from ...contracts.diagnostics.fixtures import deterministic_id_source, synthetic
 
 
 VALID_TRACEPARENT = "00-00000000000000000000000000000001-0000000000000002-01"
+
+
+def test_diagnostics_package_exports_trace_and_sink_adapters() -> None:
+    assert set(diagnostics.__all__) == {
+        "InvalidTraceParentError",
+        "JsonLoggingDiagnosticSink",
+        "RecordingDiagnosticSink",
+        "TraceParent",
+        "context_from_traceparent",
+        "format_traceparent",
+        "parse_traceparent",
+    }
 
 
 def test_valid_traceparent_continues_trace_identity_and_formats_canonically() -> None:

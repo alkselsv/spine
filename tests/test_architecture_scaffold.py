@@ -12,8 +12,22 @@ from spine.domain.workflows import StepDefinition, StepKind, WorkflowVersion
 
 
 class ArchitectureScaffoldTests(unittest.TestCase):
-    def assert_no_framework_imports(self, root: Path) -> None:
-        forbidden = {"alembic", "cognee", "fastapi", "psycopg", "sqlalchemy", "temporalio"}
+    def assert_no_framework_imports(
+        self,
+        root: Path,
+        *,
+        additional_forbidden: set[str] | None = None,
+    ) -> None:
+        forbidden = {
+            "alembic",
+            "cognee",
+            "fastapi",
+            "psycopg",
+            "sqlalchemy",
+            "temporalio",
+        }
+        if additional_forbidden is not None:
+            forbidden.update(additional_forbidden)
 
         for path in root.rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -72,7 +86,10 @@ class ArchitectureScaffoldTests(unittest.TestCase):
         diagnostics_root = (
             Path(__file__).parents[1] / "src" / "spine" / "application" / "diagnostics"
         )
-        self.assert_no_framework_imports(diagnostics_root)
+        self.assert_no_framework_imports(
+            diagnostics_root,
+            additional_forbidden={"langfuse", "logging", "opentelemetry"},
+        )
 
     def test_infrastructure_diagnostics_adapters_have_no_framework_imports(self) -> None:
         adapters_root = (
