@@ -19,10 +19,10 @@ PostgreSQL и не меняет legacy endpoints.
   Canonical Human Identity, tenant scope, роли и authorization generation.
 - `AuthorizedRequestContext[DiagnosticContextT]` резервирует один типизированный
   slot для канонического Diagnostic Context из отдельного diagnostics seam.
-  Это sealed read-only shape без публичной реализации: caller не может создать
-  или подменить экземпляр. Trusted implementation, provenance, issuance,
-  verification, lifecycle и mapping в `TrustedPersistenceContext` принадлежат
-  composition ticket #72.
+  Это sealed read-only shape без публичного конструктора, issuer или verifier:
+  caller не может создать или подменить экземпляр. Trusted implementation,
+  provenance, issuance, verification, lifecycle и mapping в
+  `TrustedPersistenceContext` принадлежат infrastructure composition root.
 
 `AuthenticationPort.authenticate` и
 `AuthorizationDirectory.resolve_request_authority` — purpose-specific ports.
@@ -47,9 +47,50 @@ Auth failures несут стабильные machine-readable `category` и `re
 которые последующий Structured Error mapper переносит без разбора текста
 исключения.
 
-PostgreSQL records, trusted context issuance, HTTP mapping и document Access
-Policy входят в следующие тикеты спецификации #5 и не являются частью этого
-модуля.
+HTTP mapping, local development mode и document Access Policy входят в
+следующие тикеты спецификации #5 и не являются частью этого модуля.
+
+## Trusted request composition
+
+`RequestAuthorizationComposer` связывает route ID с policy из
+`RoutePolicyRegistry` до появления request-controlled данных. Полученный
+`BoundRouteAuthorization` принимает только opaque credential, Workspace /
+Environment selector и существующий `DiagnosticContext`; purpose, operation,
+service principal и context issuer в request API отсутствуют.
+
+Внутри одного async request lifecycle composition выполняет следующую
+последовательность:
+
+1. аутентифицирует detached credential через `AuthenticationPort`;
+2. получает ровно один current snapshot из `AuthorizationDirectory`;
+3. сверяет scope, role и authentication configuration version с теми же
+   detached входами и bound route policy;
+4. фиксирует actor, scope, roles, authorization generation, configuration
+   version, purpose, operation, optional service principal и Diagnostic Context
+   в одном подписанном immutable snapshot;
+5. отображает этот snapshot в `TrustedPersistenceContext` через существующий
+   `TrustedContextBoundary`;
+6. коммитит registry-valid `access.decision` allow Audit Event и только после
+   этого возвращает `AuthorizedRequest` application handler-у.
+
+`TrustedRequestContextBoundary` устанавливается как verifier общей persistence
+Unit of Work. Для interactive context он дополнительно проверяет object identity,
+подпись request snapshot, exact field parity, owning `asyncio.Task` и незакрытый
+request lifecycle. Поэтому копия/подмена context, foreign issuer, перенос в
+другую task и повторное использование после выхода из `async with` отвергаются
+до открытия repository. Worker context по-прежнему проверяется исходным
+`TrustedContextBoundary` и не получает interactive authority.
+
+Authentication/authorization failure до появления доверенных canonical actor и
+tenant создаёт только unscoped `failure.observed` Diagnostic Event. Если actor и
+scope уже установлены, но detached resolution не совпал с authentication
+configuration provenance, отказ фиксируется tenant-scoped Audit Event. Поломка
+обязательного allow audit не выдаёт context; поломка deny audit не превращает
+отказ в разрешение. Request composition использует `access.decision` schema v2:
+payload содержит только purpose, operation, authorization generation и
+authentication configuration version. Совместимая schema v1 остаётся
+зарегистрированной для существующих producers; issuer, subject, credential,
+request body и protected target в события не попадают.
 
 ## Production OIDC adapter
 

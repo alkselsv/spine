@@ -5,10 +5,31 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from enum import Enum
-from typing import Any
+import re
+from typing import Annotated, Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+
+
+VERSION_IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+_VERSION_IDENTIFIER = re.compile(VERSION_IDENTIFIER_PATTERN)
+VersionIdentifier = Annotated[
+    str,
+    StringConstraints(
+        min_length=1,
+        max_length=128,
+        pattern=VERSION_IDENTIFIER_PATTERN,
+    ),
+]
+
+
+def require_version_identifier(value: str, *, field_name: str) -> str:
+    """Validate the shared bounded identifier used for immutable versions."""
+
+    if _VERSION_IDENTIFIER.fullmatch(value) is None:
+        raise ValueError(f"{field_name} must be a bounded version identifier")
+    return value
 
 
 class FrozenDict(dict[str, Any]):

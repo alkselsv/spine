@@ -23,6 +23,7 @@ from spine.application.diagnostics.audit import (
     CommandAuditPayload,
     FeedbackAuditPayload,
     OutboxDeliveryAuditPayload,
+    RequestAccessDecisionAuditPayload,
     UnsupportedAuditEventError,
 )
 from spine.application.persistence.context import ContextOrigin
@@ -214,6 +215,55 @@ def test_default_registry_supports_each_required_event_family(
     )
 
     assert type(event.payload) is type(payload)
+
+
+def test_request_access_decision_uses_new_schema_without_changing_v1() -> None:
+    registry = AuditEventRegistry.with_default_families()
+    version_two = registry.build_event(
+        workspace_id=synthetic_uuid(20),
+        environment_id=synthetic_uuid(21),
+        event_type="access.decision",
+        schema_version=2,
+        payload=RequestAccessDecisionAuditPayload(
+            purpose="knowledge_control",
+            operation="list_sources",
+            authorization_generation=7,
+            authentication_configuration_version="OIDC-2026-10-10",
+        ),
+        origin=ContextOrigin.INTERACTIVE,
+        acting_subject_id=synthetic_uuid(22),
+        service_principal_id=synthetic_uuid(23),
+        trace_id=synthetic_uuid(24),
+        occurred_at=datetime(2026, 1, 2, 3, 4, tzinfo=timezone.utc),
+        outcome=AuditOutcome.ALLOWED,
+        reason="request_authorization_allowed",
+    )
+
+    version_one = registry.build_event(
+        workspace_id=synthetic_uuid(20),
+        environment_id=synthetic_uuid(21),
+        event_type="access.decision",
+        schema_version=1,
+        payload=AccessDecisionAuditPayload(
+            purpose="knowledge_control",
+            operation="list_sources",
+        ),
+        origin=ContextOrigin.INTERACTIVE,
+        acting_subject_id=synthetic_uuid(22),
+        service_principal_id=synthetic_uuid(23),
+        trace_id=synthetic_uuid(24),
+        occurred_at=datetime(2026, 1, 2, 3, 4, tzinfo=timezone.utc),
+        outcome=AuditOutcome.ALLOWED,
+        reason="registered_outcome",
+    )
+
+    assert type(version_two.payload) is RequestAccessDecisionAuditPayload
+    assert version_two.payload_json()["authorization_generation"] == 7
+    assert type(version_one.payload) is AccessDecisionAuditPayload
+    assert version_one.payload_json() == {
+        "purpose": "knowledge_control",
+        "operation": "list_sources",
+    }
 
 
 def test_canonical_transition_requires_one_envelope_target() -> None:
