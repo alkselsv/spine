@@ -252,7 +252,7 @@ class HandlerRegistry:
         """Register one already-constructed structural handler explicitly."""
 
         self._validate_registration(registration)
-        if not _is_handler(handler):
+        if isinstance(handler, _RegisteredHandler) or not _is_handler(handler):
             raise HandlerRegistryError("local handler registration factory is invalid")
 
         def factory(selected_version: AgentVersion) -> AgentHandler[Any, Any]:
@@ -315,7 +315,7 @@ class HandlerRegistry:
             raise
         except Exception as error:
             raise HandlerConstructionError("local handler construction failed") from error
-        if not _is_handler(handler):
+        if isinstance(handler, _RegisteredHandler) or not _is_handler(handler):
             raise HandlerConstructionError("local handler construction failed")
         registered = _RegisteredHandler(handler, registration)
         self._issued_handlers = (*self._issued_handlers, registered)

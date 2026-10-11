@@ -469,6 +469,18 @@ def test_registries_are_isolated_and_finalization_prevents_order_dependence() ->
         )
 
 
+def test_registry_rejects_wrapping_a_handler_issued_by_another_registry() -> None:
+    source = registry_with_factory()
+    foreign_handler = source.construct(capability=capability(), version=version())
+    target = HandlerRegistry()
+
+    with pytest.raises(HandlerRegistryError, match="factory is invalid"):
+        target.register_handler(
+            registration=registration(),
+            handler=foreign_handler,
+        )
+
+
 def test_runtime_config_cannot_select_another_registered_implementation() -> None:
     other_version = version(version_id=22)
     selected_version = version(
