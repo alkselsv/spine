@@ -1,18 +1,29 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import datetime, timezone
+import logging
 from pathlib import Path
+from uuid import UUID, uuid4
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from spine.api.diagnostics import (
+    DiagnosticContextMiddleware,
+    get_diagnostic_context,
+    install_diagnostic_exception_handlers,
+)
+from spine.application.diagnostics import (
+    DiagnosticEventRegistry,
+    DiagnosticSink,
+    StructuredErrorRegistry,
+    build_default_error_registry,
+)
 from spine.config import settings
 from spine.ingest.loaders import documents_to_remember_payloads, load_path
+from spine.infrastructure.diagnostics import JsonLoggingDiagnosticSink
 from spine.memory.cognee_memory import ask, format_answers, remember_texts
-
-app = FastAPI(
-    title="Spine",
-    version="0.1.0",
-    description="Phase 1: company Q&A on Cognee. Trace-like orchestration comes later.",
-)
 
 
 class AskRequest(BaseModel):
@@ -39,12 +50,10 @@ class IngestResponse(BaseModel):
     status: str
 
 
-@app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "spine", "phase": "qa"}
 
 
-@app.post("/ask", response_model=AskResponse)
 async def ask_endpoint(body: AskRequest) -> AskResponse:
     try:
         results = await ask(
@@ -62,7 +71,6 @@ async def ask_endpoint(body: AskRequest) -> AskResponse:
     )
 
 
-@app.post("/ingest", response_model=IngestResponse)
 async def ingest_endpoint(body: IngestRequest) -> IngestResponse:
     path = Path(body.path)
     if not path.is_absolute():
@@ -85,3 +93,64 @@ async def ingest_endpoint(body: IngestRequest) -> IngestResponse:
         raise HTTPException(status_code=500, detail=f"remember failed: {exc}") from exc
 
     return IngestResponse(path=str(path), documents=len(docs), status="ok")
+
+
+def create_app(
+    *,
+    trace_id_source: Callable[[], UUID] = uuid4,
+    diagnostic_registry: DiagnosticEventRegistry | None = None,
+    diagnostic_sink: DiagnosticSink | None = None,
+    error_registry: StructuredErrorRegistry | None = None,
+    clock: Callable[[], datetime] | None = None,
+) -> FastAPI:
+    """Compose the HTTP API with injectable deterministic diagnostics."""
+
+    application = FastAPI(
+        title="Spine",
+        version="0.1.0",
+        description="Phase 1: company Q&A on Cognee. Trace-like orchestration comes later.",
+    )
+    resolved_diagnostic_registry = (
+        diagnostic_registry or DiagnosticEventRegistry.with_default_families()
+    )
+    resolved_diagnostic_sink = diagnostic_sink or JsonLoggingDiagnosticSink(
+        resolved_diagnostic_registry,
+        logger=logging.getLogger("spine.diagnostics"),
+    )
+    resolved_clock = clock or (lambda: datetime.now(timezone.utc))
+    application.state.diagnostic_registry = resolved_diagnostic_registry
+    application.state.diagnostic_sink = resolved_diagnostic_sink
+    application.state.diagnostic_clock = resolved_clock
+    resolved_error_registry = error_registry or build_default_error_registry()
+    application.add_middleware(
+        DiagnosticContextMiddleware,
+        trace_id_source=trace_id_source,
+        error_registry=resolved_error_registry,
+        diagnostic_registry=resolved_diagnostic_registry,
+        diagnostic_sink=resolved_diagnostic_sink,
+        clock=resolved_clock,
+    )
+    install_diagnostic_exception_handlers(
+        application,
+        error_registry=resolved_error_registry,
+    )
+    application.add_api_route("/health", health, methods=["GET"])
+    application.add_api_route(
+        "/ask",
+        ask_endpoint,
+        methods=["POST"],
+        response_model=AskResponse,
+    )
+    application.add_api_route(
+        "/ingest",
+        ingest_endpoint,
+        methods=["POST"],
+        response_model=IngestResponse,
+    )
+    return application
+
+
+app = create_app()
+
+
+__all__ = ["app", "create_app", "get_diagnostic_context"]
