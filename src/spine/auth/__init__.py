@@ -1,5 +1,6 @@
 """Authentication context and workspace-scoped authorization seams."""
 
+from spine.auth.bearer import is_http_bearer_token
 from spine.auth.contracts import (
     AccessTokenCredential,
     AuthenticationAlias,
@@ -79,6 +80,7 @@ __all__ = [
     "RequestedAuthorizationScope",
     "RouteAuthorizationPolicy",
     "InvalidAuthenticationError",
+    "is_http_bearer_token",
     "InMemoryAuthorizationDirectory",
     "InMemoryAuthorizationEntry",
     "MissingRoutePolicyError",

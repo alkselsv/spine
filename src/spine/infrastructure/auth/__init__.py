@@ -1,14 +1,19 @@
 """Production authentication adapters and their process-owned lifecycle."""
 
-from spine.infrastructure.auth.composition import (
-    BoundRouteAuthorization,
-    RequestAuthorizationComposer,
-)
 from spine.infrastructure.auth.agent_runtime import (
     RequestAgentAuthorizationVerifier,
     TrustedAgentExecutionRuntime,
     compose_agent_execution_context_factory,
     compose_agent_execution_runtime,
+)
+from spine.infrastructure.auth.composition import (
+    BoundRouteAuthorization,
+    RequestAuthorizationComposer,
+)
+from spine.infrastructure.auth.local import (
+    LocalAuthenticationAdapter,
+    LocalAuthenticationConfigurationError,
+    LocalAuthenticationSettings,
 )
 from spine.infrastructure.auth.oidc import (
     OIDCAuthenticationRuntime,
@@ -30,6 +35,9 @@ __all__ = [
     "AuthorizedRequest",
     "BoundRouteAuthorization",
     "InteractiveClientQualification",
+    "LocalAuthenticationAdapter",
+    "LocalAuthenticationConfigurationError",
+    "LocalAuthenticationSettings",
     "OIDCAuthenticationRuntime",
     "OIDCAuthenticationSettings",
     "OIDCReadiness",

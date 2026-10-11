@@ -1,19 +1,38 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
+from typing import TypeVar
 from uuid import UUID
 
+import httpx
 import pytest
 import pytest_asyncio
+from fastapi import Depends
 from pydantic import SecretStr
 from sqlalchemy import insert, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
-from spine.auth import AuthorizationDeniedError
+from spine.api.authorization import (
+    add_protected_api_route,
+    get_authorized_request_context,
+)
+from spine.api.composition import compose_local_api_authorization
+from spine.api.main import create_app
+from spine.application.diagnostics import (
+    AuditEvent,
+    AuditEventRegistry,
+    DiagnosticContext,
+    DiagnosticEventRegistry,
+)
+from spine.auth import (
+    AuthorizationDeniedError,
+    AuthorizedRequestContext,
+    RoutePolicyRegistry,
+)
 from spine.auth.records import (
     AuthenticationAliasBinding,
     AuthorizationDirectoryRecords,
@@ -34,6 +53,12 @@ from spine.infrastructure.db.test_harness import TestDatabaseProvision
 from spine.infrastructure.persistence.postgresql_authorization import (
     PostgreSQLAuthorizationDirectory,
 )
+from spine.infrastructure.auth import (
+    LocalAuthenticationSettings,
+    TrustedRequestContextBoundary,
+)
+from spine.infrastructure.diagnostics import RecordingDiagnosticSink
+from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.persistence.postgresql_authorization_mappings import (
     workspace_memberships,
 )
@@ -64,8 +89,10 @@ pytestmark = [
 ]
 MIGRATION_ROLE = "spine_migration"
 RUNTIME_ROLE = "spine_runtime"
+DISPATCHER_ROLE = "spine_dispatcher"
 MIGRATION_PASSWORD = "migration-test-secret"
 RUNTIME_PASSWORD = "runtime-test-secret"
+DISPATCHER_PASSWORD = "dispatcher-test-secret"
 AUTH_TABLES = (
     "authentication_alias_bindings",
     "canonical_human_identity_states",
@@ -74,6 +101,22 @@ AUTH_TABLES = (
     "environment_role_bindings",
     "canonical_human_identities",
 )
+API_TRACE_ID = UUID("50000000-0000-0000-0000-000000000073")
+
+
+_ResultT = TypeVar("_ResultT")
+
+
+class _ImmediateAuditGate:
+    async def release_after_audit(
+        self,
+        *,
+        context: object,
+        event: AuditEvent,
+        release: Callable[[UUID], Awaitable[_ResultT]],
+    ) -> _ResultT:
+        del context, event
+        return await release(UUID("80000000-0000-0000-0000-000000000073"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +144,8 @@ async def authorization_database(
         migration_password=MIGRATION_PASSWORD,
         runtime_role=RUNTIME_ROLE,
         runtime_password=RUNTIME_PASSWORD,
+        dispatcher_role=DISPATCHER_ROLE,
+        dispatcher_password=DISPATCHER_PASSWORD,
     )
     await bootstrap_database_roles(operator)
     migration_url = _role_url(
@@ -112,6 +157,7 @@ async def authorization_database(
             url=migration_url,
             migration_role=MIGRATION_ROLE,
             runtime_role=RUNTIME_ROLE,
+            dispatcher_role=DISPATCHER_ROLE,
         ),
     )
     migration_engine = create_async_engine(
@@ -297,6 +343,106 @@ async def test_postgresql_same_identity_is_strictly_tenant_local(
     authorization_directory_factory: AuthorizationDirectoryFactory,
 ) -> None:
     await contract_isolation(authorization_directory_factory)
+
+
+async def test_local_api_uses_postgresql_directory_and_rejects_foreign_scope_before_handler(
+    authorization_directory_factory: AuthorizationDirectoryFactory,
+    authorization_database: AuthorizationDatabase,
+) -> None:
+    await authorization_directory_factory(records())
+    local_settings = LocalAuthenticationSettings(
+        deployment_mode="development",
+        configuration_version="local-2026-10-11",
+        authentication_alias_issuer="https://identity.example.test",
+        authentication_alias_subject="provider-subject-123",
+        bearer_credential="local-development-credential-0000001",
+    )
+    persistence_boundary = TrustedContextBoundary.for_testing(
+        issuer_id=UUID("60000000-0000-0000-0000-000000000073"),
+        secret=b"ticket-73-postgresql-persistence-secret",
+    )
+    request_boundary = TrustedRequestContextBoundary.for_testing(
+        persistence_boundary=persistence_boundary,
+        issuer_id=UUID("61000000-0000-0000-0000-000000000073"),
+        secret=b"ticket-73-postgresql-request-secret-01",
+    )
+    route_policies = RoutePolicyRegistry()
+    diagnostic_registry = DiagnosticEventRegistry.with_default_families()
+    diagnostic_sink = RecordingDiagnosticSink(diagnostic_registry)
+    request_ids = iter(
+        (
+            UUID("70000000-0000-0000-0000-000000000073"),
+            UUID("70000000-0000-0000-0000-000000000074"),
+        )
+    )
+    runtime_sessions = async_sessionmaker(
+        authorization_database.runtime_engine,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+    authorization_runtime = compose_local_api_authorization(
+        settings=local_settings,
+        session_factory=runtime_sessions,
+        route_policies=route_policies,
+        request_boundary=request_boundary,
+        audit_registry=AuditEventRegistry.with_default_families(),
+        audit_gate=_ImmediateAuditGate(),
+        diagnostic_registry=diagnostic_registry,
+        diagnostic_sink=diagnostic_sink,
+        request_id_source=lambda: next(request_ids),
+    )
+    application = create_app(
+        trace_id_source=lambda: API_TRACE_ID,
+        diagnostic_registry=diagnostic_registry,
+        diagnostic_sink=diagnostic_sink,
+        authorization_runtime=authorization_runtime,
+    )
+    handler_scopes: list[tuple[UUID, UUID]] = []
+
+    async def inspect(
+        context: AuthorizedRequestContext[DiagnosticContext] = Depends(
+            get_authorized_request_context
+        ),
+    ) -> dict[str, str]:
+        handler_scopes.append(
+            (context.scope.workspace_id, context.scope.environment_id)
+        )
+        return {"actor_id": str(context.acting_subject_id)}
+
+    add_protected_api_route(
+        application,
+        "/api/v1/test/postgresql-authorization",
+        inspect,
+        route_id="test.authorization.postgresql",
+        policy=route_policy(),
+        methods=["GET"],
+    )
+    transport = httpx.ASGITransport(app=application)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        allowed = await client.get(
+            "/api/v1/test/postgresql-authorization",
+            headers={
+                "Authorization": "Bearer local-development-credential-0000001",
+                "X-Workspace-ID": str(WORKSPACE_ID),
+                "X-Environment-ID": str(ENVIRONMENT_ID),
+            },
+        )
+        denied = await client.get(
+            "/api/v1/test/postgresql-authorization",
+            headers={
+                "Authorization": "Bearer local-development-credential-0000001",
+                "X-Workspace-ID": str(OTHER_WORKSPACE_ID),
+                "X-Environment-ID": str(OTHER_ENVIRONMENT_ID),
+            },
+        )
+
+    assert allowed.status_code == 200
+    assert allowed.json() == {"actor_id": str(IDENTITY_ID)}
+    assert denied.status_code == 403
+    assert denied.json()["code"] == "spine.authorization.denied"
+    assert str(OTHER_WORKSPACE_ID) not in denied.text
+    assert str(OTHER_ENVIRONMENT_ID) not in denied.text
+    assert handler_scopes == [(WORKSPACE_ID, ENVIRONMENT_ID)]
 
 
 async def test_runtime_cannot_enumerate_or_mutate_authorization_tables(

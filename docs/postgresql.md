@@ -28,7 +28,8 @@ and Psycopg connection timeout are set explicitly. Startup opens a connection
 and rejects an unreachable server or a PostgreSQL major other than 17; any
 startup failure disposes the new engine before returning a sanitized error.
 
-Runtime and migration credentials have separate configuration surfaces:
+Runtime, dispatcher, and migration credentials have separate configuration
+surfaces:
 
 ```dotenv
 SPINE_DATABASE_URL=postgresql+psycopg://runtime_user:secret@db/spine
@@ -40,12 +41,16 @@ SPINE_DATABASE_CONNECT_TIMEOUT_SECONDS=10
 SPINE_DATABASE_POOL_PRE_PING=true
 SPINE_DATABASE_TRANSACTION_RETRY_LIMIT=3
 
+SPINE_DISPATCHER_DATABASE_URL=postgresql+psycopg://dispatcher_user:secret@db/spine
+SPINE_DISPATCHER_DATABASE_DISPATCHER_ROLE=spine_dispatcher
+
 SPINE_MIGRATION_DATABASE_URL=postgresql+psycopg://migration_owner:secret@db/spine
 SPINE_MIGRATION_DATABASE_MIGRATION_ROLE=spine_migration
 SPINE_MIGRATION_DATABASE_RUNTIME_ROLE=spine_runtime
+SPINE_MIGRATION_DATABASE_DISPATCHER_ROLE=spine_dispatcher
 ```
 
-Importing settings or persistence modules does not load either surface and does
+Importing settings or persistence modules does not load any surface and does
 not create an engine, connection, container, or socket. Migration credentials
 are consumed only by explicit operator commands.
 
@@ -147,7 +152,13 @@ Provisioning has three separate authorities:
   revisions;
 - `spine_runtime` is a non-owner login with `NOBYPASSRLS`, no role-creation
   capability, schema `USAGE`, and only RLS-guarded DML on the canonical Workspace,
-  Environment, idempotency-receipt, and outbox-intent tables.
+  Environment, idempotency-receipt, and outbox-intent tables;
+- `spine_dispatcher` is a non-owner login with `NOBYPASSRLS`, no role
+  memberships, read access to immutable outbox intents, and read/write access
+  only to mutable outbox delivery control rows. It has no access to canonical
+  business or audit tables. Atomic delivery finalization is exposed through one
+  fixed-shape `SECURITY DEFINER` function with a controlled search path; the role
+  receives `EXECUTE`, not general Audit Event table privileges.
 
 Set the operator-only values in the environment of a trusted deployment step,
 not in an application runtime:
@@ -159,6 +170,8 @@ SPINE_OPERATOR_DATABASE_MIGRATION_ROLE=spine_migration
 SPINE_OPERATOR_DATABASE_MIGRATION_PASSWORD=generated-migration-secret
 SPINE_OPERATOR_DATABASE_RUNTIME_ROLE=spine_runtime
 SPINE_OPERATOR_DATABASE_RUNTIME_PASSWORD=generated-runtime-secret
+SPINE_OPERATOR_DATABASE_DISPATCHER_ROLE=spine_dispatcher
+SPINE_OPERATOR_DATABASE_DISPATCHER_PASSWORD=generated-dispatcher-secret
 ```
 
 Then run the phases explicitly:
@@ -172,15 +185,19 @@ uv run spine-db-bootstrap-workspace \
   --display-name "Initial Workspace"
 ```
 
-`spine-db-bootstrap` creates or reconciles only the database and the two login
-roles. Reconciliation removes runtime-role memberships and direct database
-authority before granting back `CONNECT` only. `spine-db-migrate` verifies the
-current user, database owner, role separation, runtime privileges, memberships,
-unsafe database/schema/table access, forced RLS protection, and existing schema
-owner before it changes the schema. Runtime and migration connections use the
-controlled search path `pg_catalog,spine`. The Alembic version table is
+`spine-db-bootstrap` creates or reconciles only the database and the three login
+roles. Reconciliation removes runtime and dispatcher role memberships and
+direct database authority before granting back `CONNECT` only.
+`spine-db-migrate` verifies the current user, database owner, role separation,
+runtime and dispatcher privileges, memberships, unsafe database/schema/table
+access, forced RLS protection, and existing schema owner before it changes the
+schema. Runtime, dispatcher, and migration connections use the controlled
+search path `pg_catalog,spine`. The Alembic version table is
 `spine.alembic_version`, and the committed history has one linear head:
-`20261010_12`. The source-observation migrations add the source ledger tables, integrity constraints, persisted canonicalization profile identity, and database-side canonical validation.
+`20261012_14`. The source-observation migrations add the source ledger tables,
+integrity constraints, persisted canonicalization profile identity, and
+database-side canonical validation. The delivery migration adds mutable
+at-least-once delivery control state without weakening immutable outbox intents.
 The readiness migration grants the runtime role read-only access
 to the revision identity; K0 adds migration-owned, fixed-search-path receipt
 tenant validation and receipt-scope immutability without adding child tables or
@@ -194,7 +211,7 @@ invoke it or access its tables.
 
 Application startup never creates roles or schemas, invokes Alembic, or calls
 `metadata.create_all`. Readiness succeeds only when PostgreSQL major 17 is in
-use, the database reports exactly head `20261010_12`, the connected user is the
+use, the database reports exactly head `20261012_14`, the connected user is the
 configured restricted runtime role, required grants and forced RLS are intact,
 and transaction-local Workspace/Environment context can be bound. Empty,
 older, newer, unknown, and multiple-head states fail closed; the newly created
@@ -319,7 +336,8 @@ for release or ticket completion.
 ## Deployment prerequisites and recovery
 
 The deployment must provide PostgreSQL 17, operator authority for the one-time
-database/role bootstrap, separately stored migration and runtime credentials,
+database/role bootstrap, separately stored migration, runtime, and dispatcher
+credentials,
 and durable backup/restore appropriate to its environment. Spine does not
 provision the server, network policy, TLS certificates, secret manager, backup
 backend, or container runtime. Production rollout must run operator bootstrap

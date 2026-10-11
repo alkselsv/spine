@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from uuid import UUID
 
 from spine.application.diagnostics import DiagnosticContext, StructuredError
@@ -62,3 +62,32 @@ def assert_safe_structured_error(error: StructuredError) -> None:
         "retryability",
         "trace_id",
     }
+
+
+def assert_downstream_diagnostic_context(
+    context: DiagnosticContext,
+    *,
+    trace_id: UUID,
+    correlation_id: UUID | None = None,
+    causation_id: UUID | None = None,
+) -> None:
+    """Apply the shared trace-lineage contract at a downstream public seam."""
+
+    assert type(context) is DiagnosticContext
+    assert context == DiagnosticContext(
+        trace_id=trace_id,
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+    )
+
+
+def assert_no_diagnostic_leaks(
+    captures: Iterable[str],
+    *,
+    leak_corpus: Iterable[str] = DIAGNOSTIC_LEAK_CORPUS,
+) -> None:
+    """Prove protected fixture values do not cross a public/diagnostic seam."""
+
+    combined = "\n".join(captures)
+    for protected_value in leak_corpus:
+        assert protected_value not in combined

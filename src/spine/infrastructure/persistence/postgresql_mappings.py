@@ -65,6 +65,27 @@ outbox_intents = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
 )
 
+outbox_deliveries = Table(
+    "outbox_deliveries",
+    metadata,
+    Column("event_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("consumer_name", Text, nullable=True),
+    Column("status", String(32), nullable=False),
+    Column("attempt_count", Integer, nullable=False),
+    Column("next_attempt_at", DateTime(timezone=True), nullable=True),
+    Column("lease_owner", Text, nullable=True),
+    Column("lease_token", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("lease_expires_at", DateTime(timezone=True), nullable=True),
+    Column("last_error_code", Text, nullable=True),
+    Column("delivered_at", DateTime(timezone=True), nullable=True),
+    Column("quarantined_at", DateTime(timezone=True), nullable=True),
+    Column("version", Integer, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
 audit_events = Table(
     "audit_events",
     metadata,
@@ -166,6 +187,7 @@ __all__ = [
     "idempotency_receipts",
     "metadata",
     "outbox_intents",
+    "outbox_deliveries",
     "workspaces",
     "source_objects",
     "source_revisions",

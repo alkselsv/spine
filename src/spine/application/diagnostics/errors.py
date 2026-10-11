@@ -48,6 +48,8 @@ _SAFE_MESSAGE_BY_CODE = MappingProxyType({
     "spine.authorization.denied": "Authorization is denied.",
     "spine.authorization.unavailable": "Authorization is temporarily unavailable.",
     "spine.internal.unexpected": "An unexpected internal error occurred.",
+    "spine.request.rejected": "The request was rejected.",
+    "spine.request.validation": "Request validation failed.",
     "spine.persistence.failure": "Persistence operation failed.",
     "spine.persistence.invalid_context": "Persistence context is invalid.",
     "spine.persistence.invalid_bootstrap_authority": "Bootstrap authority is invalid.",
@@ -206,6 +208,12 @@ class StructuredErrorRegistry:
         mapping = ErrorMapping(exception_type, code, safe_message, retryability)
         self._mappings[exception_type] = mapping
         self._codes[code] = exception_type
+
+    @property
+    def exception_types(self) -> tuple[type[BaseException], ...]:
+        """Return the explicitly registered categories for adapter wiring."""
+
+        return tuple(self._mappings)
 
     def map(self, failure: BaseException, context: DiagnosticContext) -> StructuredError:
         """Map a failure without consulting its string or representation."""

@@ -172,6 +172,20 @@ flowchart LR
 
 Состояние одного бизнес-объекта не должно одновременно независимо редактироваться в Postgres и Cognee. Сначала фиксируется каноническое изменение, затем outbox запускает обновление проекции.
 
+PostgreSQL использует три раздельных credential surface: migration owner,
+tenant-scoped runtime и узкий cross-tenant dispatcher. Dispatcher может читать
+неизменяемые outbox intents и изменять только operational delivery state; у
+него нет доступа к canonical business/content или audit tables. Все три роли
+разделены, а runtime и dispatcher работают с `NOBYPASSRLS` и без memberships.
+
+Outbox dispatcher предоставляет один bounded `dispatch_batch` seam. Claim
+коммитится до вызова consumer; handler получает валидированный typed intent и
+восстановленный `DiagnosticContext`, работает с timeout короче lease и обязан
+идемпотентно использовать стабильный `event_id`. Delivery outcome и обязательный
+Audit Event фиксируются атомарно, после чего best-effort Diagnostic Event не
+может переписать канонический результат. Неизвестные event/route/consumer и
+terminal либо exhausted failures переходят в quarantine с безопасным кодом.
+
 ## 7. Доменная модель
 
 ### Workspace и доступ

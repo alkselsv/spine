@@ -408,6 +408,7 @@ class DiagnosticFailureCode(str, Enum):
     AUTHORIZATION_UNAVAILABLE = "authorization.unavailable"
     PERSISTENCE_FAILURE = "persistence.failure"
     PERSISTENCE_UNAVAILABLE = "persistence.unavailable"
+    TRACE_CONTEXT_INVALID = "trace_context.invalid"
     SPINE_INTERNAL_UNEXPECTED = "spine.internal.unexpected"
     SPINE_PERSISTENCE_FAILURE = "spine.persistence.failure"
     SPINE_PERSISTENCE_INVALID_CONTEXT = "spine.persistence.invalid_context"
@@ -470,6 +471,22 @@ class OutboxDeliveryDiagnosticPayload(BaseModel):
     delivery_state: OutboxDeliveryDiagnosticState
     attempt_number: int = Field(ge=1)
     retry_delay: timedelta | None = Field(default=None, ge=timedelta(0))
+
+
+class HttpRequestDiagnosticState(str, Enum):
+    """Disclosure-safe terminal states for one HTTP request."""
+
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class HttpRequestDiagnosticPayload(BaseModel):
+    """Safe HTTP completion metadata without route or input values."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    request_state: HttpRequestDiagnosticState
+    response_status_code: int = Field(ge=100, le=599)
 
 
 class UnsupportedDiagnosticEventError(ValueError):
@@ -582,6 +599,11 @@ class DiagnosticEventRegistry:
             event_type="outbox.delivery",
             schema_version=1,
             payload_type=OutboxDeliveryDiagnosticPayload,
+        )
+        registry.register(
+            event_type="http.request",
+            schema_version=1,
+            payload_type=HttpRequestDiagnosticPayload,
         )
         registry.seal()
         return registry
