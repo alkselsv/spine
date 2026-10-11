@@ -2,14 +2,17 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
+from uuid import UUID
 
 from spine.agents.catalog import HandlerRegistry
 from spine.agents.runtime import (
     AgentExecutionContext,
     AgentHandler,
     AgentRequest,
+    CancellationScope,
+    CooperativeCancellationController,
     TrustedToolGrantSet,
     adapt_async_function,
 )
@@ -18,7 +21,6 @@ from spine.domain.common import EnvironmentKind
 from spine.infrastructure.auth import compose_agent_execution_runtime
 
 from tests.agents.test_execution_context_construction import (
-    FakeCancellation,
     FakeEventSink,
     resolved_binding,
     uid,
@@ -47,11 +49,20 @@ class FixedExecutionScope:
             raise ValueError("execution scope is invalid")
 
 
+@dataclass(frozen=True, slots=True)
+class BoundAdapterRuntime:
+    handler: AgentHandler[Any, Any]
+    context: AgentExecutionContext
+    cancellation: CooperativeCancellationController
+
+
 @asynccontextmanager
-async def bound_adapter(
+async def bound_adapter_runtime(
     function: Callable[..., Awaitable[Any]],
-) -> AsyncIterator[tuple[AgentHandler[Any, Any], AgentExecutionContext]]:
-    """Yield an adapter admitted through the public production composition seam."""
+    *,
+    input_artifact_ids: tuple[UUID, ...] = (),
+) -> AsyncIterator[BoundAdapterRuntime]:
+    """Yield an admitted adapter plus controls needed by the local runtime."""
 
     composer, _, request_boundary, _ = await composition()
     async with composer.bind_route("knowledge.sources.list").authorize(
@@ -95,6 +106,14 @@ async def bound_adapter(
             expected_route_policy=request_context.route_policy,
             registry=registry,
         )
+        cancellation = CooperativeCancellationController(
+            CancellationScope(
+                workspace_id=resolution.scope.workspace_id,
+                environment_id=resolution.scope.environment_id,
+                step_run_id=uid(52),
+                agent_run_id=uid(53),
+            )
+        )
         context = runtime.factory.create(
             authorized_context=request_context,
             authorization_resolution=resolution,
@@ -107,8 +126,9 @@ async def bound_adapter(
             step_run_id=uid(52),
             agent_run_id=uid(53),
             idempotency_key="agent:50:1",
+            input_artifact_ids=input_artifact_ids,
             permitted_tool_grants=TrustedToolGrantSet(grants=("documents.read",)),
-            cancellation=FakeCancellation(),
+            cancellation=cancellation.token,
             event_sink=FakeEventSink(),
         )
         admission = runtime.factory.admission_for(
@@ -118,12 +138,23 @@ async def bound_adapter(
             resolved_binding=selected,
             permitted_tool_grants=TrustedToolGrantSet(grants=("documents.read",)),
         )
-        yield (
-            runtime.bind_for_execution(
+        yield BoundAdapterRuntime(
+            handler=runtime.bind_for_execution(
                 handler=registered,
                 context=context,
                 admission=admission,
                 resolved_binding=selected,
             ),
-            context,
+            context=context,
+            cancellation=cancellation,
         )
+
+
+@asynccontextmanager
+async def bound_adapter(
+    function: Callable[..., Awaitable[Any]],
+) -> AsyncIterator[tuple[AgentHandler[Any, Any], AgentExecutionContext]]:
+    """Yield an adapter admitted through the public production composition seam."""
+
+    async with bound_adapter_runtime(function) as bound:
+        yield bound.handler, bound.context

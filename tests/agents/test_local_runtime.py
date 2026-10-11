@@ -73,6 +73,7 @@ from tests.contracts.diagnostics.fixtures import (
     DIAGNOSTIC_LEAK_CORPUS,
     assert_no_diagnostic_leaks,
 )
+from tests.agents.runtime_fixtures import bound_adapter_runtime
 
 
 def uid(value: int) -> UUID:
@@ -771,6 +772,75 @@ async def test_legacy_invoke_runs_synthetic_answer_question_with_typed_lineage()
 
 
 @pytest.mark.asyncio
+async def test_adapted_async_function_persists_typed_artifact_through_runtime() -> None:
+    async def answer_question(
+        request: AgentRequest[InputModel],
+        context: AgentExecutionContext,
+    ) -> OutputModel:
+        assert context.capability == request.capability
+        return OutputModel(answer=f"Adapted: {request.input.question}")
+
+    async with bound_adapter_runtime(
+        answer_question,
+        input_artifact_ids=(uid(50),),
+    ) as bound:
+        acting_subject_id = bound.context.trusted_identity.acting_subject_id
+        assert acting_subject_id is not None
+        source = input_artifact(
+            workspace_id=bound.context.workspace_id,
+            environment_id=bound.context.environment_id,
+            work_item_id=bound.context.work_item_id,
+            produced_by=ActorRef(kind=ActorKind.HUMAN, id=acting_subject_id),
+            artifact_schema=bound.context.capability.input_schema,
+        )
+        persistence = FakeArtifactPersistence(
+            records={source.id: source},
+            returned_ref=ArtifactRef(
+                id=uid(70),
+                schema_name=bound.context.capability.output_schema.name,
+                schema_version=bound.context.capability.output_schema.version,
+            ),
+        )
+        runtime = LocalAgentRuntime(
+            context=bound.context,
+            handler=bound.handler,
+            artifacts=persistence,
+            schemas=CapabilityArtifactSchema(
+                schema_identity=bound.context.schema_identity,
+                input_model=InputModel,
+                output_model=OutputModel,
+                assemble_input=lambda artifacts: artifacts[0].content,
+                validate_metadata=validate_metadata,
+            ),
+            cancellation_controller=bound.cancellation,
+            **observability_dependencies(),
+        )
+        selected_invocation = invocation(
+            work_item_id=bound.context.work_item_id,
+            step_run_id=bound.context.step_run_id,
+            acting_on_behalf_of=ActorRef(
+                kind=ActorKind.HUMAN,
+                id=acting_subject_id,
+            ),
+            input_artifact_ids=(source.id,),
+            idempotency_key=bound.context.idempotency_key,
+            retry_safety=AgentRetrySafety.SAFE_TO_REPEAT,
+        )
+
+        result = await runtime.invoke(
+            bound.context.agent_version,
+            selected_invocation,
+        )
+
+    assert result.status is AgentRunStatus.SUCCEEDED
+    assert result.output_artifact_ids == (uid(70),)
+    ((draft,), _) = persistence.writes[0]
+    assert draft.content == {"answer": "Adapted: What is the answer?"}
+    assert draft.artifact_schema == bound.context.capability.output_schema
+    assert draft.upstream_artifact_ids == (source.id,)
+
+
+@pytest.mark.asyncio
 async def test_success_emits_separate_registered_diagnostics_and_audit_events() -> None:
     diagnostics = FakeEventSink()
     audit = RecordingAuditWriter()
@@ -897,6 +967,8 @@ async def test_invalid_upstream_lineage_fails_without_disclosing_ancestor() -> N
         input_artifact(environment_id=uid(99)),
         input_artifact(work_item_id=uid(99)),
         input_artifact(artifact_schema=SchemaRef(name="other", version="1")),
+        input_artifact(content={}),
+        input_artifact(content={"question": None}),
         input_artifact(content={"question": "secret", "unexpected": True}),
     ),
     ids=(
@@ -907,6 +979,8 @@ async def test_invalid_upstream_lineage_fails_without_disclosing_ancestor() -> N
         "cross-environment",
         "cross-work-item",
         "incompatible-schema",
+        "missing-field",
+        "malformed-field",
         "invalid-content",
     ),
 )
@@ -946,10 +1020,22 @@ async def test_inaccessible_artifact_uses_same_safe_failure_as_missing_artifact(
 
 
 @pytest.mark.asyncio
-async def test_incompatible_handler_output_is_not_persisted() -> None:
+@pytest.mark.parametrize(
+    "output",
+    (
+        {},
+        {"answer": None},
+        {"answer": "42", "unexpected": "protected"},
+        {"different": "42"},
+    ),
+    ids=("missing-field", "malformed-field", "extra-field", "incompatible-shape"),
+)
+async def test_incompatible_handler_output_is_not_persisted(
+    output: dict[str, object],
+) -> None:
     response = AgentResponse(
         schema_identity=CapabilitySchemaIdentity.from_capability(capability()),
-        output={"answer": "42", "unexpected": "protected"},
+        output=output,
     )
     handler = RecordingHandler(response)
     persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
@@ -958,6 +1044,7 @@ async def test_incompatible_handler_output_is_not_persisted() -> None:
 
     assert result.status is AgentRunStatus.FAILED
     assert result.error == "The request was rejected."
+    assert len(handler.calls) == 1
     assert persistence.writes == []
 
 
