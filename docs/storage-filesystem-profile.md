@@ -14,6 +14,7 @@ dedicated local volume provides all of the following primitives:
 - directory `fsync` for the storage directories;
 - `O_NOFOLLOW` and `O_DIRECTORY` when opening storage entries;
 - hard links on the same filesystem; and
+- POSIX advisory file locks for serializing writers and finalizers; and
 - atomic failure of an exclusive hard-link destination when it already exists.
 
 The staged and finalized namespaces must be on the same filesystem. The
@@ -65,7 +66,9 @@ file synchronization and finalized directory-entry synchronization.
 Reads and verification stream bounded chunks. Uploads enforce object and chunk
 limits, a concurrent-operation semaphore, inactivity timeout and total
 operation timeout. Input is consumed one chunk at a time, so backpressure does
-not require buffering the complete object in memory.
+not require buffering the complete object in memory. Per-upload locks are
+weakly held and pending deletion approvals are bounded by the configured
+inventory limit; older approvals must be prepared again before deletion replay.
 
 ## Restart and reconciliation
 
@@ -102,8 +105,11 @@ fence or claim that an ordinary volume snapshot is a coherent recovery point.
 ## Limits of the guarantee
 
 The profile proves adapter-level bounded streaming, exclusive no-replace
-publication, symlink rejection and conditional file/directory synchronization
-on the supported platform. It does not claim universal crash safety or
+publication, dirfd-relative path traversal protection, symlink rejection and
+conditional file/directory synchronization on the supported platform. Blocking
+filesystem calls run outside the event loop; cancellation waits for the
+in-flight operation to release its file descriptor and advisory lock. It does
+not claim universal crash safety or
 durability across power loss, controllers, RAID, kernels, filesystems,
 multi-volume deployments, backup implementations or machine failure. If the
 deployment cannot prove its selected volume and recovery assumptions, reads

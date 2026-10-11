@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import threading
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -11,6 +13,7 @@ import pytest
 
 from spine.infrastructure.object_storage import (
     AuthorizedReadGrantRegistry,
+    DeletionApproval,
     FilesystemOriginalObjectStore,
     FilesystemStorageProfile,
     ObjectCorrupt,
@@ -19,8 +22,10 @@ from spine.infrastructure.object_storage import (
     PreWriteRequestDigest,
     StorageConfigurationError,
     StorageIntegrityIndeterminate,
+    StorageError,
     UploadCommandState,
     UploadCommandStateName,
+    UploadConflict,
     UploadLimitExceeded,
     WriteReceipt,
 )
@@ -150,6 +155,12 @@ async def test_concurrent_finalizers_publish_one_complete_immutable_object(
 ) -> None:
     command_value = command()
     state_value = state()
+    second_state = state().model_copy(
+        update={
+            "upload_id": UUID("20000000-0000-4000-8000-000000000002"),
+            "issue8_receipt_id": UUID("40000000-0000-4000-8000-000000000002"),
+        }
+    )
     first_registry = AuthorizedReadGrantRegistry()
     second_registry = AuthorizedReadGrantRegistry()
     first = FilesystemOriginalObjectStore(
@@ -164,16 +175,36 @@ async def test_concurrent_finalizers_publish_one_complete_immutable_object(
         generation_factory=lambda: UUID("50000000-0000-4000-8000-000000000002"),
         clock=lambda: NOW,
     )
+    publication_barrier = threading.Barrier(2)
+    first_publish = first._publish_no_replace
+    second_publish = second._publish_no_replace
+
+    def first_racing_publish(source: Path, destination: Path) -> None:
+        publication_barrier.wait(timeout=2.0)
+        first_publish(source, destination)
+
+    def second_racing_publish(source: Path, destination: Path) -> None:
+        publication_barrier.wait(timeout=2.0)
+        second_publish(source, destination)
+
+    first._publish_no_replace = first_racing_publish
+    second._publish_no_replace = second_racing_publish
     await first.begin_or_resume_upload(command_value, state_value)
-    await second.begin_or_resume_upload(command_value, state_value)
+    await second.begin_or_resume_upload(command_value, second_state)
     first_observed = await first.write_chunks(UPLOAD_ID, chunks(*split_chunks(CONTENT, 8)))
+    second_observed = await second.write_chunks(
+        second_state.upload_id,
+        chunks(*split_chunks(CONTENT, 8)),
+    )
 
     receipts = await asyncio.gather(
         first.finalize_upload(state_value, first_observed),
-        second.finalize_upload(state_value, first_observed),
+        second.finalize_upload(second_state, second_observed),
+        return_exceptions=True,
     )
 
-    assert receipts[0] == receipts[1]
+    assert sum(isinstance(receipt, WriteReceipt) for receipt in receipts) == 1
+    assert sum(isinstance(receipt, StorageError) for receipt in receipts) == 1
     inventory, cursor = await first.reconciliation_inventory()
     assert len(inventory) == 1
     assert cursor is None
@@ -220,6 +251,75 @@ async def test_corrupt_and_missing_finalized_bytes_fail_closed(
     payload.unlink()
     with pytest.raises(ObjectNotFound):
         await store.verify(receipt.object_reference, max_bytes=64)
+
+
+async def test_verify_never_reads_beyond_profile_object_limit(
+    filesystem_store: tuple[FilesystemOriginalObjectStore, AuthorizedReadGrantRegistry],
+) -> None:
+    store, _ = filesystem_store
+    receipt = await finalize(store)
+    payload = finalized_payload(store._root)
+    payload.write_bytes(CONTENT + (b"x" * 100))
+
+    with pytest.raises(UploadLimitExceeded):
+        await store.verify(receipt.object_reference, max_bytes=1024)
+
+
+async def test_publishing_manifest_is_indeterminate_and_not_readable(
+    filesystem_store: tuple[FilesystemOriginalObjectStore, AuthorizedReadGrantRegistry],
+) -> None:
+    store, _ = filesystem_store
+    receipt = await finalize(store)
+    manifest = next((store._root / "finalized").rglob("*.manifest.json"))
+    value = json.loads(manifest.read_text())
+    value["status"] = "publishing"
+    manifest.write_text(json.dumps(value))
+
+    with pytest.raises(StorageIntegrityIndeterminate):
+        await store.verify(receipt.object_reference, max_bytes=64)
+    with pytest.raises(StorageIntegrityIndeterminate):
+        await store.reconciliation_inventory()
+
+
+async def test_stale_reference_cannot_prepare_deletion(
+    filesystem_store: tuple[FilesystemOriginalObjectStore, AuthorizedReadGrantRegistry],
+) -> None:
+    store, _ = filesystem_store
+    receipt = await finalize(store)
+    stale = receipt.object_reference.model_copy(
+        update={"storage_generation": UUID("50000000-0000-4000-8000-000000000099")}
+    )
+    approval = DeletionApproval(
+        command_id=UUID("80000000-0000-4000-8000-000000000001"),
+        approval_reference=UUID("90000000-0000-4000-8000-000000000001"),
+    )
+
+    with pytest.raises(UploadConflict):
+        await store.prepare_deletion(stale, approval)
+
+    result = await store.verify(receipt.object_reference, max_bytes=64)
+    assert result.observed_length == len(CONTENT)
+
+
+async def test_tampered_staged_scope_is_rejected_without_escape(
+    filesystem_store: tuple[FilesystemOriginalObjectStore, AuthorizedReadGrantRegistry],
+    tmp_path: Path,
+) -> None:
+    store, _ = filesystem_store
+    active = await store.begin_or_resume_upload(command(), state())
+    observed = await store.write_chunks(
+        active.upload_id,
+        chunks(*split_chunks(CONTENT, 8)),
+    )
+    manifest = next((tmp_path / "staged").rglob("manifest.json"))
+    value = json.loads(manifest.read_text())
+    value["scope_key"] = "../escape"
+    manifest.write_text(json.dumps(value))
+
+    with pytest.raises(StorageIntegrityIndeterminate):
+        await store.finalize_upload(active, observed)
+
+    assert not (tmp_path / "escape").exists()
 
 
 async def test_interrupted_upload_is_resumable_after_adapter_restart(
@@ -326,7 +426,7 @@ async def test_operation_concurrency_limit_applies_backpressure(
     assert not inventory.done()
     release.set()
     await writer
-    assert inventory.result()[0] == ()
+    assert (await inventory)[0] == ()
 
 
 def test_symlinked_storage_root_is_unsupported(tmp_path: Path) -> None:
