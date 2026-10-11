@@ -15,6 +15,13 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from spine.application.diagnostics.audit import AuditEventRegistry
+from spine.application.diagnostics import DiagnosticContext, DiagnosticEventRegistry
+from spine.application.outbox import (
+    DispatchOutcomeCode,
+    OutboxConsumerRegistry,
+    OutboxConsumerSuccess,
+    OutboxDispatcher,
+)
 from spine.application.persistence.context import (
     EnvironmentScope,
     PersistenceOperation,
@@ -28,6 +35,8 @@ from spine.application.persistence.delivery import (
     StaleDeliveryLeaseError,
     UnresolvedOutboxIntent,
 )
+from spine.application.persistence.outbox import OutboxIntent
+from spine.application.persistence.errors import AuditConflictError
 from spine.infrastructure.db.migrations import upgrade_database
 from spine.infrastructure.db.operator import bootstrap_database_roles
 from spine.infrastructure.db.settings import (
@@ -37,6 +46,7 @@ from spine.infrastructure.db.settings import (
 )
 from spine.infrastructure.db.test_harness import TestDatabaseProvision
 from spine.infrastructure.outbox import PostgreSQLOutboxDeliveryRepository
+from spine.infrastructure.diagnostics import RecordingDiagnosticSink
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.persistence.postgresql import PostgreSQLPersistence
 from tests.contracts.persistence.adapter import DeliveryPersistenceAdapter
@@ -193,6 +203,7 @@ async def postgresql_delivery_adapter(
         session_factory=dispatcher_sessions,
         outbox_events=outbox_events,
         delivery_routes=routes,
+        audit_events=audit_events,
         lease_token_factory=(
             synthetic_uuid(value) for value in range(6700, 6900)
         ).__next__,
@@ -359,6 +370,207 @@ async def test_postgresql_claim_preserves_tenant_and_trace_scope(
     await contract_scope(postgresql_delivery_adapter)
 
 
+class _SuccessfulConsumer:
+    async def consume(
+        self,
+        intent: OutboxIntent,
+        diagnostic_context: DiagnosticContext,
+    ) -> OutboxConsumerSuccess:
+        del intent
+        return OutboxConsumerSuccess(diagnostic_context=diagnostic_context)
+
+
+async def test_postgresql_dispatch_commits_delivery_and_audit_atomically(
+    postgresql_delivery_adapter: DeliveryPersistenceAdapter,
+) -> None:
+    adapter = postgresql_delivery_adapter
+    workspace_id = synthetic_uuid(6560)
+    event_id = synthetic_uuid(6561)
+    context = adapter.workspace_context(workspace_id)
+    async with adapter.uow_factory(context) as uow:
+        await uow.workspaces.add(workspace(workspace_id))
+        await uow.outbox.append(
+            intent(
+                adapter,
+                workspace_id=workspace_id,
+                event_id=event_id,
+                trace_id=context.trace_id,
+                producer_deduplication_id=None,
+            )
+        )
+        await uow.commit()
+    consumers = OutboxConsumerRegistry()
+    consumers.register("workspace_projection", _SuccessfulConsumer())
+    diagnostic_events = DiagnosticEventRegistry.with_default_families()
+    diagnostic_sink = RecordingDiagnosticSink(diagnostic_events)
+    audit_event_id = synthetic_uuid(6562)
+    dispatcher = OutboxDispatcher(
+        repository=adapter.delivery_repository,
+        consumers=consumers,
+        audit_events=adapter.audit_events,
+        diagnostic_events=diagnostic_events,
+        diagnostic_sink=diagnostic_sink,
+        service_principal_id=synthetic_uuid(6563),
+        clock=iter(
+            (
+                datetime(2026, 10, 12, 13, tzinfo=timezone.utc),
+                datetime(2026, 10, 12, 13, 0, 1, tzinfo=timezone.utc),
+            )
+        ).__next__,
+        audit_event_id_source=lambda: audit_event_id,
+        retry_delay=lambda attempt_number: timedelta(seconds=attempt_number * 5),
+        lease_duration=timedelta(seconds=30),
+        handler_timeout=timedelta(seconds=5),
+        maximum_attempts=3,
+    )
+
+    report = await dispatcher.dispatch_batch(limit=1, worker_identity="worker_alpha")
+
+    assert report.outcome_codes == (DispatchOutcomeCode.DELIVERED,)
+    delivery = await adapter.delivery_repository.resolve(event_id)
+    assert delivery is not None
+    assert delivery.status.value == "delivered"
+    audit = await adapter.read_audit_event(
+        adapter.worker_workspace_context(workspace_id),
+        audit_event_id,
+    )
+    assert audit is not None
+    assert audit.causation_id == event_id
+    assert len(diagnostic_sink.events) == 1
+
+
+async def test_postgresql_unknown_persisted_event_is_quarantined_without_payload_load(
+    postgresql_delivery_adapter: DeliveryPersistenceAdapter,
+    delivery_database: DeliveryDatabase,
+) -> None:
+    adapter = postgresql_delivery_adapter
+    workspace_id = synthetic_uuid(6570)
+    event_id = synthetic_uuid(6571)
+    trace_id = synthetic_uuid(6572)
+    context = adapter.workspace_context(workspace_id)
+    async with adapter.uow_factory(context) as uow:
+        await uow.workspaces.add(workspace(workspace_id))
+        await uow.commit()
+    async with delivery_database.migration_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO spine.outbox_intents ("
+                "event_id, workspace_id, environment_id, event_type, "
+                "event_schema_version, payload, trace_id, created_at) VALUES ("
+                ":event_id, :workspace_id, NULL, 'future.event', 99, "
+                "CAST(:payload AS jsonb), :trace_id, :created_at)"
+            ),
+            {
+                "event_id": event_id,
+                "workspace_id": workspace_id,
+                "payload": '{"protected_unknown_shape":"never_loaded"}',
+                "trace_id": trace_id,
+                "created_at": datetime(2026, 10, 12, 14, tzinfo=timezone.utc),
+            },
+        )
+    diagnostics = DiagnosticEventRegistry.with_default_families()
+    dispatcher = OutboxDispatcher(
+        repository=adapter.delivery_repository,
+        consumers=OutboxConsumerRegistry(),
+        audit_events=adapter.audit_events,
+        diagnostic_events=diagnostics,
+        diagnostic_sink=RecordingDiagnosticSink(diagnostics),
+        service_principal_id=synthetic_uuid(6573),
+        clock=iter(
+            (
+                datetime(2026, 10, 12, 15, tzinfo=timezone.utc),
+                datetime(2026, 10, 12, 15, 0, 1, tzinfo=timezone.utc),
+            )
+        ).__next__,
+        audit_event_id_source=lambda: synthetic_uuid(6574),
+        retry_delay=lambda attempt_number: timedelta(seconds=5),
+        lease_duration=timedelta(seconds=30),
+        handler_timeout=timedelta(seconds=5),
+        maximum_attempts=3,
+    )
+
+    report = await dispatcher.dispatch_batch(limit=1, worker_identity="worker_alpha")
+
+    assert report.outcome_codes == (DispatchOutcomeCode.QUARANTINED,)
+    delivery = await adapter.delivery_repository.resolve(event_id)
+    assert delivery is not None
+    assert delivery.last_error_code == "delivery.unknown_event"
+
+
+async def test_postgresql_audit_conflict_rolls_back_delivery_transition(
+    postgresql_delivery_adapter: DeliveryPersistenceAdapter,
+    delivery_database: DeliveryDatabase,
+) -> None:
+    adapter = postgresql_delivery_adapter
+    workspace_id = synthetic_uuid(6580)
+    event_id = synthetic_uuid(6581)
+    audit_event_id = synthetic_uuid(6582)
+    service_principal_id = synthetic_uuid(6583)
+    context = adapter.workspace_context(workspace_id)
+    async with adapter.uow_factory(context) as uow:
+        await uow.workspaces.add(workspace(workspace_id))
+        await uow.outbox.append(
+            intent(
+                adapter,
+                workspace_id=workspace_id,
+                event_id=event_id,
+                trace_id=context.trace_id,
+                producer_deduplication_id=None,
+            )
+        )
+        await uow.commit()
+    occurred_at = datetime(2026, 10, 12, 16, tzinfo=timezone.utc)
+    async with delivery_database.migration_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO spine.audit_events ("
+                "audit_event_id, workspace_id, event_type, schema_version, origin, "
+                "service_principal_id, trace_id, occurred_at, outcome, reason, payload) "
+                "VALUES (:audit_event_id, :workspace_id, 'outbox.delivery', 1, "
+                "'worker', :service_principal_id, :trace_id, :occurred_at, "
+                "'succeeded', 'delivery.succeeded', CAST(:payload AS jsonb))"
+            ),
+            {
+                "audit_event_id": audit_event_id,
+                "workspace_id": workspace_id,
+                "service_principal_id": service_principal_id,
+                "trace_id": context.trace_id,
+                "occurred_at": occurred_at,
+                "payload": (
+                    '{"outbox_event_id":"00000000-0000-0000-0000-000000000001",'
+                    '"attempt_id":"00000000-0000-0000-0000-000000000002",'
+                    '"attempt_number":1}'
+                ),
+            },
+        )
+    consumers = OutboxConsumerRegistry()
+    consumers.register("workspace_projection", _SuccessfulConsumer())
+    diagnostics = DiagnosticEventRegistry.with_default_families()
+    diagnostic_sink = RecordingDiagnosticSink(diagnostics)
+    dispatcher = OutboxDispatcher(
+        repository=adapter.delivery_repository,
+        consumers=consumers,
+        audit_events=adapter.audit_events,
+        diagnostic_events=diagnostics,
+        diagnostic_sink=diagnostic_sink,
+        service_principal_id=service_principal_id,
+        clock=iter((occurred_at, occurred_at + timedelta(seconds=1))).__next__,
+        audit_event_id_source=lambda: audit_event_id,
+        retry_delay=lambda attempt_number: timedelta(seconds=5),
+        lease_duration=timedelta(seconds=30),
+        handler_timeout=timedelta(seconds=5),
+        maximum_attempts=3,
+    )
+
+    with pytest.raises(AuditConflictError):
+        await dispatcher.dispatch_batch(limit=1, worker_identity="worker_alpha")
+
+    delivery = await adapter.delivery_repository.resolve(event_id)
+    assert delivery is not None
+    assert delivery.status.value == "in_flight"
+    assert diagnostic_sink.events == ()
+
+
 async def test_dispatcher_role_is_limited_to_outbox_delivery_tables(
     delivery_database: DeliveryDatabase,
 ) -> None:
@@ -380,6 +592,28 @@ async def test_dispatcher_role_is_limited_to_outbox_delivery_tables(
                 )
             )
         ).one()
+        routine_privileges = (
+            await connection.execute(
+                text(
+                    "SELECT routine_name, privilege_type "
+                    "FROM information_schema.role_routine_grants "
+                    "WHERE grantee = :role AND routine_schema = 'spine'"
+                ),
+                {"role": DISPATCHER_ROLE},
+            )
+        ).all()
+        function_security = (
+            await connection.execute(
+                text(
+                    "SELECT procedure.prosecdef, procedure.proconfig "
+                    "FROM pg_proc AS procedure "
+                    "JOIN pg_namespace AS namespace "
+                    "ON namespace.oid = procedure.pronamespace "
+                    "WHERE namespace.nspname = 'spine' "
+                    "AND procedure.proname = 'finalize_outbox_delivery'"
+                )
+            )
+        ).one()
 
     assert set(privileges) == {
         ("outbox_deliveries", "INSERT"),
@@ -388,6 +622,9 @@ async def test_dispatcher_role_is_limited_to_outbox_delivery_tables(
         ("outbox_intents", "SELECT"),
     }
     assert tuple(security) == (True, True)
+    assert set(routine_privileges) == {("finalize_outbox_delivery", "EXECUTE")}
+    assert function_security.prosecdef is True
+    assert function_security.proconfig == ["search_path=pg_catalog, spine"]
 
 
 async def test_runtime_delivery_reads_are_isolated_between_workspaces(

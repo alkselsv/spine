@@ -68,6 +68,10 @@ from spine.application.persistence.delivery import (
     OutboxDeliveryStatus,
     StaleDeliveryLeaseError,
 )
+from spine.application.outbox.dispatch import (
+    OutboxDeliveryFinalization,
+    validate_outbox_delivery_audit,
+)
 from spine.domain.workspaces import Environment, Workspace
 from spine.domain.sources import SourceObject, SourceRevision, SourceRevisionProvenance
 from spine.domain.sources.canonicalization import assert_revision_digest
@@ -1241,10 +1245,14 @@ class _InMemoryOutboxDeliveryRepository:
         store: _Store,
         routes: OutboxDeliveryRouteRegistry,
         lease_token_factory: Callable[[], UUID],
+        audit_events: AuditEventRegistry,
+        audit_clock: Callable[[], datetime],
     ) -> None:
         self._store = store
         self._routes = routes
         self._lease_token_factory = lease_token_factory
+        self._audit_events = audit_events
+        self._audit_clock = audit_clock
 
     async def materialize(
         self,
@@ -1500,6 +1508,72 @@ class _InMemoryOutboxDeliveryRepository:
             self._store.outbox_deliveries[delivery.event_id] = renewed_delivery
             return renewed_claim
 
+    async def finalize(
+        self,
+        claim: ClaimedOutboxDelivery,
+        *,
+        finalization: OutboxDeliveryFinalization,
+        audit_event: AuditEvent,
+    ) -> OutboxDelivery:
+        async with self._store.lock:
+            delivery = self._active_delivery(
+                claim,
+                transition_at=finalization.occurred_at,
+            )
+            canonical_audit = validate_outbox_delivery_audit(
+                claim,
+                finalization,
+                audit_event,
+                registry=self._audit_events,
+            )
+            if self._store.fail_next_audit_append:
+                self._store.fail_next_audit_append = False
+                raise UnexpectedPersistenceError(_UNEXPECTED_FAILURE_MESSAGE)
+            assert canonical_audit.audit_event_id is not None
+            if canonical_audit.audit_event_id in self._store.audit_events:
+                raise AuditConflictError("Audit Event identity already exists.")
+            if finalization.status is OutboxDeliveryStatus.DELIVERED:
+                finalized = OutboxDelivery(
+                    event_id=delivery.event_id,
+                    workspace_id=delivery.workspace_id,
+                    environment_id=delivery.environment_id,
+                    consumer_name=delivery.consumer_name,
+                    status=OutboxDeliveryStatus.DELIVERED,
+                    attempt_count=delivery.attempt_count,
+                    delivered_at=finalization.occurred_at,
+                    version=delivery.version + 1,
+                )
+            elif finalization.status is OutboxDeliveryStatus.RETRY_SCHEDULED:
+                finalized = OutboxDelivery(
+                    event_id=delivery.event_id,
+                    workspace_id=delivery.workspace_id,
+                    environment_id=delivery.environment_id,
+                    consumer_name=delivery.consumer_name,
+                    status=OutboxDeliveryStatus.RETRY_SCHEDULED,
+                    attempt_count=delivery.attempt_count,
+                    next_attempt_at=finalization.next_attempt_at,
+                    last_error_code=finalization.error_code,
+                    version=delivery.version + 1,
+                )
+            else:
+                finalized = OutboxDelivery(
+                    event_id=delivery.event_id,
+                    workspace_id=delivery.workspace_id,
+                    environment_id=delivery.environment_id,
+                    consumer_name=delivery.consumer_name,
+                    status=OutboxDeliveryStatus.QUARANTINED,
+                    attempt_count=delivery.attempt_count,
+                    last_error_code=finalization.error_code,
+                    quarantined_at=finalization.occurred_at,
+                    version=delivery.version + 1,
+                )
+            stored_audit = canonical_audit.detached_snapshot(
+                update={"appended_at": self._audit_clock()}
+            )
+            self._store.outbox_deliveries[delivery.event_id] = finalized
+            self._store.audit_events[canonical_audit.audit_event_id] = stored_audit
+            return finalized.model_copy(deep=True)
+
 
 class InMemoryPersistence:
     """Process-local deterministic adapter and its explicitly scoped entry points."""
@@ -1544,6 +1618,8 @@ class InMemoryPersistence:
             store=store,
             routes=selected_delivery_routes,
             lease_token_factory=delivery_lease_token_factory,
+            audit_events=selected_audit_events,
+            audit_clock=audit_clock,
         )
 
     def fail_next_audit_append(self) -> None:

@@ -156,7 +156,9 @@ Provisioning has three separate authorities:
 - `spine_dispatcher` is a non-owner login with `NOBYPASSRLS`, no role
   memberships, read access to immutable outbox intents, and read/write access
   only to mutable outbox delivery control rows. It has no access to canonical
-  business or audit tables.
+  business or audit tables. Atomic delivery finalization is exposed through one
+  fixed-shape `SECURITY DEFINER` function with a controlled search path; the role
+  receives `EXECUTE`, not general Audit Event table privileges.
 
 Set the operator-only values in the environment of a trusted deployment step,
 not in an application runtime:
@@ -192,7 +194,7 @@ access, forced RLS protection, and existing schema owner before it changes the
 schema. Runtime, dispatcher, and migration connections use the controlled
 search path `pg_catalog,spine`. The Alembic version table is
 `spine.alembic_version`, and the committed history has one linear head:
-`20261011_13`. The source-observation migrations add the source ledger tables,
+`20261012_14`. The source-observation migrations add the source ledger tables,
 integrity constraints, persisted canonicalization profile identity, and
 database-side canonical validation. The delivery migration adds mutable
 at-least-once delivery control state without weakening immutable outbox intents.
@@ -209,7 +211,7 @@ invoke it or access its tables.
 
 Application startup never creates roles or schemas, invokes Alembic, or calls
 `metadata.create_all`. Readiness succeeds only when PostgreSQL major 17 is in
-use, the database reports exactly head `20261011_13`, the connected user is the
+use, the database reports exactly head `20261012_14`, the connected user is the
 configured restricted runtime role, required grants and forced RLS are intact,
 and transaction-local Workspace/Environment context can be bound. Empty,
 older, newer, unknown, and multiple-head states fail closed; the newly created
