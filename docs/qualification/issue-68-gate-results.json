@@ -1,5 +1,5 @@
 {
-  "staged_diff_sha256": "d5fe4d3a329787da82b5d0c2a1a4a651d40df1c39c12de1b9a23784500d6783f",
+  "staged_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "results": [
     {
       "command": "uv sync --extra dev",
