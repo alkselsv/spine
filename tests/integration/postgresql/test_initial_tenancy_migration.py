@@ -273,6 +273,50 @@ DELIVERY_COLUMNS = {
     )
 }
 
+ADMISSION_CONSTRAINTS = {
+    "pk_admission_decisions",
+    "uq_admission_decisions_scope_revision_id",
+    "uq_admission_decisions_revision_version",
+    "fk_admission_decisions_revision",
+    "fk_admission_decisions_predecessor",
+    "ck_admission_decisions_version_positive",
+    "ck_admission_decisions_disposition",
+    "ck_admission_decisions_profile_identifier",
+    "ck_admission_decisions_reason_schema_identifier",
+    "ck_admission_decisions_reason_codes",
+    "ck_admission_decisions_authority_reference",
+    "ck_admission_decisions_references_nonzero",
+    "ck_admission_decisions_root_version",
+}
+ADMISSION_INDEXES = {
+    "pk_admission_decisions",
+    "uq_admission_decisions_scope_revision_id",
+    "uq_admission_decisions_revision_version",
+    "uq_admission_decisions_root",
+    "uq_admission_decisions_successor",
+    "ix_admission_decisions_effective",
+}
+ADMISSION_COLUMNS = {
+    ("admission_decisions", column)
+    for column in (
+        "admission_decision_id",
+        "workspace_id",
+        "environment_id",
+        "source_object_id",
+        "source_revision_id",
+        "decision_version",
+        "predecessor_decision_id",
+        "disposition",
+        "validator_profile_version",
+        "reason_schema_version",
+        "reason_codes",
+        "authority_reference",
+        "trace_id",
+        "audit_event_id",
+        "decided_at",
+    )
+}
+
 
 @dataclass(frozen=True, slots=True)
 class MigratedDatabase:
@@ -1102,6 +1146,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
     assert revision == HEAD_REVISION
     assert tables == {
         "alembic_version",
+        "admission_decisions",
         "audit_events",
         "authentication_alias_bindings",
         "authorization_generations",
@@ -1198,6 +1243,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         AUTHORIZATION_DIRECTORY_CONSTRAINTS
         | AUDIT_CONSTRAINTS
         | DELIVERY_CONSTRAINTS
+        | ADMISSION_CONSTRAINTS
     )
     missing_final_constraints = {
         expected
@@ -1258,7 +1304,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "pk_source_revision_provenance",
         "uq_source_revision_provenance_event",
         "ix_source_revision_provenance_revision_order",
-    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES
+    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
         "workspaces": (True, True),
@@ -1279,6 +1325,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "source_canonical_unicode": (False, False),
         "source_canonical_compositions": (False, False),
         "source_canonical_bcp47": (False, False),
+        "admission_decisions": (True, True),
         "source_objects": (True, True),
         "source_revisions": (True, True),
         "source_revision_provenance": (True, True),
@@ -1362,6 +1409,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "source_objects": (True, True, False, False),
         "source_revisions": (True, True, False, False),
         "source_revision_provenance": (True, True, False, False),
+        "admission_decisions": (True, True, False, False),
         "source_canonical_tables": (True, False, False, False),
         "source_canonical_unicode": (True, False, False, False),
         "source_canonical_compositions": (True, False, False, False),
@@ -1473,6 +1521,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         )
     assert tables == {
         "alembic_version",
+        "admission_decisions",
         "audit_events",
         "authentication_alias_bindings",
         "authorization_generations",
@@ -1519,7 +1568,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "uq_initial_workspace_bootstrap_action_id",
         "uq_initial_workspace_bootstrap_workspace_id",
         "uq_workspaces_slug",
-    } | AUTHORIZATION_DIRECTORY_CONSTRAINTS | AUDIT_CONSTRAINTS | DELIVERY_CONSTRAINTS
+    } | AUTHORIZATION_DIRECTORY_CONSTRAINTS | AUDIT_CONSTRAINTS | DELIVERY_CONSTRAINTS | ADMISSION_CONSTRAINTS
     assert set(columns) == {
         ("alembic_version", "version_num"),
         ("environments", "created_at"),
@@ -1562,7 +1611,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         ("workspaces", "display_name"),
         ("workspaces", "id"),
         ("workspaces", "slug"),
-    } | AUTHORIZATION_DIRECTORY_COLUMNS | AUDIT_COLUMNS | DELIVERY_COLUMNS
+    } | AUTHORIZATION_DIRECTORY_COLUMNS | AUDIT_COLUMNS | DELIVERY_COLUMNS | ADMISSION_COLUMNS
     assert columns[("workspaces", "id")] == ("uuid", "NO", None)
     assert columns[("environments", "id")] == ("uuid", "NO", None)
     event_id_type, event_id_nullable, event_id_default = columns[
@@ -1611,7 +1660,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "uq_outbox_intents_environment_producer",
         "uq_outbox_intents_workspace_producer",
         "uq_workspaces_slug",
-    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES
+    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES
     assert owners == {MIGRATION_ROLE}
 
 
@@ -2013,6 +2062,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'outbox_deliveries', "
                         "'workspace_memberships', 'environment_memberships', "
                         "'environment_role_bindings', 'authorization_generations', "
+                        "'admission_decisions', "
                         "'source_objects', 'source_revisions', "
                         "'source_revision_provenance')"
                     )
@@ -2046,6 +2096,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         }
 
     assert tables == {
+        "admission_decisions": (True, True),
         "workspaces": (True, True),
         "environments": (True, True),
         "idempotency_receipts": (True, True),
@@ -3041,13 +3092,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261010_12_source_canonical_validation.py",
         "20261011_13_outbox_deliveries.py",
         "20261012_14_atomic_outbox_delivery_audit.py",
+        "20261012_15_admission_decisions.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261012_15_injected_failure.py").write_text(
+    (target / "versions" / "20261012_16_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261012_15'\n"
-        "down_revision = '20261012_14'\n"
+        "revision = '20261012_16'\n"
+        "down_revision = '20261012_15'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

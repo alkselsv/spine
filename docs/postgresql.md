@@ -194,9 +194,12 @@ access, forced RLS protection, and existing schema owner before it changes the
 schema. Runtime, dispatcher, and migration connections use the controlled
 search path `pg_catalog,spine`. The Alembic version table is
 `spine.alembic_version`, and the committed history has one linear head:
-`20261012_14`. The source-observation migrations add the source ledger tables,
+`20261012_15`. The source-observation migrations add the source ledger tables,
 integrity constraints, persisted canonicalization profile identity, and
-database-side canonical validation. The delivery migration adds mutable
+database-side canonical validation. The admission migration adds the
+environment-scoped append-only `admission_decisions` CAS ledger, including
+quarantine/rejection dispositions, immutable validator evidence, predecessor
+uniqueness, forced RLS, and least-privilege runtime grants. The delivery migration adds mutable
 at-least-once delivery control state without weakening immutable outbox intents.
 The readiness migration grants the runtime role read-only access
 to the revision identity; K0 adds migration-owned, fixed-search-path receipt
@@ -211,7 +214,7 @@ invoke it or access its tables.
 
 Application startup never creates roles or schemas, invokes Alembic, or calls
 `metadata.create_all`. Readiness succeeds only when PostgreSQL major 17 is in
-use, the database reports exactly head `20261012_14`, the connected user is the
+use, the database reports exactly head `20261012_15`, the connected user is the
 configured restricted runtime role, required grants and forced RLS are intact,
 and transaction-local Workspace/Environment context can be bound. Empty,
 older, newer, unknown, and multiple-head states fail closed; the newly created

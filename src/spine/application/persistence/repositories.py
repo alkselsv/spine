@@ -13,7 +13,12 @@ from spine.application.persistence.idempotency import (
     OpaqueResultReference,
 )
 from spine.application.persistence.context import PersistenceOperation
-from spine.domain.sources import SourceObject, SourceRevision, SourceRevisionProvenance
+from spine.domain.sources import (
+    AdmissionDecision,
+    SourceObject,
+    SourceRevision,
+    SourceRevisionProvenance,
+)
 from spine.domain.sources.profile import OBSERVATION_SCHEMA
 from spine.domain.workspaces import Environment, Workspace
 
@@ -127,6 +132,20 @@ class SourceObservationRepository(Protocol):
     async def record_observation(self, command: SourceObservationCommand) -> SourceObservationResult: ...
 
     async def resolve_revision(self, revision_id: UUID) -> SourceRevision | None: ...
+
+
+class AdmissionRepository(Protocol):
+    """Append-only admission decision repository.
+
+    Implementations enforce the predecessor/version CAS chain.  The repository
+    does not infer admission from parser or projection state.
+    """
+
+    async def append_decision(self, decision: AdmissionDecision) -> AdmissionDecision: ...
+
+    async def resolve(self, decision_id: UUID) -> AdmissionDecision | None: ...
+
+    async def resolve_effective(self, revision_id: UUID) -> AdmissionDecision | None: ...
 from spine.application.persistence.idempotency import IdempotencyRepository
 
 
@@ -144,6 +163,7 @@ class EnvironmentRepository(Protocol):
 
 __all__ = [
     "EnvironmentRepository",
+    "AdmissionRepository",
     "IdempotencyRepository",
     "SourceObservationRepository",
     "SourceObservationCommand",

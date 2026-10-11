@@ -70,6 +70,7 @@ from spine.application.persistence.outbox import (
 from spine.application.persistence.repositories import (
     EnvironmentRepository,
     IdempotencyRepository,
+    AdmissionRepository,
     WorkspaceRepository,
     SourceObservationRepository,
     SourceObservationCommand,
@@ -97,6 +98,7 @@ __all__ = [
     "DuplicateDeliveryRouteError",
     "EnvironmentScope",
     "EnvironmentRepository",
+    "AdmissionRepository",
     "ConstraintConflictError",
     "ObservationIntegrityConflictError",
     "ObservationCommandDigestMismatchError",
