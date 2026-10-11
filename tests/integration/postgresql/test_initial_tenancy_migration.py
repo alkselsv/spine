@@ -48,8 +48,10 @@ from tests.contracts.persistence.source_canonical_vectors import (
 pytestmark = pytest.mark.postgresql
 MIGRATION_ROLE = "spine_migration"
 RUNTIME_ROLE = "spine_runtime"
+DISPATCHER_ROLE = "spine_dispatcher"
 MIGRATION_PASSWORD = "migration-test-secret"
 RUNTIME_PASSWORD = "runtime-test-secret"
+DISPATCHER_PASSWORD = "dispatcher-test-secret"
 INITIAL_REVISION = "20261009_01"
 RLS_REVISION = "20261009_02"
 IDEMPOTENCY_REVISION = "20261010_03"
@@ -59,7 +61,8 @@ K0_REVISION = "20261010_06"
 AUTHORIZATION_REVISION = "20261010_07"
 AUDIT_REVISION = "20261010_08"
 SOURCE_OBSERVATIONS_REVISION = "20261010_12"
-HEAD_REVISION = SOURCE_OBSERVATIONS_REVISION
+DELIVERY_REVISION = "20261011_13"
+HEAD_REVISION = DELIVERY_REVISION
 WORKSPACE_A = UUID("20000000-0000-0000-0000-000000000001")
 WORKSPACE_B = UUID("20000000-0000-0000-0000-000000000002")
 ENVIRONMENT_A = UUID("30000000-0000-0000-0000-000000000001")
@@ -232,6 +235,43 @@ AUDIT_COLUMNS = {
     )
 }
 
+DELIVERY_CONSTRAINTS = {
+    "ck_outbox_deliveries_attempt_count_nonnegative",
+    "ck_outbox_deliveries_consumer_identifier",
+    "ck_outbox_deliveries_error_code_identifier",
+    "ck_outbox_deliveries_lease_owner_identifier",
+    "ck_outbox_deliveries_state_complete",
+    "ck_outbox_deliveries_version_nonnegative",
+    "fk_outbox_deliveries_event_id_outbox_intents",
+    "pk_outbox_deliveries",
+}
+DELIVERY_INDEXES = {
+    "ix_outbox_deliveries_due",
+    "ix_outbox_deliveries_tenant_status",
+    "pk_outbox_deliveries",
+}
+DELIVERY_COLUMNS = {
+    ("outbox_deliveries", column)
+    for column in (
+        "event_id",
+        "workspace_id",
+        "environment_id",
+        "consumer_name",
+        "status",
+        "attempt_count",
+        "next_attempt_at",
+        "lease_owner",
+        "lease_token",
+        "lease_expires_at",
+        "last_error_code",
+        "delivered_at",
+        "quarantined_at",
+        "version",
+        "created_at",
+        "updated_at",
+    )
+}
+
 
 @dataclass(frozen=True, slots=True)
 class MigratedDatabase:
@@ -270,12 +310,15 @@ async def migrated_database(
         migration_password=MIGRATION_PASSWORD,
         runtime_role=RUNTIME_ROLE,
         runtime_password=RUNTIME_PASSWORD,
+        dispatcher_role=DISPATCHER_ROLE,
+        dispatcher_password=DISPATCHER_PASSWORD,
     )
     await bootstrap_database_roles(operator)
     migration = MigrationDatabaseSettings(
         url=_role_url(postgresql_provision, MIGRATION_ROLE, MIGRATION_PASSWORD),
         migration_role=MIGRATION_ROLE,
         runtime_role=RUNTIME_ROLE,
+        dispatcher_role=DISPATCHER_ROLE,
     )
     await asyncio.to_thread(upgrade_database, migration, revision=INITIAL_REVISION)
     retained_revisions: list[str] = []
@@ -1093,6 +1136,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "idempotency_receipts",
         "initial_workspace_bootstrap",
         "outbox_intents",
+        "outbox_deliveries",
         "workspace_memberships",
         "workspaces",
         "source_canonical_tables",
@@ -1173,7 +1217,11 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ck_source_revision_provenance_digest",
         "ck_source_revision_provenance_fields",
     }
-    expected_final_constraints |= AUTHORIZATION_DIRECTORY_CONSTRAINTS | AUDIT_CONSTRAINTS
+    expected_final_constraints |= (
+        AUTHORIZATION_DIRECTORY_CONSTRAINTS
+        | AUDIT_CONSTRAINTS
+        | DELIVERY_CONSTRAINTS
+    )
     missing_final_constraints = {
         expected
         for expected in expected_final_constraints
@@ -1233,7 +1281,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "pk_source_revision_provenance",
         "uq_source_revision_provenance_event",
         "ix_source_revision_provenance_revision_order",
-    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES
+    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
         "workspaces": (True, True),
@@ -1241,6 +1289,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "idempotency_receipts": (True, True),
         "initial_workspace_bootstrap": (True, True),
         "outbox_intents": (True, True),
+        "outbox_deliveries": (True, True),
         "workspace_memberships": (True, True),
         "environment_memberships": (True, True),
         "environment_role_bindings": (True, True),
@@ -1263,7 +1312,10 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         for table_name, flags in expected_rls.items()
         if flags == (True, True)
     }
-    standard_tenant_rls_tables = tenant_rls_tables - {"audit_events"}
+    standard_tenant_rls_tables = tenant_rls_tables - {
+        "audit_events",
+        "outbox_deliveries",
+    }
     assert set(policies) == {
         (table_name, f"pol_{table_name}_{policy_kind}")
         for table_name in standard_tenant_rls_tables
@@ -1272,6 +1324,10 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         ("audit_events", "pol_audit_events_tenant_read"),
         ("audit_events", "pol_audit_events_tenant_append"),
         ("audit_events", "pol_audit_events_migration_maintenance"),
+        ("outbox_intents", "pol_outbox_intents_dispatcher_read"),
+        ("outbox_deliveries", "pol_outbox_deliveries_tenant_read"),
+        ("outbox_deliveries", "pol_outbox_deliveries_dispatcher"),
+        ("outbox_deliveries", "pol_outbox_deliveries_migration_maintenance"),
     }
     for table_name in standard_tenant_rls_tables:
         tenant_policy = policies[(table_name, f"pol_{table_name}_tenant_isolation")]
@@ -1294,6 +1350,22 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "true",
         "true",
     )
+    assert policies[("outbox_intents", "pol_outbox_intents_dispatcher_read")][0] == (
+        DISPATCHER_ROLE,
+    )
+    assert policies[("outbox_deliveries", "pol_outbox_deliveries_tenant_read")][0] == (
+        RUNTIME_ROLE,
+    )
+    assert policies[("outbox_deliveries", "pol_outbox_deliveries_dispatcher")] == (
+        (DISPATCHER_ROLE,),
+        "true",
+        "true",
+    )
+    assert policies[("outbox_deliveries", "pol_outbox_deliveries_migration_maintenance")] == (
+        (MIGRATION_ROLE,),
+        "true",
+        "true",
+    )
     assert privileges == {
         "alembic_version": (True, False, False, False),
         "audit_events": (True, True, False, False),
@@ -1302,6 +1374,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "idempotency_receipts": (True, True, False, False),
         "initial_workspace_bootstrap": (False, False, False, False),
         "outbox_intents": (False, True, False, False),
+        "outbox_deliveries": (True, False, False, False),
         "authentication_alias_bindings": (False, False, False, False),
         "authorization_generations": (False, False, False, False),
         "canonical_human_identities": (False, False, False, False),
@@ -1442,6 +1515,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "idempotency_receipts",
         "initial_workspace_bootstrap",
         "outbox_intents",
+        "outbox_deliveries",
         "workspace_memberships",
         "workspaces",
     }
@@ -1476,7 +1550,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "uq_initial_workspace_bootstrap_action_id",
         "uq_initial_workspace_bootstrap_workspace_id",
         "uq_workspaces_slug",
-    } | AUTHORIZATION_DIRECTORY_CONSTRAINTS | AUDIT_CONSTRAINTS
+    } | AUTHORIZATION_DIRECTORY_CONSTRAINTS | AUDIT_CONSTRAINTS | DELIVERY_CONSTRAINTS
     assert set(columns) == {
         ("alembic_version", "version_num"),
         ("environments", "created_at"),
@@ -1519,7 +1593,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         ("workspaces", "display_name"),
         ("workspaces", "id"),
         ("workspaces", "slug"),
-    } | AUTHORIZATION_DIRECTORY_COLUMNS | AUDIT_COLUMNS
+    } | AUTHORIZATION_DIRECTORY_COLUMNS | AUDIT_COLUMNS | DELIVERY_COLUMNS
     assert columns[("workspaces", "id")] == ("uuid", "NO", None)
     assert columns[("environments", "id")] == ("uuid", "NO", None)
     event_id_type, event_id_nullable, event_id_default = columns[
@@ -1540,6 +1614,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "idempotency_receipts",
         "initial_workspace_bootstrap",
         "outbox_intents",
+        "outbox_deliveries",
     ):
         data_type, nullable, default = columns[(table, "created_at")]
         assert data_type == "timestamp with time zone"
@@ -1567,7 +1642,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "uq_outbox_intents_environment_producer",
         "uq_outbox_intents_workspace_producer",
         "uq_workspaces_slug",
-    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES
+    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES
     assert owners == {MIGRATION_ROLE}
 
 
@@ -1966,6 +2041,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "AND relation.relname IN "
                         "('workspaces', 'environments', 'idempotency_receipts', "
                         "'initial_workspace_bootstrap', 'outbox_intents', "
+                        "'outbox_deliveries', "
                         "'workspace_memberships', 'environment_memberships', "
                         "'environment_role_bindings', 'authorization_generations', "
                         "'source_objects', 'source_revisions', "
@@ -2006,6 +2082,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "idempotency_receipts": (True, True),
         "initial_workspace_bootstrap": (True, True),
         "outbox_intents": (True, True),
+        "outbox_deliveries": (True, True),
         "workspace_memberships": (True, True),
         "environment_memberships": (True, True),
         "environment_role_bindings": (True, True),
@@ -2014,12 +2091,18 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "source_revisions": (True, True),
         "source_revision_provenance": (True, True),
     }
+    standard_tables = set(tables) - {"outbox_deliveries"}
     assert set(policies) == {
         (table_name, f"pol_{table_name}_{policy_kind}")
-        for table_name in tables
+        for table_name in standard_tables
         for policy_kind in ("tenant_isolation", "migration_maintenance")
+    } | {
+        ("outbox_intents", "pol_outbox_intents_dispatcher_read"),
+        ("outbox_deliveries", "pol_outbox_deliveries_tenant_read"),
+        ("outbox_deliveries", "pol_outbox_deliveries_dispatcher"),
+        ("outbox_deliveries", "pol_outbox_deliveries_migration_maintenance"),
     }
-    for table_name in tables:
+    for table_name in standard_tables:
         roles, using_expression, check_expression = policies[
             (table_name, f"pol_{table_name}_tenant_isolation")
         ]
@@ -2032,6 +2115,22 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             (table_name, f"pol_{table_name}_migration_maintenance")
         ]
         assert maintenance == ([MIGRATION_ROLE], "true", "true")
+    assert policies[("outbox_intents", "pol_outbox_intents_dispatcher_read")][0] == [
+        DISPATCHER_ROLE
+    ]
+    delivery_read = policies[
+        ("outbox_deliveries", "pol_outbox_deliveries_tenant_read")
+    ]
+    assert delivery_read[0] == [RUNTIME_ROLE]
+    assert delivery_read[1] is not None and delivery_read[2] is None
+    assert policies[("outbox_deliveries", "pol_outbox_deliveries_dispatcher")] == (
+        [DISPATCHER_ROLE],
+        "true",
+        "true",
+    )
+    assert policies[
+        ("outbox_deliveries", "pol_outbox_deliveries_migration_maintenance")
+    ] == ([MIGRATION_ROLE], "true", "true")
     assert "spine.environment_id" in policies[
         ("environments", "pol_environments_tenant_isolation")
     ][1]
@@ -2971,13 +3070,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261010_10_source_observation_integrity.py",
         "20261010_11_source_profile_identity.py",
         "20261010_12_source_canonical_validation.py",
+        "20261011_13_outbox_deliveries.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261010_13_injected_failure.py").write_text(
+    (target / "versions" / "20261011_14_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261010_13'\n"
-        "down_revision = '20261010_12'\n"
+        "revision = '20261011_14'\n"
+        "down_revision = '20261011_13'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

@@ -26,9 +26,11 @@ pytestmark = pytest.mark.postgresql
 
 MIGRATION_ROLE = "spine_migration"
 RUNTIME_ROLE = "spine_runtime"
+DISPATCHER_ROLE = "spine_dispatcher"
 MIGRATION_PASSWORD = "migration-readiness-secret"
 RUNTIME_PASSWORD = "runtime-readiness-secret"
-HEAD_REVISION = "20261010_12"
+DISPATCHER_PASSWORD = "dispatcher-readiness-secret"
+HEAD_REVISION = "20261011_13"
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +68,8 @@ async def readiness_database(
         migration_password=MIGRATION_PASSWORD,
         runtime_role=RUNTIME_ROLE,
         runtime_password=RUNTIME_PASSWORD,
+        dispatcher_role=DISPATCHER_ROLE,
+        dispatcher_password=DISPATCHER_PASSWORD,
     )
     await bootstrap_database_roles(operator)
     migration_url = _role_url(
@@ -79,6 +83,7 @@ async def readiness_database(
             url=migration_url,
             migration_role=MIGRATION_ROLE,
             runtime_role=RUNTIME_ROLE,
+            dispatcher_role=DISPATCHER_ROLE,
         ),
     )
     yield ReadinessDatabase(

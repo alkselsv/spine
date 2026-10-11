@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum, auto
 from types import TracebackType
 from typing import NoReturn, TypeVar
@@ -60,6 +60,13 @@ from spine.application.persistence.outbox import (
     OutboxEventRegistry,
     OutboxIntent,
     validate_outbox_intent_for_context,
+)
+from spine.application.persistence.delivery import (
+    ClaimedOutboxDelivery,
+    OutboxDelivery,
+    OutboxDeliveryRouteRegistry,
+    OutboxDeliveryStatus,
+    StaleDeliveryLeaseError,
 )
 from spine.domain.workspaces import Environment, Workspace
 from spine.domain.sources import SourceObject, SourceRevision, SourceRevisionProvenance
@@ -117,6 +124,7 @@ class _Store:
         self.initialized = False
         self.bootstrap_sealed = False
         self.fail_next_audit_append = False
+        self.outbox_deliveries: dict[UUID, OutboxDelivery] = {}
 
     @property
     def workspaces(self) -> dict[UUID, Workspace]:
@@ -1226,6 +1234,273 @@ class _InMemoryInitialWorkspaceBootstrap:
             self._store.bootstrap_sealed = True
 
 
+class _InMemoryOutboxDeliveryRepository:
+    def __init__(
+        self,
+        *,
+        store: _Store,
+        routes: OutboxDeliveryRouteRegistry,
+        lease_token_factory: Callable[[], UUID],
+    ) -> None:
+        self._store = store
+        self._routes = routes
+        self._lease_token_factory = lease_token_factory
+
+    async def materialize(
+        self,
+        *,
+        limit: int,
+        materialized_at: datetime,
+    ) -> tuple[OutboxDelivery, ...]:
+        if isinstance(limit, bool) or limit <= 0 or limit > 1000:
+            raise ValueError("limit must be between 1 and 1000.")
+        materialized: list[OutboxDelivery] = []
+        async with self._store.lock:
+            for event_id, intent in sorted(
+                self._store.outbox_intents.items(), key=lambda item: item[0].int
+            ):
+                if len(materialized) == limit:
+                    break
+                if event_id in self._store.outbox_deliveries:
+                    continue
+                route = self._routes.resolve_optional(
+                    intent.event_type,
+                    intent.schema_version,
+                )
+                delivery = OutboxDelivery(
+                    event_id=event_id,
+                    workspace_id=intent.workspace_id,
+                    environment_id=intent.environment_id,
+                    consumer_name=(
+                        route.consumer_name if route is not None else None
+                    ),
+                    status=OutboxDeliveryStatus.PENDING,
+                    attempt_count=0,
+                    next_attempt_at=materialized_at,
+                    version=0,
+                )
+                self._store.outbox_deliveries[event_id] = delivery
+                materialized.append(delivery.model_copy(deep=True))
+        return tuple(materialized)
+
+    async def claim_due(
+        self,
+        *,
+        limit: int,
+        worker_identity: str,
+        claimed_at: datetime,
+        lease_duration: timedelta,
+    ) -> tuple[ClaimedOutboxDelivery, ...]:
+        if isinstance(limit, bool) or limit <= 0 or limit > 1000:
+            raise ValueError("limit must be between 1 and 1000.")
+        if lease_duration <= timedelta(0):
+            raise ValueError("lease_duration must be positive.")
+        lease_expires_at = claimed_at + lease_duration
+        claims: list[ClaimedOutboxDelivery] = []
+        async with self._store.lock:
+            for event_id, intent in sorted(
+                self._store.outbox_intents.items(), key=lambda item: item[0].int
+            ):
+                if len(claims) == limit:
+                    break
+                existing = self._store.outbox_deliveries.get(event_id)
+                if existing is None:
+                    attempt_number = 1
+                    version = 1
+                elif (
+                    existing.status
+                    in (
+                        OutboxDeliveryStatus.PENDING,
+                        OutboxDeliveryStatus.RETRY_SCHEDULED,
+                    )
+                    and existing.next_attempt_at is not None
+                    and existing.next_attempt_at <= claimed_at
+                ) or (
+                    existing.status is OutboxDeliveryStatus.IN_FLIGHT
+                    and existing.lease_expires_at is not None
+                    and existing.lease_expires_at <= claimed_at
+                ):
+                    attempt_number = existing.attempt_count + 1
+                    version = existing.version + 1
+                else:
+                    continue
+                route = self._routes.resolve_optional(
+                    intent.event_type,
+                    intent.schema_version,
+                )
+                consumer_name = route.consumer_name if route is not None else None
+                lease_token = self._lease_token_factory()
+                delivery = OutboxDelivery(
+                    event_id=event_id,
+                    workspace_id=intent.workspace_id,
+                    environment_id=intent.environment_id,
+                    consumer_name=consumer_name,
+                    status=OutboxDeliveryStatus.IN_FLIGHT,
+                    attempt_count=attempt_number,
+                    lease_owner=worker_identity,
+                    lease_token=lease_token,
+                    lease_expires_at=lease_expires_at,
+                    version=version,
+                )
+                claim = ClaimedOutboxDelivery(
+                    intent=intent.model_copy(deep=True),
+                    consumer_name=consumer_name,
+                    worker_identity=worker_identity,
+                    lease_token=lease_token,
+                    claimed_at=claimed_at,
+                    lease_expires_at=lease_expires_at,
+                    attempt_number=attempt_number,
+                    delivery_version=version,
+                )
+                self._store.outbox_deliveries[event_id] = delivery
+                claims.append(claim)
+        return tuple(claims)
+
+    async def resolve(self, event_id: UUID) -> OutboxDelivery | None:
+        if not isinstance(event_id, UUID) or event_id.int == 0:
+            raise ValueError("event_id must be a non-zero UUID.")
+        async with self._store.lock:
+            delivery = self._store.outbox_deliveries.get(event_id)
+            return delivery.model_copy(deep=True) if delivery is not None else None
+
+    def _active_delivery(
+        self,
+        claim: ClaimedOutboxDelivery,
+        *,
+        transition_at: datetime,
+    ) -> OutboxDelivery:
+        event_id = claim.intent.event_id
+        delivery = (
+            self._store.outbox_deliveries.get(event_id)
+            if event_id is not None
+            else None
+        )
+        if (
+            delivery is None
+            or delivery.status is not OutboxDeliveryStatus.IN_FLIGHT
+            or delivery.lease_owner != claim.worker_identity
+            or delivery.lease_token != claim.lease_token
+            or delivery.version != claim.delivery_version
+            or delivery.attempt_count != claim.attempt_number
+            or delivery.lease_expires_at is None
+            or transition_at >= delivery.lease_expires_at
+        ):
+            raise StaleDeliveryLeaseError("Outbox delivery lease is not active.")
+        return delivery
+
+    async def acknowledge(
+        self,
+        claim: ClaimedOutboxDelivery,
+        *,
+        completed_at: datetime,
+    ) -> OutboxDelivery:
+        async with self._store.lock:
+            delivery = self._active_delivery(claim, transition_at=completed_at)
+            delivered = OutboxDelivery(
+                event_id=delivery.event_id,
+                workspace_id=delivery.workspace_id,
+                environment_id=delivery.environment_id,
+                consumer_name=delivery.consumer_name,
+                status=OutboxDeliveryStatus.DELIVERED,
+                attempt_count=delivery.attempt_count,
+                delivered_at=completed_at,
+                version=delivery.version + 1,
+            )
+            self._store.outbox_deliveries[delivery.event_id] = delivered
+            return delivered.model_copy(deep=True)
+
+    async def reschedule(
+        self,
+        claim: ClaimedOutboxDelivery,
+        *,
+        failed_at: datetime,
+        next_attempt_at: datetime,
+        error_code: str,
+    ) -> OutboxDelivery:
+        if next_attempt_at <= failed_at:
+            raise ValueError("next_attempt_at must follow failed_at.")
+        async with self._store.lock:
+            delivery = self._active_delivery(claim, transition_at=failed_at)
+            retry = OutboxDelivery(
+                event_id=delivery.event_id,
+                workspace_id=delivery.workspace_id,
+                environment_id=delivery.environment_id,
+                consumer_name=delivery.consumer_name,
+                status=OutboxDeliveryStatus.RETRY_SCHEDULED,
+                attempt_count=delivery.attempt_count,
+                next_attempt_at=next_attempt_at,
+                last_error_code=error_code,
+                version=delivery.version + 1,
+            )
+            self._store.outbox_deliveries[delivery.event_id] = retry
+            return retry.model_copy(deep=True)
+
+    async def quarantine(
+        self,
+        claim: ClaimedOutboxDelivery,
+        *,
+        quarantined_at: datetime,
+        error_code: str,
+    ) -> OutboxDelivery:
+        async with self._store.lock:
+            delivery = self._active_delivery(
+                claim,
+                transition_at=quarantined_at,
+            )
+            quarantined = OutboxDelivery(
+                event_id=delivery.event_id,
+                workspace_id=delivery.workspace_id,
+                environment_id=delivery.environment_id,
+                consumer_name=delivery.consumer_name,
+                status=OutboxDeliveryStatus.QUARANTINED,
+                attempt_count=delivery.attempt_count,
+                last_error_code=error_code,
+                quarantined_at=quarantined_at,
+                version=delivery.version + 1,
+            )
+            self._store.outbox_deliveries[delivery.event_id] = quarantined
+            return quarantined.model_copy(deep=True)
+
+    async def renew(
+        self,
+        claim: ClaimedOutboxDelivery,
+        *,
+        renewed_at: datetime,
+        lease_duration: timedelta,
+    ) -> ClaimedOutboxDelivery:
+        if lease_duration <= timedelta(0):
+            raise ValueError("lease_duration must be positive.")
+        async with self._store.lock:
+            delivery = self._active_delivery(claim, transition_at=renewed_at)
+            lease_token = self._lease_token_factory()
+            lease_expires_at = renewed_at + lease_duration
+            renewed_version = delivery.version + 1
+            renewed_delivery = OutboxDelivery(
+                event_id=delivery.event_id,
+                workspace_id=delivery.workspace_id,
+                environment_id=delivery.environment_id,
+                consumer_name=delivery.consumer_name,
+                status=OutboxDeliveryStatus.IN_FLIGHT,
+                attempt_count=delivery.attempt_count,
+                lease_owner=claim.worker_identity,
+                lease_token=lease_token,
+                lease_expires_at=lease_expires_at,
+                version=renewed_version,
+            )
+            renewed_claim = ClaimedOutboxDelivery(
+                intent=claim.intent.model_copy(deep=True),
+                consumer_name=claim.consumer_name,
+                worker_identity=claim.worker_identity,
+                lease_token=lease_token,
+                claimed_at=renewed_at,
+                lease_expires_at=lease_expires_at,
+                attempt_number=claim.attempt_number,
+                delivery_version=renewed_version,
+            )
+            self._store.outbox_deliveries[delivery.event_id] = renewed_delivery
+            return renewed_claim
+
+
 class InMemoryPersistence:
     """Process-local deterministic adapter and its explicitly scoped entry points."""
 
@@ -1240,6 +1515,8 @@ class InMemoryPersistence:
         audit_events: AuditEventRegistry | None = None,
         audit_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         audit_event_id_factory: Callable[[], UUID] = uuid4,
+        delivery_routes: OutboxDeliveryRouteRegistry | None = None,
+        delivery_lease_token_factory: Callable[[], UUID] = uuid4,
     ) -> None:
         selected_audit_events = audit_events or AuditEventRegistry.with_default_families()
         selected_audit_events.require_sealed()
@@ -1257,6 +1534,17 @@ class InMemoryPersistence:
             store, bootstrap_authority
         )
         self.audit_reader = _InMemoryAuditReader(store, context_verifier)
+        selected_delivery_routes = delivery_routes or OutboxDeliveryRouteRegistry(
+            version="v1"
+        )
+        if delivery_routes is None:
+            selected_delivery_routes.seal()
+        selected_delivery_routes.require_sealed()
+        self.delivery_repository = _InMemoryOutboxDeliveryRepository(
+            store=store,
+            routes=selected_delivery_routes,
+            lease_token_factory=delivery_lease_token_factory,
+        )
 
     def fail_next_audit_append(self) -> None:
         self.uow_factory._store.fail_next_audit_append = True

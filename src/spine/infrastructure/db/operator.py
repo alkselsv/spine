@@ -39,7 +39,7 @@ async def _connect(url: str) -> AsyncIterator[AsyncConnection[tuple[object, ...]
 
 
 async def bootstrap_database_roles(settings: OperatorDatabaseSettings) -> None:
-    """Create or reconcile only the database and two least-privilege login roles."""
+    """Create or reconcile the database and least-privilege login roles."""
 
     try:
         async with _connect(settings.url.get_secret_value()) as connection:
@@ -59,7 +59,16 @@ async def bootstrap_database_roles(settings: OperatorDatabaseSettings) -> None:
                 role=settings.runtime_role,
                 password=settings.runtime_password.get_secret_value(),
             )
+            await _ensure_role(
+                connection,
+                role=settings.dispatcher_role,
+                password=settings.dispatcher_password.get_secret_value(),
+            )
             await _revoke_role_memberships(connection, role=settings.runtime_role)
+            await _revoke_role_memberships(
+                connection,
+                role=settings.dispatcher_role,
+            )
             await _ensure_database(connection, settings)
             await connection.execute(
                 sql.SQL("REVOKE ALL ON DATABASE {} FROM PUBLIC").format(
@@ -73,10 +82,11 @@ async def bootstrap_database_roles(settings: OperatorDatabaseSettings) -> None:
                 )
             )
             await connection.execute(
-                sql.SQL("GRANT CONNECT ON DATABASE {} TO {}, {}").format(
+                sql.SQL("GRANT CONNECT ON DATABASE {} TO {}, {}, {}").format(
                     sql.Identifier(settings.database_name),
                     sql.Identifier(settings.migration_role),
                     sql.Identifier(settings.runtime_role),
+                    sql.Identifier(settings.dispatcher_role),
                 )
             )
     except OperatorBootstrapError:

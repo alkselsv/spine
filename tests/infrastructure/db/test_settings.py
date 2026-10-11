@@ -4,6 +4,7 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from spine.infrastructure.db.settings import (
+    DispatcherDatabaseSettings,
     MigrationDatabaseSettings,
     OperatorDatabaseSettings,
     RuntimeDatabaseSettings,
@@ -11,6 +12,7 @@ from spine.infrastructure.db.settings import (
 )
 
 RUNTIME_URL = "postgresql+psycopg://runtime_user:runtime_secret@db/runtime"
+DISPATCHER_URL = "postgresql+psycopg://dispatcher_user:dispatcher_secret@db/runtime"
 MIGRATION_URL = "postgresql+psycopg://migration_user:migration_secret@db/migration"
 TEST_URL = "postgresql+psycopg://test_user:test_secret@db/spine_test_explicit"
 OPERATOR_URL = "postgresql+psycopg://operator:operator_secret@db/postgres"
@@ -42,6 +44,20 @@ def test_runtime_settings_require_safe_expected_runtime_role() -> None:
         RuntimeDatabaseSettings(
             url=RUNTIME_URL,
             runtime_role='unsafe"role',
+        )
+
+
+def test_dispatcher_settings_use_a_separate_bounded_role_surface() -> None:
+    settings = DispatcherDatabaseSettings(
+        url=DISPATCHER_URL,
+        dispatcher_role="spine_dispatcher",
+    )
+
+    assert settings.dispatcher_role == "spine_dispatcher"
+    with pytest.raises(ValidationError):
+        DispatcherDatabaseSettings(
+            url=DISPATCHER_URL,
+            dispatcher_role='unsafe"role',
         )
 
 
@@ -96,15 +112,19 @@ def test_operator_settings_are_explicit_and_separate_from_runtime_credentials() 
         migration_password="migration-secret",
         runtime_role="spine_runtime",
         runtime_password="runtime-secret",
+        dispatcher_role="spine_dispatcher",
+        dispatcher_password="dispatcher-secret",
     )
 
     assert settings.database_name == "spine"
     assert settings.migration_role == "spine_migration"
     assert settings.runtime_role == "spine_runtime"
+    assert settings.dispatcher_role == "spine_dispatcher"
     rendered = repr(settings)
     assert "operator_secret" not in rendered
     assert "migration-secret" not in rendered
     assert "runtime-secret" not in rendered
+    assert "dispatcher-secret" not in rendered
 
 
 @pytest.mark.parametrize(
@@ -113,6 +133,7 @@ def test_operator_settings_are_explicit_and_separate_from_runtime_credentials() 
         ("database_name", "spine; DROP DATABASE postgres"),
         ("migration_role", "spine-migration"),
         ("runtime_role", "SpineRuntime"),
+        ("dispatcher_role", "spine-dispatcher"),
     ],
 )
 def test_operator_settings_reject_unsafe_identifiers(field: str, value: str) -> None:
@@ -123,6 +144,8 @@ def test_operator_settings_reject_unsafe_identifiers(field: str, value: str) -> 
         "migration_password": "migration-secret",
         "runtime_role": "spine_runtime",
         "runtime_password": "runtime-secret",
+        "dispatcher_role": "spine_dispatcher",
+        "dispatcher_password": "dispatcher-secret",
     }
     values[field] = value
 

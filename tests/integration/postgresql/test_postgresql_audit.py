@@ -77,8 +77,10 @@ pytestmark = [
 
 MIGRATION_ROLE = "spine_migration"
 RUNTIME_ROLE = "spine_runtime"
+DISPATCHER_ROLE = "spine_dispatcher"
 MIGRATION_PASSWORD = "migration-audit-secret"
 RUNTIME_PASSWORD = "runtime-audit-secret"
+DISPATCHER_PASSWORD = "dispatcher-audit-secret"
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +154,8 @@ async def audit_database(
         migration_password=MIGRATION_PASSWORD,
         runtime_role=RUNTIME_ROLE,
         runtime_password=RUNTIME_PASSWORD,
+        dispatcher_role=DISPATCHER_ROLE,
+        dispatcher_password=DISPATCHER_PASSWORD,
     )
     await bootstrap_database_roles(operator)
     migration_url = _role_url(
@@ -163,6 +167,7 @@ async def audit_database(
             url=migration_url,
             migration_role=MIGRATION_ROLE,
             runtime_role=RUNTIME_ROLE,
+            dispatcher_role=DISPATCHER_ROLE,
         ),
     )
     migration_engine = create_async_engine(
@@ -543,7 +548,7 @@ async def test_audit_catalog_has_named_append_only_tenant_contract(
     assert tuple(privileges) == (True, True, False, False)
     assert triggers == {"trg_audit_events_immutable"}
     assert public_can_execute is False
-    assert revision == "20261010_12"
+    assert revision == "20261011_13"
 
 
 async def test_runtime_cannot_update_or_delete_audit_events(

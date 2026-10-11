@@ -129,6 +129,36 @@ class RuntimeDatabaseSettings(_DatabaseSettings):
         return value
 
 
+class DispatcherDatabaseSettings(_DatabaseSettings):
+    """Narrow cross-tenant credentials limited to outbox delivery tables."""
+
+    model_config = SettingsConfigDict(
+        frozen=True,
+        extra="forbid",
+        env_file=None,
+        env_prefix="SPINE_DISPATCHER_DATABASE_",
+        case_sensitive=False,
+        hide_input_in_errors=True,
+    )
+
+    url: SecretStr = Field(repr=False)
+    dispatcher_role: str = "spine_dispatcher"
+    pool_size: int = Field(default=2, ge=1, le=100)
+    max_overflow: int = Field(default=2, ge=0, le=100)
+    pool_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    connect_timeout_seconds: int = Field(default=10, gt=0, le=300)
+    pool_pre_ping: bool = True
+
+    _supported_url = field_validator("url")(_validate_postgresql_url)
+
+    @field_validator("dispatcher_role")
+    @classmethod
+    def _safe_dispatcher_role(cls, value: str) -> str:
+        if not POSTGRESQL_IDENTIFIER.fullmatch(value):
+            raise ValueError("dispatcher role must be a safe lowercase identifier")
+        return value
+
+
 class MigrationDatabaseSettings(_DatabaseSettings):
     """Credentials exposed only to explicit migration composition roots."""
 
@@ -144,10 +174,11 @@ class MigrationDatabaseSettings(_DatabaseSettings):
     url: SecretStr = Field(repr=False)
     migration_role: str = "spine_migration"
     runtime_role: str = "spine_runtime"
+    dispatcher_role: str = "spine_dispatcher"
 
     _supported_url = field_validator("url")(_validate_postgresql_url)
 
-    @field_validator("migration_role", "runtime_role")
+    @field_validator("migration_role", "runtime_role", "dispatcher_role")
     @classmethod
     def _safe_role_identifier(cls, value: str) -> str:
         if not POSTGRESQL_IDENTIFIER.fullmatch(value):
@@ -156,8 +187,8 @@ class MigrationDatabaseSettings(_DatabaseSettings):
 
     @model_validator(mode="after")
     def _migration_roles_are_distinct(self) -> MigrationDatabaseSettings:
-        if self.migration_role == self.runtime_role:
-            raise ValueError("migration and runtime roles must be distinct")
+        if len({self.migration_role, self.runtime_role, self.dispatcher_role}) != 3:
+            raise ValueError("migration, runtime and dispatcher roles must be distinct")
         return self
 
 
@@ -179,10 +210,17 @@ class OperatorDatabaseSettings(_DatabaseSettings):
     migration_password: SecretStr = Field(repr=False)
     runtime_role: str
     runtime_password: SecretStr = Field(repr=False)
+    dispatcher_role: str
+    dispatcher_password: SecretStr = Field(repr=False)
 
     _supported_url = field_validator("url")(_validate_postgresql_url)
 
-    @field_validator("database_name", "migration_role", "runtime_role")
+    @field_validator(
+        "database_name",
+        "migration_role",
+        "runtime_role",
+        "dispatcher_role",
+    )
     @classmethod
     def _safe_identifier(cls, value: str) -> str:
         if not POSTGRESQL_IDENTIFIER.fullmatch(value):
@@ -193,8 +231,8 @@ class OperatorDatabaseSettings(_DatabaseSettings):
 
     @model_validator(mode="after")
     def _roles_are_distinct(self) -> OperatorDatabaseSettings:
-        if self.migration_role == self.runtime_role:
-            raise ValueError("migration and runtime roles must be distinct")
+        if len({self.migration_role, self.runtime_role, self.dispatcher_role}) != 3:
+            raise ValueError("database roles must be distinct")
         return self
 
 
