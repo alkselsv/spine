@@ -69,7 +69,13 @@ from spine.application.persistence.outbox import (
 from spine.domain.audit import AuditEvent, AuditObjectReference, AuditOutcome
 from spine.domain.common import ContextOrigin, EnvironmentKind
 from spine.domain.workspaces import Environment, Workspace
-from spine.domain.sources import SourceObject, SourceRevision, SourceRevisionProvenance
+from spine.domain.sources import (
+    AdmissionDecision,
+    RevisionKind,
+    SourceObject,
+    SourceRevision,
+    SourceRevisionProvenance,
+)
 from spine.domain.sources.canonicalization import assert_revision_digest
 from spine.domain.sources.errors import RevisionDigestMismatchError as DomainRevisionDigestMismatchError
 from spine.domain.ingestion import (
@@ -89,6 +95,7 @@ from spine.infrastructure.persistence.postgresql_errors import (
     translate_persistence_error,
 )
 from spine.infrastructure.persistence.postgresql_mappings import (
+    admission_decisions as _ADMISSION_DECISIONS,
     audit_events as _AUDIT_EVENTS,
     environments as _ENVIRONMENTS,
     idempotency_receipts as _IDEMPOTENCY_RECEIPTS,
@@ -715,6 +722,110 @@ class _PostgreSQLIngestionRepository:
         return IngestionRunSource.model_validate(dict(row)) if row is not None else None
 
 
+class _PostgreSQLAdmissionRepository:
+    """PostgreSQL append-only admission decision chain."""
+
+    def __init__(self, uow: "PostgreSQLTenantUnitOfWork") -> None:
+        self._uow = uow
+
+    def _scope_predicates(self, decision: AdmissionDecision) -> tuple[object, ...]:
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope) or (
+            scope.workspace_id != decision.workspace_id
+            or scope.environment_id != decision.environment_id
+        ):
+            raise InvalidPersistenceContextError("Persistence context is invalid.")
+        return (
+            _ADMISSION_DECISIONS.c.workspace_id == decision.workspace_id,
+            _ADMISSION_DECISIONS.c.environment_id == decision.environment_id,
+        )
+
+    @staticmethod
+    def _from_row(row: Mapping[str, Any]) -> AdmissionDecision:
+        return AdmissionDecision.model_validate(dict(row))
+
+    async def append_decision(self, decision: AdmissionDecision) -> AdmissionDecision:
+        self._uow._guard_active()
+        scope_predicates = self._scope_predicates(decision)
+        revision_row = (await self._uow._execute(select(_SOURCE_REVISIONS).where(
+            _SOURCE_REVISIONS.c.revision_id == decision.revision_id,
+            _SOURCE_REVISIONS.c.source_object_id == decision.source_object_id,
+            _SOURCE_REVISIONS.c.workspace_id == decision.workspace_id,
+            _SOURCE_REVISIONS.c.environment_id == decision.environment_id,
+        ))).mappings().one_or_none()
+        if revision_row is None:
+            await self._uow._fail(ConstraintConflictError("Admission decision target is invalid."))
+        if decision.disposition.value == "admitted":
+            if revision_row.kind != RevisionKind.CONTENT.value:
+                await self._uow._fail(ConstraintConflictError("Tombstone admission requires deletion-specific checks."))
+            provenance_row = (await self._uow._execute(select(_SOURCE_PROVENANCE.c.provenance_id).where(
+                _SOURCE_PROVENANCE.c.revision_id == decision.revision_id,
+                _SOURCE_PROVENANCE.c.source_object_id == decision.source_object_id,
+                _SOURCE_PROVENANCE.c.workspace_id == decision.workspace_id,
+                _SOURCE_PROVENANCE.c.environment_id == decision.environment_id,
+            ).limit(1))).first()
+            if provenance_row is None:
+                await self._uow._fail(ConstraintConflictError("Admission provenance is incomplete."))
+
+        existing = (await self._uow._execute(select(_ADMISSION_DECISIONS).where(
+            _ADMISSION_DECISIONS.c.admission_decision_id == decision.decision_id,
+            *scope_predicates,
+        ))).mappings().one_or_none()
+        if existing is not None:
+            resolved = self._from_row(existing)
+            if resolved != decision:
+                await self._uow._fail(ConstraintConflictError("Admission decision identity conflict."))
+            return resolved
+
+        chain = (await self._uow._execute(select(_ADMISSION_DECISIONS).where(
+            _ADMISSION_DECISIONS.c.source_revision_id == decision.revision_id,
+            *scope_predicates,
+        ))).mappings().all()
+        if decision.predecessor_decision_id is None:
+            if decision.decision_version != 1 or any(row.predecessor_decision_id is None for row in chain):
+                await self._uow._fail(ConstraintConflictError("Admission decision root already exists."))
+        else:
+            predecessor = next((row for row in chain if row.admission_decision_id == decision.predecessor_decision_id), None)
+            if predecessor is None or decision.decision_version != predecessor.decision_version + 1:
+                await self._uow._fail(ConstraintConflictError("Admission decision predecessor is invalid."))
+            if any(row.predecessor_decision_id == decision.predecessor_decision_id for row in chain):
+                await self._uow._fail(ConstraintConflictError("Admission decision successor already exists."))
+        if any(row.decision_version == decision.decision_version for row in chain):
+            await self._uow._fail(ConstraintConflictError("Admission decision version already exists."))
+
+        values = decision.model_dump(mode="python")
+        values["admission_decision_id"] = values.pop("decision_id")
+        values["source_revision_id"] = values.pop("revision_id")
+        values["disposition"] = decision.disposition.value
+        values["authority_reference"] = decision.authority_reference.model_dump(mode="json")
+        await self._uow._execute(postgresql_insert(_ADMISSION_DECISIONS).values(**values))
+        return decision
+
+    async def resolve(self, decision_id: UUID) -> AdmissionDecision | None:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return None
+        row = (await self._uow._execute(select(_ADMISSION_DECISIONS).where(
+            _ADMISSION_DECISIONS.c.admission_decision_id == decision_id,
+            _ADMISSION_DECISIONS.c.workspace_id == scope.workspace_id,
+            _ADMISSION_DECISIONS.c.environment_id == scope.environment_id,
+        ))).mappings().one_or_none()
+        return self._from_row(row) if row is not None else None
+
+    async def resolve_effective(self, revision_id: UUID) -> AdmissionDecision | None:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return None
+        row = (await self._uow._execute(select(_ADMISSION_DECISIONS).where(
+            _ADMISSION_DECISIONS.c.source_revision_id == revision_id,
+            _ADMISSION_DECISIONS.c.workspace_id == scope.workspace_id,
+            _ADMISSION_DECISIONS.c.environment_id == scope.environment_id,
+        ).order_by(_ADMISSION_DECISIONS.c.decision_version.desc()).limit(1))).mappings().one_or_none()
+        return self._from_row(row) if row is not None else None
+
+
 class _PostgreSQLIdempotencyRepository:
     def __init__(self, uow: "PostgreSQLTenantUnitOfWork") -> None:
         self._uow = uow
@@ -1021,6 +1132,7 @@ class PostgreSQLTenantUnitOfWork:
         self._environments = _PostgreSQLEnvironmentRepository(self)
         self._sources = _PostgreSQLSourceObservationRepository(self)
         self._ingestion = _PostgreSQLIngestionRepository(self)
+        self._admissions = _PostgreSQLAdmissionRepository(self)
         self._idempotency = _PostgreSQLIdempotencyRepository(self)
         self._outbox = _PostgreSQLOutboxWriter(self)
         self._audit = _PostgreSQLAuditWriter(self)
@@ -1053,6 +1165,16 @@ class PostgreSQLTenantUnitOfWork:
     def ingestion(self) -> IngestionRepository:
         self._guard_active()
         return self._ingestion
+
+    @property
+    def admissions(self) -> _PostgreSQLAdmissionRepository:
+        self._guard_active()
+        return self._admissions
+
+    @property
+    def admission(self) -> _PostgreSQLAdmissionRepository:
+        self._guard_active()
+        return self._admissions
 
     @property
     def idempotency(self) -> _PostgreSQLIdempotencyRepository:

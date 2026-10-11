@@ -71,5 +71,6 @@ def test_committed_migration_inventory_has_one_linear_head() -> None:
         "20261010_12",
         "20261011_13",
         "20261012_14",
+        "20261012_15",
         "20261013_15",
     )

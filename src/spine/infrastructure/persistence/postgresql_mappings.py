@@ -215,6 +215,24 @@ processing_receipts = Table(
     "processing_receipts", metadata,
     Column("processing_receipt_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("ingestion_run_source_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("binding_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("processor_kind", Text, nullable=False), Column("parser_name", Text, nullable=False), Column("parser_version", Text, nullable=False), Column("parser_config_reference", Text, nullable=False), Column("locator_contract_version", Text, nullable=False), Column("original_sha256", String(64), nullable=False), Column("output_kind", Text), Column("output_reference", PostgreSQLUUID(as_uuid=True)), Column("output_digest", String(64)), Column("coverage", Text, nullable=False), Column("exclusions", JSONB, nullable=False), Column("warning_ids", JSONB, nullable=False), Column("failure_ids", JSONB, nullable=False), Column("command_identity", Text, nullable=False), Column("command_digest", String(64), nullable=False), Column("idempotency_receipt_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("completed_at", DateTime(timezone=True), nullable=False),
 )
+admission_decisions = Table(
+    "admission_decisions", metadata,
+    Column("admission_decision_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("decision_version", Integer, nullable=False),
+    Column("predecessor_decision_id", PostgreSQLUUID(as_uuid=True)),
+    Column("disposition", Text, nullable=False),
+    Column("validator_profile_version", Text, nullable=False),
+    Column("reason_schema_version", Text, nullable=False),
+    Column("reason_codes", JSONB, nullable=False),
+    Column("authority_reference", JSONB, nullable=False),
+    Column("trace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("audit_event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("decided_at", DateTime(timezone=True), nullable=False),
+)
 
 
 __all__ = [
@@ -235,4 +253,5 @@ __all__ = [
     "ingestion_warnings",
     "ingestion_failures",
     "processing_receipts",
+    "admission_decisions",
 ]

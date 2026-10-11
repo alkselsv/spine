@@ -10,7 +10,7 @@ from spine.infrastructure.db.settings import MigrationDatabaseSettings
 
 
 revision = "20261013_15"
-down_revision = "20261012_14"
+down_revision = "20261012_15"
 branch_labels = None
 depends_on = None
 SCHEMA = "spine"

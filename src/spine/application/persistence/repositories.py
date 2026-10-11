@@ -13,7 +13,12 @@ from spine.application.persistence.idempotency import (
     OpaqueResultReference,
 )
 from spine.application.persistence.context import PersistenceOperation
-from spine.domain.sources import SourceObject, SourceRevision, SourceRevisionProvenance
+from spine.domain.sources import (
+    AdmissionDecision,
+    SourceObject,
+    SourceRevision,
+    SourceRevisionProvenance,
+)
 from spine.domain.sources.profile import OBSERVATION_SCHEMA
 from spine.domain.workspaces import Environment, Workspace
 
@@ -133,6 +138,19 @@ class SourceObservationRepository(Protocol):
 # persistence ports from this module. The implementation lives in its own
 # module to keep this source-observation contract small.
 from spine.application.persistence.ingestion import IngestionRepository  # noqa: E402
+
+class AdmissionRepository(Protocol):
+    """Append-only admission decision repository.
+
+    Implementations enforce the predecessor/version CAS chain.  The repository
+    does not infer admission from parser or projection state.
+    """
+
+    async def append_decision(self, decision: AdmissionDecision) -> AdmissionDecision: ...
+
+    async def resolve(self, decision_id: UUID) -> AdmissionDecision | None: ...
+
+    async def resolve_effective(self, revision_id: UUID) -> AdmissionDecision | None: ...
 from spine.application.persistence.idempotency import IdempotencyRepository
 
 
@@ -151,6 +169,7 @@ class EnvironmentRepository(Protocol):
 __all__ = [
     "EnvironmentRepository",
     "IngestionRepository",
+    "AdmissionRepository",
     "IdempotencyRepository",
     "SourceObservationRepository",
     "SourceObservationCommand",

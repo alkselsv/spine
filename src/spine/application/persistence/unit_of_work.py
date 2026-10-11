@@ -11,6 +11,7 @@ from spine.application.persistence.repositories import (
     IdempotencyRepository,
     WorkspaceRepository,
     SourceObservationRepository,
+    AdmissionRepository,
 )
 from spine.application.persistence.outbox import OutboxWriter
 from spine.application.persistence.ingestion import IngestionRepository
@@ -49,6 +50,8 @@ class UnitOfWork(TenantUnitOfWork, Protocol):
     def sources(self) -> SourceObservationRepository: ...
     @property
     def ingestion(self) -> IngestionRepository: ...
+
+    def admissions(self) -> AdmissionRepository: ...
     @property
     def idempotency(self) -> IdempotencyRepository: ...
 
