@@ -23,9 +23,9 @@ platform.
 - [x] Python/FastAPI-проект и локальный Q&A-прототип на Cognee.
 - [x] Каркас domain, application, connectors, memory, agents, workflows и web.
 - [x] Начальный framework-independent каркас контрактов capability, agent invocation, artifact и workflow.
-- [ ] Local agent runtime seam: capability-specific schemas, типизированные
+- [x] Local agent runtime seam: capability-specific schemas, типизированные
       `AgentRequest`/`AgentResponse` и полный `AgentExecutionContext`.
-- [ ] Явный registry/factory, structural `AgentHandler`, adapter async-функций,
+- [x] Явный registry/factory, structural `AgentHandler`, adapter async-функций,
       `EventSink`, cooperative cancellation и разделение runtime/workflow retry.
 - [ ] Workspace и environment context во всех API-командах.
 - [ ] `SourceObject`, `SourceRevision`, immutable originals и provenance locators.
