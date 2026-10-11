@@ -21,6 +21,23 @@ stateless between calls; internal multi-agent coordination remains private only
 while it has no independently evaluated artifact, external action, approval or
 durable lifecycle.
 
+An Agent Version enables local retries only through its immutable
+`runtime_config.runtime_retry_policy`. The policy has exactly
+`maximum_attempts` (one to five), one non-negative `backoff_seconds` entry for
+each retry, and an explicit `eligible_reasons` allowlist. Each delay is at most
+30 seconds and the complete local schedule is at most 60 seconds. The runtime
+accepts only registered transient provider, rate-limit, Tool Gateway or internal
+reason codes; cancellation, authorization, validation, idempotency conflict and
+ambiguous external-effect outcomes never become eligible because of a generic
+retry hint. The invocation must also carry an explicit `safe_to_repeat` effect
+policy; absence of that policy disables local retry even for an allowlisted
+technical failure. A non-durable scheduler, clock and local attempt-ID factory
+are injected, and each typed `AgentRequest` exposes its distinct local attempt
+identity without copying or weakening the admitted execution context. Exhaustion
+returns one safe terminal result to the caller; it never
+selects another binding, creates an approval, waits for a signal or records
+durable retry state.
+
 At-least-once local invocation reuses the canonical persistence receipt. After
 handler output validates, the runtime first completes that receipt with one
 immutable `agent_invocation:v1` reference. The referenced versioned record is a

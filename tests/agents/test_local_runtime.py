@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from asyncio import CancelledError
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from typing import Any
 from uuid import UUID
@@ -14,6 +15,8 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from spine.agents.runtime import (
     AgentExecutionContext,
     AgentRetryDiagnosticState,
+    AgentRetryPolicy,
+    AgentRetryPolicyError,
     AgentRetryReason,
     AgentRequest,
     AgentResponse,
@@ -57,6 +60,7 @@ from spine.application.persistence import (
 from spine.domain.agents import (
     AgentInvocation,
     AgentResult,
+    AgentRetrySafety,
     AgentRunStatus,
     AgentRuntimeKind,
     AgentVersion,
@@ -155,13 +159,14 @@ def capability() -> CapabilityDefinition:
     )
 
 
-def version() -> AgentVersion:
+def version(*, runtime_config: dict[str, object] | None = None) -> AgentVersion:
     return AgentVersion(
         id=uid(20),
         agent_id=uid(21),
         version="2026.10.1",
         runtime=AgentRuntimeKind.CODE,
         capabilities=("answer_question",),
+        runtime_config=runtime_config or {},
     )
 
 
@@ -194,6 +199,19 @@ def execution_context(**overrides: object) -> AgentExecutionContext:
     return AgentExecutionContext(**values)
 
 
+def retry_execution_context(
+    selected_version: AgentVersion,
+    **overrides: object,
+) -> AgentExecutionContext:
+    return execution_context(
+        agent_version=selected_version.model_copy(update={"runtime_config": {}}),
+        retry_policy=AgentRetryPolicy.from_runtime_config(
+            selected_version.runtime_config
+        ),
+        **overrides,
+    )
+
+
 def invocation(**overrides: object) -> AgentInvocation:
     values: dict[str, object] = {
         "work_item_id": uid(30),
@@ -203,6 +221,7 @@ def invocation(**overrides: object) -> AgentInvocation:
         "input_artifact_ids": (uid(50),),
         "constraints": {"max_sources": 3},
         "idempotency_key": "qa:30:1",
+        "retry_safety": AgentRetrySafety.SAFE_TO_REPEAT,
     }
     values.update(overrides)
     return AgentInvocation(**values)
@@ -508,6 +527,58 @@ class CancellingHandler(RecordingHandler):
         raise CancelledError
 
 
+class SequenceHandler(RecordingHandler):
+    def __init__(self, responses: list[AgentResponse[Any]]) -> None:
+        super().__init__()
+        self.responses = responses
+
+    async def invoke(
+        self,
+        request: AgentRequest[Any],
+        context: AgentExecutionContext,
+    ) -> AgentResponse[Any]:
+        self.calls.append((request, context))
+        return self.responses.pop(0)
+
+
+class RecordingRetryScheduler:
+    def __init__(self) -> None:
+        self.delays: list[timedelta] = []
+
+    async def wait(self, delay: timedelta) -> None:
+        self.delays.append(delay)
+
+
+class CancellingRetryScheduler(RecordingRetryScheduler):
+    def __init__(
+        self,
+        controller: CooperativeCancellationController,
+        scope: CancellationScope,
+    ) -> None:
+        super().__init__()
+        self.controller = controller
+        self.scope = scope
+
+    async def wait(self, delay: timedelta) -> None:
+        await super().wait(delay)
+        self.controller.request_cancel(self.scope)
+
+
+class FakeTemporalActivityReexecutor:
+    def __init__(self) -> None:
+        self.attempt_numbers: list[int] = []
+
+    async def run(
+        self,
+        activity: Callable[[int], Awaitable[AgentResult]],
+    ) -> tuple[AgentResult, AgentResult]:
+        self.attempt_numbers.append(1)
+        first = await activity(1)
+        assert first.status is AgentRunStatus.FAILED
+        self.attempt_numbers.append(2)
+        return first, await activity(2)
+
+
 def local_runtime(
     persistence: FakeArtifactPersistence,
     handler: RecordingHandler,
@@ -515,6 +586,8 @@ def local_runtime(
     context: AgentExecutionContext | None = None,
     audit_writer: AuditWriter | None = None,
     cancellation_controller: object | None = None,
+    retry_scheduler: object | None = None,
+    attempt_id_factory: object | None = None,
 ) -> LocalAgentRuntime:
     selected_context = context or execution_context()
     selected_controller = cancellation_controller or _CANCELLATION_CONTROLLERS.get(
@@ -536,6 +609,8 @@ def local_runtime(
         audit_writer=audit_writer or RecordingAuditWriter(),
         clock=lambda: datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc),
         cancellation_controller=selected_controller,
+        retry_scheduler=retry_scheduler,
+        attempt_id_factory=attempt_id_factory,
     )
 
 
@@ -902,6 +977,473 @@ async def test_handler_exception_returns_safe_internal_failure() -> None:
     assert result.error == "An unexpected internal error occurred."
     assert "provider payload" not in result.model_dump_json()
     assert persistence.writes == []
+
+
+@pytest.mark.asyncio
+async def test_explicitly_eligible_transient_failure_retries_with_pinned_identity() -> None:
+    selected_version = version(
+        runtime_config={
+            "runtime_retry_policy": {
+                "maximum_attempts": 2,
+                "backoff_seconds": [0.25],
+                "eligible_reasons": ["provider.unavailable"],
+            }
+        }
+    )
+    transient = AgentResponse(
+        schema_identity=CapabilitySchemaIdentity.from_capability(capability()),
+        error=StructuredError(
+            code="spine.provider.unavailable",
+            safe_message="Agent provider is temporarily unavailable.",
+            retryability=Retryability.AFTER_DELAY,
+            trace_id=uid(40),
+        ),
+    )
+    handler = SequenceHandler(
+        [
+            transient,
+            AgentResponse(
+                schema_identity=CapabilitySchemaIdentity.from_capability(capability()),
+                output=OutputModel(answer="42"),
+            ),
+        ]
+    )
+    diagnostics = FakeEventSink()
+    scheduler = RecordingRetryScheduler()
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+    context = retry_execution_context(
+        selected_version,
+        event_sink=diagnostics,
+        attempt_id=uid(34),
+    )
+
+    result = await local_runtime(
+        persistence,
+        handler,
+        context=context,
+        retry_scheduler=scheduler,
+        attempt_id_factory=lambda attempt_number: uid(100 + attempt_number),
+    ).invoke(context.agent_version, invocation())
+
+    assert result.status is AgentRunStatus.SUCCEEDED
+    assert scheduler.delays == [timedelta(milliseconds=250)]
+    assert len(handler.calls) == 2
+    assert [request.local_attempt_id for request, _ in handler.calls] == [
+        uid(101),
+        uid(102),
+    ]
+    assert all(
+        call_context.agent_version == context.agent_version
+        for _, call_context in handler.calls
+    )
+    assert all(call_context.workspace_id == uid(1) for _, call_context in handler.calls)
+    assert all(
+        call_context.diagnostic_context.trace_id == uid(40)
+        for _, call_context in handler.calls
+    )
+    assert len(persistence.writes) == 1
+    retry_event = next(
+        event for event in diagnostics.events if event.event_type == "agent.retry"
+    )
+    assert retry_event.payload_json() == {
+        "agent_run_id": str(uid(33)),
+        "agent_version_id": str(uid(20)),
+        "attempt_id": str(uid(102)),
+        "attempt_number": 2,
+        "capability_id": str(uid(10)),
+        "retry_reason_code": "provider.unavailable",
+        "retry_state": "scheduled",
+        "step_run_id": str(uid(32)),
+        "work_item_id": str(uid(30)),
+        "workflow_run_id": str(uid(31)),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("code", "message", "reason"),
+    [
+        (
+            "spine.provider.rate_limited",
+            "Agent provider rate limit was reached.",
+            "provider.rate_limited",
+        ),
+        (
+            "spine.tool.unavailable",
+            "Required tool is temporarily unavailable.",
+            "tool.unavailable",
+        ),
+    ],
+)
+async def test_each_declared_transient_reason_requires_explicit_policy_eligibility(
+    code: str,
+    message: str,
+    reason: str,
+) -> None:
+    selected_version = version(
+        runtime_config={
+            "runtime_retry_policy": {
+                "maximum_attempts": 2,
+                "backoff_seconds": [0],
+                "eligible_reasons": [reason],
+            }
+        }
+    )
+    transient = AgentResponse(
+        schema_identity=CapabilitySchemaIdentity.from_capability(capability()),
+        error=StructuredError(
+            code=code,
+            safe_message=message,
+            retryability=Retryability.AFTER_DELAY,
+            trace_id=uid(40),
+        ),
+    )
+    handler = SequenceHandler(
+        [
+            transient,
+            AgentResponse(
+                schema_identity=CapabilitySchemaIdentity.from_capability(capability()),
+                output=OutputModel(answer="42"),
+            ),
+        ]
+    )
+    diagnostics = FakeEventSink()
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+
+    context = retry_execution_context(
+        selected_version,
+        event_sink=diagnostics,
+        attempt_id=uid(34),
+    )
+    result = await local_runtime(
+        persistence,
+        handler,
+        context=context,
+        retry_scheduler=RecordingRetryScheduler(),
+        attempt_id_factory=lambda attempt_number: uid(100 + attempt_number),
+    ).invoke(context.agent_version, invocation())
+
+    assert result.status is AgentRunStatus.SUCCEEDED
+    assert len(handler.calls) == 2
+    retry_event = next(
+        event for event in diagnostics.events if event.event_type == "agent.retry"
+    )
+    assert retry_event.payload_json()["retry_reason_code"] == reason
+
+
+@pytest.mark.asyncio
+async def test_retry_exhaustion_returns_one_sanitized_terminal_result() -> None:
+    selected_version = version(
+        runtime_config={
+            "runtime_retry_policy": {
+                "maximum_attempts": 3,
+                "backoff_seconds": [0.25, 0.5],
+                "eligible_reasons": ["provider.unavailable"],
+            }
+        }
+    )
+    transient = AgentResponse(
+        schema_identity=CapabilitySchemaIdentity.from_capability(capability()),
+        error=StructuredError(
+            code="spine.provider.unavailable",
+            safe_message="Agent provider is temporarily unavailable.",
+            retryability=Retryability.AFTER_DELAY,
+            trace_id=uid(40),
+        ),
+    )
+    handler = SequenceHandler([transient, transient, transient])
+    diagnostics = FakeEventSink()
+    scheduler = RecordingRetryScheduler()
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+    context = retry_execution_context(
+        selected_version,
+        event_sink=diagnostics,
+        attempt_id=uid(34),
+    )
+
+    result = await local_runtime(
+        persistence,
+        handler,
+        context=context,
+        retry_scheduler=scheduler,
+        attempt_id_factory=lambda attempt_number: uid(100 + attempt_number),
+    ).invoke(context.agent_version, invocation())
+
+    assert result.status is AgentRunStatus.FAILED
+    assert result.error == "Agent provider is temporarily unavailable."
+    assert result.trace_ref == str(uid(40))
+    assert len(handler.calls) == 3
+    assert scheduler.delays == [
+        timedelta(milliseconds=250),
+        timedelta(milliseconds=500),
+    ]
+    assert persistence.writes == []
+    retry_events = [
+        event.payload_json()
+        for event in diagnostics.events
+        if event.event_type == "agent.retry"
+    ]
+    assert [event["retry_state"] for event in retry_events] == [
+        "scheduled",
+        "scheduled",
+        "exhausted",
+    ]
+    assert [event["attempt_id"] for event in retry_events] == [
+        str(uid(102)),
+        str(uid(103)),
+        str(uid(103)),
+    ]
+    assert [event["attempt_number"] for event in retry_events] == [2, 3, 3]
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_external_effect_never_retries() -> None:
+    selected_version = version(
+        runtime_config={
+            "runtime_retry_policy": {
+                "maximum_attempts": 2,
+                "backoff_seconds": [0.25],
+                "eligible_reasons": ["provider.unavailable"],
+            }
+        }
+    )
+    ambiguous = AgentResponse(
+        schema_identity=CapabilitySchemaIdentity.from_capability(capability()),
+        error=StructuredError(
+            code="spine.execution.ambiguous_effect",
+            safe_message="External effect outcome is ambiguous and requires recovery.",
+            retryability=Retryability.AFTER_DELAY,
+            trace_id=uid(40),
+        ),
+    )
+    handler = RecordingHandler(ambiguous)
+    scheduler = RecordingRetryScheduler()
+    diagnostics = FakeEventSink()
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+
+    context = retry_execution_context(
+        selected_version,
+        event_sink=diagnostics,
+        attempt_id=uid(34),
+    )
+    result = await local_runtime(
+        persistence,
+        handler,
+        context=context,
+        retry_scheduler=scheduler,
+        attempt_id_factory=lambda attempt_number: uid(100 + attempt_number),
+    ).invoke(
+        context.agent_version,
+        invocation(retry_safety=AgentRetrySafety.SAFE_TO_REPEAT),
+    )
+
+    assert result.status is AgentRunStatus.FAILED
+    assert result.error == "External effect outcome is ambiguous and requires recovery."
+    assert len(handler.calls) == 1
+    assert scheduler.delays == []
+    assert all(event.event_type != "agent.retry" for event in diagnostics.events)
+
+
+@pytest.mark.asyncio
+async def test_configured_retry_requires_scheduler_and_attempt_identity_before_execution() -> None:
+    selected_version = version(
+        runtime_config={
+            "runtime_retry_policy": {
+                "maximum_attempts": 2,
+                "backoff_seconds": [0.25],
+                "eligible_reasons": ["provider.unavailable"],
+            }
+        }
+    )
+    handler = RecordingHandler()
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+    context = retry_execution_context(selected_version)
+
+    result = await local_runtime(persistence, handler, context=context).invoke(
+        context.agent_version,
+        invocation(),
+    )
+
+    assert result.status is AgentRunStatus.FAILED
+    assert result.error == "The request was rejected."
+    assert handler.calls == []
+    assert persistence.load_calls == []
+    assert persistence.writes == []
+
+
+@pytest.mark.asyncio
+async def test_caller_cannot_replace_the_pinned_agent_version_retry_policy() -> None:
+    selected_version = version(
+        runtime_config={
+            "runtime_retry_policy": {
+                "maximum_attempts": 2,
+                "backoff_seconds": [0.25],
+                "eligible_reasons": ["provider.unavailable"],
+            }
+        }
+    )
+    context = retry_execution_context(selected_version)
+    substituted = context.agent_version.model_copy(
+        update={
+            "runtime_config": {
+                "runtime_retry_policy": {
+                    "maximum_attempts": 3,
+                    "backoff_seconds": [0, 0],
+                    "eligible_reasons": ["internal.transient"],
+                }
+            }
+        }
+    )
+    handler = RecordingHandler()
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+
+    result = await local_runtime(
+        persistence,
+        handler,
+        context=context,
+        retry_scheduler=RecordingRetryScheduler(),
+        attempt_id_factory=lambda attempt_number: uid(100 + attempt_number),
+    ).invoke(substituted, invocation())
+
+    assert result.status is AgentRunStatus.FAILED
+    assert result.error == "The request was rejected."
+    assert handler.calls == []
+    assert persistence.load_calls == []
+
+
+@pytest.mark.asyncio
+async def test_transient_failure_requires_invocation_safe_to_repeat_policy() -> None:
+    selected_version = version(
+        runtime_config={
+            "runtime_retry_policy": {
+                "maximum_attempts": 2,
+                "backoff_seconds": [0.25],
+                "eligible_reasons": ["provider.unavailable"],
+            }
+        }
+    )
+    transient = AgentResponse(
+        schema_identity=CapabilitySchemaIdentity.from_capability(capability()),
+        error=StructuredError(
+            code="spine.provider.unavailable",
+            safe_message="Agent provider is temporarily unavailable.",
+            retryability=Retryability.AFTER_DELAY,
+            trace_id=uid(40),
+        ),
+    )
+    context = retry_execution_context(selected_version)
+    handler = RecordingHandler(transient)
+    scheduler = RecordingRetryScheduler()
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+
+    result = await local_runtime(
+        persistence,
+        handler,
+        context=context,
+        retry_scheduler=scheduler,
+        attempt_id_factory=lambda attempt_number: uid(100 + attempt_number),
+    ).invoke(
+        context.agent_version,
+        invocation(retry_safety=AgentRetrySafety.NEVER),
+    )
+
+    assert result.status is AgentRunStatus.FAILED
+    assert len(handler.calls) == 1
+    assert scheduler.delays == []
+
+
+@pytest.mark.asyncio
+async def test_retry_policy_rejects_unbounded_attempts_before_execution() -> None:
+    selected_version = version(
+        runtime_config={
+            "runtime_retry_policy": {
+                "maximum_attempts": 6,
+                "backoff_seconds": [0, 0, 0, 0, 0],
+                "eligible_reasons": ["provider.unavailable"],
+            }
+        }
+    )
+    with pytest.raises(AgentRetryPolicyError, match="retry policy"):
+        AgentRetryPolicy.from_runtime_config(selected_version.runtime_config)
+
+
+@pytest.mark.asyncio
+async def test_unlisted_retryable_failure_never_retries() -> None:
+    selected_version = version(
+        runtime_config={
+            "runtime_retry_policy": {
+                "maximum_attempts": 2,
+                "backoff_seconds": [0.25],
+                "eligible_reasons": ["provider.unavailable"],
+            }
+        }
+    )
+    authorization_failure = AgentResponse(
+        schema_identity=CapabilitySchemaIdentity.from_capability(capability()),
+        error=StructuredError(
+            code="spine.authorization.unavailable",
+            safe_message="Authorization is temporarily unavailable.",
+            retryability=Retryability.AFTER_DELAY,
+            trace_id=uid(40),
+        ),
+    )
+    handler = RecordingHandler(authorization_failure)
+    scheduler = RecordingRetryScheduler()
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+    context = retry_execution_context(selected_version)
+
+    result = await local_runtime(
+        persistence,
+        handler,
+        context=context,
+        retry_scheduler=scheduler,
+        attempt_id_factory=lambda attempt_number: uid(100 + attempt_number),
+    ).invoke(context.agent_version, invocation())
+
+    assert result.status is AgentRunStatus.FAILED
+    assert result.error == "Authorization is temporarily unavailable."
+    assert len(handler.calls) == 1
+    assert scheduler.delays == []
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_retry_wait_prevents_next_attempt() -> None:
+    selected_version = version(
+        runtime_config={
+            "runtime_retry_policy": {
+                "maximum_attempts": 2,
+                "backoff_seconds": [0.25],
+                "eligible_reasons": ["provider.unavailable"],
+            }
+        }
+    )
+    transient = AgentResponse(
+        schema_identity=CapabilitySchemaIdentity.from_capability(capability()),
+        error=StructuredError(
+            code="spine.provider.unavailable",
+            safe_message="Agent provider is temporarily unavailable.",
+            retryability=Retryability.AFTER_DELAY,
+            trace_id=uid(40),
+        ),
+    )
+    handler = SequenceHandler([transient])
+    context = retry_execution_context(selected_version, attempt_id=uid(34))
+    controller = _CANCELLATION_CONTROLLERS[id(context.cancellation)]
+    scheduler = CancellingRetryScheduler(controller, cancellation_scope())
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+
+    result = await local_runtime(
+        persistence,
+        handler,
+        context=context,
+        retry_scheduler=scheduler,
+        attempt_id_factory=lambda attempt_number: uid(100 + attempt_number),
+    ).invoke(context.agent_version, invocation())
+
+    assert result.status is AgentRunStatus.CANCELLED
+    assert result.error == "Execution was cancelled."
+    assert len(handler.calls) == 1
+    assert scheduler.delays == [timedelta(milliseconds=250)]
 
 
 @pytest.mark.asyncio
@@ -1722,22 +2264,30 @@ async def test_same_key_with_different_runtime_identity_returns_safe_conflict(
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_completion_recovers_committed_result_without_handler_repeat() -> None:
+async def test_temporal_style_reexecution_recovers_without_duplicate_committed_effect() -> None:
     persistence = FakeArtifactPersistence(
         records={uid(50): input_artifact()},
         completion_error_after_commit=True,
     )
-    handler = RecordingHandler()
-    runtime = local_runtime(persistence, handler)
+    handlers = (RecordingHandler(), RecordingHandler())
+    temporal = FakeTemporalActivityReexecutor()
 
-    ambiguous = await runtime.invoke(version(), invocation())
-    recovered = await runtime.invoke(version(), invocation())
+    async def activity(attempt_number: int) -> AgentResult:
+        return await local_runtime(
+            persistence,
+            handlers[attempt_number - 1],
+            context=execution_context(attempt_id=uid(33 + attempt_number)),
+        ).invoke(version(), invocation())
+
+    ambiguous, recovered = await temporal.run(activity)
 
     assert ambiguous.status is AgentRunStatus.FAILED
     assert ambiguous.error == "Persistence operation failed."
     assert recovered.status is AgentRunStatus.SUCCEEDED
     assert recovered.output_artifact_ids == (uid(70),)
-    assert len(handler.calls) == 1
+    assert temporal.attempt_numbers == [1, 2]
+    assert len(handlers[0].calls) == 1
+    assert handlers[1].calls == []
     assert len(persistence.writes) == 1
 
 

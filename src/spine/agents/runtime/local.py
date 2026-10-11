@@ -28,6 +28,7 @@ from spine.agents.runtime.contracts import (
     agent_result_from_response,
 )
 from spine.agents.runtime.diagnostics import (
+    AgentRetryDiagnosticState,
     AgentRunDiagnosticState,
     AgentRuntimeDiagnosticEmitter,
 )
@@ -37,7 +38,7 @@ from spine.agents.runtime.idempotency import (
     digest_agent_invocation,
 )
 from spine.agents.runtime.protocol import AgentHandler
-from spine.agents.runtime.ports import CancellationController
+from spine.agents.runtime.ports import CancellationController, RetryScheduler
 from spine.application.diagnostics import (
     AuditEventRegistry,
     AuditWriter,
@@ -52,7 +53,13 @@ from spine.application.persistence import (
     OpaqueResultReference,
     OwnedIdempotencyClaim,
 )
-from spine.domain.agents import AgentInvocation, AgentResult, AgentRunStatus, AgentVersion
+from spine.domain.agents import (
+    AgentInvocation,
+    AgentResult,
+    AgentRetrySafety,
+    AgentRunStatus,
+    AgentVersion,
+)
 from spine.domain.artifacts import Artifact, ArtifactRef, ArtifactState
 from spine.domain.common import ActorKind, ActorRef
 
@@ -86,6 +93,8 @@ class LocalAgentRuntime:
         audit_writer: AuditWriter,
         clock: Callable[[], datetime],
         cancellation_controller: CancellationController,
+        retry_scheduler: RetryScheduler | None = None,
+        attempt_id_factory: Callable[[int], UUID] | None = None,
     ) -> None:
         if not isinstance(context, AgentExecutionContext):
             raise TypeError("local runtime context is invalid")
@@ -120,6 +129,12 @@ class LocalAgentRuntime:
         if cancellation_controller.token is not context.cancellation:
             raise ValueError("local runtime cancellation token is incompatible")
         self._cancellation = cancellation_controller
+        if retry_scheduler is not None and not isinstance(retry_scheduler, RetryScheduler):
+            raise TypeError("local retry scheduler is invalid")
+        if attempt_id_factory is not None and not callable(attempt_id_factory):
+            raise TypeError("local retry attempt identity factory is invalid")
+        self._retry_scheduler = retry_scheduler
+        self._attempt_id_factory = attempt_id_factory
         self._events = AgentRuntimeDiagnosticEmitter(
             context=context,
             diagnostic_registry=diagnostic_registry,
@@ -133,13 +148,28 @@ class LocalAgentRuntime:
         version: AgentVersion,
         invocation: AgentInvocation,
     ) -> AgentResult:
-        """Load, validate, execute and persist exactly one technical attempt."""
+        """Load, validate, execute and persist one bounded local invocation."""
 
         await self._events.observe_run(AgentRunDiagnosticState.STARTED)
 
         try:
             self._context.cancellation.raise_if_cancelled()
             self._validate_invocation(version, invocation)
+            retry_policy = self._context.retry_policy
+            if retry_policy.maximum_attempts > 1 and (
+                self._retry_scheduler is None or self._attempt_id_factory is None
+            ):
+                raise ValueError("local retry dependencies are unavailable")
+            if retry_policy.maximum_attempts > 1:
+                assert self._attempt_id_factory is not None
+                current_attempt_id = self._attempt_id_factory(1)
+                if (
+                    not isinstance(current_attempt_id, UUID)
+                    or current_attempt_id.int == 0
+                ):
+                    raise ValueError("local retry attempt identity is invalid")
+            else:
+                current_attempt_id = self._context.attempt_id
             inputs = await self._load_inputs(invocation.input_artifact_ids)
             typed_input = self._schemas.load_input(inputs)
         except CooperativeCancellationError:
@@ -220,82 +250,121 @@ class LocalAgentRuntime:
                 self._safe_failure(_FailureCategory.PERSISTENCE, AgentRunStatus.FAILED)
             )
 
-        request = AgentRequest(
-            capability=self._context.capability,
-            schema_identity=self._context.schema_identity,
-            input=typed_input,
-            constraints=invocation.constraints,
+        attempt_number = 1
+        local_attempt_ids = (
+            {current_attempt_id} if current_attempt_id is not None else set()
         )
-        try:
-            self._context.cancellation.raise_if_cancelled()
-            response = await self._handler.invoke(request, self._context)
-            self._context.cancellation.raise_if_cancelled()
-        except CooperativeCancellationError:
-            return await self._finish_claimed(
-                claim,
-                result_reference,
-                self._cancelled_result(),
+        while True:
+            request = AgentRequest(
+                capability=self._context.capability,
+                schema_identity=self._context.schema_identity,
+                input=typed_input,
+                constraints=invocation.constraints,
+                local_attempt_id=current_attempt_id,
             )
-        except CancelledError:
-            return await self._finish_claimed(
-                claim,
-                result_reference,
-                self._cancelled_result(),
-            )
-        except Exception:
-            return await self._finish_claimed(
-                claim,
-                result_reference,
-                self._safe_failure(_FailureCategory.INTERNAL, AgentRunStatus.FAILED),
-            )
-
-        if not isinstance(response, AgentResponse):
-            return await self._finish_claimed(
-                claim,
-                result_reference,
-                self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.FAILED),
-            )
-        if response.schema_identity != self._context.schema_identity:
-            return await self._finish_claimed(
-                claim,
-                result_reference,
-                self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.FAILED),
-            )
-        if response.proposed_action_ids:
-            # Proposed actions need their own persisted, lineage-bearing boundary.
-            # Until that contract exists, never expose handler-fabricated IDs.
-            return await self._finish_claimed(
-                claim,
-                result_reference,
-                self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.FAILED),
-            )
-        try:
-            self._schemas.check_metadata(response)
-        except Exception:
-            return await self._finish_claimed(
-                claim,
-                result_reference,
-                self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.FAILED),
-            )
-        if response.error is not None:
-            return await self._finish_claimed(
-                claim,
-                result_reference,
-                agent_result_from_response(
-                    response,
-                    trace_ref=self._trace_ref,
+            try:
+                self._context.cancellation.raise_if_cancelled()
+                response = await self._handler.invoke(request, self._context)
+                self._context.cancellation.raise_if_cancelled()
+            except (CooperativeCancellationError, CancelledError):
+                return await self._finish_claimed_cancelled(claim, result_reference)
+            except Exception:
+                return await self._finish_claimed(
+                    claim,
+                    result_reference,
+                    self._safe_failure(_FailureCategory.INTERNAL, AgentRunStatus.FAILED),
                 )
+
+            if not isinstance(response, AgentResponse):
+                return await self._finish_claimed(
+                    claim,
+                    result_reference,
+                    self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.FAILED),
+                )
+            if response.schema_identity != self._context.schema_identity:
+                return await self._finish_claimed(
+                    claim,
+                    result_reference,
+                    self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.FAILED),
+                )
+            if response.proposed_action_ids:
+                # Proposed actions need their own persisted, lineage-bearing boundary.
+                # Until that contract exists, never expose handler-fabricated IDs.
+                return await self._finish_claimed(
+                    claim,
+                    result_reference,
+                    self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.FAILED),
+                )
+            try:
+                self._schemas.check_metadata(response)
+            except Exception:
+                return await self._finish_claimed(
+                    claim,
+                    result_reference,
+                    self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.FAILED),
+                )
+            retry_reason = (
+                retry_policy.retry_reason(response.error)
+                if invocation.retry_safety is AgentRetrySafety.SAFE_TO_REPEAT
+                else None
             )
+            if retry_reason is None or attempt_number >= retry_policy.maximum_attempts:
+                if response.error is not None:
+                    if retry_reason is not None:
+                        await self._events.observe_retry(
+                            state=AgentRetryDiagnosticState.EXHAUSTED,
+                            attempt_number=attempt_number,
+                            retry_reason_code=retry_reason,
+                            attempt_id=current_attempt_id,
+                        )
+                    return await self._finish_claimed(
+                        claim,
+                        result_reference,
+                        agent_result_from_response(
+                            response,
+                            trace_ref=self._trace_ref,
+                        ),
+                    )
+                break
+
+            next_attempt_number = attempt_number + 1
+            try:
+                if self._retry_scheduler is None or self._attempt_id_factory is None:
+                    raise ValueError("local retry dependencies are unavailable")
+                next_attempt_id = self._attempt_id_factory(next_attempt_number)
+                if (
+                    not isinstance(next_attempt_id, UUID)
+                    or next_attempt_id.int == 0
+                    or next_attempt_id in local_attempt_ids
+                ):
+                    raise ValueError("local retry attempt identity is invalid")
+                local_attempt_ids.add(next_attempt_id)
+                await self._events.observe_retry(
+                    state=AgentRetryDiagnosticState.SCHEDULED,
+                    attempt_number=next_attempt_number,
+                    retry_reason_code=retry_reason,
+                    attempt_id=next_attempt_id,
+                )
+                await self._retry_scheduler.wait(
+                    retry_policy.delay_before(next_attempt_number)
+                )
+                self._context.cancellation.raise_if_cancelled()
+            except (CooperativeCancellationError, CancelledError):
+                return await self._finish_claimed_cancelled(claim, result_reference)
+            except Exception:
+                return await self._finish_claimed(
+                    claim,
+                    result_reference,
+                    self._safe_failure(_FailureCategory.INTERNAL, AgentRunStatus.FAILED),
+                )
+            attempt_number = next_attempt_number
+            current_attempt_id = next_attempt_id
 
         try:
             self._context.cancellation.raise_if_cancelled()
             output = self._schemas.load_output(response.output)
         except CooperativeCancellationError:
-            return await self._finish_claimed(
-                claim,
-                result_reference,
-                self._cancelled_result(),
-            )
+            return await self._finish_claimed_cancelled(claim, result_reference)
         except Exception:
             return await self._finish_claimed(
                 claim,
@@ -540,6 +609,19 @@ class LocalAgentRuntime:
             )
         await self._events.observe_run_diagnostic(state)
         return persisted
+
+    async def _finish_claimed_cancelled(
+        self,
+        claim: OwnedIdempotencyClaim,
+        result_reference: OpaqueResultReference,
+    ) -> AgentResult:
+        """Persist the canonical terminal cancellation result for an owned claim."""
+
+        return await self._finish_claimed(
+            claim,
+            result_reference,
+            self._cancelled_result(),
+        )
 
     async def _persist_checkpoint(
         self,

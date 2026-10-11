@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from uuid import UUID
 
@@ -47,6 +48,14 @@ class CancellationController(Protocol):
 
     def seal(self, scope: CancellationScope) -> bool:
         """Close cancellation before commit and report whether it may proceed."""
+
+
+@runtime_checkable
+class RetryScheduler(Protocol):
+    """Non-durable scheduler for one short local retry delay."""
+
+    async def wait(self, delay: timedelta) -> None:
+        """Wait without persisting workflow state or selecting a route."""
 
 
 # Compatibility name for the first runtime contract.  Runtime diagnostics now
@@ -156,6 +165,7 @@ __all__ = [
     "CanonicalTrustedAuthorizationContextVerifier",
     "EventSink",
     "ExecutionScopeValidator",
+    "RetryScheduler",
     "TrustedAuthorizationContextVerifier",
     "TrustedExecutionAdmission",
     "TrustedExecutionIdentity",

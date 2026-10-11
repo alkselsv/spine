@@ -32,7 +32,6 @@ from spine.agents.runtime.diagnostics import (
     AgentReplayPayload,
     AgentRetryDiagnosticPayload,
     AgentRetryDiagnosticState,
-    AgentRetryReason,
     AgentRunAuditPayload,
     AgentRunDiagnosticPayload,
     AgentRunDiagnosticState,
@@ -59,11 +58,17 @@ from spine.agents.runtime.ports import (
     CancellationToken,
     EventSink,
     ExecutionScopeValidator,
+    RetryScheduler,
     TrustedAuthorizationContextVerifier,
     TrustedExecutionAdmission,
     TrustedExecutionIdentity,
 )
 from spine.agents.runtime.protocol import AgentHandler, AgentRuntime
+from spine.agents.runtime.retry import (
+    AgentRetryPolicy,
+    AgentRetryPolicyError,
+    AgentRetryReason,
+)
 from spine.agents.runtime.context import (
     AgentExecutionContextAdmission,
     AgentExecutionContextConstructionError,
@@ -83,6 +88,8 @@ __all__ = [
     "AgentRetryDiagnosticPayload",
     "AgentRetryDiagnosticState",
     "AgentRetryReason",
+    "AgentRetryPolicy",
+    "AgentRetryPolicyError",
     "AgentRequest",
     "AgentReplayPayload",
     "AgentResponse",
@@ -109,6 +116,7 @@ __all__ = [
     "CooperativeCancellationToken",
     "EventSink",
     "ExecutionScopeValidator",
+    "RetryScheduler",
     "ExecutionIdentitySnapshot",
     "CapabilitySchemaIdentity",
     "CapabilityArtifactSchema",

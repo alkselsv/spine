@@ -27,6 +27,7 @@ from spine.agents.runtime.ports import (
     EventSink,
     TrustedAuthorizationContextVerifier,
 )
+from spine.agents.runtime.retry import AgentRetryPolicy
 from spine.application.diagnostics import DiagnosticContext
 from spine.application.persistence import PersistenceOperation, PersistencePurpose
 from spine.auth.contracts import (
@@ -272,7 +273,7 @@ class AgentExecutionContextFactory:
                 authorization_generation=authorization_resolution.authorization_generation,
             )
 
-            selected_capability, selected_schema, selected_version = (
+            selected_capability, selected_schema, selected_version, retry_policy = (
                 self._validate_binding(
                     resolved_binding=resolved_binding,
                     capability=capability,
@@ -309,6 +310,7 @@ class AgentExecutionContextFactory:
                 capability=selected_capability,
                 schema_identity=selected_schema,
                 agent_version=selected_version,
+                retry_policy=retry_policy,
                 idempotency_key=idempotency_key,
                 diagnostic_context=canonical_diagnostic_context,
                 input_artifact_ids=input_artifact_ids,
@@ -469,7 +471,12 @@ class AgentExecutionContextFactory:
         agent_version: AgentVersion | None,
         workspace_id: UUID,
         environment: EnvironmentKind,
-    ) -> tuple[CapabilityDefinition, CapabilitySchemaIdentity, AgentVersion]:
+    ) -> tuple[
+        CapabilityDefinition,
+        CapabilitySchemaIdentity,
+        AgentVersion,
+        AgentRetryPolicy,
+    ]:
         from spine.agents.catalog.resolver import ResolvedAgentBinding
         from spine.domain.agents import AgentBinding, AgentDeployment
 
@@ -528,6 +535,9 @@ class AgentExecutionContextFactory:
         if selected_schema != CapabilitySchemaIdentity.from_capability(selected_capability):
             raise ValueError
         _validate_runtime_config(selected_version.runtime_config)
+        retry_policy = AgentRetryPolicy.from_runtime_config(
+            selected_version.runtime_config
+        )
         forbidden_runtime_keys = {
             "callable",
             "class",
@@ -542,6 +552,7 @@ class AgentExecutionContextFactory:
             selected_capability,
             selected_schema,
             selected_version.model_copy(update={"runtime_config": {}}),
+            retry_policy,
         )
 
     @staticmethod

@@ -16,6 +16,13 @@ class AgentRunStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class AgentRetrySafety(str, Enum):
+    """Whether one handler attempt is explicitly safe to repeat locally."""
+
+    NEVER = "never"
+    SAFE_TO_REPEAT = "safe_to_repeat"
+
+
 class AgentInvocation(SpineModel):
     work_item_id: UUID
     step_run_id: UUID
@@ -25,6 +32,7 @@ class AgentInvocation(SpineModel):
     context_request: dict[str, Any] = Field(default_factory=dict)
     constraints: dict[str, Any] = Field(default_factory=dict)
     idempotency_key: str
+    retry_safety: AgentRetrySafety = AgentRetrySafety.NEVER
 
 
 class AgentResult(SpineModel):
