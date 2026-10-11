@@ -11,6 +11,7 @@ import hashlib
 from collections.abc import AsyncIterable, AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from .contracts import (
@@ -64,6 +65,9 @@ class DeterministicOriginalObjectStoreFake:
         max_chunk_bytes: int,
         max_object_bytes: int,
         read_chunk_bytes: int,
+        io_observer: (
+            Callable[[Literal["read", "verify"], int, int], None] | None
+        ) = None,
     ) -> None:
         self._grant_registry = grant_registry
         self._generation_factory = generation_factory
@@ -71,6 +75,7 @@ class DeterministicOriginalObjectStoreFake:
         self._max_chunk_bytes = max_chunk_bytes
         self._max_object_bytes = max_object_bytes
         self._read_chunk_bytes = read_chunk_bytes
+        self._io_observer = io_observer
         self._uploads: dict[UUID, _StagedUpload] = {}
         self._objects: dict[ObjectReference, bytes] = {}
         self._objects_by_id: dict[UUID, ObjectReference] = {}
@@ -87,6 +92,8 @@ class DeterministicOriginalObjectStoreFake:
             raise ReconciliationRequired()
         existing = self._uploads.get(state.upload_id)
         if existing is None:
+            if state.state is not UploadCommandStateName.STAGING:
+                raise UploadNotFound()
             self._uploads[state.upload_id] = _StagedUpload(command=command, state=state)
             return state
         if (
@@ -125,28 +132,49 @@ class DeterministicOriginalObjectStoreFake:
         upload = self._uploads.get(upload_id)
         if upload is None:
             raise UploadNotFound()
-        if upload.state.state not in {
-            UploadCommandStateName.STAGING,
-            UploadCommandStateName.INTERRUPTED,
-        }:
+        if upload.receipt is not None:
+            try:
+                return await self._observe_chunks(chunks, content=None)
+            except StorageError:
+                raise
+            except Exception:
+                raise ObjectUnavailable() from None
+        if upload.state.state is not UploadCommandStateName.STAGING:
             raise UploadConflict()
         try:
-            async for chunk in chunks:
-                if not isinstance(chunk, bytes):
-                    raise UploadLimitExceeded()
-                if len(chunk) > self._max_chunk_bytes:
-                    raise UploadLimitExceeded()
-                if len(upload.content) + len(chunk) > self._max_object_bytes:
-                    raise UploadLimitExceeded()
-                upload.content.extend(chunk)
+            return await self._observe_chunks(chunks, content=upload.content)
         except StorageError:
+            upload.state = upload.state.transitioned(UploadCommandStateName.INTERRUPTED)
             raise
         except Exception:
+            upload.state = upload.state.transitioned(UploadCommandStateName.INTERRUPTED)
             raise ObjectUnavailable() from None
-        content = bytes(upload.content)
+
+    async def _observe_chunks(
+        self,
+        chunks: AsyncIterable[bytes],
+        *,
+        content: bytearray | None,
+    ) -> ObservedContentIdentity:
+        digest = hashlib.sha256()
+        observed_length = 0
+        if content is not None:
+            digest.update(content)
+            observed_length = len(content)
+        async for chunk in chunks:
+            if not isinstance(chunk, bytes):
+                raise UploadLimitExceeded()
+            if len(chunk) > self._max_chunk_bytes:
+                raise UploadLimitExceeded()
+            if observed_length + len(chunk) > self._max_object_bytes:
+                raise UploadLimitExceeded()
+            digest.update(chunk)
+            observed_length += len(chunk)
+            if content is not None:
+                content.extend(chunk)
         return ObservedContentIdentity(
-            observed_sha256=hashlib.sha256(content).hexdigest(),
-            observed_byte_length=len(content),
+            observed_sha256=digest.hexdigest(),
+            observed_byte_length=observed_length,
         )
 
     async def finalize_upload(
@@ -169,6 +197,8 @@ class DeterministicOriginalObjectStoreFake:
             return upload.receipt
         if upload.state.state is UploadCommandStateName.ABORTED:
             raise ObjectProtected()
+        if upload.state.state is UploadCommandStateName.INTERRUPTED:
+            raise UploadConflict()
         content = bytes(upload.content)
         actual = ObservedContentIdentity(
             observed_sha256=hashlib.sha256(content).hexdigest(),
@@ -258,13 +288,14 @@ class DeterministicOriginalObjectStoreFake:
         binding = self._grant_registry.consume_read_lease(lease, now=self._clock())
         expected_scope = self._object_scopes.get(binding.object_reference)
         if expected_scope is None:
-            raise ObjectNotFound()
+            raise InvalidReadGrant()
         if expected_scope != (binding.workspace_id, binding.environment_id):
             raise InvalidReadGrant()
         content = self._objects.get(binding.object_reference)
         if content is None:
             raise ObjectNotFound()
         bounded = content[:max_bytes]
+        self._observe_io("read", max_bytes, len(bounded))
         for offset in range(0, len(bounded), self._read_chunk_bytes):
             yield bounded[offset : offset + self._read_chunk_bytes]
 
@@ -278,7 +309,9 @@ class DeterministicOriginalObjectStoreFake:
         if content is None:
             raise ObjectNotFound()
         if max_bytes < len(content):
+            self._observe_io("verify", max_bytes, 0)
             raise UploadLimitExceeded()
+        self._observe_io("verify", max_bytes, len(content))
         digest = hashlib.sha256(content).hexdigest()
         if digest != reference.digest_hex or len(content) != reference.byte_length:
             raise ObjectCorrupt()
@@ -332,6 +365,15 @@ class DeterministicOriginalObjectStoreFake:
             for reference in sorted(self._objects, key=lambda item: item.object_id.int)
         )
         return entries, None
+
+    def _observe_io(
+        self,
+        operation: Literal["read", "verify"],
+        limit_bytes: int,
+        processed_bytes: int,
+    ) -> None:
+        if self._io_observer is not None:
+            self._io_observer(operation, limit_bytes, processed_bytes)
 
     def _upload_id_for(self, reference: ObjectReference) -> UUID:
         return next(

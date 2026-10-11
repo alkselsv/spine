@@ -212,6 +212,36 @@ async def test_finalized_generation_rejects_different_observed_retry_without_rep
 
 
 @pytest.mark.parametrize(
+    ("retry_content", "conflicts"),
+    [(CONTENT, False), (b"different", True)],
+    ids=["same-bytes", "different-bytes"],
+)
+async def test_finalized_stream_retry_is_stable_without_replacing_bytes(
+    original_object_store_factory: OriginalObjectStoreFactory,
+    retry_content: bytes,
+    conflicts: bool,
+) -> None:
+    adapter = original_object_store_factory()
+    command = upload_command().model_copy(
+        update={"expected_sha256": None, "expected_byte_length": None}
+    )
+    state, _, receipt = await finalized_object(adapter, command=command)
+
+    retried_observation = await adapter.store.write_chunks(
+        state.upload_id,
+        chunks(*split_chunks(retry_content, adapter.max_write_chunk_bytes)),
+    )
+    if conflicts:
+        with pytest.raises(UploadConflict):
+            await adapter.store.finalize_upload(state, retried_observation)
+    else:
+        replay = await adapter.store.finalize_upload(state, retried_observation)
+        assert replay == receipt
+
+    assert await read_bytes(adapter, receipt) == CONTENT
+
+
+@pytest.mark.parametrize(
     ("command", "content"),
     [
         (
@@ -273,6 +303,13 @@ async def test_bounded_read_never_returns_more_than_requested_or_configured_chun
 
     assert b"".join(parts) == CONTENT[:7]
     assert all(0 < len(part) <= adapter.read_chunk_bytes for part in parts)
+    read_observations = [
+        item for item in adapter.io_observations() if item.operation == "read"
+    ]
+    assert read_observations
+    assert all(
+        0 <= item.processed_bytes <= item.limit_bytes for item in read_observations
+    )
 
 
 async def test_verify_is_bounded_and_returns_observed_integrity(
@@ -286,6 +323,11 @@ async def test_verify_is_bounded_and_returns_observed_integrity(
             receipt.object_reference,
             max_bytes=receipt.object_reference.byte_length - 1,
         )
+    rejected_observation = adapter.io_observations()[-1]
+    assert rejected_observation.operation == "verify"
+    assert (
+        0 <= rejected_observation.processed_bytes <= rejected_observation.limit_bytes
+    )
 
     result = await adapter.store.verify(
         receipt.object_reference,
@@ -293,6 +335,11 @@ async def test_verify_is_bounded_and_returns_observed_integrity(
     )
     assert result.observed_digest == hashlib.sha256(CONTENT).hexdigest()
     assert result.observed_length == len(CONTENT)
+    verified_observation = adapter.io_observations()[-1]
+    assert verified_observation.operation == "verify"
+    assert (
+        0 <= verified_observation.processed_bytes <= verified_observation.limit_bytes
+    )
 
 
 async def test_write_limits_raise_typed_sanitized_error(
@@ -314,6 +361,14 @@ async def test_total_upload_limit_stops_stream_before_publication(
 ) -> None:
     adapter = original_object_store_factory()
     content = b"x" * (adapter.max_object_bytes + 1)
+    requested_chunks = 0
+
+    async def over_limit_stream() -> AsyncIterator[bytes]:
+        nonlocal requested_chunks
+        for part in split_chunks(content, adapter.max_write_chunk_bytes):
+            requested_chunks += 1
+            yield part
+        raise AssertionError("adapter consumed beyond the first over-limit chunk")
     state = await adapter.store.begin_or_resume_upload(
         upload_command(content), upload_state()
     )
@@ -321,9 +376,61 @@ async def test_total_upload_limit_stops_stream_before_publication(
     with pytest.raises(UploadLimitExceeded):
         await adapter.store.write_chunks(
             state.upload_id,
-            chunks(*split_chunks(content, adapter.max_write_chunk_bytes)),
+            over_limit_stream(),
         )
 
+    inventory, _ = await adapter.store.reconciliation_inventory()
+    assert inventory == ()
+    assert requested_chunks == len(split_chunks(content, adapter.max_write_chunk_bytes))
+
+
+async def test_failed_write_cannot_finalize_retained_prefix_without_resume(
+    original_object_store_factory: OriginalObjectStoreFactory,
+) -> None:
+    adapter = original_object_store_factory()
+    command = upload_command().model_copy(
+        update={"expected_sha256": None, "expected_byte_length": None}
+    )
+    state = await adapter.store.begin_or_resume_upload(command, upload_state())
+
+    with pytest.raises(UploadLimitExceeded):
+        await adapter.store.write_chunks(
+            state.upload_id,
+            chunks(b"prefix", b"x" * (adapter.max_write_chunk_bytes + 1)),
+        )
+
+    retained_prefix = ObservedContentIdentity(
+        observed_sha256=hashlib.sha256(b"prefix").hexdigest(),
+        observed_byte_length=len(b"prefix"),
+    )
+    with pytest.raises(UploadConflict):
+        await adapter.store.finalize_upload(state, retained_prefix)
+    with pytest.raises(UploadConflict):
+        await adapter.store.write_chunks(state.upload_id, chunks())
+
+    inventory, _ = await adapter.store.reconciliation_inventory()
+    assert inventory == ()
+
+
+@pytest.mark.parametrize(
+    "state_name",
+    [
+        UploadCommandStateName.INTERRUPTED,
+        UploadCommandStateName.ABORTED,
+        UploadCommandStateName.INTEGRITY_CONFLICT,
+    ],
+)
+async def test_unknown_non_staging_state_cannot_create_upload(
+    original_object_store_factory: OriginalObjectStoreFactory,
+    state_name: UploadCommandStateName,
+) -> None:
+    adapter = original_object_store_factory()
+    state = upload_state().transitioned(state_name)
+
+    with pytest.raises(StorageError) as captured:
+        await adapter.store.begin_or_resume_upload(upload_command(), state)
+
+    assert captured.value.redacted()["category"] == "upload_not_found"
     inventory, _ = await adapter.store.reconciliation_inventory()
     assert inventory == ()
 
@@ -402,7 +509,7 @@ async def test_reconciliation_required_blocks_retry_finalize_and_abort(
     assert inventory == ()
 
 
-async def test_deletion_requires_exact_prepared_approval_and_is_idempotent(
+async def test_unprepared_deletion_is_rejected_without_state_change(
     original_object_store_factory: OriginalObjectStoreFactory,
 ) -> None:
     adapter = original_object_store_factory()
@@ -416,6 +523,17 @@ async def test_deletion_requires_exact_prepared_approval_and_is_idempotent(
         await adapter.store.delete_controlled(receipt.object_reference, approval)
     assert await read_bytes(adapter, receipt) == CONTENT
 
+
+async def test_wrong_deletion_approval_is_rejected_without_state_change(
+    original_object_store_factory: OriginalObjectStoreFactory,
+) -> None:
+    adapter = original_object_store_factory()
+    _, _, receipt = await finalized_object(adapter)
+    approval = DeletionApproval(
+        command_id=UUID("80000000-0000-4000-8000-000000000001"),
+        approval_reference=UUID("90000000-0000-4000-8000-000000000001"),
+    )
+
     await adapter.store.prepare_deletion(receipt.object_reference, approval)
     wrong_approval = DeletionApproval(
         command_id=approval.command_id,
@@ -424,6 +542,18 @@ async def test_deletion_requires_exact_prepared_approval_and_is_idempotent(
     with pytest.raises(ObjectProtected):
         await adapter.store.delete_controlled(receipt.object_reference, wrong_approval)
     assert await read_bytes(adapter, receipt) == CONTENT
+
+
+async def test_approved_deletion_replay_is_stable(
+    original_object_store_factory: OriginalObjectStoreFactory,
+) -> None:
+    adapter = original_object_store_factory()
+    _, _, receipt = await finalized_object(adapter)
+    approval = DeletionApproval(
+        command_id=UUID("80000000-0000-4000-8000-000000000001"),
+        approval_reference=UUID("90000000-0000-4000-8000-000000000001"),
+    )
+    await adapter.store.prepare_deletion(receipt.object_reference, approval)
 
     deleted = await adapter.store.delete_controlled(receipt.object_reference, approval)
     replay = await adapter.store.delete_controlled(receipt.object_reference, approval)
@@ -545,6 +675,23 @@ async def test_foreign_scope_cannot_observe_existence_or_content(
     assert str(WORKSPACE_ID) not in rendered
     assert str(ENVIRONMENT_ID) not in rendered
     assert CONTENT.decode().strip() not in rendered
+
+    absent_reference = receipt.object_reference.model_copy(
+        update={
+            "object_id": UUID("30000000-0000-4000-8000-000000000099"),
+            "storage_generation": UUID("50000000-0000-4000-8000-000000000099"),
+        }
+    )
+    absent_receipt = receipt.model_copy(update={"object_reference": absent_reference})
+    with pytest.raises(StorageError) as absent:
+        await read_bytes(
+            adapter,
+            absent_receipt,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+        )
+
+    assert absent.value.redacted() == captured.value.redacted()
 
 
 async def test_errors_and_diagnostics_are_typed_and_contain_no_bytes_or_scope_ids(
