@@ -18,6 +18,7 @@ from spine.infrastructure.object_storage import (
     FilesystemStorageProfile,
     ObjectCorrupt,
     ObjectNotFound,
+    ObjectUnavailable,
     OriginalUploadCommandInput,
     PreWriteRequestDigest,
     StorageConfigurationError,
@@ -320,6 +321,78 @@ async def test_tampered_staged_scope_is_rejected_without_escape(
         await store.finalize_upload(active, observed)
 
     assert not (tmp_path / "escape").exists()
+
+
+async def test_publication_failure_after_hardlink_requires_reconciliation(
+    tmp_path: Path,
+) -> None:
+    registry = AuthorizedReadGrantRegistry()
+    store = FilesystemOriginalObjectStore(
+        FilesystemStorageProfile(root=tmp_path, max_chunk_bytes=8, max_object_bytes=64),
+        grant_registry=registry,
+        clock=lambda: NOW,
+    )
+    active = await store.begin_or_resume_upload(command(), state())
+    observed = await store.write_chunks(
+        active.upload_id,
+        chunks(*split_chunks(CONTENT, 8)),
+    )
+    original_sync_file = store._sync_file
+
+    def fail_after_file_sync(path: Path) -> None:
+        original_sync_file(path)
+        raise OSError("synthetic publication failure")
+
+    store._sync_file = fail_after_file_sync
+    with pytest.raises(ObjectUnavailable):
+        await store.finalize_upload(active, observed)
+
+    restarted = FilesystemOriginalObjectStore(
+        FilesystemStorageProfile(root=tmp_path, max_chunk_bytes=8, max_object_bytes=64),
+        grant_registry=AuthorizedReadGrantRegistry(),
+        clock=lambda: NOW,
+    )
+    with pytest.raises(StorageIntegrityIndeterminate):
+        await restarted.reconciliation_inventory()
+
+
+async def test_abort_cannot_be_overwritten_by_a_stale_writer(
+    tmp_path: Path,
+) -> None:
+    first = FilesystemOriginalObjectStore(
+        FilesystemStorageProfile(root=tmp_path, max_chunk_bytes=8, max_object_bytes=64),
+        grant_registry=AuthorizedReadGrantRegistry(),
+        clock=lambda: NOW,
+    )
+    second = FilesystemOriginalObjectStore(
+        FilesystemStorageProfile(root=tmp_path, max_chunk_bytes=8, max_object_bytes=64),
+        grant_registry=AuthorizedReadGrantRegistry(),
+        clock=lambda: NOW,
+    )
+    active = await first.begin_or_resume_upload(command(), state())
+    append_finished = asyncio.Event()
+    release_record = asyncio.Event()
+    original_append = first._append_stream
+
+    async def delayed_append(*args: object, **kwargs: object) -> object:
+        observed = await original_append(*args, **kwargs)
+        append_finished.set()
+        await release_record.wait()
+        return observed
+
+    first._append_stream = delayed_append
+    writer = asyncio.create_task(
+        first.write_chunks(active.upload_id, chunks(*split_chunks(CONTENT, 8)))
+    )
+    await append_finished.wait()
+    await second.abort_upload(active)
+    release_record.set()
+
+    with pytest.raises(ObjectUnavailable):
+        await writer
+    staged_manifest = next((tmp_path / "staged").rglob("manifest.json"))
+    assert json.loads(staged_manifest.read_text())["status"] == "aborted"
+    assert not staged_manifest.with_name("payload").exists()
 
 
 async def test_interrupted_upload_is_resumable_after_adapter_restart(
