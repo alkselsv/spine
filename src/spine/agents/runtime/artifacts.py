@@ -11,6 +11,15 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from spine.agents.runtime.contracts import AgentResponse, CapabilitySchemaIdentity
 from spine.application.diagnostics import AuditEvent
+from spine.application.persistence import (
+    CommandDigest,
+    IdempotencyClaimResult,
+    IdempotencyKey,
+    IdempotencyReplay,
+    OpaqueResultReference,
+    OwnedIdempotencyClaim,
+)
+from spine.domain.agents import AgentResult
 from spine.domain.artifacts import Artifact, ArtifactRef, validate_artifact_lineage
 from spine.domain.common import ActorRef, SchemaRef
 
@@ -57,10 +66,10 @@ class ArtifactPersistence(Protocol):
     """Narrow canonical Artifact boundary used by a single runtime attempt.
 
     ``load`` applies the requested scope and access policy before returning a
-    record. ``persist_outputs`` is atomic for the supplied batch: it either
-    validates references and commits them with the required Audit Event, or
-    raises without either effect. Durable replay/idempotency is owned by issue
-    #112.
+    record. Invocation claims reuse the canonical Issue #8 receipt types.
+    ``persist_outputs`` atomically commits the Artifact batch, AgentResult,
+    required Audit Event and receipt completion, or raises. If an adapter loses
+    the commit acknowledgement, the next claim must return ``IdempotencyReplay``.
     """
 
     async def load(
@@ -82,14 +91,44 @@ class ArtifactPersistence(Protocol):
     ) -> None:
         """Verify all declared ancestors without disclosing their records."""
 
+    async def claim_invocation(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        operation_schema_version: int,
+        key: IdempotencyKey,
+        digest: CommandDigest,
+    ) -> IdempotencyClaimResult: ...
+
+    async def load_invocation_result(
+        self,
+        replay: IdempotencyReplay,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+    ) -> AgentResult | None: ...
+
     async def persist_outputs(
         self,
         drafts: tuple[ArtifactDraft, ...],
         *,
-        idempotency_key: str,
+        claim: OwnedIdempotencyClaim,
+        result_reference: OpaqueResultReference,
         audit_event: AuditEvent,
         validate_references: Callable[[tuple[ArtifactRef, ...]], None],
-    ) -> tuple[ArtifactRef, ...]: ...
+        build_result: Callable[[tuple[ArtifactRef, ...]], AgentResult],
+    ) -> AgentResult: ...
+
+    async def persist_result(
+        self,
+        result: AgentResult,
+        *,
+        claim: OwnedIdempotencyClaim,
+        result_reference: OpaqueResultReference,
+        audit_event: AuditEvent,
+    ) -> AgentResult:
+        """Atomically persist a terminal result, Audit Event and completion."""
 
 
 @dataclass(frozen=True, slots=True)

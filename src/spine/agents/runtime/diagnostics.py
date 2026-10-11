@@ -38,6 +38,7 @@ class AgentRunDiagnosticState(str, Enum):
 
     STARTED = "started"
     COMPLETED = "completed"
+    REPLAYED = "replayed"
     FAILED = "failed"
     CANCELLATION_REQUESTED = "cancellation_requested"
     CANCELLED = "cancelled"
@@ -156,6 +157,7 @@ def build_agent_runtime_audit_registry() -> AuditEventRegistry:
                 AuditOutcome.ACCEPTED,
                 AuditOutcome.COMPLETED,
                 AuditOutcome.REJECTED,
+                AuditOutcome.REPLAYED,
             }
         ),
         requires_target=True,
@@ -292,6 +294,7 @@ class AgentRuntimeDiagnosticEmitter:
         outcome = {
             AgentRunDiagnosticState.STARTED: AuditOutcome.ACCEPTED,
             AgentRunDiagnosticState.COMPLETED: AuditOutcome.COMPLETED,
+            AgentRunDiagnosticState.REPLAYED: AuditOutcome.REPLAYED,
             AgentRunDiagnosticState.FAILED: AuditOutcome.REJECTED,
             AgentRunDiagnosticState.CANCELLED: AuditOutcome.COMPLETED,
         }[state]

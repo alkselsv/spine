@@ -44,8 +44,17 @@ from spine.application.diagnostics import (
     Retryability,
     StructuredError,
 )
+from spine.application.persistence import (
+    CommandDigest,
+    IdempotencyConflictError,
+    IdempotencyKey,
+    IdempotencyReplay,
+    OpaqueResultReference,
+    OwnedIdempotencyClaim,
+)
 from spine.domain.agents import (
     AgentInvocation,
+    AgentResult,
     AgentRunStatus,
     AgentRuntimeKind,
     AgentVersion,
@@ -218,6 +227,7 @@ class FakeArtifactPersistence:
     cancel_on_read: bool = False
     write_error: bool = False
     audit_error: bool = False
+    completion_error_after_commit: bool = False
     returned_ref: ArtifactRef | None = None
     lineage_error_ids: set[UUID] = field(default_factory=set)
     load_calls: list[tuple[UUID, UUID, UUID, UUID]] = field(default_factory=list)
@@ -225,6 +235,10 @@ class FakeArtifactPersistence:
     writes: list[tuple[tuple[ArtifactDraft, ...], str]] = field(default_factory=list)
     audit_calls: list[AuditEvent] = field(default_factory=list)
     validation_calls: int = 0
+    receipts: dict[
+        tuple[UUID, UUID, str, int, str],
+        tuple[CommandDigest, OpaqueResultReference, AgentResult],
+    ] = field(default_factory=dict)
 
     async def load(
         self,
@@ -254,14 +268,76 @@ class FakeArtifactPersistence:
         if artifact.id in self.lineage_error_ids:
             raise ArtifactReadError("protected ancestor exists")
 
+    async def claim_invocation(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        operation_schema_version: int,
+        key: IdempotencyKey,
+        digest: CommandDigest,
+    ) -> OwnedIdempotencyClaim | IdempotencyReplay:
+        receipt_key = (
+            workspace_id,
+            environment_id,
+            key.value,
+            operation_schema_version,
+            digest.operation.value,
+        )
+        existing = self.receipts.get(receipt_key)
+        if existing is not None:
+            existing_digest, result_reference, _ = existing
+            if existing_digest != digest:
+                raise IdempotencyConflictError(
+                    "Idempotency key conflicts with existing command."
+                )
+            return IdempotencyReplay(
+                kind="replay",
+                receipt_id=uid(200 + len(self.receipts)),
+                operation=digest.operation,
+                operation_schema_version=operation_schema_version,
+                key=key,
+                result=result_reference,
+            )
+        return OwnedIdempotencyClaim(
+            kind="owned",
+            receipt_id=uid(200 + len(self.receipts)),
+            operation=digest.operation,
+            operation_schema_version=operation_schema_version,
+            key=key,
+            digest=digest,
+        )
+
+    async def load_invocation_result(
+        self,
+        replay: IdempotencyReplay,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+    ) -> AgentResult | None:
+        existing = self.receipts.get(
+            (
+                workspace_id,
+                environment_id,
+                replay.key.value,
+                replay.operation_schema_version,
+                replay.operation.value,
+            )
+        )
+        if existing is None or existing[1] != replay.result:
+            return None
+        return existing[2].model_copy(deep=True)
+
     async def persist_outputs(
         self,
         drafts: tuple[ArtifactDraft, ...],
         *,
-        idempotency_key: str,
+        claim: OwnedIdempotencyClaim,
+        result_reference: OpaqueResultReference,
         audit_event: AuditEvent,
         validate_references: Any,
-    ) -> tuple[ArtifactRef, ...]:
+        build_result: Any,
+    ) -> AgentResult:
         references = (
             self.returned_ref
             or ArtifactRef(
@@ -277,8 +353,63 @@ class FakeArtifactPersistence:
             raise RuntimeError("audit commit exposed production-token")
         if self.write_error:
             raise RuntimeError("database included protected output")
-        self.writes.append((drafts, idempotency_key))
-        return references
+        result = build_result(references)
+        self.writes.append((drafts, claim.key.value))
+        first = drafts[0]
+        receipt_key = (
+            first.workspace_id,
+            first.environment_id,
+            claim.key.value,
+            claim.operation_schema_version,
+            claim.operation.value,
+        )
+        existing = self.receipts.get(receipt_key)
+        if existing is not None and existing != (
+            claim.digest,
+            result_reference,
+            result,
+        ):
+            raise IdempotencyConflictError(
+                "Idempotency key conflicts with existing command."
+            )
+        self.receipts[receipt_key] = (claim.digest, result_reference, result)
+        if self.completion_error_after_commit:
+            self.completion_error_after_commit = False
+            raise RuntimeError("commit acknowledgement was unavailable")
+        return result.model_copy(deep=True)
+
+    async def persist_result(
+        self,
+        result: AgentResult,
+        *,
+        claim: OwnedIdempotencyClaim,
+        result_reference: OpaqueResultReference,
+        audit_event: AuditEvent,
+    ) -> AgentResult:
+        self.audit_calls.append(audit_event)
+        if self.audit_error:
+            raise RuntimeError("audit commit exposed production-token")
+        receipt_key = (
+            audit_event.workspace_id,
+            audit_event.environment_id,
+            claim.key.value,
+            claim.operation_schema_version,
+            claim.operation.value,
+        )
+        existing = self.receipts.get(receipt_key)
+        if existing is not None and existing != (
+            claim.digest,
+            result_reference,
+            result,
+        ):
+            raise IdempotencyConflictError(
+                "Idempotency key conflicts with existing command."
+            )
+        self.receipts[receipt_key] = (claim.digest, result_reference, result)
+        if self.completion_error_after_commit:
+            self.completion_error_after_commit = False
+            raise RuntimeError("commit acknowledgement was unavailable")
+        return result.model_copy(deep=True)
 
 
 class RecordingHandler:
@@ -344,7 +475,7 @@ def local_runtime(
         handler=handler,
         artifacts=persistence,
         schemas=CapabilityArtifactSchema(
-            schema_identity=CapabilitySchemaIdentity.from_capability(capability()),
+            schema_identity=selected_context.schema_identity,
             input_model=InputModel,
             output_model=OutputModel,
             assemble_input=lambda artifacts: artifacts[0].content,
@@ -724,6 +855,26 @@ async def test_handler_exception_returns_safe_internal_failure() -> None:
 
 
 @pytest.mark.asyncio
+async def test_equivalent_terminal_failure_replays_without_handler_repeat() -> None:
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+    first_handler = RaisingHandler()
+    second_handler = RaisingHandler()
+
+    first = await local_runtime(persistence, first_handler).invoke(
+        version(), invocation()
+    )
+    replayed = await local_runtime(persistence, second_handler).invoke(
+        version(), invocation()
+    )
+
+    assert replayed == first
+    assert first.status is AgentRunStatus.FAILED
+    assert len(first_handler.calls) == 1
+    assert second_handler.calls == []
+    assert persistence.writes == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("protected_value", DIAGNOSTIC_LEAK_CORPUS)
 async def test_failure_diagnostics_reject_negative_disclosure_corpus(
     protected_value: str,
@@ -807,8 +958,8 @@ async def test_handler_cancellation_emits_cancelled_without_reporting_success() 
     ]
     assert [event.payload_json()["run_state"] for event in audit.events] == [
         "started",
-        "cancelled",
     ]
+    assert persistence.audit_calls[0].payload_json()["run_state"] == "cancelled"
 
 
 @pytest.mark.asyncio
@@ -1355,3 +1506,213 @@ async def test_cross_scope_invocation_fails_before_artifact_loading(
     assert result.error == "The request was rejected."
     assert persistence.load_calls == []
     assert handler.calls == []
+
+
+@pytest.mark.asyncio
+async def test_equivalent_repeat_replays_one_stable_result_without_side_effects() -> None:
+    diagnostics = FakeEventSink()
+    audit = RecordingAuditWriter()
+    first_context = execution_context(event_sink=diagnostics, attempt_id=uid(34))
+    replay_context = execution_context(event_sink=diagnostics, attempt_id=uid(35))
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+    first_handler = RecordingHandler()
+    second_handler = RecordingHandler()
+
+    first = await local_runtime(
+        persistence, first_handler, context=first_context, audit_writer=audit
+    ).invoke(version(), invocation())
+    second = await local_runtime(
+        persistence, second_handler, context=replay_context, audit_writer=audit
+    ).invoke(version(), invocation())
+
+    assert second == first
+    assert len(first_handler.calls) == 1
+    assert second_handler.calls == []
+    assert len(persistence.writes) == 1
+    assert [event.payload_json()["run_state"] for event in diagnostics.events] == [
+        "started",
+        "completed",
+        "started",
+        "replayed",
+    ]
+    assert [event.payload_json()["run_state"] for event in audit.events] == [
+        "started",
+        "started",
+        "replayed",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "second_invocation",
+    (
+        invocation(constraints={"max_sources": 4}),
+        invocation(context_request={"profile": "other"}),
+    ),
+    ids=("constraints", "context-request"),
+)
+async def test_same_key_with_different_semantics_returns_safe_conflict(
+    second_invocation: AgentInvocation,
+) -> None:
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+    handler = RecordingHandler()
+    runtime = local_runtime(persistence, handler)
+    first = await runtime.invoke(version(), invocation())
+
+    conflict = await runtime.invoke(version(), second_invocation)
+
+    assert first.status is AgentRunStatus.SUCCEEDED
+    assert conflict.status is AgentRunStatus.FAILED
+    assert conflict.error == "The idempotency key conflicts with an existing command."
+    assert conflict.output_artifact_ids == ()
+    assert len(handler.calls) == 1
+    assert len(persistence.writes) == 1
+
+
+@pytest.mark.asyncio
+async def test_same_key_with_different_validated_input_returns_safe_conflict() -> None:
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+    handler = RecordingHandler()
+    runtime = local_runtime(persistence, handler)
+    await runtime.invoke(version(), invocation())
+    persistence.records[uid(50)] = input_artifact(
+        content={"question": "A different question"}
+    )
+
+    conflict = await runtime.invoke(version(), invocation())
+
+    assert conflict.status is AgentRunStatus.FAILED
+    assert conflict.error == "The idempotency key conflicts with an existing command."
+    assert len(handler.calls) == 1
+    assert len(persistence.writes) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("identity_kind", ("capability", "version", "run"))
+async def test_same_key_with_different_runtime_identity_returns_safe_conflict(
+    identity_kind: str,
+) -> None:
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+    first_handler = RecordingHandler()
+    await local_runtime(persistence, first_handler).invoke(version(), invocation())
+
+    selected_version = version()
+    context_overrides: dict[str, object] = {}
+    if identity_kind == "capability":
+        selected_capability = capability().model_copy(
+            update={"id": uid(11)}
+        )
+        context_overrides.update(
+            {
+                "capability": selected_capability,
+                "schema_identity": CapabilitySchemaIdentity.from_capability(
+                    selected_capability
+                ),
+            }
+        )
+    elif identity_kind == "version":
+        selected_version = version().model_copy(
+            update={"id": uid(22), "version": "2026.10.2"}
+        )
+        context_overrides["agent_version"] = selected_version
+    else:
+        context_overrides["workflow_run_id"] = uid(35)
+    second_context = execution_context(**context_overrides)
+    second_handler = RecordingHandler()
+
+    conflict = await local_runtime(
+        persistence,
+        second_handler,
+        context=second_context,
+    ).invoke(selected_version, invocation())
+
+    assert conflict.status is AgentRunStatus.FAILED
+    assert conflict.error == "The idempotency key conflicts with an existing command."
+    assert second_handler.calls == []
+    assert len(persistence.writes) == 1
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_completion_recovers_committed_result_without_handler_repeat() -> None:
+    persistence = FakeArtifactPersistence(
+        records={uid(50): input_artifact()},
+        completion_error_after_commit=True,
+    )
+    handler = RecordingHandler()
+    runtime = local_runtime(persistence, handler)
+
+    ambiguous = await runtime.invoke(version(), invocation())
+    recovered = await runtime.invoke(version(), invocation())
+
+    assert ambiguous.status is AgentRunStatus.FAILED
+    assert ambiguous.error == "Persistence operation failed."
+    assert recovered.status is AgentRunStatus.SUCCEEDED
+    assert recovered.output_artifact_ids == (uid(70),)
+    assert len(handler.calls) == 1
+    assert len(persistence.writes) == 1
+
+
+@pytest.mark.asyncio
+async def test_artifact_failure_retry_creates_one_logical_output() -> None:
+    persistence = FakeArtifactPersistence(
+        records={uid(50): input_artifact()},
+        write_error=True,
+    )
+    handler = RecordingHandler()
+    runtime = local_runtime(persistence, handler)
+
+    failed = await runtime.invoke(version(), invocation())
+    persistence.write_error = False
+    recovered = await runtime.invoke(version(), invocation())
+
+    assert failed.status is AgentRunStatus.FAILED
+    assert recovered.status is AgentRunStatus.SUCCEEDED
+    assert len(persistence.writes) == 1
+    assert recovered.output_artifact_ids == (uid(70),)
+
+
+@pytest.mark.asyncio
+async def test_same_raw_key_is_isolated_between_two_tenants() -> None:
+    persistence = FakeArtifactPersistence(
+        records={
+            uid(50): input_artifact(),
+            uid(51): input_artifact(
+                id=uid(51),
+                workspace_id=uid(101),
+                environment_id=uid(102),
+                content={"question": "Tenant two question"},
+            ),
+        }
+    )
+    first_handler = RecordingHandler()
+    first_runtime = local_runtime(persistence, first_handler)
+    first = await first_runtime.invoke(version(), invocation())
+
+    second_context = execution_context(
+        workspace_id=uid(101),
+        environment_id=uid(102),
+        trusted_identity=TrustedExecutionIdentitySnapshot(
+            workspace_id=uid(101),
+            environment_id=uid(102),
+            acting_subject_id=uid(103),
+            authorization_generation=1,
+        ),
+        input_artifact_ids=(uid(51),),
+    )
+    second_handler = RecordingHandler()
+    persistence.returned_ref = ArtifactRef(
+        id=uid(71),
+        schema_name="answer_question.output",
+        schema_version="2",
+    )
+    second = await local_runtime(
+        persistence,
+        second_handler,
+        context=second_context,
+    ).invoke(version(), invocation(input_artifact_ids=(uid(51),)))
+
+    assert first.output_artifact_ids == (uid(70),)
+    assert second.output_artifact_ids == (uid(71),)
+    assert len(first_handler.calls) == 1
+    assert len(second_handler.calls) == 1
+    assert len(persistence.receipts) == 2

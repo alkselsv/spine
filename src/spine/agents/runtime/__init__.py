@@ -43,6 +43,12 @@ from spine.agents.runtime.diagnostics import (
     build_agent_runtime_diagnostic_registry,
 )
 from spine.agents.runtime.local import LocalAgentRuntime
+from spine.agents.runtime.idempotency import (
+    AGENT_INVOCATION_OPERATION,
+    AGENT_INVOCATION_OPERATION_SCHEMA_VERSION,
+    AGENT_RESULT_SCHEMA_VERSION,
+    digest_agent_invocation,
+)
 from spine.agents.runtime.ports import (
     AuthorizationContextView,
     CanonicalTrustedAuthorizationContextVerifier,
@@ -63,6 +69,9 @@ from spine.agents.runtime.context import (
 
 __all__ = [
     "AgentExecutionContext",
+    "AGENT_INVOCATION_OPERATION",
+    "AGENT_INVOCATION_OPERATION_SCHEMA_VERSION",
+    "AGENT_RESULT_SCHEMA_VERSION",
     "AgentExecutionContextAdmission",
     "AgentExecutionContextConstructionError",
     "AgentExecutionContextFactory",
@@ -109,6 +118,7 @@ __all__ = [
     "adapt_async_function",
     "build_agent_runtime_audit_registry",
     "build_agent_runtime_diagnostic_registry",
+    "digest_agent_invocation",
     "invocation_context_from_invocation",
     "typed_request_from_invocation",
 ]
