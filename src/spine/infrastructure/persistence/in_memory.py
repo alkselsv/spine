@@ -701,6 +701,13 @@ class _InMemoryIngestionRepository:
     def _processing_receipts(self) -> dict[UUID, ProcessingReceipt]:
         return self._uow._base_processing_receipts | self._uow._pending_processing_receipts
 
+    def _original_receipt(self, receipt_id: UUID) -> _IdempotencyReceipt | None:
+        receipts = self._uow._base_receipts | self._uow._pending_receipts
+        return next(
+            (receipt for receipt in receipts.values() if receipt.receipt_id == receipt_id),
+            None,
+        )
+
     async def create_run(self, command: IngestionRunCommand) -> IngestionMutationResult:
         self._uow._guard_active()
         self._scope_check(command.run.workspace_id, command.run.environment_id)
@@ -768,7 +775,7 @@ class _InMemoryIngestionRepository:
         self._uow._pending_ingestion_items[item.ingestion_run_source_id] = item.model_copy(deep=True)
         await self.append_transition(
             IngestionTransition(
-                ingestion_transition_id=uuid4(), workspace_id=item.workspace_id, environment_id=item.environment_id,
+                ingestion_transition_id=uuid5(NAMESPACE_URL, f"ingestion-item-root:{item.ingestion_run_source_id}"), workspace_id=item.workspace_id, environment_id=item.environment_id,
                 target_kind=IngestionTargetKind.ITEM, ingestion_run_id=item.ingestion_run_id,
                 ingestion_run_source_id=item.ingestion_run_source_id, state=IngestionItemState.RECEIVED,
                 attempt=1, actor_or_service="ingestion-ledger", trace_id=self._uow._trace_id_snapshot(),
@@ -798,7 +805,21 @@ class _InMemoryIngestionRepository:
         if (binding.workspace_id, binding.environment_id) != (item.workspace_id, item.environment_id) or binding.ingestion_run_source_id != item.ingestion_run_source_id:
             self._uow._fail(ConstraintConflictError("Ingestion binding scope is invalid."))
         if existing is not None:
-            if existing.source_object_id != binding.source_object_id or existing.source_revision_id != binding.source_revision_id or existing.original_receipt_digest != binding.original_receipt_digest:
+            if (
+                existing.source_object_id,
+                existing.source_revision_id,
+                existing.original_reference,
+                existing.original_receipt_kind,
+                existing.original_receipt_id,
+                existing.original_receipt_digest,
+            ) != (
+                binding.source_object_id,
+                binding.source_revision_id,
+                binding.original_reference,
+                binding.original_receipt_kind,
+                binding.original_receipt_id,
+                binding.original_receipt_digest,
+            ):
                 self._uow._fail(ConstraintConflictError("Ingestion item is already bound to another source."))
             result = OpaqueResultReference(result_type="ingestion_binding", result_id=existing.binding_id, schema_version=1)
             await self._uow.idempotency.complete(claim, result)
@@ -817,6 +838,16 @@ class _InMemoryIngestionRepository:
         if observation.revision.kind.value == "content":
             if binding.original_receipt_id is None or binding.original_reference is None or binding.original_reference.digest_hex != observation.revision.original_sha256:
                 self._uow._fail(ConstraintConflictError("Content ingestion binding requires verified original evidence."))
+            original_receipt = self._original_receipt(binding.original_receipt_id)
+            if (
+                original_receipt is None
+                or original_receipt.key.workspace_id != binding.workspace_id
+                or original_receipt.key.environment_id != binding.environment_id
+                or original_receipt.key.operation_name != "original.upload"
+                or original_receipt.result is None
+                or original_receipt.result.result_type != "original_upload"
+            ):
+                self._uow._fail(ConstraintConflictError("original receipt is unavailable or out of scope."))
 
         # The source observation is recorded in the same transaction. Its
         # operation is adapted to the trusted binding seam so it cannot commit

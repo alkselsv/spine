@@ -3,15 +3,16 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from dataclasses import dataclass
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import pytest
 import pytest_asyncio
 from pydantic import BaseModel, ConfigDict, SecretStr
 from sqlalchemy import event, text
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -31,6 +32,7 @@ from spine.application.persistence.errors import (
     PersistenceUnavailableError,
     UnexpectedPersistenceError,
 )
+from spine.application.persistence.ingestion import IngestionRunCommand
 from spine.application.persistence.idempotency import (
     IdempotencyKey,
     IdempotencyReplay,
@@ -38,6 +40,7 @@ from spine.application.persistence.idempotency import (
 )
 from spine.application.persistence.outbox import OpaqueObjectReference
 from spine.domain.common import EnvironmentKind
+from spine.domain.ingestion import IngestionRun
 from spine.domain.workspaces import Environment, Workspace
 from spine.infrastructure.db.migrations import upgrade_database
 from spine.infrastructure.db.operator import bootstrap_database_roles
@@ -76,9 +79,14 @@ from tests.contracts.persistence.test_source_observation_contract import (
     test_content_reappearance_requires_tombstone_predecessor as contract_source_content_reappearance_rejected,
     test_tombstone_reappearance_requires_tombstone_predecessor as contract_source_reappearance,
 )
+from tests.contracts.persistence.test_ingestion_repository_contract import (
+    exercise_ingestion_run_item_contract,
+    test_ingestion_binding_requires_a_scoped_original_receipt as contract_ingestion_binding_receipt,
+)
 from tests.contracts.persistence.test_idempotency_repository_contract import (
     OPERATION_SCHEMA_VERSION,
     command_digest as idempotency_command_digest,
+    persist_environment as persist_idempotency_environment,
     persist_workspace as persist_idempotency_workspace,
     result_ref as idempotency_result_ref,
     test_claim_complete_and_replay_return_same_result_reference as contract_idempotency_replay,
@@ -367,6 +375,19 @@ async def postgresql_adapter(
             trace_id=synthetic_uuid(958),
         )
 
+    def ingestion_context(
+        workspace_id: UUID, environment_id: UUID, operation: str
+    ) -> TrustedPersistenceContext:
+        return boundary.worker(
+            scope=EnvironmentScope(
+                workspace_id=workspace_id, environment_id=environment_id
+            ),
+            service_principal_id=synthetic_uuid(959),
+            purpose=PersistencePurpose("contract_test"),
+            operation=PersistenceOperation(operation),
+            trace_id=synthetic_uuid(960),
+        )
+
     def worker_workspace_context(workspace_id: UUID) -> TrustedPersistenceContext:
         return boundary.worker(
             scope=WorkspaceScope(workspace_id=workspace_id),
@@ -390,6 +411,7 @@ async def postgresql_adapter(
             hold_transactions=hold_transactions,
             outbox_events=outbox_events,
             source_context=source_context,
+            ingestion_context=ingestion_context,
         )
     finally:
         await engine.dispose()
@@ -582,6 +604,92 @@ async def test_postgresql_adapter_satisfies_source_observation_contract(
     contract: ContractTest,
 ) -> None:
     await contract(postgresql_adapter)
+
+
+async def test_postgresql_adapter_satisfies_ingestion_repository_contract(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    await exercise_ingestion_run_item_contract(postgresql_adapter)
+    await contract_ingestion_binding_receipt(postgresql_adapter)
+
+
+@pytest.mark.parametrize(
+    ("case_id", "safe_metrics", "message"),
+    (
+        (0, '{"schema_version":"ingestion-safe-detail:v1","secret":"x"}', "Safe metrics field is not allowlisted"),
+        (1, '{"schema_version":"ingestion-safe-detail:v1","item_count":10000000000}', "Safe metrics counter is invalid"),
+        (2, '{"schema_version":"ingestion-safe-detail:v1","retryable":"yes"}', "Safe metrics boolean is invalid"),
+    ),
+)
+async def test_postgresql_rejects_invalid_ingestion_safe_metrics(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+    case_id: int,
+    safe_metrics: str,
+    message: str,
+) -> None:
+    base_id = 3600 + case_id * 10
+    workspace_id = synthetic_uuid(base_id)
+    environment_id = synthetic_uuid(base_id + 1)
+    await persist_idempotency_workspace(postgresql_adapter, workspace_id)
+    await persist_idempotency_environment(postgresql_adapter, workspace_id, environment_id)
+    assert postgresql_adapter.ingestion_context is not None
+    context = postgresql_adapter.ingestion_context(
+        workspace_id, environment_id, "ingestion_run"
+    )
+    run = IngestionRun(
+        ingestion_run_id=synthetic_uuid(base_id + 2),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        command_identity="safe-metrics-test-run",
+        command_digest="a" * 64,
+        trigger_kind="upload",
+        requested_scope_schema="ingestion-scope:v1",
+        requested_scope_digest="b" * 64,
+        requested_at=datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc),
+    )
+    command = IngestionRunCommand.create(
+        run=run, idempotency_key=IdempotencyKey("safe-metrics-test-run")
+    )
+    async with postgresql_adapter.uow_factory(context) as uow:
+        await uow.ingestion.create_run(command)
+        await uow.commit()
+
+    engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    transition_id = synthetic_uuid(base_id + 3)
+    root_id = uuid5(
+        NAMESPACE_URL, f"ingestion-run-root:{command.run.ingestion_run_id}"
+    )
+    try:
+        async with engine.begin() as connection:
+            with pytest.raises(IntegrityError, match=message):
+                await connection.execute(
+                    text(
+                        "INSERT INTO spine.ingestion_transitions ("
+                        "ingestion_transition_id, workspace_id, environment_id, "
+                        "target_kind, ingestion_run_id, ingestion_run_source_id, "
+                        "predecessor_transition_id, state, attempt, safe_metrics_schema, "
+                        "safe_metrics, actor_or_service, trace_id, occurred_at) "
+                        "VALUES (:transition_id, :workspace_id, :environment_id, 'run', "
+                        ":run_id, NULL, :predecessor_id, 'receiving', 1, "
+                        "'ingestion-safe-detail:v1', CAST(:safe_metrics AS jsonb), "
+                        "'safe-metrics-test', :trace_id, CURRENT_TIMESTAMP)"
+                    ),
+                    {
+                        "transition_id": transition_id,
+                        "workspace_id": workspace_id,
+                        "environment_id": environment_id,
+                        "run_id": command.run.ingestion_run_id,
+                        "predecessor_id": root_id,
+                        "safe_metrics": safe_metrics,
+                        "trace_id": synthetic_uuid(base_id + 4),
+                    },
+                )
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.parametrize(

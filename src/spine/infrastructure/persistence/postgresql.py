@@ -495,7 +495,13 @@ class _PostgreSQLIngestionRepository:
 
     @staticmethod
     def _transition_from_row(row: Mapping[str, Any]) -> IngestionTransition:
-        return IngestionTransition.model_validate(dict(row))
+        values = dict(row)
+        safe_metrics_schema = values.pop("safe_metrics_schema", None)
+        safe_metrics = values.get("safe_metrics")
+        if safe_metrics is not None and "schema_version" not in safe_metrics:
+            safe_metrics = {"schema_version": safe_metrics_schema, **safe_metrics}
+        values["safe_metrics"] = safe_metrics
+        return IngestionTransition.model_validate(values)
 
     async def _head(self, *, run_id: UUID, item_id: UUID | None) -> IngestionTransition | None:
         predicates = [
@@ -556,7 +562,7 @@ class _PostgreSQLIngestionRepository:
             return current
         await self._uow._execute(insert(_INGESTION_ITEMS).values(**item.model_dump(mode="python")))
         await self.append_transition(IngestionTransition(
-            ingestion_transition_id=uuid4(), workspace_id=item.workspace_id, environment_id=item.environment_id,
+            ingestion_transition_id=uuid5(NAMESPACE_URL, f"ingestion-item-root:{item.ingestion_run_source_id}"), workspace_id=item.workspace_id, environment_id=item.environment_id,
             target_kind=IngestionTargetKind.ITEM, ingestion_run_id=item.ingestion_run_id, ingestion_run_source_id=item.ingestion_run_source_id,
             state=IngestionItemState.RECEIVED, attempt=1, actor_or_service="ingestion-ledger", trace_id=self._uow._trace_id_snapshot(), occurred_at=item.created_at,
         ))
@@ -580,7 +586,21 @@ class _PostgreSQLIngestionRepository:
             await self._uow._fail(ConstraintConflictError("Ingestion binding scope is invalid."))
         if existing_row is not None:
             existing = IngestionRunSourceBinding.model_validate(dict(existing_row))
-            if (existing.source_object_id, existing.source_revision_id, existing.original_receipt_digest) != (binding.source_object_id, binding.source_revision_id, binding.original_receipt_digest):
+            if (
+                existing.source_object_id,
+                existing.source_revision_id,
+                existing.original_reference,
+                existing.original_receipt_kind,
+                existing.original_receipt_id,
+                existing.original_receipt_digest,
+            ) != (
+                binding.source_object_id,
+                binding.source_revision_id,
+                binding.original_reference,
+                binding.original_receipt_kind,
+                binding.original_receipt_id,
+                binding.original_receipt_digest,
+            ):
                 await self._uow._fail(ConstraintConflictError("Ingestion item is already bound to another source."))
             result = OpaqueResultReference(result_type="ingestion_binding", result_id=existing.binding_id, schema_version=1)
             await self._uow.idempotency.complete(claim, result)
@@ -625,7 +645,7 @@ class _PostgreSQLIngestionRepository:
             validate_transition(previous, transition)
         except ValueError as error:
             await self._uow._fail(ConstraintConflictError(str(error)))
-        safe_metrics_schema, safe_metrics = (None, None)
+        safe_metrics_schema, safe_metrics = (None, null())
         if transition.safe_metrics is not None:
             safe_metrics_schema, safe_metrics, _ = self._detail_values(transition.safe_metrics)
         await self._uow._execute(insert(_INGESTION_TRANSITIONS).values(

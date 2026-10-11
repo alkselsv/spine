@@ -1269,6 +1269,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "fk_ingestion_run_source_bindings_item",
         "fk_ingestion_run_source_bindings_revision",
         "fk_ingestion_run_source_bindings_receipt",
+        "fk_ingestion_run_source_bindings_original_receipt",
         "ck_ingestion_run_source_bindings_receipt_complete",
         "ck_ingestion_run_source_bindings_digest",
         "pk_ingestion_transitions",
@@ -1307,6 +1308,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ck_processing_receipts_locator_version",
         "ck_processing_receipts_output",
         "ck_processing_receipts_complete_exclusions",
+        "ck_processing_receipts_complete_failures",
         "ck_processing_receipts_digests",
     }
     expected_final_constraints |= (
@@ -1602,9 +1604,11 @@ async def test_ingestion_ledger_catalog_has_immutable_and_deferred_integrity_tri
         "trg_processing_receipts_receipt_scope",
     } <= set(by_name)
     assert "trg_ingestion_run_source_bindings_original" in by_name
+    assert "trg_ingestion_run_source_bindings_original_receipt_tenant" in by_name
     assert {
         "trg_ingestion_warnings_safe_detail",
         "trg_ingestion_failures_safe_detail",
+        "trg_ingestion_transitions_safe_metrics",
     } <= set(by_name)
     for name, row in by_name.items():
         if name.endswith("_receipt_scope"):
@@ -1617,6 +1621,7 @@ async def test_ingestion_ledger_catalog_has_immutable_and_deferred_integrity_tri
             assert "BEFORE" in row.definition
             assert "UPDATE" in row.definition and "DELETE" in row.definition
     assert "validate_issue7_binding_original" in by_name["trg_ingestion_run_source_bindings_original"].definition
+    assert "validate_issue86_safe_metrics" in by_name["trg_ingestion_transitions_safe_metrics"].definition
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -3291,13 +3296,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261012_14_atomic_outbox_delivery_audit.py",
         "20261012_15_admission_decisions.py",
         "20261013_15_ingestion_operational_ledger.py",
+        "20261013_16_ingestion_ledger_hardening.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261013_16_injected_failure.py").write_text(
+    (target / "versions" / "20261013_17_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261013_16'\n"
-        "down_revision = '20261013_15'\n"
+        "revision = '20261013_17'\n"
+        "down_revision = '20261013_16'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

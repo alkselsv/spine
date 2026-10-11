@@ -20,6 +20,8 @@ BoundedIdentifier = Annotated[str, Field(min_length=1, max_length=64, pattern=_I
 DigestHex = Annotated[str, Field(pattern=_DIGEST)]
 PositiveInt = Annotated[int, Field(gt=0)]
 NonNegativeInt = Annotated[int, Field(ge=0)]
+SafeCounter = Annotated[int, Field(ge=0, le=9_999_999_999)]
+SafeAttempt = Annotated[int, Field(gt=0, le=9_999_999_999)]
 
 
 class IngestionRunState(str, Enum):
@@ -89,10 +91,10 @@ class SafeDiagnosticDetail(_FrozenRecord):
     """
 
     schema_version: Literal["ingestion-safe-detail:v1"]
-    attempt: PositiveInt | None = None
-    item_count: NonNegativeInt | None = None
-    byte_count: NonNegativeInt | None = None
-    duration_ms: NonNegativeInt | None = None
+    attempt: SafeAttempt | None = None
+    item_count: SafeCounter | None = None
+    byte_count: SafeCounter | None = None
+    duration_ms: SafeCounter | None = None
     retryable: bool | None = None
     opaque_detail_ref: UUID | None = None
 
@@ -197,6 +199,8 @@ class IngestionRunSourceBinding(_FrozenRecord):
                 raise ValueError("content binding requires a complete finalized receipt reference")
             if self.original_receipt_id.int == 0:
                 raise ValueError("original_receipt_id must be a non-zero UUID")
+            if self.original_receipt_digest != self.original_reference.digest_hex:
+                raise ValueError("original receipt digest must match the original reference")
         return self
 
 
@@ -328,6 +332,8 @@ class ProcessingReceipt(_FrozenRecord):
             raise ValueError("diagnostic references must be non-zero UUIDs")
         if self.coverage is ProcessingCoverage.COMPLETE and self.exclusions:
             raise ValueError("complete processing cannot contain exclusions")
+        if self.coverage is ProcessingCoverage.COMPLETE and self.failure_ids:
+            raise ValueError("complete processing cannot contain failures")
         if self.coverage is ProcessingCoverage.FAILED and self.output_digest is not None:
             raise ValueError("failed processing cannot contain an output digest")
         if self.coverage is not ProcessingCoverage.FAILED and self.output_digest is None:
