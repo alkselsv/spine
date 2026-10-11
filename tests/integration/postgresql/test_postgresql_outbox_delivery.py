@@ -380,6 +380,20 @@ class _SuccessfulConsumer:
         return OutboxConsumerSuccess(diagnostic_context=diagnostic_context)
 
 
+class _RecordingConsumer(_SuccessfulConsumer):
+    def __init__(self) -> None:
+        self.event_ids: list[UUID] = []
+
+    async def consume(
+        self,
+        intent: OutboxIntent,
+        diagnostic_context: DiagnosticContext,
+    ) -> OutboxConsumerSuccess:
+        assert intent.event_id is not None
+        self.event_ids.append(intent.event_id)
+        return await super().consume(intent, diagnostic_context)
+
+
 async def test_postgresql_dispatch_commits_delivery_and_audit_atomically(
     postgresql_delivery_adapter: DeliveryPersistenceAdapter,
 ) -> None:
@@ -438,6 +452,72 @@ async def test_postgresql_dispatch_commits_delivery_and_audit_atomically(
     assert audit is not None
     assert audit.causation_id == event_id
     assert len(diagnostic_sink.events) == 1
+
+
+async def test_concurrent_postgresql_dispatchers_do_not_overlap_active_claim(
+    postgresql_delivery_adapter: DeliveryPersistenceAdapter,
+) -> None:
+    adapter = postgresql_delivery_adapter
+    workspace_id = synthetic_uuid(6564)
+    event_id = synthetic_uuid(6565)
+    context = adapter.workspace_context(workspace_id)
+    async with adapter.uow_factory(context) as uow:
+        await uow.workspaces.add(workspace(workspace_id))
+        await uow.outbox.append(
+            intent(
+                adapter,
+                workspace_id=workspace_id,
+                event_id=event_id,
+                trace_id=context.trace_id,
+                producer_deduplication_id=None,
+            )
+        )
+        await uow.commit()
+    consumer = _RecordingConsumer()
+    consumers = OutboxConsumerRegistry()
+    consumers.register("workspace_projection", consumer)
+    diagnostics = DiagnosticEventRegistry.with_default_families()
+    claimed_at = datetime(2026, 10, 12, 13, 15, tzinfo=timezone.utc)
+    audit_event_ids = (synthetic_uuid(6566), synthetic_uuid(6567))
+
+    def build_dispatcher(index: int) -> OutboxDispatcher:
+        return OutboxDispatcher(
+            repository=adapter.delivery_repository,
+            consumers=consumers,
+            audit_events=adapter.audit_events,
+            diagnostic_events=diagnostics,
+            diagnostic_sink=RecordingDiagnosticSink(diagnostics),
+            service_principal_id=synthetic_uuid(6568 + index),
+            clock=iter((claimed_at, claimed_at + timedelta(seconds=1))).__next__,
+            audit_event_id_source=lambda: audit_event_ids[index],
+            retry_delay=lambda attempt_number: timedelta(seconds=5),
+            maximum_retry_delay=timedelta(minutes=5),
+            lease_duration=timedelta(seconds=30),
+            handler_timeout=timedelta(seconds=5),
+            maximum_attempts=3,
+        )
+
+    reports = await asyncio.gather(
+        build_dispatcher(0).dispatch_batch(limit=1, worker_identity="worker_alpha"),
+        build_dispatcher(1).dispatch_batch(limit=1, worker_identity="worker_beta"),
+    )
+
+    assert sum(report.claimed for report in reports) == 1
+    assert sum(report.delivered for report in reports) == 1
+    assert consumer.event_ids == [event_id]
+    delivery = await adapter.delivery_repository.resolve(event_id)
+    assert delivery is not None
+    assert delivery.status.value == "delivered"
+    audits = await asyncio.gather(
+        *(
+            adapter.read_audit_event(
+                adapter.worker_workspace_context(workspace_id),
+                audit_event_id,
+            )
+            for audit_event_id in audit_event_ids
+        )
+    )
+    assert sum(audit is not None for audit in audits) == 1
 
 
 async def test_atomic_finalization_rejects_mismatched_workspace_scope(
