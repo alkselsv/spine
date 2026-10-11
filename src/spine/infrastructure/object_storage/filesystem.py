@@ -682,6 +682,8 @@ class FilesystemOriginalObjectStore:
         receipt = self._receipt_from_manifest(manifest, manifest_path)
         if self._is_deleted_reference(reference):
             raise ObjectNotFound()
+        if self._is_deletion_pending(reference):
+            raise StorageIntegrityIndeterminate()
         if receipt.object_reference != reference:
             raise InvalidReadGrant()
         if not self._exists(payload_path):
@@ -795,6 +797,8 @@ class FilesystemOriginalObjectStore:
             receipt = self._receipt_from_manifest(manifest, manifest_path)
             if self._is_deleted_reference(receipt.object_reference):
                 continue
+            if self._is_deletion_pending(receipt.object_reference):
+                raise StorageIntegrityIndeterminate()
             object_id = receipt.object_reference.object_id
             if object_id in seen_object_ids:
                 raise StorageIntegrityIndeterminate()
@@ -879,17 +883,24 @@ class FilesystemOriginalObjectStore:
         with self._state_lock:
             if self._deletion_approvals.get(reference) != approval:
                 raise ObjectProtected()
-        if self._is_deleted_reference(reference):
+        marker_status = self._deletion_marker_status(reference)
+        if marker_status == "deleted":
             return DeletionResult(status="already_absent")
         location = self._locate_finalized_reference(reference)
         if location is None:
+            if marker_status == "pending":
+                self._write_deleted_marker(reference, status="deleted")
+                return DeletionResult(status="already_absent")
             raise ObjectNotFound()
         self._assert_exact_finalized_reference(location, reference)
         payload_path, manifest_path = location
         scope_dir = manifest_path.parent
         payload_fd: int | None = None
+        scope_fd: int | None = None
         try:
-            self._write_deleted_marker(reference)
+            self._write_deleted_marker(reference, status="pending")
+            scope_fd = self._open_directory(scope_dir)
+            self._lock_file(scope_fd, deadline)
             payload_fd = self._open_append(payload_path)
             self._lock_file(payload_fd, deadline)
             manifest = self._read_manifest(manifest_path)
@@ -907,6 +918,7 @@ class FilesystemOriginalObjectStore:
             )
             if self._monotonic_clock() >= deadline:
                 raise StorageIntegrityIndeterminate()
+            self._write_deleted_marker(reference, status="deleted")
         except StorageError:
             raise
         except OSError:
@@ -914,6 +926,8 @@ class FilesystemOriginalObjectStore:
         finally:
             if payload_fd is not None:
                 self._close_fd(payload_fd)
+            if scope_fd is not None:
+                self._close_fd(scope_fd)
         return DeletionResult(status="deleted")
 
     def _remove_staged_publication_evidence(
@@ -963,10 +977,10 @@ class FilesystemOriginalObjectStore:
             self._rmdir_nofollow(stage_dir)
             self._sync_directory(staged_scope)
 
-    def _is_deleted_reference(self, reference: ObjectReference) -> bool:
+    def _deletion_marker_status(self, reference: ObjectReference) -> str | None:
         marker = self._deleted_root / f"{reference.object_id.hex}.json"
         if not self._exists(marker):
-            return False
+            return None
         try:
             fd = self._open_read(marker)
             try:
@@ -982,7 +996,16 @@ class FilesystemOriginalObjectStore:
             raise StorageIntegrityIndeterminate() from None
         if restored != reference:
             raise StorageIntegrityIndeterminate()
-        return True
+        status = value.get("status", "deleted")
+        if status not in {"pending", "deleted"}:
+            raise StorageIntegrityIndeterminate()
+        return status
+
+    def _is_deleted_reference(self, reference: ObjectReference) -> bool:
+        return self._deletion_marker_status(reference) == "deleted"
+
+    def _is_deletion_pending(self, reference: ObjectReference) -> bool:
+        return self._deletion_marker_status(reference) == "pending"
 
     def _remember_deletion_approval(
         self,
@@ -1521,7 +1544,7 @@ class FilesystemOriginalObjectStore:
             raise StorageIntegrityIndeterminate() from None
         except StorageError:
             raise
-        except (TypeError, NotImplementedError):
+        except (TypeError, NotImplementedError, ValueError):
             raise StorageConfigurationError() from None
         except OSError as error:
             raise self._configuration_or_unavailable(error) from None
@@ -1801,7 +1824,7 @@ class FilesystemOriginalObjectStore:
                     raise StorageIntegrityIndeterminate()
             except FileExistsError:
                 raise
-            except (TypeError, NotImplementedError):
+            except (TypeError, NotImplementedError, ValueError):
                 raise StorageConfigurationError() from None
             except OSError as error:
                 if error.errno == errno.EEXIST:
@@ -1812,9 +1835,21 @@ class FilesystemOriginalObjectStore:
         finally:
             os.close(source_parent_fd)
 
-    def _write_deleted_marker(self, reference: ObjectReference) -> None:
+    def _write_deleted_marker(
+        self,
+        reference: ObjectReference,
+        *,
+        status: str = "deleted",
+    ) -> None:
         marker = self._deleted_root / f"{reference.object_id.hex}.json"
-        self._write_json_atomic(marker, {"version": 1, "reference": reference.model_dump(mode="json")})
+        self._write_json_atomic(
+            marker,
+            {
+                "version": 1,
+                "status": status,
+                "reference": reference.model_dump(mode="json"),
+            },
+        )
         self._sync_directory(self._deleted_root)
 
     def _update_digest_from_path(self, path: Path, digest: Any, deadline: float) -> None:
@@ -2140,7 +2175,7 @@ class FilesystemOriginalObjectStore:
             if expected_identity is not None and self._file_identity_from_fd(fd) != expected_identity:
                 raise StorageIntegrityIndeterminate()
             os.fsync(fd)
-        except (TypeError, NotImplementedError, OSError):
+        except (TypeError, NotImplementedError, ValueError, OSError):
             raise StorageIntegrityIndeterminate() from None
         finally:
             os.close(fd)
@@ -2152,7 +2187,7 @@ class FilesystemOriginalObjectStore:
                 os.fsync(fd)
             finally:
                 os.close(fd)
-        except (TypeError, NotImplementedError, OSError):
+        except (TypeError, NotImplementedError, ValueError, OSError):
             raise StorageIntegrityIndeterminate() from None
 
     def _prepare_root(self, configured_root: str | os.PathLike[str]) -> Path:
