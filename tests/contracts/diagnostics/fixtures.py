@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterable
 from uuid import UUID
 
@@ -36,20 +37,31 @@ def diagnostic_context(
 
 
 ERROR_LEAK_CORPUS = (
+    "protected-document.txt",
+    "What is the protected customer question?",
+    "The answer copied from a protected source.",
+    "citation excerpt from page 7",
+    "client-secret-credential",
+    "sk-protected-api-key-token",
     "SELECT password FROM credentials WHERE token = 'secret'",
+    "password=bound-secret-value",
     "Bearer production-token",
+    "raw provider failure message",
+    "RuntimeError('provider failure with protected text')",
+    "SQL bound value: bound-secret-value",
     "protected customer document excerpt",
-    "provider raw error https://provider.invalid/v1/responses",
-    "Traceback (most recent call last):\n  File '/srv/app.py', line 1",
-)
-
-DIAGNOSTIC_LEAK_CORPUS = ERROR_LEAK_CORPUS + (
-    "production-token",
-    "raw failure from provider",
+    "https://user:password@provider.invalid/v1/responses?api_key=secret",
     "system prompt containing customer instructions",
     "answer copied from a protected source",
     "chain_of_thought hidden model reasoning",
+    "Traceback (most recent call last):\n  File '/srv/app.py', line 1",
+    "File \"protected-document.txt\"",
+    "question=protected customer question",
+    "citation excerpt from page 7",
+    "provider raw error https://provider.invalid/v1/responses",
 )
+
+DIAGNOSTIC_LEAK_CORPUS = ERROR_LEAK_CORPUS + ("production-token", "raw failure from provider")
 
 
 def assert_safe_structured_error(error: StructuredError) -> None:
@@ -88,6 +100,42 @@ def assert_no_diagnostic_leaks(
 ) -> None:
     """Prove protected fixture values do not cross a public/diagnostic seam."""
 
+    captures = tuple(captures)
     combined = "\n".join(captures)
+
+    def contains_decoded(value: str, protected: str) -> bool:
+        pending: list[object] = [value, *value.splitlines()]
+        seen: set[tuple[type[object], str]] = set()
+        for _ in range(8):
+            next_pending: list[object] = []
+            for candidate in pending:
+                if isinstance(candidate, str):
+                    if protected in candidate:
+                        return True
+                    marker = (str, candidate)
+                    if marker in seen:
+                        continue
+                    seen.add(marker)
+                    try:
+                        next_pending.append(json.loads(candidate))
+                    except (TypeError, ValueError):
+                        for start, marker in enumerate(candidate):
+                            if marker not in "[{":
+                                continue
+                            try:
+                                next_pending.append(json.loads(candidate[start:]))
+                            except (TypeError, ValueError):
+                                continue
+                elif isinstance(candidate, dict):
+                    next_pending.extend(candidate.keys())
+                    next_pending.extend(candidate.values())
+                elif isinstance(candidate, (list, tuple)):
+                    next_pending.extend(candidate)
+            pending = next_pending
+            if not pending:
+                break
+        return False
+
     for protected_value in leak_corpus:
         assert protected_value not in combined
+        assert all(not contains_decoded(capture, protected_value) for capture in captures)

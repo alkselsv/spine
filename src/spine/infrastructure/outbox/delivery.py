@@ -41,6 +41,23 @@ from spine.infrastructure.persistence.postgresql_mappings import (
 )
 
 
+_INTENT_HEADER_COLUMNS = (
+    _INTENTS.c.event_id,
+    _INTENTS.c.workspace_id,
+    _INTENTS.c.environment_id,
+    _INTENTS.c.event_type,
+    _INTENTS.c.event_schema_version,
+    _INTENTS.c.aggregate_type,
+    _INTENTS.c.aggregate_id,
+    _INTENTS.c.aggregate_schema_version,
+    _INTENTS.c.producer_deduplication_id,
+    _INTENTS.c.trace_id,
+    _INTENTS.c.correlation_id,
+    _INTENTS.c.causation_id,
+    _INTENTS.c.created_at,
+)
+
+
 def _intent_from_row(
     row: object,
     registry: OutboxEventRegistry,
@@ -130,7 +147,7 @@ class PostgreSQLOutboxDeliveryRepository:
         materialized_at: datetime,
     ) -> tuple[OutboxDelivery, ...]:
         missing = await session.execute(
-            select(_INTENTS)
+            select(*_INTENT_HEADER_COLUMNS)
             .outerjoin(
                 _DELIVERIES,
                 _DELIVERIES.c.event_id == _INTENTS.c.event_id,
@@ -269,15 +286,29 @@ class PostgreSQLOutboxDeliveryRepository:
                         .returning(_DELIVERIES)
                     )
                     delivery_row = updated.mappings().one()
-                    intent_result = await session.execute(
-                        select(_INTENTS).where(
+                    header_result = await session.execute(
+                        select(*_INTENT_HEADER_COLUMNS).where(
                             _INTENTS.c.event_id == delivery_row.event_id
                         )
                     )
-                    intent = _intent_from_row(
-                        intent_result.mappings().one(),
-                        self._outbox_events,
-                    )
+                    header = header_result.mappings().one()
+                    try:
+                        self._outbox_events.resolve(
+                            header.event_type,
+                            header.event_schema_version,
+                        )
+                    except UnsupportedOutboxEventError:
+                        intent = _intent_from_row(header, self._outbox_events)
+                    else:
+                        intent_result = await session.execute(
+                            select(_INTENTS).where(
+                                _INTENTS.c.event_id == delivery_row.event_id
+                            )
+                        )
+                        intent = _intent_from_row(
+                            intent_result.mappings().one(),
+                            self._outbox_events,
+                        )
                     claims.append(
                         ClaimedOutboxDelivery(
                             intent=intent,

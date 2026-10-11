@@ -5,10 +5,13 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import UUID
 
 import pytest
 import pytest_asyncio
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from pydantic import SecretStr
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
@@ -68,6 +71,15 @@ from tests.contracts.persistence.test_audit_writer_contract import (
     test_allowed_required_audit_releases_without_leaking_target_metadata as contract_allowed_safe,
     test_historical_audit_event_cannot_authorize_a_new_unit_of_work as contract_not_authority,
 )
+
+
+def _current_migration_head() -> str:
+    repository_root = Path(__file__).parents[3]
+    config = Config(str(repository_root / "alembic.ini"))
+    config.set_main_option("script_location", str(repository_root / "migrations"))
+    heads = tuple(ScriptDirectory.from_config(config).get_heads())
+    assert len(heads) == 1
+    return heads[0]
 
 
 pytestmark = [
@@ -548,7 +560,7 @@ async def test_audit_catalog_has_named_append_only_tenant_contract(
     assert tuple(privileges) == (True, True, False, False)
     assert triggers == {"trg_audit_events_immutable"}
     assert public_can_execute is False
-    assert revision == "20261012_14"
+    assert revision == _current_migration_head()
 
 
 async def test_runtime_cannot_update_or_delete_audit_events(

@@ -12,6 +12,7 @@ import pytest
 import pytest_asyncio
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from alembic.util.exc import CommandError
 from pydantic import SecretStr
 from sqlalchemy import text
@@ -63,7 +64,6 @@ AUDIT_REVISION = "20261010_08"
 SOURCE_OBSERVATIONS_REVISION = "20261010_12"
 DELIVERY_REVISION = "20261011_13"
 ATOMIC_DELIVERY_AUDIT_REVISION = "20261012_14"
-HEAD_REVISION = ATOMIC_DELIVERY_AUDIT_REVISION
 WORKSPACE_A = UUID("20000000-0000-0000-0000-000000000001")
 WORKSPACE_B = UUID("20000000-0000-0000-0000-000000000002")
 ENVIRONMENT_A = UUID("30000000-0000-0000-0000-000000000001")
@@ -282,6 +282,27 @@ class MigratedDatabase:
     retained_revisions: tuple[str, ...]
 
 
+def _migration_script_directory() -> ScriptDirectory:
+    repository_root = Path(__file__).parents[3]
+    config = Config(str(repository_root / "alembic.ini"))
+    config.set_main_option("script_location", str(repository_root / "migrations"))
+    return ScriptDirectory.from_config(config)
+
+
+def _retained_revision_ids() -> tuple[str, ...]:
+    scripts = _migration_script_directory()
+    heads = tuple(scripts.get_heads())
+    assert len(heads) == 1
+    return tuple(
+        revision.revision
+        for revision in reversed(tuple(scripts.iterate_revisions(heads[0], "base")))
+    )
+
+
+# Keep assertions tied to the checked-out migration graph, not a remembered head.
+HEAD_REVISION = _retained_revision_ids()[-1]
+
+
 def _role_url(provision: TestDatabaseProvision, role: str, password: str) -> SecretStr:
     value = make_url(provision.url.get_secret_value()).set(
         username=role,
@@ -321,60 +342,15 @@ async def migrated_database(
         runtime_role=RUNTIME_ROLE,
         dispatcher_role=DISPATCHER_ROLE,
     )
-    await asyncio.to_thread(upgrade_database, migration, revision=INITIAL_REVISION)
     retained_revisions: list[str] = []
-    async with _connection(migration.url) as connection:
-        retained_revisions.append(
-            await connection.scalar(
-                text("SELECT version_num FROM spine.alembic_version")
+    for revision in _retained_revision_ids()[:-1]:
+        await asyncio.to_thread(upgrade_database, migration, revision=revision)
+        async with _connection(migration.url) as connection:
+            retained_revisions.append(
+                await connection.scalar(
+                    text("SELECT version_num FROM spine.alembic_version")
+                )
             )
-        )
-    await asyncio.to_thread(upgrade_database, migration, revision=RLS_REVISION)
-    async with _connection(migration.url) as connection:
-        retained_revisions.append(
-            await connection.scalar(
-                text("SELECT version_num FROM spine.alembic_version")
-            )
-        )
-    await asyncio.to_thread(upgrade_database, migration, revision=IDEMPOTENCY_REVISION)
-    async with _connection(migration.url) as connection:
-        retained_revisions.append(
-            await connection.scalar(
-                text("SELECT version_num FROM spine.alembic_version")
-            )
-        )
-    await asyncio.to_thread(upgrade_database, migration, revision=OUTBOX_REVISION)
-    async with _connection(migration.url) as connection:
-        retained_revisions.append(
-            await connection.scalar(
-                text("SELECT version_num FROM spine.alembic_version")
-            )
-        )
-    await asyncio.to_thread(upgrade_database, migration, revision=PRE_K0_REVISION)
-    async with _connection(migration.url) as connection:
-        retained_revisions.append(
-            await connection.scalar(
-                text("SELECT version_num FROM spine.alembic_version")
-            )
-        )
-    await asyncio.to_thread(upgrade_database, migration, revision=K0_REVISION)
-    async with _connection(migration.url) as connection:
-        retained_revisions.append(
-            await connection.scalar(
-                text("SELECT version_num FROM spine.alembic_version")
-            )
-        )
-    await asyncio.to_thread(
-        upgrade_database,
-        migration,
-        revision=AUTHORIZATION_REVISION,
-    )
-    async with _connection(migration.url) as connection:
-        retained_revisions.append(
-            await connection.scalar(
-                text("SELECT version_num FROM spine.alembic_version")
-            )
-        )
     await asyncio.to_thread(upgrade_database, migration)
     return MigratedDatabase(
         operator=operator,
@@ -1414,15 +1390,7 @@ async def test_initial_tenancy_revision_upgrades_to_current_head_and_owned_schem
                 "WHERE nspname = 'spine'"
             )
         )
-    assert migrated_database.retained_revisions == (
-        INITIAL_REVISION,
-        RLS_REVISION,
-        IDEMPOTENCY_REVISION,
-        OUTBOX_REVISION,
-        PRE_K0_REVISION,
-        K0_REVISION,
-        AUTHORIZATION_REVISION,
-    )
+    assert migrated_database.retained_revisions == _retained_revision_ids()[:-1]
     assert heads == [HEAD_REVISION]
     assert owner == MIGRATION_ROLE
 
@@ -3156,16 +3124,7 @@ async def test_unknown_revision_is_rejected_without_schema_changes(
 async def test_every_retained_revision_upgrades_to_one_final_head(
     migrated_database: MigratedDatabase,
 ) -> None:
-    starting_revisions: tuple[str | None, ...] = (
-        None,
-        INITIAL_REVISION,
-        RLS_REVISION,
-        IDEMPOTENCY_REVISION,
-        OUTBOX_REVISION,
-        PRE_K0_REVISION,
-        K0_REVISION,
-        AUTHORIZATION_REVISION,
-    )
+    starting_revisions = (None, *migrated_database.retained_revisions)
     try:
         for starting_revision in starting_revisions:
             async with _connection(migrated_database.migration.url) as connection:

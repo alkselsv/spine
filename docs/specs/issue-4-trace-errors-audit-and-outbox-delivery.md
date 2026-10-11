@@ -1,6 +1,6 @@
 # Issue #4 — Trace, structured errors, audit and outbox delivery
 
-Status: implementation-ready; decomposed into GitHub Issues #61–#68.
+Status: implemented and qualified by Issues #61–#68.
 
 Originating issue: GitHub Issue #4, "[R0 parallel] Implement trace IDs,
 structured errors, and append-only audit events".
