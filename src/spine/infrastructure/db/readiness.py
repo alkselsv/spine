@@ -301,6 +301,7 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "source_objects": ExpectedTablePrivileges(True, True, True, False, False),
         "source_revisions": ExpectedTablePrivileges(True, True, True, False, False),
         "source_revision_provenance": ExpectedTablePrivileges(True, True, True, False, False),
+        "admission_decisions": ExpectedTablePrivileges(True, True, True, False, False),
         "source_canonical_tables": ExpectedTablePrivileges(False, True, False, False, False),
         "source_canonical_unicode": ExpectedTablePrivileges(False, True, False, False, False),
         "source_canonical_compositions": ExpectedTablePrivileges(False, True, False, False, False),
