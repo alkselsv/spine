@@ -180,6 +180,28 @@ source_revision_provenance = Table(
     Column("observed_at", DateTime(timezone=True), nullable=False),
 )
 
+source_revision_receipt_associations = Table(
+    "source_revision_receipt_associations", metadata,
+    Column("association_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("provenance_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("original_receipt_kind", Text, nullable=False),
+    Column("original_receipt_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("original_command_result_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("original_command_result_schema_version", Integer, nullable=False),
+    Column("original_upload_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("original_reference", JSONB, nullable=False),
+    Column("original_sha256", String(64), nullable=False),
+    Column("byte_length", Integer, nullable=False),
+    Column("verification_status", Text, nullable=False),
+    Column("storage_status", Text, nullable=False),
+    Column("finalized_at", DateTime(timezone=True), nullable=False),
+    Column("associated_at", DateTime(timezone=True), nullable=False),
+)
+
 ingestion_runs = Table(
     "ingestion_runs", metadata,
     Column("ingestion_run_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
@@ -246,6 +268,7 @@ __all__ = [
     "source_objects",
     "source_revisions",
     "source_revision_provenance",
+    "source_revision_receipt_associations",
     "ingestion_runs",
     "ingestion_run_sources",
     "ingestion_run_source_bindings",

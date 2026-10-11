@@ -14,6 +14,7 @@ from .models import (
     SourceObject,
     SourceRevision,
     SourceRevisionProvenance,
+    SourceRevisionReceiptAssociation,
     SourceKind,
     canonical_revision_metadata_digest,
 )
@@ -43,6 +44,7 @@ __all__ = [
     "SourceObject",
     "SourceRevision",
     "SourceRevisionProvenance",
+    "SourceRevisionReceiptAssociation",
     "canonical_revision_metadata_digest",
     "SourceInvariantError",
     "OBSERVATION_SCHEMA",

@@ -89,6 +89,7 @@ from spine.domain.sources import (
     SourceObject,
     SourceRevision,
     SourceRevisionProvenance,
+    SourceRevisionReceiptAssociation,
 )
 from spine.domain.sources.canonicalization import assert_revision_digest
 from spine.domain.sources.errors import RevisionDigestMismatchError as DomainRevisionDigestMismatchError
@@ -119,6 +120,7 @@ class _StoreState:
     source_objects: dict[UUID, SourceObject]
     source_revisions: dict[UUID, SourceRevision]
     source_provenance: dict[UUID, SourceRevisionProvenance]
+    source_receipt_associations: dict[UUID, SourceRevisionReceiptAssociation]
     admission_decisions: dict[UUID, AdmissionDecision]
     audit_events: dict[UUID, AuditEvent]
     ingestion_runs: dict[UUID, IngestionRun]
@@ -157,6 +159,7 @@ class _Store:
             source_objects={},
             source_revisions={},
             source_provenance={},
+            source_receipt_associations={},
             admission_decisions={},
             audit_events={},
             ingestion_runs={},
@@ -201,6 +204,10 @@ class _Store:
     @property
     def source_provenance(self) -> dict[UUID, SourceRevisionProvenance]:
         return self.state.source_provenance
+
+    @property
+    def source_receipt_associations(self) -> dict[UUID, SourceRevisionReceiptAssociation]:
+        return self.state.source_receipt_associations
 
     @property
     def admission_decisions(self) -> dict[UUID, AdmissionDecision]:
@@ -369,6 +376,12 @@ class _SourceObservationRepository:
     def _provenance(self) -> dict[UUID, SourceRevisionProvenance]:
         return self._uow._base_source_provenance | self._uow._pending_source_provenance
 
+    def _receipt_associations(self) -> dict[UUID, SourceRevisionReceiptAssociation]:
+        return (
+            self._uow._base_source_receipt_associations
+            | self._uow._pending_source_receipt_associations
+        )
+
     async def resolve_or_create_source(self, source: SourceObject) -> SourceObject:
         self._uow._guard_active()
 
@@ -427,10 +440,40 @@ class _SourceObservationRepository:
                 )
                 if source is None or provenance is None:
                     self._uow._fail(ConstraintConflictError("Observation replay is unavailable."))
+                association = next(
+                    (
+                        item
+                        for item in self._receipt_associations().values()
+                        if item.provenance_id == provenance.provenance_id
+                        and item.revision_id == revision.revision_id
+                        and item.workspace_id == revision.workspace_id
+                        and item.environment_id == revision.environment_id
+                    ),
+                    None,
+                )
+                expected_association = (
+                    command.receipt_association.model_copy(update={"revision_id": revision.revision_id})
+                    if command.receipt_association is not None
+                    else None
+                )
+                if (
+                    expected_association is not None
+                    and (
+                        association is None
+                        or association
+                        != expected_association.model_copy(
+                            update={"associated_at": association.associated_at}
+                        )
+                    )
+                ):
+                    self._uow._fail(ObservationIntegrityConflictError("Source receipt association conflicts."))
                 return SourceObservationResult(
                     source=source.model_copy(deep=True), revision=revision.model_copy(deep=True),
                     provenance=provenance.model_copy(deep=True), replay=True,
                     claim=claim, result_reference=claim.result,
+                    receipt_association=(
+                        association.model_copy(deep=True) if association is not None else None
+                    ),
                 )
             return self._uow._repository_call(replay_operation)
 
@@ -463,6 +506,36 @@ class _SourceObservationRepository:
                 predecessor = self._revisions().get(revision.reappearance_after_tombstone_revision_id)
                 if predecessor is None or predecessor.kind.value != "tombstone" or predecessor.source_object_id != revision.source_object_id:
                     self._uow._fail(ConstraintConflictError("Source observation is invalid."))
+            association = command.receipt_association
+            if association is not None:
+                if (
+                    association.source_object_id != revision.source_object_id
+                    or association.revision_id != revision.revision_id
+                    or association.provenance_id != provenance.provenance_id
+                    or association.workspace_id != revision.workspace_id
+                    or association.environment_id != revision.environment_id
+                    or association.original_sha256 != revision.original_sha256
+                    or association.byte_length != revision.byte_length
+                    or revision.kind is not RevisionKind.CONTENT
+                ):
+                    self._uow._fail(ConstraintConflictError("Source receipt association is invalid."))
+                existing_association = self._receipt_associations().get(association.association_id)
+                if (
+                    existing_association is not None
+                    and existing_association
+                    != association.model_copy(
+                        update={"associated_at": existing_association.associated_at}
+                    )
+                ):
+                    self._uow._fail(ConstraintConflictError("Source receipt association conflicts."))
+                if any(
+                    item.original_receipt_id == association.original_receipt_id
+                    and item.workspace_id == association.workspace_id
+                    and item.environment_id == association.environment_id
+                    and item.association_id != association.association_id
+                    for item in self._receipt_associations().values()
+                ):
+                    self._uow._fail(ConstraintConflictError("Original receipt is already associated."))
             event_key = (provenance.producer_kind, provenance.producer_reference, provenance.event_identity)
             for existing_provenance in self._provenance().values():
                 existing_key = (
@@ -474,6 +547,25 @@ class _SourceObservationRepository:
                     if existing_provenance.event_digest != provenance.event_digest:
                         self._uow._fail(ObservationIntegrityConflictError("Source observation conflicts."))
                     existing_revision = self._revisions()[existing_provenance.revision_id]
+                    existing_association = next(
+                        (
+                            item
+                            for item in self._receipt_associations().values()
+                            if item.provenance_id == existing_provenance.provenance_id
+                        ),
+                        None,
+                    )
+                    if association is not None and (
+                        existing_association is None
+                        or existing_association
+                        != association.model_copy(
+                            update={
+                                "revision_id": existing_revision.revision_id,
+                                "associated_at": existing_association.associated_at,
+                            }
+                        )
+                    ):
+                        self._uow._fail(ObservationIntegrityConflictError("Source receipt association conflicts."))
                     result = SourceObservationResult(
                         source=source.model_copy(deep=True),
                         revision=existing_revision.model_copy(deep=True),
@@ -481,6 +573,11 @@ class _SourceObservationRepository:
                         replay=False, claim=claim,
                         result_reference=OpaqueResultReference(
                             result_type="source_revision", result_id=existing_revision.revision_id, schema_version=1
+                        ),
+                        receipt_association=(
+                            existing_association.model_copy(deep=True)
+                            if existing_association is not None
+                            else None
                         ),
                     )
                     return result
@@ -499,10 +596,14 @@ class _SourceObservationRepository:
                     self._uow._fail(ConstraintConflictError("Source revision conflict."))
                 self._uow._pending_source_revisions[revision.revision_id] = revision.model_copy(deep=True)
                 revision_to_return = revision
+            if association is not None and association.revision_id != revision_to_return.revision_id:
+                association = association.model_copy(update={"revision_id": revision_to_return.revision_id})
             existing_provenance = self._provenance().get(provenance.provenance_id)
             if existing_provenance is not None and existing_provenance != provenance:
                 self._uow._fail(ConstraintConflictError("Source provenance conflict."))
             self._uow._pending_source_provenance[provenance.provenance_id] = provenance.model_copy(deep=True)
+            if association is not None:
+                self._uow._pending_source_receipt_associations[association.association_id] = association.model_copy(deep=True)
             return SourceObservationResult(
                 source=source.model_copy(deep=True),
                 revision=revision_to_return.model_copy(deep=True),
@@ -511,6 +612,7 @@ class _SourceObservationRepository:
                 result_reference=OpaqueResultReference(
                     result_type="source_revision", result_id=revision_to_return.revision_id, schema_version=1
                 ),
+                receipt_association=(association.model_copy(deep=True) if association is not None else None),
             )
         result = self._uow._repository_call(operation)
         await self._uow.idempotency.complete(claim, result.result_reference)
@@ -528,6 +630,28 @@ class _SourceObservationRepository:
                 else None
             )
         )
+
+    async def resolve_receipt_associations(
+        self, revision_id: UUID
+    ) -> tuple[SourceRevisionReceiptAssociation, ...]:
+        self._uow._guard_active()
+
+        def operation() -> tuple[SourceRevisionReceiptAssociation, ...]:
+            scope = self._uow.scope
+            if not isinstance(scope, EnvironmentScope):
+                return ()
+            return tuple(
+                item.model_copy(deep=True)
+                for item in sorted(
+                    self._receipt_associations().values(),
+                    key=lambda value: (value.associated_at, value.association_id),
+                )
+                if item.revision_id == revision_id
+                and item.workspace_id == scope.workspace_id
+                and item.environment_id == scope.environment_id
+            )
+
+        return self._uow._repository_call(operation)
 
 
 class _AdmissionRepository:
@@ -1205,6 +1329,7 @@ class InMemoryUnitOfWork:
         self._base_source_objects: dict[UUID, SourceObject] = {}
         self._base_source_revisions: dict[UUID, SourceRevision] = {}
         self._base_source_provenance: dict[UUID, SourceRevisionProvenance] = {}
+        self._base_source_receipt_associations: dict[UUID, SourceRevisionReceiptAssociation] = {}
         self._base_admission_decisions: dict[UUID, AdmissionDecision] = {}
         self._base_audit_events: dict[UUID, AuditEvent] = {}
         self._base_ingestion_runs: dict[UUID, IngestionRun] = {}
@@ -1221,6 +1346,7 @@ class InMemoryUnitOfWork:
         self._pending_source_objects: dict[UUID, SourceObject] = {}
         self._pending_source_revisions: dict[UUID, SourceRevision] = {}
         self._pending_source_provenance: dict[UUID, SourceRevisionProvenance] = {}
+        self._pending_source_receipt_associations: dict[UUID, SourceRevisionReceiptAssociation] = {}
         self._pending_admission_decisions: dict[UUID, AdmissionDecision] = {}
         self._pending_audit_events: dict[UUID, AuditEvent] = {}
         self._pending_ingestion_runs: dict[UUID, IngestionRun] = {}
@@ -1341,6 +1467,10 @@ class InMemoryUnitOfWork:
                 self._base_source_provenance = {
                     key: value.model_copy(deep=True) for key, value in self._store.source_provenance.items()
                 }
+                self._base_source_receipt_associations = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.source_receipt_associations.items()
+                }
                 self._base_admission_decisions = {
                     key: value.model_copy(deep=True) for key, value in self._store.admission_decisions.items()
                 }
@@ -1443,6 +1573,16 @@ class InMemoryUnitOfWork:
                 prepared_source_provenance.update(
                     {key: value.model_copy(deep=True) for key, value in self._pending_source_provenance.items()}
                 )
+                prepared_source_receipt_associations = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.source_receipt_associations.items()
+                }
+                prepared_source_receipt_associations.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_source_receipt_associations.items()
+                    }
+                )
                 prepared_admission_decisions = {
                     key: value.model_copy(deep=True) for key, value in self._store.admission_decisions.items()
                 }
@@ -1477,6 +1617,7 @@ class InMemoryUnitOfWork:
                     source_objects=prepared_source_objects,
                     source_revisions=prepared_source_revisions,
                     source_provenance=prepared_source_provenance,
+                    source_receipt_associations=prepared_source_receipt_associations,
                     admission_decisions=prepared_admission_decisions,
                     audit_events=prepared_audit_events,
                     ingestion_runs=prepared_ingestion_runs,
@@ -1506,6 +1647,7 @@ class InMemoryUnitOfWork:
         self._pending_source_objects.clear()
         self._pending_source_revisions.clear()
         self._pending_source_provenance.clear()
+        self._pending_source_receipt_associations.clear()
         self._pending_admission_decisions.clear()
         self._pending_audit_events.clear()
         self._pending_ingestion_runs.clear()
@@ -1814,6 +1956,7 @@ class InMemoryUnitOfWork:
         self._base_source_objects.clear()
         self._base_source_revisions.clear()
         self._base_source_provenance.clear()
+        self._base_source_receipt_associations.clear()
         self._base_admission_decisions.clear()
         self._base_audit_events.clear()
         self._base_ingestion_runs.clear()
@@ -1830,6 +1973,7 @@ class InMemoryUnitOfWork:
         self._pending_source_objects.clear()
         self._pending_source_revisions.clear()
         self._pending_source_provenance.clear()
+        self._pending_source_receipt_associations.clear()
         self._pending_admission_decisions.clear()
         self._pending_audit_events.clear()
         self._pending_ingestion_runs.clear()

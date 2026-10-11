@@ -1168,6 +1168,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "source_objects",
         "source_revisions",
         "source_revision_provenance",
+        "source_revision_receipt_associations",
         "ingestion_runs",
         "ingestion_run_sources",
         "ingestion_run_source_bindings",
@@ -1245,6 +1246,14 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ck_source_revision_provenance_order_pair",
         "ck_source_revision_provenance_digest",
         "ck_source_revision_provenance_fields",
+        "pk_source_receipt_associations",
+        "uq_source_receipt_associations_receipt",
+        "uq_source_receipt_associations_provenance",
+        "fk_source_receipt_associations_revision",
+        "fk_source_receipt_associations_provenance",
+        "fk_source_receipt_associations_receipt",
+        "ck_source_receipt_associations_verified",
+        "ck_source_receipt_associations_reference",
         "pk_ingestion_runs",
         "uq_ingestion_runs_scope_id",
         "uq_ingestion_runs_command",
@@ -1376,6 +1385,11 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "pk_source_revision_provenance",
         "uq_source_revision_provenance_event",
         "ix_source_revision_provenance_revision_order",
+        "pk_source_receipt_associations",
+        "uq_source_receipt_associations_receipt",
+        "uq_source_receipt_associations_provenance",
+        "ix_source_receipt_associations_revision",
+        "ix_source_receipt_associations_object_digest",
         "pk_ingestion_runs",
         "uq_ingestion_runs_scope_id",
         "uq_ingestion_runs_command",
@@ -1434,6 +1448,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "source_objects": (True, True),
         "source_revisions": (True, True),
         "source_revision_provenance": (True, True),
+        "source_revision_receipt_associations": (True, True),
         "ingestion_runs": (True, True),
         "ingestion_run_sources": (True, True),
         "ingestion_run_source_bindings": (True, True),
@@ -1521,6 +1536,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "source_objects": (True, True, False, False),
         "source_revisions": (True, True, False, False),
         "source_revision_provenance": (True, True, False, False),
+        "source_revision_receipt_associations": (True, True, False, False),
         "ingestion_runs": (True, True, False, False),
         "ingestion_run_sources": (True, True, False, False),
         "ingestion_run_source_bindings": (True, True, False, False),
@@ -1657,7 +1673,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "ON source_namespace.oid = relation.relnamespace "
                         "WHERE source_namespace.nspname = 'spine' AND relation.relname IN "
                         "('source_objects', 'source_revisions', 'source_revision_provenance', "
-                        "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
+                        "'source_revision_receipt_associations', 'ingestion_runs', "
+                        "'ingestion_run_sources', 'ingestion_run_source_bindings', "
                         "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', "
                         "'processing_receipts'))"
                     )
@@ -1678,6 +1695,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "WHERE table_schema = 'spine' "
                         "AND table_name NOT LIKE 'source_canonical%' "
                         "AND table_name NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance', "
+                        "'source_revision_receipt_associations', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                         "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts')"
                     )
@@ -1692,6 +1710,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "WHERE schemaname = 'spine' "
                         "AND indexname NOT LIKE 'pk_source_canonical%' "
                         "AND tablename NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance', "
+                        "'source_revision_receipt_associations', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                         "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts')"
                     )
@@ -1705,6 +1724,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "SELECT tablename FROM pg_tables WHERE schemaname = 'spine' "
                         "AND tablename NOT LIKE 'source_canonical%' "
                         "AND tablename NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance', "
+                        "'source_revision_receipt_associations', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                         "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts')"
                     )
@@ -1718,6 +1738,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "SELECT tableowner FROM pg_tables WHERE schemaname = 'spine' "
                         "AND tablename NOT LIKE 'source_canonical%' "
                         "AND tablename NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance', "
+                        "'source_revision_receipt_associations', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                         "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts')"
                     )
@@ -2269,7 +2290,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'environment_role_bindings', 'authorization_generations', "
                         "'admission_decisions', "
                         "'source_objects', 'source_revisions', "
-                        "'source_revision_provenance', 'ingestion_runs', "
+                        "'source_revision_provenance', 'source_revision_receipt_associations', "
+                        "'ingestion_runs', "
                         "'ingestion_run_sources', 'ingestion_run_source_bindings', "
                         "'ingestion_transitions', 'ingestion_warnings', "
                         "'ingestion_failures', 'processing_receipts')"
@@ -2318,6 +2340,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "source_objects": (True, True),
         "source_revisions": (True, True),
         "source_revision_provenance": (True, True),
+        "source_revision_receipt_associations": (True, True),
         "ingestion_runs": (True, True),
         "ingestion_run_sources": (True, True),
         "ingestion_run_source_bindings": (True, True),
@@ -3310,13 +3333,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261012_15_admission_decisions.py",
         "20261013_15_ingestion_operational_ledger.py",
         "20261013_16_ingestion_ledger_hardening.py",
+        "20261014_17_source_receipt_associations.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261013_17_injected_failure.py").write_text(
+    (target / "versions" / "20261014_18_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261013_17'\n"
-        "down_revision = '20261013_16'\n"
+        "revision = '20261014_18'\n"
+        "down_revision = '20261014_17'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

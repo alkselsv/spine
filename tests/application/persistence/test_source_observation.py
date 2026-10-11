@@ -12,13 +12,21 @@ from spine.domain.sources import (
     SourceObject,
     SourceRevision,
     SourceRevisionProvenance,
+    SourceRevisionReceiptAssociation,
     canonical_revision_metadata_digest,
 )
 from spine.domain.sources.canonicalization import revision_digest
 from spine.domain.sources.canonicalization import content_revision, tombstone_revision
 from spine.domain.workspaces.models import Environment
 from spine.domain.common import EnvironmentKind
-from spine.infrastructure.object_storage.contracts import ObjectReference
+from spine.infrastructure.object_storage.contracts import (
+    IntegrityResult,
+    IntegrityStatus,
+    Issue8ResultReference,
+    ObjectReference,
+    OriginalUploadCommandResult,
+    WriteReceipt,
+)
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary, create_initial_workspace_bootstrap_authority
 from spine.infrastructure.persistence.in_memory import InMemoryPersistence
 from spine.application.persistence.context import EnvironmentScope, PersistenceOperation, PersistencePurpose, WorkspaceScope
@@ -26,7 +34,12 @@ from spine.application.persistence.outbox import OutboxEventRegistry
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.persistence.command_digest import digest_command
 from spine.application.persistence.repositories import SourceObservationCommand
-from spine.application.persistence.errors import IdempotencyConflictError, ObservationCommandDigestMismatchError, RevisionDigestMismatchError
+from spine.application.persistence.errors import (
+    ConstraintConflictError,
+    IdempotencyConflictError,
+    ObservationCommandDigestMismatchError,
+    RevisionDigestMismatchError,
+)
 from spine.domain.sources.errors import RevisionDigestMismatchError as DomainRevisionDigestMismatchError
 from tests.contracts.persistence.source_canonical_vectors import (
     INVALID_LANGUAGE_TAGS,
@@ -79,6 +92,57 @@ def provenance(source_object: SourceObject, source_revision: SourceRevision, num
     )
 
 
+def receipt_association(
+    source_object: SourceObject,
+    source_revision: SourceRevision,
+    source_provenance: SourceRevisionProvenance,
+    *,
+    number: int = 1,
+) -> SourceRevisionReceiptAssociation:
+    reference = source_revision.original_reference
+    assert reference is not None
+    receipt_id = synthetic_uuid(300 + number)
+    result = OriginalUploadCommandResult(
+        request_digest={
+            "algorithm": "sha256",
+            "algorithm_version": "spine.command-digest.v1",
+            "digest_hex": "e" * 64,
+        },
+        upload_id=synthetic_uuid(400 + number),
+        object_id=reference.object_id,
+        issue8_result_reference=Issue8ResultReference(receipt_id=receipt_id),
+    )
+    write_receipt = WriteReceipt(
+        schema_version=1,
+        upload_id=result.upload_id,
+        object_reference=reference,
+        observed_content={
+            "observed_sha256": reference.digest_hex,
+            "observed_byte_length": reference.byte_length,
+        },
+        verification=IntegrityResult(
+            status=IntegrityStatus.VERIFIED,
+            algorithm="sha256",
+            observed_digest=reference.digest_hex,
+            observed_length=reference.byte_length,
+        ),
+        storage_status="finalized_verified",
+        finalized_at=NOW,
+    )
+    return SourceRevisionReceiptAssociation.from_verified_upload(
+        association_id=synthetic_uuid(500 + number),
+        source_object_id=source_object.source_object_id,
+        revision_id=source_revision.revision_id,
+        provenance_id=source_provenance.provenance_id,
+        workspace_id=source_object.workspace_id,
+        environment_id=source_object.environment_id,
+        original_receipt_id=receipt_id,
+        command_result=result,
+        write_receipt=write_receipt,
+        associated_at=NOW,
+    )
+
+
 @pytest.fixture
 def source_persistence():
     boundary = TrustedContextBoundary.for_testing(issuer_id=synthetic_uuid(900), secret=b"source-observation-test-secret-32-bytes")
@@ -116,6 +180,232 @@ async def test_source_observation_reuses_revision_and_appends_provenance(source_
     assert second.replay is False
     assert first.revision.revision_id == second.revision.revision_id
     assert first.provenance.provenance_id != second.provenance.provenance_id
+
+
+@pytest.mark.asyncio
+async def test_verified_receipt_association_is_atomic_and_resolvable(source_persistence) -> None:
+    uow_factory, workspace_context, environment_context = source_persistence
+    workspace_id = synthetic_uuid(901)
+    environment_id = synthetic_uuid(910)
+    async with uow_factory(workspace_context(workspace_id)) as uow:
+        await uow.environments.add(
+            Environment(
+                id=environment_id,
+                workspace_id=workspace_id,
+                kind=EnvironmentKind.DEVELOPMENT,
+                display_name="dev",
+            )
+        )
+        await uow.commit()
+    async with uow_factory(environment_context(workspace_id, environment_id)) as uow:
+        source_object = source()
+        resolved = await uow.sources.resolve_or_create_source(source_object)
+        source_revision = valid_revision(resolved)
+        source_provenance = provenance(resolved, source_revision)
+        association = receipt_association(resolved, source_revision, source_provenance)
+        result = await uow.sources.record_observation(
+            command(resolved, source_revision, source_provenance, "receipt-key", association)
+        )
+        await uow.commit()
+
+    assert result.receipt_association == association
+    async with uow_factory(environment_context(workspace_id, environment_id)) as uow:
+        replay = await uow.sources.record_observation(
+            command(
+                resolved,
+                source_revision,
+                source_provenance,
+                "receipt-key",
+                association.model_copy(update={"associated_at": NOW.replace(hour=13)}),
+            )
+        )
+        assert replay.replay is True
+        assert replay.receipt_association == association
+        associations = await uow.sources.resolve_receipt_associations(source_revision.revision_id)
+        await uow.rollback()
+    assert associations == (association,)
+
+
+@pytest.mark.asyncio
+async def test_receipt_association_rolls_back_with_observation(source_persistence) -> None:
+    uow_factory, workspace_context, environment_context = source_persistence
+    workspace_id = synthetic_uuid(901)
+    environment_id = synthetic_uuid(910)
+    async with uow_factory(workspace_context(workspace_id)) as uow:
+        await uow.environments.add(
+            Environment(
+                id=environment_id,
+                workspace_id=workspace_id,
+                kind=EnvironmentKind.DEVELOPMENT,
+                display_name="dev",
+            )
+        )
+        await uow.commit()
+    async with uow_factory(environment_context(workspace_id, environment_id)) as uow:
+        resolved = await uow.sources.resolve_or_create_source(source())
+        source_revision = valid_revision(resolved)
+        source_provenance = provenance(resolved, source_revision)
+        association = receipt_association(resolved, source_revision, source_provenance, number=2)
+        await uow.sources.record_observation(
+            command(resolved, source_revision, source_provenance, "rollback-receipt-key", association)
+        )
+        await uow.rollback()
+
+    async with uow_factory(environment_context(workspace_id, environment_id)) as uow:
+        assert await uow.sources.resolve_revision(source_revision.revision_id) is None
+        assert await uow.sources.resolve_receipt_associations(source_revision.revision_id) == ()
+        await uow.rollback()
+
+
+def test_verified_upload_association_rejects_mismatched_command_result() -> None:
+    source_object = source()
+    source_revision = valid_revision(source_object)
+    source_provenance = provenance(source_object, source_revision)
+    association = receipt_association(source_object, source_revision, source_provenance)
+    with pytest.raises(ValueError, match="upload result is not linked"):
+        SourceRevisionReceiptAssociation.from_verified_upload(
+            association_id=association.association_id,
+            source_object_id=association.source_object_id,
+            revision_id=association.revision_id,
+            provenance_id=association.provenance_id,
+            workspace_id=association.workspace_id,
+            environment_id=association.environment_id,
+            original_receipt_id=synthetic_uuid(999),
+            command_result=OriginalUploadCommandResult(
+                request_digest={
+                    "algorithm": "sha256",
+                    "algorithm_version": "spine.command-digest.v1",
+                    "digest_hex": "e" * 64,
+                },
+                upload_id=synthetic_uuid(401),
+                object_id=association.original_reference.object_id,
+                issue8_result_reference=Issue8ResultReference(
+                    receipt_id=association.original_receipt_id
+                ),
+            ),
+            write_receipt=WriteReceipt(
+                schema_version=1,
+                upload_id=synthetic_uuid(401),
+                object_reference=association.original_reference,
+                observed_content={
+                    "observed_sha256": association.original_sha256,
+                    "observed_byte_length": association.byte_length,
+                },
+                verification=IntegrityResult(
+                    status=IntegrityStatus.VERIFIED,
+                    algorithm="sha256",
+                    observed_digest=association.original_sha256,
+                    observed_length=association.byte_length,
+                ),
+                storage_status="finalized_verified",
+                finalized_at=NOW,
+            ),
+            associated_at=NOW,
+        )
+
+
+@pytest.mark.asyncio
+async def test_duplicate_receipt_association_is_rejected(source_persistence) -> None:
+    uow_factory, workspace_context, environment_context = source_persistence
+    workspace_id = synthetic_uuid(901)
+    environment_id = synthetic_uuid(910)
+    async with uow_factory(workspace_context(workspace_id)) as uow:
+        await uow.environments.add(
+            Environment(
+                id=environment_id,
+                workspace_id=workspace_id,
+                kind=EnvironmentKind.DEVELOPMENT,
+                display_name="dev",
+            )
+        )
+        await uow.commit()
+
+    async with uow_factory(environment_context(workspace_id, environment_id)) as uow:
+        resolved = await uow.sources.resolve_or_create_source(source())
+        first_revision = valid_revision(resolved)
+        first_provenance = provenance(resolved, first_revision, 1)
+        first_association = receipt_association(resolved, first_revision, first_provenance)
+        await uow.sources.record_observation(
+            command(resolved, first_revision, first_provenance, "duplicate-receipt-1", first_association)
+        )
+        await uow.commit()
+
+    async with uow_factory(environment_context(workspace_id, environment_id)) as uow:
+        second_revision = valid_revision(resolved, synthetic_uuid(104))
+        second_provenance = provenance(resolved, second_revision, 2)
+        second_association = receipt_association(resolved, second_revision, second_provenance, number=2).model_copy(
+            update={
+                "original_receipt_id": first_association.original_receipt_id,
+                "original_command_result_id": first_association.original_command_result_id,
+                "original_upload_id": first_association.original_upload_id,
+                "original_reference": first_association.original_reference,
+                "original_sha256": first_association.original_sha256,
+                "byte_length": first_association.byte_length,
+            }
+        )
+        with pytest.raises(ConstraintConflictError, match="already associated"):
+            await uow.sources.record_observation(
+                command(resolved, second_revision, second_provenance, "duplicate-receipt-2", second_association)
+            )
+
+
+@pytest.mark.asyncio
+async def test_receipt_association_cannot_target_tombstone(source_persistence) -> None:
+    uow_factory, workspace_context, environment_context = source_persistence
+    workspace_id = synthetic_uuid(901)
+    environment_id = synthetic_uuid(910)
+    async with uow_factory(workspace_context(workspace_id)) as uow:
+        await uow.environments.add(
+            Environment(
+                id=environment_id,
+                workspace_id=workspace_id,
+                kind=EnvironmentKind.DEVELOPMENT,
+                display_name="dev",
+            )
+        )
+        await uow.commit()
+
+    async with uow_factory(environment_context(workspace_id, environment_id)) as uow:
+        resolved = await uow.sources.resolve_or_create_source(source())
+        content = valid_revision(resolved)
+        content_provenance = provenance(resolved, content, 1)
+        association = receipt_association(resolved, content, content_provenance)
+        values = content.model_dump()
+        values.update(
+            {
+                "revision_id": synthetic_uuid(105),
+                "kind": RevisionKind.TOMBSTONE,
+                "original_reference": None,
+                "original_sha256": None,
+                "byte_length": None,
+                "media_type": None,
+                "revision_metadata": None,
+                "revision_metadata_digest": None,
+                "deletion_reason": "source_deleted",
+                "deletion_provenance": "provider-event",
+                "reappearance_after_tombstone_revision_id": None,
+            }
+        )
+        tombstone = tombstone_revision(
+            **{key: value for key, value in values.items() if key != "revision_digest"}
+        )
+        tombstone_provenance = provenance(resolved, tombstone, 3)
+        tombstone_association = association.model_copy(
+            update={
+                "revision_id": tombstone.revision_id,
+                "provenance_id": tombstone_provenance.provenance_id,
+            }
+        )
+        with pytest.raises(ConstraintConflictError, match="invalid"):
+            await uow.sources.record_observation(
+                command(
+                    resolved,
+                    tombstone,
+                    tombstone_provenance,
+                    "tombstone-receipt",
+                    tombstone_association,
+                )
+            )
 
 
 def test_source_identity_modes_reject_mixed_fields() -> None:
@@ -279,12 +569,19 @@ def test_revision_digest_matches_pinned_golden_vector() -> None:
     assert revision_digest(valid_revision(source())) == "034a29522bdd6038d6c82f12a8aed04396d30263067ab47d3c3fbac33cd17156"
 
 
-def command(source_object: SourceObject, source_revision: SourceRevision, source_provenance: SourceRevisionProvenance, key: str) -> SourceObservationCommand:
+def command(
+    source_object: SourceObject,
+    source_revision: SourceRevision,
+    source_provenance: SourceRevisionProvenance,
+    key: str,
+    receipt_association: SourceRevisionReceiptAssociation | None = None,
+) -> SourceObservationCommand:
     return SourceObservationCommand.create(
         source=source_object,
         revision=source_revision,
         provenance=source_provenance,
         idempotency_key=IdempotencyKey(key),
+        receipt_association=receipt_association,
     )
 
 

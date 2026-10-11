@@ -14,6 +14,14 @@ from silently replacing canonical state. A verified deletion is a tombstone
 revision, and verified reappearance creates another revision of the same object
 only when identity continuity is established.
 
+For content observations, a verified physical `WriteReceipt` may be associated
+with the immutable revision and its observation provenance in the same canonical
+transaction. This association preserves the receipt, command-result, object
+generation, digest and length evidence, but does not admit, accept, publish or
+select a current revision. A finalized object without that committed association
+remains an inaccessible orphan candidate; later tombstones and lifecycle changes
+retain historical associations without making their physical bytes readable.
+
 Canonical current state advances independently of parsing or projection success.
 The Context Broker therefore validates every projected or cached item against the
 current revision, tombstone state and the current `AccessPolicy` required by ADR

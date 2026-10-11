@@ -75,6 +75,7 @@ from spine.domain.sources import (
     SourceObject,
     SourceRevision,
     SourceRevisionProvenance,
+    SourceRevisionReceiptAssociation,
 )
 from spine.domain.sources.canonicalization import assert_revision_digest
 from spine.domain.sources.errors import RevisionDigestMismatchError as DomainRevisionDigestMismatchError
@@ -103,6 +104,7 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     source_objects as _SOURCE_OBJECTS,
     source_revisions as _SOURCE_REVISIONS,
     source_revision_provenance as _SOURCE_PROVENANCE,
+    source_revision_receipt_associations as _SOURCE_RECEIPT_ASSOCIATIONS,
     ingestion_runs as _INGESTION_RUNS,
     ingestion_run_sources as _INGESTION_ITEMS,
     ingestion_run_source_bindings as _INGESTION_BINDINGS,
@@ -324,6 +326,14 @@ class _PostgreSQLSourceObservationRepository:
         """
         return SourceRevision.model_validate_json(json.dumps(dict(row), default=str))
 
+    @staticmethod
+    def _receipt_association_from_row(
+        row: Mapping[str, Any],
+    ) -> SourceRevisionReceiptAssociation:
+        return SourceRevisionReceiptAssociation.model_validate_json(
+            json.dumps(dict(row), default=str)
+        )
+
     async def resolve_or_create_source(self, source: SourceObject) -> SourceObject:
         self._uow._guard_active()
         self._check_scope(source.workspace_id, source.environment_id)
@@ -393,6 +403,25 @@ class _PostgreSQLSourceObservationRepository:
             ))).mappings().one_or_none()
             if source_row is None or event_row is None:
                 await self._uow._fail(ConstraintConflictError("Observation replay is unavailable."))
+            association_row = (await self._uow._execute(select(_SOURCE_RECEIPT_ASSOCIATIONS).where(
+                _SOURCE_RECEIPT_ASSOCIATIONS.c.provenance_id == event_row.provenance_id,
+                _SOURCE_RECEIPT_ASSOCIATIONS.c.revision_id == rev_row.revision_id,
+                _SOURCE_RECEIPT_ASSOCIATIONS.c.workspace_id == revision.workspace_id,
+                _SOURCE_RECEIPT_ASSOCIATIONS.c.environment_id == revision.environment_id,
+            ))).mappings().one_or_none()
+            if command.receipt_association is not None:
+                expected_association = command.receipt_association.model_copy(
+                    update={
+                        "revision_id": rev_row.revision_id,
+                        "associated_at": (
+                            self._receipt_association_from_row(association_row).associated_at
+                            if association_row is not None
+                            else command.receipt_association.associated_at
+                        ),
+                    }
+                )
+                if association_row is None or self._receipt_association_from_row(association_row) != expected_association:
+                    await self._uow._fail(ObservationIntegrityConflictError("Source receipt association conflicts."))
             return SourceObservationResult(
                 source=SourceObject.model_validate(dict(source_row)),
                 revision=self._revision_from_row(rev_row),
@@ -400,6 +429,10 @@ class _PostgreSQLSourceObservationRepository:
                 replay=replay,
                 claim=claim,
                 result_reference=result_reference,
+                receipt_association=(
+                    self._receipt_association_from_row(association_row)
+                    if association_row is not None else None
+                ),
             )
 
         if isinstance(claim, IdempotencyReplay):
@@ -416,6 +449,19 @@ class _PostgreSQLSourceObservationRepository:
             or provenance.environment_id != revision.environment_id
         ):
             await self._uow._fail(ConstraintConflictError("Source observation is invalid."))
+        association = command.receipt_association
+        if association is not None:
+            if (
+                association.source_object_id != revision.source_object_id
+                or association.revision_id != revision.revision_id
+                or association.provenance_id != provenance.provenance_id
+                or association.workspace_id != revision.workspace_id
+                or association.environment_id != revision.environment_id
+                or revision.kind is not RevisionKind.CONTENT
+                or association.original_sha256 != revision.original_sha256
+                or association.byte_length != revision.byte_length
+            ):
+                await self._uow._fail(ConstraintConflictError("Source receipt association is invalid."))
         source = await self.resolve_or_create_source(command.source)
         if source.source_object_id != revision.source_object_id:
             await self._uow._fail(ConstraintConflictError("Source observation is invalid."))
@@ -452,6 +498,8 @@ class _PostgreSQLSourceObservationRepository:
             values["original_reference"] = revision.original_reference.model_dump(mode="json") if revision.original_reference is not None else null()
             await self._uow._execute(postgresql_insert(_SOURCE_REVISIONS).values(**values).on_conflict_do_nothing(constraint="uq_source_revisions_digest"))
             rev_row = (await self._uow._execute(rev_query)).mappings().one()
+        if association is not None and association.revision_id != rev_row.revision_id:
+            association = association.model_copy(update={"revision_id": rev_row.revision_id})
         await self._uow._execute(
             postgresql_insert(_SOURCE_PROVENANCE).values(**provenance.model_dump(mode="python")).on_conflict_do_nothing(
                 index_elements=[_SOURCE_PROVENANCE.c.workspace_id, _SOURCE_PROVENANCE.c.environment_id, _SOURCE_PROVENANCE.c.producer_kind, _SOURCE_PROVENANCE.c.producer_reference, _SOURCE_PROVENANCE.c.event_identity]
@@ -460,6 +508,31 @@ class _PostgreSQLSourceObservationRepository:
         event_row = (await self._uow._execute(event_query)).mappings().one()
         if event_row.event_digest != provenance.event_digest:
             await self._uow._fail(ObservationIntegrityConflictError("Source observation conflicts."))
+        if association is not None:
+            existing_association = (await self._uow._execute(select(_SOURCE_RECEIPT_ASSOCIATIONS).where(
+                _SOURCE_RECEIPT_ASSOCIATIONS.c.association_id == association.association_id,
+                _SOURCE_RECEIPT_ASSOCIATIONS.c.workspace_id == revision.workspace_id,
+                _SOURCE_RECEIPT_ASSOCIATIONS.c.environment_id == revision.environment_id,
+            ))).mappings().one_or_none()
+            if existing_association is not None and self._receipt_association_from_row(existing_association) != association.model_copy(
+                update={"associated_at": self._receipt_association_from_row(existing_association).associated_at}
+            ):
+                await self._uow._fail(ConstraintConflictError("Source receipt association conflicts."))
+            receipt_owner = (await self._uow._execute(select(_SOURCE_RECEIPT_ASSOCIATIONS.c.association_id).where(
+                _SOURCE_RECEIPT_ASSOCIATIONS.c.original_receipt_id == association.original_receipt_id,
+                _SOURCE_RECEIPT_ASSOCIATIONS.c.workspace_id == revision.workspace_id,
+                _SOURCE_RECEIPT_ASSOCIATIONS.c.environment_id == revision.environment_id,
+            ))).scalar_one_or_none()
+            if receipt_owner is not None and receipt_owner != association.association_id:
+                await self._uow._fail(ConstraintConflictError("Original receipt is already associated."))
+            if existing_association is None:
+                values = association.model_dump(mode="python")
+                values["original_reference"] = association.original_reference.model_dump(mode="json")
+                await self._uow._execute(
+                    postgresql_insert(_SOURCE_RECEIPT_ASSOCIATIONS)
+                    .values(**values)
+                    .on_conflict_do_nothing(index_elements=[_SOURCE_RECEIPT_ASSOCIATIONS.c.association_id])
+                )
         result = await resolve(
             OpaqueResultReference(result_type="source_revision", result_id=event_row.revision_id, schema_version=1),
             False,
@@ -474,6 +547,23 @@ class _PostgreSQLSourceObservationRepository:
             return None
         row = (await self._uow._execute(select(_SOURCE_REVISIONS).where(_SOURCE_REVISIONS.c.revision_id == revision_id, _SOURCE_REVISIONS.c.workspace_id == scope.workspace_id, _SOURCE_REVISIONS.c.environment_id == scope.environment_id))).mappings().one_or_none()
         return self._revision_from_row(row) if row is not None else None
+
+    async def resolve_receipt_associations(
+        self, revision_id: UUID
+    ) -> tuple[SourceRevisionReceiptAssociation, ...]:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return ()
+        rows = (await self._uow._execute(select(_SOURCE_RECEIPT_ASSOCIATIONS).where(
+            _SOURCE_RECEIPT_ASSOCIATIONS.c.revision_id == revision_id,
+            _SOURCE_RECEIPT_ASSOCIATIONS.c.workspace_id == scope.workspace_id,
+            _SOURCE_RECEIPT_ASSOCIATIONS.c.environment_id == scope.environment_id,
+        ).order_by(
+            _SOURCE_RECEIPT_ASSOCIATIONS.c.associated_at,
+            _SOURCE_RECEIPT_ASSOCIATIONS.c.association_id,
+        ))).mappings().all()
+        return tuple(self._receipt_association_from_row(row) for row in rows)
 
 
 class _PostgreSQLIngestionRepository:

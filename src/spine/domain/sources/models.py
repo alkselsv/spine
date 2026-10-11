@@ -7,7 +7,7 @@ import hashlib
 import json
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Protocol
 from uuid import UUID
 
 from pydantic import ConfigDict, Field, model_validator
@@ -24,6 +24,28 @@ _MEDIA_TYPE = re.compile(r"[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+\Z")
 
 BoundedIdentifier = Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_.:-]{0,63}$")]
 DigestHex = Annotated[str, Field(pattern=r"[0-9a-f]{64}")]
+
+
+class _VerifiedUploadResultReference(Protocol):
+    receipt_id: UUID
+
+
+class _VerifiedUploadResult(Protocol):
+    issue8_result_reference: _VerifiedUploadResultReference
+    upload_id: UUID
+    object_id: UUID
+
+
+class _VerifiedObservedContent(Protocol):
+    observed_sha256: str
+    observed_byte_length: int
+
+
+class _VerifiedWriteReceipt(Protocol):
+    upload_id: UUID
+    object_reference: ObjectReference
+    observed_content: _VerifiedObservedContent
+    finalized_at: datetime
 
 
 class SourceKind(str, Enum):
@@ -211,6 +233,107 @@ class SourceRevisionProvenance(DefinitionModel):
             if value.tzinfo is None or value.utcoffset() is None:
                 raise ValueError("provenance timestamps must be timezone-aware")
         return self
+
+
+class SourceRevisionReceiptAssociation(DefinitionModel):
+    """Immutable verified physical evidence associated with one observation.
+
+    The association is deliberately separate from ``SourceRevision``.  A
+    repeated observation can reuse a revision while retaining a different
+    finalized storage generation and its command/provenance lineage.
+    """
+
+    association_id: UUID
+    source_object_id: UUID
+    revision_id: UUID
+    provenance_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    original_receipt_kind: Literal["issue6.write_receipt"]
+    original_receipt_id: UUID
+    original_command_result_id: UUID
+    original_command_result_schema_version: int = Field(ge=1)
+    original_upload_id: UUID
+    original_reference: ObjectReference
+    original_sha256: DigestHex
+    byte_length: int = Field(ge=0)
+    verification_status: Literal["verified"] = "verified"
+    storage_status: Literal["finalized_verified"] = "finalized_verified"
+    finalized_at: datetime
+    associated_at: datetime
+
+    @model_validator(mode="after")
+    def validate_association(self) -> "SourceRevisionReceiptAssociation":
+        for field_name in (
+            "association_id",
+            "source_object_id",
+            "revision_id",
+            "provenance_id",
+            "workspace_id",
+            "environment_id",
+            "original_receipt_id",
+            "original_command_result_id",
+            "original_upload_id",
+        ):
+            _nonzero(getattr(self, field_name), field_name)
+        if self.original_reference.digest_hex != self.original_sha256:
+            raise ValueError("receipt digest does not match the original reference")
+        if self.original_reference.byte_length != self.byte_length:
+            raise ValueError("receipt length does not match the original reference")
+        for field_name in ("finalized_at", "associated_at"):
+            value = getattr(self, field_name)
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError(f"{field_name} must be timezone-aware")
+        if self.associated_at < self.finalized_at:
+            raise ValueError("association cannot precede physical finalization")
+        return self
+
+    @classmethod
+    def from_verified_upload(
+        cls,
+        *,
+        association_id: UUID,
+        source_object_id: UUID,
+        revision_id: UUID,
+        provenance_id: UUID,
+        workspace_id: UUID,
+        environment_id: UUID,
+        original_receipt_id: UUID,
+        command_result: _VerifiedUploadResult,
+        write_receipt: _VerifiedWriteReceipt,
+        associated_at: datetime,
+    ) -> "SourceRevisionReceiptAssociation":
+        """Create an association from the storage and upload result contracts.
+
+        ``WriteReceipt`` performs the physical finalization/integrity checks;
+        this boundary only carries their verified, immutable facts into the
+        canonical source ledger and links them to the Issue #8 result.
+        """
+
+        if command_result.issue8_result_reference.receipt_id != original_receipt_id:
+            raise ValueError("upload result is not linked to the supplied receipt")
+        if command_result.upload_id != write_receipt.upload_id:
+            raise ValueError("upload result and write receipt upload identities differ")
+        if command_result.object_id != write_receipt.object_reference.object_id:
+            raise ValueError("upload result and write receipt object identities differ")
+        return cls(
+            association_id=association_id,
+            source_object_id=source_object_id,
+            revision_id=revision_id,
+            provenance_id=provenance_id,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            original_receipt_kind="issue6.write_receipt",
+            original_receipt_id=original_receipt_id,
+            original_command_result_id=command_result.upload_id,
+            original_command_result_schema_version=1,
+            original_upload_id=command_result.upload_id,
+            original_reference=write_receipt.object_reference,
+            original_sha256=write_receipt.observed_content.observed_sha256,
+            byte_length=write_receipt.observed_content.observed_byte_length,
+            finalized_at=write_receipt.finalized_at,
+            associated_at=associated_at,
+        )
 
 
 def _normalize_text(value: str) -> str:
