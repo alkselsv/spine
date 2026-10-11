@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Protocol
 from uuid import UUID, uuid4
-from weakref import WeakValueDictionary
+from weakref import WeakValueDictionary, finalize
 
 from .contracts import (
     AuthorizedReadGrantRegistry,
@@ -167,6 +167,7 @@ class FilesystemOriginalObjectStore:
         self._initialized = False
         self._root = Path(profile.root).absolute()
         self._root_fd: int | None = None
+        self._root_fd_finalizer = None
         self._staged_root = self._root / "staged"
         self._finalized_root = self._root / "finalized"
         self._deleted_root = self._root / "deleted"
@@ -179,17 +180,20 @@ class FilesystemOriginalObjectStore:
         await self._ensure_ready()
         async with self._operation_limit:
             self._ensure_operational()
+            deadline = self._deadline()
             return await self._run_blocking(
                 self._begin_or_resume_upload_sync,
                 command,
                 state,
-                deadline=self._setup_deadline(),
+                deadline,
+                deadline=deadline,
             )
 
     def _begin_or_resume_upload_sync(
         self,
         command: OriginalUploadCommandInput,
         state: UploadCommandState,
+        operation_deadline: float,
     ) -> UploadCommandState:
         if state.state is UploadCommandStateName.RECONCILIATION_REQUIRED:
             raise ReconciliationRequired()
@@ -208,6 +212,7 @@ class FilesystemOriginalObjectStore:
                     state,
                     final_payload,
                     final_manifest,
+                    deadline=operation_deadline,
                 )
 
         stage_dir = scope_dir / state.upload_id.hex
@@ -475,7 +480,7 @@ class FilesystemOriginalObjectStore:
                         deadline=deadline,
                     )
                 except UploadConflict:
-                    self._mark_publication_conflict(stage_manifest_path)
+                    self._mark_publication_conflict(stage_manifest_path, locked=True)
                     raise
             manifest = self._read_manifest(stage_manifest_path)
             self._assert_manifest_identity_from_state(manifest, state)
@@ -542,9 +547,10 @@ class FilesystemOriginalObjectStore:
                         observed_content,
                         final_payload,
                         final_manifest,
+                        deadline=deadline,
                     )
                 except UploadConflict:
-                    self._mark_publication_conflict(stage_manifest_path)
+                    self._mark_publication_conflict(stage_manifest_path, locked=True)
                     raise
             except StorageError:
                 raise
@@ -834,12 +840,35 @@ class FilesystemOriginalObjectStore:
             self._unlink_nofollow(payload_path)
             self._unlink_nofollow(manifest_path)
             self._sync_directory(scope_dir)
+            self._remove_staged_publication_evidence(reference)
             self._write_deleted_marker(reference)
         except StorageError:
             raise
         except OSError:
             raise ObjectDeletionFailed() from None
         return DeletionResult(status="deleted")
+
+    def _remove_staged_publication_evidence(self, reference: ObjectReference) -> None:
+        for staged_scope in self._iter_scope_directories(self._staged_root):
+            for entry in self._scandir(staged_scope):
+                if entry.is_symlink or not entry.is_dir:
+                    raise StorageIntegrityIndeterminate()
+                stage_dir = staged_scope / entry.name
+                manifest_path = stage_dir / "manifest.json"
+                if not self._exists(manifest_path):
+                    continue
+                manifest = self._read_manifest(manifest_path)
+                if (
+                    manifest.get("status") not in {"publishing", "integrity_conflict"}
+                    or manifest.get("object_id") != str(reference.object_id)
+                ):
+                    continue
+                payload_path = stage_dir / "payload"
+                if self._exists(payload_path):
+                    self._unlink_nofollow(payload_path)
+                self._unlink_nofollow(manifest_path)
+                self._rmdir_nofollow(stage_dir)
+                self._sync_directory(staged_scope)
 
     def _is_deleted_reference(self, reference: ObjectReference) -> bool:
         marker = self._deleted_root / f"{reference.object_id.hex}.json"
@@ -890,11 +919,13 @@ class FilesystemOriginalObjectStore:
         state: UploadCommandState,
         payload_path: Path,
         manifest_path: Path,
+        *,
+        deadline: float,
     ) -> UploadCommandState:
         manifest = self._read_manifest(manifest_path)
         self._assert_manifest_identity(manifest, command, state)
         receipt = self._receipt_from_manifest(manifest)
-        self._verify_finalized_file(payload_path, receipt)
+        self._verify_finalized_file(payload_path, receipt, deadline=deadline)
         if state.state is UploadCommandStateName.FINALIZED:
             if state.provisional_receipt != receipt:
                 raise UploadConflict()
@@ -915,6 +946,11 @@ class FilesystemOriginalObjectStore:
         manifest = self._read_manifest(manifest_path)
         self._assert_manifest_identity_from_state(manifest, state)
         receipt = self._receipt_from_manifest(manifest)
+        if (
+            state.state is UploadCommandStateName.FINALIZED
+            and state.provisional_receipt != receipt
+        ):
+            raise UploadConflict()
         if receipt.observed_content != observed_content:
             raise UploadConflict()
         self._verify_finalized_file(payload_path, receipt, deadline=deadline)
@@ -1228,10 +1264,16 @@ class FilesystemOriginalObjectStore:
                         publishing_receipt.upload_id != UUID(manifest["upload_id"])
                         or publishing_receipt.object_reference.object_id
                         != UUID(manifest["object_id"])
-                        or publishing_receipt.object_reference.digest_hex
-                        != manifest.get("expected_digest")
-                        or publishing_receipt.object_reference.byte_length
-                        != manifest.get("expected_length")
+                        or (
+                            manifest.get("expected_digest") is not None
+                            and publishing_receipt.object_reference.digest_hex
+                            != manifest.get("expected_digest")
+                        )
+                        or (
+                            manifest.get("expected_length") is not None
+                            and publishing_receipt.object_reference.byte_length
+                            != manifest.get("expected_length")
+                        )
                     ):
                         raise StorageIntegrityIndeterminate()
                     finalized_manifest_path = (
@@ -1276,24 +1318,34 @@ class FilesystemOriginalObjectStore:
         try:
             upload_id = UUID(manifest["upload_id"])
             object_id = UUID(manifest["object_id"])
-            UUID(manifest["issue8_receipt_id"])
+            issue8_receipt_id = UUID(manifest["issue8_receipt_id"])
             PreWriteRequestDigest.model_validate_json(
                 json.dumps(manifest["request_digest"], separators=(",", ":"))
             )
         except Exception:
             raise StorageIntegrityIndeterminate() from None
-        if upload_id.hex != stage_name or object_id.int == 0:
+        command_fingerprint = manifest.get("command_fingerprint")
+        if (
+            upload_id.hex != stage_name
+            or object_id.int == 0
+            or issue8_receipt_id.int == 0
+            or not isinstance(command_fingerprint, str)
+            or len(command_fingerprint) != 64
+            or any(character not in "0123456789abcdef" for character in command_fingerprint)
+        ):
             raise StorageIntegrityIndeterminate()
         expected_digest = manifest.get("expected_digest")
         expected_length = manifest.get("expected_length")
         if expected_digest is None and expected_length is None:
             return
-        if (
+        if expected_digest is not None and (
             not isinstance(expected_digest, str)
             or len(expected_digest) != 64
             or any(character not in "0123456789abcdef" for character in expected_digest)
-            or not isinstance(expected_length, int)
-            or expected_length < 0
+        ):
+            raise StorageIntegrityIndeterminate()
+        if expected_length is not None and (
+            not isinstance(expected_length, int) or expected_length < 0
         ):
             raise StorageIntegrityIndeterminate()
         observed_digest = manifest.get("observed_digest")
@@ -1435,12 +1487,24 @@ class FilesystemOriginalObjectStore:
         updated["status"] = status
         self._write_json_atomic(path, updated)
 
-    def _mark_publication_conflict(self, path: Path) -> None:
+    def _mark_publication_conflict(self, path: Path, *, locked: bool = False) -> None:
         if not self._exists(path):
             return
-        current_manifest = self._read_manifest(path)
-        if current_manifest.get("status") in {"staging", "publishing"}:
-            self._set_manifest_status(path, current_manifest, "integrity_conflict")
+        payload_fd: int | None = None
+        try:
+            if not locked:
+                payload_path = path.parent / "payload"
+                if self._exists(payload_path):
+                    payload_fd = self._open_append(payload_path)
+                    self._lock_file(payload_fd, self._setup_deadline())
+            current_manifest = self._read_manifest(path)
+            if current_manifest.get("status") in {"staging", "publishing"}:
+                self._set_manifest_status(path, current_manifest, "integrity_conflict")
+        except BaseException:
+            raise
+        finally:
+            if payload_fd is not None:
+                self._close_fd(payload_fd)
 
     def _record_observed_content(
         self,
@@ -1911,6 +1975,16 @@ class FilesystemOriginalObjectStore:
         finally:
             os.close(parent_fd)
 
+    def _rmdir_nofollow(self, path: Path) -> None:
+        parent_fd, name = self._open_secure_parent(path)
+        try:
+            entry = os.lstat(name, dir_fd=parent_fd)
+            if stat.S_ISLNK(entry.st_mode) or not stat.S_ISDIR(entry.st_mode):
+                raise StorageIntegrityIndeterminate()
+            os.rmdir(name, dir_fd=parent_fd)
+        finally:
+            os.close(parent_fd)
+
     def _write_json_exclusive(self, path: Path, value: dict[str, Any]) -> None:
         payload = self._json_bytes(value)
         fd = self._open_relative(
@@ -2060,6 +2134,7 @@ class FilesystemOriginalObjectStore:
             self._finalized_root = finalized
             self._deleted_root = deleted
             self._root_fd = root_fd
+            self._root_fd_finalizer = finalize(self, os.close, root_fd)
             self._initialized = True
 
     def _initialize_layout(self) -> tuple[Path, Path, Path, Path, int]:
@@ -2132,7 +2207,11 @@ class FilesystemOriginalObjectStore:
                     abandon()
                     raise _BlockingOperationAbandoned()
                 await asyncio.sleep(0.001)
-            value = result.result()
+            try:
+                value = result.result()
+            except StorageIntegrityIndeterminate:
+                self._indeterminate.set()
+                raise
             if deadline is not None and self._monotonic_clock() >= deadline:
                 self._indeterminate.set()
                 if on_cancel is not None:
@@ -2142,7 +2221,15 @@ class FilesystemOriginalObjectStore:
                         self._indeterminate.set()
                 raise _BlockingOperationAbandoned()
             if check_operational:
-                self._ensure_operational()
+                try:
+                    self._ensure_operational()
+                except BaseException:
+                    if on_cancel is not None:
+                        try:
+                            on_cancel(value)
+                        except BaseException:
+                            self._indeterminate.set()
+                    raise
             return value
         except asyncio.CancelledError:
             if result.done():

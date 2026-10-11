@@ -76,9 +76,9 @@ The staged manifest records the server upload/object identities, request-digest
 identity, command fingerprint, expected integrity values and the last complete
 observed stream result. A staged upload with a durable `interrupted` marker can
 resume with the same stored upload identity. An aborted or integrity-conflict
-marker is terminal. A publishing marker or a finalized payload without a
-matching finalized manifest is indeterminate and is never reported as a
-successful receipt.
+marker is terminal. A publishing marker without matching, fully verified
+finalized evidence, or a finalized payload without a matching finalized
+manifest, is indeterminate and is never reported as a successful receipt.
 
 Inventory enumerates only sanitized finalized receipt metadata. It is bounded
 and restartable through an opaque cursor; staged bytes are not an authorization
@@ -107,10 +107,14 @@ fence or claim that an ordinary volume snapshot is a coherent recovery point.
 The profile proves adapter-level bounded streaming, exclusive no-replace
 publication, dirfd-relative path traversal protection, symlink rejection and
 conditional file/directory synchronization on the supported platform. Blocking
-filesystem calls run outside the event loop. Cooperative cancellation waits for
-the in-flight operation to release its file descriptor and advisory lock; if a
-filesystem syscall does not return, the adapter quarantines itself as
-indeterminate and the worker retains descriptor ownership until it drains. It
+filesystem calls run outside the event loop. Cooperative cancellation either
+waits for the in-flight operation or transfers descriptor/lock ownership to a
+draining worker; if a filesystem syscall does not return, the adapter
+quarantines itself as indeterminate and no further storage operation is
+admitted. It
+requires input `AsyncIterable` producers to cooperate with cancellation; a
+producer that suppresses cancellation is detached and the adapter remains
+quarantined, because Python cannot forcibly terminate arbitrary user tasks. It
 does not claim universal crash safety or
 durability across power loss, controllers, RAID, kernels, filesystems,
 multi-volume deployments, backup implementations or machine failure. If the
