@@ -577,16 +577,24 @@ class FilesystemOriginalObjectStore:
             finalized_manifest = dict(publishing_manifest)
             finalized_manifest["status"] = "finalized"
             self._write_json_atomic(stage_manifest_path, publishing_manifest)
+            publication_fd: int | None = None
             try:
-                self._publish_no_replace(
+                publication_fd = self._publish_no_replace(
                     stage_payload,
                     final_payload,
                     expected_source_identity=stage_identity,
+                    deadline=deadline,
                 )
                 self._sync_file(final_payload, expected_identity=stage_identity)
                 self._write_json_exclusive(final_manifest, finalized_manifest)
                 self._sync_directory(final_scope_dir)
             except FileExistsError:
+                while not self._exists(final_manifest):
+                    if self._deleted_object_status(state.object_id) is not None:
+                        raise UploadConflict()
+                    if self._monotonic_clock() >= deadline:
+                        raise StorageIntegrityIndeterminate()
+                    time.sleep(min(0.01, max(0.0, deadline - self._monotonic_clock())))
                 if not self._exists(final_manifest):
                     raise StorageIntegrityIndeterminate() from None
                 try:
@@ -606,6 +614,9 @@ class FilesystemOriginalObjectStore:
                 raise
             except OSError as error:
                 raise self._publication_error(error) from None
+            finally:
+                if publication_fd is not None:
+                    self._close_fd(publication_fd)
             return receipt
         finally:
             self._close_fd(stage_fd)
@@ -2015,36 +2026,61 @@ class FilesystemOriginalObjectStore:
         destination: Path,
         *,
         expected_source_identity: tuple[int, int, int] | None = None,
-    ) -> None:
+        deadline: float | None = None,
+    ) -> int:
         if self._exists(destination):
             raise FileExistsError()
-        source_parent_fd, source_name = self._open_secure_parent(source)
+        publication_fd = self._open_directory(destination.parent)
         try:
-            destination_parent_fd, destination_name = self._open_secure_parent(destination)
+            self._lock_publication_scope(
+                publication_fd,
+                destination,
+                deadline if deadline is not None else self._setup_deadline(),
+            )
+            if destination.parent.parent == self._finalized_root:
+                try:
+                    object_id = UUID(destination.name)
+                except (TypeError, ValueError):
+                    object_id = None
+                if object_id is not None:
+                    deleted_status = self._deleted_object_status(object_id)
+                    if deleted_status == "deleted":
+                        raise UploadConflict()
+                    if deleted_status == "pending":
+                        raise StorageIntegrityIndeterminate()
+            source_parent_fd, source_name = self._open_secure_parent(source)
             try:
-                os.link(
-                    source_name,
-                    destination_name,
-                    src_dir_fd=source_parent_fd,
-                    dst_dir_fd=destination_parent_fd,
-                    follow_symlinks=False,
+                destination_parent_fd, destination_name = self._open_secure_parent(
+                    destination
                 )
-                if expected_source_identity is not None and (
-                    self._file_identity(destination) != expected_source_identity
-                ):
-                    raise StorageIntegrityIndeterminate()
-            except FileExistsError:
-                raise
-            except (TypeError, NotImplementedError, ValueError):
-                raise StorageConfigurationError() from None
-            except OSError as error:
-                if error.errno == errno.EEXIST:
-                    raise FileExistsError() from None
-                raise
+                try:
+                    os.link(
+                        source_name,
+                        destination_name,
+                        src_dir_fd=source_parent_fd,
+                        dst_dir_fd=destination_parent_fd,
+                        follow_symlinks=False,
+                    )
+                    if expected_source_identity is not None and (
+                        self._file_identity(destination) != expected_source_identity
+                    ):
+                        raise StorageIntegrityIndeterminate()
+                except FileExistsError:
+                    raise
+                except (TypeError, NotImplementedError, ValueError):
+                    raise StorageConfigurationError() from None
+                except OSError as error:
+                    if error.errno == errno.EEXIST:
+                        raise FileExistsError() from None
+                    raise
+                finally:
+                    os.close(destination_parent_fd)
             finally:
-                os.close(destination_parent_fd)
-        finally:
-            os.close(source_parent_fd)
+                os.close(source_parent_fd)
+        except BaseException:
+            self._close_fd(publication_fd)
+            raise
+        return publication_fd
 
     def _write_deleted_marker(
         self,
@@ -2316,6 +2352,29 @@ class FilesystemOriginalObjectStore:
                     raise UploadLimitExceeded()
                 time.sleep(min(0.01, max(0.0, deadline - self._monotonic_clock())))
 
+    def _lock_publication_scope(self, fd: int, destination: Path, deadline: float) -> None:
+        try:
+            import fcntl
+        except ImportError:
+            raise StorageConfigurationError() from None
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return
+            except BlockingIOError:
+                if self._exists(destination):
+                    raise FileExistsError()
+                if self._monotonic_clock() >= deadline:
+                    raise UploadLimitExceeded()
+                time.sleep(min(0.01, max(0.0, deadline - self._monotonic_clock())))
+            except OSError as error:
+                if error.errno not in {errno.EACCES, errno.EAGAIN}:
+                    raise StorageIntegrityIndeterminate() from None
+                if self._exists(destination):
+                    raise FileExistsError()
+                if self._monotonic_clock() >= deadline:
+                    raise UploadLimitExceeded()
+                time.sleep(min(0.01, max(0.0, deadline - self._monotonic_clock())))
     def _write_chunk(self, fd: int, chunk: bytes, deadline: float) -> None:
         view = memoryview(chunk)
         while view:
