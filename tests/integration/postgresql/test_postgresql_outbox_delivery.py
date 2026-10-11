@@ -5,17 +5,22 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import logging
 from uuid import UUID
 
 import pytest
 import pytest_asyncio
 from pydantic import SecretStr
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from spine.application.diagnostics.audit import AuditEventRegistry
-from spine.application.diagnostics import DiagnosticContext, DiagnosticEventRegistry
+from spine.application.diagnostics import (
+    DiagnosticContext,
+    DiagnosticEvent,
+    DiagnosticEventRegistry,
+)
 from spine.application.outbox import (
     DispatchOutcomeCode,
     OutboxConsumerRegistry,
@@ -46,7 +51,10 @@ from spine.infrastructure.db.settings import (
 )
 from spine.infrastructure.db.test_harness import TestDatabaseProvision
 from spine.infrastructure.outbox import PostgreSQLOutboxDeliveryRepository
-from spine.infrastructure.diagnostics import RecordingDiagnosticSink
+from spine.infrastructure.diagnostics import (
+    JsonLoggingDiagnosticSink,
+    RecordingDiagnosticSink,
+)
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.persistence.postgresql import PostgreSQLPersistence
 from tests.contracts.persistence.adapter import DeliveryPersistenceAdapter
@@ -64,6 +72,10 @@ from tests.contracts.persistence.test_outbox_delivery_repository_contract import
     test_unknown_route_can_be_claimed_and_safely_quarantined as contract_quarantine,
 )
 from tests.contracts.persistence.test_outbox_writer_contract import intent, workspace
+from tests.contracts.diagnostics.fixtures import (
+    DIAGNOSTIC_LEAK_CORPUS,
+    assert_no_diagnostic_leaks,
+)
 
 
 pytestmark = [
@@ -394,6 +406,33 @@ class _RecordingConsumer(_SuccessfulConsumer):
         return await super().consume(intent, diagnostic_context)
 
 
+class _LeakingConsumer:
+    def __init__(self, failure: Exception) -> None:
+        self._failure = failure
+
+    async def consume(
+        self,
+        intent: OutboxIntent,
+        diagnostic_context: DiagnosticContext,
+    ) -> OutboxConsumerSuccess:
+        del intent, diagnostic_context
+        raise self._failure
+
+
+class _RecordingAndLoggingSink:
+    def __init__(self, registry: DiagnosticEventRegistry, logger: logging.Logger) -> None:
+        self.recording = RecordingDiagnosticSink(registry)
+        self.logging = JsonLoggingDiagnosticSink(registry, logger=logger)
+
+    @property
+    def events(self) -> tuple[DiagnosticEvent, ...]:
+        return self.recording.events
+
+    async def emit(self, event: DiagnosticEvent) -> None:
+        await self.recording.emit(event)
+        await self.logging.emit(event)
+
+
 async def test_postgresql_dispatch_commits_delivery_and_audit_atomically(
     postgresql_delivery_adapter: DeliveryPersistenceAdapter,
 ) -> None:
@@ -452,6 +491,110 @@ async def test_postgresql_dispatch_commits_delivery_and_audit_atomically(
     assert audit is not None
     assert audit.causation_id == event_id
     assert len(diagnostic_sink.events) == 1
+
+
+@pytest.mark.parametrize(
+    "protected_failure",
+    DIAGNOSTIC_LEAK_CORPUS,
+    ids=lambda value: f"corpus_{DIAGNOSTIC_LEAK_CORPUS.index(value)}",
+)
+async def test_postgresql_issue68_disclosure_corpus_covers_persisted_rows(
+    postgresql_delivery_adapter: DeliveryPersistenceAdapter,
+    delivery_database: DeliveryDatabase,
+    protected_failure: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Apply each raw-failure corpus value to rows returned from PostgreSQL."""
+
+    adapter = postgresql_delivery_adapter
+    workspace_id = synthetic_uuid(6792)
+    event_id = synthetic_uuid(6793)
+    audit_event_id = synthetic_uuid(6794)
+    context = adapter.workspace_context(workspace_id)
+    persisted_intent = intent(
+        adapter,
+        workspace_id=workspace_id,
+        event_id=event_id,
+        trace_id=context.trace_id,
+        producer_deduplication_id=None,
+    )
+    async with adapter.uow_factory(context) as uow:
+        await uow.workspaces.add(workspace(workspace_id))
+        await uow.outbox.append(persisted_intent)
+        await uow.commit()
+
+    diagnostics = DiagnosticEventRegistry.with_default_families()
+    logger = logging.getLogger("spine.tests.issue68.postgresql")
+    diagnostic_sink = _RecordingAndLoggingSink(diagnostics, logger)
+    consumer = _LeakingConsumer(RuntimeError(protected_failure))
+    consumers = OutboxConsumerRegistry()
+    consumers.register("workspace_projection", consumer)
+    dispatcher = OutboxDispatcher(
+        repository=adapter.delivery_repository,
+        consumers=consumers,
+        audit_events=adapter.audit_events,
+        diagnostic_events=diagnostics,
+        diagnostic_sink=diagnostic_sink,
+        service_principal_id=synthetic_uuid(6795),
+        clock=lambda: datetime(2026, 10, 12, 14, tzinfo=timezone.utc),
+        audit_event_id_source=lambda: audit_event_id,
+        retry_delay=lambda attempt_number: timedelta(seconds=attempt_number),
+        maximum_retry_delay=timedelta(minutes=5),
+        lease_duration=timedelta(seconds=30),
+        handler_timeout=timedelta(seconds=5),
+        maximum_attempts=3,
+    )
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        report = await dispatcher.dispatch_batch(
+            limit=1,
+            worker_identity="worker_alpha",
+        )
+    delivery = await adapter.delivery_repository.resolve(event_id)
+    audit = await adapter.read_audit_event(
+        adapter.worker_workspace_context(workspace_id),
+        audit_event_id,
+    )
+    assert delivery is not None
+    assert audit is not None
+
+    row_captures: list[str] = []
+    async with delivery_database.migration_engine.connect() as connection:
+        for query, value in (
+            (
+                "SELECT row_to_json(a)::text FROM spine.audit_events AS a "
+                "WHERE a.audit_event_id = :value",
+                audit_event_id,
+            ),
+            (
+                "SELECT row_to_json(o)::text FROM spine.outbox_intents AS o "
+                "WHERE o.event_id = :value",
+                event_id,
+            ),
+            (
+                "SELECT row_to_json(d)::text FROM spine.outbox_deliveries AS d "
+                "WHERE d.event_id = :value",
+                event_id,
+            ),
+        ):
+            row = await connection.execute(text(query), {"value": value})
+            row_captures.append(row.scalar_one())
+
+    assert report.outcome_codes == (DispatchOutcomeCode.QUARANTINED,)
+    assert delivery.status.value == "quarantined"
+    assert delivery.last_error_code == "delivery.handler_unexpected"
+    assert audit.reason == "delivery.handler_unexpected"
+    assert_no_diagnostic_leaks(
+        (
+            *row_captures,
+            persisted_intent.model_dump_json(),
+            audit.model_dump_json(),
+            delivery.model_dump_json(),
+            report.model_dump_json(),
+            *(event.model_dump_json() for event in diagnostic_sink.events),
+            caplog.text,
+        ),
+        leak_corpus=DIAGNOSTIC_LEAK_CORPUS,
+    )
 
 
 async def test_concurrent_postgresql_dispatchers_do_not_overlap_active_claim(
@@ -578,7 +721,7 @@ async def test_atomic_finalization_rejects_mismatched_workspace_scope(
     assert delivery.status.value == "in_flight"
 
 
-async def test_postgresql_unknown_persisted_event_is_quarantined_without_payload_load(
+async def test_postgresql_unknown_persisted_event_is_quarantined_safely(
     postgresql_delivery_adapter: DeliveryPersistenceAdapter,
     delivery_database: DeliveryDatabase,
 ) -> None:
@@ -850,18 +993,46 @@ async def test_unknown_persisted_event_claim_uses_header_only_envelope(
             },
         )
 
-    claims = await adapter.delivery_repository.claim_due(
-        limit=1,
-        worker_identity="worker_alpha",
-        claimed_at=datetime(2026, 10, 11, 21, tzinfo=timezone.utc),
-        lease_duration=timedelta(seconds=30),
+    statements: list[str] = []
+
+    def record_statement(
+        connection: object,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: bool,
+    ) -> None:
+        del connection, cursor, parameters, context, executemany
+        if "outbox_intents" in statement.lower():
+            statements.append(statement.lower())
+
+    event.listen(
+        delivery_database.dispatcher_engine.sync_engine,
+        "before_cursor_execute",
+        record_statement,
     )
+    try:
+        claims = await adapter.delivery_repository.claim_due(
+            limit=1,
+            worker_identity="worker_alpha",
+            claimed_at=datetime(2026, 10, 11, 21, tzinfo=timezone.utc),
+            lease_duration=timedelta(seconds=30),
+        )
+    finally:
+        event.remove(
+            delivery_database.dispatcher_engine.sync_engine,
+            "before_cursor_execute",
+            record_statement,
+        )
 
     assert len(claims) == 1
     claim = claims[0]
     assert type(claim.intent) is UnresolvedOutboxIntent
     assert claim.intent.event_id == event_id
     assert claim.consumer_name is None
+    assert statements
+    assert all("payload" not in statement for statement in statements)
 
     quarantined = await adapter.delivery_repository.quarantine(
         claim,

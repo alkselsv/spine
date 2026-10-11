@@ -1,0 +1,35 @@
+{
+  "staged_diff_sha256": "d5fe4d3a329787da82b5d0c2a1a4a651d40df1c39c12de1b9a23784500d6783f",
+  "results": [
+    {
+      "command": "uv sync --extra dev",
+      "returncode": 0,
+      "status": "passed",
+      "summary": "completed successfully"
+    },
+    {
+      "command": "uv lock --check",
+      "returncode": 0,
+      "status": "passed",
+      "summary": "completed successfully"
+    },
+    {
+      "command": "uv run pytest -q",
+      "returncode": 0,
+      "status": "passed",
+      "summary": "1355 passed"
+    },
+    {
+      "command": "uv run python -m compileall -q src tests",
+      "returncode": 0,
+      "status": "passed",
+      "summary": "completed successfully"
+    },
+    {
+      "command": "git diff --cached --check",
+      "returncode": 0,
+      "status": "passed",
+      "summary": "completed successfully"
+    }
+  ]
+}
