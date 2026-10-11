@@ -15,23 +15,57 @@ domain contracts, agents/code steps, workflow, evaluations, API, интерфе�
 наблюдаемость и эксплуатационные ограничения. Общие компоненты извлекаются в
 платформу по мере подтверждения минимум двумя кейсами.
 
+## Статусы поставки
+
+Roadmap различает три статуса. Они относятся только к явно названной границе и
+не должны автоматически переноситься на весь релиз:
+
+- `implemented` — контракт или компонент реализован и покрыт проверками на своей
+  границе;
+- `integrated` — компонент подключён к целевому пользовательскому пути релиза, а
+  не только к fake, прототипу или compatibility path;
+- `qualified` — для названной границы собраны acceptance evidence и пройдены её
+  обязательные gates.
+
+`qualified` component contract не означает production qualification внешнего
+провайдера или завершение релиза. Чекбокс `[x]` означает, что завершён именно
+сформулированный scope item; промежуточное состояние незавершённых пунктов
+указывается отдельными status notes.
+
 ## R0 — Общая основа
 
 Цель: подготовить минимальный фундамент, не строя заранее универсальную agent
 platform.
 
 - [x] Python/FastAPI-проект и локальный Q&A-прототип на Cognee.
+      `implemented`, `operational: legacy compatibility path`,
+      `not integrated: governed R1 flow`.
 - [x] Каркас domain, application, connectors, memory, agents, workflows и web.
+      `implemented`.
 - [x] Начальный framework-independent каркас контрактов capability, agent invocation, artifact и workflow.
+      `implemented`.
 - [x] Local agent runtime seam: capability-specific schemas, типизированные
       `AgentRequest`/`AgentResponse` и полный `AgentExecutionContext`.
+      `implemented`, `qualified: deterministic offline contract`,
+      `not integrated: real R1 answer_question`.
 - [x] Явный registry/factory, structural `AgentHandler`, adapter async-функций,
       `EventSink`, cooperative cancellation и разделение runtime/workflow retry.
+      `implemented`, `qualified: deterministic offline contract`,
+      `not integrated: real R1 answer_question and Tool Gateway`.
 - [ ] Workspace и environment context во всех API-командах.
+      `implemented and qualified: identity/request/persistence foundation`;
+      `not integrated: legacy /ask and /ingest`.
 - [ ] `SourceObject`, `SourceRevision`, immutable originals и provenance locators.
+      `implemented: contracts, persistence, original storage and ingestion ledger`;
+      `partially integrated`, `not qualified: end-to-end R1 ingestion`.
 - [ ] Context Broker с Cognee как заменяемой retrieval-проекцией.
-- [ ] Единые trace ID, structured errors и audit events.
+      `implemented: provider-neutral retrieval contract`; `not integrated`,
+      `not qualified`.
+- [x] Единые trace ID, structured errors и audit events.
+      `implemented`, `qualified: offline diagnostics/delivery foundation`,
+      `not integrated: complete governed R1 flow`.
 - [ ] Минимальный app shell и сгенерированный API client.
+      `not implemented`; выбран стек и определён OpenAPI handoff.
 
 R0 не является самостоятельным продуктовым релизом: задачи из него выполняются
 по мере необходимости для R1.
@@ -48,16 +82,27 @@ R0 не является самостоятельным продуктовым �
 
 ### Scope
 
+Ни один R1 scope item пока не имеет одновременно статусы `implemented`,
+`integrated` и `qualified` на полном пользовательском пути. Поддерживающие
+компоненты ingestion, authorization, diagnostics, storage и agent runtime уже
+реализованы на своих границах, но governed flow
+`upload → projection → answer → citations → UI` ещё не интегрирован.
+
 - [ ] Надёжная загрузка PDF, DOCX, XLSX, Markdown и text с версиями и checksum.
+      `partially implemented`; `not integrated`, `not qualified: R1 flow`.
 - [ ] Parsing metadata: страницы, листы, строки, заголовки и другие stable locators.
+      `prototype evidence`; production implementation не интегрирована.
 - [ ] Versioned baseline ontology и evidence-linked извлечение domain entities и
       relations из `SourceRevision`.
 - [ ] Индексация, обновление, удаление и полная перестройка graph/vector Context
       projection; Cognee — первый replaceable adapter.
 - [ ] Object-level Access Policy и наследование прав документ → chunk/reference.
 - [ ] Typed retrieval contract через Context Broker.
+      `implemented: contract`; Cognee adapter не интегрирован и не квалифицирован.
 - [ ] Capability `answer_question` как эталонный local `AgentHandler`: pinned
       `AgentVersion`/`ContextProfile`, runtime-managed artifacts и citations.
+      `implemented and qualified: generic runtime with synthetic handler`;
+      real capability не реализован и не интегрирован.
 - [ ] `/api/v1/ask`: grounded answer/outcome, structured citations, optional
       versioned confidence metadata, `as_of`, trace ID и abstention.
 - [ ] Administrator-only Knowledge Control Plane: документы и ревизии, ingestion /
