@@ -6,6 +6,12 @@ factory to the parameterized `original_object_store_factory` fixture; scenarios
 must not be copied into adapter-specific tests. Tests use only the storage port,
 its typed contracts, and the public one-shot lease boundary.
 
+The fixture runs both the deterministic fake and the profiled filesystem
+adapter. Filesystem-specific behavior that cannot be expressed through the
+port is covered separately in
+`tests/integration/object_storage/test_filesystem.py`; those tests use a
+temporary storage root and do not replace or duplicate the shared scenarios.
+
 Each adapter factory also supplies test-only bounded-I/O observations. They let
 the shared scenarios reject implementations that return a bounded result only
 after reading or buffering beyond the declared limit. A filesystem factory may
