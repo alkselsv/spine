@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+import hashlib
 import json
 from contextlib import asynccontextmanager
 from enum import Enum, auto
 from types import TracebackType
 from typing import Any, NoReturn
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from sqlalchemy import func, insert, null, select, text, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -43,6 +44,15 @@ from spine.application.persistence.repositories import (
     SourceObservationCommand,
     SourceObservationResult,
 )
+from spine.application.persistence.ingestion import (
+    IngestionBindingCommand,
+    IngestionMutationResult,
+    IngestionRepository,
+    IngestionRunCommand,
+    IngestionRunStateView,
+    ProcessingReceiptCommand,
+    validate_transition,
+)
 from spine.application.persistence.idempotency import (
     IdempotencyClaimResult,
     IdempotencyKey,
@@ -68,6 +78,18 @@ from spine.domain.sources import (
 )
 from spine.domain.sources.canonicalization import assert_revision_digest
 from spine.domain.sources.errors import RevisionDigestMismatchError as DomainRevisionDigestMismatchError
+from spine.domain.ingestion import (
+    IngestionFailure,
+    IngestionItemState,
+    IngestionRun,
+    IngestionRunSource,
+    IngestionRunSourceBinding,
+    IngestionRunState,
+    IngestionTargetKind,
+    IngestionTransition,
+    IngestionWarning,
+    ProcessingReceipt,
+)
 from spine.infrastructure.db.engine import SessionFactory
 from spine.infrastructure.persistence.postgresql_errors import (
     translate_persistence_error,
@@ -81,6 +103,13 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     source_objects as _SOURCE_OBJECTS,
     source_revisions as _SOURCE_REVISIONS,
     source_revision_provenance as _SOURCE_PROVENANCE,
+    ingestion_runs as _INGESTION_RUNS,
+    ingestion_run_sources as _INGESTION_ITEMS,
+    ingestion_run_source_bindings as _INGESTION_BINDINGS,
+    ingestion_transitions as _INGESTION_TRANSITIONS,
+    ingestion_warnings as _INGESTION_WARNINGS,
+    ingestion_failures as _INGESTION_FAILURES,
+    processing_receipts as _PROCESSING_RECEIPTS,
     workspaces as _WORKSPACES,
 )
 
@@ -445,6 +474,252 @@ class _PostgreSQLSourceObservationRepository:
             return None
         row = (await self._uow._execute(select(_SOURCE_REVISIONS).where(_SOURCE_REVISIONS.c.revision_id == revision_id, _SOURCE_REVISIONS.c.workspace_id == scope.workspace_id, _SOURCE_REVISIONS.c.environment_id == scope.environment_id))).mappings().one_or_none()
         return self._revision_from_row(row) if row is not None else None
+
+
+class _PostgreSQLIngestionRepository:
+    """Tenant-scoped PostgreSQL implementation of the append-only ledger."""
+
+    def __init__(self, uow: "PostgreSQLTenantUnitOfWork") -> None:
+        self._uow = uow
+
+    def _check_scope(self, workspace_id: UUID, environment_id: UUID) -> None:
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope) or (scope.workspace_id, scope.environment_id) != (workspace_id, environment_id):
+            raise InvalidPersistenceContextError("Persistence context is invalid.")
+
+    @staticmethod
+    def _detail_values(detail: object) -> tuple[str, dict[str, object], str]:
+        payload = detail.model_dump(mode="json")
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        return payload["schema_version"], payload, hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _transition_from_row(row: Mapping[str, Any]) -> IngestionTransition:
+        return IngestionTransition.model_validate(dict(row))
+
+    async def _head(self, *, run_id: UUID, item_id: UUID | None) -> IngestionTransition | None:
+        predicates = [
+            _INGESTION_TRANSITIONS.c.workspace_id == self._uow.scope.workspace_id,
+            _INGESTION_TRANSITIONS.c.environment_id == self._uow.scope.environment_id,
+            _INGESTION_TRANSITIONS.c.ingestion_run_id == run_id,
+            _INGESTION_TRANSITIONS.c.ingestion_run_source_id == item_id if item_id is not None else _INGESTION_TRANSITIONS.c.ingestion_run_source_id.is_(None),
+        ]
+        rows = (await self._uow._execute(select(_INGESTION_TRANSITIONS).where(*predicates))).mappings().all()
+        if not rows:
+            return None
+        transitions = tuple(self._transition_from_row(row) for row in rows)
+        predecessor_ids = {transition.predecessor_transition_id for transition in transitions if transition.predecessor_transition_id is not None}
+        heads = tuple(transition for transition in transitions if transition.ingestion_transition_id not in predecessor_ids)
+        if len(heads) != 1:
+            await self._uow._fail(ConstraintConflictError("Ingestion transition history has multiple heads."))
+        return heads[0]
+
+    async def create_run(self, command: IngestionRunCommand) -> IngestionMutationResult:
+        self._uow._guard_active()
+        run = command.run
+        self._check_scope(run.workspace_id, run.environment_id)
+        claim = await self._uow.idempotency.claim(operation_schema_version=command.digest.operation_schema_version, key=command.idempotency_key, digest=command.digest)
+        if isinstance(claim, IdempotencyReplay):
+            row = (await self._uow._execute(select(_INGESTION_RUNS).where(_INGESTION_RUNS.c.ingestion_run_id == claim.result.result_id, _INGESTION_RUNS.c.workspace_id == run.workspace_id, _INGESTION_RUNS.c.environment_id == run.environment_id))).mappings().one_or_none()
+            if row is None:
+                await self._uow._fail(ConstraintConflictError("Ingestion run replay is unavailable."))
+            return IngestionMutationResult(IngestionRun.model_validate(dict(row)), True, claim, claim.result)
+        run = run.model_copy(update={"idempotency_receipt_id": claim.receipt_id})
+        await self._uow._execute(
+            insert(_INGESTION_RUNS).values(
+                ingestion_run_id=run.ingestion_run_id, workspace_id=run.workspace_id, environment_id=run.environment_id,
+                command_identity=run.command_identity, command_digest=run.command_digest, idempotency_receipt_id=run.idempotency_receipt_id,
+                trigger_kind=run.trigger_kind, trigger_reference=run.trigger_reference, requested_scope_schema=run.requested_scope_schema,
+                requested_scope_digest=run.requested_scope_digest, requested_at=run.requested_at,
+            )
+        )
+        await self.append_transition(IngestionTransition(
+            ingestion_transition_id=uuid5(NAMESPACE_URL, f"ingestion-run-root:{run.ingestion_run_id}"), workspace_id=run.workspace_id, environment_id=run.environment_id,
+            target_kind=IngestionTargetKind.RUN, ingestion_run_id=run.ingestion_run_id, state=IngestionRunState.REQUESTED, attempt=1,
+            actor_or_service="ingestion-ledger", trace_id=self._uow._trace_id_snapshot(), occurred_at=run.requested_at,
+        ))
+        result = OpaqueResultReference(result_type="ingestion_run", result_id=run.ingestion_run_id, schema_version=1)
+        await self._uow.idempotency.complete(claim, result)
+        return IngestionMutationResult(run, False, claim, result)
+
+    async def create_item(self, item: IngestionRunSource) -> IngestionRunSource:
+        self._uow._guard_active()
+        self._check_scope(item.workspace_id, item.environment_id)
+        run_row = (await self._uow._execute(select(_INGESTION_RUNS.c.ingestion_run_id).where(_INGESTION_RUNS.c.ingestion_run_id == item.ingestion_run_id, _INGESTION_RUNS.c.workspace_id == item.workspace_id, _INGESTION_RUNS.c.environment_id == item.environment_id))).first()
+        if run_row is None:
+            await self._uow._fail(ConstraintConflictError("Ingestion item run reference is invalid."))
+        existing = (await self._uow._execute(select(_INGESTION_ITEMS).where(_INGESTION_ITEMS.c.ingestion_run_source_id == item.ingestion_run_source_id, _INGESTION_ITEMS.c.workspace_id == item.workspace_id, _INGESTION_ITEMS.c.environment_id == item.environment_id))).mappings().one_or_none()
+        if existing is not None:
+            current = IngestionRunSource.model_validate(dict(existing))
+            if current != item:
+                await self._uow._fail(ConstraintConflictError("Ingestion item identity conflicts."))
+            return current
+        await self._uow._execute(insert(_INGESTION_ITEMS).values(**item.model_dump(mode="python")))
+        await self.append_transition(IngestionTransition(
+            ingestion_transition_id=uuid4(), workspace_id=item.workspace_id, environment_id=item.environment_id,
+            target_kind=IngestionTargetKind.ITEM, ingestion_run_id=item.ingestion_run_id, ingestion_run_source_id=item.ingestion_run_source_id,
+            state=IngestionItemState.RECEIVED, attempt=1, actor_or_service="ingestion-ledger", trace_id=self._uow._trace_id_snapshot(), occurred_at=item.created_at,
+        ))
+        return item
+
+    async def bind_source(self, command: IngestionBindingCommand) -> IngestionMutationResult:
+        self._uow._guard_active()
+        self._check_scope(command.item.workspace_id, command.item.environment_id)
+        claim = await self._uow.idempotency.claim(operation_schema_version=command.digest.operation_schema_version, key=command.idempotency_key, digest=command.digest)
+        item_row = (await self._uow._execute(select(_INGESTION_ITEMS).where(_INGESTION_ITEMS.c.ingestion_run_source_id == command.item.ingestion_run_source_id, _INGESTION_ITEMS.c.workspace_id == command.item.workspace_id, _INGESTION_ITEMS.c.environment_id == command.item.environment_id))).mappings().one_or_none()
+        if item_row is None or IngestionRunSource.model_validate(dict(item_row)) != command.item:
+            await self._uow._fail(ConstraintConflictError("Ingestion binding item is invalid."))
+        existing_row = (await self._uow._execute(select(_INGESTION_BINDINGS).where(_INGESTION_BINDINGS.c.ingestion_run_source_id == command.item.ingestion_run_source_id, _INGESTION_BINDINGS.c.workspace_id == command.item.workspace_id, _INGESTION_BINDINGS.c.environment_id == command.item.environment_id))).mappings().one_or_none()
+        if isinstance(claim, IdempotencyReplay):
+            row = (await self._uow._execute(select(_INGESTION_BINDINGS).where(_INGESTION_BINDINGS.c.binding_id == claim.result.result_id, _INGESTION_BINDINGS.c.workspace_id == command.item.workspace_id, _INGESTION_BINDINGS.c.environment_id == command.item.environment_id))).mappings().one_or_none()
+            if row is None:
+                await self._uow._fail(ConstraintConflictError("Ingestion binding replay is unavailable."))
+            return IngestionMutationResult(IngestionRunSourceBinding.model_validate(dict(row)), True, claim, claim.result)
+        binding = command.binding
+        if binding.ingestion_run_source_id != command.item.ingestion_run_source_id or (binding.workspace_id, binding.environment_id) != (command.item.workspace_id, command.item.environment_id):
+            await self._uow._fail(ConstraintConflictError("Ingestion binding scope is invalid."))
+        if existing_row is not None:
+            existing = IngestionRunSourceBinding.model_validate(dict(existing_row))
+            if (existing.source_object_id, existing.source_revision_id, existing.original_receipt_digest) != (binding.source_object_id, binding.source_revision_id, binding.original_receipt_digest):
+                await self._uow._fail(ConstraintConflictError("Ingestion item is already bound to another source."))
+            result = OpaqueResultReference(result_type="ingestion_binding", result_id=existing.binding_id, schema_version=1)
+            await self._uow.idempotency.complete(claim, result)
+            return IngestionMutationResult(existing, True, claim, result)
+        if command.observation.source.source_object_id != binding.source_object_id or command.observation.revision.revision_id != binding.source_revision_id:
+            await self._uow._fail(ConstraintConflictError("Ingestion binding observation is invalid."))
+        if command.observation.revision.kind.value == "content" and (binding.original_receipt_id is None or binding.original_reference is None or binding.original_reference.digest_hex != command.observation.revision.original_sha256):
+            await self._uow._fail(ConstraintConflictError("Content ingestion binding requires verified original evidence."))
+        from dataclasses import replace
+        observation = replace(command.observation, digest=command.observation.expected_digest(PersistenceOperation("ingestion_binding")))
+        observed = await self._uow.sources.record_observation(observation)
+        binding = binding.model_copy(update={"idempotency_receipt_id": claim.receipt_id})
+        await self._uow._execute(insert(_INGESTION_BINDINGS).values(
+            binding_id=binding.binding_id, ingestion_run_source_id=binding.ingestion_run_source_id, source_object_id=binding.source_object_id, source_revision_id=binding.source_revision_id,
+            workspace_id=binding.workspace_id, environment_id=binding.environment_id, binding_command_identity=binding.binding_command_identity, binding_command_digest=binding.binding_command_digest,
+            original_reference=binding.original_reference.model_dump(mode="json") if binding.original_reference else None, original_receipt_kind=binding.original_receipt_kind,
+            original_receipt_id=binding.original_receipt_id, original_receipt_digest=binding.original_receipt_digest, idempotency_receipt_id=binding.idempotency_receipt_id, bound_at=binding.bound_at,
+        ))
+        previous = await self._head(run_id=command.item.ingestion_run_id, item_id=command.item.ingestion_run_source_id)
+        if previous is None:
+            await self._uow._fail(ConstraintConflictError("Ingestion item transition head is unavailable."))
+        await self.append_transition(IngestionTransition(
+            ingestion_transition_id=uuid4(), workspace_id=binding.workspace_id, environment_id=binding.environment_id, target_kind=IngestionTargetKind.ITEM,
+            ingestion_run_id=command.item.ingestion_run_id, ingestion_run_source_id=binding.ingestion_run_source_id, predecessor_transition_id=previous.ingestion_transition_id,
+            state=IngestionItemState.OBSERVED, attempt=1, actor_or_service="ingestion-ledger", trace_id=self._uow._trace_id_snapshot(), occurred_at=binding.bound_at,
+        ))
+        result = OpaqueResultReference(result_type="ingestion_binding", result_id=binding.binding_id, schema_version=1)
+        await self._uow.idempotency.complete(claim, result)
+        return IngestionMutationResult(binding, False, claim, result)
+
+    async def append_transition(self, transition: IngestionTransition) -> IngestionTransition:
+        self._uow._guard_active()
+        self._check_scope(transition.workspace_id, transition.environment_id)
+        existing_row = (await self._uow._execute(select(_INGESTION_TRANSITIONS).where(_INGESTION_TRANSITIONS.c.ingestion_transition_id == transition.ingestion_transition_id, _INGESTION_TRANSITIONS.c.workspace_id == transition.workspace_id, _INGESTION_TRANSITIONS.c.environment_id == transition.environment_id))).mappings().one_or_none()
+        if existing_row is not None:
+            existing = self._transition_from_row(existing_row)
+            if existing != transition:
+                await self._uow._fail(ConstraintConflictError("Ingestion transition identity conflicts."))
+            return existing
+        previous = await self._head(run_id=transition.ingestion_run_id, item_id=transition.ingestion_run_source_id)
+        try:
+            validate_transition(previous, transition)
+        except ValueError as error:
+            await self._uow._fail(ConstraintConflictError(str(error)))
+        safe_metrics_schema, safe_metrics = (None, None)
+        if transition.safe_metrics is not None:
+            safe_metrics_schema, safe_metrics, _ = self._detail_values(transition.safe_metrics)
+        await self._uow._execute(insert(_INGESTION_TRANSITIONS).values(
+            ingestion_transition_id=transition.ingestion_transition_id, workspace_id=transition.workspace_id, environment_id=transition.environment_id,
+            target_kind=transition.target_kind.value, ingestion_run_id=transition.ingestion_run_id, ingestion_run_source_id=transition.ingestion_run_source_id,
+            predecessor_transition_id=transition.predecessor_transition_id, state=transition.state.value, attempt=transition.attempt,
+            safe_metrics_schema=safe_metrics_schema, safe_metrics=safe_metrics, actor_or_service=transition.actor_or_service, trace_id=transition.trace_id, occurred_at=transition.occurred_at,
+        ))
+        return transition
+
+    async def append_warning(self, warning: IngestionWarning) -> IngestionWarning:
+        self._uow._guard_active()
+        self._check_scope(warning.workspace_id, warning.environment_id)
+        schema, detail, digest = self._detail_values(warning.safe_detail)
+        await self._uow._execute(insert(_INGESTION_WARNINGS).values(
+            ingestion_warning_id=warning.ingestion_warning_id, workspace_id=warning.workspace_id, environment_id=warning.environment_id, ingestion_run_source_id=warning.ingestion_run_source_id,
+            attempt=warning.attempt, stage=warning.stage.value, code=warning.code, retryable=False, safe_detail_schema=schema, safe_detail=detail, safe_detail_digest=digest,
+            opaque_detail_ref=warning.safe_detail.opaque_detail_ref, occurred_at=warning.occurred_at,
+        ))
+        return warning
+
+    async def append_failure(self, failure: IngestionFailure) -> IngestionFailure:
+        self._uow._guard_active()
+        self._check_scope(failure.workspace_id, failure.environment_id)
+        schema, detail, digest = self._detail_values(failure.safe_detail)
+        await self._uow._execute(insert(_INGESTION_FAILURES).values(
+            ingestion_failure_id=failure.ingestion_failure_id, workspace_id=failure.workspace_id, environment_id=failure.environment_id, ingestion_run_source_id=failure.ingestion_run_source_id,
+            attempt=failure.attempt, stage=failure.stage.value, code=failure.code, retryable=failure.retryable, safe_detail_schema=schema, safe_detail=detail, safe_detail_digest=digest,
+            opaque_detail_ref=failure.safe_detail.opaque_detail_ref, occurred_at=failure.occurred_at,
+        ))
+        return failure
+
+    async def record_processing_receipt(self, command: ProcessingReceiptCommand) -> IngestionMutationResult:
+        self._uow._guard_active()
+        receipt = command.receipt
+        self._check_scope(receipt.workspace_id, receipt.environment_id)
+        claim = await self._uow.idempotency.claim(operation_schema_version=command.digest.operation_schema_version, key=command.idempotency_key, digest=command.digest)
+        if isinstance(claim, IdempotencyReplay):
+            row = (await self._uow._execute(select(_PROCESSING_RECEIPTS).where(_PROCESSING_RECEIPTS.c.processing_receipt_id == claim.result.result_id, _PROCESSING_RECEIPTS.c.workspace_id == receipt.workspace_id, _PROCESSING_RECEIPTS.c.environment_id == receipt.environment_id))).mappings().one_or_none()
+            if row is None:
+                await self._uow._fail(ConstraintConflictError("Processing receipt replay is unavailable."))
+            return IngestionMutationResult(ProcessingReceipt.model_validate(dict(row)), True, claim, claim.result)
+        receipt = receipt.model_copy(update={"idempotency_receipt_id": claim.receipt_id})
+        revision_row = (await self._uow._execute(select(_SOURCE_REVISIONS.c.original_sha256).where(_SOURCE_REVISIONS.c.revision_id == receipt.source_revision_id, _SOURCE_REVISIONS.c.source_object_id == receipt.source_object_id, _SOURCE_REVISIONS.c.workspace_id == receipt.workspace_id, _SOURCE_REVISIONS.c.environment_id == receipt.environment_id))).first()
+        if revision_row is None or revision_row.original_sha256 != receipt.original_sha256:
+            await self._uow._fail(ConstraintConflictError("Processing receipt original digest is invalid."))
+        item_row = (await self._uow._execute(select(_INGESTION_ITEMS.c.ingestion_run_source_id).where(_INGESTION_ITEMS.c.ingestion_run_source_id == receipt.ingestion_run_source_id, _INGESTION_ITEMS.c.workspace_id == receipt.workspace_id, _INGESTION_ITEMS.c.environment_id == receipt.environment_id))).first()
+        binding_row = (await self._uow._execute(select(_INGESTION_BINDINGS.c.binding_id).where(_INGESTION_BINDINGS.c.binding_id == receipt.binding_id, _INGESTION_BINDINGS.c.ingestion_run_source_id == receipt.ingestion_run_source_id, _INGESTION_BINDINGS.c.source_object_id == receipt.source_object_id, _INGESTION_BINDINGS.c.source_revision_id == receipt.source_revision_id, _INGESTION_BINDINGS.c.workspace_id == receipt.workspace_id, _INGESTION_BINDINGS.c.environment_id == receipt.environment_id))).first()
+        if item_row is None or binding_row is None:
+            await self._uow._fail(ConstraintConflictError("Processing receipt references are invalid."))
+        await self._uow._execute(insert(_PROCESSING_RECEIPTS).values(
+            processing_receipt_id=receipt.processing_receipt_id, workspace_id=receipt.workspace_id, environment_id=receipt.environment_id, ingestion_run_source_id=receipt.ingestion_run_source_id,
+            binding_id=receipt.binding_id, source_object_id=receipt.source_object_id, source_revision_id=receipt.source_revision_id, processor_kind=receipt.processor_kind, parser_name=receipt.parser_name,
+            parser_version=receipt.parser_version, parser_config_reference=receipt.parser_config_reference, locator_contract_version=receipt.locator_contract_version, original_sha256=receipt.original_sha256,
+            output_kind=receipt.output_kind, output_reference=receipt.output_reference, output_digest=receipt.output_digest, coverage=receipt.coverage.value, exclusions=[item.model_dump(mode="json") for item in receipt.exclusions],
+            warning_ids=[str(item) for item in receipt.warning_ids], failure_ids=[str(item) for item in receipt.failure_ids], command_identity=receipt.command_identity, command_digest=receipt.command_digest,
+            idempotency_receipt_id=receipt.idempotency_receipt_id, completed_at=receipt.completed_at,
+        ))
+        result = OpaqueResultReference(result_type="processing_receipt", result_id=receipt.processing_receipt_id, schema_version=1)
+        await self._uow.idempotency.complete(claim, result)
+        return IngestionMutationResult(receipt, False, claim, result)
+
+    async def derive_run_state(self, run_id: UUID) -> IngestionRunStateView | None:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return None
+        run_row = (await self._uow._execute(select(_INGESTION_RUNS).where(_INGESTION_RUNS.c.ingestion_run_id == run_id, _INGESTION_RUNS.c.workspace_id == scope.workspace_id, _INGESTION_RUNS.c.environment_id == scope.environment_id))).mappings().one_or_none()
+        if run_row is None:
+            return None
+        run = IngestionRun.model_validate(dict(run_row))
+        item_rows = (await self._uow._execute(select(_INGESTION_ITEMS).where(_INGESTION_ITEMS.c.ingestion_run_id == run_id, _INGESTION_ITEMS.c.workspace_id == scope.workspace_id, _INGESTION_ITEMS.c.environment_id == scope.environment_id))).mappings().all()
+        item_states: list[IngestionItemState] = []
+        for row in item_rows:
+            head = await self._head(run_id=run_id, item_id=row.ingestion_run_source_id)
+            if head is not None:
+                item_states.append(head.state)  # type: ignore[arg-type]
+        run_head = await self._head(run_id=run_id, item_id=None)
+        if run_head is None:
+            await self._uow._fail(ConstraintConflictError("Ingestion run transition head is unavailable."))
+        state = run_head.state
+        if state is IngestionRunState.PROCESSING and item_states and all(item_state in {IngestionItemState.PROCESSED, IngestionItemState.PROJECTION_REQUESTED} for item_state in item_states):
+            state = IngestionRunState.SUCCEEDED
+        elif state is IngestionRunState.PROCESSING and any(item_state in {IngestionItemState.QUARANTINED, IngestionItemState.REJECTED, IngestionItemState.PROCESSING_FAILED} for item_state in item_states) and any(item_state in {IngestionItemState.PROCESSED, IngestionItemState.PROJECTION_REQUESTED} for item_state in item_states):
+            state = IngestionRunState.PARTIALLY_SUCCEEDED
+        elif state is IngestionRunState.PROCESSING and item_states and all(item_state in {IngestionItemState.QUARANTINED, IngestionItemState.REJECTED, IngestionItemState.PROCESSING_FAILED} for item_state in item_states):
+            state = IngestionRunState.FAILED
+        return IngestionRunStateView(run=run, state=state, item_states=tuple(item_states))
+
+    async def resolve_item(self, item_id: UUID) -> IngestionRunSource | None:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        row = (await self._uow._execute(select(_INGESTION_ITEMS).where(_INGESTION_ITEMS.c.ingestion_run_source_id == item_id, _INGESTION_ITEMS.c.workspace_id == scope.workspace_id, _INGESTION_ITEMS.c.environment_id == scope.environment_id))).mappings().one_or_none()
+        return IngestionRunSource.model_validate(dict(row)) if row is not None else None
 
 
 class _PostgreSQLAdmissionRepository:
@@ -856,6 +1131,7 @@ class PostgreSQLTenantUnitOfWork:
         self._workspaces = _PostgreSQLWorkspaceRepository(self)
         self._environments = _PostgreSQLEnvironmentRepository(self)
         self._sources = _PostgreSQLSourceObservationRepository(self)
+        self._ingestion = _PostgreSQLIngestionRepository(self)
         self._admissions = _PostgreSQLAdmissionRepository(self)
         self._idempotency = _PostgreSQLIdempotencyRepository(self)
         self._outbox = _PostgreSQLOutboxWriter(self)
@@ -884,6 +1160,11 @@ class PostgreSQLTenantUnitOfWork:
     def sources(self) -> _PostgreSQLSourceObservationRepository:
         self._guard_active()
         return self._sources
+
+    @property
+    def ingestion(self) -> IngestionRepository:
+        self._guard_active()
+        return self._ingestion
 
     @property
     def admissions(self) -> _PostgreSQLAdmissionRepository:

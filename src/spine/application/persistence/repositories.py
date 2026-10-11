@@ -134,6 +134,11 @@ class SourceObservationRepository(Protocol):
     async def resolve_revision(self, revision_id: UUID) -> SourceRevision | None: ...
 
 
+# Kept as a convenience import for callers that discover all application
+# persistence ports from this module. The implementation lives in its own
+# module to keep this source-observation contract small.
+from spine.application.persistence.ingestion import IngestionRepository  # noqa: E402
+
 class AdmissionRepository(Protocol):
     """Append-only admission decision repository.
 
@@ -163,6 +168,7 @@ class EnvironmentRepository(Protocol):
 
 __all__ = [
     "EnvironmentRepository",
+    "IngestionRepository",
     "AdmissionRepository",
     "IdempotencyRepository",
     "SourceObservationRepository",

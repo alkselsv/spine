@@ -1168,6 +1168,13 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "source_objects",
         "source_revisions",
         "source_revision_provenance",
+        "ingestion_runs",
+        "ingestion_run_sources",
+        "ingestion_run_source_bindings",
+        "ingestion_transitions",
+        "ingestion_warnings",
+        "ingestion_failures",
+        "processing_receipts",
     }
     expected_final_constraints = {
         "alembic_version_pkc",
@@ -1238,6 +1245,69 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ck_source_revision_provenance_order_pair",
         "ck_source_revision_provenance_digest",
         "ck_source_revision_provenance_fields",
+        "pk_ingestion_runs",
+        "uq_ingestion_runs_scope_id",
+        "uq_ingestion_runs_command",
+        "fk_ingestion_runs_environment",
+        "fk_ingestion_runs_receipt",
+        "ck_ingestion_runs_trigger_kind",
+        "ck_ingestion_runs_scope_schema",
+        "ck_ingestion_runs_digests",
+        "ck_ingestion_runs_command_identity",
+        "pk_ingestion_run_sources",
+        "uq_ingestion_run_sources_scope_id",
+        "uq_ingestion_run_sources_ordinal",
+        "uq_ingestion_run_sources_input",
+        "uq_ingestion_run_sources_command",
+        "fk_ingestion_run_sources_run",
+        "ck_ingestion_run_sources_ordinal_positive",
+        "ck_ingestion_run_sources_digests",
+        "pk_ingestion_run_source_bindings",
+        "uq_ingestion_run_source_bindings_scope_id",
+        "uq_ingestion_run_source_bindings_item",
+        "uq_ingestion_run_source_bindings_command",
+        "fk_ingestion_run_source_bindings_item",
+        "fk_ingestion_run_source_bindings_revision",
+        "fk_ingestion_run_source_bindings_receipt",
+        "ck_ingestion_run_source_bindings_receipt_complete",
+        "ck_ingestion_run_source_bindings_digest",
+        "pk_ingestion_transitions",
+        "uq_ingestion_transitions_scope_id",
+        "fk_ingestion_transitions_run",
+        "fk_ingestion_transitions_item",
+        "fk_ingestion_transitions_predecessor",
+        "ck_ingestion_transitions_target_kind",
+        "ck_ingestion_transitions_target_state",
+        "ck_ingestion_transitions_attempt_positive",
+        "ck_ingestion_transitions_safe_metrics",
+        "pk_ingestion_warnings",
+        "uq_ingestion_warnings_scope_id",
+        "fk_ingestion_warnings_item",
+        "ck_ingestion_warnings_attempt_positive",
+        "ck_ingestion_warnings_stage",
+        "ck_ingestion_warnings_code",
+        "ck_ingestion_warnings_safe_detail",
+        "ck_ingestion_warnings_safe_detail_digest",
+        "pk_ingestion_failures",
+        "uq_ingestion_failures_scope_id",
+        "fk_ingestion_failures_item",
+        "ck_ingestion_failures_attempt_positive",
+        "ck_ingestion_failures_stage",
+        "ck_ingestion_failures_code",
+        "ck_ingestion_failures_safe_detail",
+        "ck_ingestion_failures_safe_detail_digest",
+        "pk_processing_receipts",
+        "uq_processing_receipts_scope_id",
+        "uq_processing_receipts_command",
+        "fk_processing_receipts_item",
+        "fk_processing_receipts_binding",
+        "fk_processing_receipts_revision",
+        "fk_processing_receipts_receipt",
+        "ck_processing_receipts_coverage",
+        "ck_processing_receipts_locator_version",
+        "ck_processing_receipts_output",
+        "ck_processing_receipts_complete_exclusions",
+        "ck_processing_receipts_digests",
     }
     expected_final_constraints |= (
         AUTHORIZATION_DIRECTORY_CONSTRAINTS
@@ -1304,6 +1374,39 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "pk_source_revision_provenance",
         "uq_source_revision_provenance_event",
         "ix_source_revision_provenance_revision_order",
+        "pk_ingestion_runs",
+        "uq_ingestion_runs_scope_id",
+        "uq_ingestion_runs_command",
+        "ix_ingestion_runs_requested",
+        "pk_ingestion_run_sources",
+        "uq_ingestion_run_sources_scope_id",
+        "uq_ingestion_run_sources_ordinal",
+        "uq_ingestion_run_sources_input",
+        "uq_ingestion_run_sources_command",
+        "ix_ingestion_run_sources_run",
+        "pk_ingestion_run_source_bindings",
+        "uq_ingestion_run_source_bindings_scope_id",
+        "uq_ingestion_run_source_bindings_item",
+        "uq_ingestion_run_source_bindings_command",
+        "ix_ingestion_run_source_bindings_revision",
+        "pk_ingestion_transitions",
+        "uq_ingestion_transitions_scope_id",
+        "uq_ingestion_transitions_root",
+        "uq_ingestion_transitions_predecessor",
+        "ix_ingestion_transitions_target",
+        "pk_ingestion_warnings",
+        "uq_ingestion_warnings_scope_id",
+        "uq_ingestion_warnings_dedup",
+        "ix_ingestion_warnings_item",
+        "pk_ingestion_failures",
+        "uq_ingestion_failures_scope_id",
+        "uq_ingestion_failures_dedup",
+        "ix_ingestion_failures_item",
+        "pk_processing_receipts",
+        "uq_processing_receipts_scope_id",
+        "uq_processing_receipts_command",
+        "ix_processing_receipts_revision",
+        "ix_processing_receipts_item",
     } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
@@ -1329,6 +1432,13 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "source_objects": (True, True),
         "source_revisions": (True, True),
         "source_revision_provenance": (True, True),
+        "ingestion_runs": (True, True),
+        "ingestion_run_sources": (True, True),
+        "ingestion_run_source_bindings": (True, True),
+        "ingestion_transitions": (True, True),
+        "ingestion_warnings": (True, True),
+        "ingestion_failures": (True, True),
+        "processing_receipts": (True, True),
     }
     assert rls == expected_rls
     tenant_rls_tables = {
@@ -1409,6 +1519,13 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "source_objects": (True, True, False, False),
         "source_revisions": (True, True, False, False),
         "source_revision_provenance": (True, True, False, False),
+        "ingestion_runs": (True, True, False, False),
+        "ingestion_run_sources": (True, True, False, False),
+        "ingestion_run_source_bindings": (True, True, False, False),
+        "ingestion_transitions": (True, True, False, False),
+        "ingestion_warnings": (True, True, False, False),
+        "ingestion_failures": (True, True, False, False),
+        "processing_receipts": (True, True, False, False),
         "admission_decisions": (True, True, False, False),
         "source_canonical_tables": (True, False, False, False),
         "source_canonical_unicode": (True, False, False, False),
@@ -1444,6 +1561,65 @@ async def test_initial_tenancy_revision_upgrades_to_current_head_and_owned_schem
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_ingestion_ledger_catalog_has_immutable_and_deferred_integrity_triggers(
+    migrated_database: MigratedDatabase,
+) -> None:
+    async with _connection(migrated_database.migration.url) as connection:
+        rows = (
+            await connection.execute(
+                text(
+                    "SELECT relation.relname AS table_name, trigger.tgname, "
+                    "trigger.tgdeferrable, trigger.tginitdeferred, "
+                    "pg_get_triggerdef(trigger.oid) AS definition "
+                    "FROM pg_trigger AS trigger JOIN pg_class AS relation "
+                    "ON relation.oid = trigger.tgrelid "
+                    "JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace "
+                    "WHERE namespace.nspname = 'spine' AND NOT trigger.tgisinternal "
+                    "AND relation.relname IN ("
+                    "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
+                    "'ingestion_transitions', 'ingestion_warnings', "
+                    "'ingestion_failures', 'processing_receipts')"
+                )
+            )
+        ).mappings().all()
+
+    by_name = {row.tgname: row for row in rows}
+    immutable_tables = (
+        "ingestion_runs",
+        "ingestion_run_sources",
+        "ingestion_run_source_bindings",
+        "ingestion_transitions",
+        "ingestion_warnings",
+        "ingestion_failures",
+        "processing_receipts",
+    )
+    assert {
+        f"trg_{table}_immutable" for table in immutable_tables
+    } <= set(by_name)
+    assert {
+        "trg_ingestion_runs_receipt_scope",
+        "trg_ingestion_run_source_bindings_receipt_scope",
+        "trg_processing_receipts_receipt_scope",
+    } <= set(by_name)
+    assert "trg_ingestion_run_source_bindings_original" in by_name
+    assert {
+        "trg_ingestion_warnings_safe_detail",
+        "trg_ingestion_failures_safe_detail",
+    } <= set(by_name)
+    for name, row in by_name.items():
+        if name.endswith("_receipt_scope"):
+            assert row.tgdeferrable is True
+            assert row.tginitdeferred is True
+            assert "AFTER INSERT OR UPDATE" in row.definition
+            assert "FOR EACH ROW" in row.definition
+            assert "validate_issue7_receipt_scope" in row.definition
+        if name.endswith("_immutable"):
+            assert "BEFORE" in row.definition
+            assert "UPDATE" in row.definition and "DELETE" in row.definition
+    assert "validate_issue7_binding_original" in by_name["trg_ingestion_run_source_bindings_original"].definition
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types(
     migrated_database: MigratedDatabase,
 ) -> None:
@@ -1462,7 +1638,10 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "JOIN pg_namespace AS source_namespace "
                         "ON source_namespace.oid = relation.relnamespace "
                         "WHERE source_namespace.nspname = 'spine' AND relation.relname IN "
-                        "('source_objects', 'source_revisions', 'source_revision_provenance'))"
+                        "('source_objects', 'source_revisions', 'source_revision_provenance', "
+                        "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
+                        "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', "
+                        "'processing_receipts'))"
                     )
                 )
             ).scalars()
@@ -1480,7 +1659,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "column_default FROM information_schema.columns "
                         "WHERE table_schema = 'spine' "
                         "AND table_name NOT LIKE 'source_canonical%' "
-                        "AND table_name NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance')"
+                        "AND table_name NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance', "
+                        "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
+                        "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts')"
                     )
                 )
             ).mappings()
@@ -1492,7 +1673,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "SELECT indexname FROM pg_indexes "
                         "WHERE schemaname = 'spine' "
                         "AND indexname NOT LIKE 'pk_source_canonical%' "
-                        "AND tablename NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance')"
+                        "AND tablename NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance', "
+                        "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
+                        "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts')"
                     )
                 )
             ).scalars()
@@ -1503,7 +1686,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                     text(
                         "SELECT tablename FROM pg_tables WHERE schemaname = 'spine' "
                         "AND tablename NOT LIKE 'source_canonical%' "
-                        "AND tablename NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance')"
+                        "AND tablename NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance', "
+                        "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
+                        "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts')"
                     )
                 )
             ).scalars()
@@ -1514,7 +1699,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                     text(
                         "SELECT tableowner FROM pg_tables WHERE schemaname = 'spine' "
                         "AND tablename NOT LIKE 'source_canonical%' "
-                        "AND tablename NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance')"
+                        "AND tablename NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance', "
+                        "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
+                        "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts')"
                     )
                 )
             ).scalars()
@@ -2064,7 +2251,10 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'environment_role_bindings', 'authorization_generations', "
                         "'admission_decisions', "
                         "'source_objects', 'source_revisions', "
-                        "'source_revision_provenance')"
+                        "'source_revision_provenance', 'ingestion_runs', "
+                        "'ingestion_run_sources', 'ingestion_run_source_bindings', "
+                        "'ingestion_transitions', 'ingestion_warnings', "
+                        "'ingestion_failures', 'processing_receipts')"
                     )
                 )
             )
@@ -2110,6 +2300,13 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "source_objects": (True, True),
         "source_revisions": (True, True),
         "source_revision_provenance": (True, True),
+        "ingestion_runs": (True, True),
+        "ingestion_run_sources": (True, True),
+        "ingestion_run_source_bindings": (True, True),
+        "ingestion_transitions": (True, True),
+        "ingestion_warnings": (True, True),
+        "ingestion_failures": (True, True),
+        "processing_receipts": (True, True),
     }
     standard_tables = set(tables) - {"outbox_deliveries"}
     assert set(policies) == {
@@ -3093,13 +3290,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261011_13_outbox_deliveries.py",
         "20261012_14_atomic_outbox_delivery_audit.py",
         "20261012_15_admission_decisions.py",
+        "20261013_15_ingestion_operational_ledger.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261012_16_injected_failure.py").write_text(
+    (target / "versions" / "20261013_16_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261012_16'\n"
-        "down_revision = '20261012_15'\n"
+        "revision = '20261013_16'\n"
+        "down_revision = '20261013_15'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"
