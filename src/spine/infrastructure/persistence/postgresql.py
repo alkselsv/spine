@@ -503,6 +503,15 @@ class _PostgreSQLIngestionRepository:
         values["safe_metrics"] = safe_metrics
         return IngestionTransition.model_validate(values)
 
+    @staticmethod
+    def _binding_from_row(row: Mapping[str, Any]) -> IngestionRunSourceBinding:
+        # asyncpg decodes JSONB UUID members as strings.  JSON validation lets
+        # the strict domain model parse those wire values without weakening the
+        # model's in-memory type guarantees.
+        return IngestionRunSourceBinding.model_validate_json(
+            json.dumps(dict(row), default=str)
+        )
+
     async def _head(self, *, run_id: UUID, item_id: UUID | None) -> IngestionTransition | None:
         predicates = [
             _INGESTION_TRANSITIONS.c.workspace_id == self._uow.scope.workspace_id,
@@ -580,12 +589,12 @@ class _PostgreSQLIngestionRepository:
             row = (await self._uow._execute(select(_INGESTION_BINDINGS).where(_INGESTION_BINDINGS.c.binding_id == claim.result.result_id, _INGESTION_BINDINGS.c.workspace_id == command.item.workspace_id, _INGESTION_BINDINGS.c.environment_id == command.item.environment_id))).mappings().one_or_none()
             if row is None:
                 await self._uow._fail(ConstraintConflictError("Ingestion binding replay is unavailable."))
-            return IngestionMutationResult(IngestionRunSourceBinding.model_validate(dict(row)), True, claim, claim.result)
+            return IngestionMutationResult(self._binding_from_row(row), True, claim, claim.result)
         binding = command.binding
         if binding.ingestion_run_source_id != command.item.ingestion_run_source_id or (binding.workspace_id, binding.environment_id) != (command.item.workspace_id, command.item.environment_id):
             await self._uow._fail(ConstraintConflictError("Ingestion binding scope is invalid."))
         if existing_row is not None:
-            existing = IngestionRunSourceBinding.model_validate(dict(existing_row))
+            existing = self._binding_from_row(existing_row)
             if (
                 existing.source_object_id,
                 existing.source_revision_id,

@@ -239,6 +239,7 @@ async def test_ingestion_binding_requires_a_scoped_original_receipt(
             ingestion_context(workspace_id, environment_id, "ingestion_binding")
         ) as uow:
             await uow.ingestion.bind_source(binding_command)
+            await uow.commit()
 
 
 async def exercise_ingestion_binding_race(adapter: PersistenceAdapter) -> None:
