@@ -14,6 +14,13 @@ from spine.agents.runtime.contracts import (
     typed_request_from_invocation,
 )
 from spine.agents.runtime.adapters import adapt_async_function
+from spine.agents.runtime.artifacts import (
+    ArtifactDraft,
+    ArtifactPersistence,
+    ArtifactReadError,
+    CapabilityArtifactSchema,
+)
+from spine.agents.runtime.local import LocalAgentRuntime
 from spine.agents.runtime.ports import (
     AuthorizationContextView,
     CanonicalTrustedAuthorizationContextVerifier,
@@ -43,11 +50,16 @@ __all__ = [
     "AuthorizationContextView",
     "CanonicalTrustedAuthorizationContextVerifier",
     "AgentRuntime",
+    "ArtifactDraft",
+    "ArtifactPersistence",
+    "ArtifactReadError",
     "CancellationToken",
     "EventSink",
     "ExecutionScopeValidator",
     "ExecutionIdentitySnapshot",
     "CapabilitySchemaIdentity",
+    "CapabilityArtifactSchema",
+    "LocalAgentRuntime",
     "TrustedExecutionIdentity",
     "TrustedExecutionIdentitySnapshot",
     "TrustedAuthorizationContextVerifier",

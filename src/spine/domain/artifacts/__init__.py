@@ -1,5 +1,10 @@
 """Typed outputs passed between workflow steps."""
 
-from spine.domain.artifacts.models import Artifact, ArtifactRef
+from spine.domain.artifacts.models import (
+    Artifact,
+    ArtifactRef,
+    ArtifactState,
+    validate_artifact_lineage,
+)
 
-__all__ = ["Artifact", "ArtifactRef"]
+__all__ = ["Artifact", "ArtifactRef", "ArtifactState", "validate_artifact_lineage"]
