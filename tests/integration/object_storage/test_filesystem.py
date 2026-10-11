@@ -279,6 +279,22 @@ async def test_finalized_retry_producer_failure_is_adapter_neutral(
         await store.write_chunks(receipt.upload_id, broken_stream())
 
 
+async def test_pending_deletion_is_not_reported_as_verified(
+    filesystem_store: tuple[FilesystemOriginalObjectStore, AuthorizedReadGrantRegistry],
+) -> None:
+    store, _ = filesystem_store
+    receipt = await finalize(store)
+    scope_key = next((store._root / "finalized").iterdir()).name
+    store._write_deleted_marker(
+        receipt.object_reference,
+        status="pending",
+        scope_key=scope_key,
+    )
+
+    with pytest.raises(StorageIntegrityIndeterminate):
+        await store.verify(receipt.object_reference, max_bytes=64)
+
+
 async def test_verify_never_reads_beyond_profile_object_limit(
     filesystem_store: tuple[FilesystemOriginalObjectStore, AuthorizedReadGrantRegistry],
 ) -> None:

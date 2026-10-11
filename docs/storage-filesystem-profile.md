@@ -126,7 +126,13 @@ admitted. It
 requires input `AsyncIterable` producers to cooperate with cancellation; a
 producer that suppresses cancellation is detached and the adapter remains
 quarantined, because Python cannot forcibly terminate arbitrary user tasks. It
-does not claim universal crash safety or
+does not claim universal crash safety. Controlled deletion writes a durable
+`pending` marker before physical mutation; if its deadline or a filesystem
+failure interrupts cleanup, reads, verification, inventory and ordinary retry
+remain blocked until the pending evidence is reconciled. An in-flight
+uninterruptible syscall may finish one already-started filesystem step, but it
+cannot advance the marker to `deleted` without completing the verified cleanup
+sequence. The profile does not claim universal
 durability across power loss, controllers, RAID, kernels, filesystems,
 multi-volume deployments, backup implementations or machine failure. If the
 deployment cannot prove its selected volume and recovery assumptions, reads

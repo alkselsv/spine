@@ -750,6 +750,8 @@ class FilesystemOriginalObjectStore:
         receipt = self._receipt_from_manifest(manifest, manifest_path)
         if receipt.object_reference != reference:
             raise InvalidObjectReference()
+        if self._is_deletion_pending(reference):
+            raise StorageIntegrityIndeterminate()
         if max_bytes < reference.byte_length:
             self._observe_io("verify", max_bytes, 0)
             raise UploadLimitExceeded()
