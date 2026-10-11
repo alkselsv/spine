@@ -1375,8 +1375,12 @@ rechecks an admission immediately before invocation. There is no transferable
 authority token, public factory binder or registry authority parameter: a
 plain-data factory, structural verifier, nominal verifier subclass or
 admission from another composition cannot be consumed by the protected gate.
-The catalog's direct execution method fails closed; only the infrastructure
-composition can produce the guarded two-argument handler.
+The gate also requires the selected wrapper to have been issued by the exact
+`HandlerRegistry` retained by that runtime. Matching registration metadata,
+capability, schema or implementation keys do not establish registry ownership;
+a wrapper issued by another registry is rejected. The catalog's direct
+execution method fails closed; only the infrastructure composition can produce
+the guarded two-argument handler.
 
 Run and Artifact identifiers are structurally validated and preserved here;
 authoritative ownership and handoff/persistence checks remain with the owning

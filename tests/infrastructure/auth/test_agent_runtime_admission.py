@@ -286,3 +286,113 @@ async def test_nominal_noop_factory_cannot_bind_to_real_execution_gate() -> None
             await guarded.invoke(request(), context)
 
         assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_foreign_registry_handler_cannot_bind_to_trusted_runtime() -> None:
+    composer, _, request_boundary, _ = await composition()
+
+    async with composer.bind_route("knowledge.sources.list").authorize(
+        credentials=credentials(),
+        requested_scope=scope(),
+        diagnostic_context=diagnostic_context(),
+    ) as authorized:
+        request_context = authorized.request_context
+        resolution = AuthorizationResolution(
+            acting_subject_id=request_context.acting_subject_id,
+            scope=request_context.scope,
+            roles=request_context.roles,
+            authorization_generation=request_context.authorization_generation,
+            authentication_configuration_version=(
+                request_context.authentication_configuration_version
+            ),
+        )
+        registry_a = HandlerRegistry()
+        registry_b = HandlerRegistry()
+        runtime = compose_agent_execution_runtime(
+            boundary=request_boundary,
+            authorized=authorized,
+            scope_validator=FixedExecutionScope(
+                generation=resolution.authorization_generation,
+                workspace_id=resolution.scope.workspace_id,
+                environment_id=resolution.scope.environment_id,
+            ),
+            expected_route_policy=request_context.route_policy,
+            registry=registry_a,
+        )
+        selected = resolved_binding(
+            selected_workspace_id=resolution.scope.workspace_id,
+            selected_environment=EnvironmentKind.PRODUCTION,
+        )
+        calls: list[str] = []
+
+        async def handler_a(
+            received_request: AgentRequest[InputModel],
+            received_context: AgentExecutionContext,
+        ) -> OutputModel:
+            del received_request, received_context
+            calls.append("A")
+            return OutputModel(answer="A")
+
+        async def handler_b(
+            received_request: AgentRequest[InputModel],
+            received_context: AgentExecutionContext,
+        ) -> OutputModel:
+            del received_request, received_context
+            calls.append("B")
+            return OutputModel(answer="B")
+
+        registry_a.register_handler(
+            registration=selected.registration,
+            handler=adapt_async_function(handler_a),
+        )
+        registry_b.register_handler(
+            registration=selected.registration,
+            handler=adapt_async_function(handler_b),
+        )
+        registry_a.finalize()
+        registry_b.finalize()
+        registered_a = registry_a.construct(
+            capability=selected.capability,
+            version=selected.agent_version,
+        )
+        registered_b = registry_b.construct(
+            capability=selected.capability,
+            version=selected.agent_version,
+        )
+        del registered_a
+        foreign_binding = replace(selected, handler=registered_b)
+        context = runtime.factory.create(
+            authorized_context=request_context,
+            authorization_resolution=resolution,
+            workspace_id=resolution.scope.workspace_id,
+            environment_id=resolution.scope.environment_id,
+            environment=EnvironmentKind.PRODUCTION,
+            resolved_binding=foreign_binding,
+            work_item_id=uid(60),
+            workflow_run_id=uid(61),
+            step_run_id=uid(62),
+            agent_run_id=uid(63),
+            idempotency_key="agent:60:1",
+            permitted_tool_grants=TrustedToolGrantSet(grants=("documents.read",)),
+            cancellation=FakeCancellation(),
+            event_sink=FakeEventSink(),
+        )
+        admission = runtime.factory.admission_for(
+            context=context,
+            authorized_context=request_context,
+            authorization_resolution=resolution,
+            resolved_binding=foreign_binding,
+            permitted_tool_grants=TrustedToolGrantSet(grants=("documents.read",)),
+        )
+
+        with pytest.raises(HandlerRegistryError, match="registry"):
+            guarded = runtime.bind_for_execution(
+                handler=registered_b,
+                context=context,
+                admission=admission,
+                resolved_binding=foreign_binding,
+            )
+            await guarded.invoke(request(), context)
+
+        assert calls == []

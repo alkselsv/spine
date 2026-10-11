@@ -240,6 +240,7 @@ class HandlerRegistry:
 
     def __init__(self) -> None:
         self._registrations: dict[tuple[UUID, str], _HandlerRegistration] = {}
+        self._issued_handlers: tuple[_RegisteredHandler, ...] = ()
         self._finalized = False
 
     def register_handler(
@@ -316,7 +317,9 @@ class HandlerRegistry:
             raise HandlerConstructionError("local handler construction failed") from error
         if not _is_handler(handler):
             raise HandlerConstructionError("local handler construction failed")
-        return _RegisteredHandler(handler, registration)
+        registered = _RegisteredHandler(handler, registration)
+        self._issued_handlers = (*self._issued_handlers, registered)
+        return registered
 
     def bind_for_execution(
         self,
@@ -348,6 +351,8 @@ class HandlerRegistry:
             raise HandlerRegistryError("handler selection is not registry-bound")
         if type(admission) is not AgentExecutionContextAdmission:
             raise HandlerRegistryError("handler execution admission is invalid")
+        if not any(candidate is handler for candidate in self._issued_handlers):
+            raise HandlerRegistryError("handler selection is not issued by this registry")
         if handler is not getattr(resolved_binding, "handler", None):
             raise HandlerRegistryError("handler selection is not pinned")
         if handler.registration != getattr(resolved_binding, "registration", None):
