@@ -180,13 +180,21 @@ async def test_concurrent_finalizers_publish_one_complete_immutable_object(
     first_publish = first._publish_no_replace
     second_publish = second._publish_no_replace
 
-    def first_racing_publish(source: Path, destination: Path) -> None:
+    def first_racing_publish(
+        source: Path,
+        destination: Path,
+        **kwargs: object,
+    ) -> None:
         publication_barrier.wait(timeout=2.0)
-        first_publish(source, destination)
+        first_publish(source, destination, **kwargs)
 
-    def second_racing_publish(source: Path, destination: Path) -> None:
+    def second_racing_publish(
+        source: Path,
+        destination: Path,
+        **kwargs: object,
+    ) -> None:
         publication_barrier.wait(timeout=2.0)
-        second_publish(source, destination)
+        second_publish(source, destination, **kwargs)
 
     first._publish_no_replace = first_racing_publish
     second._publish_no_replace = second_racing_publish

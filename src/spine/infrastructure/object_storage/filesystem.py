@@ -11,6 +11,8 @@ filesystem durability beyond the profile documented in
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import errno
 import hashlib
 import json
@@ -301,7 +303,9 @@ class FilesystemOriginalObjectStore:
                 raise UploadNotFound()
             kind, payload_path, manifest_path, manifest = location
             if kind == "finalized":
-                receipt = await self._run_blocking(self._receipt_from_manifest, manifest)
+                receipt = await self._run_blocking(
+                    self._receipt_from_manifest, manifest, manifest_path
+                )
                 return await self._observe_input_stream(
                     chunks,
                     deadline=deadline,
@@ -331,6 +335,11 @@ class FilesystemOriginalObjectStore:
                     deadline=deadline,
                 )
                 return observed
+            except ObjectCorrupt as error:
+                await self._mark_integrity_conflict_after_failure(
+                    manifest_path, manifest, deadline
+                )
+                raise error
             except StorageError as error:
                 await self._mark_interrupted_after_failure(
                     manifest_path, manifest, deadline
@@ -514,6 +523,9 @@ class FilesystemOriginalObjectStore:
                 deadline,
                 None,
             )
+            stage_identity = self._file_identity_from_fd(stage_fd)
+            if self._file_identity(stage_payload) != stage_identity:
+                raise StorageIntegrityIndeterminate()
             recorded_digest = manifest.get("observed_digest")
             recorded_length = manifest.get("observed_length")
             if (
@@ -548,7 +560,11 @@ class FilesystemOriginalObjectStore:
             finalized_manifest["status"] = "finalized"
             self._write_json_atomic(stage_manifest_path, publishing_manifest)
             try:
-                self._publish_no_replace(stage_payload, final_payload)
+                self._publish_no_replace(
+                    stage_payload,
+                    final_payload,
+                    expected_source_identity=stage_identity,
+                )
                 self._sync_file(final_payload)
                 self._write_json_exclusive(final_manifest, finalized_manifest)
                 self._sync_directory(final_scope_dir)
@@ -656,7 +672,7 @@ class FilesystemOriginalObjectStore:
             raise ObjectNotFound()
         manifest = self._read_manifest(manifest_path)
         self._assert_manifest_scope(manifest, final_scope_dir)
-        receipt = self._receipt_from_manifest(manifest)
+        receipt = self._receipt_from_manifest(manifest, manifest_path)
         if receipt.object_reference != reference:
             raise InvalidReadGrant()
         if not self._exists(payload_path):
@@ -703,7 +719,7 @@ class FilesystemOriginalObjectStore:
             raise ObjectNotFound()
         payload_path, manifest_path = location
         manifest = self._read_manifest(manifest_path)
-        receipt = self._receipt_from_manifest(manifest)
+        receipt = self._receipt_from_manifest(manifest, manifest_path)
         if receipt.object_reference != reference:
             raise InvalidObjectReference()
         if max_bytes < reference.byte_length:
@@ -758,15 +774,16 @@ class FilesystemOriginalObjectStore:
         deadline: float,
     ) -> tuple[tuple[ReconciliationInventoryEntry, ...], str | None]:
         start = self._inventory_cursor(cursor)
-        entries: list[ReconciliationInventoryEntry] = []
+        page: list[ReconciliationInventoryEntry] = []
         seen_object_ids: set[UUID] = set()
-        self._validate_staged_namespace()
+        self._validate_staged_namespace(deadline=deadline)
+        total = 0
         for manifest_path in self._iter_final_manifests():
-            if len(entries) >= self._profile.max_inventory_entries:
+            if total >= self._profile.max_inventory_entries:
                 raise UploadLimitExceeded()
             manifest = self._read_manifest(manifest_path)
             self._assert_manifest_scope(manifest, manifest_path.parent)
-            receipt = self._receipt_from_manifest(manifest)
+            receipt = self._receipt_from_manifest(manifest, manifest_path)
             object_id = receipt.object_reference.object_id
             if object_id in seen_object_ids:
                 raise StorageIntegrityIndeterminate()
@@ -777,17 +794,21 @@ class FilesystemOriginalObjectStore:
             if not self._exists(payload_path) or self._is_symlink(payload_path):
                 raise StorageIntegrityIndeterminate()
             self._verify_finalized_file(payload_path, receipt, deadline=deadline)
-            entries.append(
-                ReconciliationInventoryEntry(
-                    object_reference=receipt.object_reference,
-                    upload_id=receipt.upload_id,
-                    finalized=True,
-                    observed_at=self._clock(),
+            if total >= start and len(page) < limit:
+                page.append(
+                    ReconciliationInventoryEntry(
+                        object_reference=receipt.object_reference,
+                        upload_id=receipt.upload_id,
+                        finalized=True,
+                        observed_at=self._clock(),
+                    )
                 )
-            )
-        entries.sort(key=lambda entry: entry.object_reference.object_id.int)
-        page = entries[start : start + limit]
-        next_cursor = str(start + limit) if start + limit < len(entries) else None
+            total += 1
+        next_cursor = (
+            self._encode_inventory_cursor(start + len(page))
+            if start + len(page) < total
+            else None
+        )
         return tuple(page), next_cursor
 
     async def prepare_deletion(
@@ -874,9 +895,21 @@ class FilesystemOriginalObjectStore:
                 if not self._exists(manifest_path):
                     continue
                 manifest = self._read_manifest(manifest_path)
+                self._assert_manifest_scope(manifest, staged_scope)
                 if (
-                    manifest.get("status") not in {"publishing", "integrity_conflict"}
+                    manifest.get("status") != "publishing"
                     or manifest.get("object_id") != str(reference.object_id)
+                ):
+                    continue
+                try:
+                    staged_receipt = WriteReceipt.model_validate_json(
+                        json.dumps(manifest["receipt"], separators=(",", ":"))
+                    )
+                except Exception:
+                    raise StorageIntegrityIndeterminate() from None
+                if (
+                    staged_receipt.object_reference != reference
+                    or staged_receipt.upload_id != UUID(manifest["upload_id"])
                 ):
                     continue
                 payload_path = stage_dir / "payload"
@@ -925,7 +958,7 @@ class FilesystemOriginalObjectStore:
     ) -> None:
         _, manifest_path = location
         manifest = self._read_manifest(manifest_path)
-        receipt = self._receipt_from_manifest(manifest)
+        receipt = self._receipt_from_manifest(manifest, manifest_path)
         if receipt.object_reference != reference:
             raise UploadConflict()
 
@@ -940,7 +973,7 @@ class FilesystemOriginalObjectStore:
     ) -> UploadCommandState:
         manifest = self._read_manifest(manifest_path)
         self._assert_manifest_identity(manifest, command, state)
-        receipt = self._receipt_from_manifest(manifest)
+        receipt = self._receipt_from_manifest(manifest, manifest_path)
         self._verify_finalized_file(payload_path, receipt, deadline=deadline)
         if state.state is UploadCommandStateName.FINALIZED:
             if state.provisional_receipt != receipt:
@@ -961,7 +994,7 @@ class FilesystemOriginalObjectStore:
     ) -> WriteReceipt:
         manifest = self._read_manifest(manifest_path)
         self._assert_manifest_identity_from_state(manifest, state)
-        receipt = self._receipt_from_manifest(manifest)
+        receipt = self._receipt_from_manifest(manifest, manifest_path)
         if (
             state.state is UploadCommandStateName.FINALIZED
             and state.provisional_receipt != receipt
@@ -1219,7 +1252,7 @@ class FilesystemOriginalObjectStore:
         for manifest_path in self._iter_final_manifests():
             manifest = self._read_manifest(manifest_path)
             self._assert_manifest_scope(manifest, manifest_path.parent)
-            receipt = self._receipt_from_manifest(manifest)
+            receipt = self._receipt_from_manifest(manifest, manifest_path)
             if receipt.object_reference.object_id == reference.object_id:
                 if match is not None:
                     raise StorageIntegrityIndeterminate()
@@ -1235,7 +1268,7 @@ class FilesystemOriginalObjectStore:
             manifest_names = {
                 entry.name for entry in entries if entry.name.endswith(".manifest.json")
             }
-            for entry in entries:
+            for entry in sorted(entries, key=lambda item: item.name):
                 if entry.is_symlink:
                     raise StorageIntegrityIndeterminate()
                 if not entry.is_file:
@@ -1256,7 +1289,7 @@ class FilesystemOriginalObjectStore:
                 else:
                     raise StorageIntegrityIndeterminate()
 
-    def _validate_staged_namespace(self) -> None:
+    def _validate_staged_namespace(self, *, deadline: float) -> None:
         for scope_dir in self._iter_scope_directories(self._staged_root):
             for entry in self._scandir(scope_dir):
                 if entry.is_symlink or not entry.is_dir:
@@ -1306,9 +1339,10 @@ class FilesystemOriginalObjectStore:
                     if not self._exists(finalized_manifest_path):
                         raise StorageIntegrityIndeterminate()
                     finalized_manifest = self._read_manifest(finalized_manifest_path)
-                    if finalized_manifest.get("status") != "finalized":
-                        raise StorageIntegrityIndeterminate()
-                    if finalized_manifest.get("receipt") != manifest.get("receipt"):
+                    finalized_receipt = self._receipt_from_manifest(
+                        finalized_manifest, finalized_manifest_path
+                    )
+                    if finalized_receipt != publishing_receipt:
                         self._set_manifest_status(
                             stage_dir / "manifest.json",
                             manifest,
@@ -1326,6 +1360,20 @@ class FilesystemOriginalObjectStore:
                 payload = stage_dir / "payload"
                 if status in {"staging", "interrupted"} and not self._exists(payload):
                     raise StorageIntegrityIndeterminate()
+                if status in {"staging", "interrupted"} and manifest.get(
+                    "observed_digest"
+                ) is not None:
+                    actual = self._hash_file(
+                        payload,
+                        self._profile.max_object_bytes,
+                        deadline,
+                        None,
+                    )
+                    if (
+                        actual.observed_sha256 != manifest.get("observed_digest")
+                        or actual.observed_byte_length != manifest.get("observed_length")
+                    ):
+                        raise StorageIntegrityIndeterminate()
                 for child in children:
                     if child.is_symlink or not child.is_file:
                         raise StorageIntegrityIndeterminate()
@@ -1385,7 +1433,7 @@ class FilesystemOriginalObjectStore:
             raise StorageIntegrityIndeterminate()
 
     def _iter_scope_directories(self, root: Path) -> Iterator[Path]:
-        for entry in self._scandir(root):
+        for entry in sorted(self._scandir(root), key=lambda item: item.name):
             if entry.is_symlink or not entry.is_dir:
                 raise StorageIntegrityIndeterminate()
             if len(entry.name) != _SCOPE_HEX_LENGTH or any(
@@ -1418,6 +1466,8 @@ class FilesystemOriginalObjectStore:
             raise StorageIntegrityIndeterminate() from None
         except StorageError:
             raise
+        except (TypeError, NotImplementedError):
+            raise StorageConfigurationError() from None
         except OSError as error:
             raise self._configuration_or_unavailable(error) from None
 
@@ -1583,11 +1633,34 @@ class FilesystemOriginalObjectStore:
         except StorageError:
             self._indeterminate.set()
 
+    async def _mark_integrity_conflict_after_failure(
+        self,
+        path: Path,
+        manifest: dict[str, Any],
+        deadline: float,
+    ) -> None:
+        if self._monotonic_clock() >= deadline:
+            self._indeterminate.set()
+            return
+        try:
+            await self._run_blocking(
+                self._mark_interrupted,
+                path,
+                manifest,
+                deadline,
+                "integrity_conflict",
+                deadline=deadline,
+                check_operational=False,
+            )
+        except StorageError:
+            self._indeterminate.set()
+
     def _mark_interrupted(
         self,
         path: Path,
         manifest: dict[str, Any],
         deadline: float,
+        status: str = "interrupted",
     ) -> None:
         del manifest
         payload_path = path.parent / "payload"
@@ -1603,16 +1676,20 @@ class FilesystemOriginalObjectStore:
             current = self._read_manifest(path)
             if current.get("status") != "staging":
                 return
-            self._set_manifest_status(path, current, "interrupted")
+            self._set_manifest_status(path, current, status)
         except StorageError:
             raise StorageIntegrityIndeterminate() from None
-        except OSError:
+        except (TypeError, NotImplementedError, OSError):
             raise StorageIntegrityIndeterminate() from None
         finally:
             if payload_fd is not None:
                 self._close_fd(payload_fd)
 
-    def _receipt_from_manifest(self, manifest: dict[str, Any]) -> WriteReceipt:
+    def _receipt_from_manifest(
+        self,
+        manifest: dict[str, Any],
+        manifest_path: Path | None = None,
+    ) -> WriteReceipt:
         try:
             receipt = WriteReceipt.model_validate_json(
                 json.dumps(manifest["receipt"], separators=(",", ":"))
@@ -1621,9 +1698,25 @@ class FilesystemOriginalObjectStore:
             raise StorageIntegrityIndeterminate() from None
         if manifest.get("status") != "finalized":
             raise StorageIntegrityIndeterminate()
+        if (
+            manifest.get("upload_id") != str(receipt.upload_id)
+            or manifest.get("object_id") != str(receipt.object_reference.object_id)
+            or (
+                manifest_path is not None
+                and manifest_path.name
+                != self._manifest_name(receipt.object_reference.object_id)
+            )
+        ):
+            raise StorageIntegrityIndeterminate()
         return receipt
 
-    def _publish_no_replace(self, source: Path, destination: Path) -> None:
+    def _publish_no_replace(
+        self,
+        source: Path,
+        destination: Path,
+        *,
+        expected_source_identity: tuple[int, int, int] | None = None,
+    ) -> None:
         if self._exists(destination):
             raise FileExistsError()
         source_parent_fd, source_name = self._open_secure_parent(source)
@@ -1637,8 +1730,14 @@ class FilesystemOriginalObjectStore:
                     dst_dir_fd=destination_parent_fd,
                     follow_symlinks=False,
                 )
+                if expected_source_identity is not None and (
+                    self._file_identity(destination) != expected_source_identity
+                ):
+                    raise StorageIntegrityIndeterminate()
             except FileExistsError:
                 raise
+            except (TypeError, NotImplementedError):
+                raise StorageConfigurationError() from None
             except OSError as error:
                 if error.errno == errno.EEXIST:
                     raise FileExistsError() from None
@@ -1804,13 +1903,19 @@ class FilesystemOriginalObjectStore:
         if not relative.parts:
             raise StorageIntegrityIndeterminate()
         flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-        if self._root_fd is None:
-            fd = os.open(self._root, flags)
-        else:
-            fd = os.dup(self._root_fd)
+        try:
+            if self._root_fd is None:
+                fd = os.open(self._root, flags)
+            else:
+                fd = os.dup(self._root_fd)
+        except (TypeError, NotImplementedError):
+            raise StorageConfigurationError() from None
         try:
             for component in relative.parts[:-1]:
-                child_fd = os.open(component, flags, dir_fd=fd)
+                try:
+                    child_fd = os.open(component, flags, dir_fd=fd)
+                except (TypeError, NotImplementedError):
+                    raise StorageConfigurationError() from None
                 os.close(fd)
                 fd = child_fd
             return fd, relative.parts[-1]
@@ -1821,13 +1926,19 @@ class FilesystemOriginalObjectStore:
     def _open_relative(self, path: Path, flags: int, mode: int = 0o600) -> int:
         parent_fd, name = self._open_secure_parent(path)
         try:
-            return os.open(name, flags, mode, dir_fd=parent_fd)
+            try:
+                return os.open(name, flags, mode, dir_fd=parent_fd)
+            except (TypeError, NotImplementedError):
+                raise StorageConfigurationError() from None
         finally:
             os.close(parent_fd)
 
     def _open_directory(self, path: Path) -> int:
-        if path == self._root:
-            return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            if path == self._root:
+                return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except (TypeError, NotImplementedError):
+            raise StorageConfigurationError() from None
         return self._open_relative(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
 
     def _lstat(self, path: Path) -> os.stat_result:
@@ -1918,7 +2029,7 @@ class FilesystemOriginalObjectStore:
         fd = self._open_read(path)
         try:
             os.fsync(fd)
-        except OSError:
+        except (TypeError, NotImplementedError, OSError):
             raise StorageIntegrityIndeterminate() from None
         finally:
             os.close(fd)
@@ -1930,7 +2041,7 @@ class FilesystemOriginalObjectStore:
                 os.fsync(fd)
             finally:
                 os.close(fd)
-        except OSError:
+        except (TypeError, NotImplementedError, OSError):
             raise StorageIntegrityIndeterminate() from None
 
     def _prepare_root(self, configured_root: str | os.PathLike[str]) -> Path:
@@ -1953,12 +2064,14 @@ class FilesystemOriginalObjectStore:
             raise StorageConfigurationError() from None
 
     def _prepare_directory(self, path: Path) -> Path:
+        created = False
         try:
             if self._exists(path) and self._is_symlink(path):
                 raise StorageConfigurationError()
             parent_fd, name = self._open_secure_parent(path)
             try:
                 os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+                created = True
             except FileExistsError:
                 pass
             finally:
@@ -1968,6 +2081,8 @@ class FilesystemOriginalObjectStore:
                 os.fchmod(fd, 0o700)
             finally:
                 os.close(fd)
+            if created and path.parent == self._root:
+                self._sync_directory(self._root)
             return path
         except StorageError:
             raise
@@ -1976,6 +2091,7 @@ class FilesystemOriginalObjectStore:
 
     def _ensure_scope_directory(self, root: Path, scope_key: str) -> Path:
         path = root / scope_key
+        created = False
         try:
             if not self._is_scope_key(scope_key):
                 raise StorageIntegrityIndeterminate()
@@ -1984,6 +2100,7 @@ class FilesystemOriginalObjectStore:
             parent_fd, name = self._open_secure_parent(path)
             try:
                 os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+                created = True
             except FileExistsError:
                 pass
             finally:
@@ -1993,6 +2110,8 @@ class FilesystemOriginalObjectStore:
                 os.fchmod(fd, 0o700)
             finally:
                 os.close(fd)
+            if created:
+                self._sync_directory(root)
         except StorageError:
             raise
         except OSError:
@@ -2008,8 +2127,13 @@ class FilesystemOriginalObjectStore:
         parent_fd, name = self._open_secure_parent(path)
         try:
             os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+            created = True
+        except FileExistsError:
+            raise
         finally:
             os.close(parent_fd)
+        if created:
+            self._sync_directory(path.parent)
 
     def _create_empty_payload(self, path: Path) -> None:
         fd = self._open_relative(
@@ -2354,12 +2478,21 @@ class FilesystemOriginalObjectStore:
         if cursor is None:
             return 0
         try:
-            value = int(cursor)
-        except (TypeError, ValueError):
+            encoded = cursor.encode("ascii")
+            decoded = base64.urlsafe_b64decode(encoded).decode(_JSON_ENCODING)
+            version, raw_value = decoded.split(":", 1)
+            if version != "v1":
+                raise ValueError()
+            value = int(raw_value)
+        except (TypeError, ValueError, UnicodeError, binascii.Error):
             raise StorageConfigurationError() from None
         if value < 0 or value > self._profile.max_inventory_entries:
             raise StorageConfigurationError()
         return value
+
+    @staticmethod
+    def _encode_inventory_cursor(value: int) -> str:
+        return base64.urlsafe_b64encode(f"v1:{value}".encode(_JSON_ENCODING)).decode("ascii")
 
     def _observe_io(
         self,
