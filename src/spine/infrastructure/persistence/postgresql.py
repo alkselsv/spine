@@ -489,13 +489,28 @@ class _PostgreSQLIngestionRepository:
 
     @staticmethod
     def _detail_values(detail: object) -> tuple[str, dict[str, object], str]:
-        payload = detail.model_dump(mode="json")
+        payload = detail.model_dump(mode="json", exclude_none=True)
         encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
         return payload["schema_version"], payload, hashlib.sha256(encoded).hexdigest()
 
     @staticmethod
     def _transition_from_row(row: Mapping[str, Any]) -> IngestionTransition:
-        return IngestionTransition.model_validate(dict(row))
+        values = dict(row)
+        safe_metrics_schema = values.pop("safe_metrics_schema", None)
+        safe_metrics = values.get("safe_metrics")
+        if safe_metrics is not None and "schema_version" not in safe_metrics:
+            safe_metrics = {"schema_version": safe_metrics_schema, **safe_metrics}
+        values["safe_metrics"] = safe_metrics
+        return IngestionTransition.model_validate(values)
+
+    @staticmethod
+    def _binding_from_row(row: Mapping[str, Any]) -> IngestionRunSourceBinding:
+        # asyncpg decodes JSONB UUID members as strings.  JSON validation lets
+        # the strict domain model parse those wire values without weakening the
+        # model's in-memory type guarantees.
+        return IngestionRunSourceBinding.model_validate_json(
+            json.dumps(dict(row), default=str)
+        )
 
     async def _head(self, *, run_id: UUID, item_id: UUID | None) -> IngestionTransition | None:
         predicates = [
@@ -556,7 +571,7 @@ class _PostgreSQLIngestionRepository:
             return current
         await self._uow._execute(insert(_INGESTION_ITEMS).values(**item.model_dump(mode="python")))
         await self.append_transition(IngestionTransition(
-            ingestion_transition_id=uuid4(), workspace_id=item.workspace_id, environment_id=item.environment_id,
+            ingestion_transition_id=uuid5(NAMESPACE_URL, f"ingestion-item-root:{item.ingestion_run_source_id}"), workspace_id=item.workspace_id, environment_id=item.environment_id,
             target_kind=IngestionTargetKind.ITEM, ingestion_run_id=item.ingestion_run_id, ingestion_run_source_id=item.ingestion_run_source_id,
             state=IngestionItemState.RECEIVED, attempt=1, actor_or_service="ingestion-ledger", trace_id=self._uow._trace_id_snapshot(), occurred_at=item.created_at,
         ))
@@ -565,6 +580,18 @@ class _PostgreSQLIngestionRepository:
     async def bind_source(self, command: IngestionBindingCommand) -> IngestionMutationResult:
         self._uow._guard_active()
         self._check_scope(command.item.workspace_id, command.item.environment_id)
+        if command.observation.revision.kind.value == "content":
+            await self._uow._fail(
+                ConstraintConflictError(
+                    "Original receipt verification is unavailable; content binding is fail-closed."
+                )
+            )
+        if command.binding.original_receipt_id is not None:
+            await self._uow._fail(
+                ConstraintConflictError(
+                    "Contentless ingestion binding cannot include an original receipt."
+                )
+            )
         claim = await self._uow.idempotency.claim(operation_schema_version=command.digest.operation_schema_version, key=command.idempotency_key, digest=command.digest)
         item_row = (await self._uow._execute(select(_INGESTION_ITEMS).where(_INGESTION_ITEMS.c.ingestion_run_source_id == command.item.ingestion_run_source_id, _INGESTION_ITEMS.c.workspace_id == command.item.workspace_id, _INGESTION_ITEMS.c.environment_id == command.item.environment_id))).mappings().one_or_none()
         if item_row is None or IngestionRunSource.model_validate(dict(item_row)) != command.item:
@@ -574,21 +601,33 @@ class _PostgreSQLIngestionRepository:
             row = (await self._uow._execute(select(_INGESTION_BINDINGS).where(_INGESTION_BINDINGS.c.binding_id == claim.result.result_id, _INGESTION_BINDINGS.c.workspace_id == command.item.workspace_id, _INGESTION_BINDINGS.c.environment_id == command.item.environment_id))).mappings().one_or_none()
             if row is None:
                 await self._uow._fail(ConstraintConflictError("Ingestion binding replay is unavailable."))
-            return IngestionMutationResult(IngestionRunSourceBinding.model_validate(dict(row)), True, claim, claim.result)
+            return IngestionMutationResult(self._binding_from_row(row), True, claim, claim.result)
         binding = command.binding
         if binding.ingestion_run_source_id != command.item.ingestion_run_source_id or (binding.workspace_id, binding.environment_id) != (command.item.workspace_id, command.item.environment_id):
             await self._uow._fail(ConstraintConflictError("Ingestion binding scope is invalid."))
         if existing_row is not None:
-            existing = IngestionRunSourceBinding.model_validate(dict(existing_row))
-            if (existing.source_object_id, existing.source_revision_id, existing.original_receipt_digest) != (binding.source_object_id, binding.source_revision_id, binding.original_receipt_digest):
+            existing = self._binding_from_row(existing_row)
+            if (
+                existing.source_object_id,
+                existing.source_revision_id,
+                existing.original_reference,
+                existing.original_receipt_kind,
+                existing.original_receipt_id,
+                existing.original_receipt_digest,
+            ) != (
+                binding.source_object_id,
+                binding.source_revision_id,
+                binding.original_reference,
+                binding.original_receipt_kind,
+                binding.original_receipt_id,
+                binding.original_receipt_digest,
+            ):
                 await self._uow._fail(ConstraintConflictError("Ingestion item is already bound to another source."))
             result = OpaqueResultReference(result_type="ingestion_binding", result_id=existing.binding_id, schema_version=1)
             await self._uow.idempotency.complete(claim, result)
             return IngestionMutationResult(existing, True, claim, result)
         if command.observation.source.source_object_id != binding.source_object_id or command.observation.revision.revision_id != binding.source_revision_id:
             await self._uow._fail(ConstraintConflictError("Ingestion binding observation is invalid."))
-        if command.observation.revision.kind.value == "content" and (binding.original_receipt_id is None or binding.original_reference is None or binding.original_reference.digest_hex != command.observation.revision.original_sha256):
-            await self._uow._fail(ConstraintConflictError("Content ingestion binding requires verified original evidence."))
         from dataclasses import replace
         observation = replace(command.observation, digest=command.observation.expected_digest(PersistenceOperation("ingestion_binding")))
         observed = await self._uow.sources.record_observation(observation)
@@ -625,7 +664,7 @@ class _PostgreSQLIngestionRepository:
             validate_transition(previous, transition)
         except ValueError as error:
             await self._uow._fail(ConstraintConflictError(str(error)))
-        safe_metrics_schema, safe_metrics = (None, None)
+        safe_metrics_schema, safe_metrics = (None, null())
         if transition.safe_metrics is not None:
             safe_metrics_schema, safe_metrics, _ = self._detail_values(transition.safe_metrics)
         await self._uow._execute(insert(_INGESTION_TRANSITIONS).values(

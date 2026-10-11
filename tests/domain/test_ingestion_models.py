@@ -8,6 +8,7 @@ from spine.domain.ingestion import (
     IngestionFailure,
     IngestionItemState,
     IngestionRunSource,
+    IngestionRunSourceBinding,
     IngestionTargetKind,
     IngestionTransition,
     ProcessingCoverage,
@@ -16,6 +17,7 @@ from spine.domain.ingestion import (
     SafeDiagnosticDetail,
     WarningStage,
 )
+from spine.domain.sources.original_reference import ObjectReference
 
 
 NOW = datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)
@@ -77,6 +79,25 @@ def test_safe_diagnostic_rejects_unallowlisted_free_text() -> None:
         )
 
 
+def test_safe_diagnostic_rejects_unbounded_counters() -> None:
+    with pytest.raises(ValueError, match="less than or equal to 9999999999"):
+        SafeDiagnosticDetail(
+            schema_version="ingestion-safe-detail:v1", item_count=10_000_000_000
+        )
+
+
+@pytest.mark.parametrize("value", (True, 1.0, "1"))
+def test_safe_diagnostic_rejects_non_integer_counter_values(value: object) -> None:
+    with pytest.raises(ValueError):
+        SafeDiagnosticDetail(schema_version="ingestion-safe-detail:v1", attempt=value)
+
+
+@pytest.mark.parametrize("value", (1, 0, "yes", "false"))
+def test_safe_diagnostic_rejects_non_boolean_retryable_values(value: object) -> None:
+    with pytest.raises(ValueError):
+        SafeDiagnosticDetail(schema_version="ingestion-safe-detail:v1", retryable=value)
+
+
 def test_failed_processing_receipt_cannot_pin_output_digest() -> None:
     with pytest.raises(ValueError, match="failed processing"):
         ProcessingReceipt(
@@ -108,6 +129,37 @@ def test_partial_processing_receipt_requires_exclusion_or_safe_output() -> None:
     )
 
     assert receipt.coverage is ProcessingCoverage.PARTIAL
+
+
+def test_complete_processing_receipt_cannot_reference_failures() -> None:
+    with pytest.raises(ValueError, match="complete processing cannot contain failures"):
+        ProcessingReceipt(
+            processing_receipt_id=identifier(20), workspace_id=identifier(3),
+            environment_id=identifier(4), ingestion_run_source_id=identifier(1),
+            binding_id=identifier(5), source_object_id=identifier(6), source_revision_id=identifier(7),
+            processor_kind="document_processor", parser_name="parser", parser_version="v1",
+            parser_config_reference="config-v1", locator_contract_version="locator-v1",
+            original_sha256="c" * 64, output_kind="parsed-document", output_reference=identifier(21),
+            output_digest="d" * 64, coverage=ProcessingCoverage.COMPLETE,
+            failure_ids=(identifier(22),), command_identity="process-1", command_digest="e" * 64,
+            idempotency_receipt_id=identifier(8), completed_at=NOW,
+        )
+
+
+def test_binding_rejects_receipt_digest_different_from_original_reference() -> None:
+    with pytest.raises(ValueError, match="original receipt digest"):
+        IngestionRunSourceBinding(
+            binding_id=identifier(40), ingestion_run_source_id=identifier(1),
+            source_object_id=identifier(41), source_revision_id=identifier(42),
+            workspace_id=identifier(3), environment_id=identifier(4),
+            binding_command_identity="binding-1", binding_command_digest="a" * 64,
+            original_reference=ObjectReference(
+                schema_version=1, object_id=identifier(43), storage_generation=identifier(44),
+                digest_algorithm="sha256", digest_hex="b" * 64, byte_length=1,
+            ),
+            original_receipt_kind="issue6.write_receipt", original_receipt_id=identifier(45),
+            original_receipt_digest="c" * 64, bound_at=NOW,
+        )
 
 
 def test_failure_codes_are_bounded_and_content_free() -> None:

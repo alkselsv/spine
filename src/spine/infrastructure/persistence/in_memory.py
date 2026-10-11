@@ -768,7 +768,7 @@ class _InMemoryIngestionRepository:
         self._uow._pending_ingestion_items[item.ingestion_run_source_id] = item.model_copy(deep=True)
         await self.append_transition(
             IngestionTransition(
-                ingestion_transition_id=uuid4(), workspace_id=item.workspace_id, environment_id=item.environment_id,
+                ingestion_transition_id=uuid5(NAMESPACE_URL, f"ingestion-item-root:{item.ingestion_run_source_id}"), workspace_id=item.workspace_id, environment_id=item.environment_id,
                 target_kind=IngestionTargetKind.ITEM, ingestion_run_id=item.ingestion_run_id,
                 ingestion_run_source_id=item.ingestion_run_source_id, state=IngestionItemState.RECEIVED,
                 attempt=1, actor_or_service="ingestion-ledger", trace_id=self._uow._trace_id_snapshot(),
@@ -780,6 +780,18 @@ class _InMemoryIngestionRepository:
     async def bind_source(self, command: IngestionBindingCommand) -> IngestionMutationResult:
         self._uow._guard_active()
         self._scope_check(command.item.workspace_id, command.item.environment_id)
+        if command.observation.revision.kind.value == "content":
+            self._uow._fail(
+                ConstraintConflictError(
+                    "Original receipt verification is unavailable; content binding is fail-closed."
+                )
+            )
+        if command.binding.original_receipt_id is not None:
+            self._uow._fail(
+                ConstraintConflictError(
+                    "Contentless ingestion binding cannot include an original receipt."
+                )
+            )
         claim = await self._uow.idempotency.claim(
             operation_schema_version=command.digest.operation_schema_version,
             key=command.idempotency_key,
@@ -798,7 +810,21 @@ class _InMemoryIngestionRepository:
         if (binding.workspace_id, binding.environment_id) != (item.workspace_id, item.environment_id) or binding.ingestion_run_source_id != item.ingestion_run_source_id:
             self._uow._fail(ConstraintConflictError("Ingestion binding scope is invalid."))
         if existing is not None:
-            if existing.source_object_id != binding.source_object_id or existing.source_revision_id != binding.source_revision_id or existing.original_receipt_digest != binding.original_receipt_digest:
+            if (
+                existing.source_object_id,
+                existing.source_revision_id,
+                existing.original_reference,
+                existing.original_receipt_kind,
+                existing.original_receipt_id,
+                existing.original_receipt_digest,
+            ) != (
+                binding.source_object_id,
+                binding.source_revision_id,
+                binding.original_reference,
+                binding.original_receipt_kind,
+                binding.original_receipt_id,
+                binding.original_receipt_digest,
+            ):
                 self._uow._fail(ConstraintConflictError("Ingestion item is already bound to another source."))
             result = OpaqueResultReference(result_type="ingestion_binding", result_id=existing.binding_id, schema_version=1)
             await self._uow.idempotency.complete(claim, result)
@@ -814,10 +840,6 @@ class _InMemoryIngestionRepository:
         observation = command.observation
         if observation.source.source_object_id != binding.source_object_id or observation.revision.revision_id != binding.source_revision_id:
             self._uow._fail(ConstraintConflictError("Ingestion binding observation is invalid."))
-        if observation.revision.kind.value == "content":
-            if binding.original_receipt_id is None or binding.original_reference is None or binding.original_reference.digest_hex != observation.revision.original_sha256:
-                self._uow._fail(ConstraintConflictError("Content ingestion binding requires verified original evidence."))
-
         # The source observation is recorded in the same transaction. Its
         # operation is adapted to the trusted binding seam so it cannot commit
         # a claim for a different operation; the binding has its own claim.

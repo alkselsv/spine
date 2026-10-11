@@ -108,6 +108,19 @@ async def create_in_memory_adapter() -> DeliveryPersistenceAdapter:
             trace_id=synthetic_uuid(909),
         )
 
+    def ingestion_context(
+        workspace_id: UUID, environment_id: UUID, operation: str
+    ) -> TrustedPersistenceContext:
+        return boundary.worker(
+            scope=EnvironmentScope(
+                workspace_id=workspace_id, environment_id=environment_id
+            ),
+            service_principal_id=synthetic_uuid(910),
+            purpose=PersistencePurpose("contract_test"),
+            operation=PersistenceOperation(operation),
+            trace_id=synthetic_uuid(911),
+        )
+
     def worker_workspace_context(workspace_id: UUID) -> TrustedPersistenceContext:
         return boundary.worker(
             scope=WorkspaceScope(workspace_id=workspace_id),
@@ -136,6 +149,7 @@ async def create_in_memory_adapter() -> DeliveryPersistenceAdapter:
         read_audit_event=persistence.audit_reader.resolve,
         fail_next_audit_append=persistence.fail_next_audit_append,
         source_context=source_context,
+        ingestion_context=ingestion_context,
         delivery_repository=persistence.delivery_repository,
         delivery_routes=delivery_routes,
     )

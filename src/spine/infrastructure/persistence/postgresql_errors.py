@@ -60,6 +60,12 @@ _CONSTRAINT_MESSAGES = {
     "ck_idempotency_receipts_single_completion": (
         "Idempotency receipt is already completed."
     ),
+    "uq_ingestion_run_source_bindings_item": (
+        "Ingestion item is already bound to another source."
+    ),
+    "uq_ingestion_run_source_bindings_command": (
+        "Ingestion binding command identity conflicts."
+    ),
 }
 
 _IDEMPOTENCY_CONSTRAINTS = {

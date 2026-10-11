@@ -14,7 +14,7 @@ from spine.infrastructure.db.readiness import (
     (
         ((), SchemaRevisionState.EMPTY),
         (("20261009_01",), SchemaRevisionState.OLDER),
-        (("20261013_15",), SchemaRevisionState.READY),
+        (("20261013_16",), SchemaRevisionState.READY),
         (("20261014_01",), SchemaRevisionState.NEWER),
         (("unrecognized",), SchemaRevisionState.UNKNOWN),
         (
@@ -29,7 +29,7 @@ def test_schema_revision_state_classifies_database_heads(
 ) -> None:
     state = classify_schema_revision(
         database_heads=database_heads,
-        supported_head="20261013_15",
+        supported_head="20261013_16",
         known_revisions=(
             "20261009_01",
             "20261009_02",
@@ -45,7 +45,7 @@ def test_schema_revision_state_classifies_database_heads(
             "20261010_12",
             "20261011_13",
             "20261012_14",
-            "20261013_15",
+            "20261013_16",
         ),
     )
 
@@ -55,7 +55,7 @@ def test_schema_revision_state_classifies_database_heads(
 def test_committed_migration_inventory_has_one_linear_head() -> None:
     inventory = load_migration_inventory()
 
-    assert inventory.heads == ("20261013_15",)
+    assert inventory.heads == ("20261013_16",)
     assert inventory.revisions == (
         "20261009_01",
         "20261009_02",
@@ -73,4 +73,5 @@ def test_committed_migration_inventory_has_one_linear_head() -> None:
         "20261012_14",
         "20261012_15",
         "20261013_15",
+        "20261013_16",
     )

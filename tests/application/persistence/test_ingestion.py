@@ -10,18 +10,36 @@ from spine.application.persistence.context import (
     PersistencePurpose,
     WorkspaceScope,
 )
+from spine.application.persistence.command_digest import digest_command
 from spine.application.persistence.errors import ConstraintConflictError, InvalidPersistenceContextError
-from spine.application.persistence.idempotency import IdempotencyKey
-from spine.application.persistence.ingestion import IngestionRunCommand, deterministic_receipt_id
+from spine.application.persistence.idempotency import IdempotencyKey, OpaqueResultReference
+from spine.application.persistence.ingestion import (
+    IngestionBindingCommand,
+    IngestionRunCommand,
+    deterministic_receipt_id,
+)
+from spine.application.persistence.repositories import SourceObservationCommand
 from spine.application.persistence.outbox import OutboxEventRegistry
 from spine.domain.common import EnvironmentKind
 from spine.domain.ingestion import (
     IngestionRun,
     IngestionRunSource,
+    IngestionRunSourceBinding,
     IngestionRunState,
+    IngestionItemState,
     IngestionTargetKind,
     IngestionTransition,
 )
+from spine.domain.sources import (
+    IdentityMode,
+    RevisionKind,
+    RevisionMetadata,
+    SourceObject,
+    SourceRevisionProvenance,
+    canonical_revision_metadata_digest,
+)
+from spine.domain.sources.canonicalization import content_revision
+from spine.domain.sources.original_reference import ObjectReference
 from spine.domain.workspaces import Environment, Workspace
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary, create_initial_workspace_bootstrap_authority
 from spine.infrastructure.persistence.in_memory import InMemoryPersistence
@@ -77,6 +95,94 @@ def run(key: str) -> IngestionRun:
     )
 
 
+def binding_observation(label: str = "default") -> tuple[SourceObject, object, SourceObservationCommand]:
+    source = SourceObject(
+        source_object_id=uuid5(NAMESPACE_URL, f"issue86-binding-source-{label}"),
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        source_kind="document",
+        identity_mode=IdentityMode.UPLOAD,
+        upload_identity=f"issue86-binding-upload-{label}",
+        created_at=NOW,
+    )
+    metadata = RevisionMetadata(embedded_title="Issue 86 binding")
+    revision = content_revision(
+        revision_id=uuid5(NAMESPACE_URL, f"issue86-binding-revision-{label}"),
+        source_object_id=source.source_object_id,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        kind=RevisionKind.CONTENT,
+        revision_schema_version="source-revision:v1",
+        revision_metadata_schema="revision-metadata:r1-document-v1",
+        revision_metadata=metadata,
+        revision_metadata_digest=canonical_revision_metadata_digest(metadata),
+        original_reference=ObjectReference(
+            schema_version=1,
+            object_id=uuid5(NAMESPACE_URL, f"issue86-binding-object-{label}"),
+            storage_generation=uuid5(NAMESPACE_URL, f"issue86-binding-generation-{label}"),
+            digest_algorithm="sha256",
+            digest_hex="c" * 64,
+            byte_length=4,
+        ),
+        original_sha256="c" * 64,
+        byte_length=4,
+        media_type="text/plain",
+        observed_at=NOW,
+    )
+    provenance = SourceRevisionProvenance(
+        provenance_id=uuid5(NAMESPACE_URL, f"issue86-binding-provenance-{label}"),
+        source_object_id=source.source_object_id,
+        revision_id=revision.revision_id,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        producer_kind="upload",
+        producer_reference="issue86-test",
+        event_identity=f"issue86-binding-event-{label}",
+        event_digest="d" * 64,
+        observer_service="issue86-test",
+        received_at=NOW,
+        observed_at=NOW,
+    )
+    return source, revision, SourceObservationCommand.create(
+        source=source,
+        revision=revision,
+        provenance=provenance,
+        idempotency_key=IdempotencyKey(f"issue86-binding-observation-{label}"),
+    )
+
+
+def binding_command(
+    item: IngestionRunSource,
+    source: SourceObject,
+    revision: object,
+    observation: SourceObservationCommand,
+    binding_id: str,
+    command_id: str,
+    receipt_id: UUID,
+) -> IngestionBindingCommand:
+    binding = IngestionRunSourceBinding(
+        binding_id=uuid5(NAMESPACE_URL, binding_id),
+        ingestion_run_source_id=item.ingestion_run_source_id,
+        source_object_id=source.source_object_id,
+        source_revision_id=revision.revision_id,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        binding_command_identity=command_id,
+        binding_command_digest="a" * 64,
+        original_reference=revision.original_reference,
+        original_receipt_kind="issue6.write_receipt",
+        original_receipt_id=receipt_id,
+        original_receipt_digest=revision.original_sha256,
+        bound_at=NOW,
+    )
+    return IngestionBindingCommand.create(
+        item=item,
+        binding=binding,
+        observation=observation,
+        idempotency_key=IdempotencyKey(command_id),
+    )
+
+
 @pytest.mark.asyncio
 async def test_ingestion_run_and_item_replay_are_stable(persistence) -> None:
     adapter, boundary = persistence
@@ -97,6 +203,227 @@ async def test_ingestion_run_and_item_replay_are_stable(persistence) -> None:
     assert replay.replay is True
     assert replay.result_reference == first.result_reference
     assert state is not None and state.state is IngestionRunState.REQUESTED
+
+
+@pytest.mark.asyncio
+async def test_content_binding_rejects_unverified_original_receipt(persistence) -> None:
+    adapter, boundary = persistence
+    source, revision, observation = binding_observation()
+    command = IngestionRunCommand.create(run=run("binding-receipt"), idempotency_key=IdempotencyKey("binding-receipt"))
+    item = IngestionRunSource(
+        ingestion_run_source_id=uuid5(NAMESPACE_URL, "issue86-binding-item"),
+        ingestion_run_id=command.run.ingestion_run_id,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        input_ordinal=1,
+        input_identity="issue86-binding-input",
+        input_digest="e" * 64,
+        command_identity="issue86-binding-item-command",
+        command_digest="f" * 64,
+        created_at=NOW,
+    )
+    async with adapter.uow_factory(context(boundary, "original.upload")) as uow:
+        claim = await uow.idempotency.claim(
+            operation_schema_version=1,
+            key=IdempotencyKey("issue86-unverified-original-upload"),
+            digest=digest_command(
+                operation=PersistenceOperation("original.upload"),
+                operation_schema_version=1,
+                payload={"fixture": "issue86-unverified-original"},
+            ),
+        )
+        await uow.idempotency.complete(
+            claim,
+            OpaqueResultReference(
+                result_type="original_upload",
+                result_id=uuid5(NAMESPACE_URL, "issue86-unverified-original-result"),
+                schema_version=1,
+            ),
+        )
+        await uow.commit()
+
+    binding = IngestionRunSourceBinding(
+        binding_id=uuid5(NAMESPACE_URL, "issue86-binding"),
+        ingestion_run_source_id=item.ingestion_run_source_id,
+        source_object_id=source.source_object_id,
+        source_revision_id=revision.revision_id,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        binding_command_identity="issue86-binding-command",
+        binding_command_digest="a" * 64,
+        original_reference=revision.original_reference,
+        original_receipt_kind="issue6.write_receipt",
+        original_receipt_id=claim.receipt_id,
+        original_receipt_digest=revision.original_sha256,
+        bound_at=NOW,
+    )
+    binding_command = IngestionBindingCommand.create(
+        item=item,
+        binding=binding,
+        observation=observation,
+        idempotency_key=IdempotencyKey("issue86-binding-command"),
+    )
+
+    async with adapter.uow_factory(context(boundary, "ingestion_run")) as uow:
+        await uow.ingestion.create_run(command)
+        await uow.ingestion.create_item(item)
+        await uow.commit()
+
+    async with adapter.uow_factory(context(boundary, "ingestion_binding")) as uow:
+        with pytest.raises(ConstraintConflictError, match="verification is unavailable"):
+            await uow.ingestion.bind_source(binding_command)
+
+    async with adapter.uow_factory(context(boundary, "ingestion_run")) as uow:
+        state = await uow.ingestion.derive_run_state(command.run.ingestion_run_id)
+        await uow.rollback()
+    assert state is not None
+    assert state.item_states == (IngestionItemState.RECEIVED,)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_content_bindings_fail_closed_without_effect(persistence) -> None:
+    adapter, boundary = persistence
+    source, revision, observation = binding_observation("one")
+    source_two, revision_two, observation_two = binding_observation("two")
+    command = IngestionRunCommand.create(run=run("binding-race"), idempotency_key=IdempotencyKey("binding-race"))
+    item = IngestionRunSource(
+        ingestion_run_source_id=uuid5(NAMESPACE_URL, "issue86-binding-race-item"),
+        ingestion_run_id=command.run.ingestion_run_id,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        input_ordinal=1,
+        input_identity="issue86-binding-race-input",
+        input_digest="e" * 64,
+        command_identity="issue86-binding-race-item-command",
+        command_digest="f" * 64,
+        created_at=NOW,
+    )
+    receipt_key = IdempotencyKey("issue86-original-upload")
+    receipt_digest = digest_command(
+        operation=PersistenceOperation("original.upload"),
+        operation_schema_version=1,
+        payload={"fixture": "issue86-binding-race"},
+    )
+    receipt_id = None
+    async with adapter.uow_factory(context(boundary, "ingestion_run")) as uow:
+        await uow.ingestion.create_run(command)
+        await uow.ingestion.create_item(item)
+        await uow.commit()
+    async with adapter.uow_factory(context(boundary, "original.upload")) as uow:
+        claim = await uow.idempotency.claim(
+            operation_schema_version=1, key=receipt_key, digest=receipt_digest
+        )
+        receipt_id = claim.receipt_id
+        await uow.idempotency.complete(
+            claim,
+            OpaqueResultReference(
+                result_type="original_upload",
+                result_id=uuid5(NAMESPACE_URL, "issue86-original-upload-result"),
+                schema_version=1,
+            ),
+        )
+        await uow.commit()
+    assert receipt_id is not None
+    first = binding_command(
+        item, source, revision, observation, "issue86-binding-race-one", "issue86-binding-race-one", receipt_id
+    )
+    second = binding_command(
+        item, source_two, revision_two, observation_two, "issue86-binding-race-two", "issue86-binding-race-two", receipt_id
+    )
+
+    async def bind(command: IngestionBindingCommand) -> object:
+        async with adapter.uow_factory(context(boundary, "ingestion_binding")) as uow:
+            result = await uow.ingestion.bind_source(command)
+            await uow.commit()
+            return result
+
+    results = await asyncio.gather(bind(first), bind(second), return_exceptions=True)
+    assert len(results) == 2, results
+    assert all(isinstance(result, ConstraintConflictError) for result in results)
+    async with adapter.uow_factory(context(boundary, "ingestion_run")) as uow:
+        state = await uow.ingestion.derive_run_state(command.run.ingestion_run_id)
+        await uow.rollback()
+    assert state is not None
+    assert state.item_states == (IngestionItemState.RECEIVED,)
+
+
+@pytest.mark.asyncio
+async def test_run_state_derives_partial_success_from_item_heads(persistence) -> None:
+    adapter, boundary = persistence
+    command = IngestionRunCommand.create(run=run("partial"), idempotency_key=IdempotencyKey("partial"))
+    successful_item = IngestionRunSource(
+        ingestion_run_source_id=uuid5(NAMESPACE_URL, "issue86-partial-success-item"),
+        ingestion_run_id=command.run.ingestion_run_id,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        input_ordinal=1,
+        input_identity="issue86-partial-success-input",
+        input_digest="c" * 64,
+        command_identity="issue86-partial-success-command",
+        command_digest="d" * 64,
+        created_at=NOW,
+    )
+    failed_item = successful_item.model_copy(update={
+        "ingestion_run_source_id": uuid5(NAMESPACE_URL, "issue86-partial-failed-item"),
+        "input_ordinal": 2,
+        "input_identity": "issue86-partial-failed-input",
+        "command_identity": "issue86-partial-failed-command",
+    })
+
+    async with adapter.uow_factory(context(boundary, "ingestion_run")) as uow:
+        await uow.ingestion.create_run(command)
+        await uow.ingestion.create_item(successful_item)
+        await uow.ingestion.create_item(failed_item)
+        run_previous = uuid5(NAMESPACE_URL, f"ingestion-run-root:{command.run.ingestion_run_id}")
+        for state in (IngestionRunState.RECEIVING, IngestionRunState.PROCESSING):
+            transition_id = uuid5(NAMESPACE_URL, f"issue86-partial-run-{state.value}")
+            await uow.ingestion.append_transition(IngestionTransition(
+                ingestion_transition_id=transition_id,
+                workspace_id=WORKSPACE,
+                environment_id=ENVIRONMENT,
+                target_kind=IngestionTargetKind.RUN,
+                ingestion_run_id=command.run.ingestion_run_id,
+                predecessor_transition_id=run_previous,
+                state=state,
+                attempt=1,
+                actor_or_service="issue86-test",
+                trace_id=uuid5(NAMESPACE_URL, f"issue86-partial-run-trace-{state.value}"),
+                occurred_at=NOW,
+            ))
+            run_previous = transition_id
+
+        for item, terminal_state in ((successful_item, IngestionItemState.PROCESSED), (failed_item, IngestionItemState.PROCESSING_FAILED)):
+            previous = uuid5(NAMESPACE_URL, f"ingestion-item-root:{item.ingestion_run_source_id}")
+            states = (
+                IngestionItemState.OBSERVED,
+                IngestionItemState.ACCEPTED,
+                IngestionItemState.PROCESSING,
+                terminal_state,
+            )
+            for index, state in enumerate(states, start=1):
+                transition_id = uuid5(NAMESPACE_URL, f"issue86-partial-{item.ingestion_run_source_id}-{index}")
+                await uow.ingestion.append_transition(IngestionTransition(
+                    ingestion_transition_id=transition_id,
+                    workspace_id=WORKSPACE,
+                    environment_id=ENVIRONMENT,
+                    target_kind=IngestionTargetKind.ITEM,
+                    ingestion_run_id=command.run.ingestion_run_id,
+                    ingestion_run_source_id=item.ingestion_run_source_id,
+                    predecessor_transition_id=previous,
+                    state=state,
+                    attempt=1,
+                    actor_or_service="issue86-test",
+                    trace_id=uuid5(NAMESPACE_URL, f"issue86-partial-trace-{item.ingestion_run_source_id}-{index}"),
+                    occurred_at=NOW,
+                ))
+                previous = transition_id
+        await uow.commit()
+
+    async with adapter.uow_factory(context(boundary, "ingestion_run")) as uow:
+        state = await uow.ingestion.derive_run_state(command.run.ingestion_run_id)
+        await uow.rollback()
+    assert state is not None
+    assert state.state is IngestionRunState.PARTIALLY_SUCCEEDED
 
 
 @pytest.mark.asyncio
