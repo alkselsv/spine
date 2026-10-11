@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta, timezone
 import asyncio
+from uuid import UUID
 
 import pytest
 
@@ -14,15 +16,18 @@ from spine.application.outbox.dispatch import (
     DispatchOutcomeCode,
     OutboxConsumerRegistry,
     OutboxConsumerSuccess,
+    OutboxDispatchRepository,
     OutboxDispatcher,
     RetryableOutboxConsumerFailure,
     TerminalOutboxConsumerFailure,
 )
 from spine.application.persistence.delivery import OutboxDeliveryStatus
+from spine.application.persistence.errors import UnexpectedPersistenceError
 from spine.application.persistence.outbox import OutboxIntent
 from spine.domain.audit import AuditOutcome
 from spine.infrastructure.diagnostics import RecordingDiagnosticSink
 from tests.contracts.persistence.conftest import create_in_memory_adapter
+from tests.contracts.persistence.adapter import DeliveryPersistenceAdapter
 from tests.contracts.persistence.ids import synthetic_uuid
 from tests.contracts.persistence.test_outbox_writer_contract import intent, workspace
 from tests.contracts.persistence.outbox_events import WorkspaceCreatedPayload
@@ -86,6 +91,69 @@ class MismatchedContextConsumer:
         )
 
 
+async def _append_events(
+    adapter: DeliveryPersistenceAdapter,
+    *,
+    workspace_id: UUID,
+    event_ids: Iterable[UUID],
+) -> None:
+    context = adapter.workspace_context(workspace_id)
+    async with adapter.uow_factory(context) as uow:
+        await uow.workspaces.add(workspace(workspace_id))
+        for event_id in event_ids:
+            await uow.outbox.append(
+                intent(
+                    adapter,
+                    workspace_id=workspace_id,
+                    event_id=event_id,
+                    trace_id=context.trace_id,
+                    producer_deduplication_id=None,
+                )
+            )
+        await uow.commit()
+
+
+def _build_dispatcher(
+    adapter: DeliveryPersistenceAdapter,
+    *,
+    consumers: OutboxConsumerRegistry,
+    clock: Callable[[], datetime],
+    audit_id_start: int,
+    repository: OutboxDispatchRepository | None = None,
+    retry_delay: Callable[[int], timedelta] = lambda attempt: timedelta(seconds=5),
+    maximum_retry_delay: timedelta = timedelta(minutes=5),
+    handler_timeout: timedelta = timedelta(seconds=5),
+) -> tuple[OutboxDispatcher, RecordingDiagnosticSink, list[UUID]]:
+    diagnostics = DiagnosticEventRegistry.with_default_families()
+    diagnostic_sink = RecordingDiagnosticSink(diagnostics)
+    audit_event_ids: list[UUID] = []
+
+    def next_audit_event_id() -> UUID:
+        value = synthetic_uuid(audit_id_start + len(audit_event_ids))
+        audit_event_ids.append(value)
+        return value
+
+    return (
+        OutboxDispatcher(
+            repository=repository or adapter.delivery_repository,
+            consumers=consumers,
+            audit_events=adapter.audit_events,
+            diagnostic_events=diagnostics,
+            diagnostic_sink=diagnostic_sink,
+            service_principal_id=synthetic_uuid(audit_id_start - 1),
+            clock=clock,
+            audit_event_id_source=next_audit_event_id,
+            retry_delay=retry_delay,
+            maximum_retry_delay=maximum_retry_delay,
+            lease_duration=timedelta(seconds=30),
+            handler_timeout=handler_timeout,
+            maximum_attempts=3,
+        ),
+        diagnostic_sink,
+        audit_event_ids,
+    )
+
+
 def test_consumer_registry_rejects_name_outside_delivery_contract() -> None:
     consumers = OutboxConsumerRegistry()
 
@@ -137,6 +205,7 @@ async def test_success_commits_delivery_audit_before_emitting_diagnostic() -> No
         clock=clock,
         audit_event_id_source=lambda: audit_event_id,
         retry_delay=lambda attempt_number: timedelta(seconds=attempt_number * 5),
+        maximum_retry_delay=timedelta(minutes=5),
         lease_duration=timedelta(seconds=30),
         handler_timeout=timedelta(seconds=5),
         maximum_attempts=3,
@@ -176,7 +245,7 @@ async def test_success_commits_delivery_audit_before_emitting_diagnostic() -> No
 
 
 @pytest.mark.asyncio
-async def test_retryable_failure_schedules_injected_backoff_without_raw_error() -> None:
+async def test_retryable_failure_clamps_injected_backoff_without_raw_error() -> None:
     adapter = await create_in_memory_adapter()
     workspace_id = synthetic_uuid(6610)
     event_id = synthetic_uuid(6611)
@@ -209,7 +278,8 @@ async def test_retryable_failure_schedules_injected_backoff_without_raw_error() 
         service_principal_id=synthetic_uuid(6613),
         clock=iter((claimed_at, failed_at)).__next__,
         audit_event_id_source=lambda: audit_event_id,
-        retry_delay=lambda attempt_number: timedelta(seconds=attempt_number * 5),
+        retry_delay=lambda attempt_number: timedelta(hours=attempt_number),
+        maximum_retry_delay=timedelta(seconds=5),
         lease_duration=timedelta(seconds=30),
         handler_timeout=timedelta(seconds=5),
         maximum_attempts=3,
@@ -275,6 +345,7 @@ async def test_terminal_failure_is_quarantined_with_safe_code() -> None:
         ).__next__,
         audit_event_id_source=lambda: synthetic_uuid(6623),
         retry_delay=lambda attempt_number: timedelta(seconds=attempt_number * 5),
+        maximum_retry_delay=timedelta(minutes=5),
         lease_duration=timedelta(seconds=30),
         handler_timeout=timedelta(seconds=5),
         maximum_attempts=3,
@@ -332,6 +403,7 @@ async def test_retryable_failure_at_attempt_limit_is_quarantined() -> None:
             (synthetic_uuid(6633), synthetic_uuid(6634))
         ).__next__,
         retry_delay=lambda attempt_number: timedelta(seconds=5),
+        maximum_retry_delay=timedelta(minutes=5),
         lease_duration=timedelta(seconds=30),
         handler_timeout=timedelta(seconds=5),
         maximum_attempts=2,
@@ -399,6 +471,7 @@ async def test_timeout_or_context_mismatch_never_acknowledges_success(
         clock=iter((base, base + timedelta(seconds=1))).__next__,
         audit_event_id_source=lambda: synthetic_uuid(6643),
         retry_delay=lambda attempt_number: timedelta(seconds=5),
+        maximum_retry_delay=timedelta(minutes=5),
         lease_duration=timedelta(seconds=30),
         handler_timeout=timedelta(milliseconds=1),
         maximum_attempts=3,
@@ -455,6 +528,7 @@ async def test_unknown_route_is_quarantined_without_consumer_execution() -> None
         clock=iter((base, base + timedelta(seconds=1))).__next__,
         audit_event_id_source=lambda: synthetic_uuid(6653),
         retry_delay=lambda attempt_number: timedelta(seconds=5),
+        maximum_retry_delay=timedelta(minutes=5),
         lease_duration=timedelta(seconds=30),
         handler_timeout=timedelta(seconds=5),
         maximum_attempts=3,
@@ -468,7 +542,7 @@ async def test_unknown_route_is_quarantined_without_consumer_execution() -> None
     assert delivery.last_error_code == "delivery.unknown_route"
 
 
-class LoseFirstFinalization:
+class FailBeforeFirstFinalization:
     def __init__(self, repository: object) -> None:
         self._repository = repository
         self._lost = False
@@ -508,7 +582,7 @@ async def test_acknowledgement_loss_redelivers_one_logical_consumer_effect() -> 
     consumers = OutboxConsumerRegistry()
     consumers.register("workspace_projection", consumer)
     diagnostics = DiagnosticEventRegistry.with_default_families()
-    repository = LoseFirstFinalization(adapter.delivery_repository)
+    repository = FailBeforeFirstFinalization(adapter.delivery_repository)
     base = datetime(2026, 10, 12, 16, tzinfo=timezone.utc)
     dispatcher = OutboxDispatcher(
         repository=repository,  # type: ignore[arg-type]
@@ -529,13 +603,19 @@ async def test_acknowledgement_loss_redelivers_one_logical_consumer_effect() -> 
             (synthetic_uuid(6663), synthetic_uuid(6664))
         ).__next__,
         retry_delay=lambda attempt_number: timedelta(seconds=5),
+        maximum_retry_delay=timedelta(minutes=5),
         lease_duration=timedelta(seconds=30),
         handler_timeout=timedelta(seconds=5),
         maximum_attempts=3,
     )
 
-    with pytest.raises(ConnectionError):
+    with pytest.raises(
+        UnexpectedPersistenceError,
+        match="Outbox dispatch persistence failed",
+    ) as captured:
         await dispatcher.dispatch_batch(limit=1, worker_identity="worker_alpha")
+    assert captured.value.__cause__ is None
+    assert "protected detail" not in str(captured.value)
     report = await dispatcher.dispatch_batch(limit=1, worker_identity="worker_beta")
 
     assert report.delivered == 1
@@ -545,3 +625,230 @@ async def test_acknowledgement_loss_redelivers_one_logical_consumer_effect() -> 
     assert delivery is not None
     assert delivery.attempt_count == 2
     assert delivery.status is OutboxDeliveryStatus.DELIVERED
+
+
+class BarrierConsumer(IdempotentRecordingConsumer):
+    def __init__(self, expected: int) -> None:
+        super().__init__()
+        self._expected = expected
+        self._started = 0
+        self._all_started = asyncio.Event()
+
+    async def consume(
+        self,
+        intent: OutboxIntent,
+        diagnostic_context: DiagnosticContext,
+    ) -> OutboxConsumerSuccess:
+        self._started += 1
+        if self._started == self._expected:
+            self._all_started.set()
+        await self._all_started.wait()
+        return await super().consume(intent, diagnostic_context)
+
+
+@pytest.mark.asyncio
+async def test_bounded_batch_starts_handlers_within_the_same_lease_window() -> None:
+    adapter = await create_in_memory_adapter()
+    workspace_id = synthetic_uuid(6670)
+    event_ids = (synthetic_uuid(6671), synthetic_uuid(6672))
+    await _append_events(adapter, workspace_id=workspace_id, event_ids=event_ids)
+    consumer = BarrierConsumer(expected=2)
+    consumers = OutboxConsumerRegistry()
+    consumers.register("workspace_projection", consumer)
+    base = datetime(2026, 10, 12, 17, tzinfo=timezone.utc)
+    dispatcher, _, _ = _build_dispatcher(
+        adapter,
+        consumers=consumers,
+        clock=lambda: base,
+        audit_id_start=6674,
+        handler_timeout=timedelta(milliseconds=100),
+    )
+
+    report = await dispatcher.dispatch_batch(limit=2, worker_identity="worker_alpha")
+
+    assert report.claimed == 2
+    assert report.delivered == 2
+    assert consumer.effects == set(event_ids)
+
+
+@pytest.mark.asyncio
+async def test_unknown_consumer_is_quarantined_without_handler_execution() -> None:
+    adapter = await create_in_memory_adapter()
+    workspace_id = synthetic_uuid(6680)
+    event_id = synthetic_uuid(6681)
+    await _append_events(adapter, workspace_id=workspace_id, event_ids=(event_id,))
+    base = datetime(2026, 10, 12, 18, tzinfo=timezone.utc)
+    dispatcher, _, _ = _build_dispatcher(
+        adapter,
+        consumers=OutboxConsumerRegistry(),
+        clock=lambda: base,
+        audit_id_start=6683,
+    )
+
+    report = await dispatcher.dispatch_batch(limit=1, worker_identity="worker_alpha")
+
+    assert report.outcome_codes == (DispatchOutcomeCode.QUARANTINED,)
+    delivery = await adapter.delivery_repository.resolve(event_id)
+    assert delivery is not None
+    assert delivery.last_error_code == "delivery.unknown_consumer"
+
+
+class SimulatedWorkerCrash(BaseException):
+    pass
+
+
+class CrashBeforeFirstHandlerRegistry(OutboxConsumerRegistry):
+    def __init__(self) -> None:
+        super().__init__()
+        self._crashed = False
+
+    def resolve_optional(self, consumer_name: str):
+        if not self._crashed:
+            self._crashed = True
+            raise SimulatedWorkerCrash()
+        return super().resolve_optional(consumer_name)
+
+
+@pytest.mark.asyncio
+async def test_crash_before_handler_recovers_after_lease_expiry() -> None:
+    adapter = await create_in_memory_adapter()
+    workspace_id = synthetic_uuid(6690)
+    event_id = synthetic_uuid(6691)
+    await _append_events(adapter, workspace_id=workspace_id, event_ids=(event_id,))
+    consumer = IdempotentRecordingConsumer()
+    consumers = CrashBeforeFirstHandlerRegistry()
+    consumers.register("workspace_projection", consumer)
+    base = datetime(2026, 10, 12, 19, tzinfo=timezone.utc)
+    dispatcher, _, _ = _build_dispatcher(
+        adapter,
+        consumers=consumers,
+        clock=iter(
+            (base, base + timedelta(seconds=30), base + timedelta(seconds=31))
+        ).__next__,
+        audit_id_start=6693,
+    )
+
+    with pytest.raises(SimulatedWorkerCrash):
+        await dispatcher.dispatch_batch(limit=1, worker_identity="worker_alpha")
+    assert consumer.effects == set()
+
+    report = await dispatcher.dispatch_batch(limit=1, worker_identity="worker_beta")
+
+    assert report.delivered == 1
+    assert consumer.effects == {event_id}
+    delivery = await adapter.delivery_repository.resolve(event_id)
+    assert delivery is not None
+    assert delivery.attempt_count == 2
+
+
+class LoseFirstFinalizationResponse:
+    def __init__(self, repository: object) -> None:
+        self._repository = repository
+        self._lost = False
+
+    async def claim_due(self, **kwargs: object):
+        return await self._repository.claim_due(**kwargs)  # type: ignore[attr-defined]
+
+    async def finalize(self, claim: object, **kwargs: object):
+        result = await self._repository.finalize(  # type: ignore[attr-defined]
+            claim,
+            **kwargs,
+        )
+        if not self._lost:
+            self._lost = True
+            raise ConnectionError("provider response containing protected detail")
+        return result
+
+
+@pytest.mark.asyncio
+async def test_response_loss_after_commit_does_not_redeliver() -> None:
+    adapter = await create_in_memory_adapter()
+    workspace_id = synthetic_uuid(6700)
+    event_id = synthetic_uuid(6701)
+    await _append_events(adapter, workspace_id=workspace_id, event_ids=(event_id,))
+    consumer = IdempotentRecordingConsumer()
+    consumers = OutboxConsumerRegistry()
+    consumers.register("workspace_projection", consumer)
+    base = datetime(2026, 10, 12, 20, tzinfo=timezone.utc)
+    repository = LoseFirstFinalizationResponse(adapter.delivery_repository)
+    dispatcher, diagnostic_sink, _ = _build_dispatcher(
+        adapter,
+        consumers=consumers,
+        repository=repository,  # type: ignore[arg-type]
+        clock=iter((base, base + timedelta(seconds=1), base + timedelta(seconds=30))).__next__,
+        audit_id_start=6703,
+    )
+
+    with pytest.raises(UnexpectedPersistenceError) as captured:
+        await dispatcher.dispatch_batch(limit=1, worker_identity="worker_alpha")
+    assert captured.value.__cause__ is None
+    assert "protected detail" not in str(captured.value)
+
+    report = await dispatcher.dispatch_batch(limit=1, worker_identity="worker_beta")
+
+    assert report.claimed == 0
+    assert consumer.effects == {event_id}
+    assert diagnostic_sink.events == ()
+    delivery = await adapter.delivery_repository.resolve(event_id)
+    assert delivery is not None
+    assert delivery.status is OutboxDeliveryStatus.DELIVERED
+    assert delivery.attempt_count == 1
+
+
+class LeakingConsumer:
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    async def consume(
+        self,
+        intent: OutboxIntent,
+        diagnostic_context: DiagnosticContext,
+    ) -> OutboxConsumerSuccess:
+        del intent, diagnostic_context
+        raise self._error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "protected_failure",
+    (
+        RuntimeError("customer@example.test token=secret-1"),
+        ValueError("provider payload: confidential-contract"),
+    ),
+)
+async def test_unexpected_handler_failure_never_leaks_raw_detail(
+    protected_failure: Exception,
+) -> None:
+    adapter = await create_in_memory_adapter()
+    workspace_id = synthetic_uuid(6710)
+    event_id = synthetic_uuid(6711)
+    await _append_events(adapter, workspace_id=workspace_id, event_ids=(event_id,))
+    consumers = OutboxConsumerRegistry()
+    consumers.register("workspace_projection", LeakingConsumer(protected_failure))
+    base = datetime(2026, 10, 12, 21, tzinfo=timezone.utc)
+    dispatcher, diagnostic_sink, audit_ids = _build_dispatcher(
+        adapter,
+        consumers=consumers,
+        clock=lambda: base,
+        audit_id_start=6713,
+    )
+
+    report = await dispatcher.dispatch_batch(limit=1, worker_identity="worker_alpha")
+
+    delivery = await adapter.delivery_repository.resolve(event_id)
+    assert delivery is not None
+    audit = await adapter.read_audit_event(
+        adapter.worker_workspace_context(workspace_id),
+        audit_ids[0],
+    )
+    assert audit is not None
+    visible = " ".join(
+        (
+            report.model_dump_json(),
+            delivery.model_dump_json(),
+            audit.model_dump_json(),
+            diagnostic_sink.events[0].model_dump_json(),
+        )
+    )
+    assert str(protected_failure) not in visible
+    assert delivery.last_error_code == "delivery.handler_unexpected"

@@ -29,6 +29,10 @@ from spine.application.persistence.delivery import (
     UnresolvedOutboxIntent,
     validate_consumer_name,
 )
+from spine.application.persistence.errors import (
+    PersistenceError,
+    UnexpectedPersistenceError,
+)
 from spine.application.persistence.outbox import OutboxIntent
 from spine.domain.audit import AuditEvent, AuditOutcome, OutboxDeliveryAuditPayload
 from spine.domain.common import ContextOrigin
@@ -244,6 +248,7 @@ class OutboxDispatcher:
         clock: Callable[[], datetime],
         audit_event_id_source: Callable[[], UUID],
         retry_delay: Callable[[int], timedelta],
+        maximum_retry_delay: timedelta,
         lease_duration: timedelta,
         handler_timeout: timedelta,
         maximum_attempts: int,
@@ -254,6 +259,8 @@ class OutboxDispatcher:
             raise ValueError("lease_duration must be positive.")
         if handler_timeout <= timedelta(0) or handler_timeout >= lease_duration:
             raise ValueError("handler_timeout must be positive and shorter than lease.")
+        if maximum_retry_delay <= timedelta(0):
+            raise ValueError("maximum_retry_delay must be positive.")
         if isinstance(maximum_attempts, bool) or maximum_attempts <= 0:
             raise ValueError("maximum_attempts must be positive.")
         self._repository = repository
@@ -265,6 +272,7 @@ class OutboxDispatcher:
         self._clock = clock
         self._audit_event_id_source = audit_event_id_source
         self._retry_delay = retry_delay
+        self._maximum_retry_delay = maximum_retry_delay
         self._lease_duration = lease_duration
         self._handler_timeout = handler_timeout
         self._maximum_attempts = maximum_attempts
@@ -275,101 +283,112 @@ class OutboxDispatcher:
         limit: int,
         worker_identity: str,
     ) -> DispatchReport:
-        claims = await self._repository.claim_due(
-            limit=limit,
-            worker_identity=worker_identity,
-            claimed_at=self._clock(),
-            lease_duration=self._lease_duration,
+        try:
+            claims = await self._repository.claim_due(
+                limit=limit,
+                worker_identity=worker_identity,
+                claimed_at=self._clock(),
+                lease_duration=self._lease_duration,
+            )
+        except PersistenceError:
+            raise
+        except Exception:
+            raise UnexpectedPersistenceError(
+                "Outbox dispatch persistence failed."
+            ) from None
+        outcomes = await asyncio.gather(
+            *(self._dispatch_claim(claim) for claim in claims)
         )
-        delivered = 0
-        outcomes: list[DispatchOutcomeCode] = []
-        for claim in claims:
-            intent = claim.intent
-            event_id = intent.event_id
-            if event_id is None:
-                raise RuntimeError("claimed delivery has no event identity")
-            diagnostic_context = DiagnosticContext(
-                trace_id=intent.trace_id,
-                correlation_id=intent.correlation_id,
-                causation_id=event_id,
-            )
-            if type(intent) is UnresolvedOutboxIntent:
-                finalization = OutboxDeliveryFinalization(
-                    status=OutboxDeliveryStatus.QUARANTINED,
-                    occurred_at=self._clock(),
-                    error_code="delivery.unknown_event",
-                )
-            elif claim.consumer_name is None:
-                finalization = OutboxDeliveryFinalization(
-                    status=OutboxDeliveryStatus.QUARANTINED,
-                    occurred_at=self._clock(),
-                    error_code="delivery.unknown_route",
-                )
-            else:
-                consumer = self._consumers.resolve_optional(claim.consumer_name)
-                if consumer is None:
-                    finalization = OutboxDeliveryFinalization(
-                        status=OutboxDeliveryStatus.QUARANTINED,
-                        occurred_at=self._clock(),
-                        error_code="delivery.unknown_consumer",
-                    )
-                else:
-                    try:
-                        result = await asyncio.wait_for(
-                            consumer.consume(intent, diagnostic_context),
-                            timeout=self._handler_timeout.total_seconds(),
-                        )
-                    except (TimeoutError, asyncio.TimeoutError):
-                        finalization = self._retry_or_exhaust(
-                            claim,
-                            failed_at=self._clock(),
-                            error_code="delivery.handler_timeout",
-                        )
-                    except RetryableOutboxConsumerFailure as failure:
-                        finalization = self._retry_or_exhaust(
-                            claim,
-                            failed_at=self._clock(),
-                            error_code=failure.code,
-                        )
-                    except TerminalOutboxConsumerFailure as failure:
-                        finalization = OutboxDeliveryFinalization(
-                            status=OutboxDeliveryStatus.QUARANTINED,
-                            occurred_at=self._clock(),
-                            error_code=failure.code,
-                        )
-                    except Exception:
-                        finalization = OutboxDeliveryFinalization(
-                            status=OutboxDeliveryStatus.QUARANTINED,
-                            occurred_at=self._clock(),
-                            error_code="delivery.handler_unexpected",
-                        )
-                    else:
-                        if (
-                            type(result) is not OutboxConsumerSuccess
-                            or result.diagnostic_context != diagnostic_context
-                        ):
-                            finalization = OutboxDeliveryFinalization(
-                                status=OutboxDeliveryStatus.QUARANTINED,
-                                occurred_at=self._clock(),
-                                error_code="delivery.context_mismatch",
-                            )
-                        else:
-                            finalization = OutboxDeliveryFinalization(
-                                status=OutboxDeliveryStatus.DELIVERED,
-                                occurred_at=self._clock(),
-                            )
-            outcome = await self._commit_outcome(
-                claim,
-                diagnostic_context=diagnostic_context,
-                finalization=finalization,
-            )
-            outcomes.append(outcome)
         return DispatchReport(
             claimed=len(claims),
             delivered=outcomes.count(DispatchOutcomeCode.DELIVERED),
             retry_scheduled=outcomes.count(DispatchOutcomeCode.RETRY_SCHEDULED),
             quarantined=outcomes.count(DispatchOutcomeCode.QUARANTINED),
             outcome_codes=tuple(outcomes),
+        )
+
+    async def _dispatch_claim(
+        self,
+        claim: ClaimedOutboxDelivery,
+    ) -> DispatchOutcomeCode:
+        intent = claim.intent
+        event_id = intent.event_id
+        if event_id is None:
+            raise RuntimeError("claimed delivery has no event identity")
+        diagnostic_context = DiagnosticContext(
+            trace_id=intent.trace_id,
+            correlation_id=intent.correlation_id,
+            causation_id=event_id,
+        )
+        if type(intent) is UnresolvedOutboxIntent:
+            finalization = OutboxDeliveryFinalization(
+                status=OutboxDeliveryStatus.QUARANTINED,
+                occurred_at=self._clock(),
+                error_code="delivery.unknown_event",
+            )
+        elif claim.consumer_name is None:
+            finalization = OutboxDeliveryFinalization(
+                status=OutboxDeliveryStatus.QUARANTINED,
+                occurred_at=self._clock(),
+                error_code="delivery.unknown_route",
+            )
+        else:
+            consumer = self._consumers.resolve_optional(claim.consumer_name)
+            if consumer is None:
+                finalization = OutboxDeliveryFinalization(
+                    status=OutboxDeliveryStatus.QUARANTINED,
+                    occurred_at=self._clock(),
+                    error_code="delivery.unknown_consumer",
+                )
+            else:
+                try:
+                    result = await asyncio.wait_for(
+                        consumer.consume(intent, diagnostic_context),
+                        timeout=self._handler_timeout.total_seconds(),
+                    )
+                except (TimeoutError, asyncio.TimeoutError):
+                    finalization = self._retry_or_exhaust(
+                        claim,
+                        failed_at=self._clock(),
+                        error_code="delivery.handler_timeout",
+                    )
+                except RetryableOutboxConsumerFailure as failure:
+                    finalization = self._retry_or_exhaust(
+                        claim,
+                        failed_at=self._clock(),
+                        error_code=failure.code,
+                    )
+                except TerminalOutboxConsumerFailure as failure:
+                    finalization = OutboxDeliveryFinalization(
+                        status=OutboxDeliveryStatus.QUARANTINED,
+                        occurred_at=self._clock(),
+                        error_code=failure.code,
+                    )
+                except Exception:
+                    finalization = OutboxDeliveryFinalization(
+                        status=OutboxDeliveryStatus.QUARANTINED,
+                        occurred_at=self._clock(),
+                        error_code="delivery.handler_unexpected",
+                    )
+                else:
+                    if (
+                        type(result) is not OutboxConsumerSuccess
+                        or result.diagnostic_context != diagnostic_context
+                    ):
+                        finalization = OutboxDeliveryFinalization(
+                            status=OutboxDeliveryStatus.QUARANTINED,
+                            occurred_at=self._clock(),
+                            error_code="delivery.context_mismatch",
+                        )
+                    else:
+                        finalization = OutboxDeliveryFinalization(
+                            status=OutboxDeliveryStatus.DELIVERED,
+                            occurred_at=self._clock(),
+                        )
+        return await self._commit_outcome(
+            claim,
+            diagnostic_context=diagnostic_context,
+            finalization=finalization,
         )
 
     def _retry_or_exhaust(
@@ -388,6 +407,7 @@ class OutboxDispatcher:
         retry_delay = self._retry_delay(claim.attempt_number)
         if retry_delay <= timedelta(0):
             raise ValueError("retry_delay must be positive.")
+        retry_delay = min(retry_delay, self._maximum_retry_delay)
         return OutboxDeliveryFinalization(
             status=OutboxDeliveryStatus.RETRY_SCHEDULED,
             occurred_at=failed_at,
@@ -455,11 +475,18 @@ class OutboxDispatcher:
                 f"{audit_outcome.value}"
             ),
         )
-        await self._repository.finalize(
-            claim,
-            finalization=finalization,
-            audit_event=audit_event,
-        )
+        try:
+            await self._repository.finalize(
+                claim,
+                finalization=finalization,
+                audit_event=audit_event,
+            )
+        except PersistenceError:
+            raise
+        except Exception:
+            raise UnexpectedPersistenceError(
+                "Outbox dispatch persistence failed."
+            ) from None
         diagnostic = self._diagnostic_events.build_event(
             event_type="outbox.delivery",
             schema_version=1,
