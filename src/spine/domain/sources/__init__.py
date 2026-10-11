@@ -1,4 +1,11 @@
-"""Immutable source identity and observation contracts."""
+"""Immutable source identity, observation and admission contracts."""
+
+from .admission import (
+    AdmissionDecision,
+    AdmissionDisposition,
+    AdmissionReference,
+    ReasonCode,
+)
 
 from .models import (
     IdentityMode,
@@ -24,6 +31,10 @@ from .profile import BCP47_TABLE_DIGEST, REVISION_METADATA_SCHEMA, UNICODE_TABLE
 from .profile import OBSERVATION_SCHEMA
 
 __all__ = [
+    "AdmissionDecision",
+    "AdmissionDisposition",
+    "AdmissionReference",
+    "ReasonCode",
     "IdentityMode",
     "RevisionDigestMismatchError",
     "RevisionKind",

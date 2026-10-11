@@ -51,10 +51,7 @@ from spine.application.persistence.idempotency import (
     OwnedIdempotencyClaim,
     idempotency_conflict,
 )
-from spine.application.persistence.repositories import (
-    SourceObservationCommand,
-    SourceObservationResult,
-)
+from spine.application.persistence.repositories import SourceObservationCommand, SourceObservationResult
 from spine.application.persistence.command_digest import CommandDigest
 from spine.application.persistence.outbox import (
     OutboxEventRegistry,
@@ -73,7 +70,14 @@ from spine.application.outbox.dispatch import (
     validate_outbox_delivery_audit,
 )
 from spine.domain.workspaces import Environment, Workspace
-from spine.domain.sources import SourceObject, SourceRevision, SourceRevisionProvenance
+from spine.domain.sources import (
+    AdmissionDecision,
+    AdmissionDisposition,
+    RevisionKind,
+    SourceObject,
+    SourceRevision,
+    SourceRevisionProvenance,
+)
 from spine.domain.sources.canonicalization import assert_revision_digest
 from spine.domain.sources.errors import RevisionDigestMismatchError as DomainRevisionDigestMismatchError
 
@@ -91,6 +95,7 @@ class _StoreState:
     source_objects: dict[UUID, SourceObject]
     source_revisions: dict[UUID, SourceRevision]
     source_provenance: dict[UUID, SourceRevisionProvenance]
+    admission_decisions: dict[UUID, AdmissionDecision]
     audit_events: dict[UUID, AuditEvent]
 
 
@@ -121,6 +126,7 @@ class _Store:
             source_objects={},
             source_revisions={},
             source_provenance={},
+            admission_decisions={},
             audit_events={},
         )
         self.lock = transaction_lock or asyncio.Lock()
@@ -157,6 +163,10 @@ class _Store:
     @property
     def source_provenance(self) -> dict[UUID, SourceRevisionProvenance]:
         return self.state.source_provenance
+
+    @property
+    def admission_decisions(self) -> dict[UUID, AdmissionDecision]:
+        return self.state.admission_decisions
 
     @property
     def audit_events(self) -> dict[UUID, AuditEvent]:
@@ -232,7 +242,6 @@ class _WorkspaceRepository:
             return _workspace_copy(workspace) if workspace is not None else None
 
         return self._uow._repository_call(operation)
-
 
 class _EnvironmentRepository:
     def __init__(self, uow: "InMemoryUnitOfWork") -> None:
@@ -455,6 +464,109 @@ class _SourceObservationRepository:
         )
 
 
+class _AdmissionRepository:
+    """In-memory implementation of the append-only admission CAS chain."""
+
+    def __init__(self, uow: "InMemoryUnitOfWork") -> None:
+        self._uow = uow
+
+    def _decisions(self) -> dict[UUID, AdmissionDecision]:
+        return self._uow._base_admission_decisions | self._uow._pending_admission_decisions
+
+    def _scope_check(self, decision: AdmissionDecision) -> None:
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope) or (
+            scope.workspace_id != decision.workspace_id
+            or scope.environment_id != decision.environment_id
+        ):
+            self._uow._fail(InvalidPersistenceContextError("Persistence context is invalid."))
+
+    async def append_decision(self, decision: AdmissionDecision) -> AdmissionDecision:
+        self._uow._guard_active()
+
+        def operation() -> AdmissionDecision:
+            self._scope_check(decision)
+            revision = self._uow._base_source_revisions.get(decision.revision_id) or self._uow._pending_source_revisions.get(decision.revision_id)
+            if revision is None or (
+                revision.source_object_id != decision.source_object_id
+                or revision.workspace_id != decision.workspace_id
+                or revision.environment_id != decision.environment_id
+            ):
+                self._uow._fail(ConstraintConflictError("Admission decision target is invalid."))
+            if decision.disposition is AdmissionDisposition.ADMITTED and not any(
+                item.revision_id == decision.revision_id
+                and item.workspace_id == decision.workspace_id
+                and item.environment_id == decision.environment_id
+                for item in (
+                    *self._uow._base_source_provenance.values(),
+                    *self._uow._pending_source_provenance.values(),
+                )
+            ):
+                self._uow._fail(ConstraintConflictError("Admission provenance is incomplete."))
+            if decision.disposition is AdmissionDisposition.ADMITTED and revision.kind is not RevisionKind.CONTENT:
+                self._uow._fail(ConstraintConflictError("Tombstone admission requires deletion-specific checks."))
+            existing_by_id = self._decisions().get(decision.decision_id)
+            if existing_by_id is not None:
+                if existing_by_id != decision:
+                    self._uow._fail(ConstraintConflictError("Admission decision identity conflict."))
+                return existing_by_id.model_copy(deep=True)
+            decisions = tuple(
+                item for item in self._decisions().values()
+                if item.workspace_id == decision.workspace_id
+                and item.environment_id == decision.environment_id
+                and item.revision_id == decision.revision_id
+            )
+            if decision.predecessor_decision_id is None:
+                if decision.decision_version != 1 or any(item.predecessor_decision_id is None for item in decisions):
+                    self._uow._fail(ConstraintConflictError("Admission decision root already exists."))
+            else:
+                predecessor = self._decisions().get(decision.predecessor_decision_id)
+                if predecessor is None or predecessor.revision_id != decision.revision_id:
+                    self._uow._fail(ConstraintConflictError("Admission decision predecessor is invalid."))
+                if decision.decision_version != predecessor.decision_version + 1:
+                    self._uow._fail(ConstraintConflictError("Admission decision version is invalid."))
+                if any(item.predecessor_decision_id == decision.predecessor_decision_id for item in decisions):
+                    self._uow._fail(ConstraintConflictError("Admission decision successor already exists."))
+            if any(item.decision_version == decision.decision_version for item in decisions):
+                self._uow._fail(ConstraintConflictError("Admission decision version already exists."))
+            self._uow._pending_admission_decisions[decision.decision_id] = decision.model_copy(deep=True)
+            return decision.model_copy(deep=True)
+
+        return self._uow._repository_call(operation)
+
+    async def resolve(self, decision_id: UUID) -> AdmissionDecision | None:
+        self._uow._guard_active()
+        return self._uow._repository_call(
+            lambda: (
+                self._decisions()[decision_id].model_copy(deep=True)
+                if decision_id in self._decisions()
+                and self._decisions()[decision_id].workspace_id == self._uow.scope.workspace_id
+                and isinstance(self._uow.scope, EnvironmentScope)
+                and self._decisions()[decision_id].environment_id == self._uow.scope.environment_id
+                else None
+            )
+        )
+
+    async def resolve_effective(self, revision_id: UUID) -> AdmissionDecision | None:
+        self._uow._guard_active()
+
+        def operation() -> AdmissionDecision | None:
+            scope = self._uow.scope
+            if not isinstance(scope, EnvironmentScope):
+                return None
+            decisions = [
+                item for item in self._decisions().values()
+                if item.revision_id == revision_id
+                and item.workspace_id == scope.workspace_id
+                and item.environment_id == scope.environment_id
+            ]
+            if not decisions:
+                return None
+            return max(decisions, key=lambda item: item.decision_version).model_copy(deep=True)
+
+        return self._uow._repository_call(operation)
+
+
 class _AuditWriter:
     def __init__(self, uow: "InMemoryUnitOfWork") -> None:
         self._uow = uow
@@ -670,6 +782,7 @@ class InMemoryUnitOfWork:
         self._base_source_objects: dict[UUID, SourceObject] = {}
         self._base_source_revisions: dict[UUID, SourceRevision] = {}
         self._base_source_provenance: dict[UUID, SourceRevisionProvenance] = {}
+        self._base_admission_decisions: dict[UUID, AdmissionDecision] = {}
         self._base_audit_events: dict[UUID, AuditEvent] = {}
         self._pending_workspaces: dict[UUID, Workspace] = {}
         self._pending_environments: dict[UUID, Environment] = {}
@@ -678,6 +791,7 @@ class InMemoryUnitOfWork:
         self._pending_source_objects: dict[UUID, SourceObject] = {}
         self._pending_source_revisions: dict[UUID, SourceRevision] = {}
         self._pending_source_provenance: dict[UUID, SourceRevisionProvenance] = {}
+        self._pending_admission_decisions: dict[UUID, AdmissionDecision] = {}
         self._pending_audit_events: dict[UUID, AuditEvent] = {}
         self._source_observation_lock_held = False
         self._workspaces = _WorkspaceRepository(self)
@@ -685,6 +799,7 @@ class InMemoryUnitOfWork:
         self._idempotency = _IdempotencyRepository(self)
         self._outbox = _OutboxWriter(self)
         self._sources = _SourceObservationRepository(self)
+        self._admissions = _AdmissionRepository(self)
         self._audit = _AuditWriter(self)
 
     @property
@@ -711,6 +826,11 @@ class InMemoryUnitOfWork:
     def sources(self) -> _SourceObservationRepository:
         self._guard_active()
         return self._sources
+
+    @property
+    def admissions(self) -> _AdmissionRepository:
+        self._guard_active()
+        return self._admissions
 
     @property
     def audit(self) -> _AuditWriter:
@@ -777,6 +897,9 @@ class InMemoryUnitOfWork:
                 }
                 self._base_source_provenance = {
                     key: value.model_copy(deep=True) for key, value in self._store.source_provenance.items()
+                }
+                self._base_admission_decisions = {
+                    key: value.model_copy(deep=True) for key, value in self._store.admission_decisions.items()
                 }
                 self._base_audit_events = {
                     key: _audit_event_copy(value) for key, value in self._store.audit_events.items()
@@ -870,6 +993,12 @@ class InMemoryUnitOfWork:
                 prepared_source_provenance.update(
                     {key: value.model_copy(deep=True) for key, value in self._pending_source_provenance.items()}
                 )
+                prepared_admission_decisions = {
+                    key: value.model_copy(deep=True) for key, value in self._store.admission_decisions.items()
+                }
+                prepared_admission_decisions.update(
+                    {key: value.model_copy(deep=True) for key, value in self._pending_admission_decisions.items()}
+                )
                 prepared_audit_events = {
                     key: _audit_event_copy(value) for key, value in self._store.audit_events.items()
                 }
@@ -884,6 +1013,7 @@ class InMemoryUnitOfWork:
                     source_objects=prepared_source_objects,
                     source_revisions=prepared_source_revisions,
                     source_provenance=prepared_source_provenance,
+                    admission_decisions=prepared_admission_decisions,
                     audit_events=prepared_audit_events,
                 )
         except BaseException as error:
@@ -905,6 +1035,7 @@ class InMemoryUnitOfWork:
         self._pending_source_objects.clear()
         self._pending_source_revisions.clear()
         self._pending_source_provenance.clear()
+        self._pending_admission_decisions.clear()
         self._pending_audit_events.clear()
         self._lifecycle = _Lifecycle.ROLLED_BACK
         self._release_source_observation_lock()
@@ -966,6 +1097,29 @@ class InMemoryUnitOfWork:
             raise IdempotencyConflictError("Idempotency key conflicts with existing command.")
         if self._pending_outbox_intents.keys() & self._store.outbox_intents.keys():
             raise OutboxConflictError("Outbox event identity already exists.")
+        if self._pending_admission_decisions.keys() & self._store.admission_decisions.keys():
+            raise ConstraintConflictError("Admission decision identity already exists.")
+        committed_decisions = tuple(self._store.admission_decisions.values())
+        pending_decisions = tuple(self._pending_admission_decisions.values())
+        for decision in pending_decisions:
+            same_revision = tuple(
+                item for item in (*committed_decisions, *pending_decisions)
+                if item.workspace_id == decision.workspace_id
+                and item.environment_id == decision.environment_id
+                and item.revision_id == decision.revision_id
+            )
+            if any(item.decision_id != decision.decision_id and item.decision_version == decision.decision_version for item in same_revision):
+                raise ConstraintConflictError("Admission decision version already exists.")
+            if decision.predecessor_decision_id is None and any(
+                item.decision_id != decision.decision_id and item.predecessor_decision_id is None
+                for item in same_revision
+            ):
+                raise ConstraintConflictError("Admission decision root already exists.")
+            if decision.predecessor_decision_id is not None and any(
+                item.decision_id != decision.decision_id and item.predecessor_decision_id == decision.predecessor_decision_id
+                for item in same_revision
+            ):
+                raise ConstraintConflictError("Admission decision successor already exists.")
         if self._pending_audit_events.keys() & self._store.audit_events.keys():
             raise AuditConflictError("Audit Event identity already exists.")
         for intent in self._pending_outbox_intents.values():
@@ -1097,6 +1251,7 @@ class InMemoryUnitOfWork:
         self._base_source_objects.clear()
         self._base_source_revisions.clear()
         self._base_source_provenance.clear()
+        self._base_admission_decisions.clear()
         self._base_audit_events.clear()
         self._pending_workspaces.clear()
         self._pending_environments.clear()
@@ -1105,6 +1260,7 @@ class InMemoryUnitOfWork:
         self._pending_source_objects.clear()
         self._pending_source_revisions.clear()
         self._pending_source_provenance.clear()
+        self._pending_admission_decisions.clear()
         self._pending_audit_events.clear()
         self._scope = None
         self._operation = None

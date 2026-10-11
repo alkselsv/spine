@@ -180,6 +180,25 @@ source_revision_provenance = Table(
     Column("observed_at", DateTime(timezone=True), nullable=False),
 )
 
+admission_decisions = Table(
+    "admission_decisions", metadata,
+    Column("admission_decision_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("decision_version", Integer, nullable=False),
+    Column("predecessor_decision_id", PostgreSQLUUID(as_uuid=True)),
+    Column("disposition", Text, nullable=False),
+    Column("validator_profile_version", Text, nullable=False),
+    Column("reason_schema_version", Text, nullable=False),
+    Column("reason_codes", JSONB, nullable=False),
+    Column("authority_reference", JSONB, nullable=False),
+    Column("trace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("audit_event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("decided_at", DateTime(timezone=True), nullable=False),
+)
+
 
 __all__ = [
     "audit_events",
@@ -192,4 +211,5 @@ __all__ = [
     "source_objects",
     "source_revisions",
     "source_revision_provenance",
+    "admission_decisions",
 ]
