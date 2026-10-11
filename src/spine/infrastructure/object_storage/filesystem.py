@@ -38,6 +38,7 @@ from .contracts import (
     ObjectReference,
     ObservedContentIdentity,
     OriginalUploadCommandInput,
+    PreWriteRequestDigest,
     ReconciliationInventoryEntry,
     UploadCommandState,
     UploadCommandStateName,
@@ -93,6 +94,7 @@ class _ReadPlan:
     receipt: WriteReceipt
     limit: int
     deadline: float
+    payload_identity: tuple[int, int, int]
 
 
 class _BlockingOperationAbandoned(StorageIntegrityIndeterminate):
@@ -422,12 +424,19 @@ class FilesystemOriginalObjectStore:
         final_payload = final_scope_dir / state.object_id.hex
         final_manifest = final_scope_dir / self._manifest_name(state.object_id)
         if self._exists(final_manifest):
-            return self._replay_finalization(
-                state,
-                observed_content,
-                final_payload,
-                final_manifest,
-            )
+            try:
+                return self._replay_finalization(
+                    state,
+                    observed_content,
+                    final_payload,
+                    final_manifest,
+                    deadline=deadline,
+                )
+            except UploadConflict:
+                self._mark_publication_conflict(
+                    self._staged_root / scope_key / state.upload_id.hex / "manifest.json"
+                )
+                raise
 
         location = self._locate_upload(state.upload_id)
         if location is None:
@@ -439,6 +448,7 @@ class FilesystemOriginalObjectStore:
                 observed_content,
                 stage_payload,
                 stage_manifest_path,
+                deadline=deadline,
             )
 
         self._assert_manifest_identity_from_state(manifest, state)
@@ -462,6 +472,7 @@ class FilesystemOriginalObjectStore:
                         observed_content,
                         final_payload,
                         final_manifest,
+                        deadline=deadline,
                     )
                 except UploadConflict:
                     self._mark_publication_conflict(stage_manifest_path)
@@ -473,6 +484,8 @@ class FilesystemOriginalObjectStore:
                 raise ObjectProtected()
             if status == "integrity_conflict":
                 raise IntegrityMismatch()
+            if status == "publishing":
+                raise StorageIntegrityIndeterminate()
             if status != "staging":
                 raise UploadConflict()
 
@@ -593,6 +606,7 @@ class FilesystemOriginalObjectStore:
                     plan.payload_path,
                     limit=plan.limit,
                     deadline=plan.deadline,
+                    expected_identity=plan.payload_identity,
                 ):
                     yield part
             except StorageError:
@@ -634,6 +648,7 @@ class FilesystemOriginalObjectStore:
             receipt=receipt,
             limit=limit,
             deadline=deadline,
+            payload_identity=self._file_identity(payload_path),
         )
 
     async def verify(
@@ -705,17 +720,20 @@ class FilesystemOriginalObjectStore:
             raise UploadLimitExceeded()
         async with self._operation_limit:
             self._ensure_operational()
+            deadline = self._deadline()
             return await self._run_blocking(
                 self._reconciliation_inventory_sync,
                 cursor,
                 limit,
-                deadline=self._deadline(),
+                deadline,
+                deadline=deadline,
             )
 
     def _reconciliation_inventory_sync(
         self,
         cursor: str | None,
         limit: int,
+        deadline: float,
     ) -> tuple[tuple[ReconciliationInventoryEntry, ...], str | None]:
         start = self._inventory_cursor(cursor)
         entries: list[ReconciliationInventoryEntry] = []
@@ -736,7 +754,7 @@ class FilesystemOriginalObjectStore:
             payload_path = manifest_path.parent / receipt.object_reference.object_id.hex
             if not self._exists(payload_path) or self._is_symlink(payload_path):
                 raise StorageIntegrityIndeterminate()
-            self._verify_finalized_file(payload_path, receipt)
+            self._verify_finalized_file(payload_path, receipt, deadline=deadline)
             entries.append(
                 ReconciliationInventoryEntry(
                     object_reference=receipt.object_reference,
@@ -892,21 +910,28 @@ class FilesystemOriginalObjectStore:
         observed_content: ObservedContentIdentity,
         payload_path: Path,
         manifest_path: Path,
+        deadline: float | None = None,
     ) -> WriteReceipt:
         manifest = self._read_manifest(manifest_path)
         self._assert_manifest_identity_from_state(manifest, state)
         receipt = self._receipt_from_manifest(manifest)
         if receipt.observed_content != observed_content:
             raise UploadConflict()
-        self._verify_finalized_file(payload_path, receipt)
+        self._verify_finalized_file(payload_path, receipt, deadline=deadline)
         return receipt
 
-    def _verify_finalized_file(self, payload_path: Path, receipt: WriteReceipt) -> None:
+    def _verify_finalized_file(
+        self,
+        payload_path: Path,
+        receipt: WriteReceipt,
+        *,
+        deadline: float | None = None,
+    ) -> None:
         try:
             actual = self._hash_file(
                 payload_path,
                 self._profile.max_object_bytes,
-                self._deadline(),
+                deadline if deadline is not None else self._setup_deadline(),
                 None,
             )
         except StorageError:
@@ -938,9 +963,10 @@ class FilesystemOriginalObjectStore:
             except (asyncio.TimeoutError, TimeoutError):
                 raise UploadLimitExceeded() from None
             self._validate_chunk(chunk, length)
+            if length + len(chunk) > expected_length:
+                raise UploadConflict()
             digest.update(chunk)
             length += len(chunk)
-        del expected_length
         return ObservedContentIdentity(
             observed_sha256=digest.hexdigest(),
             observed_byte_length=length,
@@ -1055,17 +1081,25 @@ class FilesystemOriginalObjectStore:
                     deadline=stream_deadline,
                 )
                 write_abandoned = False
+
+                def release_abandoned_write(_: Any) -> None:
+                    try:
+                        self._close_fd(write_fd)
+                    finally:
+                        self._close_fd(fd)
+
                 try:
                     await self._run_blocking(
                         self._write_chunk,
                         write_fd,
                         chunk,
                         stream_deadline,
-                        on_cancel=lambda _: os.close(write_fd),
+                        on_cancel=release_abandoned_write,
                         deadline=stream_deadline,
                     )
                 except (asyncio.CancelledError, _BlockingOperationAbandoned):
                     write_abandoned = True
+                    fd_abandoned = True
                     raise
                 finally:
                     if not write_abandoned:
@@ -1181,6 +1215,7 @@ class FilesystemOriginalObjectStore:
                 manifest = self._read_manifest(stage_dir / "manifest.json")
                 if manifest.get("scope_key") != scope_dir.name:
                     raise StorageIntegrityIndeterminate()
+                self._validate_staged_manifest(manifest, entry.name)
                 status = manifest.get("status")
                 if status == "publishing":
                     try:
@@ -1189,6 +1224,16 @@ class FilesystemOriginalObjectStore:
                         )
                     except Exception:
                         raise StorageIntegrityIndeterminate() from None
+                    if (
+                        publishing_receipt.upload_id != UUID(manifest["upload_id"])
+                        or publishing_receipt.object_reference.object_id
+                        != UUID(manifest["object_id"])
+                        or publishing_receipt.object_reference.digest_hex
+                        != manifest.get("expected_digest")
+                        or publishing_receipt.object_reference.byte_length
+                        != manifest.get("expected_length")
+                    ):
+                        raise StorageIntegrityIndeterminate()
                     finalized_manifest_path = (
                         self._finalized_root
                         / scope_dir.name
@@ -1223,6 +1268,48 @@ class FilesystemOriginalObjectStore:
                     if child.name not in {"payload", "manifest.json"}:
                         raise StorageIntegrityIndeterminate()
 
+    def _validate_staged_manifest(
+        self,
+        manifest: dict[str, Any],
+        stage_name: str,
+    ) -> None:
+        try:
+            upload_id = UUID(manifest["upload_id"])
+            object_id = UUID(manifest["object_id"])
+            UUID(manifest["issue8_receipt_id"])
+            PreWriteRequestDigest.model_validate_json(
+                json.dumps(manifest["request_digest"], separators=(",", ":"))
+            )
+        except Exception:
+            raise StorageIntegrityIndeterminate() from None
+        if upload_id.hex != stage_name or object_id.int == 0:
+            raise StorageIntegrityIndeterminate()
+        expected_digest = manifest.get("expected_digest")
+        expected_length = manifest.get("expected_length")
+        if expected_digest is None and expected_length is None:
+            return
+        if (
+            not isinstance(expected_digest, str)
+            or len(expected_digest) != 64
+            or any(character not in "0123456789abcdef" for character in expected_digest)
+            or not isinstance(expected_length, int)
+            or expected_length < 0
+        ):
+            raise StorageIntegrityIndeterminate()
+        observed_digest = manifest.get("observed_digest")
+        observed_length = manifest.get("observed_length")
+        if observed_digest is None and observed_length is None:
+            return
+        if (
+            not isinstance(observed_digest, str)
+            or len(observed_digest) != 64
+            or any(character not in "0123456789abcdef" for character in observed_digest)
+            or not isinstance(observed_length, int)
+            or observed_length < 0
+            or observed_length > self._profile.max_object_bytes
+        ):
+            raise StorageIntegrityIndeterminate()
+
     def _iter_scope_directories(self, root: Path) -> Iterator[Path]:
         for entry in self._scandir(root):
             if entry.is_symlink or not entry.is_dir:
@@ -1238,15 +1325,19 @@ class FilesystemOriginalObjectStore:
             fd = self._open_directory(path)
             try:
                 with os.scandir(fd) as entries:
-                    return [
-                        _ScannedEntry(
-                            name=entry.name,
-                            is_symlink=entry.is_symlink(),
-                            is_file=entry.is_file(follow_symlinks=False),
-                            is_dir=entry.is_dir(follow_symlinks=False),
+                    scanned: list[_ScannedEntry] = []
+                    for entry in entries:
+                        if len(scanned) >= self._profile.max_inventory_entries:
+                            raise UploadLimitExceeded()
+                        scanned.append(
+                            _ScannedEntry(
+                                name=entry.name,
+                                is_symlink=entry.is_symlink(),
+                                is_file=entry.is_file(follow_symlinks=False),
+                                is_dir=entry.is_dir(follow_symlinks=False),
+                            )
                         )
-                        for entry in entries
-                    ]
+                    return scanned
             finally:
                 os.close(fd)
         except FileNotFoundError:
@@ -1345,8 +1436,10 @@ class FilesystemOriginalObjectStore:
         self._write_json_atomic(path, updated)
 
     def _mark_publication_conflict(self, path: Path) -> None:
+        if not self._exists(path):
+            return
         current_manifest = self._read_manifest(path)
-        if current_manifest.get("status") == "publishing":
+        if current_manifest.get("status") in {"staging", "publishing"}:
             self._set_manifest_status(path, current_manifest, "integrity_conflict")
 
     def _record_observed_content(
@@ -1505,6 +1598,7 @@ class FilesystemOriginalObjectStore:
         *,
         limit: int,
         deadline: float,
+        expected_identity: tuple[int, int, int] | None = None,
     ) -> AsyncIterator[bytes]:
         fd = await self._run_blocking(
             self._open_read,
@@ -1512,6 +1606,19 @@ class FilesystemOriginalObjectStore:
             on_cancel=os.close,
             deadline=deadline,
         )
+        if expected_identity is not None:
+            identity = await self._run_blocking(
+                self._file_identity_from_fd,
+                fd,
+                deadline=deadline,
+            )
+            if identity != expected_identity:
+                await self._run_blocking(
+                    self._close_fd,
+                    fd,
+                    check_operational=False,
+                )
+                raise ObjectCorrupt()
         remaining = limit
         try:
             while remaining:
@@ -1528,7 +1635,11 @@ class FilesystemOriginalObjectStore:
                     chunk = await self._run_blocking(
                         os.read,
                         read_fd,
-                        min(self._profile.read_chunk_bytes, remaining),
+                        min(
+                            self._profile.read_chunk_bytes,
+                            self._profile.max_chunk_bytes,
+                            remaining,
+                        ),
                         on_cancel=lambda _: os.close(read_fd),
                         deadline=deadline,
                     )
@@ -1663,6 +1774,18 @@ class FilesystemOriginalObjectStore:
             return os.fstat(fd).st_size
         finally:
             os.close(fd)
+
+    def _file_identity(self, path: Path) -> tuple[int, int, int]:
+        fd = self._open_read(path)
+        try:
+            return self._file_identity_from_fd(fd)
+        finally:
+            self._close_fd(fd)
+
+    @staticmethod
+    def _file_identity_from_fd(fd: int) -> tuple[int, int, int]:
+        stat_result = os.fstat(fd)
+        return stat_result.st_dev, stat_result.st_ino, stat_result.st_size
 
     def _sync_file(self, path: Path) -> None:
         fd = self._open_read(path)
@@ -1929,6 +2052,7 @@ class FilesystemOriginalObjectStore:
                 return
             root, staged, finalized, deleted, root_fd = await self._run_blocking(
                 self._initialize_layout,
+                on_cancel=self._close_layout_fd,
                 deadline=self._setup_deadline(),
             )
             self._root = root
@@ -1962,6 +2086,12 @@ class FilesystemOriginalObjectStore:
             os.close(fd)
         except OSError:
             raise StorageIntegrityIndeterminate() from None
+
+    def _close_layout_fd(self, value: Any) -> None:
+        try:
+            self._close_fd(value[4])
+        except (IndexError, KeyError, TypeError):
+            self._indeterminate.set()
 
     async def _run_blocking(
         self,
@@ -2006,8 +2136,13 @@ class FilesystemOriginalObjectStore:
             if deadline is not None and self._monotonic_clock() >= deadline:
                 self._indeterminate.set()
                 if on_cancel is not None:
-                    on_cancel(value)
+                    try:
+                        on_cancel(value)
+                    except BaseException:
+                        self._indeterminate.set()
                 raise _BlockingOperationAbandoned()
+            if check_operational:
+                self._ensure_operational()
             return value
         except asyncio.CancelledError:
             if result.done():
