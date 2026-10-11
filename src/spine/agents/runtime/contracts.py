@@ -1,8 +1,8 @@
 """Typed contracts for one framework-independent local agent invocation.
 
-This module defines data and ports only. Resolution, handler construction,
-artifact I/O, cancellation execution, retries, and durable recovery belong to
-later runtime tickets and their owning boundaries.
+This module defines the data exchanged by the framework-independent runtime.
+The local runtime owns bounded, explicitly safe retries; durable recovery and
+cross-process re-execution remain responsibilities of the workflow boundary.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from spine.agents.runtime.ports import (
     CancellationToken,
     EventSink,
 )
+from spine.agents.runtime.retry import AgentRetryPolicy
 
 
 InputT = TypeVar("InputT")
@@ -168,6 +169,7 @@ class AgentRequest(_ValidatedRuntimeModel, Generic[InputT]):
     schema_identity: CapabilitySchemaIdentity
     input: InputT
     constraints: Mapping[str, Any] = Field(default_factory=dict)
+    local_attempt_id: UUID | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -190,6 +192,13 @@ class AgentRequest(_ValidatedRuntimeModel, Generic[InputT]):
     @classmethod
     def freeze_constraints(cls, value: Mapping[str, Any]) -> Mapping[str, Any]:
         return FrozenDict(value)
+
+    @field_validator("local_attempt_id")
+    @classmethod
+    def reject_zero_attempt_id(cls, value: UUID | None) -> UUID | None:
+        if value is not None and value.int == 0:
+            raise ValueError("local attempt identity must be non-zero")
+        return value
 
     @model_validator(mode="after")
     def validate_schema_identity(self) -> AgentRequest[InputT]:
@@ -312,6 +321,7 @@ class AgentExecutionContext(_ValidatedRuntimeModel):
     capability: CapabilityDefinition
     schema_identity: CapabilitySchemaIdentity
     agent_version: AgentVersion
+    retry_policy: AgentRetryPolicy = AgentRetryPolicy()
     idempotency_key: str = Field(min_length=1, max_length=256)
     diagnostic_context: DiagnosticContext
     input_artifact_ids: tuple[UUID, ...] = ()
@@ -451,6 +461,8 @@ class AgentExecutionContext(_ValidatedRuntimeModel):
         _validate_tool_grants(self.permitted_tool_capabilities, "permitted")
         if self.agent_version.runtime_config:
             raise ValueError("execution context cannot contain runtime configuration")
+        if type(self.retry_policy) is not AgentRetryPolicy:
+            raise ValueError("execution retry policy is invalid")
         if not set(self.permitted_tool_capabilities).issubset(self.agent_version.tool_grants):
             raise ValueError("permitted tool grants exceed agent version grants")
         if self.deadline is not None and (

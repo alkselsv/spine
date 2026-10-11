@@ -10,6 +10,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from spine.agents.runtime.contracts import AgentExecutionContext
+from spine.agents.runtime.retry import AgentRetryReason
 from spine.application.diagnostics import (
     AuditEvent,
     AuditEventRegistry,
@@ -49,15 +50,6 @@ class AgentRetryDiagnosticState(str, Enum):
 
     SCHEDULED = "scheduled"
     EXHAUSTED = "exhausted"
-
-
-class AgentRetryReason(str, Enum):
-    """Closed retry categories; provider error text is never accepted."""
-
-    PROVIDER_UNAVAILABLE = "provider.unavailable"
-    RATE_LIMITED = "provider.rate_limited"
-    TOOL_UNAVAILABLE = "tool.unavailable"
-    TRANSIENT_INTERNAL = "internal.transient"
 
 
 class AgentToolDiagnosticState(str, Enum):
@@ -244,11 +236,12 @@ class AgentRuntimeDiagnosticEmitter:
         state: AgentRetryDiagnosticState,
         attempt_number: int,
         retry_reason_code: AgentRetryReason,
+        attempt_id: UUID | None = None,
     ) -> None:
         await self._emit_diagnostic(
             event_type=_AGENT_RETRY_EVENT_TYPE,
             payload=AgentRetryDiagnosticPayload(
-                **self._diagnostic_identity(),
+                **self._diagnostic_identity(attempt_id=attempt_id),
                 retry_state=state,
                 attempt_number=attempt_number,
                 retry_reason_code=retry_reason_code,
@@ -287,14 +280,18 @@ class AgentRuntimeDiagnosticEmitter:
             severity=DiagnosticSeverity.INFO,
         )
 
-    def _diagnostic_identity(self) -> dict[str, object]:
+    def _diagnostic_identity(
+        self,
+        *,
+        attempt_id: UUID | None = None,
+    ) -> dict[str, object]:
         context = self._context
         return {
             "work_item_id": context.work_item_id,
             "workflow_run_id": context.workflow_run_id,
             "step_run_id": context.step_run_id,
             "agent_run_id": context.agent_run_id,
-            "attempt_id": context.attempt_id,
+            "attempt_id": context.attempt_id if attempt_id is None else attempt_id,
             "agent_version_id": context.agent_version.id,
             "capability_id": context.capability.id,
         }

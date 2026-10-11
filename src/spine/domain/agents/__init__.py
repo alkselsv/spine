@@ -1,6 +1,11 @@
 """Agent catalog, versions, deployments, and invocation contracts."""
 
-from spine.domain.agents.contracts import AgentInvocation, AgentResult, AgentRunStatus
+from spine.domain.agents.contracts import (
+    AgentInvocation,
+    AgentResult,
+    AgentRetrySafety,
+    AgentRunStatus,
+)
 from spine.domain.agents.models import (
     AgentBinding,
     AgentDefinition,
@@ -17,6 +22,7 @@ __all__ = [
     "AgentDeployment",
     "AgentInvocation",
     "AgentResult",
+    "AgentRetrySafety",
     "AgentRunStatus",
     "AgentRuntimeKind",
     "AgentVersion",

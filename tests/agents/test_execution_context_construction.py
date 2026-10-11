@@ -778,6 +778,47 @@ def test_factory_projects_runtime_configuration_out_of_handler_context() -> None
     assert "protected-payload" not in context.model_dump_json()
 
 
+def test_factory_pins_retry_policy_while_hiding_runtime_configuration() -> None:
+    selected_version = version().model_copy(
+        update={
+            "runtime_config": {
+                "runtime_retry_policy": {
+                    "maximum_attempts": 2,
+                    "backoff_seconds": [0.25],
+                    "eligible_reasons": ["provider.unavailable"],
+                }
+            }
+        }
+    )
+
+    context = make_context(
+        selected_binding=resolved_binding(selected_version=selected_version),
+    )
+
+    assert context.agent_version.runtime_config == {}
+    assert context.retry_policy.maximum_attempts == 2
+    assert context.retry_policy.backoff == (timedelta(milliseconds=250),)
+
+
+def test_factory_rejects_unbounded_retry_policy() -> None:
+    selected_version = version().model_copy(
+        update={
+            "runtime_config": {
+                "runtime_retry_policy": {
+                    "maximum_attempts": 6,
+                    "backoff_seconds": [0, 0, 0, 0, 0],
+                    "eligible_reasons": ["provider.unavailable"],
+                }
+            }
+        }
+    )
+
+    with pytest.raises(ValueError, match="execution context is invalid"):
+        make_context(
+            selected_binding=resolved_binding(selected_version=selected_version),
+        )
+
+
 def test_factory_rejects_runtime_configuration_and_credentials() -> None:
     selected_version = version().model_copy(
         update={"runtime_config": {"access_token": "Bearer secret"}}
