@@ -55,6 +55,15 @@ from spine.application.persistence.repositories import (
     SourceObservationCommand,
     SourceObservationResult,
 )
+from spine.application.persistence.ingestion import (
+    IngestionBindingCommand,
+    IngestionMutationResult,
+    IngestionRepository,
+    IngestionRunCommand,
+    IngestionRunStateView,
+    ProcessingReceiptCommand,
+    validate_transition,
+)
 from spine.application.persistence.command_digest import CommandDigest
 from spine.application.persistence.outbox import (
     OutboxEventRegistry,
@@ -76,6 +85,18 @@ from spine.domain.workspaces import Environment, Workspace
 from spine.domain.sources import SourceObject, SourceRevision, SourceRevisionProvenance
 from spine.domain.sources.canonicalization import assert_revision_digest
 from spine.domain.sources.errors import RevisionDigestMismatchError as DomainRevisionDigestMismatchError
+from spine.domain.ingestion import (
+    IngestionFailure,
+    IngestionItemState,
+    IngestionRun,
+    IngestionRunSource,
+    IngestionRunSourceBinding,
+    IngestionRunState,
+    IngestionTargetKind,
+    IngestionTransition,
+    IngestionWarning,
+    ProcessingReceipt,
+)
 
 
 _ResultT = TypeVar("_ResultT")
@@ -92,6 +113,13 @@ class _StoreState:
     source_revisions: dict[UUID, SourceRevision]
     source_provenance: dict[UUID, SourceRevisionProvenance]
     audit_events: dict[UUID, AuditEvent]
+    ingestion_runs: dict[UUID, IngestionRun]
+    ingestion_items: dict[UUID, IngestionRunSource]
+    ingestion_bindings: dict[UUID, IngestionRunSourceBinding]
+    ingestion_transitions: dict[UUID, IngestionTransition]
+    ingestion_warnings: dict[UUID, IngestionWarning]
+    ingestion_failures: dict[UUID, IngestionFailure]
+    processing_receipts: dict[UUID, ProcessingReceipt]
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +150,13 @@ class _Store:
             source_revisions={},
             source_provenance={},
             audit_events={},
+            ingestion_runs={},
+            ingestion_items={},
+            ingestion_bindings={},
+            ingestion_transitions={},
+            ingestion_warnings={},
+            ingestion_failures={},
+            processing_receipts={},
         )
         self.lock = transaction_lock or asyncio.Lock()
         self.observation_lock = asyncio.Lock()
@@ -161,6 +196,34 @@ class _Store:
     @property
     def audit_events(self) -> dict[UUID, AuditEvent]:
         return self.state.audit_events
+
+    @property
+    def ingestion_runs(self) -> dict[UUID, IngestionRun]:
+        return self.state.ingestion_runs
+
+    @property
+    def ingestion_items(self) -> dict[UUID, IngestionRunSource]:
+        return self.state.ingestion_items
+
+    @property
+    def ingestion_bindings(self) -> dict[UUID, IngestionRunSourceBinding]:
+        return self.state.ingestion_bindings
+
+    @property
+    def ingestion_transitions(self) -> dict[UUID, IngestionTransition]:
+        return self.state.ingestion_transitions
+
+    @property
+    def ingestion_warnings(self) -> dict[UUID, IngestionWarning]:
+        return self.state.ingestion_warnings
+
+    @property
+    def ingestion_failures(self) -> dict[UUID, IngestionFailure]:
+        return self.state.ingestion_failures
+
+    @property
+    def processing_receipts(self) -> dict[UUID, ProcessingReceipt]:
+        return self.state.processing_receipts
 
 
 def _workspace_copy(value: Workspace) -> Workspace:
@@ -488,6 +551,341 @@ class _AuditWriter:
         return self._uow._repository_call(operation)
 
 
+class _InMemoryIngestionRepository:
+    """Transactional in-memory implementation of the operational ledger."""
+
+    def __init__(self, uow: "InMemoryUnitOfWork") -> None:
+        self._uow = uow
+
+    def _scope_check(self, workspace_id: UUID, environment_id: UUID) -> None:
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope) or (scope.workspace_id, scope.environment_id) != (workspace_id, environment_id):
+            self._uow._fail(InvalidPersistenceContextError("Persistence context is invalid."))
+
+    def _runs(self) -> dict[UUID, IngestionRun]:
+        return self._uow._base_ingestion_runs | self._uow._pending_ingestion_runs
+
+    def _items(self) -> dict[UUID, IngestionRunSource]:
+        return self._uow._base_ingestion_items | self._uow._pending_ingestion_items
+
+    def _revisions(self) -> dict[UUID, SourceRevision]:
+        return self._uow._base_source_revisions | self._uow._pending_source_revisions
+
+    def _bindings(self) -> dict[UUID, IngestionRunSourceBinding]:
+        return self._uow._base_ingestion_bindings | self._uow._pending_ingestion_bindings
+
+    def _transitions(self) -> dict[UUID, IngestionTransition]:
+        return self._uow._base_ingestion_transitions | self._uow._pending_ingestion_transitions
+
+    def _warnings(self) -> dict[UUID, IngestionWarning]:
+        return self._uow._base_ingestion_warnings | self._uow._pending_ingestion_warnings
+
+    def _failures(self) -> dict[UUID, IngestionFailure]:
+        return self._uow._base_ingestion_failures | self._uow._pending_ingestion_failures
+
+    def _processing_receipts(self) -> dict[UUID, ProcessingReceipt]:
+        return self._uow._base_processing_receipts | self._uow._pending_processing_receipts
+
+    async def create_run(self, command: IngestionRunCommand) -> IngestionMutationResult:
+        self._uow._guard_active()
+        self._scope_check(command.run.workspace_id, command.run.environment_id)
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=command.digest.operation_schema_version,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        if isinstance(claim, IdempotencyReplay):
+            run = self._runs().get(claim.result.result_id)
+            if run is None:
+                self._uow._fail(ConstraintConflictError("Ingestion run replay is unavailable."))
+            return IngestionMutationResult(run.model_copy(deep=True), True, claim, claim.result)
+        run = command.run
+        run = run.model_copy(update={"idempotency_receipt_id": claim.receipt_id})
+        if run.ingestion_run_id in self._runs() and self._runs()[run.ingestion_run_id] != run:
+            self._uow._fail(ConstraintConflictError("Ingestion run identity conflicts."))
+        if any(
+            existing.workspace_id == run.workspace_id
+            and existing.environment_id == run.environment_id
+            and existing.command_identity == run.command_identity
+            and existing.ingestion_run_id != run.ingestion_run_id
+            for existing in self._runs().values()
+        ):
+            self._uow._fail(ConstraintConflictError("Ingestion run command identity conflicts."))
+        self._uow._pending_ingestion_runs[run.ingestion_run_id] = run.model_copy(deep=True)
+        await self.append_transition(
+            IngestionTransition(
+                ingestion_transition_id=uuid5(NAMESPACE_URL, f"ingestion-run-root:{run.ingestion_run_id}"),
+                workspace_id=run.workspace_id, environment_id=run.environment_id,
+                target_kind=IngestionTargetKind.RUN, ingestion_run_id=run.ingestion_run_id,
+                state=IngestionRunState.REQUESTED, attempt=1,
+                actor_or_service="ingestion-ledger", trace_id=self._uow._trace_id_snapshot(),
+                occurred_at=run.requested_at,
+            )
+        )
+        result = OpaqueResultReference(result_type="ingestion_run", result_id=run.ingestion_run_id, schema_version=1)
+        await self._uow.idempotency.complete(claim, result)
+        return IngestionMutationResult(run.model_copy(deep=True), False, claim, result)
+
+    async def create_item(self, item: IngestionRunSource) -> IngestionRunSource:
+        self._uow._guard_active()
+        self._scope_check(item.workspace_id, item.environment_id)
+        runs = self._runs()
+        run = runs.get(item.ingestion_run_id)
+        if run is None or (run.workspace_id, run.environment_id) != (item.workspace_id, item.environment_id):
+            self._uow._fail(ConstraintConflictError("Ingestion item run reference is invalid."))
+        existing = self._items().get(item.ingestion_run_source_id)
+        if existing is not None:
+            if existing != item:
+                self._uow._fail(ConstraintConflictError("Ingestion item identity conflicts."))
+            return existing.model_copy(deep=True)
+        if any(existing.ingestion_run_id == item.ingestion_run_id and existing.input_ordinal == item.input_ordinal for existing in self._items().values()):
+            self._uow._fail(ConstraintConflictError("Ingestion item ordinal already exists."))
+        if any(existing.ingestion_run_id == item.ingestion_run_id and existing.input_identity == item.input_identity for existing in self._items().values()):
+            self._uow._fail(ConstraintConflictError("Ingestion item identity already exists."))
+        if any(
+            existing.workspace_id == item.workspace_id
+            and existing.environment_id == item.environment_id
+            and existing.command_identity == item.command_identity
+            and existing.ingestion_run_source_id != item.ingestion_run_source_id
+            for existing in self._items().values()
+        ):
+            self._uow._fail(ConstraintConflictError("Ingestion item command identity conflicts."))
+        self._uow._pending_ingestion_items[item.ingestion_run_source_id] = item.model_copy(deep=True)
+        await self.append_transition(
+            IngestionTransition(
+                ingestion_transition_id=uuid4(), workspace_id=item.workspace_id, environment_id=item.environment_id,
+                target_kind=IngestionTargetKind.ITEM, ingestion_run_id=item.ingestion_run_id,
+                ingestion_run_source_id=item.ingestion_run_source_id, state=IngestionItemState.RECEIVED,
+                attempt=1, actor_or_service="ingestion-ledger", trace_id=self._uow._trace_id_snapshot(),
+                occurred_at=item.created_at,
+            )
+        )
+        return item.model_copy(deep=True)
+
+    async def bind_source(self, command: IngestionBindingCommand) -> IngestionMutationResult:
+        self._uow._guard_active()
+        self._scope_check(command.item.workspace_id, command.item.environment_id)
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=command.digest.operation_schema_version,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        item = self._items().get(command.item.ingestion_run_source_id)
+        if item is None or item != command.item:
+            self._uow._fail(ConstraintConflictError("Ingestion binding item is invalid."))
+        existing = next((value for value in self._bindings().values() if value.ingestion_run_source_id == item.ingestion_run_source_id), None)
+        if isinstance(claim, IdempotencyReplay):
+            binding = self._bindings().get(claim.result.result_id)
+            if binding is None:
+                self._uow._fail(ConstraintConflictError("Ingestion binding replay is unavailable."))
+            return IngestionMutationResult(binding.model_copy(deep=True), True, claim, claim.result)
+        binding = command.binding
+        if (binding.workspace_id, binding.environment_id) != (item.workspace_id, item.environment_id) or binding.ingestion_run_source_id != item.ingestion_run_source_id:
+            self._uow._fail(ConstraintConflictError("Ingestion binding scope is invalid."))
+        if existing is not None:
+            if existing.source_object_id != binding.source_object_id or existing.source_revision_id != binding.source_revision_id or existing.original_receipt_digest != binding.original_receipt_digest:
+                self._uow._fail(ConstraintConflictError("Ingestion item is already bound to another source."))
+            result = OpaqueResultReference(result_type="ingestion_binding", result_id=existing.binding_id, schema_version=1)
+            await self._uow.idempotency.complete(claim, result)
+            return IngestionMutationResult(existing.model_copy(deep=True), True, claim, result)
+        if any(
+            value.workspace_id == binding.workspace_id
+            and value.environment_id == binding.environment_id
+            and value.binding_command_identity == binding.binding_command_identity
+            and value.binding_id != binding.binding_id
+            for value in self._bindings().values()
+        ):
+            self._uow._fail(ConstraintConflictError("Ingestion binding command identity conflicts."))
+        observation = command.observation
+        if observation.source.source_object_id != binding.source_object_id or observation.revision.revision_id != binding.source_revision_id:
+            self._uow._fail(ConstraintConflictError("Ingestion binding observation is invalid."))
+        if observation.revision.kind.value == "content":
+            if binding.original_receipt_id is None or binding.original_reference is None or binding.original_reference.digest_hex != observation.revision.original_sha256:
+                self._uow._fail(ConstraintConflictError("Content ingestion binding requires verified original evidence."))
+
+        # The source observation is recorded in the same transaction. Its
+        # operation is adapted to the trusted binding seam so it cannot commit
+        # a claim for a different operation; the binding has its own claim.
+        from dataclasses import replace
+        adapted_digest = observation.expected_digest(PersistenceOperation("ingestion_binding"))
+        observation = replace(observation, digest=adapted_digest)
+        observed = await self._uow.sources.record_observation(observation)
+        if binding.source_object_id != observed.source.source_object_id or binding.source_revision_id != observed.revision.revision_id:
+            self._uow._fail(ConstraintConflictError("Ingestion binding observation result is invalid."))
+        binding = binding.model_copy(update={"idempotency_receipt_id": claim.receipt_id})
+        self._uow._pending_ingestion_bindings[binding.binding_id] = binding.model_copy(deep=True)
+        item_head = self._head(item.ingestion_run_source_id, IngestionTargetKind.ITEM)
+        if item_head is None:
+            self._uow._fail(ConstraintConflictError("Ingestion item transition head is unavailable."))
+        await self.append_transition(
+            IngestionTransition(
+                ingestion_transition_id=uuid4(), workspace_id=item.workspace_id, environment_id=item.environment_id,
+                target_kind=IngestionTargetKind.ITEM, ingestion_run_id=item.ingestion_run_id,
+                ingestion_run_source_id=item.ingestion_run_source_id, state=IngestionItemState.OBSERVED,
+                predecessor_transition_id=item_head.ingestion_transition_id,
+                attempt=1, actor_or_service="ingestion-ledger", trace_id=self._uow._trace_id_snapshot(),
+                occurred_at=binding.bound_at,
+            )
+        )
+        result = OpaqueResultReference(result_type="ingestion_binding", result_id=binding.binding_id, schema_version=1)
+        await self._uow.idempotency.complete(claim, result)
+        return IngestionMutationResult(binding.model_copy(deep=True), False, claim, result)
+
+    def _head(self, target_id: UUID, target_kind: IngestionTargetKind) -> IngestionTransition | None:
+        candidates = [
+            transition for transition in self._transitions().values()
+            if transition.target_kind is target_kind
+            and ((target_kind is IngestionTargetKind.RUN and transition.ingestion_run_id == target_id) or (target_kind is IngestionTargetKind.ITEM and transition.ingestion_run_source_id == target_id))
+        ]
+        if not candidates:
+            return None
+        child_ids = {transition.predecessor_transition_id for transition in candidates if transition.predecessor_transition_id is not None}
+        heads = [transition for transition in candidates if transition.ingestion_transition_id not in child_ids]
+        if len(heads) != 1:
+            self._uow._fail(ConstraintConflictError("Ingestion transition history has multiple heads."))
+        return heads[0]
+
+    async def append_transition(self, transition: IngestionTransition) -> IngestionTransition:
+        self._uow._guard_active()
+        self._scope_check(transition.workspace_id, transition.environment_id)
+        existing = self._transitions().get(transition.ingestion_transition_id)
+        if existing is not None:
+            if existing != transition:
+                self._uow._fail(ConstraintConflictError("Ingestion transition identity conflicts."))
+            return existing.model_copy(deep=True)
+        target_id = transition.ingestion_run_id if transition.target_kind is IngestionTargetKind.RUN else transition.ingestion_run_source_id
+        assert target_id is not None
+        if transition.target_kind is IngestionTargetKind.RUN:
+            run = self._runs().get(transition.ingestion_run_id)
+            if run is None or (run.workspace_id, run.environment_id) != (transition.workspace_id, transition.environment_id):
+                self._uow._fail(ConstraintConflictError("Ingestion transition run reference is invalid."))
+        else:
+            item = self._items().get(target_id)
+            if item is None or (item.workspace_id, item.environment_id) != (transition.workspace_id, transition.environment_id) or item.ingestion_run_id != transition.ingestion_run_id:
+                self._uow._fail(ConstraintConflictError("Ingestion transition item reference is invalid."))
+        previous = self._head(target_id, transition.target_kind)
+        try:
+            validate_transition(previous, transition)
+        except ValueError as error:
+            self._uow._fail(ConstraintConflictError(str(error)))
+        self._uow._pending_ingestion_transitions[transition.ingestion_transition_id] = transition.model_copy(deep=True)
+        return transition.model_copy(deep=True)
+
+    async def append_warning(self, warning: IngestionWarning) -> IngestionWarning:
+        self._uow._guard_active()
+        self._scope_check(warning.workspace_id, warning.environment_id)
+        item = self._items().get(warning.ingestion_run_source_id)
+        if item is None or (item.workspace_id, item.environment_id) != (warning.workspace_id, warning.environment_id):
+            self._uow._fail(ConstraintConflictError("Ingestion warning item reference is invalid."))
+        existing = self._warnings().get(warning.ingestion_warning_id)
+        if existing is not None and existing != warning:
+            self._uow._fail(ConstraintConflictError("Ingestion warning identity conflicts."))
+        if any(
+            value.workspace_id == warning.workspace_id
+            and value.environment_id == warning.environment_id
+            and value.ingestion_run_source_id == warning.ingestion_run_source_id
+            and value.attempt == warning.attempt
+            and value.code == warning.code
+            and value.safe_detail == warning.safe_detail
+            and value.ingestion_warning_id != warning.ingestion_warning_id
+            for value in self._warnings().values()
+        ):
+            self._uow._fail(ConstraintConflictError("Duplicate ingestion warning."))
+        self._uow._pending_ingestion_warnings[warning.ingestion_warning_id] = warning.model_copy(deep=True)
+        return warning.model_copy(deep=True)
+
+    async def append_failure(self, failure: IngestionFailure) -> IngestionFailure:
+        self._uow._guard_active()
+        self._scope_check(failure.workspace_id, failure.environment_id)
+        item = self._items().get(failure.ingestion_run_source_id)
+        if item is None or (item.workspace_id, item.environment_id) != (failure.workspace_id, failure.environment_id):
+            self._uow._fail(ConstraintConflictError("Ingestion failure item reference is invalid."))
+        existing = self._failures().get(failure.ingestion_failure_id)
+        if existing is not None and existing != failure:
+            self._uow._fail(ConstraintConflictError("Ingestion failure identity conflicts."))
+        if any(
+            value.workspace_id == failure.workspace_id
+            and value.environment_id == failure.environment_id
+            and value.ingestion_run_source_id == failure.ingestion_run_source_id
+            and value.attempt == failure.attempt
+            and value.code == failure.code
+            and value.safe_detail == failure.safe_detail
+            and value.ingestion_failure_id != failure.ingestion_failure_id
+            for value in self._failures().values()
+        ):
+            self._uow._fail(ConstraintConflictError("Duplicate ingestion failure."))
+        self._uow._pending_ingestion_failures[failure.ingestion_failure_id] = failure.model_copy(deep=True)
+        return failure.model_copy(deep=True)
+
+    async def record_processing_receipt(self, command: ProcessingReceiptCommand) -> IngestionMutationResult:
+        self._uow._guard_active()
+        receipt = command.receipt
+        self._scope_check(receipt.workspace_id, receipt.environment_id)
+        claim = await self._uow.idempotency.claim(operation_schema_version=command.digest.operation_schema_version, key=command.idempotency_key, digest=command.digest)
+        if isinstance(claim, IdempotencyReplay):
+            existing = self._processing_receipts().get(claim.result.result_id)
+            if existing is None:
+                self._uow._fail(ConstraintConflictError("Processing receipt replay is unavailable."))
+            return IngestionMutationResult(existing.model_copy(deep=True), True, claim, claim.result)
+        receipt = receipt.model_copy(update={"idempotency_receipt_id": claim.receipt_id})
+        item = self._items().get(receipt.ingestion_run_source_id)
+        binding = self._bindings().get(receipt.binding_id)
+        revision = self._revisions().get(receipt.source_revision_id)
+        if (
+            item is None
+            or binding is None
+            or revision is None
+            or binding.ingestion_run_source_id != receipt.ingestion_run_source_id
+            or binding.source_object_id != receipt.source_object_id
+            or binding.source_revision_id != receipt.source_revision_id
+            or revision.original_sha256 != receipt.original_sha256
+        ):
+            self._uow._fail(ConstraintConflictError("Processing receipt references are invalid."))
+        if any(
+            value.workspace_id == receipt.workspace_id
+            and value.environment_id == receipt.environment_id
+            and value.command_identity == receipt.command_identity
+            and value.processing_receipt_id != receipt.processing_receipt_id
+            for value in self._processing_receipts().values()
+        ):
+            self._uow._fail(ConstraintConflictError("Processing receipt command identity conflicts."))
+        existing = self._processing_receipts().get(receipt.processing_receipt_id)
+        if existing is not None and existing != receipt:
+            self._uow._fail(ConstraintConflictError("Processing receipt identity conflicts."))
+        self._uow._pending_processing_receipts[receipt.processing_receipt_id] = receipt.model_copy(deep=True)
+        result = OpaqueResultReference(result_type="processing_receipt", result_id=receipt.processing_receipt_id, schema_version=1)
+        await self._uow.idempotency.complete(claim, result)
+        return IngestionMutationResult(receipt.model_copy(deep=True), False, claim, result)
+
+    async def derive_run_state(self, run_id: UUID) -> IngestionRunStateView | None:
+        self._uow._guard_active()
+        if not isinstance(self._uow.scope, EnvironmentScope):
+            return None
+        run = self._runs().get(run_id)
+        if run is None or (run.workspace_id, run.environment_id) != (self._uow.scope.workspace_id, self._uow.scope.environment_id):
+            return None
+        run_head = self._head(run_id, IngestionTargetKind.RUN)
+        if run_head is None:
+            self._uow._fail(ConstraintConflictError("Ingestion run transition head is unavailable."))
+        item_heads = tuple(self._head(item.ingestion_run_source_id, IngestionTargetKind.ITEM) for item in self._items().values() if item.ingestion_run_id == run_id)
+        item_states = tuple(head.state for head in item_heads if head is not None)
+        state = run_head.state
+        if state is IngestionRunState.PROCESSING and item_states and all(item_state in {IngestionItemState.PROCESSED, IngestionItemState.PROJECTION_REQUESTED} for item_state in item_states):
+            state = IngestionRunState.SUCCEEDED
+        elif state is IngestionRunState.PROCESSING and any(item_state in {IngestionItemState.QUARANTINED, IngestionItemState.REJECTED, IngestionItemState.PROCESSING_FAILED} for item_state in item_states) and any(item_state in {IngestionItemState.PROCESSED, IngestionItemState.PROJECTION_REQUESTED} for item_state in item_states):
+            state = IngestionRunState.PARTIALLY_SUCCEEDED
+        elif state is IngestionRunState.PROCESSING and item_states and all(item_state in {IngestionItemState.QUARANTINED, IngestionItemState.REJECTED, IngestionItemState.PROCESSING_FAILED} for item_state in item_states):
+            state = IngestionRunState.FAILED
+        return IngestionRunStateView(run=run.model_copy(deep=True), state=state, item_states=item_states)
+
+    async def resolve_item(self, item_id: UUID) -> IngestionRunSource | None:
+        self._uow._guard_active()
+        item = self._items().get(item_id)
+        if item is None or (item.workspace_id, item.environment_id) != (self._uow.scope.workspace_id, self._uow.scope.environment_id):
+            return None
+        return item.model_copy(deep=True)
+
+
 class _IdempotencyRepository:
     def __init__(self, uow: "InMemoryUnitOfWork") -> None:
         self._uow = uow
@@ -671,6 +1069,13 @@ class InMemoryUnitOfWork:
         self._base_source_revisions: dict[UUID, SourceRevision] = {}
         self._base_source_provenance: dict[UUID, SourceRevisionProvenance] = {}
         self._base_audit_events: dict[UUID, AuditEvent] = {}
+        self._base_ingestion_runs: dict[UUID, IngestionRun] = {}
+        self._base_ingestion_items: dict[UUID, IngestionRunSource] = {}
+        self._base_ingestion_bindings: dict[UUID, IngestionRunSourceBinding] = {}
+        self._base_ingestion_transitions: dict[UUID, IngestionTransition] = {}
+        self._base_ingestion_warnings: dict[UUID, IngestionWarning] = {}
+        self._base_ingestion_failures: dict[UUID, IngestionFailure] = {}
+        self._base_processing_receipts: dict[UUID, ProcessingReceipt] = {}
         self._pending_workspaces: dict[UUID, Workspace] = {}
         self._pending_environments: dict[UUID, Environment] = {}
         self._pending_receipts: dict[_ReceiptKey, _IdempotencyReceipt] = {}
@@ -679,12 +1084,20 @@ class InMemoryUnitOfWork:
         self._pending_source_revisions: dict[UUID, SourceRevision] = {}
         self._pending_source_provenance: dict[UUID, SourceRevisionProvenance] = {}
         self._pending_audit_events: dict[UUID, AuditEvent] = {}
+        self._pending_ingestion_runs: dict[UUID, IngestionRun] = {}
+        self._pending_ingestion_items: dict[UUID, IngestionRunSource] = {}
+        self._pending_ingestion_bindings: dict[UUID, IngestionRunSourceBinding] = {}
+        self._pending_ingestion_transitions: dict[UUID, IngestionTransition] = {}
+        self._pending_ingestion_warnings: dict[UUID, IngestionWarning] = {}
+        self._pending_ingestion_failures: dict[UUID, IngestionFailure] = {}
+        self._pending_processing_receipts: dict[UUID, ProcessingReceipt] = {}
         self._source_observation_lock_held = False
         self._workspaces = _WorkspaceRepository(self)
         self._environments = _EnvironmentRepository(self)
         self._idempotency = _IdempotencyRepository(self)
         self._outbox = _OutboxWriter(self)
         self._sources = _SourceObservationRepository(self)
+        self._ingestion = _InMemoryIngestionRepository(self)
         self._audit = _AuditWriter(self)
 
     @property
@@ -711,6 +1124,11 @@ class InMemoryUnitOfWork:
     def sources(self) -> _SourceObservationRepository:
         self._guard_active()
         return self._sources
+
+    @property
+    def ingestion(self) -> IngestionRepository:
+        self._guard_active()
+        return self._ingestion
 
     @property
     def audit(self) -> _AuditWriter:
@@ -781,6 +1199,13 @@ class InMemoryUnitOfWork:
                 self._base_audit_events = {
                     key: _audit_event_copy(value) for key, value in self._store.audit_events.items()
                 }
+                self._base_ingestion_runs = {key: value.model_copy(deep=True) for key, value in self._store.ingestion_runs.items()}
+                self._base_ingestion_items = {key: value.model_copy(deep=True) for key, value in self._store.ingestion_items.items()}
+                self._base_ingestion_bindings = {key: value.model_copy(deep=True) for key, value in self._store.ingestion_bindings.items()}
+                self._base_ingestion_transitions = {key: value.model_copy(deep=True) for key, value in self._store.ingestion_transitions.items()}
+                self._base_ingestion_warnings = {key: value.model_copy(deep=True) for key, value in self._store.ingestion_warnings.items()}
+                self._base_ingestion_failures = {key: value.model_copy(deep=True) for key, value in self._store.ingestion_failures.items()}
+                self._base_processing_receipts = {key: value.model_copy(deep=True) for key, value in self._store.processing_receipts.items()}
                 self._initialized = self._store.initialized
                 if not self._initialized:
                     raise InvalidBootstrapAuthorityError(
@@ -876,6 +1301,20 @@ class InMemoryUnitOfWork:
                 prepared_audit_events.update(
                     {key: _audit_event_copy(value) for key, value in self._pending_audit_events.items()}
                 )
+                prepared_ingestion_runs = {key: value.model_copy(deep=True) for key, value in self._store.ingestion_runs.items()}
+                prepared_ingestion_runs.update({key: value.model_copy(deep=True) for key, value in self._pending_ingestion_runs.items()})
+                prepared_ingestion_items = {key: value.model_copy(deep=True) for key, value in self._store.ingestion_items.items()}
+                prepared_ingestion_items.update({key: value.model_copy(deep=True) for key, value in self._pending_ingestion_items.items()})
+                prepared_ingestion_bindings = {key: value.model_copy(deep=True) for key, value in self._store.ingestion_bindings.items()}
+                prepared_ingestion_bindings.update({key: value.model_copy(deep=True) for key, value in self._pending_ingestion_bindings.items()})
+                prepared_ingestion_transitions = {key: value.model_copy(deep=True) for key, value in self._store.ingestion_transitions.items()}
+                prepared_ingestion_transitions.update({key: value.model_copy(deep=True) for key, value in self._pending_ingestion_transitions.items()})
+                prepared_ingestion_warnings = {key: value.model_copy(deep=True) for key, value in self._store.ingestion_warnings.items()}
+                prepared_ingestion_warnings.update({key: value.model_copy(deep=True) for key, value in self._pending_ingestion_warnings.items()})
+                prepared_ingestion_failures = {key: value.model_copy(deep=True) for key, value in self._store.ingestion_failures.items()}
+                prepared_ingestion_failures.update({key: value.model_copy(deep=True) for key, value in self._pending_ingestion_failures.items()})
+                prepared_processing_receipts = {key: value.model_copy(deep=True) for key, value in self._store.processing_receipts.items()}
+                prepared_processing_receipts.update({key: value.model_copy(deep=True) for key, value in self._pending_processing_receipts.items()})
                 self._store.state = _StoreState(
                     workspaces=prepared_workspaces,
                     environments=prepared_environments,
@@ -885,6 +1324,13 @@ class InMemoryUnitOfWork:
                     source_revisions=prepared_source_revisions,
                     source_provenance=prepared_source_provenance,
                     audit_events=prepared_audit_events,
+                    ingestion_runs=prepared_ingestion_runs,
+                    ingestion_items=prepared_ingestion_items,
+                    ingestion_bindings=prepared_ingestion_bindings,
+                    ingestion_transitions=prepared_ingestion_transitions,
+                    ingestion_warnings=prepared_ingestion_warnings,
+                    ingestion_failures=prepared_ingestion_failures,
+                    processing_receipts=prepared_processing_receipts,
                 )
         except BaseException as error:
             self._raise_terminal(error)
@@ -906,6 +1352,13 @@ class InMemoryUnitOfWork:
         self._pending_source_revisions.clear()
         self._pending_source_provenance.clear()
         self._pending_audit_events.clear()
+        self._pending_ingestion_runs.clear()
+        self._pending_ingestion_items.clear()
+        self._pending_ingestion_bindings.clear()
+        self._pending_ingestion_transitions.clear()
+        self._pending_ingestion_warnings.clear()
+        self._pending_ingestion_failures.clear()
+        self._pending_processing_receipts.clear()
         self._lifecycle = _Lifecycle.ROLLED_BACK
         self._release_source_observation_lock()
 
@@ -968,6 +1421,7 @@ class InMemoryUnitOfWork:
             raise OutboxConflictError("Outbox event identity already exists.")
         if self._pending_audit_events.keys() & self._store.audit_events.keys():
             raise AuditConflictError("Audit Event identity already exists.")
+        self._validate_ingestion_commit()
         for intent in self._pending_outbox_intents.values():
             if self._store_has_producer_identity(intent):
                 raise OutboxConflictError("Outbox producer identity already exists.")
@@ -999,6 +1453,90 @@ class InMemoryUnitOfWork:
             for environment in self._pending_environments.values()
         ):
             raise ConstraintConflictError("Owning Workspace does not exist.")
+
+    def _validate_ingestion_commit(self) -> None:
+        """Apply the database uniqueness/append-only checks at commit time.
+
+        Repository methods validate against the transaction snapshot.  A second
+        transaction may have committed after that snapshot, so these checks are
+        deliberately repeated while holding the store commit lock.
+        """
+        maps = (
+            (self._pending_ingestion_runs, self._store.ingestion_runs),
+            (self._pending_ingestion_items, self._store.ingestion_items),
+            (self._pending_ingestion_bindings, self._store.ingestion_bindings),
+            (self._pending_ingestion_transitions, self._store.ingestion_transitions),
+            (self._pending_ingestion_warnings, self._store.ingestion_warnings),
+            (self._pending_ingestion_failures, self._store.ingestion_failures),
+            (self._pending_processing_receipts, self._store.processing_receipts),
+        )
+        if any(pending.keys() & stored.keys() for pending, stored in maps):
+            raise ConstraintConflictError("Ingestion ledger identity already exists.")
+
+        stored_items = tuple(self._store.ingestion_items.values())
+        for item in self._pending_ingestion_items.values():
+            if any(
+                existing.ingestion_run_id == item.ingestion_run_id
+                and existing.input_ordinal == item.input_ordinal
+                for existing in stored_items
+            ) or any(
+                existing.ingestion_run_id == item.ingestion_run_id
+                and existing.input_identity == item.input_identity
+                for existing in stored_items
+            ):
+                raise ConstraintConflictError("Ingestion item uniqueness conflicts with a concurrent commit.")
+            if any(
+                existing.workspace_id == item.workspace_id
+                and existing.environment_id == item.environment_id
+                and existing.command_identity == item.command_identity
+                for existing in stored_items
+            ):
+                raise ConstraintConflictError("Ingestion item command identity conflicts with a concurrent commit.")
+
+        stored_bindings = tuple(self._store.ingestion_bindings.values())
+        for binding in self._pending_ingestion_bindings.values():
+            if any(existing.ingestion_run_source_id == binding.ingestion_run_source_id for existing in stored_bindings):
+                raise ConstraintConflictError("Ingestion item is already bound by a concurrent commit.")
+            if any(
+                existing.workspace_id == binding.workspace_id
+                and existing.environment_id == binding.environment_id
+                and existing.binding_command_identity == binding.binding_command_identity
+                for existing in stored_bindings
+            ):
+                raise ConstraintConflictError("Ingestion binding command identity conflicts with a concurrent commit.")
+
+        for pending, stored, label in (
+            (self._pending_ingestion_runs, self._store.ingestion_runs, "run"),
+            (self._pending_processing_receipts, self._store.processing_receipts, "processing receipt"),
+        ):
+            for value in pending.values():
+                if any(
+                    existing.workspace_id == value.workspace_id
+                    and existing.environment_id == value.environment_id
+                    and existing.command_identity == value.command_identity
+                    for existing in stored.values()
+                ):
+                    raise ConstraintConflictError(f"Ingestion {label} command identity conflicts with a concurrent commit.")
+
+        stored_transitions = tuple(self._store.ingestion_transitions.values())
+        for transition in self._pending_ingestion_transitions.values():
+            if transition.predecessor_transition_id is None and any(
+                existing.workspace_id == transition.workspace_id
+                and existing.environment_id == transition.environment_id
+                and existing.target_kind is transition.target_kind
+                and existing.ingestion_run_id == transition.ingestion_run_id
+                and existing.ingestion_run_source_id == transition.ingestion_run_source_id
+                and existing.predecessor_transition_id is None
+                for existing in stored_transitions
+            ):
+                raise ConstraintConflictError("Ingestion transition root already exists.")
+            if transition.predecessor_transition_id is not None and any(
+                existing.workspace_id == transition.workspace_id
+                and existing.environment_id == transition.environment_id
+                and existing.predecessor_transition_id == transition.predecessor_transition_id
+                for existing in stored_transitions
+            ):
+                raise ConstraintConflictError("Ingestion transition predecessor already has a successor.")
 
     def _resolve_workspace(self, workspace_id: UUID) -> Workspace | None:
         return self._pending_workspaces.get(workspace_id) or self._base_workspaces.get(workspace_id)
@@ -1098,6 +1636,13 @@ class InMemoryUnitOfWork:
         self._base_source_revisions.clear()
         self._base_source_provenance.clear()
         self._base_audit_events.clear()
+        self._base_ingestion_runs.clear()
+        self._base_ingestion_items.clear()
+        self._base_ingestion_bindings.clear()
+        self._base_ingestion_transitions.clear()
+        self._base_ingestion_warnings.clear()
+        self._base_ingestion_failures.clear()
+        self._base_processing_receipts.clear()
         self._pending_workspaces.clear()
         self._pending_environments.clear()
         self._pending_receipts.clear()
@@ -1106,6 +1651,13 @@ class InMemoryUnitOfWork:
         self._pending_source_revisions.clear()
         self._pending_source_provenance.clear()
         self._pending_audit_events.clear()
+        self._pending_ingestion_runs.clear()
+        self._pending_ingestion_items.clear()
+        self._pending_ingestion_bindings.clear()
+        self._pending_ingestion_transitions.clear()
+        self._pending_ingestion_warnings.clear()
+        self._pending_ingestion_failures.clear()
+        self._pending_processing_receipts.clear()
         self._scope = None
         self._operation = None
         self._trace_id = None

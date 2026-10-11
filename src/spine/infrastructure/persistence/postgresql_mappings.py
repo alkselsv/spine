@@ -1,6 +1,6 @@
 """Infrastructure-only SQLAlchemy mappings for canonical tenant records."""
 
-from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table, Text, text
+from sqlalchemy import Boolean, Column, DateTime, Integer, MetaData, String, Table, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
 
@@ -180,6 +180,42 @@ source_revision_provenance = Table(
     Column("observed_at", DateTime(timezone=True), nullable=False),
 )
 
+ingestion_runs = Table(
+    "ingestion_runs", metadata,
+    Column("ingestion_run_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("command_identity", Text, nullable=False), Column("command_digest", String(64), nullable=False), Column("idempotency_receipt_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("trigger_kind", Text, nullable=False), Column("trigger_reference", Text), Column("requested_scope_schema", Text, nullable=False), Column("requested_scope_digest", String(64), nullable=False), Column("requested_at", DateTime(timezone=True), nullable=False),
+)
+
+ingestion_run_sources = Table(
+    "ingestion_run_sources", metadata,
+    Column("ingestion_run_source_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("ingestion_run_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("input_ordinal", Integer, nullable=False), Column("input_identity", Text, nullable=False), Column("input_digest", String(64), nullable=False), Column("command_identity", Text, nullable=False), Column("command_digest", String(64), nullable=False), Column("created_at", DateTime(timezone=True), nullable=False),
+)
+
+ingestion_run_source_bindings = Table(
+    "ingestion_run_source_bindings", metadata,
+    Column("binding_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("ingestion_run_source_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("binding_command_identity", Text, nullable=False), Column("binding_command_digest", String(64), nullable=False), Column("original_reference", JSONB), Column("original_receipt_kind", Text), Column("original_receipt_id", PostgreSQLUUID(as_uuid=True)), Column("original_receipt_digest", String(64)), Column("idempotency_receipt_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("bound_at", DateTime(timezone=True), nullable=False),
+)
+
+ingestion_transitions = Table(
+    "ingestion_transitions", metadata,
+    Column("ingestion_transition_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("target_kind", Text, nullable=False), Column("ingestion_run_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("ingestion_run_source_id", PostgreSQLUUID(as_uuid=True)), Column("predecessor_transition_id", PostgreSQLUUID(as_uuid=True)), Column("state", Text, nullable=False), Column("attempt", Integer, nullable=False), Column("safe_metrics_schema", Text), Column("safe_metrics", JSONB), Column("actor_or_service", Text, nullable=False), Column("trace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("occurred_at", DateTime(timezone=True), nullable=False),
+)
+
+ingestion_warnings = Table(
+    "ingestion_warnings", metadata,
+    Column("ingestion_warning_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("ingestion_run_source_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("attempt", Integer, nullable=False), Column("stage", Text, nullable=False), Column("code", Text, nullable=False), Column("retryable", Boolean, nullable=False), Column("safe_detail_schema", Text, nullable=False), Column("safe_detail", JSONB, nullable=False), Column("safe_detail_digest", String(64), nullable=False), Column("opaque_detail_ref", PostgreSQLUUID(as_uuid=True)), Column("occurred_at", DateTime(timezone=True), nullable=False),
+)
+
+ingestion_failures = Table(
+    "ingestion_failures", metadata,
+    Column("ingestion_failure_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("ingestion_run_source_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("attempt", Integer, nullable=False), Column("stage", Text, nullable=False), Column("code", Text, nullable=False), Column("retryable", Boolean, nullable=False), Column("safe_detail_schema", Text, nullable=False), Column("safe_detail", JSONB, nullable=False), Column("safe_detail_digest", String(64), nullable=False), Column("opaque_detail_ref", PostgreSQLUUID(as_uuid=True)), Column("occurred_at", DateTime(timezone=True), nullable=False),
+)
+
+processing_receipts = Table(
+    "processing_receipts", metadata,
+    Column("processing_receipt_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("ingestion_run_source_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("binding_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("processor_kind", Text, nullable=False), Column("parser_name", Text, nullable=False), Column("parser_version", Text, nullable=False), Column("parser_config_reference", Text, nullable=False), Column("locator_contract_version", Text, nullable=False), Column("original_sha256", String(64), nullable=False), Column("output_kind", Text), Column("output_reference", PostgreSQLUUID(as_uuid=True)), Column("output_digest", String(64)), Column("coverage", Text, nullable=False), Column("exclusions", JSONB, nullable=False), Column("warning_ids", JSONB, nullable=False), Column("failure_ids", JSONB, nullable=False), Column("command_identity", Text, nullable=False), Column("command_digest", String(64), nullable=False), Column("idempotency_receipt_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("completed_at", DateTime(timezone=True), nullable=False),
+)
+
 
 __all__ = [
     "audit_events",
@@ -192,4 +228,11 @@ __all__ = [
     "source_objects",
     "source_revisions",
     "source_revision_provenance",
+    "ingestion_runs",
+    "ingestion_run_sources",
+    "ingestion_run_source_bindings",
+    "ingestion_transitions",
+    "ingestion_warnings",
+    "ingestion_failures",
+    "processing_receipts",
 ]

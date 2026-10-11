@@ -13,6 +13,7 @@ from spine.application.persistence.repositories import (
     SourceObservationRepository,
 )
 from spine.application.persistence.outbox import OutboxWriter
+from spine.application.persistence.ingestion import IngestionRepository
 
 if TYPE_CHECKING:
     from spine.application.diagnostics.audit import AuditWriter
@@ -46,6 +47,8 @@ class TenantUnitOfWorkFactory(Protocol):
 class UnitOfWork(TenantUnitOfWork, Protocol):
     @property
     def sources(self) -> SourceObservationRepository: ...
+    @property
+    def ingestion(self) -> IngestionRepository: ...
     @property
     def idempotency(self) -> IdempotencyRepository: ...
 
