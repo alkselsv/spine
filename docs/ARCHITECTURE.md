@@ -1404,10 +1404,12 @@ its metadata and binding values match.
 
 Run and Artifact identifiers are structurally validated and preserved here;
 authoritative ownership and handoff/persistence checks remain with the owning
-workflow/application boundary and Issue #109. Diagnostic event emission,
-cancellation execution, replay/idempotency, retries and compatibility-facade
-behavior remain deferred to Issues #110–#115. Production admission must be
-assembled through the infrastructure composition bound to the real Issue #72
+workflow/application boundary and Issue #109. Issue #110 adds registered safe
+runtime diagnostics plus shared Audit Event integration without treating either
+as the final `AgentResult`; cancellation execution, replay/idempotency, retries
+and compatibility-facade behavior remain deferred to Issues #111–#115.
+Production admission must be assembled through the infrastructure composition
+bound to the real Issue #72
 `TrustedRequestContextBoundary`; structural fakes are test-only construction
 inputs and cannot be used as production admission sources.
 
