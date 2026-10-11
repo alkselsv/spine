@@ -439,6 +439,64 @@ async def test_postgresql_dispatch_commits_delivery_and_audit_atomically(
     assert len(diagnostic_sink.events) == 1
 
 
+async def test_atomic_finalization_rejects_mismatched_workspace_scope(
+    postgresql_delivery_adapter: DeliveryPersistenceAdapter,
+    delivery_database: DeliveryDatabase,
+) -> None:
+    adapter = postgresql_delivery_adapter
+    workspace_id = synthetic_uuid(6590)
+    event_id = synthetic_uuid(6591)
+    context = adapter.workspace_context(workspace_id)
+    async with adapter.uow_factory(context) as uow:
+        await uow.workspaces.add(workspace(workspace_id))
+        await uow.outbox.append(
+            intent(
+                adapter,
+                workspace_id=workspace_id,
+                event_id=event_id,
+                trace_id=context.trace_id,
+                producer_deduplication_id=None,
+            )
+        )
+        await uow.commit()
+    claimed_at = datetime(2026, 10, 12, 13, 30, tzinfo=timezone.utc)
+    claim = (
+        await adapter.delivery_repository.claim_due(
+            limit=1,
+            worker_identity="worker_alpha",
+            claimed_at=claimed_at,
+            lease_duration=timedelta(seconds=30),
+        )
+    )[0]
+
+    async with delivery_database.dispatcher_engine.begin() as connection:
+        result = await connection.execute(
+            text(
+                "SELECT * FROM spine.finalize_outbox_delivery("
+                ":event_id, :workspace_id, NULL, :worker_identity, "
+                ":lease_token, :attempt_number, :delivery_version, "
+                "'delivered', :occurred_at, NULL, NULL, "
+                ":audit_event_id, :service_principal_id)"
+            ),
+            {
+                "event_id": event_id,
+                "workspace_id": synthetic_uuid(6592),
+                "worker_identity": claim.worker_identity,
+                "lease_token": claim.lease_token,
+                "attempt_number": claim.attempt_number,
+                "delivery_version": claim.delivery_version,
+                "occurred_at": claimed_at + timedelta(seconds=1),
+                "audit_event_id": synthetic_uuid(6593),
+                "service_principal_id": synthetic_uuid(6594),
+            },
+        )
+        assert result.mappings().all() == []
+
+    delivery = await adapter.delivery_repository.resolve(event_id)
+    assert delivery is not None
+    assert delivery.status.value == "in_flight"
+
+
 async def test_postgresql_unknown_persisted_event_is_quarantined_without_payload_load(
     postgresql_delivery_adapter: DeliveryPersistenceAdapter,
     delivery_database: DeliveryDatabase,

@@ -32,13 +32,15 @@ def _quoted_role(attribute: str) -> str:
 def upgrade() -> None:
     dispatcher_role = _quoted_role("dispatcher_role")
     signature = (
-        f"{SCHEMA}.{FUNCTION}(uuid, text, uuid, integer, integer, text, "
+        f"{SCHEMA}.{FUNCTION}(uuid, uuid, uuid, text, uuid, integer, integer, text, "
         "timestamp with time zone, timestamp with time zone, text, uuid, uuid)"
     )
     op.execute(
         f"""
         CREATE FUNCTION {SCHEMA}.{FUNCTION}(
             p_event_id uuid,
+            p_workspace_id uuid,
+            p_environment_id uuid,
             p_worker_identity text,
             p_lease_token uuid,
             p_attempt_number integer,
@@ -61,7 +63,9 @@ def upgrade() -> None:
             audit_outcome text;
             audit_reason text;
         BEGIN
-            IF p_worker_identity IS NULL
+            IF p_workspace_id IS NULL
+               OR p_workspace_id = '00000000-0000-0000-0000-000000000000'::uuid
+               OR p_worker_identity IS NULL
                OR p_worker_identity !~ '{_IDENTIFIER_PATTERN}'
                OR p_attempt_number <= 0
                OR p_delivery_version <= 0
@@ -87,7 +91,9 @@ def upgrade() -> None:
 
             SELECT * INTO source_intent
             FROM {SCHEMA}.outbox_intents
-            WHERE event_id = p_event_id;
+            WHERE event_id = p_event_id
+              AND workspace_id = p_workspace_id
+              AND environment_id IS NOT DISTINCT FROM p_environment_id;
             IF NOT FOUND THEN
                 RETURN;
             END IF;
@@ -111,6 +117,8 @@ def upgrade() -> None:
                 version = version + 1,
                 updated_at = p_occurred_at
             WHERE event_id = p_event_id
+              AND workspace_id = p_workspace_id
+              AND environment_id IS NOT DISTINCT FROM p_environment_id
               AND status = 'in_flight'
               AND lease_owner = p_worker_identity
               AND lease_token = p_lease_token
@@ -163,7 +171,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     signature = (
-        f"{SCHEMA}.{FUNCTION}(uuid, text, uuid, integer, integer, text, "
+        f"{SCHEMA}.{FUNCTION}(uuid, uuid, uuid, text, uuid, integer, integer, text, "
         "timestamp with time zone, timestamp with time zone, text, uuid, uuid)"
     )
     op.execute(f"DROP FUNCTION {signature}")

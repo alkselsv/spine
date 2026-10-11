@@ -27,6 +27,7 @@ from spine.application.persistence.delivery import (
     OutboxDelivery,
     OutboxDeliveryStatus,
     UnresolvedOutboxIntent,
+    validate_consumer_name,
 )
 from spine.application.persistence.outbox import OutboxIntent
 from spine.domain.audit import AuditEvent, AuditOutcome, OutboxDeliveryAuditPayload
@@ -66,7 +67,6 @@ class DispatchOutcomeCode(str, Enum):
     DELIVERED = "delivery.delivered"
     RETRY_SCHEDULED = "delivery.retry_scheduled"
     QUARANTINED = "delivery.quarantined"
-    STALE_LEASE = "delivery.stale_lease"
 
 
 class OutboxConsumerSuccess(BaseModel):
@@ -94,8 +94,7 @@ class OutboxConsumerRegistry:
         self._consumers: dict[str, OutboxConsumer] = {}
 
     def register(self, consumer_name: str, consumer: OutboxConsumer) -> None:
-        if _IDENTIFIER.fullmatch(consumer_name) is None:
-            raise ValueError("consumer_name must be a bounded identifier.")
+        validate_consumer_name(consumer_name)
         if consumer_name in self._consumers:
             raise DuplicateOutboxConsumerError(
                 "Outbox consumer is already registered."
