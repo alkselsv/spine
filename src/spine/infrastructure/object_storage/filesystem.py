@@ -1175,8 +1175,8 @@ class FilesystemOriginalObjectStore:
         self,
         upload_id: UUID,
     ) -> tuple[Literal["staged", "finalized"], Path, Path, dict[str, Any]] | None:
-        staged: list[tuple[Path, Path, dict[str, Any]]] = []
-        finalized: list[tuple[Path, Path, dict[str, Any]]] = []
+        staged: tuple[Path, Path, dict[str, Any]] | None = None
+        finalized: tuple[Path, Path, dict[str, Any]] | None = None
         for scope_dir in self._iter_scope_directories(self._staged_root):
             candidate = scope_dir / upload_id.hex
             if self._exists(candidate) and (
@@ -1188,19 +1188,26 @@ class FilesystemOriginalObjectStore:
                 manifest = self._read_manifest(manifest_path)
                 self._assert_manifest_scope(manifest, scope_dir)
                 if manifest.get("upload_id") == str(upload_id):
-                    staged.append((candidate / "payload", manifest_path, manifest))
+                    if staged is not None:
+                        raise StorageIntegrityIndeterminate()
+                    staged = (candidate / "payload", manifest_path, manifest)
         for manifest_path in self._iter_final_manifests():
             manifest = self._read_manifest(manifest_path)
             self._assert_manifest_scope(manifest, manifest_path.parent)
             if manifest.get("upload_id") == str(upload_id):
-                finalized.append((manifest_path.parent / self._payload_name_from_manifest(manifest), manifest_path, manifest))
-        if len(finalized) > 1 or (not finalized and len(staged) > 1):
-            raise StorageIntegrityIndeterminate()
+                if finalized is not None:
+                    raise StorageIntegrityIndeterminate()
+                finalized = (
+                    manifest_path.parent
+                    / self._payload_name_from_manifest(manifest),
+                    manifest_path,
+                    manifest,
+                )
         if finalized:
-            payload, manifest_path, manifest = finalized[0]
+            payload, manifest_path, manifest = finalized
             return "finalized", payload, manifest_path, manifest
         if staged:
-            payload, manifest_path, manifest = staged[0]
+            payload, manifest_path, manifest = staged
             return "staged", payload, manifest_path, manifest
         return None
 
@@ -1208,21 +1215,19 @@ class FilesystemOriginalObjectStore:
         self,
         reference: ObjectReference,
     ) -> tuple[Path, Path] | None:
-        matches: list[tuple[Path, Path]] = []
+        match: tuple[Path, Path] | None = None
         for manifest_path in self._iter_final_manifests():
             manifest = self._read_manifest(manifest_path)
             self._assert_manifest_scope(manifest, manifest_path.parent)
             receipt = self._receipt_from_manifest(manifest)
             if receipt.object_reference.object_id == reference.object_id:
-                matches.append(
-                    (
-                        manifest_path.parent / self._payload_name_from_manifest(manifest),
-                        manifest_path,
-                    )
+                if match is not None:
+                    raise StorageIntegrityIndeterminate()
+                match = (
+                    manifest_path.parent / self._payload_name_from_manifest(manifest),
+                    manifest_path,
                 )
-        if len(matches) > 1:
-            raise StorageIntegrityIndeterminate()
-        return matches[0] if matches else None
+        return match
 
     def _iter_final_manifests(self) -> Iterator[Path]:
         for scope_dir in self._iter_scope_directories(self._finalized_root):
@@ -1677,13 +1682,22 @@ class FilesystemOriginalObjectStore:
         digest = hashlib.sha256()
         length = 0
         try:
+            try:
+                if os.fstat(fd).st_size > max_bytes:
+                    raise UploadLimitExceeded()
+            except OSError as error:
+                raise self._read_error(error) from None
             while True:
                 if self._monotonic_clock() > deadline:
                     raise UploadLimitExceeded()
                 try:
                     chunk = os.read(
                         fd,
-                        min(self._profile.read_chunk_bytes, self._profile.max_chunk_bytes),
+                        min(
+                            self._profile.read_chunk_bytes,
+                            self._profile.max_chunk_bytes,
+                            max_bytes - length,
+                        ),
                     )
                 except OSError as error:
                     raise self._read_error(error) from None
@@ -1934,6 +1948,8 @@ class FilesystemOriginalObjectStore:
         except StorageError:
             raise
         except OSError:
+            raise StorageConfigurationError() from None
+        except RuntimeError:
             raise StorageConfigurationError() from None
 
     def _prepare_directory(self, path: Path) -> Path:
@@ -2246,7 +2262,7 @@ class FilesystemOriginalObjectStore:
                     try:
                         on_cancel(value)
                     except BaseException:
-                        pass
+                        self._indeterminate.set()
 
             threading.Thread(target=drain, daemon=True).start()
 
@@ -2285,9 +2301,12 @@ class FilesystemOriginalObjectStore:
                 try:
                     value = result.result()
                     if on_cancel is not None:
-                        on_cancel(value)
+                        try:
+                            on_cancel(value)
+                        except BaseException:
+                            self._indeterminate.set()
                 except BaseException:
-                    pass
+                    self._indeterminate.set()
             else:
                 abandon()
             raise

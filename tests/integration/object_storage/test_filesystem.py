@@ -206,7 +206,8 @@ async def test_concurrent_finalizers_publish_one_complete_immutable_object(
 
     assert sum(isinstance(receipt, WriteReceipt) for receipt in receipts) == 1
     assert sum(isinstance(receipt, StorageError) for receipt in receipts) == 1
-    inventory, cursor = await first.reconciliation_inventory()
+    winner = first if isinstance(receipts[0], WriteReceipt) else second
+    inventory, cursor = await winner.reconciliation_inventory()
     assert len(inventory) == 1
     assert cursor is None
     assert finalized_payload(tmp_path).read_bytes() == CONTENT
