@@ -63,12 +63,24 @@ def digest_agent_invocation(
                 "step_run_id": context.step_run_id,
                 "agent_run_id": context.agent_run_id,
             },
+            "authority": {
+                "acting_on_behalf_of": {
+                    "kind": invocation.acting_on_behalf_of.kind,
+                    "id": invocation.acting_on_behalf_of.id,
+                },
+                "acting_subject_id": context.trusted_identity.acting_subject_id,
+                "service_principal_id": context.trusted_identity.service_principal_id,
+                "authorization_generation": (
+                    context.trusted_identity.authorization_generation
+                ),
+            },
             "input_artifact_ids": invocation.input_artifact_ids,
             "validated_input": validated_input.model_dump(mode="json"),
             "constraints": invocation.constraints,
             "context_request": invocation.context_request,
             "context_profile": context.context_profile,
             "permitted_tool_capabilities": context.permitted_tool_capabilities,
+            "deadline": context.deadline,
         },
     )
 

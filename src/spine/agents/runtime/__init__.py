@@ -25,8 +25,10 @@ from spine.agents.runtime.artifacts import (
     ArtifactPersistence,
     ArtifactReadError,
     CapabilityArtifactSchema,
+    InvocationOutputCheckpoint,
 )
 from spine.agents.runtime.diagnostics import (
+    AgentReplayPayload,
     AgentRetryDiagnosticPayload,
     AgentRetryDiagnosticState,
     AgentRetryReason,
@@ -81,6 +83,7 @@ __all__ = [
     "AgentRetryDiagnosticState",
     "AgentRetryReason",
     "AgentRequest",
+    "AgentReplayPayload",
     "AgentResponse",
     "AgentRunAuditPayload",
     "AgentRunDiagnosticPayload",
@@ -108,6 +111,7 @@ __all__ = [
     "ExecutionIdentitySnapshot",
     "CapabilitySchemaIdentity",
     "CapabilityArtifactSchema",
+    "InvocationOutputCheckpoint",
     "LocalAgentRuntime",
     "TrustedExecutionIdentity",
     "TrustedExecutionIdentitySnapshot",

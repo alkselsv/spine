@@ -18,6 +18,7 @@ from spine.agents.runtime.artifacts import (
     ArtifactPersistence,
     ArtifactReadError,
     CapabilityArtifactSchema,
+    InvocationOutputCheckpoint,
 )
 from spine.agents.runtime.contracts import (
     AgentExecutionContext,
@@ -178,11 +179,19 @@ class LocalAgentRuntime:
                     workspace_id=self._context.workspace_id,
                     environment_id=self._context.environment_id,
                 )
+                if isinstance(replayed, InvocationOutputCheckpoint):
+                    return await self._persist_checkpoint(
+                        replayed,
+                        claim=claim,
+                        result_reference=result_reference,
+                        replayed=True,
+                    )
                 if not isinstance(replayed, AgentResult):
                     raise IdempotencyConflictError(
                         "Idempotency result cannot be resolved."
                     )
-                await self._events.observe_run(AgentRunDiagnosticState.REPLAYED)
+                self._cancellation.seal(self._cancellation_scope)
+                await self._events.observe_replay()
                 return replayed
             if not isinstance(claim, OwnedIdempotencyClaim):
                 raise IdempotencyConflictError("Idempotency claim is invalid.")
@@ -299,6 +308,13 @@ class LocalAgentRuntime:
             evidence_refs=response.evidence_refs,
             upstream_artifact_ids=invocation.input_artifact_ids,
         )
+        checkpoint = InvocationOutputCheckpoint(
+            drafts=(draft,),
+            evidence_refs=response.evidence_refs,
+            confidence=response.confidence,
+            structured_metrics=response.structured_metrics,
+            trace_ref=self._trace_ref,
+        )
         try:
             if not self._cancellation.seal(self._cancellation_scope):
                 return await self._finish_claimed(
@@ -306,23 +322,13 @@ class LocalAgentRuntime:
                     result_reference,
                     self._cancelled_result(),
                 )
-            completion_audit = self._events.build_run_audit_event(
-                AgentRunDiagnosticState.COMPLETED
-            )
-            result = await self._artifacts.persist_outputs(
-                (draft,),
+            persisted_checkpoint = await self._artifacts.checkpoint_outputs(
+                checkpoint,
                 claim=claim,
                 result_reference=result_reference,
-                audit_event=completion_audit,
-                validate_references=self._validate_persisted_references,
-                build_result=lambda references: agent_result_from_response(
-                    response,
-                    output_artifact_ids=tuple(
-                        reference.id for reference in references
-                    ),
-                    trace_ref=self._trace_ref,
-                ),
             )
+            if persisted_checkpoint != checkpoint:
+                raise ValueError("output checkpoint is invalid")
         except CooperativeCancellationError:
             return await self._finish_claimed(
                 claim,
@@ -336,15 +342,12 @@ class LocalAgentRuntime:
             return await self._finish(
                 self._safe_failure(_FailureCategory.PERSISTENCE, AgentRunStatus.FAILED)
             )
-
-        if not isinstance(result, AgentResult):
-            return await self._finish(
-                self._safe_failure(_FailureCategory.PERSISTENCE, AgentRunStatus.FAILED)
-            )
-        await self._events.observe_run_diagnostic(
-            AgentRunDiagnosticState.COMPLETED
+        return await self._persist_checkpoint(
+            checkpoint,
+            claim=claim,
+            result_reference=result_reference,
+            replayed=False,
         )
-        return result
 
     async def cancel(
         self,
@@ -495,11 +498,7 @@ class LocalAgentRuntime:
 
     async def _finish(self, result: AgentResult) -> AgentResult:
         self._cancellation.seal(self._cancellation_scope)
-        state = {
-            AgentRunStatus.SUCCEEDED: AgentRunDiagnosticState.COMPLETED,
-            AgentRunStatus.FAILED: AgentRunDiagnosticState.FAILED,
-            AgentRunStatus.CANCELLED: AgentRunDiagnosticState.CANCELLED,
-        }[result.status]
+        state = _diagnostic_state(result.status)
         await self._events.observe_run(state)
         return result
 
@@ -511,11 +510,7 @@ class LocalAgentRuntime:
     ) -> AgentResult:
         """Commit a terminal result through the same canonical receipt."""
 
-        state = {
-            AgentRunStatus.SUCCEEDED: AgentRunDiagnosticState.COMPLETED,
-            AgentRunStatus.FAILED: AgentRunDiagnosticState.FAILED,
-            AgentRunStatus.CANCELLED: AgentRunDiagnosticState.CANCELLED,
-        }[result.status]
+        state = _diagnostic_state(result.status)
         try:
             persisted = await self._artifacts.persist_result(
                 result,
@@ -536,6 +531,51 @@ class LocalAgentRuntime:
             )
         await self._events.observe_run_diagnostic(state)
         return persisted
+
+    async def _persist_checkpoint(
+        self,
+        checkpoint: InvocationOutputCheckpoint,
+        *,
+        claim: OwnedIdempotencyClaim | IdempotencyReplay,
+        result_reference: OpaqueResultReference,
+        replayed: bool,
+    ) -> AgentResult:
+        try:
+            result = await self._artifacts.persist_outputs(
+                checkpoint,
+                claim=claim,
+                result_reference=result_reference,
+                audit_event=self._events.build_run_audit_event(
+                    AgentRunDiagnosticState.COMPLETED
+                ),
+                validate_references=self._validate_persisted_references,
+            )
+        except CancelledError:
+            await self._events.observe_run(AgentRunDiagnosticState.CANCELLED)
+            raise
+        except Exception:
+            return await self._finish(
+                self._safe_failure(_FailureCategory.PERSISTENCE, AgentRunStatus.FAILED)
+            )
+        if not isinstance(result, AgentResult):
+            return await self._finish(
+                self._safe_failure(_FailureCategory.PERSISTENCE, AgentRunStatus.FAILED)
+            )
+        if replayed:
+            await self._events.observe_replay()
+        else:
+            await self._events.observe_run_diagnostic(
+                AgentRunDiagnosticState.COMPLETED
+            )
+        return result
+
+
+def _diagnostic_state(status: AgentRunStatus) -> AgentRunDiagnosticState:
+    return {
+        AgentRunStatus.SUCCEEDED: AgentRunDiagnosticState.COMPLETED,
+        AgentRunStatus.FAILED: AgentRunDiagnosticState.FAILED,
+        AgentRunStatus.CANCELLED: AgentRunDiagnosticState.CANCELLED,
+    }[status]
 
 
 __all__ = ["LocalAgentRuntime"]

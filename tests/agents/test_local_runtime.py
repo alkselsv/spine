@@ -31,6 +31,7 @@ from spine.agents.runtime import (
     AgentRunDiagnosticState,
     AgentToolDiagnosticState,
     AgentUsageKind,
+    InvocationOutputCheckpoint,
     LocalAgentRuntime,
     TrustedExecutionIdentitySnapshot,
     build_agent_runtime_audit_registry,
@@ -237,7 +238,11 @@ class FakeArtifactPersistence:
     validation_calls: int = 0
     receipts: dict[
         tuple[UUID, UUID, str, int, str],
-        tuple[CommandDigest, OpaqueResultReference, AgentResult],
+        tuple[
+            CommandDigest,
+            OpaqueResultReference,
+            AgentResult | InvocationOutputCheckpoint,
+        ],
     ] = field(default_factory=dict)
 
     async def load(
@@ -314,7 +319,7 @@ class FakeArtifactPersistence:
         *,
         workspace_id: UUID,
         environment_id: UUID,
-    ) -> AgentResult | None:
+    ) -> AgentResult | InvocationOutputCheckpoint | None:
         existing = self.receipts.get(
             (
                 workspace_id,
@@ -328,15 +333,38 @@ class FakeArtifactPersistence:
             return None
         return existing[2].model_copy(deep=True)
 
-    async def persist_outputs(
+    async def checkpoint_outputs(
         self,
-        drafts: tuple[ArtifactDraft, ...],
+        checkpoint: InvocationOutputCheckpoint,
         *,
         claim: OwnedIdempotencyClaim,
         result_reference: OpaqueResultReference,
+    ) -> InvocationOutputCheckpoint:
+        first = checkpoint.drafts[0]
+        receipt_key = (
+            first.workspace_id,
+            first.environment_id,
+            claim.key.value,
+            claim.operation_schema_version,
+            claim.operation.value,
+        )
+        existing = self.receipts.get(receipt_key)
+        expected = (claim.digest, result_reference, checkpoint)
+        if existing is not None and existing != expected:
+            raise IdempotencyConflictError(
+                "Idempotency key conflicts with existing command."
+            )
+        self.receipts[receipt_key] = expected
+        return checkpoint.model_copy(deep=True)
+
+    async def persist_outputs(
+        self,
+        checkpoint: InvocationOutputCheckpoint,
+        *,
+        claim: OwnedIdempotencyClaim | IdempotencyReplay,
+        result_reference: OpaqueResultReference,
         audit_event: AuditEvent,
         validate_references: Any,
-        build_result: Any,
     ) -> AgentResult:
         references = (
             self.returned_ref
@@ -353,9 +381,8 @@ class FakeArtifactPersistence:
             raise RuntimeError("audit commit exposed production-token")
         if self.write_error:
             raise RuntimeError("database included protected output")
-        result = build_result(references)
-        self.writes.append((drafts, claim.key.value))
-        first = drafts[0]
+        result = checkpoint.build_result(references)
+        first = checkpoint.drafts[0]
         receipt_key = (
             first.workspace_id,
             first.environment_id,
@@ -364,15 +391,23 @@ class FakeArtifactPersistence:
             claim.operation.value,
         )
         existing = self.receipts.get(receipt_key)
-        if existing is not None and existing != (
-            claim.digest,
-            result_reference,
-            result,
-        ):
+        if existing is None or existing[1] != result_reference:
             raise IdempotencyConflictError(
                 "Idempotency key conflicts with existing command."
             )
-        self.receipts[receipt_key] = (claim.digest, result_reference, result)
+        existing_digest, _, existing_value = existing
+        if isinstance(claim, OwnedIdempotencyClaim) and existing_digest != claim.digest:
+            raise IdempotencyConflictError(
+                "Idempotency key conflicts with existing command."
+            )
+        if isinstance(existing_value, AgentResult):
+            return existing_value.model_copy(deep=True)
+        if existing_value != checkpoint:
+            raise IdempotencyConflictError(
+                "Idempotency key conflicts with existing command."
+            )
+        self.writes.append((checkpoint.drafts, claim.key.value))
+        self.receipts[receipt_key] = (existing_digest, result_reference, result)
         if self.completion_error_after_commit:
             self.completion_error_after_commit = False
             raise RuntimeError("commit acknowledgement was unavailable")
@@ -1041,17 +1076,19 @@ async def test_cancel_after_commit_boundary_cannot_replace_success() -> None:
     class BlockingPersistence(FakeArtifactPersistence):
         async def persist_outputs(
             self,
-            drafts: tuple[ArtifactDraft, ...],
+            checkpoint: InvocationOutputCheckpoint,
             *,
-            idempotency_key: str,
+            claim: OwnedIdempotencyClaim | IdempotencyReplay,
+            result_reference: OpaqueResultReference,
             audit_event: AuditEvent,
             validate_references: Any,
-        ) -> tuple[ArtifactRef, ...]:
+        ) -> AgentResult:
             commit_started.set()
             await resume_commit.wait()
             return await super().persist_outputs(
-                drafts,
-                idempotency_key=idempotency_key,
+                checkpoint,
+                claim=claim,
+                result_reference=result_reference,
                 audit_event=audit_event,
                 validate_references=validate_references,
             )
@@ -1529,16 +1566,27 @@ async def test_equivalent_repeat_replays_one_stable_result_without_side_effects(
     assert len(first_handler.calls) == 1
     assert second_handler.calls == []
     assert len(persistence.writes) == 1
-    assert [event.payload_json()["run_state"] for event in diagnostics.events] == [
+    assert [event.event_type for event in diagnostics.events] == [
+        "agent.run",
+        "agent.run",
+        "agent.run",
+        "agent.replay",
+    ]
+    assert [event.payload_json().get("run_state") for event in diagnostics.events] == [
         "started",
         "completed",
         "started",
-        "replayed",
+        None,
     ]
-    assert [event.payload_json()["run_state"] for event in audit.events] == [
+    assert [event.event_type for event in audit.events] == [
+        "agent.run",
+        "agent.run",
+        "agent.replay",
+    ]
+    assert [event.payload_json().get("run_state") for event in audit.events] == [
         "started",
         "started",
-        "replayed",
+        None,
     ]
 
 
@@ -1588,7 +1636,17 @@ async def test_same_key_with_different_validated_input_returns_safe_conflict() -
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("identity_kind", ("capability", "version", "run"))
+@pytest.mark.parametrize(
+    "identity_kind",
+    (
+        "capability",
+        "version",
+        "run",
+        "acting-on-behalf-of",
+        "authorization-generation",
+        "deadline",
+    ),
+)
 async def test_same_key_with_different_runtime_identity_returns_safe_conflict(
     identity_kind: str,
 ) -> None:
@@ -1615,16 +1673,32 @@ async def test_same_key_with_different_runtime_identity_returns_safe_conflict(
             update={"id": uid(22), "version": "2026.10.2"}
         )
         context_overrides["agent_version"] = selected_version
-    else:
+    elif identity_kind == "run":
         context_overrides["workflow_run_id"] = uid(35)
+    elif identity_kind == "authorization-generation":
+        context_overrides["trusted_identity"] = (
+            TrustedExecutionIdentitySnapshot(
+                workspace_id=uid(1),
+                environment_id=uid(2),
+                acting_subject_id=uid(3),
+                authorization_generation=2,
+            )
+        )
+    elif identity_kind == "deadline":
+        context_overrides["deadline"] = datetime(2026, 10, 12, tzinfo=timezone.utc)
     second_context = execution_context(**context_overrides)
     second_handler = RecordingHandler()
+    selected_invocation = invocation()
+    if identity_kind == "acting-on-behalf-of":
+        selected_invocation = invocation(
+            acting_on_behalf_of=ActorRef(kind=ActorKind.HUMAN, id=uid(4))
+        )
 
     conflict = await local_runtime(
         persistence,
         second_handler,
         context=second_context,
-    ).invoke(selected_version, invocation())
+    ).invoke(selected_version, selected_invocation)
 
     assert conflict.status is AgentRunStatus.FAILED
     assert conflict.error == "The idempotency key conflicts with an existing command."
@@ -1667,6 +1741,7 @@ async def test_artifact_failure_retry_creates_one_logical_output() -> None:
 
     assert failed.status is AgentRunStatus.FAILED
     assert recovered.status is AgentRunStatus.SUCCEEDED
+    assert len(handler.calls) == 1
     assert len(persistence.writes) == 1
     assert recovered.output_artifact_ids == (uid(70),)
 
@@ -1691,6 +1766,10 @@ async def test_same_raw_key_is_isolated_between_two_tenants() -> None:
     second_context = execution_context(
         workspace_id=uid(101),
         environment_id=uid(102),
+        cancellation=cooperative_cancellation(
+            workspace_id=uid(101),
+            environment_id=uid(102),
+        ),
         trusted_identity=TrustedExecutionIdentitySnapshot(
             workspace_id=uid(101),
             environment_id=uid(102),

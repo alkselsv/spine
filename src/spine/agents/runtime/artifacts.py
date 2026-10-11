@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from spine.agents.runtime.contracts import AgentResponse, CapabilitySchemaIdentity
 from spine.application.diagnostics import AuditEvent
@@ -19,9 +19,9 @@ from spine.application.persistence import (
     OpaqueResultReference,
     OwnedIdempotencyClaim,
 )
-from spine.domain.agents import AgentResult
+from spine.domain.agents import AgentResult, AgentRunStatus
 from spine.domain.artifacts import Artifact, ArtifactRef, validate_artifact_lineage
-from spine.domain.common import ActorRef, SchemaRef
+from spine.domain.common import ActorRef, FrozenDict, SchemaRef
 
 
 class ArtifactReadError(RuntimeError):
@@ -61,15 +61,57 @@ class ArtifactDraft(BaseModel):
         return validate_artifact_lineage(value)
 
 
+class InvocationOutputCheckpoint(BaseModel):
+    """Durable validated handler output awaiting Artifact completion."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    drafts: tuple[ArtifactDraft, ...]
+    evidence_refs: tuple[str, ...]
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    structured_metrics: Mapping[str, float] = Field(default_factory=FrozenDict)
+    trace_ref: str
+
+    @field_validator("drafts")
+    @classmethod
+    def require_drafts(
+        cls,
+        value: tuple[ArtifactDraft, ...],
+    ) -> tuple[ArtifactDraft, ...]:
+        if not value:
+            raise ValueError("output checkpoint requires Artifact drafts")
+        return value
+
+    @field_validator("structured_metrics", mode="after")
+    @classmethod
+    def freeze_metrics(cls, value: Mapping[str, float]) -> Mapping[str, float]:
+        return FrozenDict(value)
+
+    def build_result(self, references: tuple[ArtifactRef, ...]) -> AgentResult:
+        if len(references) != len(self.drafts):
+            raise ValueError("output checkpoint references are invalid")
+        return AgentResult(
+            status=AgentRunStatus.SUCCEEDED,
+            output_artifact_ids=tuple(reference.id for reference in references),
+            evidence_refs=self.evidence_refs,
+            confidence=self.confidence,
+            structured_metrics=self.structured_metrics,
+            trace_ref=self.trace_ref,
+        )
+
+
 @runtime_checkable
 class ArtifactPersistence(Protocol):
     """Narrow canonical Artifact boundary used by a single runtime attempt.
 
     ``load`` applies the requested scope and access policy before returning a
     record. Invocation claims reuse the canonical Issue #8 receipt types.
-    ``persist_outputs`` atomically commits the Artifact batch, AgentResult,
-    required Audit Event and receipt completion, or raises. If an adapter loses
-    the commit acknowledgement, the next claim must return ``IdempotencyReplay``.
+    ``checkpoint_outputs`` atomically stores validated handler output and
+    completes the canonical receipt. ``persist_outputs`` then atomically commits
+    the Artifact batch, AgentResult and required Audit Event. If either commit
+    acknowledgement is lost, the next claim returns ``IdempotencyReplay`` and
+    resolves either the stable result or the checkpoint without rerunning the
+    handler.
     """
 
     async def load(
@@ -107,17 +149,24 @@ class ArtifactPersistence(Protocol):
         *,
         workspace_id: UUID,
         environment_id: UUID,
-    ) -> AgentResult | None: ...
+    ) -> AgentResult | InvocationOutputCheckpoint | None: ...
 
-    async def persist_outputs(
+    async def checkpoint_outputs(
         self,
-        drafts: tuple[ArtifactDraft, ...],
+        checkpoint: InvocationOutputCheckpoint,
         *,
         claim: OwnedIdempotencyClaim,
         result_reference: OpaqueResultReference,
+    ) -> InvocationOutputCheckpoint: ...
+
+    async def persist_outputs(
+        self,
+        checkpoint: InvocationOutputCheckpoint,
+        *,
+        claim: OwnedIdempotencyClaim | IdempotencyReplay,
+        result_reference: OpaqueResultReference,
         audit_event: AuditEvent,
         validate_references: Callable[[tuple[ArtifactRef, ...]], None],
-        build_result: Callable[[tuple[ArtifactRef, ...]], AgentResult],
     ) -> AgentResult: ...
 
     async def persist_result(
@@ -180,4 +229,5 @@ __all__ = [
     "ArtifactPersistence",
     "ArtifactReadError",
     "CapabilityArtifactSchema",
+    "InvocationOutputCheckpoint",
 ]
