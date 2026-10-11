@@ -22,7 +22,7 @@ from spine.application.persistence.outbox import OpaqueObjectReference
 
 
 def test_registered_event_resolves_to_one_explicit_consumer() -> None:
-    registry = OutboxDeliveryRouteRegistry()
+    registry = OutboxDeliveryRouteRegistry(version="test.v1")
     registry.register(
         event_type="workspace.created",
         schema_version=1,
@@ -37,7 +37,7 @@ def test_registered_event_resolves_to_one_explicit_consumer() -> None:
 
 
 def test_duplicate_event_route_is_rejected_deterministically() -> None:
-    registry = OutboxDeliveryRouteRegistry()
+    registry = OutboxDeliveryRouteRegistry(version="test.v1")
     registry.register(
         event_type="workspace.created",
         schema_version=1,
@@ -52,8 +52,27 @@ def test_duplicate_event_route_is_rejected_deterministically() -> None:
         )
 
 
+def test_sealed_route_registry_rejects_runtime_mutation() -> None:
+    registry = OutboxDeliveryRouteRegistry(version="test.v1")
+    registry.seal()
+
+    with pytest.raises(RuntimeError, match="sealed"):
+        registry.register(
+            event_type="workspace.created",
+            schema_version=1,
+            consumer_name="workspace_projection",
+        )
+
+
+def test_route_registry_version_is_read_only() -> None:
+    registry = OutboxDeliveryRouteRegistry(version="test.v1")
+
+    with pytest.raises(AttributeError):
+        registry.version = "other.v2"  # type: ignore[misc]
+
+
 def test_unknown_event_route_is_reported_without_payload_detail() -> None:
-    registry = OutboxDeliveryRouteRegistry()
+    registry = OutboxDeliveryRouteRegistry(version="test.v1")
 
     with pytest.raises(
         UnsupportedDeliveryRouteError,
@@ -103,9 +122,8 @@ def test_claimed_delivery_is_an_immutable_validated_snapshot() -> None:
         claim.attempt_number = 2  # type: ignore[misc]
 
 
-def test_delivery_state_rejects_raw_errors_and_incomplete_lease_state() -> None:
-    now = datetime(2026, 10, 11, 12, tzinfo=timezone.utc)
-    common = {
+def _delivery_fields() -> dict[str, object]:
+    return {
         "event_id": synthetic_uuid(6510),
         "workspace_id": synthetic_uuid(6511),
         "environment_id": None,
@@ -117,9 +135,11 @@ def test_delivery_state_rejects_raw_errors_and_incomplete_lease_state() -> None:
         "version": 1,
     }
 
+
+def test_in_flight_delivery_requires_complete_lease_state() -> None:
     with pytest.raises(ValidationError):
         OutboxDelivery(
-            **common,
+            **_delivery_fields(),
             status=OutboxDeliveryStatus.IN_FLIGHT,
             lease_owner="worker_alpha",
             lease_token=synthetic_uuid(6512),
@@ -127,9 +147,12 @@ def test_delivery_state_rejects_raw_errors_and_incomplete_lease_state() -> None:
             last_error_code=None,
         )
 
+
+def test_delivery_state_rejects_unsafe_error_code() -> None:
+    now = datetime(2026, 10, 11, 12, tzinfo=timezone.utc)
     with pytest.raises(ValidationError):
         OutboxDelivery(
-            **(common | {"next_attempt_at": now}),
+            **(_delivery_fields() | {"next_attempt_at": now}),
             status=OutboxDeliveryStatus.RETRY_SCHEDULED,
             lease_owner=None,
             lease_token=None,
@@ -137,5 +160,7 @@ def test_delivery_state_rejects_raw_errors_and_incomplete_lease_state() -> None:
             last_error_code="provider failed: protected payload",
         )
 
+
+def test_delivery_row_contract_cannot_store_raw_failure_data() -> None:
     assert "payload" not in OutboxDelivery.model_fields
     assert "exception" not in OutboxDelivery.model_fields

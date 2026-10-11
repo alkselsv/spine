@@ -26,6 +26,7 @@ from spine.application.persistence.delivery import (
     OutboxDelivery,
     OutboxDeliveryRouteRegistry,
     StaleDeliveryLeaseError,
+    UnresolvedOutboxIntent,
 )
 from spine.infrastructure.db.migrations import upgrade_database
 from spine.infrastructure.db.operator import bootstrap_database_roles
@@ -175,12 +176,13 @@ async def postgresql_delivery_adapter(
     )
     outbox_events = create_outbox_event_registry()
     audit_events = AuditEventRegistry.with_default_families()
-    routes = OutboxDeliveryRouteRegistry()
+    routes = OutboxDeliveryRouteRegistry(version="integration.v1")
     routes.register(
         event_type="workspace.created",
         schema_version=1,
         consumer_name="workspace_projection",
     )
+    routes.seal()
     persistence = PostgreSQLPersistence(
         session_factory=runtime_sessions,
         context_verifier=boundary,
@@ -438,3 +440,56 @@ async def test_runtime_delivery_reads_are_isolated_between_workspaces(
 
     assert await visible(first_workspace) == {first_event}
     assert await visible(second_workspace) == {second_event}
+
+
+async def test_unknown_persisted_event_claim_uses_header_only_envelope(
+    postgresql_delivery_adapter: DeliveryPersistenceAdapter,
+    delivery_database: DeliveryDatabase,
+) -> None:
+    adapter = postgresql_delivery_adapter
+    workspace_id = synthetic_uuid(6560)
+    event_id = synthetic_uuid(6561)
+    trace_id = synthetic_uuid(6562)
+    context = adapter.workspace_context(workspace_id)
+    async with adapter.uow_factory(context) as uow:
+        await uow.workspaces.add(workspace(workspace_id))
+        await uow.commit()
+
+    async with delivery_database.migration_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO spine.outbox_intents "
+                "(event_id, workspace_id, event_type, event_schema_version, "
+                "payload, trace_id) VALUES "
+                "(:event_id, :workspace_id, 'future.event', 99, "
+                "'{\"protected_unknown_shape\": \"never_loaded\"}'::jsonb, "
+                ":trace_id)"
+            ),
+            {
+                "event_id": event_id,
+                "workspace_id": workspace_id,
+                "trace_id": trace_id,
+            },
+        )
+
+    claims = await adapter.delivery_repository.claim_due(
+        limit=1,
+        worker_identity="worker_alpha",
+        claimed_at=datetime(2026, 10, 11, 21, tzinfo=timezone.utc),
+        lease_duration=timedelta(seconds=30),
+    )
+
+    assert len(claims) == 1
+    claim = claims[0]
+    assert type(claim.intent) is UnresolvedOutboxIntent
+    assert claim.intent.event_id == event_id
+    assert claim.consumer_name is None
+
+    quarantined = await adapter.delivery_repository.quarantine(
+        claim,
+        quarantined_at=datetime(2026, 10, 11, 21, 0, 1, tzinfo=timezone.utc),
+        error_code="delivery.unknown_route",
+    )
+
+    assert quarantined.status.value == "quarantined"
+    assert quarantined.last_error_code == "delivery.unknown_route"

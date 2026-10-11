@@ -31,6 +31,7 @@ from spine.application.persistence.delivery import (
     OutboxDeliveryStatus,
     StaleDeliveryLeaseError,
     UnsupportedDeliveryRouteError,
+    UnresolvedOutboxIntent,
 )
 from spine.application.persistence.errors import (
     AuditConflictError,
@@ -143,6 +144,7 @@ __all__ = [
     "UnitOfWorkLifecycleError",
     "UnsupportedOutboxEventError",
     "UnsupportedDeliveryRouteError",
+    "UnresolvedOutboxIntent",
     "UnsupportedCommandValueError",
     "UnexpectedPersistenceError",
     "WorkspaceScope",

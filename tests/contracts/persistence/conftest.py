@@ -45,12 +45,13 @@ async def create_in_memory_adapter() -> DeliveryPersistenceAdapter:
     )
     bootstrap_authority = create_initial_workspace_bootstrap_authority()
     outbox_events = create_outbox_event_registry()
-    delivery_routes = OutboxDeliveryRouteRegistry()
+    delivery_routes = OutboxDeliveryRouteRegistry(version="contract.v1")
     delivery_routes.register(
         event_type="workspace.created",
         schema_version=1,
         consumer_name="workspace_projection",
     )
+    delivery_routes.seal()
     audit_events = AuditEventRegistry.with_default_families()
     persistence = InMemoryPersistence(
         context_verifier=boundary,

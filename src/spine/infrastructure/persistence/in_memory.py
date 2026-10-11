@@ -1534,9 +1534,15 @@ class InMemoryPersistence:
             store, bootstrap_authority
         )
         self.audit_reader = _InMemoryAuditReader(store, context_verifier)
+        selected_delivery_routes = delivery_routes or OutboxDeliveryRouteRegistry(
+            version="v1"
+        )
+        if delivery_routes is None:
+            selected_delivery_routes.seal()
+        selected_delivery_routes.require_sealed()
         self.delivery_repository = _InMemoryOutboxDeliveryRepository(
             store=store,
-            routes=delivery_routes or OutboxDeliveryRouteRegistry(),
+            routes=selected_delivery_routes,
             lease_token_factory=delivery_lease_token_factory,
         )
 

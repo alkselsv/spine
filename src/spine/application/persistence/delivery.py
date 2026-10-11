@@ -20,6 +20,12 @@ _EVENT_TYPE = re.compile(r"[a-z][a-z0-9_.:-]{0,127}")
 _CONSUMER_NAME = re.compile(r"[a-z][a-z0-9_.:-]{0,63}")
 
 
+def _require_nonzero_uuid(value: UUID) -> UUID:
+    if value.int == 0:
+        raise ValueError("identity must be a non-zero UUID.")
+    return value
+
+
 class DuplicateDeliveryRouteError(PersistenceError):
     """An event type/version has more than one declared route."""
 
@@ -42,10 +48,42 @@ class OutboxDeliveryStatus(str, Enum):
     QUARANTINED = "quarantined"
 
 
-def _require_nonzero_uuid(value: UUID) -> UUID:
-    if value.int == 0:
-        raise ValueError("identity must be a non-zero UUID.")
-    return value
+class UnresolvedOutboxIntent(BaseModel):
+    """Safe header-only representation of an unknown persisted event version."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    event_id: UUID
+    workspace_id: UUID
+    environment_id: UUID | None = None
+    event_type: str
+    schema_version: int
+    trace_id: UUID
+    correlation_id: UUID | None = None
+    causation_id: UUID | None = None
+
+    _validate_required_ids = field_validator(
+        "event_id", "workspace_id", "trace_id"
+    )(_require_nonzero_uuid)
+
+    @field_validator("environment_id", "correlation_id", "causation_id")
+    @classmethod
+    def validate_optional_id(cls, value: UUID | None) -> UUID | None:
+        return None if value is None else _require_nonzero_uuid(value)
+
+    @field_validator("event_type")
+    @classmethod
+    def validate_event_type(cls, value: str) -> str:
+        if _EVENT_TYPE.fullmatch(value) is None:
+            raise ValueError("event_type must be a bounded identifier.")
+        return value
+
+    @field_validator("schema_version")
+    @classmethod
+    def validate_schema_version(cls, value: int) -> int:
+        if isinstance(value, bool) or value <= 0:
+            raise ValueError("schema_version must be a positive integer.")
+        return value
 
 
 def _require_aware(value: datetime) -> datetime:
@@ -199,7 +237,7 @@ class ClaimedOutboxDelivery(BaseModel):
         arbitrary_types_allowed=True,
     )
 
-    intent: OutboxIntent
+    intent: OutboxIntent | UnresolvedOutboxIntent
     consumer_name: str | None = None
     worker_identity: str
     lease_token: UUID
@@ -239,7 +277,9 @@ class ClaimedOutboxDelivery(BaseModel):
 
     @model_validator(mode="after")
     def validate_claim(self) -> "ClaimedOutboxDelivery":
-        if type(self.intent) is not OutboxIntent or self.intent.event_id is None:
+        if type(self.intent) not in (OutboxIntent, UnresolvedOutboxIntent):
+            raise ValueError("claimed delivery requires a canonical intent envelope.")
+        if self.intent.event_id is None:
             raise ValueError("claimed delivery requires a persisted intent.")
         if self.lease_expires_at <= self.claimed_at:
             raise ValueError("lease expiry must follow claim time.")
@@ -320,8 +360,16 @@ class OutboxDeliveryRoute:
 class OutboxDeliveryRouteRegistry:
     """Explicit single-consumer routes for versioned outbox events."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, version: str) -> None:
+        if _EVENT_TYPE.fullmatch(version) is None:
+            raise ValueError("route registry version must be a bounded identifier.")
+        self._version = version
         self._routes: dict[tuple[str, int], OutboxDeliveryRoute] = {}
+        self._sealed = False
+
+    @property
+    def version(self) -> str:
+        return self._version
 
     def register(
         self,
@@ -330,6 +378,8 @@ class OutboxDeliveryRouteRegistry:
         schema_version: int,
         consumer_name: str,
     ) -> None:
+        if self._sealed:
+            raise RuntimeError("Outbox delivery route registry is sealed.")
         route = OutboxDeliveryRoute(
             event_type=event_type,
             schema_version=schema_version,
@@ -341,6 +391,13 @@ class OutboxDeliveryRouteRegistry:
                 "Outbox delivery route is already registered."
             )
         self._routes[key] = route
+
+    def seal(self) -> None:
+        self._sealed = True
+
+    def require_sealed(self) -> None:
+        if not self._sealed:
+            raise RuntimeError("Outbox delivery route registry must be sealed.")
 
     def resolve(self, event_type: str, schema_version: int) -> OutboxDeliveryRoute:
         route = self._routes.get((event_type, schema_version))
@@ -370,4 +427,5 @@ __all__ = [
     "OutboxDeliveryStatus",
     "StaleDeliveryLeaseError",
     "UnsupportedDeliveryRouteError",
+    "UnresolvedOutboxIntent",
 ]

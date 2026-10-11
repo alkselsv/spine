@@ -16,11 +16,13 @@ from spine.application.persistence.delivery import (
     OutboxDeliveryRouteRegistry,
     OutboxDeliveryStatus,
     StaleDeliveryLeaseError,
+    UnresolvedOutboxIntent,
 )
 from spine.application.persistence.outbox import (
     OpaqueObjectReference,
     OutboxEventRegistry,
     OutboxIntent,
+    UnsupportedOutboxEventError,
 )
 from spine.infrastructure.db.engine import SessionFactory
 from spine.infrastructure.persistence.postgresql_errors import (
@@ -32,11 +34,26 @@ from spine.infrastructure.persistence.postgresql_mappings import (
 )
 
 
-def _intent_from_row(row: object, registry: OutboxEventRegistry) -> OutboxIntent:
+def _intent_from_row(
+    row: object,
+    registry: OutboxEventRegistry,
+) -> OutboxIntent | UnresolvedOutboxIntent:
+    try:
+        payload_type = registry.resolve(row.event_type, row.event_schema_version)
+    except UnsupportedOutboxEventError:
+        return UnresolvedOutboxIntent(
+            event_id=row.event_id,
+            workspace_id=row.workspace_id,
+            environment_id=row.environment_id,
+            event_type=row.event_type,
+            schema_version=row.event_schema_version,
+            trace_id=row.trace_id,
+            correlation_id=row.correlation_id,
+            causation_id=row.causation_id,
+        )
     payload_snapshot = row.payload
     if not isinstance(payload_snapshot, Mapping):
         raise ValueError("Persisted outbox payload is invalid.")
-    payload_type = registry.resolve(row.event_type, row.event_schema_version)
     payload = payload_type.model_validate(dict(payload_snapshot))
     aggregate = None
     if row.aggregate_id is not None:
@@ -92,6 +109,7 @@ class PostgreSQLOutboxDeliveryRepository:
     ) -> None:
         self._session_factory = session_factory
         self._outbox_events = outbox_events
+        delivery_routes.require_sealed()
         self._delivery_routes = delivery_routes
         self._lease_token_factory = lease_token_factory
 
@@ -305,6 +323,13 @@ class PostgreSQLOutboxDeliveryRepository:
                     update(_DELIVERIES)
                     .where(
                         _DELIVERIES.c.event_id == event_id,
+                        _DELIVERIES.c.workspace_id == claim.intent.workspace_id,
+                        (
+                            _DELIVERIES.c.environment_id.is_(None)
+                            if claim.intent.environment_id is None
+                            else _DELIVERIES.c.environment_id
+                            == claim.intent.environment_id
+                        ),
                         _DELIVERIES.c.status
                         == OutboxDeliveryStatus.IN_FLIGHT.value,
                         _DELIVERIES.c.lease_owner == claim.worker_identity,
