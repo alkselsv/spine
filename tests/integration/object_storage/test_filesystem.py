@@ -348,8 +348,8 @@ async def test_publication_failure_after_hardlink_requires_reconciliation(
     )
     original_sync_file = store._sync_file
 
-    def fail_after_file_sync(path: Path) -> None:
-        original_sync_file(path)
+    def fail_after_file_sync(path: Path, **kwargs: object) -> None:
+        original_sync_file(path, **kwargs)
         raise OSError("synthetic publication failure")
 
     store._sync_file = fail_after_file_sync

@@ -565,7 +565,7 @@ class FilesystemOriginalObjectStore:
                     final_payload,
                     expected_source_identity=stage_identity,
                 )
-                self._sync_file(final_payload)
+                self._sync_file(final_payload, expected_identity=stage_identity)
                 self._write_json_exclusive(final_manifest, finalized_manifest)
                 self._sync_directory(final_scope_dir)
             except FileExistsError:
@@ -850,17 +850,20 @@ class FilesystemOriginalObjectStore:
         self._validate_reference(reference)
         async with self._operation_limit:
             self._ensure_operational()
+            deadline = self._deadline()
             return await self._run_blocking(
                 self._delete_controlled_sync,
                 reference,
                 approval,
-                deadline=self._deadline(),
+                deadline,
+                deadline=deadline,
             )
 
     def _delete_controlled_sync(
         self,
         reference: ObjectReference,
         approval: DeletionApproval,
+        deadline: float,
     ) -> DeletionResult:
         with self._state_lock:
             if self._deletion_approvals.get(reference) != approval:
@@ -873,20 +876,42 @@ class FilesystemOriginalObjectStore:
         self._assert_exact_finalized_reference(location, reference)
         payload_path, manifest_path = location
         scope_dir = manifest_path.parent
+        payload_fd: int | None = None
         try:
-            self._unlink_nofollow(payload_path)
+            payload_fd = self._open_append(payload_path)
+            self._lock_file(payload_fd, deadline)
+            manifest = self._read_manifest(manifest_path)
+            receipt = self._receipt_from_manifest(manifest, manifest_path)
+            if receipt.object_reference != reference:
+                raise StorageIntegrityIndeterminate()
+            identity = self._file_identity_from_fd(payload_fd)
+            if self._file_identity(payload_path) != identity:
+                raise StorageIntegrityIndeterminate()
+            self._unlink_nofollow(payload_path, expected_identity=identity)
             self._unlink_nofollow(manifest_path)
             self._sync_directory(scope_dir)
-            self._remove_staged_publication_evidence(reference)
+            self._remove_staged_publication_evidence(reference, scope_dir.name)
             self._write_deleted_marker(reference)
         except StorageError:
             raise
         except OSError:
             raise ObjectDeletionFailed() from None
+        finally:
+            if payload_fd is not None:
+                self._close_fd(payload_fd)
         return DeletionResult(status="deleted")
 
-    def _remove_staged_publication_evidence(self, reference: ObjectReference) -> None:
-        for staged_scope in self._iter_scope_directories(self._staged_root):
+    def _remove_staged_publication_evidence(
+        self,
+        reference: ObjectReference,
+        scope_key: str,
+    ) -> None:
+        staged_scope = self._staged_root / scope_key
+        if not self._exists(staged_scope):
+            return
+        if self._is_symlink(staged_scope) or not self._is_directory(staged_scope):
+            raise StorageIntegrityIndeterminate()
+        for entry in self._scandir(staged_scope):
             for entry in self._scandir(staged_scope):
                 if entry.is_symlink or not entry.is_dir:
                     raise StorageIntegrityIndeterminate()
@@ -1069,8 +1094,16 @@ class FilesystemOriginalObjectStore:
         except (asyncio.CancelledError, asyncio.TimeoutError):
             if not task.done():
                 task.cancel()
-                self._indeterminate.set()
-                task.add_done_callback(self._discard_stream_task)
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(task),
+                        timeout=min(0.1, timeout),
+                    )
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    self._indeterminate.set()
+                    task.add_done_callback(self._discard_stream_task)
+                else:
+                    self._discard_stream_task(task)
             raise
 
     @staticmethod
@@ -1676,7 +1709,17 @@ class FilesystemOriginalObjectStore:
             current = self._read_manifest(path)
             if current.get("status") != "staging":
                 return
-            self._set_manifest_status(path, current, status)
+            observed = self._hash_file(
+                payload_path,
+                self._profile.max_object_bytes,
+                deadline,
+                None,
+            )
+            updated = dict(current)
+            updated["observed_digest"] = observed.observed_sha256
+            updated["observed_length"] = observed.observed_byte_length
+            updated["status"] = status
+            self._write_json_atomic(path, updated)
         except StorageError:
             raise StorageIntegrityIndeterminate() from None
         except (TypeError, NotImplementedError, OSError):
@@ -1782,7 +1825,8 @@ class FilesystemOriginalObjectStore:
         length = 0
         try:
             try:
-                if os.fstat(fd).st_size > max_bytes:
+                initial_stat = os.fstat(fd)
+                if initial_stat.st_size > max_bytes:
                     raise UploadLimitExceeded()
             except OSError as error:
                 raise self._read_error(error) from None
@@ -1807,6 +1851,16 @@ class FilesystemOriginalObjectStore:
                     self._observe_io(operation, max_bytes, length - len(chunk))
                     raise UploadLimitExceeded()
                 digest.update(chunk)
+            final_stat = os.fstat(fd)
+            if (
+                final_stat.st_dev != initial_stat.st_dev
+                or final_stat.st_ino != initial_stat.st_ino
+                or final_stat.st_size != initial_stat.st_size
+                or final_stat.st_size != length
+            ):
+                raise ObjectCorrupt()
+        except OSError as error:
+            raise self._read_error(error) from None
         finally:
             self._close_fd(fd)
         self._observe_io(operation, max_bytes, length)
@@ -1908,13 +1962,13 @@ class FilesystemOriginalObjectStore:
                 fd = os.open(self._root, flags)
             else:
                 fd = os.dup(self._root_fd)
-        except (TypeError, NotImplementedError):
+        except (TypeError, NotImplementedError, ValueError):
             raise StorageConfigurationError() from None
         try:
             for component in relative.parts[:-1]:
                 try:
                     child_fd = os.open(component, flags, dir_fd=fd)
-                except (TypeError, NotImplementedError):
+                except (TypeError, NotImplementedError, ValueError):
                     raise StorageConfigurationError() from None
                 os.close(fd)
                 fd = child_fd
@@ -1928,7 +1982,7 @@ class FilesystemOriginalObjectStore:
         try:
             try:
                 return os.open(name, flags, mode, dir_fd=parent_fd)
-            except (TypeError, NotImplementedError):
+            except (TypeError, NotImplementedError, ValueError):
                 raise StorageConfigurationError() from None
         finally:
             os.close(parent_fd)
@@ -1937,14 +1991,17 @@ class FilesystemOriginalObjectStore:
         try:
             if path == self._root:
                 return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        except (TypeError, NotImplementedError):
+        except (TypeError, NotImplementedError, ValueError):
             raise StorageConfigurationError() from None
         return self._open_relative(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
 
     def _lstat(self, path: Path) -> os.stat_result:
         parent_fd, name = self._open_secure_parent(path)
         try:
-            return os.lstat(name, dir_fd=parent_fd)
+            try:
+                return os.lstat(name, dir_fd=parent_fd)
+            except (TypeError, NotImplementedError, ValueError):
+                raise StorageConfigurationError() from None
         finally:
             os.close(parent_fd)
 
@@ -2025,9 +2082,16 @@ class FilesystemOriginalObjectStore:
         stat_result = os.fstat(fd)
         return stat_result.st_dev, stat_result.st_ino, stat_result.st_size
 
-    def _sync_file(self, path: Path) -> None:
+    def _sync_file(
+        self,
+        path: Path,
+        *,
+        expected_identity: tuple[int, int, int] | None = None,
+    ) -> None:
         fd = self._open_read(path)
         try:
+            if expected_identity is not None and self._file_identity_from_fd(fd) != expected_identity:
+                raise StorageIntegrityIndeterminate()
             os.fsync(fd)
         except (TypeError, NotImplementedError, OSError):
             raise StorageIntegrityIndeterminate() from None
@@ -2060,7 +2124,7 @@ class FilesystemOriginalObjectStore:
             raise
         except OSError:
             raise StorageConfigurationError() from None
-        except RuntimeError:
+        except (RuntimeError, ValueError):
             raise StorageConfigurationError() from None
 
     def _prepare_directory(self, path: Path) -> Path:
@@ -2070,8 +2134,11 @@ class FilesystemOriginalObjectStore:
                 raise StorageConfigurationError()
             parent_fd, name = self._open_secure_parent(path)
             try:
-                os.mkdir(name, mode=0o700, dir_fd=parent_fd)
-                created = True
+                try:
+                    os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+                    created = True
+                except (TypeError, NotImplementedError, ValueError):
+                    raise StorageConfigurationError() from None
             except FileExistsError:
                 pass
             finally:
@@ -2086,7 +2153,7 @@ class FilesystemOriginalObjectStore:
             return path
         except StorageError:
             raise
-        except OSError:
+        except (TypeError, NotImplementedError, ValueError, OSError):
             raise StorageConfigurationError() from None
 
     def _ensure_scope_directory(self, root: Path, scope_key: str) -> Path:
@@ -2099,8 +2166,11 @@ class FilesystemOriginalObjectStore:
                 raise StorageIntegrityIndeterminate()
             parent_fd, name = self._open_secure_parent(path)
             try:
-                os.mkdir(name, mode=0o700, dir_fd=parent_fd)
-                created = True
+                try:
+                    os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+                    created = True
+                except (TypeError, NotImplementedError, ValueError):
+                    raise StorageConfigurationError() from None
             except FileExistsError:
                 pass
             finally:
@@ -2114,7 +2184,7 @@ class FilesystemOriginalObjectStore:
                 self._sync_directory(root)
         except StorageError:
             raise
-        except OSError:
+        except (TypeError, NotImplementedError, ValueError, OSError):
             raise StorageConfigurationError() from None
         return path
 
@@ -2126,7 +2196,10 @@ class FilesystemOriginalObjectStore:
     def _mkdir_exclusive(self, path: Path) -> None:
         parent_fd, name = self._open_secure_parent(path)
         try:
-            os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+            try:
+                os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+            except (TypeError, NotImplementedError, ValueError):
+                raise StorageConfigurationError() from None
             created = True
         except FileExistsError:
             raise
@@ -2136,10 +2209,13 @@ class FilesystemOriginalObjectStore:
             self._sync_directory(path.parent)
 
     def _create_empty_payload(self, path: Path) -> None:
-        fd = self._open_relative(
-            path,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-        )
+        try:
+            fd = self._open_relative(
+                path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            )
+        except (TypeError, NotImplementedError, ValueError):
+            raise StorageConfigurationError() from None
         try:
             os.fsync(fd)
         finally:
@@ -2151,26 +2227,49 @@ class FilesystemOriginalObjectStore:
             return True
         except FileNotFoundError:
             return False
-        except OSError:
+        except (TypeError, NotImplementedError, OSError):
             raise StorageIntegrityIndeterminate() from None
 
-    def _unlink_nofollow(self, path: Path) -> None:
+    def _unlink_nofollow(
+        self,
+        path: Path,
+        *,
+        expected_identity: tuple[int, int, int] | None = None,
+    ) -> None:
         parent_fd, name = self._open_secure_parent(path)
         try:
-            entry = os.lstat(name, dir_fd=parent_fd)
+            try:
+                entry = os.lstat(name, dir_fd=parent_fd)
+            except (TypeError, NotImplementedError, ValueError):
+                raise StorageConfigurationError() from None
             if stat.S_ISLNK(entry.st_mode):
                 raise StorageIntegrityIndeterminate()
-            os.unlink(name, dir_fd=parent_fd)
+            if expected_identity is not None and (
+                entry.st_dev,
+                entry.st_ino,
+                entry.st_size,
+            ) != expected_identity:
+                raise StorageIntegrityIndeterminate()
+            try:
+                os.unlink(name, dir_fd=parent_fd)
+            except (TypeError, NotImplementedError, ValueError):
+                raise StorageConfigurationError() from None
         finally:
             os.close(parent_fd)
 
     def _rmdir_nofollow(self, path: Path) -> None:
         parent_fd, name = self._open_secure_parent(path)
         try:
-            entry = os.lstat(name, dir_fd=parent_fd)
+            try:
+                entry = os.lstat(name, dir_fd=parent_fd)
+            except (TypeError, NotImplementedError, ValueError):
+                raise StorageConfigurationError() from None
             if stat.S_ISLNK(entry.st_mode) or not stat.S_ISDIR(entry.st_mode):
                 raise StorageIntegrityIndeterminate()
-            os.rmdir(name, dir_fd=parent_fd)
+            try:
+                os.rmdir(name, dir_fd=parent_fd)
+            except (TypeError, NotImplementedError, ValueError):
+                raise StorageConfigurationError() from None
         finally:
             os.close(parent_fd)
 
@@ -2195,7 +2294,7 @@ class FilesystemOriginalObjectStore:
             self._write_json_exclusive(temporary, value)
         except StorageError:
             raise
-        except OSError:
+        except (TypeError, NotImplementedError, OSError):
             raise StorageIntegrityIndeterminate() from None
         try:
             parent_fd, name = self._open_secure_parent(path)
@@ -2209,10 +2308,10 @@ class FilesystemOriginalObjectStore:
             finally:
                 os.close(parent_fd)
             self._sync_directory(path.parent)
-        except OSError:
+        except (TypeError, NotImplementedError, OSError):
             try:
                 self._unlink_nofollow(temporary)
-            except OSError:
+            except (StorageError, TypeError, NotImplementedError, OSError):
                 pass
             raise StorageIntegrityIndeterminate() from None
 
