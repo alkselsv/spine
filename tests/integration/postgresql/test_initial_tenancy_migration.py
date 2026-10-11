@@ -62,7 +62,8 @@ AUTHORIZATION_REVISION = "20261010_07"
 AUDIT_REVISION = "20261010_08"
 SOURCE_OBSERVATIONS_REVISION = "20261010_12"
 DELIVERY_REVISION = "20261011_13"
-HEAD_REVISION = DELIVERY_REVISION
+ATOMIC_DELIVERY_AUDIT_REVISION = "20261012_14"
+HEAD_REVISION = ATOMIC_DELIVERY_AUDIT_REVISION
 WORKSPACE_A = UUID("20000000-0000-0000-0000-000000000001")
 WORKSPACE_B = UUID("20000000-0000-0000-0000-000000000002")
 ENVIRONMENT_A = UUID("30000000-0000-0000-0000-000000000001")
@@ -3071,13 +3072,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261010_11_source_profile_identity.py",
         "20261010_12_source_canonical_validation.py",
         "20261011_13_outbox_deliveries.py",
+        "20261012_14_atomic_outbox_delivery_audit.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261011_14_injected_failure.py").write_text(
+    (target / "versions" / "20261012_15_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261011_14'\n"
-        "down_revision = '20261011_13'\n"
+        "revision = '20261012_15'\n"
+        "down_revision = '20261012_14'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

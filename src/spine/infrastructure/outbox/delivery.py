@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
 from sqlalchemy import or_, select, update
+from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from spine.application.persistence.delivery import (
@@ -18,6 +19,12 @@ from spine.application.persistence.delivery import (
     StaleDeliveryLeaseError,
     UnresolvedOutboxIntent,
 )
+from spine.application.outbox.dispatch import (
+    OutboxDeliveryFinalization,
+    validate_outbox_delivery_audit,
+)
+from spine.application.diagnostics.audit import AuditEventRegistry
+from spine.domain.audit import AuditEvent
 from spine.application.persistence.outbox import (
     OpaqueObjectReference,
     OutboxEventRegistry,
@@ -106,12 +113,14 @@ class PostgreSQLOutboxDeliveryRepository:
         outbox_events: OutboxEventRegistry,
         delivery_routes: OutboxDeliveryRouteRegistry,
         lease_token_factory: Callable[[], UUID] = uuid4,
+        audit_events: AuditEventRegistry | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._outbox_events = outbox_events
         delivery_routes.require_sealed()
         self._delivery_routes = delivery_routes
         self._lease_token_factory = lease_token_factory
+        self._audit_events = audit_events
 
     async def _materialize_with_session(
         self,
@@ -453,6 +462,66 @@ class PostgreSQLOutboxDeliveryRepository:
             attempt_number=claim.attempt_number,
             delivery_version=renewed.version,
         )
+
+    async def finalize(
+        self,
+        claim: ClaimedOutboxDelivery,
+        *,
+        finalization: OutboxDeliveryFinalization,
+        audit_event: AuditEvent,
+    ) -> OutboxDelivery:
+        if self._audit_events is None:
+            raise RuntimeError("Audit Event registry is required for finalization.")
+        canonical_audit = validate_outbox_delivery_audit(
+            claim,
+            finalization,
+            audit_event,
+            registry=self._audit_events,
+        )
+        event_id = claim.intent.event_id
+        assert event_id is not None
+        assert canonical_audit.audit_event_id is not None
+        assert canonical_audit.service_principal_id is not None
+        session = self._session_factory()
+        try:
+            async with session.begin():
+                result = await session.execute(
+                    text(
+                        "SELECT * FROM spine.finalize_outbox_delivery("
+                        ":event_id, :workspace_id, :environment_id, "
+                        ":worker_identity, :lease_token, "
+                        ":attempt_number, :delivery_version, :status, "
+                        ":occurred_at, :next_attempt_at, :error_code, "
+                        ":audit_event_id, :service_principal_id)"
+                    ),
+                    {
+                        "event_id": event_id,
+                        "workspace_id": claim.intent.workspace_id,
+                        "environment_id": claim.intent.environment_id,
+                        "worker_identity": claim.worker_identity,
+                        "lease_token": claim.lease_token,
+                        "attempt_number": claim.attempt_number,
+                        "delivery_version": claim.delivery_version,
+                        "status": finalization.status.value,
+                        "occurred_at": finalization.occurred_at,
+                        "next_attempt_at": finalization.next_attempt_at,
+                        "error_code": finalization.error_code,
+                        "audit_event_id": canonical_audit.audit_event_id,
+                        "service_principal_id": canonical_audit.service_principal_id,
+                    },
+                )
+                row = result.mappings().one_or_none()
+                if row is None:
+                    raise StaleDeliveryLeaseError(
+                        "Outbox delivery lease is not active."
+                    )
+                return _delivery_from_row(row)
+        except BaseException as error:
+            if isinstance(error, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+                raise
+            raise translate_persistence_error(error) from None
+        finally:
+            await session.close()
 
 
 __all__ = ["PostgreSQLOutboxDeliveryRepository"]
