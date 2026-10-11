@@ -17,6 +17,7 @@ from spine.auth import (
     InvalidAuthenticationError,
 )
 from spine.infrastructure.auth import OIDCAuthenticationRuntime
+from tests.contracts.diagnostics.fixtures import DIAGNOSTIC_LEAK_CORPUS
 
 from .conftest import MutableClock, provider_transport, signed_token
 
@@ -63,20 +64,21 @@ def test_total_oversized_credential_is_rejected_by_parent_contract() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("sensitive_value", DIAGNOSTIC_LEAK_CORPUS)
 async def test_provider_and_token_secrets_never_escape_errors_or_logging(
     oidc_settings: Any,
     rsa_private_key: Any,
     clock: MutableClock,
     caplog: pytest.LogCaptureFixture,
+    sensitive_value: str,
 ) -> None:
     protected = (
         "raw-token-corpus",
-        "provider-secret-corpus",
-        "private-claim-corpus",
+        sensitive_value,
     )
 
     def unavailable(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError(protected[1], request=request)
+        raise httpx.ConnectError(sensitive_value, request=request)
 
     runtime = OIDCAuthenticationRuntime(
         oidc_settings,
@@ -86,7 +88,7 @@ async def test_provider_and_token_secrets_never_escape_errors_or_logging(
     token = signed_token(
         rsa_private_key,
         clock,
-        claim_overrides={"private": protected[2]},
+        claim_overrides={"private": sensitive_value},
         extra_headers={"private": protected[0]},
     )
     caplog.set_level(logging.DEBUG)

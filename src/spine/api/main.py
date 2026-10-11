@@ -69,12 +69,19 @@ async def liveness() -> dict[str, str]:
 
 async def readiness(request: Request) -> JSONResponse:
     runtime = getattr(request.app.state, "authorization_runtime", None)
-    ready = runtime is None or await runtime.is_ready()
+    if type(runtime) is ApiAuthorizationRuntime:
+        authorization_readiness = await runtime.check_readiness()
+        ready = authorization_readiness.ready
+        code = authorization_readiness.code.value
+    else:
+        ready = True
+        code = "authorization.ready"
     return JSONResponse(
         status_code=200 if ready else 503,
         content={
             "status": "ready" if ready else "not_ready",
             "service": "spine",
+            "code": code,
         },
     )
 
@@ -134,7 +141,14 @@ def create_app(
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         validate_api_route_authorization(application)
-        yield
+        runtime = application.state.authorization_runtime
+        try:
+            if type(runtime) is ApiAuthorizationRuntime:
+                await runtime.startup()
+            yield
+        finally:
+            if type(runtime) is ApiAuthorizationRuntime:
+                await runtime.aclose()
 
     application = FastAPI(
         title="Spine",
