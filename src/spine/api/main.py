@@ -1,18 +1,27 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from spine.api.diagnostics import (
     DiagnosticContextMiddleware,
     get_diagnostic_context,
     install_diagnostic_exception_handlers,
+)
+from spine.api.authorization import (
+    ApiAuthorizationRuntime,
+    ApiRouteClassificationRegistry,
+    add_public_api_route,
+    install_authorization_openapi,
+    validate_api_route_authorization,
 )
 from spine.application.diagnostics import (
     DiagnosticEventRegistry,
@@ -52,6 +61,22 @@ class IngestResponse(BaseModel):
 
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "spine", "phase": "qa"}
+
+
+async def liveness() -> dict[str, str]:
+    return {"status": "ok", "service": "spine"}
+
+
+async def readiness(request: Request) -> JSONResponse:
+    runtime = getattr(request.app.state, "authorization_runtime", None)
+    ready = runtime is None or await runtime.is_ready()
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={
+            "status": "ready" if ready else "not_ready",
+            "service": "spine",
+        },
+    )
 
 
 async def ask_endpoint(body: AskRequest) -> AskResponse:
@@ -102,13 +127,20 @@ def create_app(
     diagnostic_sink: DiagnosticSink | None = None,
     error_registry: StructuredErrorRegistry | None = None,
     clock: Callable[[], datetime] | None = None,
+    authorization_runtime: ApiAuthorizationRuntime | None = None,
 ) -> FastAPI:
     """Compose the HTTP API with injectable deterministic diagnostics."""
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI):
+        validate_api_route_authorization(application)
+        yield
 
     application = FastAPI(
         title="Spine",
         version="0.1.0",
         description="Phase 1: company Q&A on Cognee. Trace-like orchestration comes later.",
+        lifespan=lifespan,
     )
     resolved_diagnostic_registry = (
         diagnostic_registry or DiagnosticEventRegistry.with_default_families()
@@ -121,6 +153,9 @@ def create_app(
     application.state.diagnostic_registry = resolved_diagnostic_registry
     application.state.diagnostic_sink = resolved_diagnostic_sink
     application.state.diagnostic_clock = resolved_clock
+    application.state.authorization_runtime = authorization_runtime
+    application.state.route_classifications = ApiRouteClassificationRegistry()
+    install_authorization_openapi(application)
     resolved_error_registry = error_registry or build_default_error_registry()
     application.add_middleware(
         DiagnosticContextMiddleware,
@@ -135,6 +170,20 @@ def create_app(
         error_registry=resolved_error_registry,
     )
     application.add_api_route("/health", health, methods=["GET"])
+    add_public_api_route(
+        application,
+        "/api/v1/health/live",
+        liveness,
+        route_id="system.health.live",
+        methods=["GET"],
+    )
+    add_public_api_route(
+        application,
+        "/api/v1/health/ready",
+        readiness,
+        route_id="system.health.ready",
+        methods=["GET"],
+    )
     application.add_api_route(
         "/ask",
         ask_endpoint,

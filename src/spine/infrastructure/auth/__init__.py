@@ -4,6 +4,11 @@ from spine.infrastructure.auth.composition import (
     BoundRouteAuthorization,
     RequestAuthorizationComposer,
 )
+from spine.infrastructure.auth.local import (
+    LocalAuthenticationAdapter,
+    LocalAuthenticationConfigurationError,
+    LocalAuthenticationSettings,
+)
 from spine.infrastructure.auth.oidc import (
     OIDCAuthenticationRuntime,
     OIDCReadiness,
@@ -24,6 +29,9 @@ __all__ = [
     "AuthorizedRequest",
     "BoundRouteAuthorization",
     "InteractiveClientQualification",
+    "LocalAuthenticationAdapter",
+    "LocalAuthenticationConfigurationError",
+    "LocalAuthenticationSettings",
     "OIDCAuthenticationRuntime",
     "OIDCAuthenticationSettings",
     "OIDCReadiness",

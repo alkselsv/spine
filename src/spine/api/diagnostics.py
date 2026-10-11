@@ -106,6 +106,7 @@ class DiagnosticContextMiddleware:
                 response: Response = JSONResponse(
                     status_code=_status_for_structured_error(error),
                     content=error.model_dump(mode="json"),
+                    headers=_headers_for_structured_error(error),
                 )
             else:
                 response = PlainTextResponse("Internal Server Error", status_code=500)
@@ -199,6 +200,7 @@ def install_diagnostic_exception_handlers(
         return JSONResponse(
             status_code=_status_for_structured_error(error),
             content=error.model_dump(mode="json"),
+            headers=_headers_for_structured_error(error),
         )
 
     async def handle_http(
@@ -251,6 +253,12 @@ def _status_for_structured_error(error: StructuredError) -> int:
     if error.retryability is Retryability.AFTER_DELAY:
         return 503
     return 500
+
+
+def _headers_for_structured_error(error: StructuredError) -> dict[str, str]:
+    if error.code == "spine.authentication.invalid":
+        return {"WWW-Authenticate": "Bearer"}
+    return {}
 
 
 __all__ = [

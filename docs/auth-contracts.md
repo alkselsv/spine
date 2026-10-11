@@ -47,8 +47,8 @@ Auth failures несут стабильные machine-readable `category` и `re
 которые последующий Structured Error mapper переносит без разбора текста
 исключения.
 
-HTTP mapping, local development mode и document Access Policy входят в
-следующие тикеты спецификации #5 и не являются частью этого модуля.
+Document Access Policy остаётся за следующим vertical slice спецификации #7;
+HTTP mapping и local development mode описаны ниже.
 
 ## Trusted request composition
 
@@ -128,3 +128,56 @@ concurrent refresh, stale-key outage и leak corpus без внешнего prov
 Результат live qualification должен ссылаться на ту же
 `configuration_version`, что загружена в runtime. Ни один реальный issuer или
 client registration в рамках offline-реализации тикета #71 не проверялся.
+
+## FastAPI boundary и local development mode
+
+`spine.api.authorization` добавляет защищённые `/api/v1` routes только через
+`add_protected_api_route`. Регистрация связывает route ID с одной static policy
+до запроса, устанавливает Bearer security и обязательные UUID-заголовки
+`X-Workspace-ID` / `X-Environment-ID` в OpenAPI и выполняет authentication,
+directory resolution и required audit до FastAPI dependency graph и handler.
+`get_bearer_credential` является общей Bearer dependency, а
+`get_authorized_request_context` после авторизации возвращает только sealed
+context текущего запроса. Подмена context dependency через
+`app.dependency_overrides` для защищённых routes отфильтровывается. Credential
+проверяется до разбора scope, поэтому invalid credential остаётся safe `401`,
+даже если Workspace/Environment отсутствуют или malformed.
+
+Startup validation требует ровно одну классификацию для каждого `/api/v1`
+route. Единственные public exemptions — точные route objects
+`/api/v1/health/live` и `/api/v1/health/ready`; совпадающее имя нового route или
+подключение нового router не наследует exemption. Legacy `/health`, `/ask` и
+`/ingest` остаются вне R1 protected surface и сохраняют прежние response bodies.
+
+`LocalAuthenticationSettings` и `LocalAuthenticationAdapter` предназначены
+только для явного `development` deployment. Adapter повторно валидирует
+настройки при создании, сравнивает один server-configured bearer в constant time
+и возвращает отдельно настроенный Authentication Alias. Затем тот же
+`AuthorizationDirectory` — в production composition это
+`PostgreSQLAuthorizationDirectory` — проверяет identity, membership, role и
+scope. Bearer не содержит и не выбирает actor, Workspace, Environment или role.
+
+`compose_local_api_authorization` является deployable composition root для этого
+режима: он fail-closed загружает или повторно валидирует local settings, создаёт
+local adapter и всегда связывает его с `PostgreSQLAuthorizationDirectory`.
+Внешний identity provider local режиму не нужен. Собранный runtime также даёт
+health endpoint безопасный auth-readiness probe; protected runtime без такого
+probe создать нельзя.
+
+Generator-facing OpenAPI handoff описан в `web/api/README.md`. Protected
+operations публикуют стабильный server-owned `operationId`, Bearer security и
+два required UUID header; ручные файлы в `web/api/generated/` не создаются.
+
+Local-настройки обязательны и не имеют fail-open defaults:
+
+```text
+SPINE_LOCAL_AUTH_DEPLOYMENT_MODE=development
+SPINE_LOCAL_AUTH_CONFIGURATION_VERSION=local-2026-10-11
+SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_ISSUER=spine-local://development
+SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_SUBJECT=configured-local-administrator
+SPINE_LOCAL_AUTH_BEARER_CREDENTIAL=<random-secret-at-least-32-characters>
+```
+
+`staging`, `production`, отсутствующие или malformed version, alias и credential
+останавливают создание local adapter. Значение credential нельзя публиковать в
+readiness, логах, traces, errors или committed configuration.

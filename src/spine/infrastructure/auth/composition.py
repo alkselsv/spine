@@ -143,7 +143,23 @@ class BoundRouteAuthorization:
         return _AuthorizationSession(
             route=self,
             credentials=credentials,
-            requested_scope=requested_scope,
+            requested_scope_resolver=lambda: requested_scope,
+            diagnostic_context=diagnostic_context,
+        )
+
+    def authorize_with_scope_resolver(
+        self,
+        *,
+        credentials: AccessTokenCredential,
+        requested_scope_resolver: Callable[[], RequestedAuthorizationScope],
+        diagnostic_context: DiagnosticContext,
+    ) -> _AuthorizationSession:
+        """Authenticate first, then resolve the untrusted scope selector."""
+
+        return _AuthorizationSession(
+            route=self,
+            credentials=credentials,
+            requested_scope_resolver=requested_scope_resolver,
             diagnostic_context=diagnostic_context,
         )
 
@@ -154,7 +170,7 @@ class _AuthorizationSession:
         "_credentials",
         "_diagnostic_context",
         "_entered",
-        "_requested_scope",
+        "_requested_scope_resolver",
         "_route",
     )
 
@@ -163,12 +179,12 @@ class _AuthorizationSession:
         *,
         route: BoundRouteAuthorization,
         credentials: AccessTokenCredential,
-        requested_scope: RequestedAuthorizationScope,
+        requested_scope_resolver: Callable[[], RequestedAuthorizationScope],
         diagnostic_context: DiagnosticContext,
     ) -> None:
         self._route = route
         self._credentials = credentials
-        self._requested_scope = requested_scope
+        self._requested_scope_resolver = requested_scope_resolver
         self._diagnostic_context = diagnostic_context
         self._authorized: AuthorizedRequest | None = None
         self._entered = False
@@ -181,7 +197,6 @@ class _AuthorizationSession:
         diagnostic_context = _snapshot_diagnostic_context(self._diagnostic_context)
         try:
             credentials = _snapshot_credentials(self._credentials)
-            requested_scope = _snapshot_requested_scope(self._requested_scope)
             authenticated_alias = await composer._authentication.authenticate(
                 credentials,
                 diagnostic_context,
@@ -201,6 +216,9 @@ class _AuthorizationSession:
             raise _UnexpectedRequestAuthorizationError() from None
 
         try:
+            requested_scope = _snapshot_requested_scope(
+                self._requested_scope_resolver()
+            )
             resolution = await composer._authorization_directory.resolve_request_authority(
                 alias_snapshot,
                 requested_scope,
