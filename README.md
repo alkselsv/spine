@@ -4,9 +4,12 @@ Spine — платформа для корпоративных AI-сценари
 контекст, совместная работа агентов и людей и контролируемые действия во внешних
 системах.
 
-Проект находится на ранней стадии. Сейчас в репозитории работает локальный
-Q&A-прототип на Cognee; готовый к эксплуатации контекстный слой, веб-интерфейс и
-механизм исполнения процессов ещё не реализованы.
+Проект находится на ранней стадии. В репозитории работает legacy Q&A-прототип на
+Cognee и реализован значительный R0-фундамент: PostgreSQL persistence и tenancy,
+identity/authorization, diagnostics/audit/outbox, immutable original storage,
+source/ingestion records и framework-independent local Agent Runtime. Эти
+компоненты ещё не соединены в готовый R1-путь с governed retrieval, citations и
+веб-интерфейсом.
 
 ## Продуктовые кейсы
 
@@ -23,20 +26,67 @@ Spine развивается вертикальными релизами в фи
 Общие компоненты платформы извлекаются из этих кейсов по мере их реализации, а
 не разрабатываются заранее как самостоятельный продукт.
 
-## Что уже работает
+## Текущий статус
+
+В документации используются три независимых статуса:
+
+- `implemented` — компонент существует и проверен на своей контрактной границе;
+- `integrated` — компонент подключён к целевому пользовательскому пути;
+- `qualified` — для указанной границы собраны acceptance evidence и пройдены её
+  обязательные gates.
+
+Квалификация отдельного компонента не означает, что квалифицирован весь R1 или
+реальная внешняя интеграция.
+
+### Implemented
+
+- PostgreSQL persistence kernel с tenancy/RLS, idempotency и transactional outbox;
+- provider-neutral identity и request authorization contracts;
+- trace context, structured errors, diagnostic events и append-only audit;
+- immutable original-storage contracts и filesystem adapter;
+- `SourceObject`/`SourceRevision`, admission decisions и ingestion ledger;
+- local Agent Runtime: typed schemas and artifacts, explicit registry/bindings,
+  diagnostics, cooperative cancellation, replay/recovery и bounded local retry.
+
+### Integrated
 
 - загрузка локальных `.md`, `.txt`, `.pdf`, `.docx` и `.xlsx` файлов;
 - добавление текстового корпуса в Cognee через `remember`;
 - вопросы к корпусу через Cognee `recall`;
 - CLI-команды для загрузки данных и вопросов;
 - FastAPI endpoints `/health`, `/ingest` и `/ask`;
-- каркас целевых модулей предметной области, агентов, процессов, памяти и
-  интерфейса.
+- diagnostics и authorization composition для API/workers;
+- synthetic `answer_question`-shaped handler через общий Agent Runtime contract.
 
-Текущий API является прототипом. В нём пока нет гарантированных структурированных
-цитат, проверки доступа к отдельным документам, истории ревизий источников,
-постоянного операционного хранилища и пользовательского интерфейса. Эти
-возможности входят в R1.
+Первые пять пунктов образуют legacy prototype path. Они сохраняются для
+совместимости и ещё не используют целевой governed R1 ingestion/retrieval flow.
+
+### Qualified
+
+- PostgreSQL persistence/tenancy kernel — repository contract и real-PostgreSQL
+  gates при наличии обязательного container runtime;
+- diagnostics, audit и outbox delivery foundation — offline qualification;
+- identity и authorization foundation — offline qualification, с отдельным
+  opt-in live OIDC provider gate;
+- local Agent Runtime — deterministic fake-backed offline qualification по
+  AC1–AC20 из Issue #104.
+
+Local Agent Runtime qualification не включает реальный model provider, Tool
+Gateway, PostgreSQL Artifact persistence, Temporal Activity, Cognee projection
+или production integration.
+
+### Ещё не интегрировано в R1
+
+- versioned document ingestion через публичный `/api/v1` contract;
+- object-level document access policy в retrieval path;
+- versioned Context projection и Cognee adapter за Context Broker;
+- реальная capability `answer_question`, grounded outcomes, abstention и
+  структурированные citations;
+- Knowledge Control Plane, сгенерированный API client и web-интерфейс;
+- R1 datasets, regression evaluations и release qualification.
+
+Поэтому `/ask` и `/ingest` остаются prototype endpoints, а наличие
+квалифицированных R0-компонентов не означает готовность пользовательского R1.
 
 ## Быстрый старт
 
