@@ -86,7 +86,9 @@ finalized evidence, or a finalized payload without a matching finalized
 manifest, is indeterminate and is never reported as a successful receipt.
 
 Inventory enumerates only sanitized finalized receipt metadata. It is bounded
-and restartable through an opaque cursor. A profile has a hard
+and restartable through an opaque keyset cursor. The cursor advances past the
+last enumerated server-generated manifest identity, so additions or removals
+after a page do not shift an already returned page. A profile has a hard
 `max_inventory_entries` ceiling for one complete inventory walk; the cursor
 pages within that bounded walk, while a root exceeding the ceiling fails closed
 with a typed limit error rather than silently truncating reconciliation.

@@ -222,6 +222,8 @@ class FilesystemOriginalObjectStore:
         scope_key = self._scope_key(command.workspace_id, command.environment_id)
         scope_dir = self._ensure_scope_directory(self._staged_root, scope_key)
         final_scope_dir = self._ensure_scope_directory(self._finalized_root, scope_key)
+        if self._deleted_object_status(state.object_id) is not None:
+            raise UploadConflict()
         final_manifest = final_scope_dir / self._manifest_name(state.object_id)
         final_payload = final_scope_dir / state.object_id.hex
         if self._exists(final_manifest):
@@ -313,11 +315,18 @@ class FilesystemOriginalObjectStore:
                 receipt = await self._run_blocking(
                     self._receipt_from_manifest, manifest, manifest_path
                 )
-                return await self._observe_input_stream(
-                    chunks,
-                    deadline=deadline,
-                    expected_length=receipt.object_reference.byte_length,
-                )
+                try:
+                    return await self._observe_input_stream(
+                        chunks,
+                        deadline=deadline,
+                        expected_length=receipt.object_reference.byte_length,
+                    )
+                except StorageError:
+                    raise
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    raise ObjectUnavailable() from None
             status = manifest.get("status")
             if status in {"aborted", "integrity_conflict"}:
                 raise UploadConflict()
@@ -452,6 +461,8 @@ class FilesystemOriginalObjectStore:
         deadline: float,
     ) -> WriteReceipt:
         scope_key = self._scope_key_from_state_scope(state)
+        if self._deleted_object_status(state.object_id) is not None:
+            raise UploadConflict()
         final_scope_dir = self._ensure_scope_directory(self._finalized_root, scope_key)
         final_payload = final_scope_dir / state.object_id.hex
         final_manifest = final_scope_dir / self._manifest_name(state.object_id)
@@ -636,28 +647,34 @@ class FilesystemOriginalObjectStore:
                     read_deadline,
                     deadline=read_deadline,
                 )
-                if plan.limit >= plan.receipt.object_reference.byte_length:
-                    actual = await self._run_blocking(
-                        self._hash_file,
-                        plan.payload_path,
-                        plan.limit,
-                        plan.deadline,
-                        "read",
-                        deadline=plan.deadline,
-                    )
-                    if actual != plan.receipt.observed_content:
-                        raise ObjectCorrupt()
-                async for part in self._read_file(
+                actual = await self._run_blocking(
+                    self._hash_file,
                     plan.payload_path,
-                    limit=plan.limit,
+                    self._profile.max_object_bytes,
+                    plan.deadline,
+                    "read",
                     deadline=plan.deadline,
-                    expected_identity=plan.payload_identity,
-                ):
-                    yield part
+                )
+                if actual != plan.receipt.observed_content:
+                    raise ObjectCorrupt()
             except StorageError:
                 raise
             except OSError as error:
                 raise self._read_error(error) from None
+        try:
+            async for part in self._read_file(
+                plan.payload_path,
+                limit=plan.limit,
+                deadline=plan.deadline,
+                expected_identity=plan.payload_identity,
+            ):
+                yield part
+        except StorageError:
+            raise
+        except OSError as error:
+            raise self._read_error(error) from None
+        except (TypeError, NotImplementedError, ValueError):
+            raise StorageConfigurationError() from None
 
     def _prepare_read_sync(
         self,
@@ -784,13 +801,18 @@ class FilesystemOriginalObjectStore:
         limit: int,
         deadline: float,
     ) -> tuple[tuple[ReconciliationInventoryEntry, ...], str | None]:
-        start = self._inventory_cursor(cursor)
+        start_key = self._inventory_cursor(cursor)
         page: list[ReconciliationInventoryEntry] = []
         seen_object_ids: set[UUID] = set()
         self._validate_staged_namespace(deadline=deadline)
-        total = 0
+        scanned = 0
+        has_more = False
+        last_key: str | None = None
         for manifest_path in self._iter_final_manifests():
-            if total >= self._profile.max_inventory_entries:
+            manifest_key = f"{manifest_path.parent.name}/{manifest_path.name}"
+            if start_key is not None and manifest_key <= start_key:
+                continue
+            if scanned >= self._profile.max_inventory_entries:
                 raise UploadLimitExceeded()
             manifest = self._read_manifest(manifest_path)
             self._assert_manifest_scope(manifest, manifest_path.parent)
@@ -809,7 +831,7 @@ class FilesystemOriginalObjectStore:
             if not self._exists(payload_path) or self._is_symlink(payload_path):
                 raise StorageIntegrityIndeterminate()
             self._verify_finalized_file(payload_path, receipt, deadline=deadline)
-            if total >= start and len(page) < limit:
+            if len(page) < limit:
                 page.append(
                     ReconciliationInventoryEntry(
                         object_reference=receipt.object_reference,
@@ -818,12 +840,11 @@ class FilesystemOriginalObjectStore:
                         observed_at=self._clock(),
                     )
                 )
-            total += 1
-        next_cursor = (
-            self._encode_inventory_cursor(start + len(page))
-            if start + len(page) < total
-            else None
-        )
+                last_key = manifest_key
+            else:
+                has_more = True
+            scanned += 1
+        next_cursor = self._encode_inventory_cursor(last_key) if has_more else None
         return tuple(page), next_cursor
 
     async def prepare_deletion(
@@ -893,6 +914,11 @@ class FilesystemOriginalObjectStore:
                 if scope_key is None:
                     raise StorageIntegrityIndeterminate()
                 self._recover_pending_deletion(reference, scope_key, deadline)
+                self._remove_staged_publication_evidence(
+                    reference,
+                    scope_key,
+                    deadline=deadline,
+                )
                 self._write_deleted_marker(
                     reference,
                     status="deleted",
@@ -905,6 +931,11 @@ class FilesystemOriginalObjectStore:
         scope_dir = manifest_path.parent
         if marker_status == "pending" and not self._exists(payload_path):
             self._recover_pending_deletion(reference, scope_dir.name, deadline)
+            self._remove_staged_publication_evidence(
+                reference,
+                scope_dir.name,
+                deadline=deadline,
+            )
             self._write_deleted_marker(
                 reference,
                 status="deleted",
@@ -916,6 +947,26 @@ class FilesystemOriginalObjectStore:
         try:
             scope_fd = self._open_directory(scope_dir)
             self._lock_file(scope_fd, deadline)
+            marker_status = self._deletion_marker_status(reference)
+            if marker_status == "deleted":
+                return DeletionResult(status="already_absent")
+            if marker_status == "pending" and not self._exists(payload_path):
+                self._recover_pending_deletion_locked(
+                    reference,
+                    scope_dir.name,
+                    deadline,
+                )
+                self._remove_staged_publication_evidence(
+                    reference,
+                    scope_dir.name,
+                    deadline=deadline,
+                )
+                self._write_deleted_marker(
+                    reference,
+                    status="deleted",
+                    scope_key=scope_dir.name,
+                )
+                return DeletionResult(status="already_absent")
             self._write_deleted_marker(
                 reference,
                 status="pending",
@@ -1059,36 +1110,47 @@ class FilesystemOriginalObjectStore:
         if not self._is_scope_key(scope_key):
             raise StorageIntegrityIndeterminate()
         scope_dir = self._finalized_root / scope_key
-        payload_path = scope_dir / reference.object_id.hex
-        manifest_path = scope_dir / self._manifest_name(reference.object_id)
         scope_fd = self._open_directory(scope_dir) if self._exists(scope_dir) else None
         try:
             if scope_fd is not None:
                 self._lock_file(scope_fd, deadline)
-            manifest_exists = self._exists(manifest_path)
-            payload_exists = self._exists(payload_path)
-            if not manifest_exists and not payload_exists:
-                return
-            if not manifest_exists:
-                raise StorageIntegrityIndeterminate()
-            manifest = self._read_manifest(manifest_path)
-            self._assert_manifest_scope(manifest, scope_dir)
-            receipt = self._receipt_from_manifest(manifest, manifest_path)
-            if receipt.object_reference != reference:
-                raise StorageIntegrityIndeterminate()
-            if payload_exists:
-                payload_identity = self._file_identity(payload_path)
-                self._unlink_nofollow(payload_path, expected_identity=payload_identity)
-            if self._monotonic_clock() >= deadline:
-                raise StorageIntegrityIndeterminate()
-            manifest_identity = self._file_identity(manifest_path)
-            self._unlink_nofollow(manifest_path, expected_identity=manifest_identity)
-            if self._monotonic_clock() >= deadline:
-                raise StorageIntegrityIndeterminate()
-            self._sync_directory(scope_dir)
+            self._recover_pending_deletion_locked(reference, scope_key, deadline)
         finally:
             if scope_fd is not None:
                 self._close_fd(scope_fd)
+
+    def _recover_pending_deletion_locked(
+        self,
+        reference: ObjectReference,
+        scope_key: str,
+        deadline: float,
+    ) -> None:
+        if not self._is_scope_key(scope_key):
+            raise StorageIntegrityIndeterminate()
+        scope_dir = self._finalized_root / scope_key
+        payload_path = scope_dir / reference.object_id.hex
+        manifest_path = scope_dir / self._manifest_name(reference.object_id)
+        manifest_exists = self._exists(manifest_path)
+        payload_exists = self._exists(payload_path)
+        if not manifest_exists and not payload_exists:
+            return
+        if not manifest_exists:
+            raise StorageIntegrityIndeterminate()
+        manifest = self._read_manifest(manifest_path)
+        self._assert_manifest_scope(manifest, scope_dir)
+        receipt = self._receipt_from_manifest(manifest, manifest_path)
+        if receipt.object_reference != reference:
+            raise StorageIntegrityIndeterminate()
+        if payload_exists:
+            payload_identity = self._file_identity(payload_path)
+            self._unlink_nofollow(payload_path, expected_identity=payload_identity)
+        if self._monotonic_clock() >= deadline:
+            raise StorageIntegrityIndeterminate()
+        manifest_identity = self._file_identity(manifest_path)
+        self._unlink_nofollow(manifest_path, expected_identity=manifest_identity)
+        if self._monotonic_clock() >= deadline:
+            raise StorageIntegrityIndeterminate()
+        self._sync_directory(scope_dir)
 
     def _read_deletion_marker(self, reference: ObjectReference) -> dict[str, Any] | None:
         marker = self._deleted_root / f"{reference.object_id.hex}.json"
@@ -1112,6 +1174,26 @@ class FilesystemOriginalObjectStore:
         if scope_key is not None and not self._is_scope_key(scope_key):
             raise StorageIntegrityIndeterminate()
         return value
+
+    def _deleted_object_status(self, object_id: UUID) -> str | None:
+        marker = self._deleted_root / f"{object_id.hex}.json"
+        if not self._exists(marker):
+            return None
+        try:
+            value = self._read_manifest(marker)
+            reference = ObjectReference.model_validate_json(
+                json.dumps(value["reference"], separators=(",", ":"))
+            )
+        except StorageError:
+            raise
+        except Exception:
+            raise StorageIntegrityIndeterminate() from None
+        if reference.object_id != object_id:
+            raise StorageIntegrityIndeterminate()
+        status = value.get("status", "deleted")
+        if status not in {"pending", "deleted"}:
+            raise StorageIntegrityIndeterminate()
+        return status
 
     def _deletion_marker_status(self, reference: ObjectReference) -> str | None:
         value = self._read_deletion_marker(reference)
@@ -2072,69 +2154,63 @@ class FilesystemOriginalObjectStore:
         deadline: float,
         expected_identity: tuple[int, int, int] | None = None,
     ) -> AsyncIterator[bytes]:
-        fd = await self._run_blocking(
-            self._open_read,
-            path,
-            on_cancel=os.close,
-            deadline=deadline,
-        )
-        owned_fd = _OwnedFd(fd)
-        fd_abandoned = False
-        try:
-            if expected_identity is not None:
-                try:
-                    identity = await self._run_blocking(
-                        self._file_identity_from_fd,
-                        fd,
-                        on_cancel=owned_fd.close,
-                        deadline=deadline,
-                    )
-                except (asyncio.CancelledError, _BlockingOperationAbandoned):
-                    fd_abandoned = True
-                    raise
-                if identity != expected_identity:
-                    raise ObjectCorrupt()
-            remaining = limit
-            while remaining:
-                if self._monotonic_clock() > deadline:
-                    raise UploadLimitExceeded()
-                read_fd = await self._run_blocking(
-                    os.dup,
-                    fd,
+        remaining = limit
+        offset = 0
+        while remaining:
+            if self._monotonic_clock() > deadline:
+                raise UploadLimitExceeded()
+            async with self._operation_limit:
+                self._ensure_operational()
+                fd = await self._run_blocking(
+                    self._open_read,
+                    path,
                     on_cancel=os.close,
                     deadline=deadline,
                 )
-                owned_read_fd = _OwnedFd(read_fd)
-                read_abandoned = False
+                owned_fd = _OwnedFd(fd)
+                fd_abandoned = False
                 try:
-                    chunk = await self._run_blocking(
-                        os.read,
-                        read_fd,
-                        min(
-                            self._profile.read_chunk_bytes,
-                            self._profile.max_chunk_bytes,
-                            remaining,
-                        ),
-                        on_cancel=owned_read_fd.close,
-                        deadline=deadline,
-                    )
-                except (asyncio.CancelledError, _BlockingOperationAbandoned):
-                    read_abandoned = True
-                    raise
+                    if expected_identity is not None:
+                        try:
+                            identity = await self._run_blocking(
+                                self._file_identity_from_fd,
+                                fd,
+                                on_cancel=owned_fd.close,
+                                deadline=deadline,
+                            )
+                        except (asyncio.CancelledError, _BlockingOperationAbandoned):
+                            fd_abandoned = True
+                            raise
+                        if identity != expected_identity:
+                            raise ObjectCorrupt()
+                    try:
+                        chunk = await self._run_blocking(
+                            os.pread,
+                            fd,
+                            min(
+                                self._profile.read_chunk_bytes,
+                                self._profile.max_chunk_bytes,
+                                remaining,
+                            ),
+                            offset,
+                            on_cancel=owned_fd.close,
+                            deadline=deadline,
+                        )
+                    except (asyncio.CancelledError, _BlockingOperationAbandoned):
+                        fd_abandoned = True
+                        raise
                 finally:
-                    if not read_abandoned:
+                    if not fd_abandoned:
                         await self._run_blocking(
-                            owned_read_fd.close,
+                            owned_fd.close,
                             check_operational=False,
                         )
-                if not chunk:
-                    break
-                remaining -= len(chunk)
-                self._observe_io("read", limit, limit - remaining)
-                yield chunk
-        finally:
-            if not fd_abandoned:
-                await self._run_blocking(owned_fd.close, check_operational=False)
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            offset += len(chunk)
+            self._observe_io("read", limit, limit - remaining)
+            yield chunk
 
     def _validate_chunk(self, chunk: bytes, current_length: int) -> None:
         if not isinstance(chunk, bytes):
@@ -2253,20 +2329,34 @@ class FilesystemOriginalObjectStore:
             raise StorageConfigurationError() from None
 
     def _open_read(self, path: Path) -> int:
+        fd: int | None = None
         try:
             fd = self._open_relative(path, os.O_RDONLY | os.O_NOFOLLOW)
-            try:
-                regular = stat.S_ISREG(os.fstat(fd).st_mode)
-            except (TypeError, NotImplementedError, ValueError):
-                raise StorageConfigurationError() from None
+            regular = stat.S_ISREG(os.fstat(fd).st_mode)
             if not regular:
-                os.close(fd)
                 raise StorageIntegrityIndeterminate()
             return fd
         except StorageError:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    self._indeterminate.set()
             raise
         except OSError as error:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    self._indeterminate.set()
             raise self._read_error(error) from None
+        except (TypeError, NotImplementedError, ValueError):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    self._indeterminate.set()
+            raise StorageConfigurationError() from None
 
     def _regular_file_size(self, path: Path) -> int:
         fd = self._open_read(path)
@@ -2850,24 +2940,32 @@ class FilesystemOriginalObjectStore:
         if not isinstance(reference, ObjectReference):
             raise InvalidObjectReference()
 
-    def _inventory_cursor(self, cursor: str | None) -> int:
+    def _inventory_cursor(self, cursor: str | None) -> str | None:
         if cursor is None:
-            return 0
+            return None
         try:
             encoded = cursor.encode("ascii")
             decoded = base64.urlsafe_b64decode(encoded).decode(_JSON_ENCODING)
             version, raw_value = decoded.split(":", 1)
             if version != "v1":
                 raise ValueError()
-            value = int(raw_value)
+            scope_key, manifest_name = raw_value.split("/", 1)
+            if (
+                not self._is_scope_key(scope_key)
+                or len(manifest_name) != _OPAQUE_NAME_LENGTH + len(".manifest.json")
+                or not manifest_name.endswith(".manifest.json")
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in manifest_name[:_OPAQUE_NAME_LENGTH]
+                )
+            ):
+                raise ValueError()
+            return raw_value
         except (TypeError, ValueError, UnicodeError, binascii.Error):
             raise StorageConfigurationError() from None
-        if value < 0 or value > self._profile.max_inventory_entries:
-            raise StorageConfigurationError()
-        return value
 
     @staticmethod
-    def _encode_inventory_cursor(value: int) -> str:
+    def _encode_inventory_cursor(value: str) -> str:
         return base64.urlsafe_b64encode(f"v1:{value}".encode(_JSON_ENCODING)).decode("ascii")
 
     def _observe_io(
@@ -2891,7 +2989,12 @@ class FilesystemOriginalObjectStore:
     def _publication_error(error: OSError) -> StorageError:
         if isinstance(error, FileExistsError):
             return ObjectAlreadyExists()
-        if error.errno in {getattr(os, "ELOOP", 40), getattr(os, "ENOTSUP", 95), getattr(os, "EINVAL", 22)}:
+        if error.errno in {
+            getattr(os, "ELOOP", 40),
+            getattr(os, "ENOTSUP", 95),
+            getattr(os, "EINVAL", 22),
+            getattr(os, "EXDEV", 18),
+        }:
             return StorageIntegrityIndeterminate()
         return ObjectUnavailable()
 

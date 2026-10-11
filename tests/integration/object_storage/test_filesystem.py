@@ -257,10 +257,26 @@ async def test_corrupt_and_missing_finalized_bytes_fail_closed(
         await store.verify(receipt.object_reference, max_bytes=64)
     with pytest.raises(ObjectCorrupt):
         await read_receipt(store, registry, receipt)
+    with pytest.raises(ObjectCorrupt):
+        await read_receipt(store, registry, receipt, max_bytes=3)
 
     payload.unlink()
     with pytest.raises(ObjectNotFound):
         await store.verify(receipt.object_reference, max_bytes=64)
+
+
+async def test_finalized_retry_producer_failure_is_adapter_neutral(
+    filesystem_store: tuple[FilesystemOriginalObjectStore, AuthorizedReadGrantRegistry],
+) -> None:
+    store, _ = filesystem_store
+    receipt = await finalize(store)
+
+    async def broken_stream() -> AsyncIterator[bytes]:
+        raise RuntimeError("synthetic producer failure")
+        yield b"unreachable"
+
+    with pytest.raises(ObjectUnavailable):
+        await store.write_chunks(receipt.upload_id, broken_stream())
 
 
 async def test_verify_never_reads_beyond_profile_object_limit(
@@ -309,6 +325,31 @@ async def test_stale_reference_cannot_prepare_deletion(
 
     result = await store.verify(receipt.object_reference, max_bytes=64)
     assert result.observed_length == len(CONTENT)
+
+
+async def test_deleted_object_identity_cannot_be_republished(
+    filesystem_store: tuple[FilesystemOriginalObjectStore, AuthorizedReadGrantRegistry],
+) -> None:
+    store, _ = filesystem_store
+    receipt = await finalize(store)
+    approval = DeletionApproval(
+        command_id=UUID("80000000-0000-4000-8000-000000000001"),
+        approval_reference=UUID("90000000-0000-4000-8000-000000000001"),
+    )
+    await store.prepare_deletion(receipt.object_reference, approval)
+    await store.delete_controlled(receipt.object_reference, approval)
+
+    replacement_state = state().model_copy(
+        update={
+            "upload_id": UUID("20000000-0000-4000-8000-000000000002"),
+            "issue8_receipt_id": UUID("40000000-0000-4000-8000-000000000002"),
+        }
+    )
+    with pytest.raises(UploadConflict):
+        await store.begin_or_resume_upload(
+            command().model_copy(update={"idempotency_key": "replacement"}),
+            replacement_state,
+        )
 
 
 async def test_tampered_staged_scope_is_rejected_without_escape(
