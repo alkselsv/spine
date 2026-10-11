@@ -909,6 +909,7 @@ class FilesystemOriginalObjectStore:
             return DeletionResult(status="already_absent")
         location = self._locate_finalized_reference(reference)
         if location is None:
+            marker_status = self._deletion_marker_status(reference)
             if marker_status == "pending":
                 scope_key = self._deletion_marker_scope(reference)
                 if scope_key is None:
