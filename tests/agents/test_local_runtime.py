@@ -32,6 +32,7 @@ from spine.agents.runtime import (
     AgentToolDiagnosticState,
     AgentUsageKind,
     InvocationOutputCheckpoint,
+    InvocationReplayRecord,
     LocalAgentRuntime,
     TrustedExecutionIdentitySnapshot,
     build_agent_runtime_audit_registry,
@@ -228,6 +229,7 @@ class FakeArtifactPersistence:
     cancel_on_read: bool = False
     write_error: bool = False
     audit_error: bool = False
+    checkpoint_completion_error_after_commit: bool = False
     completion_error_after_commit: bool = False
     returned_ref: ArtifactRef | None = None
     lineage_error_ids: set[UUID] = field(default_factory=set)
@@ -241,7 +243,7 @@ class FakeArtifactPersistence:
         tuple[
             CommandDigest,
             OpaqueResultReference,
-            AgentResult | InvocationOutputCheckpoint,
+            InvocationReplayRecord,
         ],
     ] = field(default_factory=dict)
 
@@ -319,7 +321,7 @@ class FakeArtifactPersistence:
         *,
         workspace_id: UUID,
         environment_id: UUID,
-    ) -> AgentResult | InvocationOutputCheckpoint | None:
+    ) -> InvocationReplayRecord | None:
         existing = self.receipts.get(
             (
                 workspace_id,
@@ -349,12 +351,19 @@ class FakeArtifactPersistence:
             claim.operation.value,
         )
         existing = self.receipts.get(receipt_key)
-        expected = (claim.digest, result_reference, checkpoint)
+        expected = (
+            claim.digest,
+            result_reference,
+            InvocationReplayRecord.from_checkpoint(checkpoint),
+        )
         if existing is not None and existing != expected:
             raise IdempotencyConflictError(
                 "Idempotency key conflicts with existing command."
             )
         self.receipts[receipt_key] = expected
+        if self.checkpoint_completion_error_after_commit:
+            self.checkpoint_completion_error_after_commit = False
+            raise RuntimeError("checkpoint acknowledgement was unavailable")
         return checkpoint.model_copy(deep=True)
 
     async def persist_outputs(
@@ -400,14 +409,19 @@ class FakeArtifactPersistence:
             raise IdempotencyConflictError(
                 "Idempotency key conflicts with existing command."
             )
-        if isinstance(existing_value, AgentResult):
-            return existing_value.model_copy(deep=True)
-        if existing_value != checkpoint:
+        if existing_value.state == "completed":
+            assert existing_value.result is not None
+            return existing_value.result.model_copy(deep=True)
+        if existing_value.checkpoint != checkpoint:
             raise IdempotencyConflictError(
                 "Idempotency key conflicts with existing command."
             )
         self.writes.append((checkpoint.drafts, claim.key.value))
-        self.receipts[receipt_key] = (existing_digest, result_reference, result)
+        self.receipts[receipt_key] = (
+            existing_digest,
+            result_reference,
+            InvocationReplayRecord.from_result(result),
+        )
         if self.completion_error_after_commit:
             self.completion_error_after_commit = False
             raise RuntimeError("commit acknowledgement was unavailable")
@@ -432,15 +446,16 @@ class FakeArtifactPersistence:
             claim.operation.value,
         )
         existing = self.receipts.get(receipt_key)
+        completed = InvocationReplayRecord.from_result(result)
         if existing is not None and existing != (
             claim.digest,
             result_reference,
-            result,
+            completed,
         ):
             raise IdempotencyConflictError(
                 "Idempotency key conflicts with existing command."
             )
-        self.receipts[receipt_key] = (claim.digest, result_reference, result)
+        self.receipts[receipt_key] = (claim.digest, result_reference, completed)
         if self.completion_error_after_commit:
             self.completion_error_after_commit = False
             raise RuntimeError("commit acknowledgement was unavailable")
@@ -1711,6 +1726,26 @@ async def test_ambiguous_completion_recovers_committed_result_without_handler_re
     persistence = FakeArtifactPersistence(
         records={uid(50): input_artifact()},
         completion_error_after_commit=True,
+    )
+    handler = RecordingHandler()
+    runtime = local_runtime(persistence, handler)
+
+    ambiguous = await runtime.invoke(version(), invocation())
+    recovered = await runtime.invoke(version(), invocation())
+
+    assert ambiguous.status is AgentRunStatus.FAILED
+    assert ambiguous.error == "Persistence operation failed."
+    assert recovered.status is AgentRunStatus.SUCCEEDED
+    assert recovered.output_artifact_ids == (uid(70),)
+    assert len(handler.calls) == 1
+    assert len(persistence.writes) == 1
+
+
+@pytest.mark.asyncio
+async def test_lost_checkpoint_ack_recovers_without_handler_repeat() -> None:
+    persistence = FakeArtifactPersistence(
+        records={uid(50): input_artifact()},
+        checkpoint_completion_error_after_commit=True,
     )
     handler = RecordingHandler()
     runtime = local_runtime(persistence, handler)

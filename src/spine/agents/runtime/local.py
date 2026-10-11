@@ -19,6 +19,7 @@ from spine.agents.runtime.artifacts import (
     ArtifactReadError,
     CapabilityArtifactSchema,
     InvocationOutputCheckpoint,
+    InvocationReplayRecord,
 )
 from spine.agents.runtime.contracts import (
     AgentExecutionContext,
@@ -32,7 +33,7 @@ from spine.agents.runtime.diagnostics import (
 )
 from spine.agents.runtime.idempotency import (
     AGENT_INVOCATION_OPERATION_SCHEMA_VERSION,
-    AGENT_RESULT_SCHEMA_VERSION,
+    AGENT_INVOCATION_RECORD_SCHEMA_VERSION,
     digest_agent_invocation,
 )
 from spine.agents.runtime.protocol import AgentHandler
@@ -158,9 +159,9 @@ class LocalAgentRuntime:
                 validated_input=typed_input,
             )
             result_reference = OpaqueResultReference(
-                result_type="agent_result",
+                result_type="agent_invocation",
                 result_id=self._context.agent_run_id,
-                schema_version=AGENT_RESULT_SCHEMA_VERSION,
+                schema_version=AGENT_INVOCATION_RECORD_SCHEMA_VERSION,
             )
             claim = await self._artifacts.claim_invocation(
                 workspace_id=self._context.workspace_id,
@@ -179,20 +180,28 @@ class LocalAgentRuntime:
                     workspace_id=self._context.workspace_id,
                     environment_id=self._context.environment_id,
                 )
-                if isinstance(replayed, InvocationOutputCheckpoint):
+                if not isinstance(replayed, InvocationReplayRecord):
+                    raise IdempotencyConflictError(
+                        "Idempotency result cannot be resolved."
+                    )
+                if replayed.state == "checkpoint":
+                    if replayed.checkpoint is None:
+                        raise IdempotencyConflictError(
+                            "Idempotency result cannot be resolved."
+                        )
                     return await self._persist_checkpoint(
-                        replayed,
+                        replayed.checkpoint,
                         claim=claim,
                         result_reference=result_reference,
                         replayed=True,
                     )
-                if not isinstance(replayed, AgentResult):
+                if replayed.result is None:
                     raise IdempotencyConflictError(
                         "Idempotency result cannot be resolved."
                     )
                 self._cancellation.seal(self._cancellation_scope)
                 await self._events.observe_replay()
-                return replayed
+                return replayed.result
             if not isinstance(claim, OwnedIdempotencyClaim):
                 raise IdempotencyConflictError("Idempotency claim is invalid.")
         except IdempotencyConflictError:

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from spine.agents.runtime.contracts import AgentResponse, CapabilitySchemaIdentity
 from spine.application.diagnostics import AuditEvent
@@ -100,6 +100,37 @@ class InvocationOutputCheckpoint(BaseModel):
         )
 
 
+class InvocationReplayRecord(BaseModel):
+    """Versioned record referenced by one immutable idempotency receipt."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal[1] = 1
+    state: Literal["checkpoint", "completed"]
+    checkpoint: InvocationOutputCheckpoint | None = None
+    result: AgentResult | None = None
+
+    @model_validator(mode="after")
+    def require_state_value(self) -> InvocationReplayRecord:
+        if self.state == "checkpoint":
+            if self.checkpoint is None or self.result is not None:
+                raise ValueError("checkpoint replay record is invalid")
+        elif self.result is None or self.checkpoint is not None:
+            raise ValueError("completed replay record is invalid")
+        return self
+
+    @classmethod
+    def from_checkpoint(
+        cls,
+        checkpoint: InvocationOutputCheckpoint,
+    ) -> InvocationReplayRecord:
+        return cls(state="checkpoint", checkpoint=checkpoint)
+
+    @classmethod
+    def from_result(cls, result: AgentResult) -> InvocationReplayRecord:
+        return cls(state="completed", result=result)
+
+
 @runtime_checkable
 class ArtifactPersistence(Protocol):
     """Narrow canonical Artifact boundary used by a single runtime attempt.
@@ -149,7 +180,7 @@ class ArtifactPersistence(Protocol):
         *,
         workspace_id: UUID,
         environment_id: UUID,
-    ) -> AgentResult | InvocationOutputCheckpoint | None: ...
+    ) -> InvocationReplayRecord | None: ...
 
     async def checkpoint_outputs(
         self,
@@ -230,4 +261,5 @@ __all__ = [
     "ArtifactReadError",
     "CapabilityArtifactSchema",
     "InvocationOutputCheckpoint",
+    "InvocationReplayRecord",
 ]

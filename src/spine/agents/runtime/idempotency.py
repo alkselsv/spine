@@ -17,7 +17,7 @@ from spine.domain.agents import AgentInvocation
 
 AGENT_INVOCATION_OPERATION: Final = PersistenceOperation("agent.invoke")
 AGENT_INVOCATION_OPERATION_SCHEMA_VERSION: Final = 1
-AGENT_RESULT_SCHEMA_VERSION: Final = 1
+AGENT_INVOCATION_RECORD_SCHEMA_VERSION: Final = 1
 
 
 def digest_agent_invocation(
@@ -88,6 +88,6 @@ def digest_agent_invocation(
 __all__ = [
     "AGENT_INVOCATION_OPERATION",
     "AGENT_INVOCATION_OPERATION_SCHEMA_VERSION",
-    "AGENT_RESULT_SCHEMA_VERSION",
+    "AGENT_INVOCATION_RECORD_SCHEMA_VERSION",
     "digest_agent_invocation",
 ]

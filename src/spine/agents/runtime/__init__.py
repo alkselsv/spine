@@ -26,6 +26,7 @@ from spine.agents.runtime.artifacts import (
     ArtifactReadError,
     CapabilityArtifactSchema,
     InvocationOutputCheckpoint,
+    InvocationReplayRecord,
 )
 from spine.agents.runtime.diagnostics import (
     AgentReplayPayload,
@@ -48,7 +49,7 @@ from spine.agents.runtime.local import LocalAgentRuntime
 from spine.agents.runtime.idempotency import (
     AGENT_INVOCATION_OPERATION,
     AGENT_INVOCATION_OPERATION_SCHEMA_VERSION,
-    AGENT_RESULT_SCHEMA_VERSION,
+    AGENT_INVOCATION_RECORD_SCHEMA_VERSION,
     digest_agent_invocation,
 )
 from spine.agents.runtime.ports import (
@@ -73,7 +74,7 @@ __all__ = [
     "AgentExecutionContext",
     "AGENT_INVOCATION_OPERATION",
     "AGENT_INVOCATION_OPERATION_SCHEMA_VERSION",
-    "AGENT_RESULT_SCHEMA_VERSION",
+    "AGENT_INVOCATION_RECORD_SCHEMA_VERSION",
     "AgentExecutionContextAdmission",
     "AgentExecutionContextConstructionError",
     "AgentExecutionContextFactory",
@@ -112,6 +113,7 @@ __all__ = [
     "CapabilitySchemaIdentity",
     "CapabilityArtifactSchema",
     "InvocationOutputCheckpoint",
+    "InvocationReplayRecord",
     "LocalAgentRuntime",
     "TrustedExecutionIdentity",
     "TrustedExecutionIdentitySnapshot",
