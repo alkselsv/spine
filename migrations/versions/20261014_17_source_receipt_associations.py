@@ -102,7 +102,7 @@ def upgrade() -> None:
         sa.Column("storage_status", sa.Text(), nullable=False),
         sa.Column("finalized_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("associated_at", sa.DateTime(timezone=True), nullable=False),
-        sa.PrimaryKeyConstraint("association_id", name="pk_source_revision_receipt_associations"),
+        sa.PrimaryKeyConstraint("association_id", name="pk_source_receipt_associations"),
         sa.UniqueConstraint(
             "workspace_id", "environment_id", "original_receipt_id",
             name="uq_source_receipt_associations_receipt",
@@ -131,40 +131,44 @@ def upgrade() -> None:
             [f"{SCHEMA}.idempotency_receipts.receipt_id"],
             name="fk_source_receipt_associations_receipt",
         ),
-        sa.CheckConstraint(
-            "original_receipt_kind = 'issue6.write_receipt' AND verification_status = 'verified' "
-            "AND storage_status = 'finalized_verified' AND original_command_result_schema_version > 0 "
-            "AND byte_length >= 0 AND original_sha256 OPERATOR(pg_catalog.~) '^[0-9a-f]{64}$' "
-            "AND associated_at >= finalized_at "
-            "AND association_id <> '00000000-0000-0000-0000-000000000000'::pg_catalog.uuid "
-            "AND source_object_id <> '00000000-0000-0000-0000-000000000000'::pg_catalog.uuid "
-            "AND revision_id <> '00000000-0000-0000-0000-000000000000'::pg_catalog.uuid "
-            "AND provenance_id <> '00000000-0000-0000-0000-000000000000'::pg_catalog.uuid "
-            "AND original_receipt_id <> '00000000-0000-0000-0000-000000000000'::pg_catalog.uuid "
-            "AND original_command_result_id <> '00000000-0000-0000-0000-000000000000'::pg_catalog.uuid "
-            "AND original_upload_id <> '00000000-0000-0000-0000-000000000000'::pg_catalog.uuid",
-            name="ck_source_receipt_associations_verified",
-        ),
-        sa.CheckConstraint(
-            "pg_catalog.jsonb_typeof(original_reference) = 'object' "
-            "AND (original_reference - 'schema_version' - 'object_id' - 'storage_generation' "
-            "- 'digest_algorithm' - 'digest_hex' - 'byte_length') = '{}'::pg_catalog.jsonb "
-            "AND original_reference ?& ARRAY['schema_version', 'object_id', 'storage_generation', "
-            "'digest_algorithm', 'digest_hex', 'byte_length'] "
-            "AND (original_reference->>'schema_version') OPERATOR(pg_catalog.~) '^[1-9][0-9]*$' "
-            "AND (original_reference->>'object_id') OPERATOR(pg_catalog.~) "
-            "'^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$' "
-            "AND (original_reference->>'object_id') <> '00000000-0000-0000-0000-000000000000' "
-            "AND (original_reference->>'storage_generation') OPERATOR(pg_catalog.~) "
-            "'^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$' "
-            "AND (original_reference->>'storage_generation') <> '00000000-0000-0000-0000-000000000000' "
-            "AND original_reference->>'digest_algorithm' = 'sha256' "
-            "AND original_reference->>'digest_hex' = original_sha256 "
-            "AND (original_reference->>'digest_hex') OPERATOR(pg_catalog.~) '^[0-9a-f]{64}$' "
-            "AND (original_reference->>'byte_length') OPERATOR(pg_catalog.~) '^[0-9]+$' "
-            "AND (original_reference->>'byte_length') = byte_length::text",
-            name="ck_source_receipt_associations_reference",
-        ),
+        schema=SCHEMA,
+    )
+    op.create_check_constraint(
+        "ck_source_receipt_associations_verified",
+        "source_revision_receipt_associations",
+        "original_receipt_kind = 'issue6.write_receipt' AND verification_status = 'verified' "
+        "AND storage_status = 'finalized_verified' AND original_command_result_schema_version > 0 "
+        "AND byte_length >= 0 AND original_sha256 OPERATOR(pg_catalog.~) '^[0-9a-f]{64}$' "
+        "AND associated_at >= finalized_at "
+        "AND association_id <> '00000000-0000-0000-0000-000000000000'::pg_catalog.uuid "
+        "AND source_object_id <> '00000000-0000-0000-0000-000000000000'::pg_catalog.uuid "
+        "AND revision_id <> '00000000-0000-0000-0000-000000000000'::pg_catalog.uuid "
+        "AND provenance_id <> '00000000-0000-0000-0000-000000000000'::pg_catalog.uuid "
+        "AND original_receipt_id <> '00000000-0000-0000-0000-000000000000'::pg_catalog.uuid "
+        "AND original_command_result_id <> '00000000-0000-0000-0000-000000000000'::pg_catalog.uuid "
+        "AND original_upload_id <> '00000000-0000-0000-0000-000000000000'::pg_catalog.uuid",
+        schema=SCHEMA,
+    )
+    op.create_check_constraint(
+        "ck_source_receipt_associations_reference",
+        "source_revision_receipt_associations",
+        "pg_catalog.jsonb_typeof(original_reference) = 'object' "
+        "AND (original_reference - 'schema_version' - 'object_id' - 'storage_generation' "
+        "- 'digest_algorithm' - 'digest_hex' - 'byte_length') = '{}'::pg_catalog.jsonb "
+        "AND original_reference ?& ARRAY['schema_version', 'object_id', 'storage_generation', "
+        "'digest_algorithm', 'digest_hex', 'byte_length'] "
+        "AND (original_reference->>'schema_version') OPERATOR(pg_catalog.~) '^[1-9][0-9]*$' "
+        "AND (original_reference->>'object_id') OPERATOR(pg_catalog.~) "
+        "'^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$' "
+        "AND (original_reference->>'object_id') <> '00000000-0000-0000-0000-000000000000' "
+        "AND (original_reference->>'storage_generation') OPERATOR(pg_catalog.~) "
+        "'^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$' "
+        "AND (original_reference->>'storage_generation') <> '00000000-0000-0000-0000-000000000000' "
+        "AND original_reference->>'digest_algorithm' = 'sha256' "
+        "AND original_reference->>'digest_hex' = original_sha256 "
+        "AND (original_reference->>'digest_hex') OPERATOR(pg_catalog.~) '^[0-9a-f]{64}$' "
+        "AND (original_reference->>'byte_length') OPERATOR(pg_catalog.~) '^[0-9]+$' "
+        "AND (original_reference->>'byte_length') = byte_length::text",
         schema=SCHEMA,
     )
     op.create_index(
