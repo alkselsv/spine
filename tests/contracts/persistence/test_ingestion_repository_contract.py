@@ -70,7 +70,6 @@ async def exercise_ingestion_run_item_contract(adapter: PersistenceAdapter) -> N
         command_digest="d" * 64,
         created_at=NOW,
     )
-
     async with adapter.uow_factory(context_factory(workspace_id, environment_id, "ingestion_run")) as uow:
         first = await uow.ingestion.create_run(command)
         await uow.ingestion.create_item(item)
@@ -98,6 +97,12 @@ async def test_ingestion_binding_requires_a_scoped_original_receipt(
     environment_id = synthetic_uuid(1812)
     await persist_workspace(persistence_adapter, workspace_id)
     await persist_environment(persistence_adapter, workspace_id, environment_id)
+    foreign_workspace_id = synthetic_uuid(1822)
+    foreign_environment_id = synthetic_uuid(1823)
+    await persist_workspace(persistence_adapter, foreign_workspace_id)
+    await persist_environment(
+        persistence_adapter, foreign_workspace_id, foreign_environment_id
+    )
     run = IngestionRun(
         ingestion_run_id=synthetic_uuid(1813),
         workspace_id=workspace_id,
@@ -191,13 +196,38 @@ async def test_ingestion_binding_requires_a_scoped_original_receipt(
         original_receipt_digest=revision.original_sha256,
         bound_at=NOW,
     )
+    ingestion_context = persistence_adapter.ingestion_context
+    foreign_digest = digest_command(
+        operation=PersistenceOperation("original.upload"),
+        operation_schema_version=1,
+        payload={"fixture": "foreign-original-receipt"},
+    )
+    async with persistence_adapter.uow_factory(
+        ingestion_context(foreign_workspace_id, foreign_environment_id, "original.upload")
+    ) as uow:
+        foreign_claim = await uow.idempotency.claim(
+            operation_schema_version=1,
+            key=IdempotencyKey("foreign-original-upload"),
+            digest=foreign_digest,
+        )
+        await uow.idempotency.complete(
+            foreign_claim,
+            OpaqueResultReference(
+                result_type="original_upload",
+                result_id=synthetic_uuid(1824),
+                schema_version=1,
+            ),
+        )
+        await uow.commit()
+    binding = binding.model_copy(
+        update={"original_receipt_id": foreign_claim.receipt_id}
+    )
     binding_command = IngestionBindingCommand.create(
         item=item,
         binding=binding,
         observation=observation,
         idempotency_key=IdempotencyKey("contract-binding-command"),
     )
-    ingestion_context = persistence_adapter.ingestion_context
     async with persistence_adapter.uow_factory(
         ingestion_context(workspace_id, environment_id, "ingestion_run")
     ) as uow:
@@ -242,6 +272,14 @@ async def exercise_ingestion_binding_race(adapter: PersistenceAdapter) -> None:
         command_identity="contract-binding-race-item",
         command_digest="d" * 64,
         created_at=NOW,
+    )
+    rollback_item = item.model_copy(
+        update={
+            "ingestion_run_source_id": synthetic_uuid(1835),
+            "input_ordinal": 2,
+            "input_identity": "contract-binding-race-rollback-input",
+            "command_identity": "contract-binding-race-rollback-item",
+        }
     )
 
     def source_case(offset: int, label: str) -> tuple[SourceObject, object, SourceObservationCommand]:
@@ -312,6 +350,7 @@ async def exercise_ingestion_binding_race(adapter: PersistenceAdapter) -> None:
     ) as uow:
         await uow.ingestion.create_run(run_command)
         await uow.ingestion.create_item(item)
+        await uow.ingestion.create_item(rollback_item)
         await uow.commit()
     async with adapter.uow_factory(
         ingestion_context(workspace_id, environment_id, "original.upload")
@@ -339,12 +378,13 @@ async def exercise_ingestion_binding_race(adapter: PersistenceAdapter) -> None:
         observation: SourceObservationCommand,
         label: str,
         binding_id: int,
+        item_to_bind: IngestionRunSource = item,
     ) -> IngestionBindingCommand:
         return IngestionBindingCommand.create(
-            item=item,
+            item=item_to_bind,
             binding=IngestionRunSourceBinding(
                 binding_id=synthetic_uuid(binding_id),
-                ingestion_run_source_id=item.ingestion_run_source_id,
+                ingestion_run_source_id=item_to_bind.ingestion_run_source_id,
                 source_object_id=source.source_object_id,
                 source_revision_id=revision.revision_id,
                 workspace_id=workspace_id,
@@ -364,6 +404,34 @@ async def exercise_ingestion_binding_race(adapter: PersistenceAdapter) -> None:
     first = binding_case(first_source, first_revision, first_observation, "one", 1847)
     second = binding_case(second_source, second_revision, second_observation, "two", 1848)
 
+    rollback_source, rollback_revision, rollback_observation = source_case(1850, "rollback")
+    rollback = binding_case(
+        rollback_source,
+        rollback_revision,
+        rollback_observation,
+        "rollback",
+        1855,
+        rollback_item,
+    )
+
+    async def bind_then_fail(command: IngestionBindingCommand) -> None:
+        async with adapter.uow_factory(
+            ingestion_context(workspace_id, environment_id, "ingestion_binding")
+        ) as uow:
+            result = await uow.ingestion.bind_source(command)
+            assert result.replay is False
+            raise RuntimeError("injected pre-commit binding failure")
+
+    with pytest.raises(RuntimeError, match="injected pre-commit"):
+        await bind_then_fail(rollback)
+
+    async with adapter.uow_factory(
+        ingestion_context(workspace_id, environment_id, "ingestion_binding")
+    ) as uow:
+        retry_after_rollback = await uow.ingestion.bind_source(rollback)
+        await uow.commit()
+    assert retry_after_rollback.replay is False
+
     async def bind(command: IngestionBindingCommand) -> object:
         async with adapter.uow_factory(
             ingestion_context(workspace_id, environment_id, "ingestion_binding")
@@ -375,6 +443,15 @@ async def exercise_ingestion_binding_race(adapter: PersistenceAdapter) -> None:
     results = await asyncio.gather(bind(first), bind(second), return_exceptions=True)
     assert sum(isinstance(result, ConstraintConflictError) for result in results) == 1
     assert sum(not isinstance(result, BaseException) for result in results) == 1
+
+    winner = first if not isinstance(results[0], BaseException) else second
+    async with adapter.uow_factory(
+        ingestion_context(workspace_id, environment_id, "ingestion_binding")
+    ) as uow:
+        replay = await uow.ingestion.bind_source(winner)
+        await uow.commit()
+    assert replay.replay is True
+    assert replay.value.binding_id == winner.binding.binding_id
 
 
 @pytest.mark.asyncio
