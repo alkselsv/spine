@@ -101,6 +101,25 @@ class _BlockingOperationAbandoned(StorageIntegrityIndeterminate):
     """The worker outlived its caller and still owns any passed resources."""
 
 
+class _OwnedFd:
+    """Close an fd at most once, even when worker cleanup races caller cleanup."""
+
+    def __init__(self, fd: int) -> None:
+        self.fd = fd
+        self._lock = threading.Lock()
+        self._closed = False
+
+    def close(self, _value: Any = None) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            try:
+                os.close(self.fd)
+            except OSError:
+                raise StorageIntegrityIndeterminate() from None
+
+
 class _ReadGrantBinding(Protocol):
     workspace_id: UUID
     environment_id: UUID | None
@@ -313,30 +332,18 @@ class FilesystemOriginalObjectStore:
                 )
                 return observed
             except StorageError as error:
-                await self._run_blocking(
-                    self._mark_interrupted,
-                    manifest_path,
-                    manifest,
-                    deadline=self._setup_deadline(),
-                    check_operational=False,
+                await self._mark_interrupted_after_failure(
+                    manifest_path, manifest, deadline
                 )
                 raise error
             except asyncio.CancelledError:
-                await self._run_blocking(
-                    self._mark_interrupted,
-                    manifest_path,
-                    manifest,
-                    deadline=self._setup_deadline(),
-                    check_operational=False,
+                await self._mark_interrupted_after_failure(
+                    manifest_path, manifest, deadline
                 )
                 raise
             except Exception:
-                await self._run_blocking(
-                    self._mark_interrupted,
-                    manifest_path,
-                    manifest,
-                    deadline=self._setup_deadline(),
-                    check_operational=False,
+                await self._mark_interrupted_after_failure(
+                    manifest_path, manifest, deadline
                 )
                 raise ObjectUnavailable() from None
 
@@ -348,13 +355,17 @@ class FilesystemOriginalObjectStore:
         lock = self._upload_locks.setdefault(state.upload_id, asyncio.Lock())
         async with self._operation_limit, lock:
             self._ensure_operational()
+            deadline = self._deadline()
             return await self._run_blocking(
                 self._abort_upload_sync,
                 state,
-                deadline=self._deadline(),
+                deadline,
+                deadline=deadline,
             )
 
-    def _abort_upload_sync(self, state: UploadCommandState) -> UploadCommandState:
+    def _abort_upload_sync(
+        self, state: UploadCommandState, deadline: float
+    ) -> UploadCommandState:
         if state.state is UploadCommandStateName.RECONCILIATION_REQUIRED:
             raise ReconciliationRequired()
         self._validate_upload_state(state)
@@ -376,7 +387,7 @@ class FilesystemOriginalObjectStore:
         try:
             if self._exists(payload_path):
                 payload_fd = self._open_append(payload_path)
-                self._lock_file(payload_fd, self._deadline())
+                self._lock_file(payload_fd, deadline)
                 manifest = self._read_manifest(manifest_path)
                 self._assert_manifest_identity_from_state(manifest, state)
                 status = manifest.get("status")
@@ -439,7 +450,8 @@ class FilesystemOriginalObjectStore:
                 )
             except UploadConflict:
                 self._mark_publication_conflict(
-                    self._staged_root / scope_key / state.upload_id.hex / "manifest.json"
+                    self._staged_root / scope_key / state.upload_id.hex / "manifest.json",
+                    deadline=deadline,
                 )
                 raise
 
@@ -480,7 +492,9 @@ class FilesystemOriginalObjectStore:
                         deadline=deadline,
                     )
                 except UploadConflict:
-                    self._mark_publication_conflict(stage_manifest_path, locked=True)
+                    self._mark_publication_conflict(
+                        stage_manifest_path, deadline=deadline, locked=True
+                    )
                     raise
             manifest = self._read_manifest(stage_manifest_path)
             self._assert_manifest_identity_from_state(manifest, state)
@@ -550,7 +564,9 @@ class FilesystemOriginalObjectStore:
                         deadline=deadline,
                     )
                 except UploadConflict:
-                    self._mark_publication_conflict(stage_manifest_path, locked=True)
+                    self._mark_publication_conflict(
+                        stage_manifest_path, deadline=deadline, locked=True
+                    )
                     raise
             except StorageError:
                 raise
@@ -1046,6 +1062,7 @@ class FilesystemOriginalObjectStore:
             on_cancel=os.close,
             deadline=deadline,
         )
+        owned_fd = _OwnedFd(fd)
         fd_abandoned = False
         try:
             setup_deadline = deadline
@@ -1054,7 +1071,7 @@ class FilesystemOriginalObjectStore:
                     self._lock_file,
                     fd,
                     setup_deadline,
-                    on_cancel=lambda _: os.close(fd),
+                    on_cancel=owned_fd.close,
                 )
             except (asyncio.CancelledError, _BlockingOperationAbandoned):
                 fd_abandoned = True
@@ -1116,13 +1133,14 @@ class FilesystemOriginalObjectStore:
                     on_cancel=os.close,
                     deadline=stream_deadline,
                 )
+                owned_write_fd = _OwnedFd(write_fd)
                 write_abandoned = False
 
                 def release_abandoned_write(_: Any) -> None:
                     try:
-                        self._close_fd(write_fd)
+                        owned_write_fd.close()
                     finally:
-                        self._close_fd(fd)
+                        owned_fd.close()
 
                 try:
                     await self._run_blocking(
@@ -1140,15 +1158,14 @@ class FilesystemOriginalObjectStore:
                 finally:
                     if not write_abandoned:
                         await self._run_blocking(
-                            self._close_fd,
-                            write_fd,
+                            owned_write_fd.close,
                             check_operational=False,
                         )
                 digest.update(chunk)
                 length += len(chunk)
         finally:
             if not fd_abandoned:
-                await self._run_blocking(self._close_fd, fd, check_operational=False)
+                await self._run_blocking(owned_fd.close, check_operational=False)
         return ObservedContentIdentity(
             observed_sha256=digest.hexdigest(),
             observed_byte_length=length,
@@ -1487,7 +1504,13 @@ class FilesystemOriginalObjectStore:
         updated["status"] = status
         self._write_json_atomic(path, updated)
 
-    def _mark_publication_conflict(self, path: Path, *, locked: bool = False) -> None:
+    def _mark_publication_conflict(
+        self,
+        path: Path,
+        *,
+        deadline: float,
+        locked: bool = False,
+    ) -> None:
         if not self._exists(path):
             return
         payload_fd: int | None = None
@@ -1496,7 +1519,7 @@ class FilesystemOriginalObjectStore:
                 payload_path = path.parent / "payload"
                 if self._exists(payload_path):
                     payload_fd = self._open_append(payload_path)
-                    self._lock_file(payload_fd, self._setup_deadline())
+                    self._lock_file(payload_fd, deadline)
             current_manifest = self._read_manifest(path)
             if current_manifest.get("status") in {"staging", "publishing"}:
                 self._set_manifest_status(path, current_manifest, "integrity_conflict")
@@ -1534,7 +1557,33 @@ class FilesystemOriginalObjectStore:
         finally:
             self._close_fd(fd)
 
-    def _mark_interrupted(self, path: Path, manifest: dict[str, Any]) -> None:
+    async def _mark_interrupted_after_failure(
+        self,
+        path: Path,
+        manifest: dict[str, Any],
+        deadline: float,
+    ) -> None:
+        if self._monotonic_clock() >= deadline:
+            self._indeterminate.set()
+            return
+        try:
+            await self._run_blocking(
+                self._mark_interrupted,
+                path,
+                manifest,
+                deadline,
+                deadline=deadline,
+                check_operational=False,
+            )
+        except StorageError:
+            self._indeterminate.set()
+
+    def _mark_interrupted(
+        self,
+        path: Path,
+        manifest: dict[str, Any],
+        deadline: float,
+    ) -> None:
         del manifest
         payload_path = path.parent / "payload"
         payload_fd: int | None = None
@@ -1545,10 +1594,7 @@ class FilesystemOriginalObjectStore:
                     raise StorageIntegrityIndeterminate()
                 return
             payload_fd = self._open_append(payload_path)
-            self._lock_file(
-                payload_fd,
-                self._monotonic_clock() + max(self._profile.operation_timeout, 1.0),
-            )
+            self._lock_file(payload_fd, deadline)
             current = self._read_manifest(path)
             if current.get("status") != "staging":
                 return
@@ -1670,21 +1716,23 @@ class FilesystemOriginalObjectStore:
             on_cancel=os.close,
             deadline=deadline,
         )
-        if expected_identity is not None:
-            identity = await self._run_blocking(
-                self._file_identity_from_fd,
-                fd,
-                deadline=deadline,
-            )
-            if identity != expected_identity:
-                await self._run_blocking(
-                    self._close_fd,
-                    fd,
-                    check_operational=False,
-                )
-                raise ObjectCorrupt()
-        remaining = limit
+        owned_fd = _OwnedFd(fd)
+        fd_abandoned = False
         try:
+            if expected_identity is not None:
+                try:
+                    identity = await self._run_blocking(
+                        self._file_identity_from_fd,
+                        fd,
+                        on_cancel=owned_fd.close,
+                        deadline=deadline,
+                    )
+                except (asyncio.CancelledError, _BlockingOperationAbandoned):
+                    fd_abandoned = True
+                    raise
+                if identity != expected_identity:
+                    raise ObjectCorrupt()
+            remaining = limit
             while remaining:
                 if self._monotonic_clock() > deadline:
                     raise UploadLimitExceeded()
@@ -1694,6 +1742,7 @@ class FilesystemOriginalObjectStore:
                     on_cancel=os.close,
                     deadline=deadline,
                 )
+                owned_read_fd = _OwnedFd(read_fd)
                 read_abandoned = False
                 try:
                     chunk = await self._run_blocking(
@@ -1704,7 +1753,7 @@ class FilesystemOriginalObjectStore:
                             self._profile.max_chunk_bytes,
                             remaining,
                         ),
-                        on_cancel=lambda _: os.close(read_fd),
+                        on_cancel=owned_read_fd.close,
                         deadline=deadline,
                     )
                 except (asyncio.CancelledError, _BlockingOperationAbandoned):
@@ -1713,8 +1762,7 @@ class FilesystemOriginalObjectStore:
                 finally:
                     if not read_abandoned:
                         await self._run_blocking(
-                            self._close_fd,
-                            read_fd,
+                            owned_read_fd.close,
                             check_operational=False,
                         )
                 if not chunk:
@@ -1723,7 +1771,8 @@ class FilesystemOriginalObjectStore:
                 self._observe_io("read", limit, limit - remaining)
                 yield chunk
         finally:
-            await self._run_blocking(self._close_fd, fd, check_operational=False)
+            if not fd_abandoned:
+                await self._run_blocking(owned_fd.close, check_operational=False)
 
     def _validate_chunk(self, chunk: bytes, current_length: int) -> None:
         if not isinstance(chunk, bytes):
