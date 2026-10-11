@@ -200,7 +200,7 @@ class AgentExecutionContextFactory:
         idempotency_key: str,
         permitted_tool_grants: TrustedToolGrantSet,
         cancellation: CancellationToken,
-        event_sink: EventSink[Any],
+        event_sink: EventSink,
         attempt_id: UUID | None = None,
         capability: CapabilityDefinition | None = None,
         schema_identity: CapabilitySchemaIdentity | None = None,

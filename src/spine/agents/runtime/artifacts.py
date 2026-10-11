@@ -10,6 +10,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from spine.agents.runtime.contracts import AgentResponse, CapabilitySchemaIdentity
+from spine.application.diagnostics import AuditEvent
 from spine.domain.artifacts import Artifact, ArtifactRef, validate_artifact_lineage
 from spine.domain.common import ActorRef, SchemaRef
 
@@ -57,8 +58,9 @@ class ArtifactPersistence(Protocol):
 
     ``load`` applies the requested scope and access policy before returning a
     record. ``persist_outputs`` is atomic for the supplied batch: it either
-    returns durable references for every draft or raises without reporting a
-    successful completion. Durable replay/idempotency is owned by issue #112.
+    validates references and commits them with the required Audit Event, or
+    raises without either effect. Durable replay/idempotency is owned by issue
+    #112.
     """
 
     async def load(
@@ -85,6 +87,8 @@ class ArtifactPersistence(Protocol):
         drafts: tuple[ArtifactDraft, ...],
         *,
         idempotency_key: str,
+        audit_event: AuditEvent,
+        validate_references: Callable[[tuple[ArtifactRef, ...]], None],
     ) -> tuple[ArtifactRef, ...]: ...
 
 

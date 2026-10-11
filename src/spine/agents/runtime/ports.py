@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Generic, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from uuid import UUID
 
-from spine.application.diagnostics import DiagnosticContext
+from spine.application.diagnostics import DiagnosticContext, DiagnosticSink
 from spine.auth.contracts import (
     AuthorizedRequestContext,
     AuthorizationResolution,
     RequestedAuthorizationScope,
 )
 from spine.domain.common import EnvironmentKind
-
-EventT = TypeVar("EventT")
 
 if TYPE_CHECKING:
     from spine.agents.runtime.contracts import AgentExecutionContext
@@ -31,12 +29,9 @@ class CancellationToken(Protocol):
         """Raise the caller's cancellation outcome when cancellation is observed."""
 
 
-@runtime_checkable
-class EventSink(Protocol, Generic[EventT]):
-    """Port for safe execution observations owned by the diagnostics boundary."""
-
-    async def emit(self, event: EventT) -> None:
-        """Accept one already-validated, disclosure-safe execution event."""
+# Compatibility name for the first runtime contract.  Runtime diagnostics now
+# consume the Issue #4 port directly instead of maintaining a parallel schema.
+EventSink = DiagnosticSink
 
 
 @runtime_checkable

@@ -1,25 +1,40 @@
 from __future__ import annotations
 
+from asyncio import CancelledError
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+import json
 from typing import Any
 from uuid import UUID
 
 import pytest
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from spine.agents.runtime import (
     AgentExecutionContext,
+    AgentRetryDiagnosticState,
+    AgentRetryReason,
     AgentRequest,
     AgentResponse,
     ArtifactDraft,
     ArtifactReadError,
     CapabilityArtifactSchema,
     CapabilitySchemaIdentity,
+    AgentRuntimeAuditError,
+    AgentRuntimeDiagnosticEmitter,
+    AgentRunDiagnosticState,
+    AgentToolDiagnosticState,
+    AgentUsageKind,
     LocalAgentRuntime,
     TrustedExecutionIdentitySnapshot,
+    build_agent_runtime_audit_registry,
+    build_agent_runtime_diagnostic_registry,
 )
 from spine.application.diagnostics import (
+    AuditEvent,
+    AuditWriter,
     DiagnosticContext,
+    DiagnosticEvent,
     Retryability,
     StructuredError,
 )
@@ -32,6 +47,10 @@ from spine.domain.agents import (
 from spine.domain.artifacts import Artifact, ArtifactRef, ArtifactState
 from spine.domain.capabilities import CapabilityDefinition
 from spine.domain.common import ActorKind, ActorRef, EnvironmentKind, SchemaRef
+from tests.contracts.diagnostics.fixtures import (
+    DIAGNOSTIC_LEAK_CORPUS,
+    assert_no_diagnostic_leaks,
+)
 
 
 def uid(value: int) -> UUID:
@@ -65,8 +84,33 @@ class FakeCancellation:
 
 
 class FakeEventSink:
+    def __init__(self) -> None:
+        self.events: list[DiagnosticEvent] = []
+
+    async def emit(self, event: object) -> None:
+        assert isinstance(event, DiagnosticEvent)
+        self.events.append(event)
+
+
+class RecordingAuditWriter:
+    def __init__(self) -> None:
+        self.events: list[AuditEvent] = []
+
+    async def append(self, event: AuditEvent) -> UUID:
+        self.events.append(event)
+        return uid(80 + len(self.events))
+
+
+class FailingEventSink:
     async def emit(self, event: object) -> None:
         del event
+        raise RuntimeError("diagnostic backend exposed production-token")
+
+
+class FailingAuditWriter:
+    async def append(self, event: AuditEvent) -> UUID:
+        del event
+        raise RuntimeError("audit backend exposed production-token")
 
 
 def capability() -> CapabilityDefinition:
@@ -150,12 +194,16 @@ def input_artifact(**overrides: object) -> Artifact:
 class FakeArtifactPersistence:
     records: dict[UUID, Artifact] = field(default_factory=dict)
     read_error: bool = False
+    cancel_on_read: bool = False
     write_error: bool = False
+    audit_error: bool = False
     returned_ref: ArtifactRef | None = None
     lineage_error_ids: set[UUID] = field(default_factory=set)
     load_calls: list[tuple[UUID, UUID, UUID, UUID]] = field(default_factory=list)
     lineage_calls: list[UUID] = field(default_factory=list)
     writes: list[tuple[tuple[ArtifactDraft, ...], str]] = field(default_factory=list)
+    audit_calls: list[AuditEvent] = field(default_factory=list)
+    validation_calls: int = 0
 
     async def load(
         self,
@@ -166,6 +214,8 @@ class FakeArtifactPersistence:
         work_item_id: UUID,
     ) -> Artifact | None:
         self.load_calls.append((artifact_id, workspace_id, environment_id, work_item_id))
+        if self.cancel_on_read:
+            raise CancelledError
         if self.read_error:
             raise ArtifactReadError("protected record exists")
         return self.records.get(artifact_id)
@@ -188,11 +238,10 @@ class FakeArtifactPersistence:
         drafts: tuple[ArtifactDraft, ...],
         *,
         idempotency_key: str,
+        audit_event: AuditEvent,
+        validate_references: Any,
     ) -> tuple[ArtifactRef, ...]:
-        self.writes.append((drafts, idempotency_key))
-        if self.write_error:
-            raise RuntimeError("database included protected output")
-        return (
+        references = (
             self.returned_ref
             or ArtifactRef(
                 id=uid(70),
@@ -200,6 +249,15 @@ class FakeArtifactPersistence:
                 schema_version="2",
             ),
         )
+        self.validation_calls += 1
+        validate_references(references)
+        self.audit_calls.append(audit_event)
+        if self.audit_error:
+            raise RuntimeError("audit commit exposed production-token")
+        if self.write_error:
+            raise RuntimeError("database included protected output")
+        self.writes.append((drafts, idempotency_key))
+        return references
 
 
 class RecordingHandler:
@@ -225,13 +283,27 @@ class RecordingHandler:
 
 
 class RaisingHandler(RecordingHandler):
+    def __init__(self, protected_message: str = "provider payload is protected") -> None:
+        super().__init__()
+        self.protected_message = protected_message
+
     async def invoke(
         self,
         request: AgentRequest[Any],
         context: AgentExecutionContext,
     ) -> AgentResponse[Any]:
         self.calls.append((request, context))
-        raise RuntimeError("provider payload is protected")
+        raise RuntimeError(self.protected_message)
+
+
+class CancellingHandler(RecordingHandler):
+    async def invoke(
+        self,
+        request: AgentRequest[Any],
+        context: AgentExecutionContext,
+    ) -> AgentResponse[Any]:
+        self.calls.append((request, context))
+        raise CancelledError
 
 
 def local_runtime(
@@ -239,9 +311,11 @@ def local_runtime(
     handler: RecordingHandler,
     *,
     context: AgentExecutionContext | None = None,
+    audit_writer: AuditWriter | None = None,
 ) -> LocalAgentRuntime:
+    selected_context = context or execution_context()
     return LocalAgentRuntime(
-        context=context or execution_context(),
+        context=selected_context,
         handler=handler,
         artifacts=persistence,
         schemas=CapabilityArtifactSchema(
@@ -251,7 +325,20 @@ def local_runtime(
             assemble_input=lambda artifacts: artifacts[0].content,
             validate_metadata=validate_metadata,
         ),
+        diagnostic_registry=build_agent_runtime_diagnostic_registry(),
+        audit_registry=build_agent_runtime_audit_registry(),
+        audit_writer=audit_writer or RecordingAuditWriter(),
+        clock=lambda: datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc),
     )
+
+
+def observability_dependencies() -> dict[str, object]:
+    return {
+        "diagnostic_registry": build_agent_runtime_diagnostic_registry(),
+        "audit_registry": build_agent_runtime_audit_registry(),
+        "audit_writer": RecordingAuditWriter(),
+        "clock": lambda: datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc),
+    }
 
 
 def validate_metadata(response: AgentResponse[Any]) -> None:
@@ -284,6 +371,7 @@ def test_runtime_rejects_schema_mapping_for_another_capability_version() -> None
                 assemble_input=lambda artifacts: artifacts[0].content,
                 validate_metadata=validate_metadata,
             ),
+            **observability_dependencies(),
         )
 
 
@@ -364,6 +452,63 @@ async def test_valid_artifact_handoff_persists_lineage_before_reporting_success(
 
 
 @pytest.mark.asyncio
+async def test_success_emits_separate_registered_diagnostics_and_audit_events() -> None:
+    diagnostics = FakeEventSink()
+    audit = RecordingAuditWriter()
+    context = execution_context(
+        event_sink=diagnostics,
+        attempt_id=uid(34),
+        diagnostic_context=DiagnosticContext(
+            trace_id=uid(40),
+            correlation_id=uid(41),
+            causation_id=uid(42),
+        ),
+    )
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+
+    result = await local_runtime(
+        persistence,
+        RecordingHandler(),
+        context=context,
+        audit_writer=audit,
+    ).invoke(version(), invocation())
+
+    assert result.status is AgentRunStatus.SUCCEEDED
+    assert [event.event_type for event in diagnostics.events] == [
+        "agent.run",
+        "agent.run",
+    ]
+    assert [event.payload_json()["run_state"] for event in diagnostics.events] == [
+        "started",
+        "completed",
+    ]
+    completed = diagnostics.events[-1]
+    assert completed.workspace_id == uid(1)
+    assert completed.environment_id == uid(2)
+    assert completed.trace_id == uid(40)
+    assert completed.correlation_id == uid(41)
+    assert completed.causation_id == uid(42)
+    assert completed.schema_version == 1
+    assert completed.payload_json() == {
+        "agent_run_id": str(uid(33)),
+        "agent_version_id": str(uid(20)),
+        "attempt_id": str(uid(34)),
+        "capability_id": str(uid(10)),
+        "run_state": "completed",
+        "step_run_id": str(uid(32)),
+        "work_item_id": str(uid(30)),
+        "workflow_run_id": str(uid(31)),
+    }
+    assert [event.payload_json()["run_state"] for event in audit.events] == [
+        "started"
+    ]
+    assert persistence.audit_calls[0].payload_json()["run_state"] == "completed"
+    assert persistence.audit_calls[0].target is not None
+    assert persistence.audit_calls[0].target.object_id == uid(33)
+    assert "42" not in json.dumps(completed.payload_json())
+
+
+@pytest.mark.asyncio
 async def test_capability_adapter_assembles_multiple_artifacts_by_named_fields() -> None:
     first = input_artifact()
     second = input_artifact(
@@ -387,6 +532,7 @@ async def test_capability_adapter_assembles_multiple_artifacts_by_named_fields()
             },
             validate_metadata=validate_metadata,
         ),
+        **observability_dependencies(),
     )
 
     result = await runtime.invoke(
@@ -545,6 +691,227 @@ async def test_handler_exception_returns_safe_internal_failure() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("protected_value", DIAGNOSTIC_LEAK_CORPUS)
+async def test_failure_diagnostics_reject_negative_disclosure_corpus(
+    protected_value: str,
+) -> None:
+    diagnostics = FakeEventSink()
+    audit = RecordingAuditWriter()
+    context = execution_context(event_sink=diagnostics, attempt_id=uid(34))
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+
+    result = await local_runtime(
+        persistence,
+        RaisingHandler(protected_value),
+        context=context,
+        audit_writer=audit,
+    ).invoke(version(), invocation())
+
+    assert result.status is AgentRunStatus.FAILED
+    assert diagnostics.events[-1].payload_json()["run_state"] == "failed"
+    captures = [
+        result.model_dump_json(),
+        *(json.dumps(event.payload_json()) for event in diagnostics.events),
+        *(event.model_dump_json() for event in audit.events),
+    ]
+    assert_no_diagnostic_leaks(captures, leak_corpus=(protected_value,))
+
+
+@pytest.mark.asyncio
+async def test_observation_sink_failures_cannot_rewrite_canonical_result() -> None:
+    context = execution_context(event_sink=FailingEventSink())
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+
+    result = await local_runtime(
+        persistence,
+        RecordingHandler(),
+        context=context,
+        audit_writer=RecordingAuditWriter(),
+    ).invoke(version(), invocation())
+
+    assert result.status is AgentRunStatus.SUCCEEDED
+    assert result.output_artifact_ids == (uid(70),)
+
+
+@pytest.mark.asyncio
+async def test_required_audit_failure_blocks_execution_with_safe_error() -> None:
+    context = execution_context(event_sink=FakeEventSink())
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+    handler = RecordingHandler()
+
+    with pytest.raises(AgentRuntimeAuditError) as captured:
+        await local_runtime(
+            persistence,
+            handler,
+            context=context,
+            audit_writer=FailingAuditWriter(),
+        ).invoke(version(), invocation())
+
+    assert str(captured.value) == "Agent runtime audit is unavailable."
+    assert "production-token" not in str(captured.value)
+    assert handler.calls == []
+
+
+@pytest.mark.asyncio
+async def test_handler_cancellation_emits_cancelled_without_reporting_success() -> None:
+    diagnostics = FakeEventSink()
+    audit = RecordingAuditWriter()
+    context = execution_context(event_sink=diagnostics, attempt_id=uid(34))
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+
+    result = await local_runtime(
+        persistence,
+        CancellingHandler(),
+        context=context,
+        audit_writer=audit,
+    ).invoke(version(), invocation())
+
+    assert result.status is AgentRunStatus.CANCELLED
+    assert [event.payload_json()["run_state"] for event in diagnostics.events] == [
+        "started",
+        "cancelled",
+    ]
+    assert [event.payload_json()["run_state"] for event in audit.events] == [
+        "started",
+        "cancelled",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_artifact_io_cancellation_is_observed_and_propagated() -> None:
+    diagnostics = FakeEventSink()
+    audit = RecordingAuditWriter()
+    context = execution_context(event_sink=diagnostics, attempt_id=uid(34))
+    persistence = FakeArtifactPersistence(cancel_on_read=True)
+
+    with pytest.raises(CancelledError):
+        await local_runtime(
+            persistence,
+            RecordingHandler(),
+            context=context,
+            audit_writer=audit,
+        ).invoke(version(), invocation())
+
+    assert [event.payload_json()["run_state"] for event in diagnostics.events] == [
+        "started",
+        "cancelled",
+    ]
+    assert [event.payload_json()["run_state"] for event in audit.events] == [
+        "started",
+        "cancelled",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cancel_request_emits_observation_without_fabricating_audit_transition() -> None:
+    diagnostics = FakeEventSink()
+    audit = RecordingAuditWriter()
+    context = execution_context(event_sink=diagnostics, attempt_id=uid(34))
+    runtime = local_runtime(
+        FakeArtifactPersistence(),
+        RecordingHandler(),
+        context=context,
+        audit_writer=audit,
+    )
+
+    await runtime.cancel(uid(32))
+
+    assert [event.payload_json()["run_state"] for event in diagnostics.events] == [
+        "cancellation_requested"
+    ]
+    assert audit.events == []
+
+
+@pytest.mark.asyncio
+async def test_retry_tool_and_usage_observations_use_registered_safe_payloads() -> None:
+    diagnostics = FakeEventSink()
+    context = execution_context(event_sink=diagnostics, attempt_id=uid(34))
+    emitter = AgentRuntimeDiagnosticEmitter(
+        context=context,
+        diagnostic_registry=build_agent_runtime_diagnostic_registry(),
+        audit_registry=build_agent_runtime_audit_registry(),
+        audit_writer=RecordingAuditWriter(),
+        clock=lambda: datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc),
+    )
+
+    await emitter.observe_retry(
+        state=AgentRetryDiagnosticState.SCHEDULED,
+        attempt_number=2,
+        retry_reason_code=AgentRetryReason.PROVIDER_UNAVAILABLE,
+    )
+    await emitter.observe_tool(
+        tool_call_id=uid(60),
+        state=AgentToolDiagnosticState.SUCCEEDED,
+    )
+    await emitter.observe_usage(kind=AgentUsageKind.INPUT_TOKENS, quantity=128)
+
+    assert [event.event_type for event in diagnostics.events] == [
+        "agent.retry",
+        "agent.tool",
+        "agent.usage",
+    ]
+    assert diagnostics.events[0].payload_json()["attempt_number"] == 2
+    assert diagnostics.events[1].payload_json()["tool_call_id"] == str(uid(60))
+    assert diagnostics.events[2].payload_json() == {
+        "agent_run_id": str(uid(33)),
+        "agent_version_id": str(uid(20)),
+        "attempt_id": str(uid(34)),
+        "capability_id": str(uid(10)),
+        "quantity": 128,
+        "step_run_id": str(uid(32)),
+        "usage_kind": "input_tokens",
+        "work_item_id": str(uid(30)),
+        "workflow_run_id": str(uid(31)),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protected_value", DIAGNOSTIC_LEAK_CORPUS)
+async def test_retry_observation_rejects_unregistered_failure_detail(
+    protected_value: str,
+) -> None:
+    diagnostics = FakeEventSink()
+    context = execution_context(event_sink=diagnostics, attempt_id=uid(34))
+    emitter = AgentRuntimeDiagnosticEmitter(
+        context=context,
+        diagnostic_registry=build_agent_runtime_diagnostic_registry(),
+        audit_registry=build_agent_runtime_audit_registry(),
+        audit_writer=RecordingAuditWriter(),
+        clock=lambda: datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc),
+    )
+
+    with pytest.raises(ValidationError):
+        await emitter.observe_retry(
+            state=AgentRetryDiagnosticState.SCHEDULED,
+            attempt_number=2,
+            retry_reason_code=protected_value,  # type: ignore[arg-type]
+        )
+
+    assert diagnostics.events == []
+
+
+@pytest.mark.asyncio
+async def test_distinct_attempts_have_distinct_audit_deduplication_identity() -> None:
+    first_audit = RecordingAuditWriter()
+    second_audit = RecordingAuditWriter()
+    for attempt_id, audit in ((uid(34), first_audit), (uid(35), second_audit)):
+        context = execution_context(event_sink=FakeEventSink(), attempt_id=attempt_id)
+        emitter = AgentRuntimeDiagnosticEmitter(
+            context=context,
+            diagnostic_registry=build_agent_runtime_diagnostic_registry(),
+            audit_registry=build_agent_runtime_audit_registry(),
+            audit_writer=audit,
+            clock=lambda: datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc),
+        )
+        await emitter.observe_run(AgentRunDiagnosticState.STARTED)
+
+    assert (
+        first_audit.events[0].producer_deduplication_id
+        != second_audit.events[0].producer_deduplication_id
+    )
+
+
+@pytest.mark.asyncio
 async def test_non_response_handler_result_is_rejected() -> None:
     persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
 
@@ -617,19 +984,54 @@ async def test_failed_persistence_cannot_appear_as_success() -> None:
 
 
 @pytest.mark.asyncio
+async def test_completion_audit_failure_rolls_back_artifact_effect() -> None:
+    persistence = FakeArtifactPersistence(
+        records={uid(50): input_artifact()},
+        audit_error=True,
+    )
+    audit = RecordingAuditWriter()
+
+    result = await local_runtime(
+        persistence,
+        RecordingHandler(),
+        audit_writer=audit,
+    ).invoke(version(), invocation())
+
+    assert result.status is AgentRunStatus.FAILED
+    assert result.output_artifact_ids == ()
+    assert result.error == "Persistence operation failed."
+    assert persistence.writes == []
+    assert persistence.audit_calls[0].payload_json()["run_state"] == "completed"
+    assert [event.payload_json()["run_state"] for event in audit.events] == [
+        "started",
+        "failed",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_invalid_persistence_receipt_cannot_appear_as_success() -> None:
     persistence = FakeArtifactPersistence(
         records={uid(50): input_artifact()},
         returned_ref=ArtifactRef(id=uid(70), schema_name="other", schema_version="1"),
     )
 
-    result = await local_runtime(persistence, RecordingHandler()).invoke(
-        version(), invocation()
-    )
+    audit = RecordingAuditWriter()
+    result = await local_runtime(
+        persistence,
+        RecordingHandler(),
+        audit_writer=audit,
+    ).invoke(version(), invocation())
 
     assert result.status is AgentRunStatus.FAILED
     assert result.output_artifact_ids == ()
     assert result.error == "Persistence operation failed."
+    assert persistence.writes == []
+    assert persistence.audit_calls == []
+    assert persistence.validation_calls == 1
+    assert [event.payload_json()["run_state"] for event in audit.events] == [
+        "started",
+        "failed",
+    ]
 
 
 @pytest.mark.asyncio

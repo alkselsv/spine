@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from asyncio import CancelledError
+from datetime import datetime
 from enum import Enum
 from typing import Any
 from uuid import UUID
@@ -19,8 +21,18 @@ from spine.agents.runtime.contracts import (
     AgentResponse,
     agent_result_from_response,
 )
+from spine.agents.runtime.diagnostics import (
+    AgentRunDiagnosticState,
+    AgentRuntimeDiagnosticEmitter,
+)
 from spine.agents.runtime.protocol import AgentHandler
-from spine.application.diagnostics import Retryability, StructuredError
+from spine.application.diagnostics import (
+    AuditEventRegistry,
+    AuditWriter,
+    DiagnosticEventRegistry,
+    Retryability,
+    StructuredError,
+)
 from spine.domain.agents import AgentInvocation, AgentResult, AgentRunStatus, AgentVersion
 from spine.domain.artifacts import Artifact, ArtifactRef, ArtifactState
 from spine.domain.common import ActorKind, ActorRef
@@ -48,6 +60,10 @@ class LocalAgentRuntime:
         handler: AgentHandler[Any, Any],
         artifacts: ArtifactPersistence,
         schemas: CapabilityArtifactSchema,
+        diagnostic_registry: DiagnosticEventRegistry,
+        audit_registry: AuditEventRegistry,
+        audit_writer: AuditWriter,
+        clock: Callable[[], datetime],
     ) -> None:
         if not isinstance(context, AgentExecutionContext):
             raise TypeError("local runtime context is invalid")
@@ -59,10 +75,23 @@ class LocalAgentRuntime:
             raise TypeError("local runtime artifact schemas are invalid")
         if schemas.schema_identity != context.schema_identity:
             raise ValueError("local runtime artifact schema mapping is incompatible")
+        if not isinstance(diagnostic_registry, DiagnosticEventRegistry):
+            raise TypeError("local runtime diagnostic registry is invalid")
+        if not isinstance(audit_registry, AuditEventRegistry):
+            raise TypeError("local runtime audit registry is invalid")
+        if not callable(clock):
+            raise TypeError("local runtime clock is invalid")
         self._context = context
         self._handler = handler
         self._artifacts = artifacts
         self._schemas = schemas
+        self._events = AgentRuntimeDiagnosticEmitter(
+            context=context,
+            diagnostic_registry=diagnostic_registry,
+            audit_registry=audit_registry,
+            audit_writer=audit_writer,
+            clock=clock,
+        )
 
     async def invoke(
         self,
@@ -71,14 +100,19 @@ class LocalAgentRuntime:
     ) -> AgentResult:
         """Load, validate, execute and persist exactly one technical attempt."""
 
+        await self._events.observe_run(AgentRunDiagnosticState.STARTED)
+
         try:
             self._validate_invocation(version, invocation)
             inputs = await self._load_inputs(invocation.input_artifact_ids)
             typed_input = self._schemas.load_input(inputs)
         except CancelledError:
+            await self._events.observe_run(AgentRunDiagnosticState.CANCELLED)
             raise
         except Exception:
-            return self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.FAILED)
+            return await self._finish(
+                self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.FAILED)
+            )
 
         request = AgentRequest(
             capability=self._context.capability,
@@ -89,32 +123,48 @@ class LocalAgentRuntime:
         try:
             response = await self._handler.invoke(request, self._context)
         except CancelledError:
-            return self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.CANCELLED)
+            return await self._finish(
+                self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.CANCELLED)
+            )
         except Exception:
-            return self._safe_failure(_FailureCategory.INTERNAL, AgentRunStatus.FAILED)
+            return await self._finish(
+                self._safe_failure(_FailureCategory.INTERNAL, AgentRunStatus.FAILED)
+            )
 
         if not isinstance(response, AgentResponse):
-            return self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.FAILED)
+            return await self._finish(
+                self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.FAILED)
+            )
         if response.schema_identity != self._context.schema_identity:
-            return self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.FAILED)
+            return await self._finish(
+                self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.FAILED)
+            )
         if response.proposed_action_ids:
             # Proposed actions need their own persisted, lineage-bearing boundary.
             # Until that contract exists, never expose handler-fabricated IDs.
-            return self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.FAILED)
+            return await self._finish(
+                self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.FAILED)
+            )
         try:
             self._schemas.check_metadata(response)
         except Exception:
-            return self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.FAILED)
+            return await self._finish(
+                self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.FAILED)
+            )
         if response.error is not None:
-            return agent_result_from_response(
-                response,
-                trace_ref=self._trace_ref,
+            return await self._finish(
+                agent_result_from_response(
+                    response,
+                    trace_ref=self._trace_ref,
+                )
             )
 
         try:
             output = self._schemas.load_output(response.output)
         except Exception:
-            return self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.FAILED)
+            return await self._finish(
+                self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.FAILED)
+            )
 
         draft = ArtifactDraft(
             workspace_id=self._context.workspace_id,
@@ -131,27 +181,41 @@ class LocalAgentRuntime:
             upstream_artifact_ids=invocation.input_artifact_ids,
         )
         try:
+            completion_audit = self._events.build_run_audit_event(
+                AgentRunDiagnosticState.COMPLETED
+            )
             references = await self._artifacts.persist_outputs(
                 (draft,),
                 idempotency_key=invocation.idempotency_key,
+                audit_event=completion_audit,
+                validate_references=self._validate_persisted_references,
             )
-            self._validate_persisted_references(references)
         except CancelledError:
+            await self._events.observe_run(AgentRunDiagnosticState.CANCELLED)
             raise
         except Exception:
-            return self._safe_failure(_FailureCategory.PERSISTENCE, AgentRunStatus.FAILED)
+            return await self._finish(
+                self._safe_failure(_FailureCategory.PERSISTENCE, AgentRunStatus.FAILED)
+            )
 
-        return agent_result_from_response(
+        result = agent_result_from_response(
             response,
             output_artifact_ids=tuple(reference.id for reference in references),
             trace_ref=self._trace_ref,
         )
+        await self._events.observe_run_diagnostic(
+            AgentRunDiagnosticState.COMPLETED
+        )
+        return result
 
     async def cancel(self, step_run_id: UUID) -> None:
         """Validate the run-scoped control surface; cancellation is cooperative."""
 
         if step_run_id != self._context.step_run_id:
             raise ValueError("cancellation scope is invalid")
+        await self._events.observe_run(
+            AgentRunDiagnosticState.CANCELLATION_REQUESTED
+        )
         # The observation token is owned by trusted composition. This method
         # cannot safely mutate an arbitrary token implementation.
 
@@ -274,6 +338,15 @@ class LocalAgentRuntime:
             status=status,
             trace_ref=self._trace_ref,
         )
+
+    async def _finish(self, result: AgentResult) -> AgentResult:
+        state = {
+            AgentRunStatus.SUCCEEDED: AgentRunDiagnosticState.COMPLETED,
+            AgentRunStatus.FAILED: AgentRunDiagnosticState.FAILED,
+            AgentRunStatus.CANCELLED: AgentRunDiagnosticState.CANCELLED,
+        }[result.status]
+        await self._events.observe_run(state)
+        return result
 
 
 __all__ = ["LocalAgentRuntime"]

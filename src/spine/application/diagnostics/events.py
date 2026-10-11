@@ -14,6 +14,7 @@ from typing import (
     Any,
     Literal,
     Protocol,
+    runtime_checkable,
     Union,
     get_args,
     get_origin,
@@ -768,6 +769,7 @@ class DiagnosticEventRegistry:
         return self.validate(event)
 
 
+@runtime_checkable
 class DiagnosticSink(Protocol):
     """Emit one registry-validated safe operational observation."""
 
