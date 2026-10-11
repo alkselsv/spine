@@ -81,6 +81,7 @@ from tests.contracts.persistence.test_source_observation_contract import (
 )
 from tests.contracts.persistence.test_ingestion_repository_contract import (
     exercise_ingestion_run_item_contract,
+    exercise_ingestion_binding_race,
     test_ingestion_binding_requires_a_scoped_original_receipt as contract_ingestion_binding_receipt,
 )
 from tests.contracts.persistence.test_idempotency_repository_contract import (
@@ -611,6 +612,7 @@ async def test_postgresql_adapter_satisfies_ingestion_repository_contract(
 ) -> None:
     await exercise_ingestion_run_item_contract(postgresql_adapter)
     await contract_ingestion_binding_receipt(postgresql_adapter)
+    await exercise_ingestion_binding_race(postgresql_adapter)
 
 
 @pytest.mark.parametrize(

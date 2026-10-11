@@ -86,6 +86,12 @@ def test_safe_diagnostic_rejects_unbounded_counters() -> None:
         )
 
 
+@pytest.mark.parametrize("value", (True, 1.0, "1"))
+def test_safe_diagnostic_rejects_non_integer_counter_values(value: object) -> None:
+    with pytest.raises(ValueError):
+        SafeDiagnosticDetail(schema_version="ingestion-safe-detail:v1", attempt=value)
+
+
 def test_failed_processing_receipt_cannot_pin_output_digest() -> None:
     with pytest.raises(ValueError, match="failed processing"):
         ProcessingReceipt(

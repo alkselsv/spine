@@ -8,7 +8,7 @@ from enum import Enum
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, StrictInt, model_validator
 
 from spine.domain.common import DefinitionModel
 from spine.domain.sources.original_reference import ObjectReference
@@ -20,8 +20,8 @@ BoundedIdentifier = Annotated[str, Field(min_length=1, max_length=64, pattern=_I
 DigestHex = Annotated[str, Field(pattern=_DIGEST)]
 PositiveInt = Annotated[int, Field(gt=0)]
 NonNegativeInt = Annotated[int, Field(ge=0)]
-SafeCounter = Annotated[int, Field(ge=0, le=9_999_999_999)]
-SafeAttempt = Annotated[int, Field(gt=0, le=9_999_999_999)]
+SafeCounter = Annotated[StrictInt, Field(ge=0, le=9_999_999_999)]
+SafeAttempt = Annotated[StrictInt, Field(gt=0, le=9_999_999_999)]
 
 
 class IngestionRunState(str, Enum):

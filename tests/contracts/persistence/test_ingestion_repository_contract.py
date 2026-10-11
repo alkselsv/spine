@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 import pytest
 
+from spine.application.persistence.command_digest import digest_command
+from spine.application.persistence.context import PersistenceOperation
 from spine.application.persistence.errors import ConstraintConflictError
-from spine.application.persistence.idempotency import IdempotencyKey
+from spine.application.persistence.idempotency import IdempotencyKey, OpaqueResultReference
 from spine.application.persistence.ingestion import IngestionBindingCommand, IngestionRunCommand
 from spine.application.persistence.repositories import SourceObservationCommand
 from spine.domain.ingestion import (
@@ -206,6 +209,179 @@ async def test_ingestion_binding_requires_a_scoped_original_receipt(
             ingestion_context(workspace_id, environment_id, "ingestion_binding")
         ) as uow:
             await uow.ingestion.bind_source(binding_command)
+
+
+async def exercise_ingestion_binding_race(adapter: PersistenceAdapter) -> None:
+    assert adapter.ingestion_context is not None
+    workspace_id = synthetic_uuid(1830)
+    environment_id = synthetic_uuid(1831)
+    await persist_workspace(adapter, workspace_id)
+    await persist_environment(adapter, workspace_id, environment_id)
+    run = IngestionRun(
+        ingestion_run_id=synthetic_uuid(1832),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        command_identity="contract-binding-race-run",
+        command_digest="a" * 64,
+        trigger_kind="upload",
+        requested_scope_schema="ingestion-scope:v1",
+        requested_scope_digest="b" * 64,
+        requested_at=NOW,
+    )
+    run_command = IngestionRunCommand.create(
+        run=run, idempotency_key=IdempotencyKey("contract-binding-race-run")
+    )
+    item = IngestionRunSource(
+        ingestion_run_source_id=synthetic_uuid(1833),
+        ingestion_run_id=run.ingestion_run_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        input_ordinal=1,
+        input_identity="contract-binding-race-input",
+        input_digest="c" * 64,
+        command_identity="contract-binding-race-item",
+        command_digest="d" * 64,
+        created_at=NOW,
+    )
+
+    def source_case(offset: int, label: str) -> tuple[SourceObject, object, SourceObservationCommand]:
+        source = SourceObject(
+            source_object_id=synthetic_uuid(offset),
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            source_kind="document",
+            identity_mode=IdentityMode.UPLOAD,
+            upload_identity=f"contract-binding-race-upload-{label}",
+            created_at=NOW,
+        )
+        metadata = RevisionMetadata(embedded_title=f"Contract race {label}")
+        revision = content_revision(
+            revision_id=synthetic_uuid(offset + 1),
+            source_object_id=source.source_object_id,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            kind=RevisionKind.CONTENT,
+            revision_schema_version="source-revision:v1",
+            revision_metadata_schema="revision-metadata:r1-document-v1",
+            revision_metadata=metadata,
+            revision_metadata_digest=canonical_revision_metadata_digest(metadata),
+            original_reference=ObjectReference(
+                schema_version=1,
+                object_id=synthetic_uuid(offset + 2),
+                storage_generation=synthetic_uuid(offset + 3),
+                digest_algorithm="sha256",
+                digest_hex="e" * 64,
+                byte_length=4,
+            ),
+            original_sha256="e" * 64,
+            byte_length=4,
+            media_type="text/plain",
+            observed_at=NOW,
+        )
+        return source, revision, SourceObservationCommand.create(
+            source=source,
+            revision=revision,
+            provenance=SourceRevisionProvenance(
+                provenance_id=synthetic_uuid(offset + 4),
+                source_object_id=source.source_object_id,
+                revision_id=revision.revision_id,
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                producer_kind="upload",
+                producer_reference="contract-race",
+                event_identity=f"contract-binding-race-event-{label}",
+                event_digest="f" * 64,
+                observer_service="contract-race",
+                received_at=NOW,
+                observed_at=NOW,
+            ),
+            idempotency_key=IdempotencyKey(f"contract-binding-race-observation-{label}"),
+        )
+
+    first_source, first_revision, first_observation = source_case(1834, "one")
+    second_source, second_revision, second_observation = source_case(1840, "two")
+    original_digest = digest_command(
+        operation=PersistenceOperation("original.upload"),
+        operation_schema_version=1,
+        payload={"fixture": "contract-binding-race"},
+    )
+    original_receipt_id = None
+    ingestion_context = adapter.ingestion_context
+    async with adapter.uow_factory(
+        ingestion_context(workspace_id, environment_id, "ingestion_run")
+    ) as uow:
+        await uow.ingestion.create_run(run_command)
+        await uow.ingestion.create_item(item)
+        await uow.commit()
+    async with adapter.uow_factory(
+        ingestion_context(workspace_id, environment_id, "original.upload")
+    ) as uow:
+        claim = await uow.idempotency.claim(
+            operation_schema_version=1,
+            key=IdempotencyKey("contract-binding-race-original"),
+            digest=original_digest,
+        )
+        original_receipt_id = claim.receipt_id
+        await uow.idempotency.complete(
+            claim,
+            OpaqueResultReference(
+                result_type="original_upload",
+                result_id=synthetic_uuid(1846),
+                schema_version=1,
+            ),
+        )
+        await uow.commit()
+    assert original_receipt_id is not None
+
+    def binding_case(
+        source: SourceObject,
+        revision: object,
+        observation: SourceObservationCommand,
+        label: str,
+        binding_id: int,
+    ) -> IngestionBindingCommand:
+        return IngestionBindingCommand.create(
+            item=item,
+            binding=IngestionRunSourceBinding(
+                binding_id=synthetic_uuid(binding_id),
+                ingestion_run_source_id=item.ingestion_run_source_id,
+                source_object_id=source.source_object_id,
+                source_revision_id=revision.revision_id,
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                binding_command_identity=f"contract-binding-race-{label}",
+                binding_command_digest="a" * 64,
+                original_reference=revision.original_reference,
+                original_receipt_kind="issue6.write_receipt",
+                original_receipt_id=original_receipt_id,
+                original_receipt_digest=revision.original_sha256,
+                bound_at=NOW,
+            ),
+            observation=observation,
+            idempotency_key=IdempotencyKey(f"contract-binding-race-{label}"),
+        )
+
+    first = binding_case(first_source, first_revision, first_observation, "one", 1847)
+    second = binding_case(second_source, second_revision, second_observation, "two", 1848)
+
+    async def bind(command: IngestionBindingCommand) -> object:
+        async with adapter.uow_factory(
+            ingestion_context(workspace_id, environment_id, "ingestion_binding")
+        ) as uow:
+            result = await uow.ingestion.bind_source(command)
+            await uow.commit()
+            return result
+
+    results = await asyncio.gather(bind(first), bind(second), return_exceptions=True)
+    assert sum(isinstance(result, ConstraintConflictError) for result in results) == 1
+    assert sum(not isinstance(result, BaseException) for result in results) == 1
+
+
+@pytest.mark.asyncio
+async def test_ingestion_binding_race_contract(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    await exercise_ingestion_binding_race(persistence_adapter)
 
 
 @pytest.mark.asyncio
