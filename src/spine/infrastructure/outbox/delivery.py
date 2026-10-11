@@ -488,13 +488,16 @@ class PostgreSQLOutboxDeliveryRepository:
                 result = await session.execute(
                     text(
                         "SELECT * FROM spine.finalize_outbox_delivery("
-                        ":event_id, :worker_identity, :lease_token, "
+                        ":event_id, :workspace_id, :environment_id, "
+                        ":worker_identity, :lease_token, "
                         ":attempt_number, :delivery_version, :status, "
                         ":occurred_at, :next_attempt_at, :error_code, "
                         ":audit_event_id, :service_principal_id)"
                     ),
                     {
                         "event_id": event_id,
+                        "workspace_id": claim.intent.workspace_id,
+                        "environment_id": claim.intent.environment_id,
                         "worker_identity": claim.worker_identity,
                         "lease_token": claim.lease_token,
                         "attempt_number": claim.attempt_number,

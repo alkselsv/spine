@@ -86,6 +86,13 @@ class MismatchedContextConsumer:
         )
 
 
+def test_consumer_registry_rejects_name_outside_delivery_contract() -> None:
+    consumers = OutboxConsumerRegistry()
+
+    with pytest.raises(ValueError, match="bounded identifier"):
+        consumers.register("a" * 65, IdempotentRecordingConsumer())
+
+
 @pytest.mark.asyncio
 async def test_success_commits_delivery_audit_before_emitting_diagnostic() -> None:
     adapter = await create_in_memory_adapter()

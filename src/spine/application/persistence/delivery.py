@@ -26,6 +26,13 @@ def _require_nonzero_uuid(value: UUID) -> UUID:
     return value
 
 
+def validate_consumer_name(value: str) -> str:
+    """Validate the shared delivery consumer identifier contract."""
+    if _CONSUMER_NAME.fullmatch(value) is None:
+        raise ValueError("consumer_name must be a bounded identifier.")
+    return value
+
+
 class DuplicateDeliveryRouteError(PersistenceError):
     """An event type/version has more than one declared route."""
 
@@ -93,9 +100,7 @@ def _require_aware(value: datetime) -> datetime:
 
 
 def _require_optional_consumer(value: str | None) -> str | None:
-    if value is not None and _CONSUMER_NAME.fullmatch(value) is None:
-        raise ValueError("consumer_name must be a bounded identifier.")
-    return value
+    return None if value is None else validate_consumer_name(value)
 
 
 class OutboxDelivery(BaseModel):
@@ -353,8 +358,7 @@ class OutboxDeliveryRoute:
             raise ValueError("event_type must be a bounded identifier.")
         if isinstance(self.schema_version, bool) or self.schema_version <= 0:
             raise ValueError("schema_version must be a positive integer.")
-        if _CONSUMER_NAME.fullmatch(self.consumer_name) is None:
-            raise ValueError("consumer_name must be a bounded identifier.")
+        validate_consumer_name(self.consumer_name)
 
 
 class OutboxDeliveryRouteRegistry:
@@ -428,4 +432,5 @@ __all__ = [
     "StaleDeliveryLeaseError",
     "UnsupportedDeliveryRouteError",
     "UnresolvedOutboxIntent",
+    "validate_consumer_name",
 ]
