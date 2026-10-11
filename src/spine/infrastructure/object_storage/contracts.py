@@ -268,6 +268,7 @@ class _ReadGrantBinding:
     object_reference: ObjectReference
     purpose: str
     authorization_decision_version: str
+    lifecycle_version: str
     expires_at: datetime
 
 
@@ -370,6 +371,7 @@ class AuthorizedReadGrantRegistry:
         purpose: str,
         authorization_decision_version: str,
         expires_at: datetime,
+        lifecycle_version: str = "lifecycle-v1",
     ) -> AuthorizedOriginalReadGrant:
         _validate_grant_binding(
             workspace_id=workspace_id,
@@ -378,6 +380,7 @@ class AuthorizedReadGrantRegistry:
             object_reference=object_reference,
             purpose=purpose,
             authorization_decision_version=authorization_decision_version,
+            lifecycle_version=lifecycle_version,
             expires_at=expires_at,
         )
         token = secrets.token_bytes(32)
@@ -388,6 +391,7 @@ class AuthorizedReadGrantRegistry:
             object_reference=object_reference,
             purpose=purpose,
             authorization_decision_version=authorization_decision_version,
+            lifecycle_version=lifecycle_version,
             expires_at=expires_at,
         )
         with self.__lock:
@@ -407,6 +411,9 @@ class AuthorizedReadGrantRegistry:
         source_revision_id: UUID,
         object_reference: ObjectReference,
         now: datetime | None = None,
+        purpose: str | None = None,
+        authorization_decision_version: str | None = None,
+        lifecycle_version: str | None = None,
     ) -> ConsumedOriginalReadLease:
         if not isinstance(grant, AuthorizedOriginalReadGrant) or not grant._belongs_to(self):
             raise InvalidReadGrant()
@@ -422,6 +429,12 @@ class AuthorizedReadGrantRegistry:
             or binding.environment_id != environment_id
             or binding.source_revision_id != source_revision_id
             or binding.object_reference != object_reference
+            or (purpose is not None and binding.purpose != purpose)
+            or (
+                authorization_decision_version is not None
+                and binding.authorization_decision_version != authorization_decision_version
+            )
+            or (lifecycle_version is not None and binding.lifecycle_version != lifecycle_version)
         ):
             raise InvalidReadGrant()
         lease_token = secrets.token_bytes(32)
@@ -461,6 +474,7 @@ def _validate_grant_binding(
     object_reference: ObjectReference,
     purpose: str,
     authorization_decision_version: str,
+    lifecycle_version: str,
     expires_at: datetime,
 ) -> None:
     if (
@@ -487,6 +501,13 @@ def _validate_grant_binding(
         or _IDENTIFIER_PATTERN.fullmatch(authorization_decision_version) is None
     ):
         raise ValueError("authorization decision version is invalid")
+    if (
+        not isinstance(lifecycle_version, str)
+        or not lifecycle_version
+        or len(lifecycle_version) > 256
+        or _IDENTIFIER_PATTERN.fullmatch(lifecycle_version) is None
+    ):
+        raise ValueError("lifecycle version is invalid")
     if not isinstance(expires_at, datetime) or expires_at.tzinfo is None:
         raise ValueError("expires_at must be timezone-aware")
 
