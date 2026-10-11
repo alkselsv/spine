@@ -47,6 +47,7 @@ _SAFE_MESSAGE_BY_CODE = MappingProxyType({
     "spine.authentication.unavailable": "Authentication is temporarily unavailable.",
     "spine.authorization.denied": "Authorization is denied.",
     "spine.authorization.unavailable": "Authorization is temporarily unavailable.",
+    "spine.execution.cancelled": "Execution was cancelled.",
     "spine.internal.unexpected": "An unexpected internal error occurred.",
     "spine.request.rejected": "The request was rejected.",
     "spine.request.validation": "Request validation failed.",
