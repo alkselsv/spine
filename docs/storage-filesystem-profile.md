@@ -107,9 +107,11 @@ fence or claim that an ordinary volume snapshot is a coherent recovery point.
 The profile proves adapter-level bounded streaming, exclusive no-replace
 publication, dirfd-relative path traversal protection, symlink rejection and
 conditional file/directory synchronization on the supported platform. Blocking
-filesystem calls run outside the event loop; cancellation waits for the
-in-flight operation to release its file descriptor and advisory lock. It does
-not claim universal crash safety or
+filesystem calls run outside the event loop. Cooperative cancellation waits for
+the in-flight operation to release its file descriptor and advisory lock; if a
+filesystem syscall does not return, the adapter quarantines itself as
+indeterminate and the worker retains descriptor ownership until it drains. It
+does not claim universal crash safety or
 durability across power loss, controllers, RAID, kernels, filesystems,
 multi-volume deployments, backup implementations or machine failure. If the
 deployment cannot prove its selected volume and recovery assumptions, reads

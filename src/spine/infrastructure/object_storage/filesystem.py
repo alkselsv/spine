@@ -24,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 from uuid import UUID, uuid4
 from weakref import WeakValueDictionary
 
@@ -95,6 +95,16 @@ class _ReadPlan:
     deadline: float
 
 
+class _BlockingOperationAbandoned(StorageIntegrityIndeterminate):
+    """The worker outlived its caller and still owns any passed resources."""
+
+
+class _ReadGrantBinding(Protocol):
+    workspace_id: UUID
+    environment_id: UUID | None
+    object_reference: ObjectReference
+
+
 @dataclass(frozen=True, slots=True)
 class FilesystemStorageProfile:
     """Resource limits and root for the supported local-volume profile."""
@@ -151,22 +161,25 @@ class FilesystemOriginalObjectStore:
         self._deletion_approvals: OrderedDict[ObjectReference, DeletionApproval] = OrderedDict()
         self._state_lock = threading.RLock()
         self._indeterminate = threading.Event()
-        self._root = self._prepare_root(profile.root)
-        self._staged_root = self._prepare_directory(self._root / "staged")
-        self._finalized_root = self._prepare_directory(self._root / "finalized")
-        self._deleted_root = self._prepare_directory(self._root / "deleted")
+        self._ready_lock = asyncio.Lock()
+        self._initialized = False
+        self._root = Path(profile.root).absolute()
+        self._staged_root = self._root / "staged"
+        self._finalized_root = self._root / "finalized"
+        self._deleted_root = self._root / "deleted"
 
     async def begin_or_resume_upload(
         self,
         command: OriginalUploadCommandInput,
         state: UploadCommandState,
     ) -> UploadCommandState:
-        self._ensure_operational()
+        await self._ensure_ready()
         async with self._operation_limit:
             return await self._run_blocking(
                 self._begin_or_resume_upload_sync,
                 command,
                 state,
+                deadline=self._setup_deadline(),
             )
 
     def _begin_or_resume_upload_sync(
@@ -245,7 +258,7 @@ class FilesystemOriginalObjectStore:
         upload_id: UUID,
         chunks: AsyncIterable[bytes],
     ) -> ObservedContentIdentity:
-        self._ensure_operational()
+        await self._ensure_ready()
         self._validate_uuid(upload_id)
         lock = self._upload_locks.setdefault(upload_id, asyncio.Lock())
         async with self._operation_limit, lock:
@@ -289,17 +302,32 @@ class FilesystemOriginalObjectStore:
                 )
                 return observed
             except StorageError as error:
-                await self._run_blocking(self._mark_interrupted, manifest_path, manifest)
+                await self._run_blocking(
+                    self._mark_interrupted,
+                    manifest_path,
+                    manifest,
+                    deadline=self._setup_deadline(),
+                )
                 raise error
             except asyncio.CancelledError:
-                await self._run_blocking(self._mark_interrupted, manifest_path, manifest)
+                await self._run_blocking(
+                    self._mark_interrupted,
+                    manifest_path,
+                    manifest,
+                    deadline=self._setup_deadline(),
+                )
                 raise
             except Exception:
-                await self._run_blocking(self._mark_interrupted, manifest_path, manifest)
+                await self._run_blocking(
+                    self._mark_interrupted,
+                    manifest_path,
+                    manifest,
+                    deadline=self._setup_deadline(),
+                )
                 raise ObjectUnavailable() from None
 
     async def abort_upload(self, state: UploadCommandState) -> UploadCommandState:
-        self._ensure_operational()
+        await self._ensure_ready()
         if state.state is UploadCommandStateName.RECONCILIATION_REQUIRED:
             raise ReconciliationRequired()
         self._validate_upload_state(state)
@@ -359,7 +387,7 @@ class FilesystemOriginalObjectStore:
         state: UploadCommandState,
         observed_content: ObservedContentIdentity,
     ) -> WriteReceipt:
-        self._ensure_operational()
+        await self._ensure_ready()
         if state.state is UploadCommandStateName.RECONCILIATION_REQUIRED:
             raise ReconciliationRequired()
         self._validate_upload_state(state)
@@ -506,7 +534,7 @@ class FilesystemOriginalObjectStore:
         *,
         max_bytes: int,
     ) -> AsyncIterator[bytes]:
-        self._ensure_operational()
+        await self._ensure_ready()
         if max_bytes <= 0:
             raise UploadLimitExceeded()
         async with self._operation_limit:
@@ -552,7 +580,7 @@ class FilesystemOriginalObjectStore:
 
     def _prepare_read_sync(
         self,
-        binding: Any,
+        binding: _ReadGrantBinding,
         max_bytes: int,
         deadline: float,
     ) -> _ReadPlan:
@@ -591,7 +619,7 @@ class FilesystemOriginalObjectStore:
         *,
         max_bytes: int,
     ) -> IntegrityResult:
-        self._ensure_operational()
+        await self._ensure_ready()
         self._validate_reference(reference)
         async with self._operation_limit:
             return await self._run_blocking(
@@ -641,7 +669,7 @@ class FilesystemOriginalObjectStore:
         cursor: str | None = None,
         limit: int = 100,
     ) -> tuple[tuple[ReconciliationInventoryEntry, ...], str | None]:
-        self._ensure_operational()
+        await self._ensure_ready()
         if limit <= 0 or limit > self._profile.max_inventory_entries:
             raise UploadLimitExceeded()
         async with self._operation_limit:
@@ -689,7 +717,7 @@ class FilesystemOriginalObjectStore:
         reference: ObjectReference,
         approval: DeletionApproval,
     ) -> None:
-        self._ensure_operational()
+        await self._ensure_ready()
         self._validate_reference(reference)
         async with self._operation_limit:
             await self._run_blocking(
@@ -718,7 +746,7 @@ class FilesystemOriginalObjectStore:
         reference: ObjectReference,
         approval: DeletionApproval,
     ) -> DeletionResult:
-        self._ensure_operational()
+        await self._ensure_ready()
         self._validate_reference(reference)
         async with self._operation_limit:
             return await self._run_blocking(
@@ -861,8 +889,8 @@ class FilesystemOriginalObjectStore:
         while True:
             remaining = self._remaining_timeout(deadline)
             try:
-                chunk = await asyncio.wait_for(
-                    iterator.__anext__(),
+                chunk = await self._next_stream_chunk(
+                    iterator,
                     timeout=min(self._profile.inactivity_timeout, remaining),
                 )
             except StopAsyncIteration:
@@ -877,6 +905,28 @@ class FilesystemOriginalObjectStore:
             observed_sha256=digest.hexdigest(),
             observed_byte_length=length,
         )
+
+    async def _next_stream_chunk(
+        self,
+        iterator: AsyncIterator[bytes],
+        *,
+        timeout: float,
+    ) -> bytes:
+        task = asyncio.create_task(iterator.__anext__())
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            if not task.done():
+                task.cancel()
+                task.add_done_callback(self._discard_stream_task)
+            raise
+
+    @staticmethod
+    def _discard_stream_task(task: asyncio.Task[bytes]) -> None:
+        try:
+            task.result()
+        except BaseException:
+            pass
 
     async def _append_stream(
         self,
@@ -893,15 +943,23 @@ class FilesystemOriginalObjectStore:
             on_cancel=os.close,
             deadline=deadline,
         )
+        fd_abandoned = False
         try:
-            await self._run_blocking(
-                self._lock_file,
-                fd,
-                self._monotonic_clock() + max(self._profile.operation_timeout, 1.0),
-            )
+            setup_deadline = self._setup_deadline()
+            try:
+                await self._run_blocking(
+                    self._lock_file,
+                    fd,
+                    setup_deadline,
+                    on_cancel=lambda _: os.close(fd),
+                )
+            except (asyncio.CancelledError, _BlockingOperationAbandoned):
+                fd_abandoned = True
+                raise
             current_manifest = await self._run_blocking(
                 self._read_manifest,
                 manifest_path,
+                deadline=setup_deadline,
             )
             if current_manifest.get("status") != "staging":
                 raise UploadConflict()
@@ -910,8 +968,9 @@ class FilesystemOriginalObjectStore:
                 self._hash_file,
                 payload_path,
                 self._profile.max_object_bytes,
-                self._monotonic_clock() + max(self._profile.operation_timeout, 1.0),
+                setup_deadline,
                 None,
+                deadline=setup_deadline,
             )
             recorded_digest = manifest.get("observed_digest")
             recorded_length = manifest.get("observed_length")
@@ -931,15 +990,16 @@ class FilesystemOriginalObjectStore:
                 self._update_digest_from_path,
                 payload_path,
                 digest,
-                self._monotonic_clock() + max(self._profile.operation_timeout, 1.0),
+                setup_deadline,
+                deadline=setup_deadline,
             )
             stream_deadline = self._deadline()
             iterator = chunks.__aiter__()
             while True:
                 remaining = self._remaining_timeout(stream_deadline)
                 try:
-                    chunk = await asyncio.wait_for(
-                        iterator.__anext__(),
+                    chunk = await self._next_stream_chunk(
+                        iterator,
                         timeout=min(self._profile.inactivity_timeout, remaining),
                     )
                 except StopAsyncIteration:
@@ -953,20 +1013,27 @@ class FilesystemOriginalObjectStore:
                     on_cancel=os.close,
                     deadline=stream_deadline,
                 )
+                write_abandoned = False
                 try:
                     await self._run_blocking(
                         self._write_chunk,
                         write_fd,
                         chunk,
                         stream_deadline,
+                        on_cancel=lambda _: os.close(write_fd),
                         deadline=stream_deadline,
                     )
+                except (asyncio.CancelledError, _BlockingOperationAbandoned):
+                    write_abandoned = True
+                    raise
                 finally:
-                    await self._run_blocking(os.close, write_fd)
+                    if not write_abandoned:
+                        await self._run_blocking(os.close, write_fd)
                 digest.update(chunk)
                 length += len(chunk)
         finally:
-            await self._run_blocking(os.close, fd)
+            if not fd_abandoned:
+                await self._run_blocking(os.close, fd)
         return ObservedContentIdentity(
             observed_sha256=digest.hexdigest(),
             observed_byte_length=length,
@@ -1332,7 +1399,13 @@ class FilesystemOriginalObjectStore:
             while True:
                 if self._monotonic_clock() > deadline:
                     raise UploadLimitExceeded()
-                chunk = os.read(fd, min(self._profile.read_chunk_bytes, self._profile.max_chunk_bytes))
+                try:
+                    chunk = os.read(
+                        fd,
+                        min(self._profile.read_chunk_bytes, self._profile.max_chunk_bytes),
+                    )
+                except OSError as error:
+                    raise self._read_error(error) from None
                 if not chunk:
                     break
                 length += len(chunk)
@@ -1372,15 +1445,21 @@ class FilesystemOriginalObjectStore:
                     on_cancel=os.close,
                     deadline=deadline,
                 )
+                read_abandoned = False
                 try:
                     chunk = await self._run_blocking(
                         os.read,
                         read_fd,
                         min(self._profile.read_chunk_bytes, remaining),
+                        on_cancel=lambda _: os.close(read_fd),
                         deadline=deadline,
                     )
+                except (asyncio.CancelledError, _BlockingOperationAbandoned):
+                    read_abandoned = True
+                    raise
                 finally:
-                    await self._run_blocking(os.close, read_fd)
+                    if not read_abandoned:
+                        await self._run_blocking(os.close, read_fd)
                 if not chunk:
                     break
                 remaining -= len(chunk)
@@ -1751,8 +1830,37 @@ class FilesystemOriginalObjectStore:
             raise StorageIntegrityIndeterminate()
         return generation
 
+    async def _ensure_ready(self) -> None:
+        self._ensure_operational()
+        if self._initialized:
+            return
+        async with self._ready_lock:
+            self._ensure_operational()
+            if self._initialized:
+                return
+            root, staged, finalized, deleted = await self._run_blocking(
+                self._initialize_layout,
+                deadline=self._setup_deadline(),
+            )
+            self._root = root
+            self._staged_root = staged
+            self._finalized_root = finalized
+            self._deleted_root = deleted
+            self._initialized = True
+
+    def _initialize_layout(self) -> tuple[Path, Path, Path, Path]:
+        root = self._prepare_root(self._profile.root)
+        self._root = root
+        staged = self._prepare_directory(root / "staged")
+        finalized = self._prepare_directory(root / "finalized")
+        deleted = self._prepare_directory(root / "deleted")
+        return root, staged, finalized, deleted
+
     def _deadline(self) -> float:
         return self._monotonic_clock() + self._profile.operation_timeout
+
+    def _setup_deadline(self) -> float:
+        return self._monotonic_clock() + max(self._profile.operation_timeout, 1.0)
 
     async def _run_blocking(
         self,
@@ -1784,7 +1892,7 @@ class FilesystemOriginalObjectStore:
             while not result.done():
                 if deadline is not None and self._monotonic_clock() >= deadline:
                     abandon()
-                    raise StorageIntegrityIndeterminate()
+                    raise _BlockingOperationAbandoned()
                 await asyncio.sleep(0.001)
             return result.result()
         except asyncio.CancelledError:

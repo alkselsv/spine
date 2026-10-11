@@ -502,14 +502,15 @@ async def test_operation_concurrency_limit_applies_backpressure(
     assert (await inventory)[0] == ()
 
 
-def test_symlinked_storage_root_is_unsupported(tmp_path: Path) -> None:
+async def test_symlinked_storage_root_is_unsupported(tmp_path: Path) -> None:
     target = tmp_path / "target"
     target.mkdir()
     link = tmp_path / "root-link"
     link.symlink_to(target, target_is_directory=True)
 
     with pytest.raises(StorageConfigurationError):
-        FilesystemOriginalObjectStore(
+        store = FilesystemOriginalObjectStore(
             FilesystemStorageProfile(root=link),
             grant_registry=AuthorizedReadGrantRegistry(),
         )
+        await store.begin_or_resume_upload(command(), state())
