@@ -6,13 +6,13 @@ import asyncio
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 from uuid import UUID
 
 from fastapi import FastAPI, Request
 from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 from starlette.datastructures import Headers
 from starlette.routing import Mount
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -86,13 +86,44 @@ class RouteAuthorizationComposer(Protocol):
     def bind_route(self, route_id: str) -> _BoundRouteAuthorization: ...
 
 
-ReadinessProbe = Callable[[], Awaitable[bool]]
+class ApiAuthorizationReadinessCode(str, Enum):
+    AUTHORIZATION_READY = "authorization.ready"
+    AUTHORIZATION_UNAVAILABLE = "authorization.unavailable"
+    AUTHORIZATION_STORE_UNAVAILABLE = "authorization.store_unavailable"
+    LOCAL_READY = "local.ready"
+    OIDC_READY = "oidc.ready"
+    OIDC_CHECK_DEFERRED = "oidc.check_deferred"
+    OIDC_STALE_KEYS = "oidc.stale_keys"
+    OIDC_PROVIDER_UNAVAILABLE = "oidc.provider_unavailable"
+    OIDC_PROVIDER_INCOMPATIBLE = "oidc.provider_incompatible"
+    OIDC_RUNTIME_CLOSED = "oidc.runtime_closed"
+
+
+class ApiAuthorizationReadiness(BaseModel):
+    """Disclosure-safe aggregate readiness for authentication and authority."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ready: bool
+    code: ApiAuthorizationReadinessCode
+    authentication_configuration_version: str | None = None
+    authentication_mode: Literal["local", "oidc"] | None = None
+
+
+ReadinessProbe = Callable[[], Awaitable[ApiAuthorizationReadiness]]
+LifecycleHook = Callable[[], Awaitable[object]]
 
 
 class ApiAuthorizationRuntime:
     """Register and bind static route policy before request data arrives."""
 
-    __slots__ = ("_composer", "_readiness_probe", "_route_policies")
+    __slots__ = (
+        "_close_hook",
+        "_composer",
+        "_readiness_probe",
+        "_route_policies",
+        "_startup_hook",
+    )
 
     def __init__(
         self,
@@ -100,6 +131,8 @@ class ApiAuthorizationRuntime:
         composer: RouteAuthorizationComposer,
         route_policies: RoutePolicyRegistry,
         readiness_probe: ReadinessProbe,
+        startup_hook: LifecycleHook | None = None,
+        close_hook: LifecycleHook | None = None,
     ) -> None:
         if type(route_policies) is not RoutePolicyRegistry:
             raise TypeError("route_policies must use the canonical registry")
@@ -107,9 +140,15 @@ class ApiAuthorizationRuntime:
             raise TypeError("composer must implement the route authorization seam")
         if not callable(readiness_probe):
             raise TypeError("readiness_probe must be callable")
+        if startup_hook is not None and not callable(startup_hook):
+            raise TypeError("startup_hook must be callable")
+        if close_hook is not None and not callable(close_hook):
+            raise TypeError("close_hook must be callable")
         self._composer = composer
         self._route_policies = route_policies
         self._readiness_probe = readiness_probe
+        self._startup_hook = startup_hook
+        self._close_hook = close_hook
 
     def register_and_bind(
         self,
@@ -125,12 +164,36 @@ class ApiAuthorizationRuntime:
     async def is_ready(self) -> bool:
         """Return a safe aggregate authentication readiness signal."""
 
+        return (await self.check_readiness()).ready
+
+    async def check_readiness(self) -> ApiAuthorizationReadiness:
+        """Return a safe reason code without exposing provider or store detail."""
+
         try:
-            return (await self._readiness_probe()) is True
+            result = await self._readiness_probe()
+            if type(result) is not ApiAuthorizationReadiness:
+                raise TypeError("readiness probe returned a non-canonical result")
+            return result
         except asyncio.CancelledError:
             raise
         except Exception:
-            return False
+            pass
+        return ApiAuthorizationReadiness(
+            ready=False,
+            code=ApiAuthorizationReadinessCode.AUTHORIZATION_UNAVAILABLE,
+        )
+
+    async def startup(self) -> None:
+        """Start process-owned authentication resources, when configured."""
+
+        if self._startup_hook is not None:
+            await self._startup_hook()
+
+    async def aclose(self) -> None:
+        """Close process-owned authentication resources, when configured."""
+
+        if self._close_hook is not None:
+            await self._close_hook()
 
 
 class RouteAuthorizationConfigurationError(RuntimeError):
@@ -525,6 +588,8 @@ def _canonical_uuid(value: str) -> UUID:
 
 
 __all__ = [
+    "ApiAuthorizationReadiness",
+    "ApiAuthorizationReadinessCode",
     "ApiAuthorizationRuntime",
     "ApiRouteClassificationRegistry",
     "ENVIRONMENT_ID_HEADER",

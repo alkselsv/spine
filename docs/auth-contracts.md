@@ -181,3 +181,21 @@ SPINE_LOCAL_AUTH_BEARER_CREDENTIAL=<random-secret-at-least-32-characters>
 `staging`, `production`, отсутствующие или malformed version, alias и credential
 останавливают создание local adapter. Значение credential нельзя публиковать в
 readiness, логах, traces, errors или committed configuration.
+
+## Итоговая квалификация
+
+Production OIDC composition root `compose_oidc_api_authorization` связывает
+process-owned OIDC runtime только с каноническим
+`PostgreSQLAuthorizationDirectory`; FastAPI lifespan выполняет startup/readiness
+и гарантированно закрывает provider client. Readiness отдельно проверяет
+restricted PostgreSQL resolver и возвращает только безопасный operator code для
+OIDC либо `authorization.store_unavailable`. Success-path real-PostgreSQL тест
+подтверждает путь signed token → FastAPI → directory → durable audit → trusted
+persistence context → handler, включая единый trace. Отдельная denial-матрица
+подтверждает ранний cross-tenant reject до вызова handler.
+
+Матрица AC1–AC30 и результат квалификации находятся в
+[`qualification/issue-5-identity-authorization.md`](qualification/issue-5-identity-authorization.md).
+Проверка конкретного production issuer/client выполняется отдельно по
+[`runbooks/oidc-provider-qualification.md`](runbooks/oidc-provider-qualification.md);
+она не входит в offline suite.

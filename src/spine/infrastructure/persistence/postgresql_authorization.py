@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from uuid import UUID
 
 from sqlalchemy import text
 
@@ -112,7 +113,32 @@ class PostgreSQLAuthorizationDirectory:
         )
 
 
+async def check_postgresql_authorization_store_readiness(
+    session_factory: SessionFactory,
+) -> bool:
+    """Exercise the restricted resolver without disclosing whether scope exists."""
+
+    repository = PostgreSQLAuthorizationSnapshotRepository(session_factory)
+    try:
+        await repository.resolve_current_snapshot(
+            AuthenticationAlias(
+                issuer="https://readiness.invalid",
+                subject="authorization-store-readiness",
+            ),
+            RequestedAuthorizationScope(
+                workspace_id=UUID("00000000-0000-0000-0000-000000000048"),
+                environment_id=UUID("00000000-0000-0000-0000-000000000049"),
+            ),
+        )
+        return True
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return False
+
+
 __all__ = [
     "PostgreSQLAuthorizationDirectory",
     "PostgreSQLAuthorizationSnapshotRepository",
+    "check_postgresql_authorization_store_readiness",
 ]

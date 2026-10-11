@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, FastAPI
 from pydantic import BaseModel, ConfigDict, Field
 
 from spine.api.authorization import (
+    ApiAuthorizationReadiness,
     ApiAuthorizationRuntime,
     RouteAuthorizationConfigurationError,
     add_protected_api_route,
@@ -59,6 +60,8 @@ from tests.contracts.diagnostics.fixtures import DIAGNOSTIC_LEAK_CORPUS
 TRACE_ID = UUID("50000000-0000-0000-0000-000000000073")
 WORKSPACE_ID = UUID("20000000-0000-0000-0000-000000000073")
 ENVIRONMENT_ID = UUID("30000000-0000-0000-0000-000000000073")
+OTHER_WORKSPACE_ID = UUID("20000000-0000-0000-0000-000000000074")
+OTHER_ENVIRONMENT_ID = UUID("30000000-0000-0000-0000-000000000074")
 IDENTITY_ID = UUID("10000000-0000-0000-0000-000000000073")
 SERVICE_PRINCIPAL_ID = UUID("40000000-0000-0000-0000-000000000073")
 REQUEST_ISSUER_ID = UUID("61000000-0000-0000-0000-000000000073")
@@ -121,8 +124,11 @@ class ImmediateAuditGate:
         return await release(AUDIT_EVENT_ID)
 
 
-async def authorization_ready() -> bool:
-    return True
+async def authorization_ready() -> ApiAuthorizationReadiness:
+    return ApiAuthorizationReadiness(
+        ready=True,
+        code="authorization.ready",
+    )
 
 
 def route_policy() -> RouteAuthorizationPolicy:
@@ -160,7 +166,9 @@ def authorized_app(
     *,
     authentication: object | None = None,
     directory: object | None = None,
-    readiness_probe: Callable[[], Awaitable[bool]] = authorization_ready,
+    readiness_probe: Callable[[], Awaitable[ApiAuthorizationReadiness]] = (
+        authorization_ready
+    ),
 ) -> FastAPI:
     diagnostic_registry = DiagnosticEventRegistry.with_default_families()
     diagnostic_sink = RecordingDiagnosticSink(diagnostic_registry)
@@ -451,6 +459,80 @@ async def test_auth_failure_responses_and_diagnostics_exclude_negative_leak_corp
     assert "protected-token-value" not in captures
 
 
+@pytest.mark.parametrize(
+    ("directory", "scope_headers"),
+    (
+        (
+            InMemoryAuthorizationDirectory(entries=(authorization_entry(),)),
+            {},
+        ),
+        (
+            InMemoryAuthorizationDirectory(entries=(authorization_entry(),)),
+            {
+                "X-Workspace-ID": str(OTHER_WORKSPACE_ID),
+                "X-Environment-ID": str(OTHER_ENVIRONMENT_ID),
+            },
+        ),
+        (
+            InMemoryAuthorizationDirectory(
+                entries=(
+                    authorization_entry().model_copy(
+                        update={
+                            "identity_state": AuthorizationRecordState.DISABLED,
+                        }
+                    ),
+                )
+            ),
+            {
+                "X-Workspace-ID": str(WORKSPACE_ID),
+                "X-Environment-ID": str(ENVIRONMENT_ID),
+            },
+        ),
+        (
+            InMemoryAuthorizationDirectory(
+                entries=(
+                    authorization_entry().model_copy(update={"roles": frozenset()}),
+                )
+            ),
+            {
+                "X-Workspace-ID": str(WORKSPACE_ID),
+                "X-Environment-ID": str(ENVIRONMENT_ID),
+            },
+        ),
+    ),
+    ids=("missing", "cross_tenant", "disabled", "unprivileged"),
+)
+async def test_scope_denial_states_share_schema_and_exclude_negative_leak_corpus(
+    directory: InMemoryAuthorizationDirectory,
+    scope_headers: dict[str, str],
+) -> None:
+    application = authorized_app([], directory=directory)
+    transport = httpx.ASGITransport(app=application)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/api/v1/test/authorization",
+            headers={
+                "Authorization": "Bearer protected-token-value",
+                **scope_headers,
+            },
+        )
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "schema_version": 1,
+        "code": "spine.authorization.denied",
+        "safe_message": "Authorization is denied.",
+        "retryability": "never",
+        "trace_id": str(TRACE_ID),
+    }
+    assert all(
+        protected_value not in response.text
+        for protected_value in DIAGNOSTIC_LEAK_CORPUS
+    )
+
+
 async def test_missing_or_foreign_scope_returns_safe_403_before_handler() -> None:
     handler_calls: list[AuthorizedRequestContext[DiagnosticContext]] = []
     application = authorized_app(handler_calls)
@@ -646,8 +728,11 @@ async def test_public_health_exemptions_are_explicit_and_have_no_security_scope(
 
 
 async def test_readiness_reports_authentication_unavailability_without_details() -> None:
-    async def unavailable() -> bool:
-        return False
+    async def unavailable() -> ApiAuthorizationReadiness:
+        return ApiAuthorizationReadiness(
+            ready=False,
+            code="authorization.unavailable",
+        )
 
     application = authorized_app([], readiness_probe=unavailable)
     transport = httpx.ASGITransport(app=application)
@@ -656,7 +741,11 @@ async def test_readiness_reports_authentication_unavailability_without_details()
         response = await client.get("/api/v1/health/ready")
 
     assert response.status_code == 503
-    assert response.json() == {"status": "not_ready", "service": "spine"}
+    assert response.json() == {
+        "status": "not_ready",
+        "service": "spine",
+        "code": "authorization.unavailable",
+    }
 
 
 async def test_public_exemption_is_not_inherited_by_a_new_route_with_same_name() -> None:

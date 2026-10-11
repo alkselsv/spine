@@ -3,13 +3,16 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import TypeVar
 from uuid import UUID
 
 import httpx
+import jwt
 import pytest
 import pytest_asyncio
-from fastapi import Depends
+from cryptography.hazmat.primitives.asymmetric import rsa
+from fastapi import Depends, FastAPI
 from pydantic import SecretStr
 from sqlalchemy import insert, text
 from sqlalchemy.engine import make_url
@@ -20,14 +23,19 @@ from spine.api.authorization import (
     add_protected_api_route,
     get_authorized_request_context,
 )
-from spine.api.composition import compose_local_api_authorization
+from spine.api.composition import (
+    compose_local_api_authorization,
+    compose_oidc_api_authorization,
+)
 from spine.api.main import create_app
 from spine.application.diagnostics import (
     AuditEvent,
     AuditEventRegistry,
     DiagnosticContext,
     DiagnosticEventRegistry,
+    RequiredAuditCoordinator,
 )
+from spine.application.persistence import OutboxEventRegistry
 from spine.auth import (
     AuthorizationDeniedError,
     AuthorizedRequestContext,
@@ -54,11 +62,14 @@ from spine.infrastructure.persistence.postgresql_authorization import (
     PostgreSQLAuthorizationDirectory,
 )
 from spine.infrastructure.auth import (
+    InteractiveClientQualification,
     LocalAuthenticationSettings,
+    OIDCAuthenticationSettings,
     TrustedRequestContextBoundary,
 )
 from spine.infrastructure.diagnostics import RecordingDiagnosticSink
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
+from spine.infrastructure.persistence.postgresql import PostgreSQLPersistence
 from spine.infrastructure.persistence.postgresql_authorization_mappings import (
     workspace_memberships,
 )
@@ -102,6 +113,8 @@ AUTH_TABLES = (
     "canonical_human_identities",
 )
 API_TRACE_ID = UUID("50000000-0000-0000-0000-000000000073")
+OIDC_NOW = datetime(2026, 10, 11, 15, tzinfo=timezone.utc)
+OIDC_QUALIFICATION_PATH = "/api/v1/test/oidc-postgresql-qualification"
 
 
 _ResultT = TypeVar("_ResultT")
@@ -123,6 +136,14 @@ class _ImmediateAuditGate:
 class AuthorizationDatabase:
     migration_engine: AsyncEngine
     runtime_engine: AsyncEngine
+
+
+@dataclass(frozen=True, slots=True)
+class OIDCQualificationApplication:
+    application: FastAPI
+    token: str
+    handler_contexts: list[dict[str, object]]
+    audit_was_visible_in_handler: list[bool]
 
 
 def _role_url(provision: TestDatabaseProvision, role: str, password: str) -> SecretStr:
@@ -443,6 +464,366 @@ async def test_local_api_uses_postgresql_directory_and_rejects_foreign_scope_bef
     assert str(OTHER_WORKSPACE_ID) not in denied.text
     assert str(OTHER_ENVIRONMENT_ID) not in denied.text
     assert handler_scopes == [(WORKSPACE_ID, ENVIRONMENT_ID)]
+
+
+def _oidc_qualification_headers(
+    token: str,
+    *,
+    workspace_id: UUID = WORKSPACE_ID,
+    environment_id: UUID = ENVIRONMENT_ID,
+) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {token}",
+        "X-Workspace-ID": str(workspace_id),
+        "X-Environment-ID": str(environment_id),
+    }
+
+
+def _build_oidc_qualification_application(
+    authorization_database: AuthorizationDatabase,
+    *,
+    trace_id: UUID,
+    request_ids: tuple[UUID, ...],
+) -> OIDCQualificationApplication:
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_jwk = jwt.algorithms.RSAAlgorithm.to_jwk(
+        private_key.public_key(), as_dict=True
+    )
+    public_jwk.update({"kid": "qualification-key", "use": "sig", "alg": "RS256"})
+    issuer = "https://identity.example.test"
+    jwks_uri = f"{issuer}/keys"
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/.well-known/openid-configuration"):
+            return httpx.Response(200, json={"issuer": issuer, "jwks_uri": jwks_uri})
+        if str(request.url) == jwks_uri:
+            return httpx.Response(200, json={"keys": [public_jwk]})
+        return httpx.Response(404)
+
+    oidc_settings = OIDCAuthenticationSettings(
+        configuration_version="oidc-2026-10-10",
+        issuer=issuer,
+        audience="https://api.spine.example.test",
+        qualified_interactive_clients=(
+            InteractiveClientQualification(
+                client_id="spine-web",
+                configuration_version="oidc-2026-10-10",
+                issuer=issuer,
+                audience="https://api.spine.example.test",
+                client_credentials_for_audience_disabled=True,
+                evidence_reference="synthetic-ticket-74-qualification",
+            ),
+        ),
+    )
+    token = jwt.encode(
+        {
+            "iss": issuer,
+            "aud": "https://api.spine.example.test",
+            "sub": "provider-subject-123",
+            "client_id": "spine-web",
+            "exp": OIDC_NOW.timestamp() + 300,
+            "iat": OIDC_NOW.timestamp() - 10,
+            "jti": "ticket-74-access-token",
+            "roles": ["administrator"],
+            "groups": ["tenant-owners"],
+            "scope": "all",
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "qualification-key", "typ": "at+jwt"},
+    )
+    persistence_boundary = TrustedContextBoundary.for_testing(
+        issuer_id=UUID("60000000-0000-0000-0000-000000000074"),
+        secret=b"ticket-74-postgresql-persistence-secret",
+    )
+    request_boundary = TrustedRequestContextBoundary.for_testing(
+        persistence_boundary=persistence_boundary,
+        issuer_id=UUID("61000000-0000-0000-0000-000000000074"),
+        secret=b"ticket-74-postgresql-request-secret-01",
+    )
+    route_policies = RoutePolicyRegistry()
+    diagnostic_registry = DiagnosticEventRegistry.with_default_families()
+    diagnostic_sink = RecordingDiagnosticSink(diagnostic_registry)
+    audit_registry = AuditEventRegistry.with_default_families()
+    runtime_sessions = async_sessionmaker(
+        authorization_database.runtime_engine,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+    persistence = PostgreSQLPersistence(
+        session_factory=runtime_sessions,
+        context_verifier=request_boundary,
+        outbox_events=OutboxEventRegistry(),
+        audit_events=audit_registry,
+    )
+    authorization_runtime = compose_oidc_api_authorization(
+        settings=oidc_settings,
+        session_factory=runtime_sessions,
+        route_policies=route_policies,
+        request_boundary=request_boundary,
+        audit_registry=audit_registry,
+        audit_gate=RequiredAuditCoordinator(persistence.uow_factory),
+        diagnostic_registry=diagnostic_registry,
+        diagnostic_sink=diagnostic_sink,
+        transport=httpx.MockTransport(provider),
+        clock=lambda: OIDC_NOW,
+        request_id_source=iter(request_ids).__next__,
+    )
+    application = create_app(
+        trace_id_source=lambda: trace_id,
+        diagnostic_registry=diagnostic_registry,
+        diagnostic_sink=diagnostic_sink,
+        authorization_runtime=authorization_runtime,
+        clock=lambda: OIDC_NOW,
+    )
+    handler_contexts: list[dict[str, object]] = []
+    audit_was_visible_in_handler: list[bool] = []
+
+    async def inspect(
+        context: AuthorizedRequestContext[DiagnosticContext] = Depends(
+            get_authorized_request_context
+        ),
+    ) -> dict[str, str]:
+        handler_contexts.append(
+            {
+                "acting_subject_id": context.acting_subject_id,
+                "workspace_id": context.scope.workspace_id,
+                "environment_id": context.scope.environment_id,
+                "authorization_generation": context.authorization_generation,
+                "authentication_configuration_version": (
+                    context.authentication_configuration_version
+                ),
+                "trace_id": context.diagnostic_context.trace_id,
+            }
+        )
+        async with authorization_database.migration_engine.connect() as connection:
+            audit_was_visible_in_handler.append(
+                bool(
+                    await connection.scalar(
+                        text(
+                            "SELECT EXISTS (SELECT 1 FROM spine.audit_events "
+                            "WHERE trace_id = :trace_id "
+                            "AND event_type = 'access.decision')"
+                        ),
+                        {"trace_id": trace_id},
+                    )
+                )
+            )
+        return {"actor_id": str(context.acting_subject_id)}
+
+    add_protected_api_route(
+        application,
+        OIDC_QUALIFICATION_PATH,
+        inspect,
+        route_id="test.authorization.oidc_postgresql_qualification",
+        policy=route_policy(),
+        methods=["GET"],
+    )
+    return OIDCQualificationApplication(
+        application=application,
+        token=token,
+        handler_contexts=handler_contexts,
+        audit_was_visible_in_handler=audit_was_visible_in_handler,
+    )
+
+
+async def test_signed_oidc_token_executes_handler_after_postgresql_audit(
+    authorization_directory_factory: AuthorizationDirectoryFactory,
+    authorization_database: AuthorizationDatabase,
+) -> None:
+    await authorization_directory_factory(records())
+    trace_id = UUID("50000000-0000-0000-0000-000000000074")
+    qualification = _build_oidc_qualification_application(
+        authorization_database,
+        trace_id=trace_id,
+        request_ids=(UUID("70000000-0000-0000-0000-000000000074"),),
+    )
+
+    async with qualification.application.router.lifespan_context(
+        qualification.application
+    ):
+        transport = httpx.ASGITransport(app=qualification.application)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.get(
+                OIDC_QUALIFICATION_PATH,
+                headers=_oidc_qualification_headers(qualification.token),
+            )
+
+    assert response.status_code == 200
+    assert response.json() == {"actor_id": str(IDENTITY_ID)}
+    assert len(qualification.handler_contexts) == 1
+    context = qualification.handler_contexts[0]
+    assert context == {
+        "acting_subject_id": IDENTITY_ID,
+        "workspace_id": WORKSPACE_ID,
+        "environment_id": ENVIRONMENT_ID,
+        "authorization_generation": 7,
+        "authentication_configuration_version": "oidc-2026-10-10",
+        "trace_id": trace_id,
+    }
+    assert qualification.audit_was_visible_in_handler == [True]
+
+    async with authorization_database.migration_engine.connect() as connection:
+        audit = (
+            await connection.execute(
+                text(
+                    "SELECT workspace_id, environment_id, acting_subject_id, "
+                    "trace_id, outcome, payload FROM spine.audit_events "
+                    "WHERE trace_id = :trace_id AND event_type = 'access.decision'"
+                ),
+                {"trace_id": trace_id},
+            )
+        ).mappings().one()
+
+    assert audit.workspace_id == WORKSPACE_ID
+    assert audit.environment_id == ENVIRONMENT_ID
+    assert audit.acting_subject_id == IDENTITY_ID
+    assert audit.trace_id == trace_id
+    assert audit.outcome == "allowed"
+    assert audit.payload == {
+        "purpose": route_policy().purpose.value,
+        "operation": route_policy().operation.value,
+        "authorization_generation": 7,
+        "authentication_configuration_version": "oidc-2026-10-10",
+    }
+
+
+async def test_oidc_api_readiness_includes_postgresql_authorization_store(
+    authorization_directory_factory: AuthorizationDirectoryFactory,
+    authorization_database: AuthorizationDatabase,
+) -> None:
+    await authorization_directory_factory(records())
+    qualification = _build_oidc_qualification_application(
+        authorization_database,
+        trace_id=UUID("50000000-0000-0000-0000-000000000077"),
+        request_ids=(UUID("70000000-0000-0000-0000-000000000078"),),
+    )
+
+    async with qualification.application.router.lifespan_context(
+        qualification.application
+    ):
+        transport = httpx.ASGITransport(app=qualification.application)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.get("/api/v1/health/ready")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ready",
+        "service": "spine",
+        "code": "oidc.ready",
+    }
+
+
+@pytest.mark.parametrize(
+    ("case", "seed_records", "workspace_id", "environment_id"),
+    (
+        ("unprivileged", records(role_bindings=()), WORKSPACE_ID, ENVIRONMENT_ID),
+        ("wrong_workspace", records(), OTHER_WORKSPACE_ID, ENVIRONMENT_ID),
+        ("wrong_environment", records(), WORKSPACE_ID, OTHER_ENVIRONMENT_ID),
+        ("cross_tenant", records(), OTHER_WORKSPACE_ID, OTHER_ENVIRONMENT_ID),
+    ),
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+async def test_composed_authorization_denial_stops_handler_without_disclosure(
+    authorization_directory_factory: AuthorizationDirectoryFactory,
+    authorization_database: AuthorizationDatabase,
+    case: str,
+    seed_records: AuthorizationDirectoryRecords,
+    workspace_id: UUID,
+    environment_id: UUID,
+) -> None:
+    del case
+    await authorization_directory_factory(seed_records)
+    trace_id = UUID("50000000-0000-0000-0000-000000000075")
+    qualification = _build_oidc_qualification_application(
+        authorization_database,
+        trace_id=trace_id,
+        request_ids=(UUID("70000000-0000-0000-0000-000000000075"),),
+    )
+
+    async with qualification.application.router.lifespan_context(
+        qualification.application
+    ):
+        transport = httpx.ASGITransport(app=qualification.application)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.get(
+                OIDC_QUALIFICATION_PATH,
+                headers=_oidc_qualification_headers(
+                    qualification.token,
+                    workspace_id=workspace_id,
+                    environment_id=environment_id,
+                ),
+            )
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "schema_version": 1,
+        "code": "spine.authorization.denied",
+        "safe_message": "Authorization is denied.",
+        "retryability": "never",
+        "trace_id": str(trace_id),
+    }
+    assert str(workspace_id) not in response.text
+    assert str(environment_id) not in response.text
+    assert qualification.handler_contexts == []
+    assert qualification.audit_was_visible_in_handler == []
+
+
+async def test_revoked_generation_stops_next_composed_request_before_handler(
+    authorization_directory_factory: AuthorizationDirectoryFactory,
+    authorization_database: AuthorizationDatabase,
+) -> None:
+    baseline = records()
+    await authorization_directory_factory(baseline)
+    qualification = _build_oidc_qualification_application(
+        authorization_database,
+        trace_id=UUID("50000000-0000-0000-0000-000000000076"),
+        request_ids=(
+            UUID("70000000-0000-0000-0000-000000000076"),
+            UUID("70000000-0000-0000-0000-000000000077"),
+        ),
+    )
+    headers = _oidc_qualification_headers(qualification.token)
+
+    async with qualification.application.router.lifespan_context(
+        qualification.application
+    ):
+        transport = httpx.ASGITransport(app=qualification.application)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            allowed = await client.get(OIDC_QUALIFICATION_PATH, headers=headers)
+            active_membership = baseline.workspace_memberships[0]
+            revoked_membership = active_membership.model_copy(
+                update={
+                    "membership_id": UUID(
+                        "12000000-0000-0000-0000-000000000076"
+                    ),
+                    "version": 2,
+                    "status": AuthorizationRecordStatus.REVOKED,
+                    "provenance": provenance(76),
+                }
+            )
+            helper = PostgreSQLAuthorizationSeedHelper(
+                async_sessionmaker(authorization_database.migration_engine)
+            )
+            await helper.append(
+                AuthorizationDirectoryRecords(
+                    workspace_memberships=(revoked_membership,)
+                )
+            )
+            denied = await client.get(OIDC_QUALIFICATION_PATH, headers=headers)
+
+    assert allowed.status_code == 200
+    assert denied.status_code == 403
+    assert denied.json()["code"] == "spine.authorization.denied"
+    assert len(qualification.handler_contexts) == 1
 
 
 async def test_runtime_cannot_enumerate_or_mutate_authorization_tables(
