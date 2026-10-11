@@ -1,5 +1,11 @@
 """Production authentication adapters and their process-owned lifecycle."""
 
+from spine.infrastructure.auth.agent_runtime import (
+    RequestAgentAuthorizationVerifier,
+    TrustedAgentExecutionRuntime,
+    compose_agent_execution_context_factory,
+    compose_agent_execution_runtime,
+)
 from spine.infrastructure.auth.composition import (
     BoundRouteAuthorization,
     RequestAuthorizationComposer,
@@ -39,5 +45,9 @@ __all__ = [
     "OIDCReadinessPolicy",
     "OIDCReadinessStatus",
     "RequestAuthorizationComposer",
+    "RequestAgentAuthorizationVerifier",
+    "TrustedAgentExecutionRuntime",
+    "compose_agent_execution_context_factory",
+    "compose_agent_execution_runtime",
     "TrustedRequestContextBoundary",
 ]

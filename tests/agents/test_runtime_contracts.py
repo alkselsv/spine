@@ -132,8 +132,9 @@ def test_identity_snapshot_is_data_not_authorization_proof() -> None:
     )
 
     assert not hasattr(snapshot, "issue_authority")
-    with pytest.raises(ValidationError, match="authorization provenance"):
-        context(trusted_identity=snapshot)
+    execution_context = context(trusted_identity=snapshot)
+    assert execution_context.trusted_identity == snapshot
+    assert not hasattr(execution_context, "authorization_proof")
 
 
 class InputModel(BaseModel):
@@ -189,6 +190,7 @@ def version() -> AgentVersion:
         version="2026.10.1",
         runtime=AgentRuntimeKind.CODE,
         capabilities=("answer_question",),
+        tool_grants=("documents.read",),
     )
 
 
@@ -201,7 +203,12 @@ def context(
         "workspace_id": uid(1),
         "environment_id": uid(2),
         "environment": EnvironmentKind.DEVELOPMENT,
-        "trusted_identity": FakeTrustedIdentity(),
+        "trusted_identity": TrustedExecutionIdentitySnapshot(
+            workspace_id=uid(1),
+            environment_id=uid(2),
+            acting_subject_id=uid(3),
+            authorization_generation=1,
+        ),
         "work_item_id": uid(30),
         "workflow_run_id": uid(31),
         "step_run_id": uid(32),
@@ -339,7 +346,7 @@ def test_execution_context_is_immutable_and_validates_scope_and_identity() -> No
         execution_context.workspace_id = uid(99)  # type: ignore[misc]
     with pytest.raises(ValidationError):
         context(workspace_id=uid(99))
-    with pytest.raises(ValidationError):
+    with pytest.raises(TypeError, match="cannot be updated"):
         execution_context.model_copy(update={"workspace_id": uid(99)})
     with pytest.raises(TypeError):
         AgentExecutionContext.model_construct(workspace_id=uid(99))

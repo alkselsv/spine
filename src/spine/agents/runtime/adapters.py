@@ -34,7 +34,9 @@ def adapt_async_function(
     ``input_type`` and ``output_type`` let an explicit composition root pin the
     contract when it has authoritative metadata beyond the function's
     annotations. They are checked against the annotations; they do not alter
-    the request or response contracts.
+    the request or response contracts. The returned handler is an unbound
+    selection and fails closed when invoked directly. A trusted registry gate
+    calls its private selected-handler seam after admission and request checks.
     """
 
     contract = _inspect_function(function)
@@ -73,7 +75,17 @@ class _AsyncFunctionHandler(Generic[InputT, OutputT]):
         request: AgentRequest[InputT],
         context: AgentExecutionContext,
     ) -> AgentResponse[OutputT]:
-        """Invoke without retaining either call's request or execution context."""
+        """Reject direct execution without a trusted registry gate."""
+
+        del request, context
+        raise TypeError("handler requires a trusted execution gate")
+
+    async def _invoke_selected(
+        self,
+        request: AgentRequest[InputT],
+        context: AgentExecutionContext,
+    ) -> AgentResponse[OutputT]:
+        """Run the selected coroutine after the external gate has admitted it."""
 
         if not isinstance(request, AgentRequest):
             raise TypeError("async handler requires an AgentRequest")

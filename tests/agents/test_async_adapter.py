@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from uuid import UUID
 
 import pytest
@@ -8,16 +7,22 @@ from pydantic import BaseModel, ConfigDict
 
 from spine.agents.runtime import (
     AgentExecutionContext,
+    AgentExecutionContextAdmission,
     AgentHandler,
     AgentRequest,
     AgentResponse,
     CapabilitySchemaIdentity,
+    TrustedExecutionIdentitySnapshot,
     adapt_async_function,
 )
 from spine.application.diagnostics import DiagnosticContext
 from spine.domain.agents import AgentResult, AgentRuntimeKind, AgentVersion
 from spine.domain.capabilities import CapabilityDefinition
 from spine.domain.common import EnvironmentKind, SchemaRef
+from tests.agents.test_execution_context_construction import (
+    make_admitted_context,
+)
+from tests.agents.runtime_fixtures import bound_adapter
 
 
 def uid(value: int) -> UUID:
@@ -38,15 +43,6 @@ class OtherInput(BaseModel):
     value: int
 
 
-@dataclass
-class FakeTrustedIdentity:
-    workspace_id: UUID = uid(1)
-    environment_id: UUID = uid(2)
-    acting_subject_id: UUID | None = uid(3)
-    service_principal_id: UUID | None = None
-    authorization_generation: int = 1
-
-
 class FakeCancellation:
     is_cancelled = False
 
@@ -60,6 +56,12 @@ class FakeEventSink:
         del event
 
 
+def admitted_context() -> tuple[AgentExecutionContext, AgentExecutionContextAdmission]:
+    execution_context, admission, _, _ = make_admitted_context()
+    assert isinstance(admission, AgentExecutionContextAdmission)
+    return execution_context, admission
+
+
 def capability(*, identity_seed: int = 10) -> CapabilityDefinition:
     return CapabilityDefinition(
         id=uid(identity_seed),
@@ -70,8 +72,30 @@ def capability(*, identity_seed: int = 10) -> CapabilityDefinition:
     )
 
 
+def capability_with_schema(
+    *,
+    input_version: str = "1",
+    output_version: str = "1",
+) -> CapabilityDefinition:
+    return CapabilityDefinition(
+        id=uid(10),
+        key="answer_question",
+        display_name="Answer question",
+        input_schema=SchemaRef(name="answer_question.input", version=input_version),
+        output_schema=SchemaRef(name="answer_question.output", version=output_version),
+    )
+
+
 def request() -> AgentRequest[InputModel]:
     selected = capability()
+    return AgentRequest[InputModel](
+        capability=selected,
+        schema_identity=CapabilitySchemaIdentity.from_capability(selected),
+        input=InputModel(question="What is the answer?"),
+    )
+
+
+def request_for(selected: CapabilityDefinition) -> AgentRequest[InputModel]:
     return AgentRequest[InputModel](
         capability=selected,
         schema_identity=CapabilitySchemaIdentity.from_capability(selected),
@@ -85,7 +109,12 @@ def context() -> AgentExecutionContext:
         workspace_id=uid(1),
         environment_id=uid(2),
         environment=EnvironmentKind.DEVELOPMENT,
-        trusted_identity=FakeTrustedIdentity(),
+        trusted_identity=TrustedExecutionIdentitySnapshot(
+            workspace_id=uid(1),
+            environment_id=uid(2),
+            acting_subject_id=uid(3),
+            authorization_generation=1,
+        ),
         work_item_id=uid(30),
         workflow_run_id=uid(31),
         step_run_id=uid(32),
@@ -141,13 +170,122 @@ async def annotated_response_handler(
 
 @pytest.mark.asyncio
 async def test_compatible_async_function_invokes_through_structural_handler() -> None:
-    adapted = adapt_async_function(annotated_raw_handler)
+    async with bound_adapter(annotated_raw_handler) as (adapted, execution_context):
+        assert isinstance(adapted, AgentHandler)
+        result = await adapted.invoke(request(), execution_context)
 
-    assert isinstance(adapted, AgentHandler)
-    result = await adapted.invoke(request(), context())
+        assert result.output == OutputModel(answer="What is the answer?")
+        assert result.schema_identity == request().schema_identity
 
-    assert result.output == OutputModel(answer="What is the answer?")
-    assert result.schema_identity == request().schema_identity
+
+@pytest.mark.asyncio
+async def test_adapter_rejects_plain_context_without_admission_before_handler() -> None:
+    calls = 0
+
+    async def handler(
+        received_request: AgentRequest[InputModel],
+        received_context: AgentExecutionContext,
+    ) -> OutputModel:
+        nonlocal calls
+        del received_request, received_context
+        calls += 1
+        return OutputModel(answer="must not run")
+
+    with pytest.raises(TypeError, match="trusted execution gate"):
+        await adapt_async_function(handler).invoke(request(), context())
+
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_adapter_rejects_unbound_handler_before_handler() -> None:
+    calls = 0
+
+    async def handler(
+        received_request: AgentRequest[InputModel],
+        received_context: AgentExecutionContext,
+    ) -> OutputModel:
+        nonlocal calls
+        del received_request, received_context
+        calls += 1
+        return OutputModel(answer="must not run")
+
+    with pytest.raises(TypeError, match="trusted execution gate"):
+        await adapt_async_function(handler).invoke(request(), context())
+
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_adapter_rejects_substituted_context_before_handler() -> None:
+    calls = 0
+    original_context, _ = admitted_context()
+
+    async def handler(
+        received_request: AgentRequest[InputModel],
+        received_context: AgentExecutionContext,
+    ) -> OutputModel:
+        nonlocal calls
+        del received_request, received_context
+        calls += 1
+        return OutputModel(answer="must not run")
+
+    async with bound_adapter(handler) as (adapted, _):
+        substituted = original_context.model_copy()
+
+        with pytest.raises(TypeError, match="not admitted"):
+            await adapted.invoke(request(), substituted)
+
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "selected",
+    (
+        capability(identity_seed=11),
+        capability_with_schema(input_version="2"),
+        capability_with_schema(output_version="2"),
+    ),
+)
+async def test_execution_gate_rejects_request_capability_or_schema_substitution(
+    selected: CapabilityDefinition,
+) -> None:
+    calls = 0
+
+    async def handler(
+        received_request: AgentRequest[InputModel],
+        received_context: AgentExecutionContext,
+    ) -> OutputModel:
+        nonlocal calls
+        del received_request, received_context
+        calls += 1
+        return OutputModel(answer="must not run")
+
+    async with bound_adapter(handler) as (admitted_handler, execution_context):
+        with pytest.raises(TypeError, match="not admitted"):
+            await admitted_handler.invoke(request_for(selected), execution_context)
+
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_unbound_adapter_rejects_direct_execution_before_handler() -> None:
+    calls = 0
+
+    async def handler(
+        received_request: AgentRequest[InputModel],
+        received_context: AgentExecutionContext,
+    ) -> OutputModel:
+        nonlocal calls
+        del received_request, received_context
+        calls += 1
+        return OutputModel(answer="must not run")
+
+    execution_context, _ = admitted_context()
+    with pytest.raises(TypeError, match="trusted execution gate"):
+        await adapt_async_function(handler).invoke(request(), execution_context)
+    assert calls == 0
 
 
 @pytest.mark.asyncio
@@ -161,11 +299,9 @@ async def test_adapter_passes_request_and_context_without_replacing_identity() -
         seen.extend((received_request, received_context))
         return OutputModel(answer="ok")
 
-    adapted = adapt_async_function(handler)
     original_request = request()
-    original_context = context()
-
-    await adapted.invoke(original_request, original_context)
+    async with bound_adapter(handler) as (adapted, original_context):
+        await adapted.invoke(original_request, original_context)
 
     assert seen == [original_request, original_context]
     assert seen[0] is original_request
@@ -183,7 +319,8 @@ async def test_existing_response_is_preserved_when_schema_identity_matches() -> 
         del received_request, received_context
         return formed
 
-    result = await adapt_async_function(handler).invoke(request(), context())
+    async with bound_adapter(handler) as (adapted, execution_context):
+        result = await adapted.invoke(request(), execution_context)
 
     assert result is formed
     assert result.output == OutputModel(answer="preserve me")
@@ -203,7 +340,8 @@ async def test_raw_output_uses_request_schema_identity() -> None:
         return OutputModel(answer="typed")
 
     original_request = request()
-    result = await adapt_async_function(handler).invoke(original_request, context())
+    async with bound_adapter(handler) as (adapted, execution_context):
+        result = await adapted.invoke(original_request, execution_context)
 
     assert result.schema_identity == original_request.schema_identity
 
@@ -218,7 +356,8 @@ async def test_conflicting_response_schema_identity_is_rejected() -> None:
         return formed_response(selected=capability(identity_seed=11))
 
     with pytest.raises(ValueError, match="schema identity"):
-        await adapt_async_function(handler).invoke(request(), context())
+        async with bound_adapter(handler) as (adapted, execution_context):
+            await adapted.invoke(request(), execution_context)
 
 
 @pytest.mark.asyncio
@@ -231,7 +370,8 @@ async def test_incorrect_raw_output_is_rejected_without_leaking_contents() -> No
         return "credential=do-not-leak"  # type: ignore[return-value]
 
     with pytest.raises(TypeError) as error:
-        await adapt_async_function(handler).invoke(request(), context())
+        async with bound_adapter(handler) as (adapted, execution_context):
+            await adapted.invoke(request(), execution_context)
 
     assert "credential=do-not-leak" not in str(error.value)
 
@@ -316,10 +456,10 @@ async def test_separate_invocations_do_not_share_adapter_state() -> None:
     second = request().model_copy(
         update={"input": InputModel(question="second question")}
     )
-
-    first_result, second_result = await adapted.invoke(first, context()), await adapted.invoke(
-        second, context()
-    )
+    async with bound_adapter(handler) as (first_handler, first_context):
+        first_result = await first_handler.invoke(first, first_context)
+    async with bound_adapter(handler) as (second_handler, second_context):
+        second_result = await second_handler.invoke(second, second_context)
 
     assert first_result.output == OutputModel(answer="What is the answer?")
     assert second_result.output == OutputModel(answer="second question")
@@ -335,4 +475,5 @@ async def test_handler_exceptions_propagate_without_adapter_diagnostics() -> Non
         raise RuntimeError("protected document text and provider payload")
 
     with pytest.raises(RuntimeError, match="protected document text"):
-        await adapt_async_function(handler).invoke(request(), context())
+        async with bound_adapter(handler) as (adapted, execution_context):
+            await adapted.invoke(request(), execution_context)

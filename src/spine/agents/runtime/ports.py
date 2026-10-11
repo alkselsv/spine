@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Generic, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Generic, Protocol, TypeVar, runtime_checkable
 from uuid import UUID
 
+from spine.application.diagnostics import DiagnosticContext
+from spine.auth.contracts import (
+    AuthorizedRequestContext,
+    AuthorizationResolution,
+    RequestedAuthorizationScope,
+)
+from spine.domain.common import EnvironmentKind
+
 EventT = TypeVar("EventT")
+
+if TYPE_CHECKING:
+    from spine.agents.runtime.contracts import AgentExecutionContext
 
 
 @runtime_checkable
@@ -61,3 +72,75 @@ class AuthorizationContextView(Protocol):
 # Existing consumers use this approved port name. Keep it as an alias while
 # making the non-authoritative view semantics explicit above.
 TrustedExecutionIdentity = AuthorizationContextView
+
+
+class TrustedAuthorizationContextVerifier(Protocol):
+    """Issue #72 integration seam for canonical context provenance.
+
+    ``AuthorizationResolution`` is validated directory data.  It is not proof
+    that the sealed ``AuthorizedRequestContext`` was issued by the trusted
+    composition root.  The verifier is deliberately required at the runtime
+    construction boundary and is not implemented in this ticket.
+    """
+
+    def verify(
+        self,
+        context: AuthorizedRequestContext[DiagnosticContext],
+        resolution: AuthorizationResolution,
+    ) -> None:
+        """Raise when the context was not issued and verified by the root."""
+
+
+class CanonicalTrustedAuthorizationContextVerifier:
+    """Composition-owned verifier base for production execution admission.
+
+    The implementation is supplied by the infrastructure authorization
+    boundary. Structural and nominal test verifiers may support plain
+    construction tests, but a verifier alone cannot issue an admission
+    accepted by the protected execution gate.
+    """
+
+    def verify(
+        self,
+        context: AuthorizedRequestContext[DiagnosticContext],
+        resolution: AuthorizationResolution,
+    ) -> None:
+        raise NotImplementedError
+
+
+@runtime_checkable
+class TrustedExecutionAdmission(Protocol):
+    """Current authorization admission required immediately before execution.
+
+    An implementation is supplied by trusted composition and must revalidate
+    the exact authorization context, lifecycle, scope and pinned execution
+    selection. Structural compatibility alone is not production authority.
+    """
+
+    def verify(self, context: AgentExecutionContext) -> None:
+        """Raise unless this exact context is currently admitted."""
+
+
+class ExecutionScopeValidator(Protocol):
+    """Authoritative Workspace/Environment UUID-to-kind and generation check."""
+
+    def validate(
+        self,
+        *,
+        scope: RequestedAuthorizationScope,
+        environment: EnvironmentKind,
+        authorization_generation: int,
+    ) -> None:
+        """Raise for an unknown, mismatched, or stale execution scope."""
+
+
+__all__ = [
+    "AuthorizationContextView",
+    "CancellationToken",
+    "CanonicalTrustedAuthorizationContextVerifier",
+    "EventSink",
+    "ExecutionScopeValidator",
+    "TrustedAuthorizationContextVerifier",
+    "TrustedExecutionAdmission",
+    "TrustedExecutionIdentity",
+]

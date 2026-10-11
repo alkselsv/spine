@@ -1361,6 +1361,56 @@ AgentHandler[InputT, OutputT]:
     → AgentResponse[OutputT]
 ```
 
+The two-argument handler contract is deliberately separate from execution
+authority. `AgentExecutionContext` and `ExecutionIdentitySnapshot` are plain,
+detached, sanitized data; constructing, copying or deserializing either value
+does not authenticate a request. Issue #72 remains the canonical source of
+authorization provenance, request-local lifecycle and task ownership. The
+composition root binds that live boundary to the runtime through an execution
+admission gate and revalidates it immediately before invoking a handler.
+
+The gate retains the privileged admission and the exact `ResolvedAgentBinding`
+privately. It selects a handler only from the finalized registry, checks the
+current Workspace/Environment, acting identity, authorization generation,
+route purpose and operation, pinned AgentVersion, capability and input/output
+schema identities, context profile and tool-grant ceiling, and then calls the
+handler with only `(AgentRequest, AgentExecutionContext)`. An unbound adapter or
+registry selection fails closed. Requests with a different capability or
+schema, and handlers different from the admitted registration, are rejected
+before user code runs. Authorization contexts, verifiers, bindings, provider
+configuration, credentials and opaque provenance never cross the handler
+argument boundary.
+
+The production composition root atomically creates a
+`TrustedAgentExecutionRuntime` from the real Issue #72 boundary, the canonical
+request, the plain-data factory and the finalized registry. The runtime retains
+the exact factory instance that it created and uses that instance when it
+rechecks an admission immediately before invocation. There is no transferable
+authority token, public factory binder or registry authority parameter: a
+plain-data factory, structural verifier, nominal verifier subclass or
+admission from another composition cannot be consumed by the protected gate.
+The gate also requires the selected wrapper to have been issued by the exact
+`HandlerRegistry` retained by that runtime. Matching registration metadata,
+capability, schema or implementation keys do not establish registry ownership;
+a wrapper issued by another registry is rejected. The catalog's direct
+execution method fails closed; only the infrastructure composition can produce
+the guarded two-argument handler.
+`_RegisteredHandler` and `_BoundAgentHandler` are infrastructure-owned
+execution wrappers, not ordinary application handlers: neither may be
+registered or returned by a registered factory. Construction validates the
+actual returned object before recording registry ownership, so a foreign
+guarded handler cannot be laundered inside a locally issued wrapper even when
+its metadata and binding values match.
+
+Run and Artifact identifiers are structurally validated and preserved here;
+authoritative ownership and handoff/persistence checks remain with the owning
+workflow/application boundary and Issue #109. Diagnostic event emission,
+cancellation execution, replay/idempotency, retries and compatibility-facade
+behavior remain deferred to Issues #110–#115. Production admission must be
+assembled through the infrastructure composition bound to the real Issue #72
+`TrustedRequestContextBoundary`; structural fakes are test-only construction
+inputs and cannot be used as production admission sources.
+
 Одна `AgentVersion` может объединять несколько связанных handlers, но workflow step вызывает ровно один capability. Каждому capability соответствует отдельный типизированный handler; универсальный строковый router внутри реализации не является interface платформы.
 
 Внешние agent endpoints, сторонний Agent SDK, package trust и transport protocol не входят в текущий scope четырёх приоритетных кейсов. Runtime seam должен позволить позднее добавить remote adapter без изменения workflow и capability contracts. Когда появится подтверждённый кейс внешнего агента, отдельно выбираются protocol, manifest, health, cancellation, artifact transfer и certification; Agno не становится обязательной зависимостью Spine.

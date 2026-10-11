@@ -7,12 +7,18 @@ import re
 from asyncio import CancelledError
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from spine.agents.runtime import AgentHandler, CapabilitySchemaIdentity
+from spine.agents.runtime.context import AgentExecutionContextAdmission
+from spine.agents.runtime.contracts import AgentExecutionContext, AgentRequest, AgentResponse
 from spine.domain.agents import AgentRuntimeKind, AgentVersion
 from spine.domain.capabilities import CapabilityDefinition
+
+if TYPE_CHECKING:
+    from spine.agents.catalog.resolver import ResolvedAgentBinding
+    from spine.agents.runtime.context import AgentExecutionContextFactory
 
 
 _IMPLEMENTATION_KEY = re.compile(r"[a-z][a-z0-9_.-]{0,127}\Z")
@@ -126,11 +132,100 @@ def _is_handler(value: Any) -> bool:
         parameters = tuple(inspect.signature(invoke).parameters.values())
     except (TypeError, ValueError):
         return False
-    return len(parameters) == 2 and all(
-        parameter.kind
-        in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD)
-        for parameter in parameters
+    if len(parameters) != 2:
+        return False
+    first, second = parameters
+    return (
+        first.kind in (first.POSITIONAL_ONLY, first.POSITIONAL_OR_KEYWORD)
+        and second.kind in (second.POSITIONAL_ONLY, second.POSITIONAL_OR_KEYWORD)
     )
+
+
+class _RegisteredHandler:
+    """Unbound registry selection; direct execution always fails closed."""
+
+    __slots__ = ("_handler", "_registration")
+
+    def __init__(
+        self,
+        handler: AgentHandler[Any, Any],
+        registration: AgentImplementationRegistration,
+    ) -> None:
+        self._handler = handler
+        self._registration = registration
+
+    @property
+    def registration(self) -> AgentImplementationRegistration:
+        return self._registration
+
+    async def invoke(
+        self,
+        request: AgentRequest[Any],
+        context: AgentExecutionContext,
+    ) -> AgentResponse[Any]:
+        del request, context
+        raise TypeError("handler requires a trusted execution gate")
+
+    async def _invoke_selected(
+        self,
+        request: AgentRequest[Any],
+        context: AgentExecutionContext,
+    ) -> AgentResponse[Any]:
+        selected = getattr(self._handler, "_invoke_selected", None)
+        if callable(selected):
+            return await selected(request, context)
+        return await self._handler.invoke(request, context)
+
+
+class _BoundAgentHandler:
+    """Two-argument execution gate bound to one registry selection."""
+
+    __slots__ = (
+        "_selected",
+        "_context",
+        "_admission",
+        "_trusted_factory",
+        "_resolved_binding",
+    )
+
+    def __init__(
+        self,
+        *,
+        selected: _RegisteredHandler,
+        context: AgentExecutionContext,
+        admission: AgentExecutionContextAdmission,
+        trusted_factory: AgentExecutionContextFactory,
+        resolved_binding: ResolvedAgentBinding,
+    ) -> None:
+        self._selected = selected
+        self._context = context
+        self._admission = admission
+        self._trusted_factory = trusted_factory
+        self._resolved_binding = resolved_binding
+
+    async def invoke(
+        self,
+        request: AgentRequest[Any],
+        context: AgentExecutionContext,
+    ) -> AgentResponse[Any]:
+        if context is not self._context:
+            raise TypeError("handler execution context is not admitted")
+        try:
+            self._admission.verify_selection(
+                context,
+                self._resolved_binding,
+                self._trusted_factory,
+            )
+            self._admission.verify_request(request, context)
+        except Exception:
+            raise TypeError("handler execution context is not admitted") from None
+        return await self._selected._invoke_selected(request, context)
+
+
+def _is_protected_execution_wrapper(value: Any) -> bool:
+    """Keep Spine-owned execution wrappers out of ordinary registrations."""
+
+    return isinstance(value, (_RegisteredHandler, _BoundAgentHandler))
 
 
 def _is_factory(value: Any) -> bool:
@@ -151,6 +246,7 @@ class HandlerRegistry:
 
     def __init__(self) -> None:
         self._registrations: dict[tuple[UUID, str], _HandlerRegistration] = {}
+        self._issued_handlers: tuple[_RegisteredHandler, ...] = ()
         self._finalized = False
 
     def register_handler(
@@ -162,7 +258,7 @@ class HandlerRegistry:
         """Register one already-constructed structural handler explicitly."""
 
         self._validate_registration(registration)
-        if not _is_handler(handler):
+        if _is_protected_execution_wrapper(handler) or not _is_handler(handler):
             raise HandlerRegistryError("local handler registration factory is invalid")
 
         def factory(selected_version: AgentVersion) -> AgentHandler[Any, Any]:
@@ -225,9 +321,63 @@ class HandlerRegistry:
             raise
         except Exception as error:
             raise HandlerConstructionError("local handler construction failed") from error
-        if not _is_handler(handler):
+        if _is_protected_execution_wrapper(handler) or not _is_handler(handler):
             raise HandlerConstructionError("local handler construction failed")
-        return handler
+        registered = _RegisteredHandler(handler, registration)
+        self._issued_handlers = (*self._issued_handlers, registered)
+        return registered
+
+    def bind_for_execution(
+        self,
+        *,
+        handler: AgentHandler[Any, Any],
+        context: AgentExecutionContext,
+        admission: AgentExecutionContextAdmission,
+        resolved_binding: ResolvedAgentBinding,
+    ) -> AgentHandler[Any, Any]:
+        """Reject direct execution-gate assembly through the catalog API."""
+
+        del handler, context, admission, resolved_binding
+        raise HandlerRegistryError(
+            "handler execution must use the trusted infrastructure composition"
+        )
+
+    def _bind_composed_execution(
+        self,
+        *,
+        handler: AgentHandler[Any, Any],
+        context: AgentExecutionContext,
+        admission: AgentExecutionContextAdmission,
+        resolved_binding: ResolvedAgentBinding,
+        trusted_factory: AgentExecutionContextFactory,
+    ) -> AgentHandler[Any, Any]:
+        """Bind a selection for the infrastructure-owned execution runtime."""
+
+        if type(handler) is not _RegisteredHandler:
+            raise HandlerRegistryError("handler selection is not registry-bound")
+        if type(admission) is not AgentExecutionContextAdmission:
+            raise HandlerRegistryError("handler execution admission is invalid")
+        if not any(candidate is handler for candidate in self._issued_handlers):
+            raise HandlerRegistryError("handler selection is not issued by this registry")
+        if handler is not getattr(resolved_binding, "handler", None):
+            raise HandlerRegistryError("handler selection is not pinned")
+        if handler.registration != getattr(resolved_binding, "registration", None):
+            raise HandlerRegistryError("handler selection is not pinned")
+        try:
+            admission.verify_selection(
+                context,
+                resolved_binding,
+                trusted_factory,
+            )
+        except Exception:
+            raise HandlerRegistryError("handler execution admission is invalid") from None
+        return _BoundAgentHandler(
+            selected=handler,
+            context=context,
+            admission=admission,
+            trusted_factory=trusted_factory,
+            resolved_binding=resolved_binding,
+        )
 
     def _validate_registration(self, registration: AgentImplementationRegistration) -> None:
         self._require_not_finalized()

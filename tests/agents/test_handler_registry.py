@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from asyncio import CancelledError
 from dataclasses import dataclass, field
 from uuid import UUID
@@ -14,6 +15,7 @@ from spine.agents.catalog import (
     BindingResolutionError,
     BindingResolutionRequest,
     DeploymentSelectionPolicy,
+    HandlerConstructionError,
     HandlerRegistry,
     HandlerRegistryError,
 )
@@ -256,10 +258,27 @@ def test_registry_registers_structural_handler_and_constructs_after_finalize() -
         )
 
     registry.finalize()
-    assert registry.construct(
+    constructed = registry.construct(
         capability=capability(),
         version=version(),
-    ) is handler
+    )
+    assert constructed is not handler
+    with pytest.raises(TypeError, match="trusted execution gate"):
+        # The registry's returned entry point must fail closed before handler code.
+        import asyncio
+
+        asyncio.run(constructed.invoke(object(), object()))
+
+
+def test_registry_preserves_two_argument_handler_contract() -> None:
+    handler = StructuralHandler()
+    registry = HandlerRegistry()
+    registry.register_handler(registration=registration(), handler=handler)
+    registry.finalize()
+
+    constructed = registry.construct(capability=capability(), version=version())
+
+    assert len(inspect.signature(constructed.invoke).parameters) == 2
 
 
 def test_registry_accepts_explicit_async_function_adapter() -> None:
@@ -278,10 +297,11 @@ def test_registry_accepts_explicit_async_function_adapter() -> None:
     )
     registry.finalize()
 
-    assert registry.construct(
+    constructed = registry.construct(
         capability=capability(),
         version=version(),
-    ) is adapted
+    )
+    assert constructed is not adapted
 
 
 def test_registry_factory_receives_pinned_version_and_does_not_invoke_handler() -> None:
@@ -448,6 +468,32 @@ def test_registries_are_isolated_and_finalization_prevents_order_dependence() ->
             ),
             factory=lambda selected_version: StructuralHandler(),
         )
+
+
+def test_registry_rejects_wrapping_a_handler_issued_by_another_registry() -> None:
+    source = registry_with_factory()
+    foreign_handler = source.construct(capability=capability(), version=version())
+    target = HandlerRegistry()
+
+    with pytest.raises(HandlerRegistryError, match="factory is invalid"):
+        target.register_handler(
+            registration=registration(),
+            handler=foreign_handler,
+        )
+
+
+def test_registry_rejects_factory_returning_an_issued_handler_wrapper() -> None:
+    source = registry_with_factory()
+    foreign_handler = source.construct(capability=capability(), version=version())
+    target = HandlerRegistry()
+    target.register_factory(
+        registration=registration(),
+        factory=lambda selected_version: foreign_handler,
+    )
+    target.finalize()
+
+    with pytest.raises(HandlerConstructionError, match="construction failed"):
+        target.construct(capability=capability(), version=version())
 
 
 def test_runtime_config_cannot_select_another_registered_implementation() -> None:
