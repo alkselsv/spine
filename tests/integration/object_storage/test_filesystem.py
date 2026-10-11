@@ -433,7 +433,7 @@ async def test_total_operation_timeout_interrupts_a_slow_stream(tmp_path: Path) 
             max_chunk_bytes=8,
             max_object_bytes=64,
             inactivity_timeout=1.0,
-            operation_timeout=0.01,
+            operation_timeout=0.2,
         ),
         grant_registry=registry,
         clock=lambda: NOW,
@@ -442,7 +442,7 @@ async def test_total_operation_timeout_interrupts_a_slow_stream(tmp_path: Path) 
 
     async def slow_stream() -> AsyncIterator[bytes]:
         yield b"prefix"
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.3)
         yield b"late"
 
     with pytest.raises(UploadLimitExceeded):

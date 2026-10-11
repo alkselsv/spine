@@ -175,6 +175,7 @@ class FilesystemOriginalObjectStore:
     ) -> UploadCommandState:
         await self._ensure_ready()
         async with self._operation_limit:
+            self._ensure_operational()
             return await self._run_blocking(
                 self._begin_or_resume_upload_sync,
                 command,
@@ -262,6 +263,7 @@ class FilesystemOriginalObjectStore:
         self._validate_uuid(upload_id)
         lock = self._upload_locks.setdefault(upload_id, asyncio.Lock())
         async with self._operation_limit, lock:
+            self._ensure_operational()
             deadline = self._deadline()
             location = await self._run_blocking(
                 self._locate_upload,
@@ -333,6 +335,7 @@ class FilesystemOriginalObjectStore:
         self._validate_upload_state(state)
         lock = self._upload_locks.setdefault(state.upload_id, asyncio.Lock())
         async with self._operation_limit, lock:
+            self._ensure_operational()
             return await self._run_blocking(
                 self._abort_upload_sync,
                 state,
@@ -393,6 +396,7 @@ class FilesystemOriginalObjectStore:
         self._validate_upload_state(state)
         lock = self._upload_locks.setdefault(state.upload_id, asyncio.Lock())
         async with self._operation_limit, lock:
+            self._ensure_operational()
             return await self._run_blocking(
                 self._finalize_upload_sync,
                 state,
@@ -518,7 +522,7 @@ class FilesystemOriginalObjectStore:
                 raise self._publication_error(error) from None
             return receipt
         finally:
-            os.close(stage_fd)
+            self._close_fd(stage_fd)
 
     def open_bounded_read(
         self,
@@ -538,6 +542,7 @@ class FilesystemOriginalObjectStore:
         if max_bytes <= 0:
             raise UploadLimitExceeded()
         async with self._operation_limit:
+            self._ensure_operational()
             try:
                 binding = self._grant_registry.consume_read_lease(
                     lease,
@@ -622,14 +627,22 @@ class FilesystemOriginalObjectStore:
         await self._ensure_ready()
         self._validate_reference(reference)
         async with self._operation_limit:
+            self._ensure_operational()
+            deadline = self._deadline()
             return await self._run_blocking(
                 self._verify_sync,
                 reference,
                 max_bytes,
-                deadline=self._deadline(),
+                deadline,
+                deadline=deadline,
             )
 
-    def _verify_sync(self, reference: ObjectReference, max_bytes: int) -> IntegrityResult:
+    def _verify_sync(
+        self,
+        reference: ObjectReference,
+        max_bytes: int,
+        deadline: float,
+    ) -> IntegrityResult:
         location = self._locate_finalized_reference(reference)
         if location is None:
             raise ObjectNotFound()
@@ -645,7 +658,7 @@ class FilesystemOriginalObjectStore:
             actual = self._hash_file(
                 payload_path,
                 min(max_bytes, self._profile.max_object_bytes),
-                self._deadline(),
+                deadline,
                 "verify",
             )
         except StorageError:
@@ -673,6 +686,7 @@ class FilesystemOriginalObjectStore:
         if limit <= 0 or limit > self._profile.max_inventory_entries:
             raise UploadLimitExceeded()
         async with self._operation_limit:
+            self._ensure_operational()
             return await self._run_blocking(
                 self._reconciliation_inventory_sync,
                 cursor,
@@ -720,6 +734,7 @@ class FilesystemOriginalObjectStore:
         await self._ensure_ready()
         self._validate_reference(reference)
         async with self._operation_limit:
+            self._ensure_operational()
             await self._run_blocking(
                 self._prepare_deletion_sync,
                 reference,
@@ -749,6 +764,7 @@ class FilesystemOriginalObjectStore:
         await self._ensure_ready()
         self._validate_reference(reference)
         async with self._operation_limit:
+            self._ensure_operational()
             return await self._run_blocking(
                 self._delete_controlled_sync,
                 reference,
@@ -918,6 +934,7 @@ class FilesystemOriginalObjectStore:
         except (asyncio.CancelledError, asyncio.TimeoutError):
             if not task.done():
                 task.cancel()
+                self._indeterminate.set()
                 task.add_done_callback(self._discard_stream_task)
             raise
 
@@ -945,7 +962,7 @@ class FilesystemOriginalObjectStore:
         )
         fd_abandoned = False
         try:
-            setup_deadline = self._setup_deadline()
+            setup_deadline = deadline
             try:
                 await self._run_blocking(
                     self._lock_file,
@@ -993,7 +1010,7 @@ class FilesystemOriginalObjectStore:
                 setup_deadline,
                 deadline=setup_deadline,
             )
-            stream_deadline = self._deadline()
+            stream_deadline = deadline
             iterator = chunks.__aiter__()
             while True:
                 remaining = self._remaining_timeout(stream_deadline)
@@ -1297,7 +1314,7 @@ class FilesystemOriginalObjectStore:
             updated["observed_length"] = actual.observed_byte_length
             self._write_json_atomic(manifest_path, updated)
         finally:
-            os.close(fd)
+            self._close_fd(fd)
 
     def _mark_interrupted(self, path: Path, manifest: dict[str, Any]) -> None:
         del manifest
@@ -1381,7 +1398,7 @@ class FilesystemOriginalObjectStore:
                     break
                 digest.update(chunk)
         finally:
-            os.close(fd)
+            self._close_fd(fd)
 
     def _hash_file(
         self,
@@ -1414,7 +1431,7 @@ class FilesystemOriginalObjectStore:
                     raise UploadLimitExceeded()
                 digest.update(chunk)
         finally:
-            os.close(fd)
+            self._close_fd(fd)
         self._observe_io(operation, max_bytes, length)
         return ObservedContentIdentity(
             observed_sha256=digest.hexdigest(),
@@ -1759,7 +1776,7 @@ class FilesystemOriginalObjectStore:
             except OSError:
                 raise StorageIntegrityIndeterminate() from None
         finally:
-            os.close(fd)
+            self._close_fd(fd)
         try:
             value = json.loads(raw.decode(_JSON_ENCODING))
         except Exception:
@@ -1861,6 +1878,13 @@ class FilesystemOriginalObjectStore:
 
     def _setup_deadline(self) -> float:
         return self._monotonic_clock() + max(self._profile.operation_timeout, 1.0)
+
+    @staticmethod
+    def _close_fd(fd: int) -> None:
+        try:
+            os.close(fd)
+        except OSError:
+            raise StorageIntegrityIndeterminate() from None
 
     async def _run_blocking(
         self,
