@@ -17,6 +17,7 @@ from spine.application.persistence.context import (
     WorkspaceScope,
 )
 from spine.application.diagnostics.audit import AuditEventRegistry
+from spine.application.persistence.delivery import OutboxDeliveryRouteRegistry
 from spine.domain.workspaces import Workspace
 from spine.infrastructure.persistence.contexts import (
     TrustedContextBoundary,
@@ -24,7 +25,11 @@ from spine.infrastructure.persistence.contexts import (
 )
 from spine.infrastructure.persistence.in_memory import InMemoryPersistence
 
-from .adapter import AuditPersistenceAdapter, PersistenceAdapter
+from .adapter import (
+    AuditPersistenceAdapter,
+    DeliveryPersistenceAdapter,
+    PersistenceAdapter,
+)
 from .ids import synthetic_uuid
 from .outbox_events import create_outbox_event_registry
 
@@ -32,7 +37,7 @@ from .outbox_events import create_outbox_event_registry
 AdapterFactory = Callable[[], Awaitable[PersistenceAdapter]]
 
 
-async def create_in_memory_adapter() -> AuditPersistenceAdapter:
+async def create_in_memory_adapter() -> DeliveryPersistenceAdapter:
     transaction_lock = asyncio.Lock()
     boundary = TrustedContextBoundary.for_testing(
         issuer_id=synthetic_uuid(900),
@@ -40,6 +45,12 @@ async def create_in_memory_adapter() -> AuditPersistenceAdapter:
     )
     bootstrap_authority = create_initial_workspace_bootstrap_authority()
     outbox_events = create_outbox_event_registry()
+    delivery_routes = OutboxDeliveryRouteRegistry()
+    delivery_routes.register(
+        event_type="workspace.created",
+        schema_version=1,
+        consumer_name="workspace_projection",
+    )
     audit_events = AuditEventRegistry.with_default_families()
     persistence = InMemoryPersistence(
         context_verifier=boundary,
@@ -49,6 +60,10 @@ async def create_in_memory_adapter() -> AuditPersistenceAdapter:
         transaction_lock=transaction_lock,
         audit_clock=lambda: datetime(2026, 2, 3, 4, 5, tzinfo=timezone.utc),
         audit_event_id_factory=lambda: synthetic_uuid(908),
+        delivery_routes=delivery_routes,
+        delivery_lease_token_factory=(
+            synthetic_uuid(value) for value in range(6600, 6700)
+        ).__next__,
     )
     await persistence.initial_workspace_bootstrap.create_initial_workspace(
         bootstrap_authority,
@@ -109,7 +124,7 @@ async def create_in_memory_adapter() -> AuditPersistenceAdapter:
         finally:
             transaction_lock.release()
 
-    return AuditPersistenceAdapter(
+    return DeliveryPersistenceAdapter(
         uow_factory=persistence.uow_factory,
         workspace_context=workspace_context,
         worker_workspace_context=worker_workspace_context,
@@ -120,6 +135,8 @@ async def create_in_memory_adapter() -> AuditPersistenceAdapter:
         read_audit_event=persistence.audit_reader.resolve,
         fail_next_audit_append=persistence.fail_next_audit_append,
         source_context=source_context,
+        delivery_repository=persistence.delivery_repository,
+        delivery_routes=delivery_routes,
     )
 
 
@@ -137,3 +154,8 @@ async def persistence_adapter(
     persistence_adapter_factory: AdapterFactory,
 ) -> PersistenceAdapter:
     return await persistence_adapter_factory()
+
+
+@pytest_asyncio.fixture
+async def delivery_persistence_adapter() -> DeliveryPersistenceAdapter:
+    return await create_in_memory_adapter()

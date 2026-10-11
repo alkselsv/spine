@@ -297,6 +297,7 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "initial_workspace_bootstrap": ExpectedTablePrivileges(True, False, False, False, False),
         "idempotency_receipts": ExpectedTablePrivileges(True, True, True, False, False),
         "outbox_intents": ExpectedTablePrivileges(True, False, True, False, False),
+        "outbox_deliveries": ExpectedTablePrivileges(True, True, False, False, False),
         "source_objects": ExpectedTablePrivileges(True, True, True, False, False),
         "source_revisions": ExpectedTablePrivileges(True, True, True, False, False),
         "source_revision_provenance": ExpectedTablePrivileges(True, True, True, False, False),

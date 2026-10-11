@@ -25,6 +25,12 @@ delivery records, so dispatch does not turn the outbox into a workflow engine or
 claim exactly-once delivery. Duplicate delivery is expected and consumers use the
 stable event identity for idempotency.
 
+A dedicated `spine_dispatcher` login is the only cross-tenant operational
+reader/writer. It may read immutable outbox intents and mutate only their
+delivery control rows. It is a non-owner role with `NOBYPASSRLS`, has no role
+memberships, and cannot access canonical business or audit tables. The ordinary
+runtime role remains tenant-scoped.
+
 This separation trades some diagnostic convenience for a smaller disclosure
 surface and preserves the different retention, availability and evidentiary
 semantics of canonical audit, asynchronous delivery and telemetry. It composes

@@ -64,8 +64,10 @@ pytestmark = [
 ]
 MIGRATION_ROLE = "spine_migration"
 RUNTIME_ROLE = "spine_runtime"
+DISPATCHER_ROLE = "spine_dispatcher"
 MIGRATION_PASSWORD = "migration-test-secret"
 RUNTIME_PASSWORD = "runtime-test-secret"
+DISPATCHER_PASSWORD = "dispatcher-test-secret"
 AUTH_TABLES = (
     "authentication_alias_bindings",
     "canonical_human_identity_states",
@@ -101,6 +103,8 @@ async def authorization_database(
         migration_password=MIGRATION_PASSWORD,
         runtime_role=RUNTIME_ROLE,
         runtime_password=RUNTIME_PASSWORD,
+        dispatcher_role=DISPATCHER_ROLE,
+        dispatcher_password=DISPATCHER_PASSWORD,
     )
     await bootstrap_database_roles(operator)
     migration_url = _role_url(
@@ -112,6 +116,7 @@ async def authorization_database(
             url=migration_url,
             migration_role=MIGRATION_ROLE,
             runtime_role=RUNTIME_ROLE,
+            dispatcher_role=DISPATCHER_ROLE,
         ),
     )
     migration_engine = create_async_engine(

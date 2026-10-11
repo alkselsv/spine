@@ -8,6 +8,10 @@ from uuid import UUID
 from spine.application.diagnostics.audit import AuditEvent, AuditEventRegistry
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.application.persistence.outbox import OutboxEventRegistry
+from spine.application.persistence.delivery import (
+    OutboxDeliveryRepository,
+    OutboxDeliveryRouteRegistry,
+)
 from spine.application.persistence.unit_of_work import UnitOfWorkFactory
 
 
@@ -33,3 +37,11 @@ class AuditPersistenceAdapter(PersistenceAdapter):
         [TrustedPersistenceContext, UUID], Awaitable[AuditEvent | None]
     ]
     fail_next_audit_append: Callable[[], None]
+
+
+@dataclass(frozen=True)
+class DeliveryPersistenceAdapter(AuditPersistenceAdapter):
+    """Adapter-neutral delivery capabilities owned by Issue #65 tests."""
+
+    delivery_repository: OutboxDeliveryRepository
+    delivery_routes: OutboxDeliveryRouteRegistry
