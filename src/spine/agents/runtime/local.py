@@ -431,13 +431,17 @@ class LocalAgentRuntime:
         self,
         step_run_id: UUID,
         *,
-        scope: CancellationScope,
+        scope: CancellationScope | None = None,
     ) -> None:
         """Request cancellation of this exact run through the existing surface."""
 
-        if step_run_id != scope.step_run_id or scope != self._cancellation_scope:
+        resolved_scope = self._cancellation_scope if scope is None else scope
+        if (
+            step_run_id != resolved_scope.step_run_id
+            or resolved_scope != self._cancellation_scope
+        ):
             raise ValueError("cancellation scope is invalid")
-        if self._cancellation.request_cancel(scope):
+        if self._cancellation.request_cancel(resolved_scope):
             await self._events.observe_run(
                 AgentRunDiagnosticState.CANCELLATION_REQUESTED
             )

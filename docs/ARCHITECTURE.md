@@ -1407,8 +1407,10 @@ authoritative ownership and handoff/persistence checks remain with the owning
 workflow/application boundary and Issue #109. Issues #110–#113 provide registered
 safe runtime diagnostics, cooperative cancellation, replay/idempotency and
 bounded local technical retries without treating observations as the final
-`AgentResult` or moving durable recovery out of Temporal. Compatibility-facade
-behavior remains deferred to Issues #114–#115.
+`AgentResult` or moving durable recovery out of Temporal. Issue #114 preserves
+the low-level `invoke(version, invocation)` and `cancel(step_run_id)` compatibility
+surface on that same runtime and proves coexistence with the legacy Q&A prototype;
+Issue #115 owns final cross-cutting contract-suite qualification.
 Production admission must be assembled through the infrastructure composition
 bound to the real Issue #72
 `TrustedRequestContextBoundary`; structural fakes are test-only construction

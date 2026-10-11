@@ -36,5 +36,5 @@ class AgentRuntime(Protocol):
         self,
         step_run_id: UUID,
         *,
-        scope: CancellationScope,
+        scope: CancellationScope | None = None,
     ) -> None: ...
