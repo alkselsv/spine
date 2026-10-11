@@ -619,8 +619,19 @@ async def test_postgresql_adapter_satisfies_ingestion_repository_contract(
     ("case_id", "safe_metrics", "message"),
     (
         (0, '{"schema_version":"ingestion-safe-detail:v1","secret":"x"}', "Safe metrics field is not allowlisted"),
-        (1, '{"schema_version":"ingestion-safe-detail:v1","item_count":10000000000}', "Safe metrics counter is invalid"),
-        (2, '{"schema_version":"ingestion-safe-detail:v1","retryable":"yes"}', "Safe metrics boolean is invalid"),
+        (1, '{"schema_version":"other"}', "Safe metrics schema is invalid"),
+        (2, '[]', "Safe metrics schema is invalid"),
+        (3, '{"schema_version":"ingestion-safe-detail:v1","attempt":0}', "Safe metrics attempt is invalid"),
+        (4, '{"schema_version":"ingestion-safe-detail:v1","attempt":1.5}', "Safe metrics attempt is invalid"),
+        (5, '{"schema_version":"ingestion-safe-detail:v1","attempt":true}', "Safe metrics attempt is invalid"),
+        (6, '{"schema_version":"ingestion-safe-detail:v1","item_count":10000000000}', "Safe metrics counter is invalid"),
+        (7, '{"schema_version":"ingestion-safe-detail:v1","byte_count":-1}', "Safe metrics counter is invalid"),
+        (8, '{"schema_version":"ingestion-safe-detail:v1","byte_count":1.5}', "Safe metrics counter is invalid"),
+        (9, '{"schema_version":"ingestion-safe-detail:v1","duration_ms":null}', "Safe metrics counter is invalid"),
+        (10, '{"schema_version":"ingestion-safe-detail:v1","retryable":"yes"}', "Safe metrics boolean is invalid"),
+        (11, '{"schema_version":"ingestion-safe-detail:v1","retryable":null}', "Safe metrics boolean is invalid"),
+        (12, '{"schema_version":"ingestion-safe-detail:v1","opaque_detail_ref":"00000000-0000-0000-0000-000000000000"}', "Safe metrics reference is invalid"),
+        (13, '{"schema_version":"ingestion-safe-detail:v1","opaque_detail_ref":"not-a-uuid"}', "Safe metrics reference is invalid"),
     ),
 )
 async def test_postgresql_rejects_invalid_ingestion_safe_metrics(
