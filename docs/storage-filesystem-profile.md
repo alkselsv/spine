@@ -23,6 +23,11 @@ procedure must be approved separately. A temporary filesystem used by the
 integration suite proves adapter behavior on the test platform; it does not
 approve a production volume.
 
+The storage root is dedicated to this adapter. External processes must not
+mutate its entries or bypass the adapter's advisory locks; backup and restore
+agents use the separately approved quiescence procedure. This ownership
+assumption is part of the profile's fencing guarantee.
+
 Other operating systems, filesystems that do not provide these primitives, a
 storage root that is a symlink, and indeterminate filesystem errors are
 unsupported or fail closed with a typed storage error.
@@ -81,11 +86,15 @@ finalized evidence, or a finalized payload without a matching finalized
 manifest, is indeterminate and is never reported as a successful receipt.
 
 Inventory enumerates only sanitized finalized receipt metadata. It is bounded
-and restartable through an opaque cursor; staged bytes are not an authorization
-bypass and are not returned as ordinary inventory objects. Missing, malformed,
-symlinked or contradictory physical evidence fails closed for the affected
-operation. Reconciliation and cleanup must compare inventory against canonical
-PostgreSQL receipt/reference records before deleting anything.
+and restartable through an opaque cursor. A profile has a hard
+`max_inventory_entries` ceiling for one complete inventory walk; the cursor
+pages within that bounded walk, while a root exceeding the ceiling fails closed
+with a typed limit error rather than silently truncating reconciliation.
+Staged bytes are not an authorization bypass and are not returned as ordinary
+inventory objects. Missing, malformed, symlinked or contradictory physical
+evidence fails closed for the affected operation. Reconciliation and cleanup
+must compare inventory against canonical PostgreSQL receipt/reference records
+before deleting anything.
 
 ## Corruption, backup and restore
 

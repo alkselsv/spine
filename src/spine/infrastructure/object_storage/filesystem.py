@@ -889,18 +889,38 @@ class FilesystemOriginalObjectStore:
         location = self._locate_finalized_reference(reference)
         if location is None:
             if marker_status == "pending":
-                self._write_deleted_marker(reference, status="deleted")
+                scope_key = self._deletion_marker_scope(reference)
+                if scope_key is None:
+                    raise StorageIntegrityIndeterminate()
+                self._recover_pending_deletion(reference, scope_key, deadline)
+                self._write_deleted_marker(
+                    reference,
+                    status="deleted",
+                    scope_key=scope_key,
+                )
                 return DeletionResult(status="already_absent")
             raise ObjectNotFound()
         self._assert_exact_finalized_reference(location, reference)
         payload_path, manifest_path = location
         scope_dir = manifest_path.parent
+        if marker_status == "pending" and not self._exists(payload_path):
+            self._recover_pending_deletion(reference, scope_dir.name, deadline)
+            self._write_deleted_marker(
+                reference,
+                status="deleted",
+                scope_key=scope_dir.name,
+            )
+            return DeletionResult(status="already_absent")
         payload_fd: int | None = None
         scope_fd: int | None = None
         try:
-            self._write_deleted_marker(reference, status="pending")
             scope_fd = self._open_directory(scope_dir)
             self._lock_file(scope_fd, deadline)
+            self._write_deleted_marker(
+                reference,
+                status="pending",
+                scope_key=scope_dir.name,
+            )
             payload_fd = self._open_append(payload_path)
             self._lock_file(payload_fd, deadline)
             manifest = self._read_manifest(manifest_path)
@@ -910,15 +930,26 @@ class FilesystemOriginalObjectStore:
             identity = self._file_identity_from_fd(payload_fd)
             if self._file_identity(payload_path) != identity:
                 raise StorageIntegrityIndeterminate()
+            manifest_identity = self._file_identity(manifest_path)
+            if self._monotonic_clock() >= deadline:
+                raise StorageIntegrityIndeterminate()
             self._unlink_nofollow(payload_path, expected_identity=identity)
-            self._unlink_nofollow(manifest_path)
+            if self._monotonic_clock() >= deadline:
+                raise StorageIntegrityIndeterminate()
+            self._unlink_nofollow(manifest_path, expected_identity=manifest_identity)
+            if self._monotonic_clock() >= deadline:
+                raise StorageIntegrityIndeterminate()
             self._sync_directory(scope_dir)
             self._remove_staged_publication_evidence(
                 reference, scope_dir.name, deadline=deadline
             )
             if self._monotonic_clock() >= deadline:
                 raise StorageIntegrityIndeterminate()
-            self._write_deleted_marker(reference, status="deleted")
+            self._write_deleted_marker(
+                reference,
+                status="deleted",
+                scope_key=scope_dir.name,
+            )
         except StorageError:
             raise
         except OSError:
@@ -942,6 +973,29 @@ class FilesystemOriginalObjectStore:
             return
         if self._is_symlink(staged_scope) or not self._is_directory(staged_scope):
             raise StorageIntegrityIndeterminate()
+        scope_fd = self._open_directory(staged_scope)
+        try:
+            self._lock_file(scope_fd, deadline)
+            self._remove_staged_publication_evidence_locked(
+                reference,
+                scope_key,
+                deadline=deadline,
+            )
+        finally:
+            self._close_fd(scope_fd)
+
+    def _remove_staged_publication_evidence_locked(
+        self,
+        reference: ObjectReference,
+        scope_key: str,
+        *,
+        deadline: float,
+    ) -> None:
+        staged_scope = self._staged_root / scope_key
+        if not self._exists(staged_scope):
+            return
+        if self._is_symlink(staged_scope) or not self._is_directory(staged_scope):
+            raise StorageIntegrityIndeterminate()
         for entry in self._scandir(staged_scope):
             if self._monotonic_clock() >= deadline:
                 raise StorageIntegrityIndeterminate()
@@ -949,8 +1003,12 @@ class FilesystemOriginalObjectStore:
                 raise StorageIntegrityIndeterminate()
             stage_dir = staged_scope / entry.name
             manifest_path = stage_dir / "manifest.json"
+            if self._monotonic_clock() >= deadline:
+                raise StorageIntegrityIndeterminate()
             if not self._exists(manifest_path):
                 continue
+            if self._monotonic_clock() >= deadline:
+                raise StorageIntegrityIndeterminate()
             manifest = self._read_manifest(manifest_path)
             self._assert_manifest_scope(manifest, staged_scope)
             if (
@@ -971,22 +1029,73 @@ class FilesystemOriginalObjectStore:
             ):
                 continue
             payload_path = stage_dir / "payload"
+            if self._monotonic_clock() >= deadline:
+                raise StorageIntegrityIndeterminate()
             if self._exists(payload_path):
-                self._unlink_nofollow(payload_path)
-            self._unlink_nofollow(manifest_path)
+                if self._monotonic_clock() >= deadline:
+                    raise StorageIntegrityIndeterminate()
+                payload_identity = self._file_identity(payload_path)
+                self._unlink_nofollow(
+                    payload_path,
+                    expected_identity=payload_identity,
+                )
+            if self._monotonic_clock() >= deadline:
+                raise StorageIntegrityIndeterminate()
+            manifest_identity = self._file_identity(manifest_path)
+            self._unlink_nofollow(manifest_path, expected_identity=manifest_identity)
+            if self._monotonic_clock() >= deadline:
+                raise StorageIntegrityIndeterminate()
             self._rmdir_nofollow(stage_dir)
+            if self._monotonic_clock() >= deadline:
+                raise StorageIntegrityIndeterminate()
             self._sync_directory(staged_scope)
 
-    def _deletion_marker_status(self, reference: ObjectReference) -> str | None:
+    def _recover_pending_deletion(
+        self,
+        reference: ObjectReference,
+        scope_key: str,
+        deadline: float,
+    ) -> None:
+        if not self._is_scope_key(scope_key):
+            raise StorageIntegrityIndeterminate()
+        scope_dir = self._finalized_root / scope_key
+        payload_path = scope_dir / reference.object_id.hex
+        manifest_path = scope_dir / self._manifest_name(reference.object_id)
+        scope_fd = self._open_directory(scope_dir) if self._exists(scope_dir) else None
+        try:
+            if scope_fd is not None:
+                self._lock_file(scope_fd, deadline)
+            manifest_exists = self._exists(manifest_path)
+            payload_exists = self._exists(payload_path)
+            if not manifest_exists and not payload_exists:
+                return
+            if not manifest_exists:
+                raise StorageIntegrityIndeterminate()
+            manifest = self._read_manifest(manifest_path)
+            self._assert_manifest_scope(manifest, scope_dir)
+            receipt = self._receipt_from_manifest(manifest, manifest_path)
+            if receipt.object_reference != reference:
+                raise StorageIntegrityIndeterminate()
+            if payload_exists:
+                payload_identity = self._file_identity(payload_path)
+                self._unlink_nofollow(payload_path, expected_identity=payload_identity)
+            if self._monotonic_clock() >= deadline:
+                raise StorageIntegrityIndeterminate()
+            manifest_identity = self._file_identity(manifest_path)
+            self._unlink_nofollow(manifest_path, expected_identity=manifest_identity)
+            if self._monotonic_clock() >= deadline:
+                raise StorageIntegrityIndeterminate()
+            self._sync_directory(scope_dir)
+        finally:
+            if scope_fd is not None:
+                self._close_fd(scope_fd)
+
+    def _read_deletion_marker(self, reference: ObjectReference) -> dict[str, Any] | None:
         marker = self._deleted_root / f"{reference.object_id.hex}.json"
         if not self._exists(marker):
             return None
         try:
-            fd = self._open_read(marker)
-            try:
-                value = json.loads(os.read(fd, 128 * 1024).decode(_JSON_ENCODING))
-            finally:
-                os.close(fd)
+            value = self._read_manifest(marker)
             restored = ObjectReference.model_validate_json(
                 json.dumps(value["reference"], separators=(",", ":"))
             )
@@ -999,7 +1108,24 @@ class FilesystemOriginalObjectStore:
         status = value.get("status", "deleted")
         if status not in {"pending", "deleted"}:
             raise StorageIntegrityIndeterminate()
+        scope_key = value.get("scope_key")
+        if scope_key is not None and not self._is_scope_key(scope_key):
+            raise StorageIntegrityIndeterminate()
+        return value
+
+    def _deletion_marker_status(self, reference: ObjectReference) -> str | None:
+        value = self._read_deletion_marker(reference)
+        if value is None:
+            return None
+        status = value.get("status", "deleted")
         return status
+
+    def _deletion_marker_scope(self, reference: ObjectReference) -> str | None:
+        value = self._read_deletion_marker(reference)
+        if value is None:
+            return None
+        scope_key = value.get("scope_key")
+        return scope_key if isinstance(scope_key, str) else None
 
     def _is_deleted_reference(self, reference: ObjectReference) -> bool:
         return self._deletion_marker_status(reference) == "deleted"
@@ -1767,7 +1893,7 @@ class FilesystemOriginalObjectStore:
             self._write_json_atomic(path, updated)
         except StorageError:
             raise StorageIntegrityIndeterminate() from None
-        except (TypeError, NotImplementedError, OSError):
+        except (TypeError, NotImplementedError, ValueError, OSError):
             raise StorageIntegrityIndeterminate() from None
         finally:
             if payload_fd is not None:
@@ -1840,16 +1966,19 @@ class FilesystemOriginalObjectStore:
         reference: ObjectReference,
         *,
         status: str = "deleted",
+        scope_key: str | None = None,
     ) -> None:
         marker = self._deleted_root / f"{reference.object_id.hex}.json"
-        self._write_json_atomic(
-            marker,
-            {
-                "version": 1,
-                "status": status,
-                "reference": reference.model_dump(mode="json"),
-            },
-        )
+        value: dict[str, Any] = {
+            "version": 1,
+            "status": status,
+            "reference": reference.model_dump(mode="json"),
+        }
+        if scope_key is not None:
+            if not self._is_scope_key(scope_key):
+                raise StorageIntegrityIndeterminate()
+            value["scope_key"] = scope_key
+        self._write_json_atomic(marker, value)
         self._sync_directory(self._deleted_root)
 
     def _update_digest_from_path(self, path: Path, digest: Any, deadline: float) -> None:
@@ -2160,7 +2289,7 @@ class FilesystemOriginalObjectStore:
     def _file_identity_from_fd(fd: int) -> tuple[int, int, int]:
         try:
             stat_result = os.fstat(fd)
-        except (TypeError, NotImplementedError, ValueError):
+        except (TypeError, NotImplementedError, ValueError, OSError):
             raise StorageConfigurationError() from None
         return stat_result.st_dev, stat_result.st_ino, stat_result.st_size
 
@@ -2193,24 +2322,18 @@ class FilesystemOriginalObjectStore:
     def _prepare_root(self, configured_root: str | os.PathLike[str]) -> Path:
         if os.name != "posix" or not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
             raise StorageConfigurationError()
-        configured = Path(configured_root)
         try:
-            absolute = configured.absolute()
-            current = Path(absolute.anchor)
-            for component in absolute.parts[1:]:
-                current /= component
-                if current.is_symlink():
-                    raise StorageConfigurationError()
-            resolved = absolute.resolve(strict=False)
-            resolved.mkdir(parents=True, exist_ok=True, mode=0o700)
-            self._assert_directory(resolved)
-            os.chmod(resolved, 0o700)
-            return resolved
+            root = Path(os.path.abspath(os.fspath(configured_root)))
+            if "\x00" in os.fspath(root) or not root.is_absolute():
+                raise StorageConfigurationError()
+            if any(component in {"", ".", ".."} for component in root.parts[1:]):
+                raise StorageConfigurationError()
+            return root
         except StorageError:
             raise
         except (TypeError, NotImplementedError, ValueError, OSError):
             raise StorageConfigurationError() from None
-        except (RuntimeError, ValueError):
+        except RuntimeError:
             raise StorageConfigurationError() from None
 
     def _prepare_directory(self, path: Path) -> Path:
@@ -2316,7 +2439,7 @@ class FilesystemOriginalObjectStore:
             return True
         except FileNotFoundError:
             return False
-        except (TypeError, NotImplementedError, OSError):
+        except (TypeError, NotImplementedError, ValueError, OSError):
             raise StorageIntegrityIndeterminate() from None
 
     def _unlink_nofollow(
@@ -2400,7 +2523,7 @@ class FilesystemOriginalObjectStore:
             finally:
                 os.close(parent_fd)
             self._sync_directory(path.parent)
-        except (TypeError, NotImplementedError, OSError):
+        except (TypeError, NotImplementedError, ValueError, OSError):
             try:
                 self._unlink_nofollow(temporary)
             except (StorageError, TypeError, NotImplementedError, OSError):
@@ -2524,14 +2647,72 @@ class FilesystemOriginalObjectStore:
     def _initialize_layout(self) -> tuple[Path, Path, Path, Path, int]:
         root = self._prepare_root(self._profile.root)
         self._root = root
-        staged = self._prepare_directory(root / "staged")
-        finalized = self._prepare_directory(root / "finalized")
-        deleted = self._prepare_directory(root / "deleted")
+        root_fd = self._open_or_create_root(root)
+        self._root_fd = root_fd
         try:
-            root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        except (TypeError, NotImplementedError, ValueError, OSError):
-            raise StorageConfigurationError() from None
+            staged = self._prepare_directory(root / "staged")
+            finalized = self._prepare_directory(root / "finalized")
+            deleted = self._prepare_directory(root / "deleted")
+        except BaseException:
+            self._close_fd(root_fd)
+            self._root_fd = None
+            raise
         return root, staged, finalized, deleted, root_fd
+
+    def _open_or_create_root(self, root: Path) -> int:
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        parent_fd: int | None = None
+        root_fd: int | None = None
+        try:
+            parent_fd = os.open(root.anchor, flags)
+            parts = root.parts[1:]
+            if not parts:
+                raise StorageConfigurationError()
+            for component in parts[:-1]:
+                try:
+                    child_fd = os.open(component, flags, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    try:
+                        os.mkdir(component, mode=0o700, dir_fd=parent_fd)
+                        child_fd = os.open(component, flags, dir_fd=parent_fd)
+                    except FileExistsError:
+                        child_fd = os.open(component, flags, dir_fd=parent_fd)
+                try:
+                    os.close(parent_fd)
+                except OSError:
+                    os.close(child_fd)
+                    raise StorageConfigurationError() from None
+                parent_fd = child_fd
+            name = parts[-1]
+            try:
+                os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+            except FileExistsError:
+                pass
+            root_fd = os.open(name, flags, dir_fd=parent_fd)
+            os.fchmod(root_fd, 0o700)
+            try:
+                os.close(parent_fd)
+            except OSError:
+                os.close(root_fd)
+                root_fd = None
+                raise StorageConfigurationError() from None
+            parent_fd = None
+            return root_fd
+        except StorageError:
+            raise
+        except (TypeError, NotImplementedError, ValueError, OSError):
+            if root_fd is not None:
+                try:
+                    os.close(root_fd)
+                except OSError:
+                    pass
+            raise StorageConfigurationError() from None
+        finally:
+            if parent_fd is not None:
+                try:
+                    os.close(parent_fd)
+                except OSError:
+                    pass
 
     def _deadline(self) -> float:
         return self._monotonic_clock() + self._profile.operation_timeout
