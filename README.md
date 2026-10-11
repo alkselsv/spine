@@ -28,7 +28,9 @@ Spine развивается вертикальными релизами в фи
 
 ## Текущий статус
 
-В документации используются три независимых статуса:
+Канонические определения находятся в
+[roadmap](docs/ROADMAP.md#статусы-поставки). В документации используются три
+статуса:
 
 - `implemented` — компонент существует и проверен на своей контрактной границе;
 - `integrated` — компонент подключён к целевому пользовательскому пути;
@@ -48,7 +50,7 @@ Spine развивается вертикальными релизами в фи
 - local Agent Runtime: typed schemas and artifacts, explicit registry/bindings,
   diagnostics, cooperative cancellation, replay/recovery и bounded local retry.
 
-### Integrated
+### Operational compatibility path
 
 - загрузка локальных `.md`, `.txt`, `.pdf`, `.docx` и `.xlsx` файлов;
 - добавление текстового корпуса в Cognee через `remember`;
@@ -58,8 +60,14 @@ Spine развивается вертикальными релизами в фи
 - diagnostics и authorization composition для API/workers;
 - synthetic `answer_question`-shaped handler через общий Agent Runtime contract.
 
-Первые пять пунктов образуют legacy prototype path. Они сохраняются для
-совместимости и ещё не используют целевой governed R1 ingestion/retrieval flow.
+Первые пять пунктов образуют legacy prototype path. Остальные два доказывают
+совместимость инфраструктурных контрактов. Эти пути operational, но не имеют
+статуса `integrated`, потому что не входят в целевой governed R1 flow.
+
+### Integrated
+
+Пока ни один компонент не интегрирован в полный целевой путь
+`upload → projection → answer → citations → UI`.
 
 ### Qualified
 

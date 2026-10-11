@@ -38,7 +38,8 @@ Roadmap различает три статуса. Они относятся то
 platform.
 
 - [x] Python/FastAPI-проект и локальный Q&A-прототип на Cognee.
-      `implemented`, `integrated: legacy prototype`.
+      `implemented`, `operational: legacy compatibility path`,
+      `not integrated: governed R1 flow`.
 - [x] Каркас domain, application, connectors, memory, agents, workflows и web.
       `implemented`.
 - [x] Начальный framework-independent каркас контрактов capability, agent invocation, artifact и workflow.
@@ -61,8 +62,8 @@ platform.
       `implemented: provider-neutral retrieval contract`; `not integrated`,
       `not qualified`.
 - [x] Единые trace ID, structured errors и audit events.
-      `implemented`, `integrated: API, workers and local agent runtime`,
-      `qualified: offline diagnostics/delivery foundation`.
+      `implemented`, `qualified: offline diagnostics/delivery foundation`,
+      `not integrated: complete governed R1 flow`.
 - [ ] Минимальный app shell и сгенерированный API client.
       `not implemented`; выбран стек и определён OpenAPI handoff.
 
