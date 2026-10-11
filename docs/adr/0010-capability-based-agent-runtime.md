@@ -21,6 +21,19 @@ stateless between calls; internal multi-agent coordination remains private only
 while it has no independently evaluated artifact, external action, approval or
 durable lifecycle.
 
+At-least-once local invocation reuses the canonical persistence receipt. After
+handler output validates, the runtime first completes that receipt with one
+immutable `agent_invocation:v1` reference. The referenced versioned record is a
+discriminated state: it initially contains the immutable Artifact drafts and
+result metadata as a checkpoint, then Artifact, completion audit and final
+`AgentResult` persistence atomically transition it to the completed state while
+the receipt reference stays unchanged. A replay resolves the record discriminator
+before deserialization: it either resumes Artifact completion from the checkpoint
+or returns the final result, without calling the handler again. Identical raw keys
+remain scoped to Workspace and Environment by the canonical receipt boundary;
+the tenant scope also participates in the command digest so a mis-scoped adapter
+cannot replay across tenants.
+
 Deterministic async code is a `code` step when it is bound directly into a
 workflow. It becomes an agent implementation only when exposed as a replaceable,
 versioned capability governed by Agent Binding, deployment and evaluations.

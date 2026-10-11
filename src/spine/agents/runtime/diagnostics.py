@@ -23,6 +23,7 @@ from spine.application.diagnostics import (
 from spine.domain.common import ContextOrigin
 
 _AGENT_RUN_EVENT_TYPE = "agent.run"
+_AGENT_REPLAY_EVENT_TYPE = "agent.replay"
 _AGENT_RETRY_EVENT_TYPE = "agent.retry"
 _AGENT_TOOL_EVENT_TYPE = "agent.tool"
 _AGENT_USAGE_EVENT_TYPE = "agent.usage"
@@ -124,12 +125,17 @@ class AgentRunAuditPayload(AgentExecutionObservationIdentity):
     run_state: AgentRunDiagnosticState
 
 
+class AgentReplayPayload(AgentExecutionObservationIdentity):
+    """A distinct v1 contract for replay observations and audit."""
+
+
 def build_agent_runtime_diagnostic_registry() -> DiagnosticEventRegistry:
     """Build the sealed Issue #4 registry used by the local runtime."""
 
     registry = DiagnosticEventRegistry()
     for event_type, payload_type in (
         (_AGENT_RUN_EVENT_TYPE, AgentRunDiagnosticPayload),
+        (_AGENT_REPLAY_EVENT_TYPE, AgentReplayPayload),
         (_AGENT_RETRY_EVENT_TYPE, AgentRetryDiagnosticPayload),
         (_AGENT_TOOL_EVENT_TYPE, AgentToolDiagnosticPayload),
         (_AGENT_USAGE_EVENT_TYPE, AgentUsageDiagnosticPayload),
@@ -158,6 +164,13 @@ def build_agent_runtime_audit_registry() -> AuditEventRegistry:
                 AuditOutcome.REJECTED,
             }
         ),
+        requires_target=True,
+    )
+    registry.register(
+        event_type=_AGENT_REPLAY_EVENT_TYPE,
+        schema_version=1,
+        payload_type=AgentReplayPayload,
+        allowed_outcomes=frozenset({AuditOutcome.REPLAYED}),
         requires_target=True,
     )
     registry.seal()
@@ -203,6 +216,27 @@ class AgentRuntimeDiagnosticEmitter:
                 else DiagnosticSeverity.INFO
             ),
         )
+
+    async def observe_replay(self) -> None:
+        """Record replay without changing the immutable ``agent.run:v1`` schema."""
+
+        payload = AgentReplayPayload(**self._diagnostic_identity())
+        await self._emit_diagnostic(
+            event_type=_AGENT_REPLAY_EVENT_TYPE,
+            payload=payload,
+            severity=DiagnosticSeverity.INFO,
+        )
+        event = self._build_audit_event(
+            event_type=_AGENT_REPLAY_EVENT_TYPE,
+            payload=payload,
+            outcome=AuditOutcome.REPLAYED,
+            reason="agent_runtime.replayed",
+            deduplication_suffix="replayed",
+        )
+        try:
+            await self._audit_writer.append(event)
+        except Exception:
+            raise AgentRuntimeAuditError("Agent runtime audit is unavailable.") from None
 
     async def observe_retry(
         self,
@@ -295,15 +329,33 @@ class AgentRuntimeDiagnosticEmitter:
             AgentRunDiagnosticState.FAILED: AuditOutcome.REJECTED,
             AgentRunDiagnosticState.CANCELLED: AuditOutcome.COMPLETED,
         }[state]
-        return self._audit_registry.build_event(
-            workspace_id=context.workspace_id,
-            environment_id=context.environment_id,
+        return self._build_audit_event(
             event_type=_AGENT_RUN_EVENT_TYPE,
-            schema_version=1,
             payload=AgentRunAuditPayload(
                 **self._diagnostic_identity(),
                 run_state=state,
             ),
+            outcome=outcome,
+            reason=f"agent_runtime.{state.value}",
+            deduplication_suffix=state.value,
+        )
+
+    def _build_audit_event(
+        self,
+        *,
+        event_type: str,
+        payload: BaseModel,
+        outcome: AuditOutcome,
+        reason: str,
+        deduplication_suffix: str,
+    ) -> AuditEvent:
+        context = self._context
+        return self._audit_registry.build_event(
+            workspace_id=context.workspace_id,
+            environment_id=context.environment_id,
+            event_type=event_type,
+            schema_version=1,
+            payload=payload,
             origin=(
                 ContextOrigin.INTERACTIVE
                 if context.trusted_identity.acting_subject_id is not None
@@ -321,11 +373,11 @@ class AgentRuntimeDiagnosticEmitter:
                 schema_version=1,
             ),
             outcome=outcome,
-            reason=f"agent_runtime.{state.value}",
+            reason=reason,
             producer_deduplication_id=(
                 f"agent_run.{context.agent_run_id.hex}."
                 f"attempt.{context.attempt_id.hex if context.attempt_id else 'none'}."
-                f"{state.value}"
+                f"{deduplication_suffix}"
             ),
         )
 
@@ -345,6 +397,7 @@ __all__ = [
     "AgentRunAuditPayload",
     "AgentRunDiagnosticPayload",
     "AgentRunDiagnosticState",
+    "AgentReplayPayload",
     "AgentRuntimeAuditError",
     "AgentRuntimeDiagnosticEmitter",
     "AgentToolDiagnosticPayload",
