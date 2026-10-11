@@ -21,6 +21,14 @@ stateless between calls; internal multi-agent coordination remains private only
 while it has no independently evaluated artifact, external action, approval or
 durable lifecycle.
 
+The existing low-level `invoke(version, invocation)` and `cancel(step_run_id)`
+surface remains a compatibility contract over that same local runtime. A caller
+may additionally pass the exact trusted cancellation scope for explicit scope
+checking; omitting it uses only the scope already pinned to the admitted runtime
+instance. The compatibility surface does not bypass typed Artifact validation,
+lineage, diagnostics, idempotency or retry policy, and it does not replace the
+legacy `/ask` and `/ingest` prototype endpoints.
+
 An Agent Version enables local retries only through its immutable
 `runtime_config.runtime_retry_policy`. The policy has exactly
 `maximum_attempts` (one to five), one non-negative `backoff_seconds` entry for

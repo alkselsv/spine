@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from spine.agents.runtime import (
     AgentExecutionContext,
+    AgentHandler,
     AgentRetryDiagnosticState,
     AgentRetryPolicy,
     AgentRetryPolicyError,
@@ -503,6 +504,21 @@ class RecordingHandler:
         )
 
 
+class SyntheticAnswerQuestionHandler:
+    async def invoke(
+        self,
+        request: AgentRequest[InputModel],
+        context: AgentExecutionContext,
+    ) -> AgentResponse[OutputModel]:
+        assert request.input == InputModel(question="What is the answer?")
+        return AgentResponse(
+            schema_identity=context.schema_identity,
+            output=OutputModel(answer="Synthetic grounded answer"),
+            evidence_refs=("source:revision:page=1",),
+            structured_metrics={"sources": 1.0},
+        )
+
+
 class RaisingHandler(RecordingHandler):
     def __init__(self, protected_message: str = "provider payload is protected") -> None:
         super().__init__()
@@ -581,7 +597,7 @@ class FakeTemporalActivityReexecutor:
 
 def local_runtime(
     persistence: FakeArtifactPersistence,
-    handler: RecordingHandler,
+    handler: AgentHandler[Any, Any],
     *,
     context: AgentExecutionContext | None = None,
     audit_writer: AuditWriter | None = None,
@@ -733,6 +749,23 @@ async def test_valid_artifact_handoff_persists_lineage_before_reporting_success(
     assert draft.produced_by_agent_version_id == uid(20)
     assert draft.artifact_schema == capability().output_schema
     assert draft.content == {"answer": "42"}
+    assert draft.evidence_refs == ("source:revision:page=1",)
+    assert draft.upstream_artifact_ids == (uid(50),)
+
+
+@pytest.mark.asyncio
+async def test_legacy_invoke_runs_synthetic_answer_question_with_typed_lineage() -> None:
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+    runtime = local_runtime(
+        persistence,
+        SyntheticAnswerQuestionHandler(),
+    )
+
+    result = await runtime.invoke(version(), invocation())
+
+    assert result.status is AgentRunStatus.SUCCEEDED
+    ((draft,), _) = persistence.writes[0]
+    assert draft.content == {"answer": "Synthetic grounded answer"}
     assert draft.evidence_refs == ("source:revision:page=1",)
     assert draft.upstream_artifact_ids == (uid(50),)
 
@@ -1603,6 +1636,25 @@ async def test_cancel_request_emits_observation_without_fabricating_audit_transi
         "cancellation_requested"
     ]
     assert audit.events == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_cancel_request_uses_the_runtime_pinned_scope() -> None:
+    diagnostics = FakeEventSink()
+    cancellation = cooperative_cancellation()
+    context = execution_context(event_sink=diagnostics, cancellation=cancellation)
+    runtime = local_runtime(
+        FakeArtifactPersistence(),
+        RecordingHandler(),
+        context=context,
+    )
+
+    await runtime.cancel(uid(32))
+
+    assert cancellation.is_cancelled is True
+    assert [event.payload_json()["run_state"] for event in diagnostics.events] == [
+        "cancellation_requested"
+    ]
 
 
 @pytest.mark.asyncio
