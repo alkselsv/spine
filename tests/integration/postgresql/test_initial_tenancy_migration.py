@@ -1584,6 +1584,16 @@ async def test_ingestion_ledger_catalog_has_immutable_and_deferred_integrity_tri
                 )
             )
         ).mappings().all()
+        original_validator = await connection.scalar(
+            text(
+                "SELECT pg_get_functiondef(namespace.oid) "
+                "FROM pg_proc AS namespace "
+                "JOIN pg_namespace AS schema_namespace "
+                "ON schema_namespace.oid = namespace.pronamespace "
+                "WHERE schema_namespace.nspname = 'spine' "
+                "AND namespace.proname = 'validate_issue86_binding_original_receipt'"
+            )
+        )
 
     by_name = {row.tgname: row for row in rows}
     immutable_tables = (
@@ -1622,6 +1632,9 @@ async def test_ingestion_ledger_catalog_has_immutable_and_deferred_integrity_tri
             assert "UPDATE" in row.definition and "DELETE" in row.definition
     assert "validate_issue7_binding_original" in by_name["trg_ingestion_run_source_bindings_original"].definition
     assert "validate_issue86_safe_metrics" in by_name["trg_ingestion_transitions_safe_metrics"].definition
+    assert original_validator is not None
+    assert "Original receipt verification unavailable" in original_validator
+    assert "source_revisions" in original_validator
 
 
 @pytest.mark.asyncio(loop_scope="session")

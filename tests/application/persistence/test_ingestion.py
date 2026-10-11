@@ -206,7 +206,7 @@ async def test_ingestion_run_and_item_replay_are_stable(persistence) -> None:
 
 
 @pytest.mark.asyncio
-async def test_binding_rejects_missing_original_receipt(persistence) -> None:
+async def test_content_binding_rejects_unverified_original_receipt(persistence) -> None:
     adapter, boundary = persistence
     source, revision, observation = binding_observation()
     command = IngestionRunCommand.create(run=run("binding-receipt"), idempotency_key=IdempotencyKey("binding-receipt"))
@@ -222,6 +222,26 @@ async def test_binding_rejects_missing_original_receipt(persistence) -> None:
         command_digest="f" * 64,
         created_at=NOW,
     )
+    async with adapter.uow_factory(context(boundary, "original.upload")) as uow:
+        claim = await uow.idempotency.claim(
+            operation_schema_version=1,
+            key=IdempotencyKey("issue86-unverified-original-upload"),
+            digest=digest_command(
+                operation=PersistenceOperation("original.upload"),
+                operation_schema_version=1,
+                payload={"fixture": "issue86-unverified-original"},
+            ),
+        )
+        await uow.idempotency.complete(
+            claim,
+            OpaqueResultReference(
+                result_type="original_upload",
+                result_id=uuid5(NAMESPACE_URL, "issue86-unverified-original-result"),
+                schema_version=1,
+            ),
+        )
+        await uow.commit()
+
     binding = IngestionRunSourceBinding(
         binding_id=uuid5(NAMESPACE_URL, "issue86-binding"),
         ingestion_run_source_id=item.ingestion_run_source_id,
@@ -233,7 +253,7 @@ async def test_binding_rejects_missing_original_receipt(persistence) -> None:
         binding_command_digest="a" * 64,
         original_reference=revision.original_reference,
         original_receipt_kind="issue6.write_receipt",
-        original_receipt_id=uuid5(NAMESPACE_URL, "issue86-missing-receipt"),
+        original_receipt_id=claim.receipt_id,
         original_receipt_digest=revision.original_sha256,
         bound_at=NOW,
     )
@@ -250,12 +270,18 @@ async def test_binding_rejects_missing_original_receipt(persistence) -> None:
         await uow.commit()
 
     async with adapter.uow_factory(context(boundary, "ingestion_binding")) as uow:
-        with pytest.raises(ConstraintConflictError, match="original receipt"):
+        with pytest.raises(ConstraintConflictError, match="verification is unavailable"):
             await uow.ingestion.bind_source(binding_command)
+
+    async with adapter.uow_factory(context(boundary, "ingestion_run")) as uow:
+        state = await uow.ingestion.derive_run_state(command.run.ingestion_run_id)
+        await uow.rollback()
+    assert state is not None
+    assert state.item_states == (IngestionItemState.RECEIVED,)
 
 
 @pytest.mark.asyncio
-async def test_concurrent_competing_bindings_have_one_effect(persistence) -> None:
+async def test_concurrent_content_bindings_fail_closed_without_effect(persistence) -> None:
     adapter, boundary = persistence
     source, revision, observation = binding_observation("one")
     source_two, revision_two, observation_two = binding_observation("two")
@@ -313,8 +339,12 @@ async def test_concurrent_competing_bindings_have_one_effect(persistence) -> Non
 
     results = await asyncio.gather(bind(first), bind(second), return_exceptions=True)
     assert len(results) == 2, results
-    assert sum(isinstance(result, ConstraintConflictError) for result in results) == 1, [type(result) for result in results]
-    assert sum(not isinstance(result, BaseException) for result in results) == 1
+    assert all(isinstance(result, ConstraintConflictError) for result in results)
+    async with adapter.uow_factory(context(boundary, "ingestion_run")) as uow:
+        state = await uow.ingestion.derive_run_state(command.run.ingestion_run_id)
+        await uow.rollback()
+    assert state is not None
+    assert state.item_states == (IngestionItemState.RECEIVED,)
 
 
 @pytest.mark.asyncio

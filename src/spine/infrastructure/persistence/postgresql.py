@@ -580,6 +580,18 @@ class _PostgreSQLIngestionRepository:
     async def bind_source(self, command: IngestionBindingCommand) -> IngestionMutationResult:
         self._uow._guard_active()
         self._check_scope(command.item.workspace_id, command.item.environment_id)
+        if command.observation.revision.kind.value == "content":
+            await self._uow._fail(
+                ConstraintConflictError(
+                    "Original receipt verification is unavailable; content binding is fail-closed."
+                )
+            )
+        if command.binding.original_receipt_id is not None:
+            await self._uow._fail(
+                ConstraintConflictError(
+                    "Contentless ingestion binding cannot include an original receipt."
+                )
+            )
         claim = await self._uow.idempotency.claim(operation_schema_version=command.digest.operation_schema_version, key=command.idempotency_key, digest=command.digest)
         item_row = (await self._uow._execute(select(_INGESTION_ITEMS).where(_INGESTION_ITEMS.c.ingestion_run_source_id == command.item.ingestion_run_source_id, _INGESTION_ITEMS.c.workspace_id == command.item.workspace_id, _INGESTION_ITEMS.c.environment_id == command.item.environment_id))).mappings().one_or_none()
         if item_row is None or IngestionRunSource.model_validate(dict(item_row)) != command.item:
@@ -616,8 +628,6 @@ class _PostgreSQLIngestionRepository:
             return IngestionMutationResult(existing, True, claim, result)
         if command.observation.source.source_object_id != binding.source_object_id or command.observation.revision.revision_id != binding.source_revision_id:
             await self._uow._fail(ConstraintConflictError("Ingestion binding observation is invalid."))
-        if command.observation.revision.kind.value == "content" and (binding.original_receipt_id is None or binding.original_reference is None or binding.original_reference.digest_hex != command.observation.revision.original_sha256):
-            await self._uow._fail(ConstraintConflictError("Content ingestion binding requires verified original evidence."))
         from dataclasses import replace
         observation = replace(command.observation, digest=command.observation.expected_digest(PersistenceOperation("ingestion_binding")))
         observed = await self._uow.sources.record_observation(observation)

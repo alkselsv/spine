@@ -701,13 +701,6 @@ class _InMemoryIngestionRepository:
     def _processing_receipts(self) -> dict[UUID, ProcessingReceipt]:
         return self._uow._base_processing_receipts | self._uow._pending_processing_receipts
 
-    def _original_receipt(self, receipt_id: UUID) -> _IdempotencyReceipt | None:
-        receipts = self._uow._base_receipts | self._uow._pending_receipts
-        return next(
-            (receipt for receipt in receipts.values() if receipt.receipt_id == receipt_id),
-            None,
-        )
-
     async def create_run(self, command: IngestionRunCommand) -> IngestionMutationResult:
         self._uow._guard_active()
         self._scope_check(command.run.workspace_id, command.run.environment_id)
@@ -787,6 +780,18 @@ class _InMemoryIngestionRepository:
     async def bind_source(self, command: IngestionBindingCommand) -> IngestionMutationResult:
         self._uow._guard_active()
         self._scope_check(command.item.workspace_id, command.item.environment_id)
+        if command.observation.revision.kind.value == "content":
+            self._uow._fail(
+                ConstraintConflictError(
+                    "Original receipt verification is unavailable; content binding is fail-closed."
+                )
+            )
+        if command.binding.original_receipt_id is not None:
+            self._uow._fail(
+                ConstraintConflictError(
+                    "Contentless ingestion binding cannot include an original receipt."
+                )
+            )
         claim = await self._uow.idempotency.claim(
             operation_schema_version=command.digest.operation_schema_version,
             key=command.idempotency_key,
@@ -835,20 +840,6 @@ class _InMemoryIngestionRepository:
         observation = command.observation
         if observation.source.source_object_id != binding.source_object_id or observation.revision.revision_id != binding.source_revision_id:
             self._uow._fail(ConstraintConflictError("Ingestion binding observation is invalid."))
-        if observation.revision.kind.value == "content":
-            if binding.original_receipt_id is None or binding.original_reference is None or binding.original_reference.digest_hex != observation.revision.original_sha256:
-                self._uow._fail(ConstraintConflictError("Content ingestion binding requires verified original evidence."))
-            original_receipt = self._original_receipt(binding.original_receipt_id)
-            if (
-                original_receipt is None
-                or original_receipt.key.workspace_id != binding.workspace_id
-                or original_receipt.key.environment_id != binding.environment_id
-                or original_receipt.key.operation_name != "original.upload"
-                or original_receipt.result is None
-                or original_receipt.result.result_type != "original_upload"
-            ):
-                self._uow._fail(ConstraintConflictError("original receipt is unavailable or out of scope."))
-
         # The source observation is recorded in the same transaction. Its
         # operation is adapted to the trusted binding seam so it cannot commit
         # a claim for a different operation; the binding has its own claim.

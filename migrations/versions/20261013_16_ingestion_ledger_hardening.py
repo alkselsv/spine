@@ -90,40 +90,32 @@ def upgrade() -> None:
         SECURITY INVOKER
         SET search_path = pg_catalog, {SCHEMA}
         AS $function$
-        DECLARE receipt_workspace uuid;
-        DECLARE receipt_environment uuid;
-        DECLARE receipt_operation text;
-        DECLARE receipt_result_type text;
-        DECLARE receipt_result_id uuid;
-        DECLARE receipt_result_schema_version integer;
+        DECLARE revision_kind text;
         BEGIN
-            IF NEW.original_receipt_id IS NULL THEN
+            SELECT revision.kind
+              INTO revision_kind
+              FROM {SCHEMA}.source_revisions AS revision
+             WHERE revision.source_revision_id = NEW.source_revision_id
+               AND revision.workspace_id = NEW.workspace_id
+               AND revision.environment_id = NEW.environment_id
+             FOR KEY SHARE;
+
+            IF NOT FOUND THEN
                 RETURN NEW;
             END IF;
 
-            SELECT receipt.workspace_id, receipt.environment_id
-                   , receipt.operation_name, receipt.result_type
-                   , receipt.result_id, receipt.result_schema_version
-              INTO receipt_workspace, receipt_environment
-                   , receipt_operation, receipt_result_type
-                   , receipt_result_id, receipt_result_schema_version
-              FROM {SCHEMA}.idempotency_receipts AS receipt
-             WHERE receipt.receipt_id = NEW.original_receipt_id
-             FOR KEY SHARE;
-
-            IF NOT FOUND
-               OR receipt_workspace IS DISTINCT FROM NEW.workspace_id
-               OR receipt_environment IS DISTINCT FROM NEW.environment_id
-               OR receipt_operation <> 'original.upload'
-               OR receipt_result_type <> 'original_upload'
-               OR receipt_result_id IS NULL
-               OR receipt_result_schema_version IS NULL
-            THEN
-                RAISE EXCEPTION 'Original receipt scope conflict.'
+            IF revision_kind = 'content' THEN
+                RAISE EXCEPTION 'Original receipt verification unavailable.'
                     USING ERRCODE = '23514',
                           CONSTRAINT = 'ck_ingestion_binding_original_receipt_scope';
             END IF;
-            RETURN NEW;
+
+            IF NEW.original_receipt_id IS NULL THEN
+                RETURN NEW;
+            END IF;
+            RAISE EXCEPTION 'Contentless ingestion binding cannot include an original receipt.'
+                USING ERRCODE = '23514',
+                      CONSTRAINT = 'ck_ingestion_binding_original_receipt_scope';
         END;
         $function$
         """

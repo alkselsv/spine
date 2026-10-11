@@ -312,15 +312,6 @@ async def exercise_ingestion_binding_race(adapter: PersistenceAdapter) -> None:
         command_digest="d" * 64,
         created_at=NOW,
     )
-    rollback_item = item.model_copy(
-        update={
-            "ingestion_run_source_id": synthetic_uuid(1835),
-            "input_ordinal": 2,
-            "input_identity": "contract-binding-race-rollback-input",
-            "command_identity": "contract-binding-race-rollback-item",
-        }
-    )
-
     def source_case(offset: int, label: str) -> tuple[SourceObject, object, SourceObservationCommand]:
         source = SourceObject(
             source_object_id=synthetic_uuid(offset),
@@ -389,7 +380,6 @@ async def exercise_ingestion_binding_race(adapter: PersistenceAdapter) -> None:
     ) as uow:
         await uow.ingestion.create_run(run_command)
         await uow.ingestion.create_item(item)
-        await uow.ingestion.create_item(rollback_item)
         await uow.commit()
     async with adapter.uow_factory(
         ingestion_context(workspace_id, environment_id, "original.upload")
@@ -443,34 +433,6 @@ async def exercise_ingestion_binding_race(adapter: PersistenceAdapter) -> None:
     first = binding_case(first_source, first_revision, first_observation, "one", 1847)
     second = binding_case(second_source, second_revision, second_observation, "two", 1848)
 
-    rollback_source, rollback_revision, rollback_observation = source_case(1850, "rollback")
-    rollback = binding_case(
-        rollback_source,
-        rollback_revision,
-        rollback_observation,
-        "rollback",
-        1855,
-        rollback_item,
-    )
-
-    async def bind_then_fail(command: IngestionBindingCommand) -> None:
-        async with adapter.uow_factory(
-            ingestion_context(workspace_id, environment_id, "ingestion_binding")
-        ) as uow:
-            result = await uow.ingestion.bind_source(command)
-            assert result.replay is False
-            raise RuntimeError("injected pre-commit binding failure")
-
-    with pytest.raises(RuntimeError, match="injected pre-commit"):
-        await bind_then_fail(rollback)
-
-    async with adapter.uow_factory(
-        ingestion_context(workspace_id, environment_id, "ingestion_binding")
-    ) as uow:
-        retry_after_rollback = await uow.ingestion.bind_source(rollback)
-        await uow.commit()
-    assert retry_after_rollback.replay is False
-
     async def bind(command: IngestionBindingCommand) -> object:
         async with adapter.uow_factory(
             ingestion_context(workspace_id, environment_id, "ingestion_binding")
@@ -480,17 +442,14 @@ async def exercise_ingestion_binding_race(adapter: PersistenceAdapter) -> None:
             return result
 
     results = await asyncio.gather(bind(first), bind(second), return_exceptions=True)
-    assert sum(isinstance(result, ConstraintConflictError) for result in results) == 1
-    assert sum(not isinstance(result, BaseException) for result in results) == 1
-
-    winner = first if not isinstance(results[0], BaseException) else second
+    assert all(isinstance(result, ConstraintConflictError) for result in results)
     async with adapter.uow_factory(
-        ingestion_context(workspace_id, environment_id, "ingestion_binding")
+        ingestion_context(workspace_id, environment_id, "ingestion_run")
     ) as uow:
-        replay = await uow.ingestion.bind_source(winner)
-        await uow.commit()
-    assert replay.replay is True
-    assert replay.value.binding_id == winner.binding.binding_id
+        state = await uow.ingestion.derive_run_state(run.ingestion_run_id)
+        await uow.rollback()
+    assert state is not None
+    assert state.item_states == (IngestionItemState.RECEIVED,)
 
 
 @pytest.mark.asyncio
