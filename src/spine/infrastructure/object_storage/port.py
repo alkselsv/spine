@@ -88,7 +88,7 @@ class AuthorizedOriginalReadService(Protocol):
         self,
         *,
         workspace_id: UUID,
-        environment_id: UUID | None,
+        environment_id: UUID,
         source_revision_id: UUID,
         purpose: str,
         max_bytes: int,

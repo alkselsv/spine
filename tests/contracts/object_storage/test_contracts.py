@@ -402,6 +402,34 @@ def test_grant_rejects_expiry_and_scope_or_generation_substitution() -> None:
         )
 
 
+def test_grant_binds_purpose_policy_and_lifecycle_versions() -> None:
+    workspace_id = uuid4()
+    source_revision_id = uuid4()
+    object_reference = reference()
+    registry = AuthorizedReadGrantRegistry()
+    grant = registry.issue(
+        workspace_id=workspace_id,
+        environment_id=uuid4(),
+        source_revision_id=source_revision_id,
+        object_reference=object_reference,
+        purpose="document.read",
+        authorization_decision_version="policy-v2",
+        lifecycle_version="source-v3",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+    )
+    with pytest.raises(InvalidReadGrant):
+        registry.consume(
+            grant,
+            workspace_id=workspace_id,
+            environment_id=uuid4(),
+            source_revision_id=source_revision_id,
+            object_reference=object_reference,
+            purpose="document.process",
+            authorization_decision_version="policy-v2",
+            lifecycle_version="source-v3",
+        )
+
+
 def test_digest_rejects_unknown_issue8_algorithm_version() -> None:
     with pytest.raises(ValidationError):
         PreWriteRequestDigest(
