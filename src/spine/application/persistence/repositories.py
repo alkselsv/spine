@@ -18,6 +18,7 @@ from spine.domain.sources import (
     SourceObject,
     SourceRevision,
     SourceRevisionProvenance,
+    SourceRevisionReceiptAssociation,
 )
 from spine.domain.sources.profile import OBSERVATION_SCHEMA
 from spine.domain.workspaces import Environment, Workspace
@@ -33,6 +34,7 @@ class SourceObservationResult:
     replay: bool
     claim: IdempotencyClaimResult
     result_reference: OpaqueResultReference
+    receipt_association: SourceRevisionReceiptAssociation | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +46,7 @@ class SourceObservationCommand:
     provenance: SourceRevisionProvenance
     idempotency_key: IdempotencyKey
     digest: CommandDigest
+    receipt_association: SourceRevisionReceiptAssociation | None = None
 
     @classmethod
     def create(
@@ -53,6 +56,7 @@ class SourceObservationCommand:
         revision: SourceRevision,
         provenance: SourceRevisionProvenance,
         idempotency_key: IdempotencyKey,
+        receipt_association: SourceRevisionReceiptAssociation | None = None,
     ) -> "SourceObservationCommand":
         placeholder = cls(
             source=source,
@@ -64,6 +68,7 @@ class SourceObservationCommand:
                 operation_schema_version=SOURCE_OBSERVATION_SCHEMA_VERSION,
                 payload={"placeholder": True},
             ),
+            receipt_association=receipt_association,
         )
         return cls(
             source=source,
@@ -71,6 +76,7 @@ class SourceObservationCommand:
             provenance=provenance,
             idempotency_key=idempotency_key,
             digest=placeholder.expected_digest(PersistenceOperation("source_observation")),
+            receipt_association=receipt_association,
         )
 
     def expected_digest(self, operation: PersistenceOperation) -> CommandDigest:
@@ -122,6 +128,21 @@ class SourceObservationCommand:
                     "observer_service": self.provenance.observer_service,
                 },
                 "idempotency_key": self.idempotency_key.value,
+                "receipt_association": (
+                    {
+                        "association_id": self.receipt_association.association_id,
+                        "provenance_id": self.receipt_association.provenance_id,
+                        "original_receipt_id": self.receipt_association.original_receipt_id,
+                        "original_command_result_id": self.receipt_association.original_command_result_id,
+                        "original_command_result_schema_version": self.receipt_association.original_command_result_schema_version,
+                        "original_upload_id": self.receipt_association.original_upload_id,
+                        "original_reference": self.receipt_association.original_reference.model_dump(mode="json"),
+                        "original_sha256": self.receipt_association.original_sha256,
+                        "byte_length": self.receipt_association.byte_length,
+                    }
+                    if self.receipt_association is not None
+                    else None
+                ),
             },
         )
 
@@ -132,6 +153,10 @@ class SourceObservationRepository(Protocol):
     async def record_observation(self, command: SourceObservationCommand) -> SourceObservationResult: ...
 
     async def resolve_revision(self, revision_id: UUID) -> SourceRevision | None: ...
+
+    async def resolve_receipt_associations(
+        self, revision_id: UUID
+    ) -> tuple[SourceRevisionReceiptAssociation, ...]: ...
 
 
 # Kept as a convenience import for callers that discover all application
