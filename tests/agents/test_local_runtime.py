@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from asyncio import CancelledError
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -20,6 +21,11 @@ from spine.agents.runtime import (
     ArtifactReadError,
     CapabilityArtifactSchema,
     CapabilitySchemaIdentity,
+    CancellationController,
+    CancellationToken,
+    CancellationScope,
+    CooperativeCancellationController,
+    CooperativeCancellationToken,
     AgentRuntimeAuditError,
     AgentRuntimeDiagnosticEmitter,
     AgentRunDiagnosticState,
@@ -76,11 +82,26 @@ class CombinedInputModel(BaseModel):
     second_question: str
 
 
-class FakeCancellation:
-    is_cancelled = False
+def cancellation_scope(**overrides: UUID) -> CancellationScope:
+    values = {
+        "workspace_id": uid(1),
+        "environment_id": uid(2),
+        "step_run_id": uid(32),
+        "agent_run_id": uid(33),
+    }
+    values.update(overrides)
+    return CancellationScope(**values)
 
-    def raise_if_cancelled(self) -> None:
-        return None
+
+def cooperative_cancellation(**overrides: UUID) -> CooperativeCancellationToken:
+    controller = CooperativeCancellationController(
+        cancellation_scope(**overrides)
+    )
+    _CANCELLATION_CONTROLLERS[id(controller.token)] = controller
+    return controller.token
+
+
+_CANCELLATION_CONTROLLERS: dict[int, CooperativeCancellationController] = {}
 
 
 class FakeEventSink:
@@ -155,7 +176,7 @@ def execution_context(**overrides: object) -> AgentExecutionContext:
         "idempotency_key": "qa:30:1",
         "diagnostic_context": DiagnosticContext(trace_id=uid(40)),
         "input_artifact_ids": (uid(50),),
-        "cancellation": FakeCancellation(),
+        "cancellation": cooperative_cancellation(),
         "event_sink": FakeEventSink(),
     }
     values.update(overrides)
@@ -312,8 +333,12 @@ def local_runtime(
     *,
     context: AgentExecutionContext | None = None,
     audit_writer: AuditWriter | None = None,
+    cancellation_controller: object | None = None,
 ) -> LocalAgentRuntime:
     selected_context = context or execution_context()
+    selected_controller = cancellation_controller or _CANCELLATION_CONTROLLERS.get(
+        id(selected_context.cancellation)
+    )
     return LocalAgentRuntime(
         context=selected_context,
         handler=handler,
@@ -329,6 +354,7 @@ def local_runtime(
         audit_registry=build_agent_runtime_audit_registry(),
         audit_writer=audit_writer or RecordingAuditWriter(),
         clock=lambda: datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc),
+        cancellation_controller=selected_controller,
     )
 
 
@@ -359,9 +385,10 @@ def test_runtime_rejects_schema_mapping_for_another_capability_version() -> None
         }
     )
 
+    context = execution_context()
     with pytest.raises(ValueError, match="schema mapping"):
         LocalAgentRuntime(
-            context=execution_context(),
+            context=context,
             handler=RecordingHandler(),
             artifacts=FakeArtifactPersistence(),
             schemas=CapabilityArtifactSchema(
@@ -371,6 +398,9 @@ def test_runtime_rejects_schema_mapping_for_another_capability_version() -> None
                 assemble_input=lambda artifacts: artifacts[0].content,
                 validate_metadata=validate_metadata,
             ),
+            cancellation_controller=_CANCELLATION_CONTROLLERS[
+                id(context.cancellation)
+            ],
             **observability_dependencies(),
         )
 
@@ -532,6 +562,9 @@ async def test_capability_adapter_assembles_multiple_artifacts_by_named_fields()
             },
             validate_metadata=validate_metadata,
         ),
+        cancellation_controller=_CANCELLATION_CONTROLLERS[
+            id(context.cancellation)
+        ],
         **observability_dependencies(),
     )
 
@@ -767,6 +800,7 @@ async def test_handler_cancellation_emits_cancelled_without_reporting_success() 
     ).invoke(version(), invocation())
 
     assert result.status is AgentRunStatus.CANCELLED
+    assert result.error == "Execution was cancelled."
     assert [event.payload_json()["run_state"] for event in diagnostics.events] == [
         "started",
         "cancelled",
@@ -806,7 +840,12 @@ async def test_artifact_io_cancellation_is_observed_and_propagated() -> None:
 async def test_cancel_request_emits_observation_without_fabricating_audit_transition() -> None:
     diagnostics = FakeEventSink()
     audit = RecordingAuditWriter()
-    context = execution_context(event_sink=diagnostics, attempt_id=uid(34))
+    cancellation = cooperative_cancellation()
+    context = execution_context(
+        event_sink=diagnostics,
+        attempt_id=uid(34),
+        cancellation=cancellation,
+    )
     runtime = local_runtime(
         FakeArtifactPersistence(),
         RecordingHandler(),
@@ -814,12 +853,266 @@ async def test_cancel_request_emits_observation_without_fabricating_audit_transi
         audit_writer=audit,
     )
 
-    await runtime.cancel(uid(32))
+    await runtime.cancel(uid(32), scope=cancellation_scope())
 
+    assert cancellation.is_cancelled is True
     assert [event.payload_json()["run_state"] for event in diagnostics.events] == [
         "cancellation_requested"
     ]
     assert audit.events == []
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancel_request_is_idempotent() -> None:
+    diagnostics = FakeEventSink()
+    cancellation = cooperative_cancellation()
+    context = execution_context(event_sink=diagnostics, cancellation=cancellation)
+    runtime = local_runtime(
+        FakeArtifactPersistence(),
+        RecordingHandler(),
+        context=context,
+    )
+
+    await runtime.cancel(uid(32), scope=cancellation_scope())
+    await runtime.cancel(uid(32), scope=cancellation_scope())
+
+    assert cancellation.is_cancelled is True
+    assert [event.payload_json()["run_state"] for event in diagnostics.events] == [
+        "cancellation_requested"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cancel_after_commit_boundary_cannot_replace_success() -> None:
+    commit_started = asyncio.Event()
+    resume_commit = asyncio.Event()
+
+    class BlockingPersistence(FakeArtifactPersistence):
+        async def persist_outputs(
+            self,
+            drafts: tuple[ArtifactDraft, ...],
+            *,
+            idempotency_key: str,
+            audit_event: AuditEvent,
+            validate_references: Any,
+        ) -> tuple[ArtifactRef, ...]:
+            commit_started.set()
+            await resume_commit.wait()
+            return await super().persist_outputs(
+                drafts,
+                idempotency_key=idempotency_key,
+                audit_event=audit_event,
+                validate_references=validate_references,
+            )
+
+    diagnostics = FakeEventSink()
+    context = execution_context(event_sink=diagnostics)
+    persistence = BlockingPersistence(records={uid(50): input_artifact()})
+    runtime = local_runtime(persistence, RecordingHandler(), context=context)
+
+    invocation_task = asyncio.create_task(runtime.invoke(version(), invocation()))
+    await commit_started.wait()
+    await runtime.cancel(uid(32), scope=cancellation_scope())
+    resume_commit.set()
+    result = await invocation_task
+    await runtime.cancel(uid(32), scope=cancellation_scope())
+
+    assert result.status is AgentRunStatus.SUCCEEDED
+    assert len(persistence.writes) == 1
+    assert [event.payload_json()["run_state"] for event in diagnostics.events] == [
+        "started",
+        "completed",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scope_override", "value"),
+    [
+        ("workspace_id", uid(101)),
+        ("environment_id", uid(102)),
+        ("step_run_id", uid(103)),
+        ("agent_run_id", uid(104)),
+    ],
+)
+async def test_cancel_request_rejects_every_cross_run_scope(
+    scope_override: str,
+    value: UUID,
+) -> None:
+    cancellation = cooperative_cancellation()
+    context = execution_context(cancellation=cancellation)
+    runtime = local_runtime(
+        FakeArtifactPersistence(),
+        RecordingHandler(),
+        context=context,
+    )
+    with pytest.raises(ValueError, match="cancellation scope is invalid"):
+        mismatched_scope = cancellation_scope(**{scope_override: value})
+        await runtime.cancel(mismatched_scope.step_run_id, scope=mismatched_scope)
+
+    assert cancellation.is_cancelled is False
+
+
+@pytest.mark.asyncio
+async def test_cancellation_isolated_between_agent_runs() -> None:
+    first_cancellation = cooperative_cancellation()
+    second_cancellation = cooperative_cancellation(
+        workspace_id=uid(101),
+        environment_id=uid(102),
+        agent_run_id=uid(34),
+    )
+    first_context = execution_context(
+        cancellation=first_cancellation,
+        agent_run_id=uid(33),
+        event_sink=FakeEventSink(),
+    )
+    second_context = execution_context(
+        cancellation=second_cancellation,
+        workspace_id=uid(101),
+        environment_id=uid(102),
+        agent_run_id=uid(34),
+        trusted_identity=TrustedExecutionIdentitySnapshot(
+            workspace_id=uid(101),
+            environment_id=uid(102),
+            acting_subject_id=uid(3),
+            authorization_generation=1,
+        ),
+        event_sink=FakeEventSink(),
+    )
+    first_runtime = local_runtime(
+        FakeArtifactPersistence(records={uid(50): input_artifact()}),
+        RecordingHandler(),
+        context=first_context,
+    )
+    second_runtime = local_runtime(
+        FakeArtifactPersistence(
+            records={
+                uid(50): input_artifact(
+                    workspace_id=uid(101),
+                    environment_id=uid(102),
+                )
+            }
+        ),
+        RecordingHandler(),
+        context=second_context,
+    )
+
+    await first_runtime.cancel(uid(32), scope=cancellation_scope())
+    first_result, second_result = await asyncio.gather(
+        first_runtime.invoke(version(), invocation()),
+        second_runtime.invoke(version(), invocation()),
+    )
+
+    assert first_result.status is AgentRunStatus.CANCELLED
+    assert second_result.status is AgentRunStatus.SUCCEEDED
+    assert second_cancellation.is_cancelled is False
+
+
+@pytest.mark.asyncio
+async def test_running_handler_shares_cancellation_with_nested_call_and_tool() -> None:
+    started = asyncio.Event()
+    resume = asyncio.Event()
+    observations: list[tuple[str, object, bool]] = []
+    diagnostics = FakeEventSink()
+
+    async def nested_call(cancellation: CancellationToken) -> None:
+        assert cancellation is cooperative
+        observations.append(("nested", cancellation, cancellation.is_cancelled))
+
+    class PermittedTool:
+        async def invoke(self, cancellation: CancellationToken) -> None:
+            assert cancellation is cooperative
+            observations.append(("tool", cancellation, cancellation.is_cancelled))
+
+    permitted_tool = PermittedTool()
+
+    class CooperativeHandler:
+        async def invoke(
+            self,
+            request: AgentRequest[InputModel],
+            context: AgentExecutionContext,
+        ) -> AgentResponse[OutputModel]:
+            del request
+            assert not isinstance(context.cancellation, CancellationController)
+            assert not hasattr(context.cancellation, "request_cancel")
+            assert not hasattr(context.cancellation, "seal")
+            started.set()
+            await resume.wait()
+            await nested_call(context.cancellation)
+            await permitted_tool.invoke(context.cancellation)
+            context.cancellation.raise_if_cancelled()
+            raise AssertionError("cancelled handler continued")
+
+    cooperative = cooperative_cancellation()
+    context = execution_context(
+        cancellation=cooperative,
+        event_sink=diagnostics,
+    )
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+    runtime = local_runtime(
+        persistence,
+        CooperativeHandler(),
+        context=context,
+    )
+
+    invocation_task = asyncio.create_task(runtime.invoke(version(), invocation()))
+    await started.wait()
+    await runtime.cancel(uid(32), scope=cancellation_scope())
+    resume.set()
+    result = await invocation_task
+
+    assert result.status is AgentRunStatus.CANCELLED
+    assert observations == [
+        ("nested", cooperative, True),
+        ("tool", cooperative, True),
+    ]
+    assert persistence.writes == []
+    assert [event.event_type for event in diagnostics.events] == [
+        "agent.run",
+        "agent.run",
+        "agent.run",
+    ]
+    assert [event.payload_json()["run_state"] for event in diagnostics.events] == [
+        "started",
+        "cancellation_requested",
+        "cancelled",
+    ]
+
+
+def test_runtime_rejects_cancellation_handle_bound_to_another_run() -> None:
+    context = execution_context(
+        cancellation=cooperative_cancellation(agent_run_id=uid(34)),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="local runtime cancellation scope is incompatible",
+    ):
+        local_runtime(
+            FakeArtifactPersistence(records={uid(50): input_artifact()}),
+            RecordingHandler(),
+            context=context,
+        )
+
+
+def test_runtime_rejects_observation_only_cancellation_token() -> None:
+    class ObservationOnlyCancellation:
+        is_cancelled = False
+
+        def raise_if_cancelled(self) -> None:
+            return None
+
+    context = execution_context(cancellation=ObservationOnlyCancellation())
+
+    with pytest.raises(
+        TypeError,
+        match="local runtime cancellation control is unavailable",
+    ):
+        local_runtime(
+            FakeArtifactPersistence(records={uid(50): input_artifact()}),
+            RecordingHandler(),
+            context=context,
+        )
 
 
 @pytest.mark.asyncio

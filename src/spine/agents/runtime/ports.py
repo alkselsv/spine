@@ -14,6 +14,7 @@ from spine.auth.contracts import (
 from spine.domain.common import EnvironmentKind
 
 if TYPE_CHECKING:
+    from spine.agents.runtime.cancellation import CancellationScope
     from spine.agents.runtime.contracts import AgentExecutionContext
 
 
@@ -27,6 +28,25 @@ class CancellationToken(Protocol):
 
     def raise_if_cancelled(self) -> None:
         """Raise the caller's cancellation outcome when cancellation is observed."""
+
+
+@runtime_checkable
+class CancellationController(Protocol):
+    """Trusted control side of a scoped cooperative cancellation handle."""
+
+    @property
+    def scope(self) -> CancellationScope:
+        """Exact run identity controlled by this handle."""
+
+    @property
+    def token(self) -> CancellationToken:
+        """Observation-only token exposed to the handler context."""
+
+    def request_cancel(self, scope: CancellationScope) -> bool:
+        """Request cancellation and report whether this was the first request."""
+
+    def seal(self, scope: CancellationScope) -> bool:
+        """Close cancellation before commit and report whether it may proceed."""
 
 
 # Compatibility name for the first runtime contract.  Runtime diagnostics now
@@ -131,6 +151,7 @@ class ExecutionScopeValidator(Protocol):
 
 __all__ = [
     "AuthorizationContextView",
+    "CancellationController",
     "CancellationToken",
     "CanonicalTrustedAuthorizationContextVerifier",
     "EventSink",

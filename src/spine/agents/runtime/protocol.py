@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Generic, Protocol, TypeVar, runtime_checkable
 from uuid import UUID
 
+from spine.agents.runtime.cancellation import CancellationScope
 from spine.agents.runtime.contracts import AgentExecutionContext, AgentRequest, AgentResponse
 from spine.domain.agents.contracts import AgentInvocation, AgentResult
 from spine.domain.agents.models import AgentVersion
@@ -31,4 +32,9 @@ class AgentRuntime(Protocol):
         invocation: AgentInvocation,
     ) -> AgentResult: ...
 
-    async def cancel(self, step_run_id: UUID) -> None: ...
+    async def cancel(
+        self,
+        step_run_id: UUID,
+        *,
+        scope: CancellationScope,
+    ) -> None: ...

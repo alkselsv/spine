@@ -9,6 +9,10 @@ from enum import Enum
 from typing import Any
 from uuid import UUID
 
+from spine.agents.runtime.cancellation import (
+    CancellationScope,
+    CooperativeCancellationError,
+)
 from spine.agents.runtime.artifacts import (
     ArtifactDraft,
     ArtifactPersistence,
@@ -26,6 +30,7 @@ from spine.agents.runtime.diagnostics import (
     AgentRuntimeDiagnosticEmitter,
 )
 from spine.agents.runtime.protocol import AgentHandler
+from spine.agents.runtime.ports import CancellationController
 from spine.application.diagnostics import (
     AuditEventRegistry,
     AuditWriter,
@@ -39,6 +44,7 @@ from spine.domain.common import ActorKind, ActorRef
 
 
 class _FailureCategory(str, Enum):
+    CANCELLATION = "cancellation"
     REQUEST = "request"
     INTERNAL = "internal"
     PERSISTENCE = "persistence"
@@ -64,6 +70,7 @@ class LocalAgentRuntime:
         audit_registry: AuditEventRegistry,
         audit_writer: AuditWriter,
         clock: Callable[[], datetime],
+        cancellation_controller: CancellationController,
     ) -> None:
         if not isinstance(context, AgentExecutionContext):
             raise TypeError("local runtime context is invalid")
@@ -85,6 +92,19 @@ class LocalAgentRuntime:
         self._handler = handler
         self._artifacts = artifacts
         self._schemas = schemas
+        self._cancellation_scope = CancellationScope(
+            workspace_id=context.workspace_id,
+            environment_id=context.environment_id,
+            step_run_id=context.step_run_id,
+            agent_run_id=context.agent_run_id,
+        )
+        if not isinstance(cancellation_controller, CancellationController):
+            raise TypeError("local runtime cancellation control is unavailable")
+        if cancellation_controller.scope != self._cancellation_scope:
+            raise ValueError("local runtime cancellation scope is incompatible")
+        if cancellation_controller.token is not context.cancellation:
+            raise ValueError("local runtime cancellation token is incompatible")
+        self._cancellation = cancellation_controller
         self._events = AgentRuntimeDiagnosticEmitter(
             context=context,
             diagnostic_registry=diagnostic_registry,
@@ -103,9 +123,12 @@ class LocalAgentRuntime:
         await self._events.observe_run(AgentRunDiagnosticState.STARTED)
 
         try:
+            self._context.cancellation.raise_if_cancelled()
             self._validate_invocation(version, invocation)
             inputs = await self._load_inputs(invocation.input_artifact_ids)
             typed_input = self._schemas.load_input(inputs)
+        except CooperativeCancellationError:
+            return await self._finish(self._cancelled_result())
         except CancelledError:
             await self._events.observe_run(AgentRunDiagnosticState.CANCELLED)
             raise
@@ -121,11 +144,13 @@ class LocalAgentRuntime:
             constraints=invocation.constraints,
         )
         try:
+            self._context.cancellation.raise_if_cancelled()
             response = await self._handler.invoke(request, self._context)
+            self._context.cancellation.raise_if_cancelled()
+        except CooperativeCancellationError:
+            return await self._finish(self._cancelled_result())
         except CancelledError:
-            return await self._finish(
-                self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.CANCELLED)
-            )
+            return await self._finish(self._cancelled_result())
         except Exception:
             return await self._finish(
                 self._safe_failure(_FailureCategory.INTERNAL, AgentRunStatus.FAILED)
@@ -160,7 +185,10 @@ class LocalAgentRuntime:
             )
 
         try:
+            self._context.cancellation.raise_if_cancelled()
             output = self._schemas.load_output(response.output)
+        except CooperativeCancellationError:
+            return await self._finish(self._cancelled_result())
         except Exception:
             return await self._finish(
                 self._safe_failure(_FailureCategory.REQUEST, AgentRunStatus.FAILED)
@@ -181,6 +209,8 @@ class LocalAgentRuntime:
             upstream_artifact_ids=invocation.input_artifact_ids,
         )
         try:
+            if not self._cancellation.seal(self._cancellation_scope):
+                return await self._finish(self._cancelled_result())
             completion_audit = self._events.build_run_audit_event(
                 AgentRunDiagnosticState.COMPLETED
             )
@@ -190,6 +220,8 @@ class LocalAgentRuntime:
                 audit_event=completion_audit,
                 validate_references=self._validate_persisted_references,
             )
+        except CooperativeCancellationError:
+            return await self._finish(self._cancelled_result())
         except CancelledError:
             await self._events.observe_run(AgentRunDiagnosticState.CANCELLED)
             raise
@@ -208,16 +240,20 @@ class LocalAgentRuntime:
         )
         return result
 
-    async def cancel(self, step_run_id: UUID) -> None:
-        """Validate the run-scoped control surface; cancellation is cooperative."""
+    async def cancel(
+        self,
+        step_run_id: UUID,
+        *,
+        scope: CancellationScope,
+    ) -> None:
+        """Request cancellation of this exact run through the existing surface."""
 
-        if step_run_id != self._context.step_run_id:
+        if step_run_id != scope.step_run_id or scope != self._cancellation_scope:
             raise ValueError("cancellation scope is invalid")
-        await self._events.observe_run(
-            AgentRunDiagnosticState.CANCELLATION_REQUESTED
-        )
-        # The observation token is owned by trusted composition. This method
-        # cannot safely mutate an arbitrary token implementation.
+        if self._cancellation.request_cancel(scope):
+            await self._events.observe_run(
+                AgentRunDiagnosticState.CANCELLATION_REQUESTED
+            )
 
     @property
     def _trace_ref(self) -> str:
@@ -315,7 +351,10 @@ class LocalAgentRuntime:
         category: _FailureCategory,
         status: AgentRunStatus,
     ) -> AgentResult:
-        if category is _FailureCategory.PERSISTENCE:
+        if category is _FailureCategory.CANCELLATION:
+            code = "spine.execution.cancelled"
+            message = "Execution was cancelled."
+        elif category is _FailureCategory.PERSISTENCE:
             code = "spine.persistence.failure"
             message = "Persistence operation failed."
         elif category is _FailureCategory.INTERNAL:
@@ -339,7 +378,14 @@ class LocalAgentRuntime:
             trace_ref=self._trace_ref,
         )
 
+    def _cancelled_result(self) -> AgentResult:
+        return self._safe_failure(
+            _FailureCategory.CANCELLATION,
+            AgentRunStatus.CANCELLED,
+        )
+
     async def _finish(self, result: AgentResult) -> AgentResult:
+        self._cancellation.seal(self._cancellation_scope)
         state = {
             AgentRunStatus.SUCCEEDED: AgentRunDiagnosticState.COMPLETED,
             AgentRunStatus.FAILED: AgentRunDiagnosticState.FAILED,

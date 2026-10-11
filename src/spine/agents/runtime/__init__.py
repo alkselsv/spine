@@ -14,6 +14,12 @@ from spine.agents.runtime.contracts import (
     typed_request_from_invocation,
 )
 from spine.agents.runtime.adapters import adapt_async_function
+from spine.agents.runtime.cancellation import (
+    CancellationScope,
+    CooperativeCancellationController,
+    CooperativeCancellationError,
+    CooperativeCancellationToken,
+)
 from spine.agents.runtime.artifacts import (
     ArtifactDraft,
     ArtifactPersistence,
@@ -40,6 +46,7 @@ from spine.agents.runtime.local import LocalAgentRuntime
 from spine.agents.runtime.ports import (
     AuthorizationContextView,
     CanonicalTrustedAuthorizationContextVerifier,
+    CancellationController,
     CancellationToken,
     EventSink,
     ExecutionScopeValidator,
@@ -77,11 +84,16 @@ __all__ = [
     "AgentUsageKind",
     "AuthorizationContextView",
     "CanonicalTrustedAuthorizationContextVerifier",
+    "CancellationController",
+    "CancellationScope",
     "AgentRuntime",
     "ArtifactDraft",
     "ArtifactPersistence",
     "ArtifactReadError",
     "CancellationToken",
+    "CooperativeCancellationController",
+    "CooperativeCancellationError",
+    "CooperativeCancellationToken",
     "EventSink",
     "ExecutionScopeValidator",
     "ExecutionIdentitySnapshot",
