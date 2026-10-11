@@ -133,9 +133,9 @@ def upgrade() -> None:
         ),
         schema=SCHEMA,
     )
-    op.create_check_constraint(
-        "ck_source_receipt_associations_verified",
-        "source_revision_receipt_associations",
+    op.execute(
+        f"ALTER TABLE {SCHEMA}.\"source_revision_receipt_associations\" "
+        "ADD CONSTRAINT ck_source_receipt_associations_verified CHECK ("
         "original_receipt_kind = 'issue6.write_receipt' AND verification_status = 'verified' "
         "AND storage_status = 'finalized_verified' AND original_command_result_schema_version > 0 "
         "AND byte_length >= 0 AND original_sha256 OPERATOR(pg_catalog.~) '^[0-9a-f]{64}$' "
@@ -146,12 +146,11 @@ def upgrade() -> None:
         "AND provenance_id <> '00000000-0000-0000-0000-000000000000'::pg_catalog.uuid "
         "AND original_receipt_id <> '00000000-0000-0000-0000-000000000000'::pg_catalog.uuid "
         "AND original_command_result_id <> '00000000-0000-0000-0000-000000000000'::pg_catalog.uuid "
-        "AND original_upload_id <> '00000000-0000-0000-0000-000000000000'::pg_catalog.uuid",
-        schema=SCHEMA,
+        "AND original_upload_id <> '00000000-0000-0000-0000-000000000000'::pg_catalog.uuid)",
     )
-    op.create_check_constraint(
-        "ck_source_receipt_associations_reference",
-        "source_revision_receipt_associations",
+    op.execute(
+        f"ALTER TABLE {SCHEMA}.\"source_revision_receipt_associations\" "
+        "ADD CONSTRAINT ck_source_receipt_associations_reference CHECK ("
         "pg_catalog.jsonb_typeof(original_reference) = 'object' "
         "AND (original_reference - 'schema_version' - 'object_id' - 'storage_generation' "
         "- 'digest_algorithm' - 'digest_hex' - 'byte_length') = '{}'::pg_catalog.jsonb "
@@ -168,8 +167,7 @@ def upgrade() -> None:
         "AND original_reference->>'digest_hex' = original_sha256 "
         "AND (original_reference->>'digest_hex') OPERATOR(pg_catalog.~) '^[0-9a-f]{64}$' "
         "AND (original_reference->>'byte_length') OPERATOR(pg_catalog.~) '^[0-9]+$' "
-        "AND (original_reference->>'byte_length') = byte_length::text",
-        schema=SCHEMA,
+        "AND (original_reference->>'byte_length') = byte_length::text)",
     )
     op.create_index(
         "ix_source_receipt_associations_revision",
