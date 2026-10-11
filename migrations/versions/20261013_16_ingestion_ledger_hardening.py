@@ -200,16 +200,16 @@ def upgrade() -> None:
             END LOOP;
             IF NEW.safe_metrics ? 'attempt' AND (
                 jsonb_typeof(NEW.safe_metrics->'attempt') <> 'number'
-                OR NEW.safe_metrics->>'attempt' !~ '^[1-9][0-9]{0,9}$'
+                OR NEW.safe_metrics->>'attempt' !~ '^[1-9][0-9]{{0,9}}$'
             ) THEN
                 RAISE EXCEPTION 'Safe metrics attempt is invalid.'
                     USING ERRCODE = '23514',
                           CONSTRAINT = 'ck_ingestion_transitions_safe_metrics_counter';
             END IF;
             IF (NEW.safe_metrics ? 'item_count' OR NEW.safe_metrics ? 'byte_count' OR NEW.safe_metrics ? 'duration_ms') AND (
-                (NEW.safe_metrics ? 'item_count' AND (jsonb_typeof(NEW.safe_metrics->'item_count') <> 'number' OR NEW.safe_metrics->>'item_count' !~ '^[0-9]{1,10}$'))
-                OR (NEW.safe_metrics ? 'byte_count' AND (jsonb_typeof(NEW.safe_metrics->'byte_count') <> 'number' OR NEW.safe_metrics->>'byte_count' !~ '^[0-9]{1,10}$'))
-                OR (NEW.safe_metrics ? 'duration_ms' AND (jsonb_typeof(NEW.safe_metrics->'duration_ms') <> 'number' OR NEW.safe_metrics->>'duration_ms' !~ '^[0-9]{1,10}$'))
+                (NEW.safe_metrics ? 'item_count' AND (jsonb_typeof(NEW.safe_metrics->'item_count') <> 'number' OR NEW.safe_metrics->>'item_count' !~ '^[0-9]{{1,10}}$'))
+                OR (NEW.safe_metrics ? 'byte_count' AND (jsonb_typeof(NEW.safe_metrics->'byte_count') <> 'number' OR NEW.safe_metrics->>'byte_count' !~ '^[0-9]{{1,10}}$'))
+                OR (NEW.safe_metrics ? 'duration_ms' AND (jsonb_typeof(NEW.safe_metrics->'duration_ms') <> 'number' OR NEW.safe_metrics->>'duration_ms' !~ '^[0-9]{{1,10}}$'))
             ) THEN
                 RAISE EXCEPTION 'Safe metrics counter is invalid.'
                     USING ERRCODE = '23514',

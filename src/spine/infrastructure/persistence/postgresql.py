@@ -489,7 +489,7 @@ class _PostgreSQLIngestionRepository:
 
     @staticmethod
     def _detail_values(detail: object) -> tuple[str, dict[str, object], str]:
-        payload = detail.model_dump(mode="json")
+        payload = detail.model_dump(mode="json", exclude_none=True)
         encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
         return payload["schema_version"], payload, hashlib.sha256(encoded).hexdigest()
 

@@ -40,7 +40,13 @@ from spine.application.persistence.idempotency import (
 )
 from spine.application.persistence.outbox import OpaqueObjectReference
 from spine.domain.common import EnvironmentKind
-from spine.domain.ingestion import IngestionRun
+from spine.domain.ingestion import (
+    IngestionRun,
+    IngestionRunState,
+    IngestionTargetKind,
+    IngestionTransition,
+    SafeDiagnosticDetail,
+)
 from spine.domain.workspaces import Environment, Workspace
 from spine.infrastructure.db.migrations import upgrade_database
 from spine.infrastructure.db.operator import bootstrap_database_roles
@@ -664,8 +670,29 @@ async def test_postgresql_rejects_invalid_ingestion_safe_metrics(
     command = IngestionRunCommand.create(
         run=run, idempotency_key=IdempotencyKey("safe-metrics-test-run")
     )
+    root_id = uuid5(
+        NAMESPACE_URL, f"ingestion-run-root:{command.run.ingestion_run_id}"
+    )
     async with postgresql_adapter.uow_factory(context) as uow:
         await uow.ingestion.create_run(command)
+        await uow.ingestion.append_transition(
+            IngestionTransition(
+                ingestion_transition_id=synthetic_uuid(base_id + 5),
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                target_kind=IngestionTargetKind.RUN,
+                ingestion_run_id=command.run.ingestion_run_id,
+                predecessor_transition_id=root_id,
+                state=IngestionRunState.RECEIVING,
+                attempt=1,
+                safe_metrics=SafeDiagnosticDetail(
+                    schema_version="ingestion-safe-detail:v1", attempt=1
+                ),
+                actor_or_service="safe-metrics-test",
+                trace_id=synthetic_uuid(base_id + 6),
+                occurred_at=datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc),
+            )
+        )
         await uow.commit()
 
     engine = create_async_engine(
@@ -673,9 +700,6 @@ async def test_postgresql_rejects_invalid_ingestion_safe_metrics(
         hide_parameters=True,
     )
     transition_id = synthetic_uuid(base_id + 3)
-    root_id = uuid5(
-        NAMESPACE_URL, f"ingestion-run-root:{command.run.ingestion_run_id}"
-    )
     try:
         async with engine.begin() as connection:
             with pytest.raises(IntegrityError, match=message):
@@ -696,7 +720,7 @@ async def test_postgresql_rejects_invalid_ingestion_safe_metrics(
                         "workspace_id": workspace_id,
                         "environment_id": environment_id,
                         "run_id": command.run.ingestion_run_id,
-                        "predecessor_id": root_id,
+                        "predecessor_id": synthetic_uuid(base_id + 5),
                         "safe_metrics": safe_metrics,
                         "trace_id": synthetic_uuid(base_id + 4),
                     },
