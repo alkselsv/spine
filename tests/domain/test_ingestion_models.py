@@ -92,6 +92,12 @@ def test_safe_diagnostic_rejects_non_integer_counter_values(value: object) -> No
         SafeDiagnosticDetail(schema_version="ingestion-safe-detail:v1", attempt=value)
 
 
+@pytest.mark.parametrize("value", (1, 0, "yes", "false"))
+def test_safe_diagnostic_rejects_non_boolean_retryable_values(value: object) -> None:
+    with pytest.raises(ValueError):
+        SafeDiagnosticDetail(schema_version="ingestion-safe-detail:v1", retryable=value)
+
+
 def test_failed_processing_receipt_cannot_pin_output_digest() -> None:
     with pytest.raises(ValueError, match="failed processing"):
         ProcessingReceipt(

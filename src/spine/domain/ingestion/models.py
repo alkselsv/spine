@@ -8,7 +8,7 @@ from enum import Enum
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, StrictInt, model_validator
+from pydantic import ConfigDict, Field, StrictBool, StrictInt, model_validator
 
 from spine.domain.common import DefinitionModel
 from spine.domain.sources.original_reference import ObjectReference
@@ -95,7 +95,7 @@ class SafeDiagnosticDetail(_FrozenRecord):
     item_count: SafeCounter | None = None
     byte_count: SafeCounter | None = None
     duration_ms: SafeCounter | None = None
-    retryable: bool | None = None
+    retryable: StrictBool | None = None
     opaque_detail_ref: UUID | None = None
 
     @model_validator(mode="after")
