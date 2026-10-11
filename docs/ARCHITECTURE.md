@@ -1381,6 +1381,12 @@ capability, schema or implementation keys do not establish registry ownership;
 a wrapper issued by another registry is rejected. The catalog's direct
 execution method fails closed; only the infrastructure composition can produce
 the guarded two-argument handler.
+`_RegisteredHandler` and `_BoundAgentHandler` are infrastructure-owned
+execution wrappers, not ordinary application handlers: neither may be
+registered or returned by a registered factory. Construction validates the
+actual returned object before recording registry ownership, so a foreign
+guarded handler cannot be laundered inside a locally issued wrapper even when
+its metadata and binding values match.
 
 Run and Artifact identifiers are structurally validated and preserved here;
 authoritative ownership and handoff/persistence checks remain with the owning

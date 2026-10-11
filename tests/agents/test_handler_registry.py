@@ -15,6 +15,7 @@ from spine.agents.catalog import (
     BindingResolutionError,
     BindingResolutionRequest,
     DeploymentSelectionPolicy,
+    HandlerConstructionError,
     HandlerRegistry,
     HandlerRegistryError,
 )
@@ -479,6 +480,20 @@ def test_registry_rejects_wrapping_a_handler_issued_by_another_registry() -> Non
             registration=registration(),
             handler=foreign_handler,
         )
+
+
+def test_registry_rejects_factory_returning_an_issued_handler_wrapper() -> None:
+    source = registry_with_factory()
+    foreign_handler = source.construct(capability=capability(), version=version())
+    target = HandlerRegistry()
+    target.register_factory(
+        registration=registration(),
+        factory=lambda selected_version: foreign_handler,
+    )
+    target.finalize()
+
+    with pytest.raises(HandlerConstructionError, match="construction failed"):
+        target.construct(capability=capability(), version=version())
 
 
 def test_runtime_config_cannot_select_another_registered_implementation() -> None:

@@ -222,6 +222,12 @@ class _BoundAgentHandler:
         return await self._selected._invoke_selected(request, context)
 
 
+def _is_protected_execution_wrapper(value: Any) -> bool:
+    """Keep Spine-owned execution wrappers out of ordinary registrations."""
+
+    return isinstance(value, (_RegisteredHandler, _BoundAgentHandler))
+
+
 def _is_factory(value: Any) -> bool:
     if not callable(value):
         return False
@@ -252,7 +258,7 @@ class HandlerRegistry:
         """Register one already-constructed structural handler explicitly."""
 
         self._validate_registration(registration)
-        if isinstance(handler, _RegisteredHandler) or not _is_handler(handler):
+        if _is_protected_execution_wrapper(handler) or not _is_handler(handler):
             raise HandlerRegistryError("local handler registration factory is invalid")
 
         def factory(selected_version: AgentVersion) -> AgentHandler[Any, Any]:
@@ -315,7 +321,7 @@ class HandlerRegistry:
             raise
         except Exception as error:
             raise HandlerConstructionError("local handler construction failed") from error
-        if isinstance(handler, _RegisteredHandler) or not _is_handler(handler):
+        if _is_protected_execution_wrapper(handler) or not _is_handler(handler):
             raise HandlerConstructionError("local handler construction failed")
         registered = _RegisteredHandler(handler, registration)
         self._issued_handlers = (*self._issued_handlers, registered)
