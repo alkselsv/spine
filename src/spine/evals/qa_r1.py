@@ -52,14 +52,8 @@ class TextRangeLocator(_FrozenModel):
         return self
 
 
-class MessageLocator(_FrozenModel):
-    kind: Literal["message"]
-    schema_version: Literal["locator:message:v1"]
-    message_id: _NON_EMPTY
-
-
 Locator: TypeAlias = Annotated[
-    Union[PDFPageLocator, XLSXCellLocator, TextRangeLocator, MessageLocator],
+    Union[PDFPageLocator, XLSXCellLocator, TextRangeLocator],
     Field(discriminator="kind"),
 ]
 
@@ -82,6 +76,8 @@ class EvidenceItem(_FrozenModel):
 
 class SourceRevisionFixture(_FrozenModel):
     revision_id: UUID
+    revision_digest: Annotated[str, Field(pattern=_DIGEST)] | None = None
+    revision_schema_version: Literal["source-revision:v1"] = "source-revision:v1"
     source_object_id: UUID
     workspace_id: UUID
     environment_id: UUID
@@ -90,6 +86,7 @@ class SourceRevisionFixture(_FrozenModel):
     media_type: Annotated[str, Field(min_length=1, pattern=r"^[a-z0-9.+-]+/[a-z0-9.+-]+$")] | None = None
     content: str | None = None
     tombstone_reason: _Identifier | None = None
+    table_rows: tuple[tuple[_NON_EMPTY, ...], ...] = ()
     evidence: tuple[EvidenceItem, ...] = ()
 
     @model_validator(mode="after")
@@ -99,15 +96,33 @@ class SourceRevisionFixture(_FrozenModel):
                 raise ValueError("content revisions require content metadata and no tombstone reason")
             if not self.evidence:
                 raise ValueError("content revisions require evidence items")
+            if self.revision_digest is None:
+                object.__setattr__(self, "revision_digest", hashlib.sha256(self.content.encode("utf-8")).hexdigest())
         elif self.content is not None or self.media_type is not None or self.evidence or not self.tombstone_reason:
             raise ValueError("tombstones contain only deletion provenance")
+        if self.revision_digest is None:
+            object.__setattr__(
+                self,
+                "revision_digest",
+                hashlib.sha256(f"{self.source_object_id}:{self.revision_number}:{self.tombstone_reason}".encode()).hexdigest(),
+            )
         return self
 
 
 class ACLFixture(_FrozenModel):
+    schema_version: Literal["access-policy:v1"] = "access-policy:v1"
     source_object_id: UUID
     principal_id: UUID
     read_content: bool
+
+
+class SourceObservationFixture(_FrozenModel):
+    observation_id: _Identifier
+    source_revision_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    idempotency_key: _Identifier
+    observed_digest: Annotated[str, Field(pattern=_DIGEST)]
 
 
 class ExpectedClaim(_FrozenModel):
@@ -129,12 +144,13 @@ class QACase(_FrozenModel):
     workspace_id: UUID
     environment_id: UUID
     principal_id: UUID
-    expected_outcome: Literal["answered", "clarification_required", "abstained", "denied"]
+    expected_outcome: Literal["answered", "abstained", "denied"]
     expected_answer: str | None = None
     expected_claims: tuple[ExpectedClaim, ...] = ()
     expected_evidence_ids: tuple[_Identifier, ...] = ()
     expected_reason: _Identifier | None = None
     available_revision_ids: tuple[UUID, ...] = Field(min_length=1)
+    excluded_revision_ids: tuple[UUID, ...] = ()
     acl: tuple[ACLFixture, ...] = ()
     relevance_labels: tuple[RelevanceLabel, ...] = ()
     observation_ids: tuple[_Identifier, ...] = ()
@@ -168,12 +184,14 @@ class QADataset(_FrozenModel):
     release_thresholds: tuple[_Identifier, ...] = ()
     source_objects: tuple[SourceObjectFixture, ...] = ()
     source_revisions: tuple[SourceRevisionFixture, ...] = ()
+    observations: tuple[SourceObservationFixture, ...] = ()
     cases: tuple[QACase, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
     def validate_references_and_digest(self) -> "QADataset":
         object_by_id = {item.source_object_id: item for item in self.source_objects}
         revision_by_id = {item.revision_id: item for item in self.source_revisions}
+        observation_by_id = {item.observation_id: item for item in self.observations}
         evidence_by_id = {
             item.evidence_id: (revision, item)
             for revision in self.source_revisions
@@ -183,6 +201,8 @@ class QADataset(_FrozenModel):
             raise ValueError("source object identities must be unique")
         if len(revision_by_id) != len(self.source_revisions):
             raise ValueError("source revision identities must be unique")
+        if len(observation_by_id) != len(self.observations):
+            raise ValueError("observation identities must be unique")
         if len(evidence_by_id) != sum(len(revision.evidence) for revision in self.source_revisions):
             raise ValueError("evidence identities must be unique")
         if len({case.case_id for case in self.cases}) != len(self.cases):
@@ -201,6 +221,18 @@ class QADataset(_FrozenModel):
                 if evidence.source_revision_id != revision.revision_id:
                     raise ValueError("evidence must reference its containing source revision")
 
+        for observation in self.observations:
+            revision = revision_by_id.get(observation.source_revision_id)
+            if revision is None:
+                raise ValueError("observation references an unknown source revision")
+            if (observation.workspace_id, observation.environment_id) != (
+                revision.workspace_id,
+                revision.environment_id,
+            ):
+                raise ValueError("observation scope must match its source revision")
+            if observation.observed_digest != revision.revision_digest:
+                raise ValueError("observation digest must match its source revision")
+
         for case in self.cases:
             revisions = [revision_by_id.get(revision_id) for revision_id in case.available_revision_ids]
             if any(revision is None for revision in revisions):
@@ -211,6 +243,20 @@ class QADataset(_FrozenModel):
                 if revision is not None
             ):
                 raise ValueError("case cannot retrieve across workspace or environment boundaries")
+            for revision_id in case.excluded_revision_ids:
+                revision = revision_by_id.get(revision_id)
+                if revision is None:
+                    raise ValueError("case references an unknown excluded revision")
+                if revision_id in case.available_revision_ids:
+                    raise ValueError("excluded revisions cannot be available")
+                if (revision.workspace_id, revision.environment_id) == (case.workspace_id, case.environment_id):
+                    raise ValueError("excluded revisions must demonstrate another workspace or environment")
+            for observation_id in case.observation_ids:
+                observation = observation_by_id.get(observation_id)
+                if observation is None:
+                    raise ValueError("case references an unknown observation")
+                if observation.source_revision_id not in case.available_revision_ids:
+                    raise ValueError("case observation must belong to an available revision")
             for evidence_id in case.expected_evidence_ids:
                 revision, evidence = evidence_by_id.get(evidence_id, (None, None))
                 if revision is None or evidence is None:
@@ -274,7 +320,6 @@ __all__ = [
     "EvidenceItem",
     "ExpectedClaim",
     "Locator",
-    "MessageLocator",
     "PDFPageLocator",
     "QACase",
     "QADataset",
@@ -283,6 +328,7 @@ __all__ = [
     "RelevanceLabel",
     "SourceObjectFixture",
     "SourceRevisionFixture",
+    "SourceObservationFixture",
     "TextRangeLocator",
     "XLSXCellLocator",
     "load_r1_dataset",

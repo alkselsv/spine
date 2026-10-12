@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from spine.evals.qa_r1 import (
@@ -87,6 +89,14 @@ def test_r1_dataset_evidence_and_workspace_references_resolve() -> None:
             assert revision.workspace_id == case.workspace_id
             assert revision.environment_id == case.environment_id
             assert item.source_revision_id == revision.revision_id
+
+        for revision_id in case.excluded_revision_ids:
+            excluded = revisions[revision_id]
+            assert revision_id not in case.available_revision_ids
+            assert (excluded.workspace_id, excluded.environment_id) != (
+                case.workspace_id,
+                case.environment_id,
+            )
         for label in case.relevance_labels:
             revision, item = evidence[label.evidence_id]
             assert revision.revision_id in case.available_revision_ids
@@ -108,6 +118,47 @@ def test_r1_dataset_has_citation_grade_pdf_and_xlsx_locators() -> None:
     assert any(locator.kind == "pdf_page" for locator in locators)
     assert any(locator.kind == "xlsx_cell" for locator in locators)
     assert all(locator.schema_version for locator in locators)
+
+    for revision in dataset.source_revisions:
+        if revision.content is None:
+            continue
+        for item in revision.evidence:
+            if item.locator.kind == "text_range":
+                assert revision.content[item.locator.start : item.locator.end] == item.excerpt
+
+
+def test_r1_dataset_records_idempotent_duplicate_observations() -> None:
+    dataset = load_r1_dataset()
+    observations = {item.observation_id: item for item in dataset.observations}
+    duplicate_ids = next(case.observation_ids for case in dataset.cases if "duplicate_ingestion" in case.scenario_tags)
+    duplicate_observations = [observations[item] for item in duplicate_ids]
+
+    assert len(duplicate_observations) == 2
+    assert {item.source_revision_id for item in duplicate_observations} == {
+        duplicate_observations[0].source_revision_id
+    }
+    assert len({item.idempotency_key for item in duplicate_observations}) == 1
+    assert len({item.observed_digest for item in duplicate_observations}) == 1
+
+
+def test_r1_dataset_keeps_tombstone_predecessor_history() -> None:
+    dataset = load_r1_dataset()
+    revisions_by_object: dict[object, list[object]] = {}
+    for revision in dataset.source_revisions:
+        revisions_by_object.setdefault(revision.source_object_id, []).append(revision)
+
+    tombstones = [revision for revision in dataset.source_revisions if revision.kind == "tombstone"]
+    assert tombstones
+    for tombstone in tombstones:
+        assert any(revision.kind == "content" for revision in revisions_by_object[tombstone.source_object_id])
+
+
+def test_r1_dataset_serialization_is_stable_from_independent_loads() -> None:
+    path = Path(__file__).parents[2] / "src" / "spine" / "evals" / "data" / "qa_r1.json"
+    first = QADataset.model_validate_json(path.read_bytes())
+    second = QADataset.model_validate_json(path.read_bytes())
+
+    assert serialize_dataset(first) == serialize_dataset(second)
 
 
 def test_r1_dataset_is_synthetic_and_does_not_define_release_thresholds() -> None:
