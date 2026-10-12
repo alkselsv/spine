@@ -29,6 +29,7 @@ from spine.application.persistence.canonical import (
     SourceOrderComparison,
     SourceOrderingPolicyError,
     SourceOrderingPolicyRegistry,
+    validate_canonical_acceptance_effects,
 )
 from spine.application.access_policies import (
     AccessPolicyActivationCommand,
@@ -1139,6 +1140,26 @@ class _PostgreSQLCanonicalAcceptanceRepository:
                         "Current source acceptance is unavailable."
                     )
                 )
+            content_is_eligible = (
+                current.current_revision_kind is RevisionKind.CONTENT
+                and acceptance.admission_decision_id is not None
+                and acceptance.access_policy_version_id is not None
+                and await self._current_content_is_eligible(
+                    source_id=acceptance.source_object_id,
+                    revision_id=acceptance.source_revision_id,
+                    admission_id=acceptance.admission_decision_id,
+                    policy_id=acceptance.access_policy_version_id,
+                )
+            )
+            tombstone_is_eligible = (
+                current.current_revision_kind is RevisionKind.TOMBSTONE
+                and acceptance.admission_decision_id is None
+                and acceptance.access_policy_version_id is None
+            )
+            if not content_is_eligible and not tombstone_is_eligible:
+                await self._uow._fail(
+                    CanonicalEligibilityError("Canonical replay is unavailable.")
+                )
             result_reference = OpaqueResultReference(
                 result_type="canonical_acceptance",
                 result_id=acceptance.canonical_acceptance_id,
@@ -1208,6 +1229,16 @@ class _PostgreSQLCanonicalAcceptanceRepository:
                 .one_or_none()
             )
             if association is None:
+                await self._uow._fail(
+                    CanonicalEligibilityError(
+                        "Canonical acceptance evidence is incomplete."
+                    )
+                )
+            if (
+                self._uow.sources._receipt_association_from_row(association)
+                .original_reference
+                != revision.original_reference
+            ):
                 await self._uow._fail(
                     CanonicalEligibilityError(
                         "Canonical acceptance evidence is incomplete."
@@ -1326,6 +1357,20 @@ class _PostgreSQLCanonicalAcceptanceRepository:
             outbox_event_id=command.outbox_event_id,
             accepted_at=command.accepted_at,
         )
+        try:
+            validate_canonical_acceptance_effects(
+                command=command,
+                acceptance=acceptance,
+                context=self._uow._context_snapshot_active(),
+                audit_registry=self._uow._audit_events,
+                outbox_registry=self._uow._outbox_events,
+            )
+        except Exception:
+            await self._uow._fail(
+                CanonicalAuthorityConflictError(
+                    "Canonical audit or outbox evidence conflicts."
+                )
+            )
         await self._uow._execute(insert(_CANONICAL_ACCEPTANCES).values(**acceptance.model_dump(mode="python")))
         await self._uow._execute(
             update(_CANONICAL_GENERATION_COUNTERS)
@@ -1356,12 +1401,6 @@ class _PostgreSQLCanonicalAcceptanceRepository:
                 set_=head.model_dump(mode="python", exclude={"source_object_id"}),
             )
         )
-        if command.audit_event is None or command.outbox_intent is None:
-            await self._uow._fail(
-                ConstraintConflictError(
-                    "Canonical acceptance audit and outbox evidence is required."
-                )
-            )
         if command.audit_event.audit_event_id not in (None, command.audit_event_id):
             await self._uow._fail(
                 ConstraintConflictError("Canonical audit identity is invalid.")

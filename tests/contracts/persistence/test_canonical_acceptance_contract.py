@@ -12,7 +12,12 @@ from spine.application.access_policies import (
     access_policy_document_hash,
 )
 from spine.application.diagnostics.audit import AuditEventRegistry
-from spine.application.persistence.canonical import CanonicalAcceptanceCommand
+from spine.application.persistence.canonical import (
+    CANONICAL_ACCEPTANCE_OUTBOX_EVENT_TYPE,
+    CANONICAL_ACCEPTANCE_OUTBOX_SCHEMA_VERSION,
+    CanonicalAcceptanceCommand,
+    CanonicalAcceptanceOutboxPayload,
+)
 from spine.application.persistence.command_digest import digest_command
 from spine.application.persistence.context import PersistenceOperation
 from spine.application.persistence.errors import (
@@ -150,6 +155,41 @@ def _outbox(
             lifecycle_state="active",
         ),
         trace_id=context.trace_id,
+    )
+
+
+def _canonical_outbox(
+    adapter: PersistenceAdapter,
+    *,
+    context: object,
+    source_object_id: UUID,
+    source_revision_id: UUID,
+    acceptance_id: UUID,
+    generation: int,
+    audit_event_id: UUID,
+    event_id: UUID,
+    transition: str = "source.accepted",
+):
+    return adapter.outbox_events.build_intent(
+        event_id=event_id,
+        workspace_id=context.scope.workspace_id,
+        environment_id=context.scope.environment_id,
+        event_type=CANONICAL_ACCEPTANCE_OUTBOX_EVENT_TYPE,
+        schema_version=CANONICAL_ACCEPTANCE_OUTBOX_SCHEMA_VERSION,
+        payload=CanonicalAcceptanceOutboxPayload(
+            canonical_acceptance_id=acceptance_id,
+            source_object_id=source_object_id,
+            source_revision_id=source_revision_id,
+            accepted_generation=generation,
+            audit_event_id=audit_event_id,
+            transition=transition,
+        ),
+        trace_id=context.trace_id,
+        aggregate=OpaqueObjectReference(
+            object_type="source_object",
+            object_id=source_object_id,
+            schema_version=1,
+        ),
     )
 
 
@@ -453,10 +493,14 @@ async def prepare_case(
             event_id=audit_id,
             reason="source_accepted",
         ),
-        outbox_intent=_outbox(
+        outbox_intent=_canonical_outbox(
             adapter,
             context=canonical_context,
             source_object_id=source_object.source_object_id,
+            source_revision_id=source_revision.revision_id,
+            acceptance_id=synthetic_uuid(number + 18002),
+            generation=1,
+            audit_event_id=audit_id,
             event_id=outbox_id,
         ),
     )
@@ -597,10 +641,14 @@ async def test_canonical_rejects_stale_expected_current_without_success_effect(
             event_id=audit_id,
             reason="source_accepted",
         ),
-        outbox_intent=_outbox(
+        outbox_intent=_canonical_outbox(
             persistence_adapter,
             context=case.context,
             source_object_id=case.source.source_object_id,
+            source_revision_id=case.revision.revision_id,
+            acceptance_id=synthetic_uuid(19723),
+            generation=2,
+            audit_event_id=audit_id,
             event_id=outbox_id,
         ),
     )
