@@ -2218,7 +2218,8 @@ detectors без специальных обходов в platform core.
   Workspace/Environment request authorization.
 - [ADR-022](adr/0022-durable-backup-fence-and-recovery-evidence.md): durable
   deployment-scoped backup fencing, ordered operation tickets, immutable
-  recovery manifests and explicit Profile A/Profile B separation.
+  recovery manifests, explicit Profile A/Profile B separation, and the
+  hash-linked recovery-evidence trust/readiness gate used during restore.
 - ADR-TBD: artifact schemas и handoff evaluation protocol.
 - ADR-012: business outcome attribution и cost accounting.
 - ADR-013: future third-party Agent SDK, package trust и certification после появления подтверждённого внешнего кейса.

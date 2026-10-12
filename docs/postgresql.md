@@ -217,8 +217,10 @@ to monotonic policy and CAS generations.
 
 Revision `20261016_19` adds the deployment-scoped backup fence, ordered
 operation tickets, immutable epoch-scoped quiescence evidence and immutable
-recovery manifests. The live lease is the serialized coordination boundary;
-historical evidence cannot be rewritten by the runtime role.
+recovery manifests. Revision `20261017_20` adds the append-only, hash-linked
+recovery-evidence invalidation chain. The live lease is the serialized
+coordination boundary; historical evidence cannot be rewritten by the runtime
+role, and recovery readiness must fail closed unless the complete chain verifies.
 
 `spine-db-bootstrap-workspace` is a one-time migration-authority action. It
 atomically inserts the first Workspace and an operator audit record, then seals
@@ -228,7 +230,7 @@ invoke it or access its tables.
 
 Application startup never creates roles or schemas, invokes Alembic, or calls
 `metadata.create_all`. Readiness succeeds only when PostgreSQL major 17 is in
-use, the database reports exactly head `20261016_19`, the connected user is the
+use, the database reports exactly head `20261017_20`, the connected user is the
 configured restricted runtime role, required grants and forced RLS are intact,
 and transaction-local Workspace/Environment context can be bound. Empty,
 older, newer, unknown, and multiple-head states fail closed; the newly created

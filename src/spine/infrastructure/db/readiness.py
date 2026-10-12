@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
 from typing import cast
@@ -34,6 +35,9 @@ class SchemaRevisionState(str, Enum):
 
 class DatabaseReadinessError(RuntimeError):
     """The runtime database cannot safely serve this application build."""
+
+
+RecoveryReadinessCheck = Callable[[], Awaitable[None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +113,7 @@ def classify_schema_revision(
 async def verify_database_readiness(
     engine: object,
     settings: RuntimeDatabaseSettings,
+    recovery_readiness_check: RecoveryReadinessCheck | None = None,
 ) -> None:
     """Verify exact schema, restricted privileges, and local context binding."""
 
@@ -266,6 +271,15 @@ async def verify_database_readiness(
             ).one()
             if tuple(bound) != (workspace_id, environment_id):
                 raise DatabaseReadinessError("database tenant context is not ready")
+            if recovery_readiness_check is not None:
+                try:
+                    await recovery_readiness_check()
+                except DatabaseReadinessError:
+                    raise
+                except Exception:
+                    raise DatabaseReadinessError(
+                        "database recovery evidence is not ready"
+                    ) from None
     except DatabaseReadinessError:
         raise
     except Exception:
@@ -322,6 +336,9 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "fence_operation_tickets": ExpectedTablePrivileges(True, True, True, True, False),
         "recovery_quiescence_evidence": ExpectedTablePrivileges(True, True, True, False, False),
         "storage_recovery_manifests": ExpectedTablePrivileges(True, True, True, False, False),
+        "recovery_evidence_invalidations": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
         "source_canonical_tables": ExpectedTablePrivileges(False, True, False, False, False),
         "source_canonical_unicode": ExpectedTablePrivileges(False, True, False, False, False),
         "source_canonical_compositions": ExpectedTablePrivileges(False, True, False, False, False),
@@ -364,6 +381,7 @@ def _revision_order(revision: str) -> tuple[int, int] | None:
 __all__ = [
     "DatabaseReadinessError",
     "MigrationInventory",
+    "RecoveryReadinessCheck",
     "SchemaRevisionState",
     "classify_schema_revision",
     "load_migration_inventory",

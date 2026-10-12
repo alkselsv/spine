@@ -15,7 +15,10 @@ from spine.infrastructure.db.settings import (
     POSTGRESQL_SEARCH_PATH_OPTIONS,
     RuntimeDatabaseSettings,
 )
-from spine.infrastructure.db.readiness import verify_database_readiness
+from spine.infrastructure.db.readiness import (
+    RecoveryReadinessCheck,
+    verify_database_readiness,
+)
 
 
 class DisposableAsyncEngine(Protocol):
@@ -53,10 +56,12 @@ class DatabaseRuntime:
         engine_factory: EngineFactory = create_async_engine,
         session_factory_builder: SessionFactoryBuilder = async_sessionmaker,
         readiness_check: ReadinessCheck | None = None,
+        recovery_readiness_check: RecoveryReadinessCheck | None = None,
     ) -> None:
         self._engine_factory = engine_factory
         self._session_factory_builder = session_factory_builder
         self._readiness_check = readiness_check
+        self._recovery_readiness_check = recovery_readiness_check
         self._resources: DatabaseResources | None = None
         self._settings: RuntimeDatabaseSettings | None = None
         self._lifecycle_lock = asyncio.Lock()
@@ -93,9 +98,18 @@ class DatabaseRuntime:
                     hide_parameters=True,
                 )
                 if self._readiness_check is None:
-                    await verify_database_readiness(engine, settings)
+                    if self._recovery_readiness_check is None:
+                        await verify_database_readiness(engine, settings)
+                    else:
+                        await verify_database_readiness(
+                            engine,
+                            settings,
+                            recovery_readiness_check=self._recovery_readiness_check,
+                        )
                 else:
                     await self._readiness_check(engine)
+                    if self._recovery_readiness_check is not None:
+                        await self._recovery_readiness_check()
                 session_factory = self._session_factory_builder(
                     engine,
                     expire_on_commit=False,

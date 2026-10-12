@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from spine.infrastructure.persistence.postgresql_mappings import (
     backup_fence_leases,
     fence_operation_tickets,
+    recovery_evidence_invalidations,
     recovery_quiescence_evidence,
     storage_recovery_manifests,
 )
@@ -21,16 +22,17 @@ from spine.infrastructure.persistence.backup_recovery import _manifest_values
 
 def test_backup_recovery_migration_declares_all_durable_coordination_records() -> None:
     migration = importlib.import_module(
-        "migrations.versions.20261016_19_backup_recovery_coordination"
+        "migrations.versions.20261017_20_recovery_evidence_integrity"
     )
 
-    assert migration.revision == "20261016_19"
-    assert migration.down_revision == "20261015_18"
+    assert migration.revision == "20261017_20"
+    assert migration.down_revision == "20261016_19"
     assert migration.COORDINATION_TABLES == (
         "backup_fence_leases",
         "fence_operation_tickets",
         "recovery_quiescence_evidence",
         "storage_recovery_manifests",
+        "recovery_evidence_invalidations",
     )
 
 
@@ -43,6 +45,8 @@ def test_backup_recovery_mappings_keep_live_and_immutable_records_separate() -> 
     assert "ticket_sequence" in fence_operation_tickets.c
     assert "verification_digest" in recovery_quiescence_evidence.c
     assert "manifest_digest" in storage_recovery_manifests.c
+    assert "previous_event_digest" in recovery_evidence_invalidations.c
+    assert "event_digest" in recovery_evidence_invalidations.c
 
 
 def test_manifest_values_are_json_serializable_for_jsonb_evidence() -> None:

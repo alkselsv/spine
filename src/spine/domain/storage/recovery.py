@@ -456,3 +456,25 @@ __all__ = [
     "TicketAdmission",
     "validate_ticket_transition",
 ]
+
+from .recovery_integrity import (
+    RecoveryEvidenceEventKind,
+    RecoveryEvidenceFailure,
+    RecoveryEvidenceInvalidation,
+    RecoveryEvidenceVerification,
+    RecoveryReadiness,
+    RecoveryTrustState,
+    derive_recovery_readiness,
+    verify_recovery_evidence_chain,
+)
+
+__all__ += [
+    "RecoveryEvidenceEventKind",
+    "RecoveryEvidenceFailure",
+    "RecoveryEvidenceInvalidation",
+    "RecoveryEvidenceVerification",
+    "RecoveryReadiness",
+    "RecoveryTrustState",
+    "derive_recovery_readiness",
+    "verify_recovery_evidence_chain",
+]

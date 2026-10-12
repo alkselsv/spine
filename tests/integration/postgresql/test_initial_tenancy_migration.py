@@ -5,6 +5,7 @@ import shutil
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -19,8 +20,19 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError, IntegrityError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from spine.application.persistence.errors import ConstraintConflictError
+from spine.application.storage.recovery_integrity import RecoveryEvidenceCoordinator
+from spine.domain.storage.recovery import (
+    ComponentState,
+    QuiescentEvidence,
+    RecoveryEvidenceEventKind,
+    RecoveryEvidenceInvalidation,
+    RecoveryManifestProfile,
+    RecoveryManifestStatus,
+    StorageRecoveryManifest,
+)
 from spine.domain.workspaces import Workspace
 from spine.infrastructure.db.initial_workspace import (
     PostgreSQLInitialWorkspaceBootstrap,
@@ -38,6 +50,9 @@ from spine.infrastructure.db.settings import (
 from spine.infrastructure.db.test_harness import TestDatabaseProvision
 from spine.infrastructure.persistence.contexts import (
     create_initial_workspace_bootstrap_authority,
+)
+from spine.infrastructure.persistence.backup_recovery import (
+    PostgreSQLBackupRecoveryRepository,
 )
 from tests.contracts.persistence.source_canonical_vectors import (
     INVALID_LANGUAGE_TAGS,
@@ -458,6 +473,99 @@ async def tenant_rows(migrated_database: MigratedDatabase) -> AsyncIterator[None
             {"workspace_a": WORKSPACE_A, "workspace_b": WORKSPACE_B},
         )
         await connection.commit()
+
+
+def _recovery_manifest_for_integration() -> StorageRecoveryManifest:
+    now = datetime(2026, 10, 12, 12, 0, tzinfo=timezone.utc)
+    evidence = QuiescentEvidence.build(
+        fence_epoch=1,
+        cutoff_ticket_sequence=0,
+        watermark="pg:1",
+        pre_fence_terminal_ticket_count=0,
+        captured_at=now,
+    )
+    return StorageRecoveryManifest.build(
+        recovery_set_id="recovery-integration-101",
+        deployment_scope_id="deployment-integration-101",
+        profile=RecoveryManifestProfile.COORDINATED,
+        manifest_status=RecoveryManifestStatus.COHERENT,
+        fence_epoch=1,
+        cutoff_ticket_sequence=0,
+        quiescent_evidence=evidence,
+        postgres_boundary="snapshot:pg-1",
+        postgres_recovery_watermark="pg:1",
+        object_volume_generation="volume:1",
+        postgres_component_state=ComponentState.VERIFIED,
+        object_component_state=ComponentState.VERIFIED,
+        postgres_backup_identity="backup:pg-1",
+        postgres_verification_reference="verify:pg-1",
+        object_verification_reference="verify:volume-1",
+        drained_operation_count=0,
+        orphaned_operation_count=0,
+        indeterminate_operation_count=0,
+        scope="deployment-integration-101",
+        created_at=now,
+        completed_at=now,
+    )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_recovery_evidence_append_is_atomic(
+    migrated_database: MigratedDatabase,
+) -> None:
+    engine = create_async_engine(migrated_database.migration.url.get_secret_value())
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    repository = PostgreSQLBackupRecoveryRepository(session_factory=session_factory)
+    recovery = RecoveryEvidenceCoordinator(repository=repository)
+    manifest = _recovery_manifest_for_integration()
+
+    try:
+        async with repository.transaction(manifest.deployment_scope_id) as transaction:
+            await transaction.add_manifest(manifest)
+
+        first = await recovery.append_invalidation(
+            manifest.deployment_scope_id,
+            recovery_set_id=manifest.recovery_set_id,
+            manifest_digest=manifest.manifest_digest,
+            reason_code="component_identity_mismatch",
+        )
+        assert (
+            await recovery.verify(manifest.deployment_scope_id)
+        ).trust_state.value == "invalidated"
+
+        second = RecoveryEvidenceInvalidation.build(
+            deployment_scope_id=manifest.deployment_scope_id,
+            sequence=2,
+            recovery_set_id=manifest.recovery_set_id,
+            manifest_digest=manifest.manifest_digest,
+            event_kind=RecoveryEvidenceEventKind.INVALIDATED,
+            reason_code="component_identity_mismatch",
+            previous_event_digest=first.event_digest,
+            occurred_at=manifest.created_at,
+        )
+        with pytest.raises(RuntimeError, match="simulated append crash"):
+            async with repository.transaction(
+                manifest.deployment_scope_id
+            ) as transaction:
+                await transaction.add_invalidation(second)
+                raise RuntimeError("simulated append crash")
+
+        async with repository.transaction(manifest.deployment_scope_id) as transaction:
+            assert await transaction.list_invalidations(
+                manifest.deployment_scope_id
+            ) == (first,)
+    finally:
+        async with _connection(migrated_database.migration.url) as connection:
+            await connection.execute(
+                text(
+                    "TRUNCATE spine.recovery_evidence_invalidations, "
+                    "spine.storage_recovery_manifests, "
+                    "spine.recovery_quiescence_evidence, "
+                    "spine.fence_operation_tickets, spine.backup_fence_leases"
+                )
+            )
+            await connection.commit()
+        await engine.dispose()
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -1199,6 +1307,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "fence_operation_tickets",
         "recovery_quiescence_evidence",
         "storage_recovery_manifests",
+        "recovery_evidence_invalidations",
     }
     expected_final_constraints = {
         "alembic_version_pkc",
@@ -1363,6 +1472,14 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ck_storage_recovery_manifests_counts",
         "ck_storage_recovery_manifests_profile_status",
         "ck_storage_recovery_manifests_coherent_evidence",
+        "pk_recovery_evidence_invalidations",
+        "fk_recovery_evidence_invalidations_lease",
+        "ck_recovery_evidence_invalidations_identifiers",
+        "ck_recovery_evidence_invalidations_sequence_positive",
+        "ck_recovery_evidence_invalidations_predecessor",
+        "ck_recovery_evidence_invalidations_digests",
+        "ck_recovery_evidence_invalidations_event_kind",
+        "ck_recovery_evidence_invalidations_replacement",
     }
     expected_final_constraints |= (
         AUTHORIZATION_DIRECTORY_CONSTRAINTS
@@ -1474,6 +1591,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "pk_recovery_quiescence_evidence",
         "pk_storage_recovery_manifests",
         "ix_storage_recovery_manifests_scope_created",
+        "pk_recovery_evidence_invalidations",
+        "ix_recovery_evidence_invalidations_scope_digest",
     } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
@@ -1511,6 +1630,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "fence_operation_tickets": (True, True),
         "recovery_quiescence_evidence": (True, True),
         "storage_recovery_manifests": (True, True),
+        "recovery_evidence_invalidations": (True, True),
     }
     assert rls == expected_rls
     tenant_rls_tables = {
@@ -1603,6 +1723,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "fence_operation_tickets": (True, True, True, False),
         "recovery_quiescence_evidence": (True, True, False, False),
         "storage_recovery_manifests": (True, True, False, False),
+        "recovery_evidence_invalidations": (True, True, False, False),
         "admission_decisions": (True, True, False, False),
         "source_canonical_tables": (True, False, False, False),
         "source_canonical_unicode": (True, False, False, False),
@@ -1739,7 +1860,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'access_policy_grants', 'policy_proposals', 'policy_approvals', "
                             "'policy_activations', 'current_access_policies', "
                             "'backup_fence_leases', 'fence_operation_tickets', "
-                            "'recovery_quiescence_evidence', 'storage_recovery_manifests'))"
+                            "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
+                            "'recovery_evidence_invalidations'))"
                     )
                 )
             ).scalars()
@@ -1764,7 +1886,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'backup_fence_leases', 'fence_operation_tickets', "
-                            "'recovery_quiescence_evidence', 'storage_recovery_manifests')"
+                            "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
+                            "'recovery_evidence_invalidations')"
                     )
                 )
             ).mappings()
@@ -1783,7 +1906,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'backup_fence_leases', 'fence_operation_tickets', "
-                            "'recovery_quiescence_evidence', 'storage_recovery_manifests')"
+                            "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
+                            "'recovery_evidence_invalidations')"
                     )
                 )
             ).scalars()
@@ -1801,7 +1925,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'backup_fence_leases', 'fence_operation_tickets', "
-                            "'recovery_quiescence_evidence', 'storage_recovery_manifests')"
+                            "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
+                            "'recovery_evidence_invalidations')"
                     )
                 )
             ).scalars()
@@ -1819,7 +1944,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'backup_fence_leases', 'fence_operation_tickets', "
-                            "'recovery_quiescence_evidence', 'storage_recovery_manifests')"
+                            "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
+                            "'recovery_evidence_invalidations')"
                     )
                 )
             ).scalars()
@@ -2378,7 +2504,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'policy_proposals', 'policy_approvals', "
                         "'policy_activations', 'current_access_policies', "
                         "'backup_fence_leases', 'fence_operation_tickets', "
-                        "'recovery_quiescence_evidence', 'storage_recovery_manifests')"
+                        "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
+                        "'recovery_evidence_invalidations')"
                     )
                 )
             )
@@ -2442,6 +2569,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "fence_operation_tickets": (True, True),
             "recovery_quiescence_evidence": (True, True),
             "storage_recovery_manifests": (True, True),
+            "recovery_evidence_invalidations": (True, True),
         }
     standard_tables = set(tables) - {"outbox_deliveries"}
     assert set(policies) == {
@@ -2466,6 +2594,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "fence_operation_tickets",
             "recovery_quiescence_evidence",
             "storage_recovery_manifests",
+            "recovery_evidence_invalidations",
         }:
             assert "spine.deployment_scope_id" in using_expression
             assert "spine.deployment_scope_id" in check_expression
@@ -3638,13 +3767,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261014_17_source_receipt_associations.py",
         "20261015_18_access_policy_persistence.py",
         "20261016_19_backup_recovery_coordination.py",
+        "20261017_20_recovery_evidence_integrity.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261016_20_injected_failure.py").write_text(
+    (target / "versions" / "20261017_21_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261016_20'\n"
-        "down_revision = '20261016_19'\n"
+        "revision = '20261017_21'\n"
+        "down_revision = '20261017_20'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"
