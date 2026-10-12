@@ -1,8 +1,10 @@
 """Deterministic offline metrics for ranked retrieval results.
 
-The evaluators consume the versioned synthetic Q&A case contract and the
-provider-neutral retrieval result.  They measure the offline fixture contract;
-they do not qualify a production index or create a release threshold.
+The evaluators consume the versioned synthetic Q&A case and dataset contracts
+plus the provider-neutral retrieval result.  The dataset is required to
+validate evidence-to-revision provenance.  These evaluators measure the
+offline fixture contract; they do not qualify a production index or create a
+release threshold.
 """
 
 from __future__ import annotations
@@ -27,8 +29,8 @@ def evaluate_recall_at_k(
     case: QACase,
     *,
     k: int,
+    dataset: QADataset,
     subject_id: UUID | None = None,
-    dataset: QADataset | None = None,
 ) -> EvaluationResult:
     """Evaluate the fraction of relevant references found in the top ``k``.
 
@@ -118,8 +120,8 @@ def evaluate_mrr(
     result: RetrievalResult,
     case: QACase,
     *,
+    dataset: QADataset,
     subject_id: UUID | None = None,
-    dataset: QADataset | None = None,
 ) -> EvaluationResult:
     """Evaluate reciprocal rank of the first relevant reference.
 
@@ -227,7 +229,7 @@ def _evaluation_identity(
     case: QACase,
     evaluator_key: str,
     parameter: str,
-    dataset: QADataset | None,
+    dataset: QADataset,
 ) -> UUID:
     reference_signature = ";".join(
         f"{reference.evidence_id}:{reference.source_revision_id}:{reference.workspace_id}:{reference.environment_id}"
@@ -249,7 +251,7 @@ def _evaluation_identity(
 def _ranked_ids_in_case_scope(
     result: RetrievalResult,
     case: QACase,
-    dataset: QADataset | None,
+    dataset: QADataset,
 ) -> tuple[tuple[str, ...], int, int]:
     ranked_ids: list[str] = []
     seen: set[str] = set()
@@ -264,7 +266,7 @@ def _ranked_ids_in_case_scope(
             ineligible_count += 1
             continue
         expected_revision = evidence_by_id.get(reference.evidence_id)
-        if expected_revision is not None and expected_revision != reference.source_revision_id:
+        if expected_revision is None or expected_revision != reference.source_revision_id:
             ineligible_count += 1
             continue
         if reference.evidence_id not in seen:
@@ -273,9 +275,7 @@ def _ranked_ids_in_case_scope(
     return tuple(ranked_ids), scope_filtered_count, ineligible_count
 
 
-def _evidence_by_id(dataset: QADataset | None) -> dict[str, UUID]:
-    if dataset is None:
-        return {}
+def _evidence_by_id(dataset: QADataset) -> dict[str, UUID]:
     return {
         item.evidence_id: revision.revision_id
         for revision in dataset.source_revisions

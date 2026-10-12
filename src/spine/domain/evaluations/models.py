@@ -4,7 +4,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from spine.domain.common import SpineModel
 
@@ -26,3 +26,9 @@ class EvaluationResult(SpineModel):
     verdict: EvaluationVerdict
     score: float | None = Field(default=None, ge=0.0, le=1.0)
     details: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_qa_scope(self) -> "EvaluationResult":
+        if self.subject_type == "qa_case" and (self.workspace_id is None or self.environment_id is None):
+            raise ValueError("qa_case evaluations require workspace and environment scope")
+        return self
