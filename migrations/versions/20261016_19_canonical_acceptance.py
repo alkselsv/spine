@@ -75,6 +75,13 @@ def _immutable(table: str) -> None:
 
 
 def upgrade() -> None:
+    # The lineage trigger must read immutable evidence that the runtime role
+    # intentionally cannot SELECT.  Its fixed search_path and value-only
+    # comparisons keep the elevated read narrow and non-disclosing.
+    op.execute(
+        f"ALTER FUNCTION {SCHEMA}.validate_source_receipt_association() "
+        "SECURITY DEFINER"
+    )
     op.create_unique_constraint(
         "uq_source_revision_provenance_scope_id",
         "source_revision_provenance",
@@ -321,6 +328,10 @@ def downgrade() -> None:
     op.execute(f"DROP FUNCTION {SCHEMA}.guard_canonical_acceptance_predecessor()")
     op.execute(f"DROP FUNCTION {SCHEMA}.guard_current_source_head_step()")
     op.execute(f"DROP FUNCTION {SCHEMA}.guard_canonical_generation_step()")
+    op.execute(
+        f"ALTER FUNCTION {SCHEMA}.validate_source_receipt_association() "
+        "SECURITY INVOKER"
+    )
     op.drop_constraint(
         "uq_source_revision_provenance_scope_id",
         "source_revision_provenance",

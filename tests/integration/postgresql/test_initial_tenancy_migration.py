@@ -991,7 +991,8 @@ async def test_source_observation_catalog_and_runtime_security_contract(
                         "AND procedure.proname IN ('source_canonical_nfc', 'source_canonical_trim', "
                         "'source_canonical_language', 'validate_source_revision_canonical', "
                         "'check_source_reappearance', 'reject_source_objects_mutation', "
-                        "'reject_source_revisions_mutation', 'reject_source_revision_provenance_mutation')"
+                        "'reject_source_revisions_mutation', 'reject_source_revision_provenance_mutation', "
+                        "'validate_source_receipt_association')"
                     ),
                     {"runtime": RUNTIME_ROLE},
                 )
@@ -1002,10 +1003,13 @@ async def test_source_observation_catalog_and_runtime_security_contract(
             "validate_source_revision_canonical", "check_source_reappearance",
             "reject_source_objects_mutation", "reject_source_revisions_mutation",
             "reject_source_revision_provenance_mutation",
+            "validate_source_receipt_association",
         }
         for row in function_rows.values():
             assert row.owner == MIGRATION_ROLE
-            assert row.security_definer is False
+            assert row.security_definer is (
+                row.proname == "validate_source_receipt_association"
+            )
             expected_volatility = {
                 "source_canonical_nfc": "i",
                 "source_canonical_trim": "i",
@@ -1015,12 +1019,14 @@ async def test_source_observation_catalog_and_runtime_security_contract(
                 "reject_source_objects_mutation": "v",
                 "reject_source_revisions_mutation": "v",
                 "reject_source_revision_provenance_mutation": "v",
+                "validate_source_receipt_association": "v",
             }[row.proname]
             assert row.volatility == expected_volatility
             assert "search_path=pg_catalog, spine" in tuple(row.config or ())
             assert row.public_execute is False
             assert row.runtime_execute is (
                 row.proname.startswith("source_canonical_")
+                and row.proname != "validate_source_receipt_association"
             )
 
 
@@ -1433,6 +1439,24 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
             expected == "ck_source_canonical_unicode_codepoint"
             and any(
                 actual.startswith("ck_source_canonical_unicode_")
+                for actual in constraints
+            )
+        )
+        and not (
+            expected == "ck_canonical_generation_nonnegative"
+            and any(
+                actual.startswith(
+                    "ck_canonical_generation_counters_ck_canonical_generation_nonneg"
+                )
+                for actual in constraints
+            )
+        )
+        and not (
+            expected == "ck_canonical_acceptances_ordering_shape"
+            and any(
+                actual.startswith(
+                    "ck_canonical_acceptances_ck_canonical_acceptances_ordering_sh"
+                )
                 for actual in constraints
             )
         )
@@ -2150,6 +2174,9 @@ async def test_outbox_intent_is_immutable_after_insert(
         await connection.execute(
             text("DELETE FROM spine.outbox_intents WHERE event_id = :event_id"),
             {"event_id": event_id},
+        )
+        await connection.execute(
+            text("SET CONSTRAINTS fk_canonical_acceptances_outbox IMMEDIATE")
         )
         await connection.execute(
             text(
