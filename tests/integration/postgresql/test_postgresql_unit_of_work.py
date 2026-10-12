@@ -706,6 +706,67 @@ async def test_postgresql_adapter_satisfies_canonical_acceptance_contract(
     await contract(postgresql_adapter)
 
 
+async def test_postgresql_canonical_acceptance_requires_corresponding_outbox_intent(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    case = await prepare_canonical_case(postgresql_adapter, 19250)
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        await uow.canonical.accept(case.command)
+        await uow.commit()
+
+    engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    try:
+        async with engine.connect() as connection:
+            constraint_name = await connection.scalar(
+                text(
+                    "SELECT constraint_record.conname "
+                    "FROM pg_constraint AS constraint_record "
+                    "JOIN pg_class AS source_relation "
+                    "ON source_relation.oid = constraint_record.conrelid "
+                    "JOIN pg_class AS referenced_relation "
+                    "ON referenced_relation.oid = constraint_record.confrelid "
+                    "JOIN pg_namespace AS namespace "
+                    "ON namespace.oid = source_relation.relnamespace "
+                    "JOIN pg_attribute AS source_column "
+                    "ON source_column.attrelid = source_relation.oid "
+                    "AND source_column.attnum = ANY(constraint_record.conkey) "
+                    "JOIN pg_attribute AS referenced_column "
+                    "ON referenced_column.attrelid = referenced_relation.oid "
+                    "AND referenced_column.attnum = ANY(constraint_record.confkey) "
+                    "WHERE namespace.nspname = 'spine' "
+                    "AND constraint_record.contype = 'f' "
+                    "AND source_relation.relname = 'canonical_acceptances' "
+                    "AND source_column.attname = 'outbox_event_id' "
+                    "AND referenced_relation.relname = 'outbox_intents' "
+                    "AND referenced_column.attname = 'event_id'"
+                )
+            )
+        assert isinstance(constraint_name, str)
+        with pytest.raises(IntegrityError) as error:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "ALTER TABLE spine.outbox_intents "
+                        "DISABLE TRIGGER trg_outbox_intents_immutable"
+                    )
+                )
+                await connection.execute(
+                    text(
+                        "DELETE FROM spine.outbox_intents "
+                        "WHERE event_id = :event_id"
+                    ),
+                    {"event_id": case.command.outbox_event_id},
+                )
+                await connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
+        assert error.value.orig.diag.constraint_name == constraint_name
+    finally:
+        await engine.dispose()
+
+
 async def test_postgresql_policy_change_wins_before_acceptance_and_stale_evidence_fails_closed(
     postgresql_adapter: PersistenceAdapter,
 ) -> None:

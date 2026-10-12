@@ -40,7 +40,11 @@ from spine.domain.sources import (
     AccessPolicyVersion,
     AdmissionDecision,
     AdmissionDisposition,
+    EligibilityDisposition,
+    InitialPolicyEligibilityDecision,
+    PolicyBenefitClassification,
     PolicyOriginKind,
+    PolicyProposal,
     PrincipalKind,
     SourceRevisionReceiptAssociation,
 )
@@ -186,6 +190,8 @@ async def _activate_policy(
     expected_cas: int = 0,
 ) -> UUID:
     policy_id = synthetic_uuid(number + 16000)
+    proposal_id = synthetic_uuid(number + 16001)
+    initial = expected_generation == 0
     policy = AccessPolicyVersion(
         access_policy_version_id=policy_id,
         workspace_id=source_object.workspace_id,
@@ -195,8 +201,12 @@ async def _activate_policy(
         predecessor_policy_version_id=expected_policy_id,
         document_schema_version="access-policy.v1",
         document_hash="a" * 64,
-        origin_kind=PolicyOriginKind.ELIGIBLE_TEMPLATE,
-        origin_reference=synthetic_uuid(number + 16001),
+        origin_kind=(
+            PolicyOriginKind.ELIGIBLE_TEMPLATE
+            if initial
+            else PolicyOriginKind.APPROVED_PROPOSAL
+        ),
+        origin_reference=proposal_id,
         origin_version=1,
         origin_hash="b" * 64,
         created_by_canonical_human_id=synthetic_uuid(number + 16002),
@@ -210,7 +220,7 @@ async def _activate_policy(
                 purpose="contract_test",
                 operation="canonical_acceptance",
             ),
-        ),
+        ) if initial else (),
     )
     policy = policy.model_copy(
         update={"document_hash": access_policy_document_hash(policy)}
@@ -239,6 +249,53 @@ async def _activate_policy(
         source_object_id=source_object.source_object_id,
         event_id=outbox_id,
     )
+    eligibility = (
+        InitialPolicyEligibilityDecision(
+            decision_id=synthetic_uuid(number + 16007),
+            workspace_id=source_object.workspace_id,
+            environment_id=source_object.environment_id,
+            source_object_id=source_object.source_object_id,
+            policy_version_id=policy.access_policy_version_id,
+            policy_hash=policy.document_hash,
+            origin_kind=policy.origin_kind,
+            origin_reference=policy.origin_reference,
+            origin_version=policy.origin_version,
+            origin_hash=policy.origin_hash,
+            membership_generation=1,
+            authority_generation=1,
+            service_authority_generation=1,
+            disposition=EligibilityDisposition.ELIGIBLE,
+            reason_code="eligible_template",
+            evaluator_contract_version="initial-policy.v1",
+            authority_snapshot_reference=synthetic_uuid(number + 16008),
+            audit_event_id=synthetic_uuid(number + 16009),
+            decided_at=NOW,
+        )
+        if initial
+        else None
+    )
+    proposal = (
+        None
+        if initial
+        else PolicyProposal(
+            policy_proposal_id=proposal_id,
+            workspace_id=source_object.workspace_id,
+            environment_id=source_object.environment_id,
+            source_object_id=source_object.source_object_id,
+            proposal_version=1,
+            proposed_policy_version_id=policy.access_policy_version_id,
+            proposed_policy_hash=policy.document_hash,
+            requester_canonical_human_id=synthetic_uuid(number + 16002),
+            expected_policy_version_id=expected_policy_id,
+            expected_policy_generation=expected_generation,
+            benefit_classification=PolicyBenefitClassification.REVOCATION,
+            benefit_schema_version="policy-benefit.v1",
+            membership_generation=1,
+            authority_generation=1,
+            service_authority_generation=1,
+            submitted_at=NOW,
+        )
+    )
     command = AccessPolicyActivationCommand(
         policy=policy,
         requester_canonical_human_id=synthetic_uuid(number + 16002),
@@ -253,6 +310,8 @@ async def _activate_policy(
         activated_at=NOW,
         audit_event=audit,
         outbox_intent=outbox,
+        proposal=proposal,
+        eligibility=eligibility,
     )
     draft = PolicyActivationDraft(
         values={
@@ -263,6 +322,20 @@ async def _activate_policy(
             "predecessor_policy_version_id": expected_policy_id,
             "new_policy_version_id": policy_id,
             "policy_generation": expected_generation + 1,
+            "policy_proposal_id": (
+                proposal.policy_proposal_id if proposal is not None else None
+            ),
+            "policy_proposal_version": (
+                proposal.proposal_version if proposal is not None else None
+            ),
+            "policy_proposal_hash": (
+                proposal.proposed_policy_hash if proposal is not None else None
+            ),
+            "policy_approval_id": None,
+            "policy_approval_decision": None,
+            "initial_eligibility_decision_id": (
+                eligibility.decision_id if eligibility is not None else None
+            ),
             "requester_canonical_human_id": command.requester_canonical_human_id,
             "activator_canonical_human_id": command.activator_canonical_human_id,
             "membership_generation": 1,
