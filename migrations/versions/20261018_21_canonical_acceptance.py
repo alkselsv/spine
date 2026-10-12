@@ -161,13 +161,6 @@ def upgrade() -> None:
             deferrable=True,
             initially="DEFERRED",
         ),
-        sa.ForeignKeyConstraint(
-            ["outbox_event_id"],
-            [f"{SCHEMA}.outbox_intents.event_id"],
-            name="fk_canonical_acceptances_outbox",
-            deferrable=True,
-            initially="DEFERRED",
-        ),
         sa.CheckConstraint("accepted_generation >= 1", name="ck_canonical_acceptances_generation"),
         sa.CheckConstraint("ordering IN ('trusted', 'expected_current')", name="ck_canonical_acceptances_ordering"),
         sa.CheckConstraint("(ordering_scheme IS NULL) = (ordering_token IS NULL)", name="ck_canonical_acceptances_order_pair"),
