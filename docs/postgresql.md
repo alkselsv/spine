@@ -194,7 +194,7 @@ access, forced RLS protection, and existing schema owner before it changes the
 schema. Runtime, dispatcher, and migration connections use the controlled
 search path `pg_catalog,spine`. The Alembic version table is
 `spine.alembic_version`, and the committed history has one linear head:
-`20261015_18`. The source-observation migrations add the source ledger tables,
+`20261016_19`. The source-observation migrations add the source ledger tables,
 integrity constraints, persisted canonicalization profile identity, and
 database-side canonical validation. The admission migration adds the
 environment-scoped append-only `admission_decisions` CAS ledger, including
@@ -215,6 +215,13 @@ All six tables are environment-scoped with forced RLS; immutable history has
 insert/select-only runtime grants, while current-pointer updates are constrained
 to monotonic policy and CAS generations.
 
+Revision `20261016_19` adds the canonical acceptance ledger, serialized
+environment generation counters, and PostgreSQL-owned current source heads.
+Canonical acceptance locks the environment counter before the source head,
+requires current admission/policy evidence for content, and commits its
+idempotency completion, audit event, outbox intent, acceptance row, and head
+transition together. A tombstone does not require content admission or policy.
+
 `spine-db-bootstrap-workspace` is a one-time migration-authority action. It
 atomically inserts the first Workspace and an operator audit record, then seals
 itself. It cannot list, update, delete, or impersonate another Workspace and
@@ -222,8 +229,9 @@ does not grant document-content authority. Ordinary runtime credentials cannot
 invoke it or access its tables.
 
 Application startup never creates roles or schemas, invokes Alembic, or calls
-`metadata.create_all`. Readiness succeeds only when PostgreSQL major 17 is in
-use, the database reports exactly head `20261015_18`, the connected user is the
+`metadata.create_all`. Readiness succeeds only when PostgreSQL major 17 is at
+the supported migration head. The database reports exactly head
+`20261016_19`, the connected user is the
 configured restricted runtime role, required grants and forced RLS are intact,
 and transaction-local Workspace/Environment context can be bound. Empty,
 older, newer, unknown, and multiple-head states fail closed; the newly created

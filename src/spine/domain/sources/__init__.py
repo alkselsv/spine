@@ -21,6 +21,7 @@ from .access_policy import (
     PolicyProposal,
     PrincipalKind,
 )
+from .canonical import CanonicalAcceptance, CanonicalOrdering, CurrentSourceHead
 
 from .models import (
     IdentityMode,
@@ -48,6 +49,9 @@ from .profile import OBSERVATION_SCHEMA
 
 __all__ = [
     "AccessGrant",
+    "CanonicalAcceptance",
+    "CanonicalOrdering",
+    "CurrentSourceHead",
     "AccessPermission",
     "AccessPolicyVersion",
     "CurrentAccessPolicy",

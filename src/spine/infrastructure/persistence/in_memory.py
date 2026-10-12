@@ -39,6 +39,7 @@ from spine.application.persistence.errors import (
     PersistenceUnavailableError,
     ObservationIntegrityConflictError,
     ObservationCommandDigestMismatchError,
+    OptimisticConflictError,
     UnexpectedPersistenceError,
     UnitOfWorkLifecycleError,
 )
@@ -54,6 +55,10 @@ from spine.application.persistence.idempotency import (
 from spine.application.persistence.repositories import (
     SourceObservationCommand,
     SourceObservationResult,
+)
+from spine.application.persistence.canonical import (
+    CanonicalAcceptanceCommand,
+    CanonicalAcceptanceResult,
 )
 from spine.application.persistence.ingestion import (
     IngestionBindingCommand,
@@ -90,6 +95,9 @@ from spine.domain.sources import (
     SourceRevision,
     SourceRevisionProvenance,
     SourceRevisionReceiptAssociation,
+    CanonicalAcceptance,
+    CanonicalOrdering,
+    CurrentSourceHead,
 )
 from spine.domain.sources.canonicalization import assert_revision_digest
 from spine.domain.sources.errors import RevisionDigestMismatchError as DomainRevisionDigestMismatchError
@@ -130,6 +138,9 @@ class _StoreState:
     ingestion_warnings: dict[UUID, IngestionWarning]
     ingestion_failures: dict[UUID, IngestionFailure]
     processing_receipts: dict[UUID, ProcessingReceipt]
+    canonical_acceptances: dict[UUID, CanonicalAcceptance]
+    current_source_heads: dict[UUID, CurrentSourceHead]
+    canonical_generations: dict[tuple[UUID, UUID], int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,9 +180,13 @@ class _Store:
             ingestion_warnings={},
             ingestion_failures={},
             processing_receipts={},
+            canonical_acceptances={},
+            current_source_heads={},
+            canonical_generations={},
         )
         self.lock = transaction_lock or asyncio.Lock()
         self.observation_lock = asyncio.Lock()
+        self.canonical_lock = asyncio.Lock()
         self.initialized = False
         self.bootstrap_sealed = False
         self.fail_next_audit_append = False
@@ -244,6 +259,18 @@ class _Store:
     @property
     def processing_receipts(self) -> dict[UUID, ProcessingReceipt]:
         return self.state.processing_receipts
+
+    @property
+    def canonical_acceptances(self) -> dict[UUID, CanonicalAcceptance]:
+        return self.state.canonical_acceptances
+
+    @property
+    def current_source_heads(self) -> dict[UUID, CurrentSourceHead]:
+        return self.state.current_source_heads
+
+    @property
+    def canonical_generations(self) -> dict[tuple[UUID, UUID], int]:
+        return self.state.canonical_generations
 
 
 def _workspace_copy(value: Workspace) -> Workspace:
@@ -755,6 +782,200 @@ class _AdmissionRepository:
             return max(decisions, key=lambda item: item.decision_version).model_copy(deep=True)
 
         return self._uow._repository_call(operation)
+
+
+class _CanonicalAcceptanceRepository:
+    """In-memory implementation of the canonical source-head protocol."""
+
+    def __init__(self, uow: "InMemoryUnitOfWork") -> None:
+        self._uow = uow
+
+    def _acceptances(self) -> dict[UUID, CanonicalAcceptance]:
+        return self._uow._base_canonical_acceptances | self._uow._pending_canonical_acceptances
+
+    def _heads(self) -> dict[UUID, CurrentSourceHead]:
+        return self._uow._base_current_source_heads | self._uow._pending_current_source_heads
+
+    def _revisions(self) -> dict[UUID, SourceRevision]:
+        return self._uow._base_source_revisions | self._uow._pending_source_revisions
+
+    def _provenance(self) -> dict[UUID, SourceRevisionProvenance]:
+        return self._uow._base_source_provenance | self._uow._pending_source_provenance
+
+    async def resolve_current(self, source_object_id: UUID) -> CurrentSourceHead | None:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return None
+        head = self._heads().get(source_object_id)
+        if head is None or (head.workspace_id, head.environment_id) != (scope.workspace_id, scope.environment_id):
+            return None
+        return head.model_copy(deep=True)
+
+    async def resolve_acceptance(self, canonical_acceptance_id: UUID) -> CanonicalAcceptance | None:
+        self._uow._guard_active()
+        value = self._acceptances().get(canonical_acceptance_id)
+        if value is None or not isinstance(self._uow.scope, EnvironmentScope):
+            return None
+        if (value.workspace_id, value.environment_id) != (self._uow.scope.workspace_id, self._uow.scope.environment_id):
+            return None
+        return value.model_copy(deep=True)
+
+    async def accept(self, command: CanonicalAcceptanceCommand) -> CanonicalAcceptanceResult:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope) or (
+            command.source.workspace_id,
+            command.source.environment_id,
+        ) != (scope.workspace_id, scope.environment_id):
+            self._uow._fail(InvalidPersistenceContextError("Persistence context is invalid."))
+        if command.expected_digest() != command.digest:
+            self._uow._fail(ConstraintConflictError("Canonical acceptance command digest is invalid."))
+        if (
+            command.revision.source_object_id != command.source.source_object_id
+            or command.provenance.source_object_id != command.source.source_object_id
+            or command.provenance.revision_id != command.revision.revision_id
+        ):
+            self._uow._fail(ConstraintConflictError("Canonical acceptance references are invalid."))
+        if not self._uow._canonical_lock_held:
+            await self._uow._store.canonical_lock.acquire()
+            self._uow._canonical_lock_held = True
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=command.digest.operation_schema_version,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        if isinstance(claim, IdempotencyReplay):
+            current = await self.resolve_current(command.source.source_object_id)
+            if current is None:
+                self._uow._fail(ConstraintConflictError("Canonical replay head is unavailable."))
+            acceptance = (
+                await self.resolve_acceptance(claim.result.result_id)
+                if claim.result.result_type == "canonical_acceptance"
+                else None
+            )
+            revision = self._revisions().get(current.current_revision_id)
+            if revision is None:
+                self._uow._fail(ConstraintConflictError("Canonical replay revision is unavailable."))
+            return CanonicalAcceptanceResult(
+                command.source.model_copy(deep=True),
+                revision.model_copy(deep=True),
+                current,
+                acceptance,
+                True,
+                acceptance is not None,
+                claim,
+                claim.result,
+            )
+        revision = self._revisions().get(command.revision.revision_id)
+        provenance = self._provenance().get(command.provenance.provenance_id)
+        source = self._uow._base_source_objects.get(command.source.source_object_id) or self._uow._pending_source_objects.get(command.source.source_object_id)
+        if revision is None or provenance is None or source is None:
+            self._uow._fail(ConstraintConflictError("Canonical acceptance evidence is incomplete."))
+        current = self._heads().get(command.source.source_object_id)
+        comparison: int | None = None
+        if current is None:
+            if command.provenance.order_scheme is None and command.expected_current_revision_id is not None:
+                self._uow._fail(OptimisticConflictError("The expected source head is stale."))
+        elif (
+            command.provenance.order_scheme is not None
+            and current.ordering_scheme == command.provenance.order_scheme
+            and current.ordering_token is not None
+        ):
+            incoming = command.provenance.order_token or ""
+            comparison = (incoming > current.ordering_token) - (incoming < current.ordering_token)
+        elif command.expected_current_revision_id != current.current_revision_id:
+            self._uow._fail(OptimisticConflictError("The expected source head is stale."))
+        if comparison == 0 and current is not None:
+            current_revision = self._revisions().get(current.current_revision_id)
+            if current_revision is None or current_revision.revision_digest != command.revision.revision_digest:
+                self._uow._fail(OptimisticConflictError("Trusted source order conflicts with a different revision."))
+            acceptance = self._acceptances().get(current.acceptance_id)
+            if acceptance is None:
+                self._uow._fail(ConstraintConflictError("Current source acceptance is unavailable."))
+            reference = OpaqueResultReference(result_type="canonical_acceptance", result_id=acceptance.canonical_acceptance_id, schema_version=1)
+            await self._uow.idempotency.complete(claim, reference)
+            return CanonicalAcceptanceResult(source.model_copy(deep=True), revision.model_copy(deep=True), current.model_copy(deep=True), acceptance.model_copy(deep=True), False, True, claim, reference)
+        if comparison is not None and comparison < 0:
+            assert current is not None
+            reference = OpaqueResultReference(result_type="canonical_source_head", result_id=current.source_object_id, schema_version=1)
+            await self._uow.idempotency.complete(claim, reference)
+            return CanonicalAcceptanceResult(source.model_copy(deep=True), revision.model_copy(deep=True), current.model_copy(deep=True), None, False, False, claim, reference)
+        if current is not None and current.current_revision_kind is RevisionKind.TOMBSTONE and command.revision.kind is RevisionKind.CONTENT:
+            if command.revision.reappearance_after_tombstone_revision_id != current.current_revision_id:
+                self._uow._fail(ConstraintConflictError("Source reappearance continuity is invalid."))
+        elif command.revision.reappearance_after_tombstone_revision_id is not None:
+            self._uow._fail(ConstraintConflictError("Source reappearance continuity is invalid."))
+        if command.revision.kind is RevisionKind.CONTENT:
+            decisions = [
+                value for value in (
+                    *self._uow._base_admission_decisions.values(),
+                    *self._uow._pending_admission_decisions.values(),
+                )
+                if value.revision_id == revision.revision_id
+                and (value.workspace_id, value.environment_id) == (scope.workspace_id, scope.environment_id)
+            ]
+            admission = max(decisions, key=lambda value: value.decision_version) if decisions else None
+            if admission is None or admission.disposition is not AdmissionDisposition.ADMITTED or (
+                command.admission_decision_id is not None and admission.decision_id != command.admission_decision_id
+            ):
+                self._uow._fail(ConstraintConflictError("Content admission is not eligible."))
+            if command.access_policy_version_id is None:
+                self._uow._fail(ConstraintConflictError("An eligible current access policy is required."))
+            admission_id = admission.decision_id
+            policy_id = command.access_policy_version_id
+        else:
+            admission_id = None
+            policy_id = None
+        generation_key = (scope.workspace_id, scope.environment_id)
+        generation = self._uow._base_canonical_generations.get(generation_key, 0)
+        generation = self._uow._pending_canonical_generations.get(generation_key, generation) + 1
+        ordering = CanonicalOrdering.TRUSTED if command.provenance.order_scheme is not None else CanonicalOrdering.EXPECTED_CURRENT
+        acceptance = CanonicalAcceptance(
+            canonical_acceptance_id=command.canonical_acceptance_id,
+            source_object_id=source.source_object_id,
+            source_revision_id=revision.revision_id,
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            predecessor_revision_id=current.current_revision_id if current else None,
+            predecessor_acceptance_id=current.acceptance_id if current else None,
+            accepted_generation=generation,
+            ordering=ordering,
+            ordering_scheme=command.provenance.order_scheme,
+            ordering_token=command.provenance.order_token,
+            admission_decision_id=admission_id,
+            access_policy_version_id=policy_id,
+            provenance_id=provenance.provenance_id,
+            idempotency_receipt_id=claim.receipt_id,
+            audit_event_id=command.audit_event_id,
+            outbox_event_id=command.outbox_event_id,
+            accepted_at=command.accepted_at,
+        )
+        self._uow._pending_canonical_acceptances[acceptance.canonical_acceptance_id] = acceptance
+        self._uow._pending_canonical_generations[generation_key] = generation
+        head = CurrentSourceHead(
+            source_object_id=source.source_object_id,
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            current_revision_id=revision.revision_id,
+            current_revision_kind=revision.kind,
+            acceptance_id=acceptance.canonical_acceptance_id,
+            accepted_generation=generation,
+            cas_version=current.cas_version + 1 if current else 1,
+            ordering_scheme=acceptance.ordering_scheme,
+            ordering_token=acceptance.ordering_token,
+            changed_at=command.accepted_at,
+        )
+        self._uow._pending_current_source_heads[source.source_object_id] = head
+        if command.audit_event is None or command.outbox_intent is None:
+            self._uow._fail(ConstraintConflictError("Canonical acceptance audit and outbox evidence is required."))
+        audit_id = await self._uow.audit.append(command.audit_event)
+        event_id = await self._uow.outbox.append(command.outbox_intent)
+        if audit_id != command.audit_event_id or event_id != command.outbox_event_id:
+            self._uow._fail(ConstraintConflictError("Canonical evidence identity is invalid."))
+        reference = OpaqueResultReference(result_type="canonical_acceptance", result_id=acceptance.canonical_acceptance_id, schema_version=1)
+        await self._uow.idempotency.complete(claim, reference)
+        return CanonicalAcceptanceResult(source.model_copy(deep=True), revision.model_copy(deep=True), head, acceptance, False, True, claim, reference)
 
 
 class _AuditWriter:
@@ -1339,6 +1560,9 @@ class InMemoryUnitOfWork:
         self._base_ingestion_warnings: dict[UUID, IngestionWarning] = {}
         self._base_ingestion_failures: dict[UUID, IngestionFailure] = {}
         self._base_processing_receipts: dict[UUID, ProcessingReceipt] = {}
+        self._base_canonical_acceptances: dict[UUID, CanonicalAcceptance] = {}
+        self._base_current_source_heads: dict[UUID, CurrentSourceHead] = {}
+        self._base_canonical_generations: dict[tuple[UUID, UUID], int] = {}
         self._pending_workspaces: dict[UUID, Workspace] = {}
         self._pending_environments: dict[UUID, Environment] = {}
         self._pending_receipts: dict[_ReceiptKey, _IdempotencyReceipt] = {}
@@ -1356,7 +1580,11 @@ class InMemoryUnitOfWork:
         self._pending_ingestion_warnings: dict[UUID, IngestionWarning] = {}
         self._pending_ingestion_failures: dict[UUID, IngestionFailure] = {}
         self._pending_processing_receipts: dict[UUID, ProcessingReceipt] = {}
+        self._pending_canonical_acceptances: dict[UUID, CanonicalAcceptance] = {}
+        self._pending_current_source_heads: dict[UUID, CurrentSourceHead] = {}
+        self._pending_canonical_generations: dict[tuple[UUID, UUID], int] = {}
         self._source_observation_lock_held = False
+        self._canonical_lock_held = False
         self._workspaces = _WorkspaceRepository(self)
         self._environments = _EnvironmentRepository(self)
         self._idempotency = _IdempotencyRepository(self)
@@ -1364,6 +1592,7 @@ class InMemoryUnitOfWork:
         self._sources = _SourceObservationRepository(self)
         self._ingestion = _InMemoryIngestionRepository(self)
         self._admissions = _AdmissionRepository(self)
+        self._canonical = _CanonicalAcceptanceRepository(self)
         self._audit = _AuditWriter(self)
 
     @property
@@ -1400,6 +1629,11 @@ class InMemoryUnitOfWork:
     def admissions(self) -> _AdmissionRepository:
         self._guard_active()
         return self._admissions
+
+    @property
+    def canonical(self) -> "_CanonicalAcceptanceRepository":
+        self._guard_active()
+        return self._canonical
 
     @property
     def audit(self) -> _AuditWriter:
@@ -1484,6 +1718,15 @@ class InMemoryUnitOfWork:
                 self._base_ingestion_warnings = {key: value.model_copy(deep=True) for key, value in self._store.ingestion_warnings.items()}
                 self._base_ingestion_failures = {key: value.model_copy(deep=True) for key, value in self._store.ingestion_failures.items()}
                 self._base_processing_receipts = {key: value.model_copy(deep=True) for key, value in self._store.processing_receipts.items()}
+                self._base_canonical_acceptances = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.canonical_acceptances.items()
+                }
+                self._base_current_source_heads = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.current_source_heads.items()
+                }
+                self._base_canonical_generations = dict(self._store.canonical_generations)
                 self._initialized = self._store.initialized
                 if not self._initialized:
                     raise InvalidBootstrapAuthorityError(
@@ -1609,6 +1852,28 @@ class InMemoryUnitOfWork:
                 prepared_ingestion_failures.update({key: value.model_copy(deep=True) for key, value in self._pending_ingestion_failures.items()})
                 prepared_processing_receipts = {key: value.model_copy(deep=True) for key, value in self._store.processing_receipts.items()}
                 prepared_processing_receipts.update({key: value.model_copy(deep=True) for key, value in self._pending_processing_receipts.items()})
+                prepared_canonical_acceptances = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.canonical_acceptances.items()
+                }
+                prepared_canonical_acceptances.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_canonical_acceptances.items()
+                    }
+                )
+                prepared_current_source_heads = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.current_source_heads.items()
+                }
+                prepared_current_source_heads.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_current_source_heads.items()
+                    }
+                )
+                prepared_canonical_generations = dict(self._store.canonical_generations)
+                prepared_canonical_generations.update(self._pending_canonical_generations)
                 self._store.state = _StoreState(
                     workspaces=prepared_workspaces,
                     environments=prepared_environments,
@@ -1627,11 +1892,15 @@ class InMemoryUnitOfWork:
                     ingestion_warnings=prepared_ingestion_warnings,
                     ingestion_failures=prepared_ingestion_failures,
                     processing_receipts=prepared_processing_receipts,
+                    canonical_acceptances=prepared_canonical_acceptances,
+                    current_source_heads=prepared_current_source_heads,
+                    canonical_generations=prepared_canonical_generations,
                 )
         except BaseException as error:
             self._raise_terminal(error)
         self._lifecycle = _Lifecycle.COMMITTED
         self._release_source_observation_lock()
+        self._release_canonical_lock()
         self._clear_transaction()
 
     async def rollback(self) -> None:
@@ -1657,8 +1926,12 @@ class InMemoryUnitOfWork:
         self._pending_ingestion_warnings.clear()
         self._pending_ingestion_failures.clear()
         self._pending_processing_receipts.clear()
+        self._pending_canonical_acceptances.clear()
+        self._pending_current_source_heads.clear()
+        self._pending_canonical_generations.clear()
         self._lifecycle = _Lifecycle.ROLLED_BACK
         self._release_source_observation_lock()
+        self._release_canonical_lock()
 
     def _guard_owner(self) -> None:
         if self._owner is None or asyncio.current_task() is not self._owner:
@@ -1677,6 +1950,7 @@ class InMemoryUnitOfWork:
 
     def _raise_terminal(self, error: BaseException) -> NoReturn:
         self._release_source_observation_lock()
+        self._release_canonical_lock()
         self._lifecycle = _Lifecycle.CLOSED
         self._clear_transaction()
         if isinstance(error, asyncio.CancelledError):
@@ -1966,6 +2240,9 @@ class InMemoryUnitOfWork:
         self._base_ingestion_warnings.clear()
         self._base_ingestion_failures.clear()
         self._base_processing_receipts.clear()
+        self._base_canonical_acceptances.clear()
+        self._base_current_source_heads.clear()
+        self._base_canonical_generations.clear()
         self._pending_workspaces.clear()
         self._pending_environments.clear()
         self._pending_receipts.clear()
@@ -1983,6 +2260,9 @@ class InMemoryUnitOfWork:
         self._pending_ingestion_warnings.clear()
         self._pending_ingestion_failures.clear()
         self._pending_processing_receipts.clear()
+        self._pending_canonical_acceptances.clear()
+        self._pending_current_source_heads.clear()
+        self._pending_canonical_generations.clear()
         self._scope = None
         self._operation = None
         self._trace_id = None
@@ -1995,6 +2275,11 @@ class InMemoryUnitOfWork:
         if self._source_observation_lock_held:
             self._source_observation_lock_held = False
             self._store.observation_lock.release()
+
+    def _release_canonical_lock(self) -> None:
+        if self._canonical_lock_held:
+            self._canonical_lock_held = False
+            self._store.canonical_lock.release()
 
 
 def _receipt_id(key: _ReceiptKey) -> UUID:

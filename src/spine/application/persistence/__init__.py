@@ -4,6 +4,12 @@ from spine.application.persistence.bootstrap import (
     InitialWorkspaceBootstrap,
     InitialWorkspaceBootstrapAuthority,
 )
+from spine.application.persistence.canonical import (
+    CANONICAL_ACCEPTANCE_SCHEMA_VERSION,
+    CanonicalAcceptanceCommand,
+    CanonicalAcceptanceRepository,
+    CanonicalAcceptanceResult,
+)
 from spine.application.persistence.context import (
     ContextOrigin,
     EnvironmentScope,
@@ -91,6 +97,10 @@ from spine.application.persistence.unit_of_work import (
 
 __all__ = [
     "AuditConflictError",
+    "CANONICAL_ACCEPTANCE_SCHEMA_VERSION",
+    "CanonicalAcceptanceCommand",
+    "CanonicalAcceptanceRepository",
+    "CanonicalAcceptanceResult",
     "ContextOrigin",
     "COMMAND_DIGEST_ALGORITHM_VERSION",
     "CommandDigest",

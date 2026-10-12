@@ -3572,6 +3572,7 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261013_16_ingestion_ledger_hardening.py",
         "20261014_17_source_receipt_associations.py",
         "20261015_18_access_policy_persistence.py",
+        "20261016_19_canonical_acceptance.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "20261015_19_injected_failure.py").write_text(
