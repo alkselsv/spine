@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import uuid
-import warnings
 
 import pytest
 import pytest_asyncio
@@ -18,9 +17,7 @@ from spine.infrastructure.db.test_harness import (
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
-async def postgresql_provision(
-    request: pytest.FixtureRequest,
-) -> TestDatabaseProvision:
+async def postgresql_provision() -> TestDatabaseProvision:
     settings = TestDatabaseSettings()
     run_id = f"{os.getenv('PYTEST_XDIST_WORKER', 'local')}-{uuid.uuid4().hex[:12]}"
     failure: str | None = None
@@ -37,12 +34,4 @@ async def postgresql_provision(
         yield provision
     finally:
         if provision.container is not None:
-            if request.session.testsfailed == 0:
-                provision.container.stop()
-            else:
-                warnings.warn(
-                    "PostgreSQL test failures left the owned disposable container "
-                    "intact for verification",
-                    RuntimeWarning,
-                    stacklevel=1,
-                )
+            provision.container.stop()
