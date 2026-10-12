@@ -333,6 +333,7 @@ CANONICAL_ACCEPTANCE_CONSTRAINTS = {
     "fk_canonical_acceptances_policy",
     "fk_canonical_acceptances_idempotency",
     "fk_canonical_acceptances_audit",
+    "fk_canonical_acceptances_outbox",
     "ck_canonical_acceptances_generation",
     "ck_canonical_acceptances_ordering",
     "ck_canonical_acceptances_order_pair",
@@ -1409,6 +1410,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         | AUDIT_CONSTRAINTS
         | DELIVERY_CONSTRAINTS
         | ADMISSION_CONSTRAINTS
+        | CANONICAL_ACCEPTANCE_CONSTRAINTS
     )
     missing_final_constraints = {
         expected
@@ -1436,79 +1438,113 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         )
     }
     assert not missing_final_constraints, sorted(missing_final_constraints)
-    assert indexes == {
-        "alembic_version_pkc",
-        "ix_environments_workspace_id",
-        "pk_environments",
-        "pk_idempotency_receipts",
-        "pk_initial_workspace_bootstrap",
-        "pk_outbox_intents",
-        "pk_workspaces",
-        "uq_environments_workspace_id_id",
-        "uq_idempotency_receipts_environment_key",
-        "uq_idempotency_receipts_workspace_key",
-        "uq_initial_workspace_bootstrap_action_id",
-        "uq_initial_workspace_bootstrap_workspace_id",
-        "uq_outbox_intents_environment_producer",
-        "uq_outbox_intents_workspace_producer",
-        "uq_workspaces_slug",
-        "pk_source_canonical_tables",
-        "pk_source_canonical_unicode",
-        "pk_source_canonical_compositions",
-        "pk_source_canonical_bcp47",
-        "pk_source_objects",
-        "uq_source_objects_scope_id",
-        "uq_source_objects_connector_identity",
-        "uq_source_objects_upload_identity",
-        "ix_source_objects_connection_lookup",
-        "pk_source_revisions",
-        "uq_source_revisions_digest",
-        "uq_source_revisions_scope_id",
-        "ix_source_revisions_source_observed",
-        "ix_source_revisions_original_digest",
-        "pk_source_revision_provenance",
-        "uq_source_revision_provenance_event",
-        "uq_source_revision_provenance_scope_id",
-        "ix_source_revision_provenance_revision_order",
-        "pk_source_receipt_associations",
-        "uq_source_receipt_associations_receipt",
-        "uq_source_receipt_associations_provenance",
-        "ix_source_receipt_associations_revision",
-        "ix_source_receipt_associations_object_digest",
-        "pk_ingestion_runs",
-        "uq_ingestion_runs_scope_id",
-        "uq_ingestion_runs_command",
-        "ix_ingestion_runs_requested",
-        "pk_ingestion_run_sources",
-        "uq_ingestion_run_sources_scope_id",
-        "uq_ingestion_run_sources_ordinal",
-        "uq_ingestion_run_sources_input",
-        "uq_ingestion_run_sources_command",
-        "ix_ingestion_run_sources_run",
-        "pk_ingestion_run_source_bindings",
-        "uq_ingestion_run_source_bindings_scope_id",
-        "uq_ingestion_run_source_bindings_item",
-        "uq_ingestion_run_source_bindings_command",
-        "ix_ingestion_run_source_bindings_revision",
-        "pk_ingestion_transitions",
-        "uq_ingestion_transitions_scope_id",
-        "uq_ingestion_transitions_root",
-        "uq_ingestion_transitions_predecessor",
-        "ix_ingestion_transitions_target",
-        "pk_ingestion_warnings",
-        "uq_ingestion_warnings_scope_id",
-        "uq_ingestion_warnings_dedup",
-        "ix_ingestion_warnings_item",
-        "pk_ingestion_failures",
-        "uq_ingestion_failures_scope_id",
-        "uq_ingestion_failures_dedup",
-        "ix_ingestion_failures_item",
-        "pk_processing_receipts",
-        "uq_processing_receipts_scope_id",
-        "uq_processing_receipts_command",
-        "ix_processing_receipts_revision",
-        "ix_processing_receipts_item",
-    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES | CANONICAL_ACCEPTANCE_INDEXES
+    outbox_fk = (
+        (
+            await connection.execute(
+                text(
+                    "SELECT constraint_record.condeferrable, "
+                    "constraint_record.condeferred, "
+                    "pg_get_constraintdef(constraint_record.oid) AS definition "
+                    "FROM pg_constraint AS constraint_record "
+                    "JOIN pg_class AS relation "
+                    "ON relation.oid = constraint_record.conrelid "
+                    "JOIN pg_namespace AS namespace "
+                    "ON namespace.oid = relation.relnamespace "
+                    "WHERE namespace.nspname = 'spine' "
+                    "AND relation.relname = 'canonical_acceptances' "
+                    "AND constraint_record.conname = "
+                    "'fk_canonical_acceptances_outbox'"
+                )
+            )
+        )
+        .mappings()
+        .one()
+    )
+    assert outbox_fk.condeferrable is True
+    assert outbox_fk.condeferred is True
+    assert "FOREIGN KEY (outbox_event_id)" in outbox_fk.definition
+    assert "outbox_intents(event_id)" in outbox_fk.definition
+    assert (
+        indexes
+        == {
+            "alembic_version_pkc",
+            "ix_environments_workspace_id",
+            "pk_environments",
+            "pk_idempotency_receipts",
+            "pk_initial_workspace_bootstrap",
+            "pk_outbox_intents",
+            "pk_workspaces",
+            "uq_environments_workspace_id_id",
+            "uq_idempotency_receipts_environment_key",
+            "uq_idempotency_receipts_workspace_key",
+            "uq_initial_workspace_bootstrap_action_id",
+            "uq_initial_workspace_bootstrap_workspace_id",
+            "uq_outbox_intents_environment_producer",
+            "uq_outbox_intents_workspace_producer",
+            "uq_workspaces_slug",
+            "pk_source_canonical_tables",
+            "pk_source_canonical_unicode",
+            "pk_source_canonical_compositions",
+            "pk_source_canonical_bcp47",
+            "pk_source_objects",
+            "uq_source_objects_scope_id",
+            "uq_source_objects_connector_identity",
+            "uq_source_objects_upload_identity",
+            "ix_source_objects_connection_lookup",
+            "pk_source_revisions",
+            "uq_source_revisions_digest",
+            "uq_source_revisions_scope_id",
+            "ix_source_revisions_source_observed",
+            "ix_source_revisions_original_digest",
+            "pk_source_revision_provenance",
+            "uq_source_revision_provenance_event",
+            "uq_source_revision_provenance_scope_id",
+            "ix_source_revision_provenance_revision_order",
+            "pk_source_receipt_associations",
+            "uq_source_receipt_associations_receipt",
+            "uq_source_receipt_associations_provenance",
+            "ix_source_receipt_associations_revision",
+            "ix_source_receipt_associations_object_digest",
+            "pk_ingestion_runs",
+            "uq_ingestion_runs_scope_id",
+            "uq_ingestion_runs_command",
+            "ix_ingestion_runs_requested",
+            "pk_ingestion_run_sources",
+            "uq_ingestion_run_sources_scope_id",
+            "uq_ingestion_run_sources_ordinal",
+            "uq_ingestion_run_sources_input",
+            "uq_ingestion_run_sources_command",
+            "ix_ingestion_run_sources_run",
+            "pk_ingestion_run_source_bindings",
+            "uq_ingestion_run_source_bindings_scope_id",
+            "uq_ingestion_run_source_bindings_item",
+            "uq_ingestion_run_source_bindings_command",
+            "ix_ingestion_run_source_bindings_revision",
+            "pk_ingestion_transitions",
+            "uq_ingestion_transitions_scope_id",
+            "uq_ingestion_transitions_root",
+            "uq_ingestion_transitions_predecessor",
+            "ix_ingestion_transitions_target",
+            "pk_ingestion_warnings",
+            "uq_ingestion_warnings_scope_id",
+            "uq_ingestion_warnings_dedup",
+            "ix_ingestion_warnings_item",
+            "pk_ingestion_failures",
+            "uq_ingestion_failures_scope_id",
+            "uq_ingestion_failures_dedup",
+            "ix_ingestion_failures_item",
+            "pk_processing_receipts",
+            "uq_processing_receipts_scope_id",
+            "uq_processing_receipts_command",
+            "ix_processing_receipts_revision",
+            "ix_processing_receipts_item",
+        }
+        | AUTHORIZATION_DIRECTORY_INDEXES
+        | AUDIT_INDEXES
+        | DELIVERY_INDEXES
+        | ADMISSION_INDEXES
+        | CANONICAL_ACCEPTANCE_INDEXES
+    )
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
         "workspaces": (True, True),

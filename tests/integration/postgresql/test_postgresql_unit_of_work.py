@@ -28,6 +28,7 @@ from spine.application.persistence.context import (
     WorkspaceScope,
 )
 from spine.application.persistence.errors import (
+    CanonicalEligibilityError,
     ConstraintConflictError,
     IdempotencyConflictError,
     PersistenceUnavailableError,
@@ -57,6 +58,7 @@ from spine.domain.ingestion import (
     IngestionTransition,
     SafeDiagnosticDetail,
 )
+from spine.domain.sources import AdmissionDecision, AdmissionDisposition
 from spine.domain.sources.access_policy import (
     AccessGrant,
     AccessPermission,
@@ -76,7 +78,10 @@ from spine.infrastructure.db.settings import (
 )
 from spine.infrastructure.db.test_harness import TestDatabaseProvision
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
-from spine.infrastructure.persistence.postgresql import PostgreSQLPersistence
+from spine.infrastructure.persistence.postgresql import (
+    PostgreSQLPersistence,
+    PostgreSQLTransactionStage,
+)
 from tests.contracts.persistence.adapter import PersistenceAdapter
 from tests.contracts.persistence.ids import synthetic_uuid
 from tests.contracts.persistence.outbox_events import (
@@ -107,6 +112,17 @@ from tests.contracts.persistence.test_source_observation_contract import (
     test_source_observation_reuses_revision_for_new_provenance as contract_source_observation_revision_reuse,
     test_content_reappearance_requires_tombstone_predecessor as contract_source_content_reappearance_rejected,
     test_tombstone_reappearance_requires_tombstone_predecessor as contract_source_reappearance,
+)
+from tests.contracts.persistence.test_canonical_acceptance_contract import (
+    _activate_policy as activate_canonical_policy,
+    prepare_case as prepare_canonical_case,
+    test_canonical_happy_path_and_exact_replay as contract_canonical_happy_replay,
+    test_canonical_rejects_forged_authoritative_snapshot as contract_canonical_authority,
+    test_canonical_rejects_missing_finalized_receipt_association as contract_canonical_receipt,
+    test_canonical_rejects_stale_expected_current_without_success_effect as contract_canonical_cas,
+    test_canonical_rejects_superseded_admission as contract_canonical_admission,
+    test_canonical_rejects_unknown_ordering_scheme as contract_canonical_unknown_ordering,
+    test_canonical_replay_requires_current_policy_authority as contract_canonical_replay_authority,
 )
 from tests.contracts.persistence.test_ingestion_repository_contract import (
     exercise_ingestion_run_item_contract,
@@ -206,6 +222,39 @@ class TransactionGate:
         finally:
             self._blocking = False
             self._release.set()
+
+
+class CanonicalTransactionProbe:
+    def __init__(self) -> None:
+        self._target: PostgreSQLTransactionStage | None = None
+        self._reached: asyncio.Event | None = None
+        self._release: asyncio.Event | None = None
+
+    def arm(self, target: PostgreSQLTransactionStage) -> None:
+        assert self._target is None
+        self._target = target
+        self._reached = asyncio.Event()
+        self._release = asyncio.Event()
+
+    async def __call__(self, stage: PostgreSQLTransactionStage) -> None:
+        if stage is not self._target:
+            return
+        self._target = None
+        assert self._reached is not None
+        assert self._release is not None
+        self._reached.set()
+        await self._release.wait()
+
+    async def wait_until_reached(self) -> None:
+        assert self._reached is not None
+        await asyncio.wait_for(self._reached.wait(), timeout=10)
+
+    def release(self) -> None:
+        assert self._release is not None
+        self._release.set()
+
+
+CANONICAL_TRANSACTION_PROBE = CanonicalTransactionProbe()
 
 
 class TransactionControlledSession:
@@ -370,6 +419,7 @@ async def postgresql_adapter(
         ),  # type: ignore[arg-type]
         context_verifier=boundary,
         outbox_events=outbox_events,
+        transaction_probe=CANONICAL_TRANSACTION_PROBE,
     )
 
     def workspace_context(workspace_id: UUID) -> TrustedPersistenceContext:
@@ -634,6 +684,156 @@ async def test_postgresql_adapter_satisfies_source_observation_contract(
     contract: ContractTest,
 ) -> None:
     await contract(postgresql_adapter)
+
+
+@pytest.mark.parametrize(
+    "contract",
+    (
+        contract_canonical_happy_replay,
+        contract_canonical_authority,
+        contract_canonical_receipt,
+        contract_canonical_cas,
+        contract_canonical_admission,
+        contract_canonical_replay_authority,
+        contract_canonical_unknown_ordering,
+    ),
+    ids=lambda contract: contract.__name__.removeprefix("test_"),
+)
+async def test_postgresql_adapter_satisfies_canonical_acceptance_contract(
+    postgresql_adapter: PersistenceAdapter,
+    contract: ContractTest,
+) -> None:
+    await contract(postgresql_adapter)
+
+
+async def test_postgresql_policy_change_wins_before_acceptance_and_stale_evidence_fails_closed(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    case = await prepare_canonical_case(postgresql_adapter, 19300)
+    assert postgresql_adapter.ingestion_context is not None
+    policy_context = postgresql_adapter.ingestion_context(
+        case.source.workspace_id,
+        case.source.environment_id,
+        "access_policy_activation",
+    )
+    CANONICAL_TRANSACTION_PROBE.arm(PostgreSQLTransactionStage.BEFORE_COMMIT)
+    policy_task = asyncio.create_task(
+        activate_canonical_policy(
+            postgresql_adapter,
+            context=policy_context,
+            source_object=case.source,
+            number=19320,
+            expected_policy_id=case.policy_id,
+            expected_generation=1,
+            expected_cas=1,
+        )
+    )
+    await CANONICAL_TRANSACTION_PROBE.wait_until_reached()
+
+    async def accept() -> None:
+        async with postgresql_adapter.uow_factory(case.context) as uow:
+            await uow.canonical.accept(case.command)
+            await uow.commit()
+
+    acceptance_task = asyncio.create_task(accept())
+    await asyncio.sleep(0)
+    CANONICAL_TRANSACTION_PROBE.release()
+    await policy_task
+    with pytest.raises(CanonicalEligibilityError):
+        await acceptance_task
+
+
+async def test_postgresql_acceptance_locks_authoritative_policy_until_commit(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    case = await prepare_canonical_case(postgresql_adapter, 19400)
+    assert postgresql_adapter.ingestion_context is not None
+
+    async def accept() -> object:
+        async with postgresql_adapter.uow_factory(case.context) as uow:
+            result = await uow.canonical.accept(case.command)
+            await uow.commit()
+            return result
+
+    CANONICAL_TRANSACTION_PROBE.arm(
+        PostgreSQLTransactionStage.AFTER_CANONICAL_EVIDENCE_LOCKED
+    )
+    acceptance_task = asyncio.create_task(accept())
+    await CANONICAL_TRANSACTION_PROBE.wait_until_reached()
+    policy_context = postgresql_adapter.ingestion_context(
+        case.source.workspace_id,
+        case.source.environment_id,
+        "access_policy_activation",
+    )
+    policy_task = asyncio.create_task(
+        activate_canonical_policy(
+            postgresql_adapter,
+            context=policy_context,
+            source_object=case.source,
+            number=19420,
+            expected_policy_id=case.policy_id,
+            expected_generation=1,
+            expected_cas=1,
+        )
+    )
+    await asyncio.sleep(0)
+    CANONICAL_TRANSACTION_PROBE.release()
+    result = await acceptance_task
+    await policy_task
+    assert result.advanced is True
+
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        with pytest.raises(CanonicalEligibilityError):
+            await uow.canonical.accept(case.command)
+
+
+async def test_postgresql_admission_change_wins_before_acceptance_and_fails_closed(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    case = await prepare_canonical_case(postgresql_adapter, 19500)
+
+    async def deny_admission() -> None:
+        async with postgresql_adapter.uow_factory(case.context) as uow:
+            await uow.admissions.append_decision(
+                AdmissionDecision(
+                    decision_id=synthetic_uuid(19520),
+                    source_object_id=case.source.source_object_id,
+                    revision_id=case.revision.revision_id,
+                    workspace_id=case.source.workspace_id,
+                    environment_id=case.source.environment_id,
+                    decision_version=2,
+                    predecessor_decision_id=case.admission_id,
+                    disposition=AdmissionDisposition.REJECTED,
+                    validator_profile_version="admission:r1",
+                    reason_schema_version="reason.v1",
+                    reason_codes=("revoked",),
+                    authority_reference={
+                        "reference_type": "validator",
+                        "reference_id": synthetic_uuid(19521),
+                        "schema_version": 1,
+                    },
+                    trace_id=case.context.trace_id,
+                    audit_event_id=synthetic_uuid(19522),
+                    decided_at=datetime(2026, 10, 12, tzinfo=timezone.utc),
+                )
+            )
+            await uow.commit()
+
+    CANONICAL_TRANSACTION_PROBE.arm(PostgreSQLTransactionStage.BEFORE_COMMIT)
+    admission_task = asyncio.create_task(deny_admission())
+    await CANONICAL_TRANSACTION_PROBE.wait_until_reached()
+
+    async def accept() -> None:
+        async with postgresql_adapter.uow_factory(case.context) as uow:
+            await uow.canonical.accept(case.command)
+            await uow.commit()
+
+    acceptance_task = asyncio.create_task(accept())
+    await asyncio.sleep(0)
+    CANONICAL_TRANSACTION_PROBE.release()
+    await admission_task
+    with pytest.raises(CanonicalEligibilityError):
+        await acceptance_task
 
 
 async def test_postgresql_adapter_satisfies_ingestion_repository_contract(
