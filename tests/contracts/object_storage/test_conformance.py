@@ -509,6 +509,44 @@ async def test_reconciliation_required_blocks_retry_finalize_and_abort(
     assert inventory == ()
 
 
+async def test_trusted_reconciliation_recovers_proven_staging_and_finalization(
+    original_object_store_factory: OriginalObjectStoreFactory,
+) -> None:
+    adapter = original_object_store_factory()
+    state = await adapter.store.begin_or_resume_upload(upload_command(), upload_state())
+    await adapter.store.write_chunks(
+        state.upload_id,
+        chunks(*split_chunks(CONTENT, adapter.max_write_chunk_bytes)),
+    )
+    blocked = state.transitioned(UploadCommandStateName.RECONCILIATION_REQUIRED)
+
+    interrupted = await adapter.store.reconcile_upload(upload_command(), blocked)
+
+    assert interrupted.state is UploadCommandStateName.INTERRUPTED
+    assert interrupted.provisional_receipt is None
+
+    finalized_state, _, receipt = await finalized_object(
+        adapter,
+        command=upload_command(idempotency_key="finalized-reconciliation"),
+        state=upload_state(
+            upload_id=UUID("20000000-0000-4000-8000-000000000002"),
+            object_id=UUID("30000000-0000-4000-8000-000000000002"),
+            receipt_id=UUID("40000000-0000-4000-8000-000000000002"),
+        ),
+    )
+    finalized_blocked = finalized_state.transitioned(
+        UploadCommandStateName.RECONCILIATION_REQUIRED
+    )
+
+    recovered = await adapter.store.reconcile_upload(
+        upload_command(idempotency_key="finalized-reconciliation"),
+        finalized_blocked,
+    )
+
+    assert recovered.state is UploadCommandStateName.FINALIZED
+    assert recovered.provisional_receipt == receipt
+
+
 async def test_unprepared_deletion_is_rejected_without_state_change(
     original_object_store_factory: OriginalObjectStoreFactory,
 ) -> None:
