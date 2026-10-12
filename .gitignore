@@ -15,4 +15,6 @@ build/
 node_modules/
 .next/
 web/out/
+web/playwright-report/
+web/test-results/
 coverage/
