@@ -155,6 +155,24 @@ A derived `healthy` or `degraded` assessment of exclusions, failed processing,
 artifact integrity, receipt consistency and reconciliation for a publication.
 _Avoid_: Publication Freshness, answerability, manifest completeness
 
+**Backup Fence**:
+A lease-backed, deployment-scoped coordination barrier that stops admission of
+fence-controlled mutations, drains already admitted operations and records the
+exact durable cutoff used for recovery evidence.
+_Avoid_: Database lock, snapshot status, mutable backup flag
+
+**Recovery Manifest**:
+An immutable, evidence-bearing record of one PostgreSQL/object-volume recovery
+set, its fencing epoch, quiescent watermark, component identities and verified
+completion state. A best-effort manifest is never a coherent recovery point.
+_Avoid_: Backup job log, live lease, mutable readiness flag
+
+**Fence Operation Ticket**:
+A durable ordered admission record for one fence-controlled mutation, including
+its safe terminal or reconciliation classification. Ticket counts never replace
+the individual evidence needed for quiescence.
+_Avoid_: Task queue item, transaction log, audit event
+
 ### Grounded question answering
 
 **Answer Claim**:

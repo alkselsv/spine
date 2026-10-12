@@ -194,7 +194,7 @@ access, forced RLS protection, and existing schema owner before it changes the
 schema. Runtime, dispatcher, and migration connections use the controlled
 search path `pg_catalog,spine`. The Alembic version table is
 `spine.alembic_version`, and the committed history has one linear head:
-`20261015_18`. The source-observation migrations add the source ledger tables,
+`20261016_19`. The source-observation migrations add the source ledger tables,
 integrity constraints, persisted canonicalization profile identity, and
 database-side canonical validation. The admission migration adds the
 environment-scoped append-only `admission_decisions` CAS ledger, including
@@ -215,6 +215,11 @@ All six tables are environment-scoped with forced RLS; immutable history has
 insert/select-only runtime grants, while current-pointer updates are constrained
 to monotonic policy and CAS generations.
 
+Revision `20261016_19` adds the deployment-scoped backup fence, ordered
+operation tickets, immutable epoch-scoped quiescence evidence and immutable
+recovery manifests. The live lease is the serialized coordination boundary;
+historical evidence cannot be rewritten by the runtime role.
+
 `spine-db-bootstrap-workspace` is a one-time migration-authority action. It
 atomically inserts the first Workspace and an operator audit record, then seals
 itself. It cannot list, update, delete, or impersonate another Workspace and
@@ -223,7 +228,7 @@ invoke it or access its tables.
 
 Application startup never creates roles or schemas, invokes Alembic, or calls
 `metadata.create_all`. Readiness succeeds only when PostgreSQL major 17 is in
-use, the database reports exactly head `20261015_18`, the connected user is the
+use, the database reports exactly head `20261016_19`, the connected user is the
 configured restricted runtime role, required grants and forced RLS are intact,
 and transaction-local Workspace/Environment context can be bound. Empty,
 older, newer, unknown, and multiple-head states fail closed; the newly created

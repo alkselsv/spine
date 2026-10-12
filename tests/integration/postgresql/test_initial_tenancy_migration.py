@@ -1195,6 +1195,10 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ingestion_warnings",
         "ingestion_failures",
         "processing_receipts",
+        "backup_fence_leases",
+        "fence_operation_tickets",
+        "recovery_quiescence_evidence",
+        "storage_recovery_manifests",
     }
     expected_final_constraints = {
         "alembic_version_pkc",
@@ -1338,6 +1342,27 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ck_processing_receipts_complete_exclusions",
         "ck_processing_receipts_complete_failures",
         "ck_processing_receipts_digests",
+        "pk_backup_fence_leases",
+        "ck_backup_fence_leases_scope",
+        "ck_backup_fence_leases_state",
+        "ck_backup_fence_leases_admission",
+        "pk_fence_operation_tickets",
+        "fk_fence_operation_tickets_lease",
+        "ck_fence_operation_tickets_sequence",
+        "ck_fence_operation_tickets_identifiers",
+        "pk_recovery_quiescence_evidence",
+        "fk_recovery_quiescence_evidence_lease",
+        "ck_recovery_quiescence_evidence_identifiers",
+        "ck_recovery_quiescence_evidence_counts",
+        "ck_recovery_quiescence_evidence_digest",
+        "pk_storage_recovery_manifests",
+        "fk_storage_recovery_manifests_lease",
+        "ck_storage_recovery_manifests_profile",
+        "ck_storage_recovery_manifests_status",
+        "ck_storage_recovery_manifests_digest",
+        "ck_storage_recovery_manifests_counts",
+        "ck_storage_recovery_manifests_profile_status",
+        "ck_storage_recovery_manifests_coherent_evidence",
     }
     expected_final_constraints |= (
         AUTHORIZATION_DIRECTORY_CONSTRAINTS
@@ -1442,6 +1467,13 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "uq_processing_receipts_command",
         "ix_processing_receipts_revision",
         "ix_processing_receipts_item",
+        "pk_backup_fence_leases",
+        "pk_fence_operation_tickets",
+        "uq_fence_operation_tickets_scope_sequence",
+        "ix_fence_operation_tickets_scope_state",
+        "pk_recovery_quiescence_evidence",
+        "pk_storage_recovery_manifests",
+        "ix_storage_recovery_manifests_scope_created",
     } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
@@ -1475,6 +1507,10 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ingestion_warnings": (True, True),
         "ingestion_failures": (True, True),
         "processing_receipts": (True, True),
+        "backup_fence_leases": (True, True),
+        "fence_operation_tickets": (True, True),
+        "recovery_quiescence_evidence": (True, True),
+        "storage_recovery_manifests": (True, True),
     }
     assert rls == expected_rls
     tenant_rls_tables = {
@@ -1563,6 +1599,10 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ingestion_warnings": (True, True, False, False),
         "ingestion_failures": (True, True, False, False),
         "processing_receipts": (True, True, False, False),
+        "backup_fence_leases": (True, True, True, False),
+        "fence_operation_tickets": (True, True, True, False),
+        "recovery_quiescence_evidence": (True, True, False, False),
+        "storage_recovery_manifests": (True, True, False, False),
         "admission_decisions": (True, True, False, False),
         "source_canonical_tables": (True, False, False, False),
         "source_canonical_unicode": (True, False, False, False),
@@ -1697,7 +1737,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', "
                             "'processing_receipts', 'access_policy_versions', "
                             "'access_policy_grants', 'policy_proposals', 'policy_approvals', "
-                            "'policy_activations', 'current_access_policies'))"
+                            "'policy_activations', 'current_access_policies', "
+                            "'backup_fence_leases', 'fence_operation_tickets', "
+                            "'recovery_quiescence_evidence', 'storage_recovery_manifests'))"
                     )
                 )
             ).scalars()
@@ -1720,7 +1762,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
-                            "'policy_approvals', 'policy_activations', 'current_access_policies')"
+                            "'policy_approvals', 'policy_activations', 'current_access_policies', "
+                            "'backup_fence_leases', 'fence_operation_tickets', "
+                            "'recovery_quiescence_evidence', 'storage_recovery_manifests')"
                     )
                 )
             ).mappings()
@@ -1737,7 +1781,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
-                            "'policy_approvals', 'policy_activations', 'current_access_policies')"
+                            "'policy_approvals', 'policy_activations', 'current_access_policies', "
+                            "'backup_fence_leases', 'fence_operation_tickets', "
+                            "'recovery_quiescence_evidence', 'storage_recovery_manifests')"
                     )
                 )
             ).scalars()
@@ -1753,7 +1799,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
-                            "'policy_approvals', 'policy_activations', 'current_access_policies')"
+                            "'policy_approvals', 'policy_activations', 'current_access_policies', "
+                            "'backup_fence_leases', 'fence_operation_tickets', "
+                            "'recovery_quiescence_evidence', 'storage_recovery_manifests')"
                     )
                 )
             ).scalars()
@@ -1769,7 +1817,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
-                            "'policy_approvals', 'policy_activations', 'current_access_policies')"
+                            "'policy_approvals', 'policy_activations', 'current_access_policies', "
+                            "'backup_fence_leases', 'fence_operation_tickets', "
+                            "'recovery_quiescence_evidence', 'storage_recovery_manifests')"
                     )
                 )
             ).scalars()
@@ -2326,7 +2376,9 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'ingestion_failures', 'processing_receipts', "
                         "'access_policy_versions', 'access_policy_grants', "
                         "'policy_proposals', 'policy_approvals', "
-                        "'policy_activations', 'current_access_policies')"
+                        "'policy_activations', 'current_access_policies', "
+                        "'backup_fence_leases', 'fence_operation_tickets', "
+                        "'recovery_quiescence_evidence', 'storage_recovery_manifests')"
                     )
                 )
             )
@@ -2386,6 +2438,10 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "policy_approvals": (True, True),
             "policy_activations": (True, True),
             "current_access_policies": (True, True),
+            "backup_fence_leases": (True, True),
+            "fence_operation_tickets": (True, True),
+            "recovery_quiescence_evidence": (True, True),
+            "storage_recovery_manifests": (True, True),
         }
     standard_tables = set(tables) - {"outbox_deliveries"}
     assert set(policies) == {
@@ -2405,8 +2461,17 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         assert roles == [RUNTIME_ROLE]
         assert using_expression is not None
         assert check_expression is not None
-        assert "spine.workspace_id" in using_expression
-        assert "spine.workspace_id" in check_expression
+        if table_name in {
+            "backup_fence_leases",
+            "fence_operation_tickets",
+            "recovery_quiescence_evidence",
+            "storage_recovery_manifests",
+        }:
+            assert "spine.deployment_scope_id" in using_expression
+            assert "spine.deployment_scope_id" in check_expression
+        else:
+            assert "spine.workspace_id" in using_expression
+            assert "spine.workspace_id" in check_expression
         maintenance = policies[
             (table_name, f"pol_{table_name}_migration_maintenance")
         ]
@@ -3572,13 +3637,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261013_16_ingestion_ledger_hardening.py",
         "20261014_17_source_receipt_associations.py",
         "20261015_18_access_policy_persistence.py",
+        "20261016_19_backup_recovery_coordination.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261015_19_injected_failure.py").write_text(
+    (target / "versions" / "20261016_20_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261015_19'\n"
-        "down_revision = '20261015_18'\n"
+        "revision = '20261016_20'\n"
+        "down_revision = '20261016_19'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

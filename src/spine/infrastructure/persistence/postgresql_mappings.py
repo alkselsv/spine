@@ -1,6 +1,18 @@
 """Infrastructure-only SQLAlchemy mappings for canonical tenant records."""
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, MetaData, String, Table, Text, text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    Integer,
+    MetaData,
+    PrimaryKeyConstraint,
+    String,
+    Table,
+    Text,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
 
@@ -287,6 +299,85 @@ current_access_policies = Table(
     Column("source_object_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("access_policy_version_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("policy_activation_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("policy_generation", Integer, nullable=False), Column("cas_version", Integer, nullable=False),
 )
 
+backup_fence_leases = Table(
+    "backup_fence_leases",
+    metadata,
+    Column("deployment_scope_id", Text, primary_key=True),
+    Column("active_fence_epoch", BigInteger),
+    Column("fence_state", String(32), nullable=False),
+    Column("cutoff_ticket_sequence", BigInteger),
+    Column("lease_owner", Text),
+    Column("lease_expires_at", DateTime(timezone=True)),
+    Column("lease_renewal", DateTime(timezone=True)),
+    Column("takeover_reference", Text),
+    Column("ticket_admission", String(16), nullable=False),
+    Column("cleanup_release_progress", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
+recovery_quiescence_evidence = Table(
+    "recovery_quiescence_evidence",
+    metadata,
+    Column("deployment_scope_id", Text, nullable=False),
+    Column("fence_epoch", BigInteger, nullable=False),
+    Column("schema_version", Integer, nullable=False),
+    Column("cutoff_ticket_sequence", BigInteger, nullable=False),
+    Column("watermark", Text, nullable=False),
+    Column("pre_fence_terminal_ticket_count", BigInteger, nullable=False),
+    Column("indeterminate_ticket_count", BigInteger, nullable=False),
+    Column("captured_at", DateTime(timezone=True), nullable=False),
+    Column("verification_digest", String(64), nullable=False),
+    PrimaryKeyConstraint("deployment_scope_id", "fence_epoch"),
+)
+
+fence_operation_tickets = Table(
+    "fence_operation_tickets",
+    metadata,
+    Column("ticket_id", Text, primary_key=True),
+    Column("deployment_scope_id", Text, nullable=False),
+    Column("ticket_sequence", BigInteger, nullable=False),
+    Column("fence_epoch", BigInteger),
+    Column("operation_kind", String(64), nullable=False),
+    Column("target_reference", Text, nullable=False),
+    Column("admitted_at", DateTime(timezone=True), nullable=False),
+    Column("state", String(64), nullable=False),
+    Column("terminal_at", DateTime(timezone=True)),
+    Column("safe_failure_category", String(64)),
+    Column("correlation_id", Text),
+    Column("schema_version", Integer, nullable=False),
+)
+
+storage_recovery_manifests = Table(
+    "storage_recovery_manifests",
+    metadata,
+    Column("recovery_set_id", Text, primary_key=True),
+    Column("deployment_scope_id", Text, nullable=False),
+    Column("schema_version", Integer, nullable=False),
+    Column("profile", String(32), nullable=False),
+    Column("manifest_status", String(32), nullable=False),
+    Column("fence_epoch", BigInteger, nullable=False),
+    Column("cutoff_ticket_sequence", BigInteger, nullable=False),
+    Column("quiescent_evidence", JSONB),
+    Column("postgres_boundary", Text, nullable=False),
+    Column("postgres_recovery_watermark", Text),
+    Column("object_volume_generation", Text, nullable=False),
+    Column("postgres_component_state", String(16), nullable=False),
+    Column("object_component_state", String(16), nullable=False),
+    Column("postgres_backup_identity", Text),
+    Column("postgres_verification_reference", Text),
+    Column("object_verification_reference", Text),
+    Column("drained_operation_count", BigInteger, nullable=False),
+    Column("orphaned_operation_count", BigInteger, nullable=False),
+    Column("indeterminate_operation_count", BigInteger, nullable=False),
+    Column("integrity_algorithm", String(16), nullable=False),
+    Column("manifest_digest", String(64), nullable=False),
+    Column("scope", Text, nullable=False),
+    Column("start_watermark", Text),
+    Column("end_watermark", Text),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("completed_at", DateTime(timezone=True)),
+)
 
 __all__ = [
     "access_policy_grants",
@@ -314,4 +405,8 @@ __all__ = [
     "policy_activations",
     "policy_approvals",
     "policy_proposals",
+    "backup_fence_leases",
+    "fence_operation_tickets",
+    "recovery_quiescence_evidence",
+    "storage_recovery_manifests",
 ]

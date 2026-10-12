@@ -29,6 +29,17 @@ from .reconciliation import (
     ReconciliationReport,
     ReconciliationStorage,
 )
+from .recovery import (
+    BackupRecoveryCoordinator,
+    FenceAdmissionBlockedError,
+    FenceOwnershipError,
+    QuiescenceBlockedError,
+    RecoveryCoordinationError,
+    RecoveryEvidenceProvider,
+    RecoveryManifestError,
+    RecoveryRepository,
+    RecoveryTransaction,
+)
 from .diagnostics import (
     RecordingStorageOutcomeRecorder,
     NullStorageOutcomeRecorder,
@@ -88,4 +99,13 @@ __all__ = [
     "audit_outcome_for_storage",
     "register_storage_outcome_outbox_event",
     "record_storage_outcome_safely",
+    "BackupRecoveryCoordinator",
+    "FenceAdmissionBlockedError",
+    "FenceOwnershipError",
+    "QuiescenceBlockedError",
+    "RecoveryCoordinationError",
+    "RecoveryEvidenceProvider",
+    "RecoveryManifestError",
+    "RecoveryRepository",
+    "RecoveryTransaction",
 ]
