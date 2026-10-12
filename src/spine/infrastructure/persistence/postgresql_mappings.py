@@ -256,8 +256,41 @@ admission_decisions = Table(
     Column("decided_at", DateTime(timezone=True), nullable=False),
 )
 
+access_policy_versions = Table(
+    "access_policy_versions", metadata,
+    Column("access_policy_version_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("version", Integer, nullable=False), Column("predecessor_policy_version_id", PostgreSQLUUID(as_uuid=True)), Column("document_schema_version", Text, nullable=False), Column("document_hash", String(64), nullable=False),
+    Column("origin_kind", Text, nullable=False), Column("origin_reference", PostgreSQLUUID(as_uuid=True), nullable=False), Column("origin_version", Integer, nullable=False), Column("origin_hash", String(64), nullable=False),
+    Column("created_by_canonical_human_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("created_at", DateTime(timezone=True), nullable=False),
+)
+access_policy_grants = Table(
+    "access_policy_grants", metadata,
+    Column("access_grant_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("access_policy_version_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("principal_kind", Text, nullable=False), Column("principal_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("permission", Text, nullable=False), Column("purpose", Text), Column("operation", Text), Column("valid_from", DateTime(timezone=True)), Column("valid_until", DateTime(timezone=True)),
+)
+policy_proposals = Table(
+    "policy_proposals", metadata,
+    Column("policy_proposal_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("proposal_version", Integer, nullable=False), Column("predecessor_proposal_id", PostgreSQLUUID(as_uuid=True)), Column("proposed_policy_version_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("proposed_policy_hash", String(64), nullable=False), Column("requester_canonical_human_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("expected_policy_version_id", PostgreSQLUUID(as_uuid=True)), Column("expected_policy_generation", Integer, nullable=False), Column("benefit_classification", Text, nullable=False), Column("benefit_schema_version", Text, nullable=False), Column("membership_generation", Integer, nullable=False), Column("authority_generation", Integer, nullable=False), Column("service_authority_generation", Integer, nullable=False), Column("submitted_at", DateTime(timezone=True), nullable=False),
+)
+policy_approvals = Table(
+    "policy_approvals", metadata,
+    Column("policy_approval_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("policy_proposal_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("proposal_version", Integer, nullable=False), Column("proposal_hash", String(64), nullable=False), Column("approver_canonical_human_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("identity_proof_reference", PostgreSQLUUID(as_uuid=True), nullable=False), Column("authority_snapshot_reference", PostgreSQLUUID(as_uuid=True), nullable=False), Column("membership_generation", Integer, nullable=False), Column("authority_generation", Integer, nullable=False), Column("decision", Text, nullable=False), Column("reason_code", Text, nullable=False), Column("decided_at", DateTime(timezone=True), nullable=False),
+)
+policy_activations = Table(
+    "policy_activations", metadata,
+    Column("policy_activation_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("predecessor_policy_version_id", PostgreSQLUUID(as_uuid=True)), Column("new_policy_version_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("policy_generation", Integer, nullable=False), Column("policy_proposal_id", PostgreSQLUUID(as_uuid=True)), Column("policy_proposal_version", Integer), Column("policy_proposal_hash", String(64)), Column("policy_approval_id", PostgreSQLUUID(as_uuid=True)), Column("policy_approval_decision", Text), Column("initial_eligibility_decision_id", PostgreSQLUUID(as_uuid=True)), Column("requester_canonical_human_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("activator_canonical_human_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("membership_generation", Integer, nullable=False), Column("authority_generation", Integer, nullable=False), Column("service_authority_generation", Integer, nullable=False), Column("idempotency_receipt_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("audit_event_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("outbox_event_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("activated_at", DateTime(timezone=True), nullable=False),
+)
+current_access_policies = Table(
+    "current_access_policies", metadata,
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("access_policy_version_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("policy_activation_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("policy_generation", Integer, nullable=False), Column("cas_version", Integer, nullable=False),
+)
+
 
 __all__ = [
+    "access_policy_grants",
+    "access_policy_versions",
     "audit_events",
     "environments",
     "idempotency_receipts",
@@ -277,4 +310,8 @@ __all__ = [
     "ingestion_failures",
     "processing_receipts",
     "admission_decisions",
+    "current_access_policies",
+    "policy_activations",
+    "policy_approvals",
+    "policy_proposals",
 ]

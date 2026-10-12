@@ -1034,6 +1034,14 @@ async def _set_tenant_context(
 
 
 async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> None:
+    policy_tables = {
+        "access_policy_versions",
+        "access_policy_grants",
+        "policy_proposals",
+        "policy_approvals",
+        "policy_activations",
+        "current_access_policies",
+    }
     tables = set(
         (
             await connection.execute(
@@ -1041,6 +1049,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
             )
         ).scalars()
     )
+    tables.difference_update(policy_tables)
     constraints = set(
         (
             await connection.execute(
@@ -1048,7 +1057,12 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                     "SELECT conname FROM pg_constraint AS constraint_record "
                     "JOIN pg_namespace AS namespace "
                     "ON namespace.oid = constraint_record.connamespace "
-                    "WHERE namespace.nspname = 'spine'"
+                    "WHERE namespace.nspname = 'spine' AND constraint_record.conrelid NOT IN ("
+                    "SELECT relation.oid FROM pg_class AS relation JOIN pg_namespace AS ns "
+                    "ON ns.oid = relation.relnamespace WHERE ns.nspname = 'spine' AND "
+                    "relation.relname IN ('access_policy_versions','access_policy_grants',"
+                    "'policy_proposals','policy_approvals','policy_activations',"
+                    "'current_access_policies'))"
                 )
             )
         ).scalars()
@@ -1056,7 +1070,10 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
     indexes = set(
         (
             await connection.execute(
-                text("SELECT indexname FROM pg_indexes WHERE schemaname = 'spine'")
+                text("SELECT indexname FROM pg_indexes WHERE schemaname = 'spine' AND "
+                     "tablename NOT IN ('access_policy_versions','access_policy_grants',"
+                     "'policy_proposals','policy_approvals','policy_activations',"
+                     "'current_access_policies')")
             )
         ).scalars()
     )
@@ -1080,7 +1097,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                 )
             )
         )
-        if row.relname != "alembic_version"
+        if row.relname != "alembic_version" and row.relname not in policy_tables
     }
     policies = {
         (row.table_name, row.policy_name): (
@@ -1104,6 +1121,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                 )
             )
         )
+        if row.table_name not in policy_tables
     }
     privilege_names = ("select_ok", "insert_ok", "update_ok", "delete_ok")
     privileges = {
@@ -1123,6 +1141,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                 {"role": RUNTIME_ROLE},
             )
         ).mappings()
+        if row.table_name not in policy_tables
     }
     receipt_update_columns = {
         row.column_name
@@ -1676,7 +1695,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "'source_revision_receipt_associations', 'ingestion_runs', "
                         "'ingestion_run_sources', 'ingestion_run_source_bindings', "
                         "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', "
-                        "'processing_receipts'))"
+                            "'processing_receipts', 'access_policy_versions', "
+                            "'access_policy_grants', 'policy_proposals', 'policy_approvals', "
+                            "'policy_activations', 'current_access_policies'))"
                     )
                 )
             ).scalars()
@@ -1697,7 +1718,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "AND table_name NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
-                        "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts')"
+                            "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
+                            "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
+                            "'policy_approvals', 'policy_activations', 'current_access_policies')"
                     )
                 )
             ).mappings()
@@ -1712,7 +1735,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "AND tablename NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
-                        "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts')"
+                            "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
+                            "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
+                            "'policy_approvals', 'policy_activations', 'current_access_policies')"
                     )
                 )
             ).scalars()
@@ -1726,7 +1751,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "AND tablename NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
-                        "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts')"
+                            "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
+                            "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
+                            "'policy_approvals', 'policy_activations', 'current_access_policies')"
                     )
                 )
             ).scalars()
@@ -1740,7 +1767,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "AND tablename NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
-                        "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts')"
+                            "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
+                            "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
+                            "'policy_approvals', 'policy_activations', 'current_access_policies')"
                     )
                 )
             ).scalars()
@@ -2294,7 +2323,10 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'ingestion_runs', "
                         "'ingestion_run_sources', 'ingestion_run_source_bindings', "
                         "'ingestion_transitions', 'ingestion_warnings', "
-                        "'ingestion_failures', 'processing_receipts')"
+                        "'ingestion_failures', 'processing_receipts', "
+                        "'access_policy_versions', 'access_policy_grants', "
+                        "'policy_proposals', 'policy_approvals', "
+                        "'policy_activations', 'current_access_policies')"
                     )
                 )
             )
@@ -2347,8 +2379,14 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "ingestion_transitions": (True, True),
         "ingestion_warnings": (True, True),
         "ingestion_failures": (True, True),
-        "processing_receipts": (True, True),
-    }
+            "processing_receipts": (True, True),
+            "access_policy_versions": (True, True),
+            "access_policy_grants": (True, True),
+            "policy_proposals": (True, True),
+            "policy_approvals": (True, True),
+            "policy_activations": (True, True),
+            "current_access_policies": (True, True),
+        }
     standard_tables = set(tables) - {"outbox_deliveries"}
     assert set(policies) == {
         (table_name, f"pol_{table_name}_{policy_kind}")
@@ -2410,6 +2448,205 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_access_policy_catalog_enforces_lineage_immutability_and_receipt_scope(
+    migrated_database: MigratedDatabase,
+) -> None:
+    policy_tables = (
+        "access_policy_versions",
+        "access_policy_grants",
+        "policy_proposals",
+        "policy_approvals",
+        "policy_activations",
+        "current_access_policies",
+    )
+    async with _connection(migrated_database.migration.url) as connection:
+        constraints = set(
+            (
+                await connection.execute(
+                    text(
+                        "SELECT constraint_record.conname FROM pg_constraint AS constraint_record "
+                        "JOIN pg_class AS relation ON relation.oid = constraint_record.conrelid "
+                        "JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace "
+                        "WHERE namespace.nspname = 'spine' AND relation.relname = ANY(:tables)"
+                    ),
+                    {"tables": list(policy_tables)},
+                )
+            ).scalars()
+        )
+        triggers = {
+            row.tgname: (
+                row.tgdeferrable,
+                row.tginitdeferred,
+                row.definition,
+                row.owner,
+                row.runtime_trigger,
+            )
+            for row in (
+                await connection.execute(
+                    text(
+                        "SELECT trigger.tgname, trigger.tgdeferrable, trigger.tginitdeferred, "
+                        "pg_get_triggerdef(trigger.oid) AS definition, "
+                        "pg_get_userbyid(relation.relowner) AS owner, "
+                        "has_table_privilege(:runtime, relation.oid, 'TRIGGER') "
+                        "AS runtime_trigger FROM pg_trigger AS trigger "
+                        "JOIN pg_class AS relation ON relation.oid = trigger.tgrelid "
+                        "JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace "
+                        "WHERE namespace.nspname = 'spine' AND relation.relname = ANY(:tables) "
+                        "AND NOT trigger.tgisinternal"
+                    ),
+                    {"tables": list(policy_tables), "runtime": RUNTIME_ROLE},
+                )
+            ).mappings()
+        }
+        indexes = set(
+            (
+                await connection.execute(
+                    text(
+                        "SELECT indexname FROM pg_indexes WHERE schemaname = 'spine' "
+                        "AND tablename = ANY(:tables)"
+                    ),
+                    {"tables": list(policy_tables)},
+                )
+            ).scalars()
+        )
+        functions = {
+            row.proname: (
+                row.security_definer,
+                tuple(row.config or ()),
+                row.public_execute,
+            )
+            for row in (
+                await connection.execute(
+                    text(
+                        "SELECT procedure.proname, procedure.prosecdef AS security_definer, "
+                        "procedure.proconfig AS config, "
+                        "has_function_privilege('public', procedure.oid, 'EXECUTE') "
+                        "AS public_execute FROM pg_proc AS procedure "
+                        "JOIN pg_namespace AS namespace ON namespace.oid = "
+                        "procedure.pronamespace WHERE namespace.nspname = 'spine' "
+                        "AND procedure.proname IN "
+                        "('reject_access_policy_history_mutation', "
+                        "'enforce_current_access_policy_cas')"
+                    )
+                )
+            ).mappings()
+        }
+
+    expected_constraints = {
+        "pk_access_policy_versions",
+        "uq_access_policy_versions_scope_source_id",
+        "uq_access_policy_versions_source_version",
+        "uq_access_policy_versions_source_hash",
+        "fk_access_policy_versions_source",
+        "fk_access_policy_versions_predecessor",
+        "ck_access_policy_versions_positive_versions",
+        "ck_access_policy_versions_chain",
+        "ck_access_policy_versions_hashes",
+        "ck_access_policy_versions_schema",
+        "ck_access_policy_versions_origin",
+        "pk_access_policy_grants",
+        "fk_access_policy_grants_policy",
+        "ck_access_policy_grants_authority_shape",
+        "ck_access_policy_grants_validity",
+        "ck_access_policy_grants_service_identifiers",
+        "pk_policy_proposals",
+        "uq_policy_proposals_scope_source_id",
+        "uq_policy_proposals_exact",
+        "fk_policy_proposals_policy",
+        "fk_policy_proposals_predecessor",
+        "ck_policy_proposals_generations",
+        "ck_policy_proposals_benefit",
+        "pk_policy_approvals",
+        "uq_policy_approvals_scope_source_id",
+        "fk_policy_activations_proposal",
+        "fk_policy_activations_approval",
+        "fk_policy_activations_idempotency",
+        "fk_policy_activations_audit",
+        "fk_policy_activations_outbox",
+        "uq_policy_approvals_exact",
+        "fk_policy_approvals_exact_proposal",
+        "uq_policy_approvals_proposal_approver_decision",
+        "ck_policy_approvals_decision",
+        "ck_policy_approvals_reason",
+        "pk_policy_activations",
+        "uq_policy_activations_head_tuple",
+        "uq_policy_activations_source_policy",
+        "uq_policy_activations_source_generation",
+        "uq_policy_activations_idempotency_receipt",
+        "fk_policy_activations_new_policy",
+        "fk_policy_activations_predecessor",
+        "ck_policy_activations_generations",
+        "ck_policy_activations_evidence_shape",
+        "pk_current_access_policies",
+        "uq_current_access_policies_scope_source",
+        "fk_current_access_policies_source",
+        "fk_current_access_policies_activation",
+        "ck_current_access_policies_positive_versions",
+    }
+    missing_constraints = {
+        expected
+        for expected in expected_constraints
+        if expected not in constraints
+        and not any(actual.endswith(expected) for actual in constraints)
+        and not any(
+            actual.startswith(f"ck_{table}_{expected}"[:50])
+            for table in policy_tables
+            for actual in constraints
+            if expected.startswith(f"ck_{table}_")
+        )
+    }
+    assert missing_constraints == set()
+    expected_indexes = {
+        "pk_access_policy_versions",
+        "uq_access_policy_versions_scope_source_id",
+        "uq_access_policy_versions_source_version",
+        "uq_access_policy_versions_source_hash",
+        "ix_access_policy_versions_source",
+        "pk_access_policy_grants",
+        "uq_access_policy_grants_normalized",
+        "ix_access_policy_grants_principal",
+        "pk_policy_proposals",
+        "uq_policy_proposals_scope_source_id",
+        "uq_policy_proposals_exact",
+        "ix_policy_proposals_baseline",
+        "pk_policy_approvals",
+        "uq_policy_approvals_scope_source_id",
+        "uq_policy_approvals_exact",
+        "uq_policy_approvals_proposal_approver_decision",
+        "ix_policy_approvals_proposal",
+        "pk_policy_activations",
+        "uq_policy_activations_head_tuple",
+        "uq_policy_activations_source_policy",
+        "uq_policy_activations_source_generation",
+        "uq_policy_activations_idempotency_receipt",
+        "ix_policy_activations_source",
+        "pk_current_access_policies",
+        "uq_current_access_policies_scope_source",
+        "ix_current_access_policies_policy_generation",
+    }
+    assert expected_indexes <= indexes
+    receipt_trigger = triggers["trg_policy_activations_receipt_scope"]
+    assert receipt_trigger[:2] == (True, True)
+    assert "CREATE CONSTRAINT TRIGGER" in receipt_trigger[2]
+    assert "AFTER INSERT OR UPDATE" in receipt_trigger[2]
+    assert "DEFERRABLE INITIALLY DEFERRED" in receipt_trigger[2]
+    assert "FOR EACH ROW" in receipt_trigger[2]
+    assert "validate_issue7_receipt_scope" in receipt_trigger[2]
+    assert receipt_trigger[3:] == (MIGRATION_ROLE, False)
+    for table in set(policy_tables) - {"current_access_policies"}:
+        assert f"trg_{table}_immutable" in triggers
+    assert "trg_current_access_policies_cas" in triggers
+    assert set(functions) == {
+        "reject_access_policy_history_mutation",
+        "enforce_current_access_policy_cas",
+    }
+    for security_definer, config, public_execute in functions.values():
+        assert security_definer is False
+        assert config == ("search_path=pg_catalog, spine",)
+        assert public_execute is False
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_runtime_grants_are_minimal_and_tables_remain_migration_owned(
     migrated_database: MigratedDatabase,
 ) -> None:
@@ -2451,7 +2688,7 @@ async def test_runtime_grants_are_minimal_and_tables_remain_migration_owned(
         }
         owners = {
             row.relname: row.owner
-            for row in (
+        for row in (
                 await connection.execute(
                     text(
                         "SELECT relation.relname, pg_get_userbyid(relation.relowner) "
@@ -3334,13 +3571,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261013_15_ingestion_operational_ledger.py",
         "20261013_16_ingestion_ledger_hardening.py",
         "20261014_17_source_receipt_associations.py",
+        "20261015_18_access_policy_persistence.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261014_18_injected_failure.py").write_text(
+    (target / "versions" / "20261015_19_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261014_18'\n"
-        "down_revision = '20261014_17'\n"
+        "revision = '20261015_19'\n"
+        "down_revision = '20261015_18'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"
