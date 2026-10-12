@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
+import re
 from typing import Protocol
 from uuid import UUID
 
@@ -24,8 +27,66 @@ from spine.domain.sources import (
     SourceRevisionProvenance,
 )
 
-
 CANONICAL_ACCEPTANCE_SCHEMA_VERSION = 1
+ALLOWED_CANONICAL_ADMISSION_PROFILES = frozenset({"admission:r1"})
+
+
+class SourceOrderComparison(str, Enum):
+    LOWER = "lower"
+    EQUAL = "equal"
+    HIGHER = "higher"
+
+
+class SourceOrderingPolicyError(ValueError):
+    """An ordering scheme or token is unknown, invalid, or incomparable."""
+
+
+SourceOrderComparator = Callable[[str, str], SourceOrderComparison]
+
+
+class SourceOrderingPolicyRegistry:
+    """Closed registry of versioned connector ordering comparators."""
+
+    def __init__(self, policies: Mapping[str, SourceOrderComparator]) -> None:
+        self._policies = dict(policies)
+        if not self._policies:
+            raise ValueError("at least one source ordering policy is required")
+
+    def compare(
+        self, scheme: str, incoming: str, current: str
+    ) -> SourceOrderComparison:
+        comparator = self._policies.get(scheme)
+        if comparator is None:
+            raise SourceOrderingPolicyError("source ordering scheme is unsupported")
+        try:
+            return comparator(incoming, current)
+        except SourceOrderingPolicyError:
+            raise
+        except (TypeError, ValueError):
+            raise SourceOrderingPolicyError(
+                "source ordering token is invalid"
+            ) from None
+
+    @classmethod
+    def r1(cls) -> "SourceOrderingPolicyRegistry":
+        return cls({"integer.v1": _compare_canonical_decimal})
+
+
+_CANONICAL_DECIMAL = re.compile(r"0|[1-9][0-9]*")
+
+
+def _compare_canonical_decimal(incoming: str, current: str) -> SourceOrderComparison:
+    if (
+        _CANONICAL_DECIMAL.fullmatch(incoming) is None
+        or _CANONICAL_DECIMAL.fullmatch(current) is None
+    ):
+        raise SourceOrderingPolicyError("source ordering token is invalid")
+    incoming_value, current_value = int(incoming), int(current)
+    if incoming_value < current_value:
+        return SourceOrderComparison.LOWER
+    if incoming_value > current_value:
+        return SourceOrderComparison.HIGHER
+    return SourceOrderComparison.EQUAL
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,10 +142,9 @@ class CanonicalAcceptanceCommand:
         outbox_intent: OutboxIntent | None = None,
     ) -> "CanonicalAcceptanceCommand":
         payload = {
-            "source_object_id": source.source_object_id,
-            "revision_id": revision.revision_id,
-            "revision_digest": revision.revision_digest,
-            "provenance_id": provenance.provenance_id,
+            "source": source.model_dump(mode="json"),
+            "revision": revision.model_dump(mode="json"),
+            "provenance": provenance.model_dump(mode="json"),
             "admission_decision_id": admission_decision_id,
             "access_policy_version_id": access_policy_version_id,
             "event_identity": provenance.event_identity,
@@ -154,8 +214,12 @@ class CanonicalAcceptanceRepository(Protocol):
 
 
 __all__ = [
+    "ALLOWED_CANONICAL_ADMISSION_PROFILES",
     "CANONICAL_ACCEPTANCE_SCHEMA_VERSION",
     "CanonicalAcceptanceCommand",
     "CanonicalAcceptanceRepository",
     "CanonicalAcceptanceResult",
+    "SourceOrderComparison",
+    "SourceOrderingPolicyError",
+    "SourceOrderingPolicyRegistry",
 ]

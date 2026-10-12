@@ -42,6 +42,14 @@ class ConstraintConflictError(PersistenceError):
     """A known persistence invariant rejected the requested change."""
 
 
+class CanonicalAuthorityConflictError(ConstraintConflictError):
+    """Caller-owned canonical snapshots differ from persisted authority."""
+
+
+class CanonicalEligibilityError(ConstraintConflictError):
+    """Current admission, receipt, policy, or disclosure evidence is ineligible."""
+
+
 class ObservationIntegrityConflictError(ConstraintConflictError):
     """An observation identity was reused for different content."""
 

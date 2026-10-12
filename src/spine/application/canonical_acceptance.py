@@ -12,6 +12,14 @@ from spine.application.persistence.canonical import (
 )
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.application.persistence.errors import OptimisticConflictError
+from spine.application.persistence.errors import (
+    CanonicalAuthorityConflictError,
+    CanonicalEligibilityError,
+)
+
+
+class CanonicalAcceptanceAuditUnavailableError(RuntimeError):
+    """A rejected attempt stayed denied but its required audit was unavailable."""
 
 
 class CanonicalAcceptanceFailedAttemptAudit(Protocol):
@@ -41,29 +49,48 @@ class CanonicalAcceptanceCoordinator:
 
     def __init__(
         self,
-        uow_factory: Callable[[TrustedPersistenceContext], CanonicalAcceptanceUnitOfWork],
-        context_factory: Callable[[CanonicalAcceptanceCommand], TrustedPersistenceContext],
-        failed_attempt_audit: CanonicalAcceptanceFailedAttemptAudit | None = None,
+        uow_factory: Callable[
+            [TrustedPersistenceContext], CanonicalAcceptanceUnitOfWork
+        ],
+        context_factory: Callable[
+            [CanonicalAcceptanceCommand], TrustedPersistenceContext
+        ],
+        failed_attempt_audit: CanonicalAcceptanceFailedAttemptAudit,
     ) -> None:
         self._uow_factory = uow_factory
         self._context_factory = context_factory
         self._failed_attempt_audit = failed_attempt_audit
 
-    async def accept(self, command: CanonicalAcceptanceCommand) -> CanonicalAcceptanceResult:
+    async def accept(
+        self, command: CanonicalAcceptanceCommand
+    ) -> CanonicalAcceptanceResult:
         try:
             async with self._uow_factory(self._context_factory(command)) as uow:
                 result = await uow.canonical.accept(command)
                 await uow.commit()
                 return result
-        except OptimisticConflictError:
-            if self._failed_attempt_audit is not None:
-                await self._failed_attempt_audit.record_failed_cas(
-                    command, "stale_source_head"
-                )
+        except (
+            CanonicalAuthorityConflictError,
+            CanonicalEligibilityError,
+            OptimisticConflictError,
+        ) as rejection:
+            if isinstance(rejection, CanonicalAuthorityConflictError):
+                reason = "canonical_authority_conflict"
+            elif isinstance(rejection, CanonicalEligibilityError):
+                reason = "canonical_evidence_ineligible"
+            else:
+                reason = "canonical_order_or_cas_conflict"
+            try:
+                await self._failed_attempt_audit.record_failed_cas(command, reason)
+            except Exception as audit_failure:
+                raise CanonicalAcceptanceAuditUnavailableError(
+                    "Canonical acceptance remained denied; failed-attempt audit is unavailable."
+                ) from audit_failure
             raise
 
 
 __all__ = [
+    "CanonicalAcceptanceAuditUnavailableError",
     "CanonicalAcceptanceCoordinator",
     "CanonicalAcceptanceFailedAttemptAudit",
     "CanonicalAcceptanceUnitOfWork",

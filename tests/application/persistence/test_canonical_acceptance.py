@@ -6,6 +6,11 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from spine.application.diagnostics.audit import AuditEventRegistry
+from spine.application.access_policies import (
+    AccessPolicyActivationCommand,
+    PolicyActivationDraft,
+    access_policy_document_hash,
+)
 from spine.application.persistence.canonical import CanonicalAcceptanceCommand
 from spine.application.persistence.context import (
     EnvironmentScope,
@@ -14,23 +19,52 @@ from spine.application.persistence.context import (
     WorkspaceScope,
 )
 from spine.application.persistence.idempotency import IdempotencyKey
-from spine.application.persistence.outbox import OpaqueObjectReference, OutboxEventRegistry
+from spine.application.persistence.errors import (
+    CanonicalAuthorityConflictError,
+    CanonicalEligibilityError,
+    OptimisticConflictError,
+)
+from spine.application.canonical_acceptance import (
+    CanonicalAcceptanceAuditUnavailableError,
+    CanonicalAcceptanceCoordinator,
+)
+from spine.application.persistence.canonical import (
+    SourceOrderComparison,
+    SourceOrderingPolicyError,
+    SourceOrderingPolicyRegistry,
+)
+from spine.application.persistence.outbox import (
+    OpaqueObjectReference,
+    OutboxEventRegistry,
+)
 from spine.domain.audit import (
     AuditObjectReference,
     AuditOutcome,
     CanonicalTransitionAuditPayload,
 )
 from spine.domain.common import ContextOrigin, EnvironmentKind
-from spine.domain.sources import AdmissionDecision, AdmissionDisposition
+from spine.domain.sources import (
+    AccessGrant,
+    AccessPermission,
+    AccessPolicyVersion,
+    AdmissionDecision,
+    AdmissionDisposition,
+    PolicyOriginKind,
+    PrincipalKind,
+)
 from spine.domain.workspaces import Environment, Workspace
 from spine.infrastructure.persistence.contexts import (
     TrustedContextBoundary,
     create_initial_workspace_bootstrap_authority,
 )
 from spine.infrastructure.persistence.in_memory import InMemoryPersistence
+from spine.infrastructure.persistence.access_policies import (
+    InMemoryAccessPolicyRepository,
+)
 from tests.application.persistence.test_source_observation import (
     NOW,
     provenance,
+    receipt_association,
     source,
     synthetic_uuid,
     valid_revision,
@@ -62,12 +96,15 @@ def canonical_persistence():
         schema_version=1,
         payload_type=SourceAcceptedPayload,
     )
+    policies = InMemoryAccessPolicyRepository()
     persistence = InMemoryPersistence(
         context_verifier=boundary,
         outbox_events=events,
         audit_events=AuditEventRegistry.with_default_families(),
         bootstrap_authority=authority,
         transaction_lock=asyncio.Lock(),
+        canonical_policy_repository=policies,
+        canonical_clock=lambda: NOW,
     )
 
     async def initialize() -> None:
@@ -105,7 +142,75 @@ def canonical_persistence():
             trace_id=uid(904),
         )
 
-    return persistence, workspace_context, source_context, canonical_context
+    return persistence, policies, workspace_context, source_context, canonical_context
+
+
+async def activate_policy(
+    policies: InMemoryAccessPolicyRepository, source_object
+) -> UUID:
+    policy = AccessPolicyVersion(
+        access_policy_version_id=uid(401),
+        workspace_id=source_object.workspace_id,
+        environment_id=source_object.environment_id,
+        source_object_id=source_object.source_object_id,
+        version=1,
+        predecessor_policy_version_id=None,
+        document_schema_version="access-policy.v1",
+        document_hash="a" * 64,
+        origin_kind=PolicyOriginKind.ELIGIBLE_TEMPLATE,
+        origin_reference=uid(402),
+        origin_version=1,
+        origin_hash="b" * 64,
+        created_by_canonical_human_id=uid(403),
+        created_at=NOW,
+        grants=(
+            AccessGrant(
+                access_grant_id=uid(404),
+                principal_kind=PrincipalKind.SERVICE,
+                principal_id=uid(902),
+                permission=AccessPermission.PROCESS_CONTENT,
+                purpose="canonical_test",
+                operation="canonical_acceptance",
+            ),
+        ),
+    )
+    policy = policy.model_copy(
+        update={"document_hash": access_policy_document_hash(policy)}
+    )
+    command = AccessPolicyActivationCommand(
+        policy=policy,
+        requester_canonical_human_id=uid(403),
+        activator_canonical_human_id=uid(403),
+        expected_policy_version_id=None,
+        expected_policy_generation=0,
+        expected_cas_version=0,
+        activation_id=uid(405),
+        idempotency_key=IdempotencyKey("canonical-policy"),
+        audit_event_id=uid(406),
+        outbox_event_id=uid(407),
+        activated_at=NOW,
+    )
+    draft = PolicyActivationDraft(
+        values={
+            "policy_activation_id": command.activation_id,
+            "workspace_id": policy.workspace_id,
+            "environment_id": policy.environment_id,
+            "source_object_id": policy.source_object_id,
+            "predecessor_policy_version_id": None,
+            "new_policy_version_id": policy.access_policy_version_id,
+            "policy_generation": 1,
+            "requester_canonical_human_id": command.requester_canonical_human_id,
+            "activator_canonical_human_id": command.activator_canonical_human_id,
+            "membership_generation": 1,
+            "authority_generation": 1,
+            "service_authority_generation": 1,
+            "audit_event_id": command.audit_event_id,
+            "outbox_event_id": command.outbox_event_id,
+            "activated_at": NOW,
+        }
+    )
+    await policies.activate(command, draft)
+    return policy.access_policy_version_id
 
 
 async def add_environment(persistence, workspace_context) -> None:
@@ -172,8 +277,12 @@ def acceptance_command(source_object, revision, provenance_value, *, key, genera
 
 
 @pytest.mark.asyncio
-async def test_canonical_acceptance_advances_head_and_replays_without_second_effect(canonical_persistence):
-    persistence, workspace_context, source_context, canonical_context = canonical_persistence
+async def test_canonical_acceptance_advances_head_and_replays_without_second_effect(
+    canonical_persistence,
+):
+    persistence, policies, workspace_context, source_context, canonical_context = (
+        canonical_persistence
+    )
     await add_environment(persistence, workspace_context)
     source_object = source()
     revision = valid_revision(source_object)
@@ -181,9 +290,16 @@ async def test_canonical_acceptance_advances_head_and_replays_without_second_eff
     async with persistence.uow_factory(source_context()) as uow:
         resolved = await uow.sources.resolve_or_create_source(source_object)
         await uow.sources.record_observation(
-            observation_command(resolved, revision, source_provenance, "observe")
+            observation_command(
+                resolved,
+                revision,
+                source_provenance,
+                "observe",
+                receipt_association(resolved, revision, source_provenance),
+            )
         )
         await uow.commit()
+    policy_id = await activate_policy(policies, source_object)
     async with persistence.uow_factory(canonical_context()) as uow:
         resolved = await uow.sources.resolve_or_create_source(source_object)
         await uow.admissions.append_decision(
@@ -195,24 +311,213 @@ async def test_canonical_acceptance_advances_head_and_replays_without_second_eff
                 environment_id=resolved.environment_id,
                 decision_version=1,
                 disposition=AdmissionDisposition.ADMITTED,
-                validator_profile_version="validator.v1",
+                validator_profile_version="admission:r1",
                 reason_schema_version="reason.v1",
                 reason_codes=("clean",),
-                authority_reference={"reference_type": "validator", "reference_id": uid(502), "schema_version": 1},
+                authority_reference={
+                    "reference_type": "validator",
+                    "reference_id": uid(502),
+                    "schema_version": 1,
+                },
                 trace_id=uid(904),
                 audit_event_id=uid(503),
                 decided_at=NOW,
             )
         )
-        first = await uow.canonical.accept(
-            acceptance_command(resolved, revision, source_provenance, key="accept-1", generation=1)
+        command = acceptance_command(
+            resolved, revision, source_provenance, key="accept-1", generation=1
         )
-        replay = await uow.canonical.accept(
-            acceptance_command(resolved, revision, source_provenance, key="accept-1", generation=1)
+        command = CanonicalAcceptanceCommand.create(
+            source=command.source,
+            revision=command.revision,
+            provenance=command.provenance,
+            admission_decision_id=command.admission_decision_id,
+            access_policy_version_id=policy_id,
+            expected_current_revision_id=command.expected_current_revision_id,
+            idempotency_key=command.idempotency_key,
+            canonical_acceptance_id=command.canonical_acceptance_id,
+            audit_event_id=command.audit_event_id,
+            outbox_event_id=command.outbox_event_id,
+            accepted_at=command.accepted_at,
+            audit_event=command.audit_event,
+            outbox_intent=command.outbox_intent,
         )
+        first = await uow.canonical.accept(command)
+        replay = await uow.canonical.accept(command)
         await uow.commit()
     assert first.advanced is True
     assert replay.replay is True
     assert replay.acceptance == first.acceptance
     assert len(persistence.uow_factory._store.state.canonical_acceptances) == 1
     assert len(persistence.uow_factory._store.state.current_source_heads) == 1
+
+    forged_snapshots = (
+        (
+            resolved.model_copy(update={"source_kind": "forged"}),
+            revision,
+            source_provenance,
+        ),
+        (
+            resolved,
+            revision.model_copy(update={"media_type": "application/forged"}),
+            source_provenance,
+        ),
+        (
+            resolved,
+            revision,
+            source_provenance.model_copy(
+                update={"order_scheme": "integer.v1", "order_token": "2"}
+            ),
+        ),
+    )
+    for number, (forged_source, forged_revision, forged_provenance) in enumerate(
+        forged_snapshots, start=2
+    ):
+        forged = acceptance_command(
+            forged_source,
+            forged_revision,
+            forged_provenance,
+            key=f"forged-authority-{number}",
+            generation=number,
+            expected=revision.revision_id,
+        )
+        forged = CanonicalAcceptanceCommand.create(
+            source=forged.source,
+            revision=forged.revision,
+            provenance=forged.provenance,
+            admission_decision_id=uid(501),
+            access_policy_version_id=policy_id,
+            expected_current_revision_id=revision.revision_id,
+            idempotency_key=forged.idempotency_key,
+            canonical_acceptance_id=forged.canonical_acceptance_id,
+            audit_event_id=forged.audit_event_id,
+            outbox_event_id=forged.outbox_event_id,
+            accepted_at=forged.accepted_at,
+            audit_event=forged.audit_event,
+            outbox_intent=forged.outbox_intent,
+        )
+        async with persistence.uow_factory(canonical_context()) as uow:
+            with pytest.raises(CanonicalAuthorityConflictError):
+                await uow.canonical.accept(forged)
+
+
+def test_source_ordering_registry_uses_scheme_specific_numeric_order() -> None:
+    registry = SourceOrderingPolicyRegistry.r1()
+
+    assert registry.compare("integer.v1", "10", "9") is SourceOrderComparison.HIGHER
+    assert registry.compare("integer.v1", "9", "10") is SourceOrderComparison.LOWER
+    assert registry.compare("integer.v1", "10", "10") is SourceOrderComparison.EQUAL
+
+
+@pytest.mark.parametrize(
+    ("scheme", "incoming", "current"),
+    (("unknown.v1", "1", "1"), ("integer.v1", "01", "1")),
+)
+def test_source_ordering_registry_rejects_unknown_or_noncanonical_tokens(
+    scheme: str, incoming: str, current: str
+) -> None:
+    with pytest.raises(SourceOrderingPolicyError):
+        SourceOrderingPolicyRegistry.r1().compare(scheme, incoming, current)
+
+
+class RejectingCanonicalRepository:
+    def __init__(self, error: Exception, events: list[str]) -> None:
+        self._error = error
+        self._events = events
+
+    async def accept(self, command: CanonicalAcceptanceCommand):
+        del command
+        self._events.append("reject")
+        raise self._error
+
+
+class RejectingCanonicalUnitOfWork:
+    def __init__(self, error: Exception, events: list[str]) -> None:
+        self.canonical = RejectingCanonicalRepository(error, events)
+        self._events = events
+
+    async def __aenter__(self):
+        self._events.append("begin")
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback) -> None:
+        del exc, traceback
+        self._events.append("rollback" if exc_type is not None else "close")
+
+    async def commit(self) -> None:
+        self._events.append("commit")
+
+
+class RecordingFailedAcceptanceAudit:
+    def __init__(self, events: list[str], *, fail: bool = False) -> None:
+        self._events = events
+        self._fail = fail
+
+    async def record_failed_cas(
+        self, command: CanonicalAcceptanceCommand, reason_code: str
+    ) -> None:
+        del command
+        self._events.append(f"audit:{reason_code}")
+        if self._fail:
+            raise RuntimeError("audit unavailable")
+
+
+def coordinator_command() -> CanonicalAcceptanceCommand:
+    source_object = source()
+    source_revision = valid_revision(source_object)
+    return acceptance_command(
+        source_object,
+        source_revision,
+        provenance(source_object, source_revision),
+        key="coordinator-rejection",
+        generation=9,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    (
+        (CanonicalAuthorityConflictError("conflict"), "canonical_authority_conflict"),
+        (CanonicalEligibilityError("denied"), "canonical_evidence_ineligible"),
+        (OptimisticConflictError("stale"), "canonical_order_or_cas_conflict"),
+    ),
+)
+async def test_failed_acceptance_rolls_back_before_exactly_one_separate_audit(
+    error: Exception, reason: str
+) -> None:
+    events: list[str] = []
+    coordinator = CanonicalAcceptanceCoordinator(
+        lambda context: RejectingCanonicalUnitOfWork(error, events),
+        lambda command: object(),
+        RecordingFailedAcceptanceAudit(events),
+    )
+
+    with pytest.raises(type(error)):
+        await coordinator.accept(coordinator_command())
+
+    assert events == ["begin", "reject", "rollback", f"audit:{reason}"]
+
+
+@pytest.mark.asyncio
+async def test_failed_acceptance_audit_failure_cannot_turn_denial_into_success() -> (
+    None
+):
+    events: list[str] = []
+    rejection = CanonicalEligibilityError("denied")
+    coordinator = CanonicalAcceptanceCoordinator(
+        lambda context: RejectingCanonicalUnitOfWork(rejection, events),
+        lambda command: object(),
+        RecordingFailedAcceptanceAudit(events, fail=True),
+    )
+
+    with pytest.raises(CanonicalAcceptanceAuditUnavailableError) as raised:
+        await coordinator.accept(coordinator_command())
+
+    assert raised.value.__cause__ is not None
+    assert events == [
+        "begin",
+        "reject",
+        "rollback",
+        "audit:canonical_evidence_ineligible",
+    ]
