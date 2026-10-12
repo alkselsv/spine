@@ -115,11 +115,19 @@ class OriginalUploadOrchestrator:
             raise
 
         if record.state.state is UploadCommandStateName.FINALIZED:
-            return await self._replay_finalized(
+            replayed = await self._replay_finalized(
                 record,
                 chunks,
                 storage_state=storage_state,
             )
+            await self._record_outcome(
+                context,
+                operation=StorageOutcomeKind.UPLOAD,
+                status=StorageOutcomeStatus.SUCCEEDED,
+                subject_id=record.result.upload_id,
+                suffix="replay",
+            )
+            return replayed
         if storage_state.state is UploadCommandStateName.FINALIZED:
             await self._mark_reconciliation_required(context, record.result.upload_id)
             raise ReconciliationRequired()
@@ -220,6 +228,13 @@ class OriginalUploadOrchestrator:
         if record.state.state is UploadCommandStateName.RECONCILIATION_REQUIRED:
             raise ReconciliationRequired()
         if record.state.state is UploadCommandStateName.ABORTED:
+            await self._record_outcome(
+                context,
+                operation=StorageOutcomeKind.UPLOAD,
+                status=StorageOutcomeStatus.ABORTED,
+                subject_id=record.result.upload_id,
+                suffix="aborted-replay",
+            )
             return self._abort_outcome(record, replay=True)
         if record.state.state in {
             UploadCommandStateName.FINALIZED,
@@ -277,6 +292,13 @@ class OriginalUploadOrchestrator:
         if record.state.state is not UploadCommandStateName.ABORTED:
             raise ObjectProtected()
         if record.cleanup_status is UploadCleanupStatus.COMPLETED:
+            await self._record_outcome(
+                context,
+                operation=StorageOutcomeKind.DELETION,
+                status=StorageOutcomeStatus.SUCCEEDED,
+                subject_id=record.result.object_id,
+                suffix="completed-replay",
+            )
             return self._abort_outcome(record, replay=True)
 
         cleanup_state = UploadCommandState.model_validate(
@@ -313,6 +335,7 @@ class OriginalUploadOrchestrator:
             subject_id=record.result.object_id,
             error_category=(error_category.value if error_category else None),
             suffix=cleanup_status.value,
+            attempt_number=record.record_version,
         )
         return OriginalUploadAbortOutcome(
             result=record.result,
@@ -665,6 +688,7 @@ class OriginalUploadOrchestrator:
             subject_id=record.result.upload_id,
             error_category=error.category.value,
             suffix=error.category.value,
+            attempt_number=record.record_version,
         )
         if record.state.state in {
             UploadCommandStateName.FINALIZED,
@@ -698,6 +722,7 @@ class OriginalUploadOrchestrator:
         subject_id: UUID,
         suffix: str,
         error_category: str | None = None,
+        attempt_number: int = 1,
     ) -> None:
         outcome = StorageOutcome(
             workspace_id=context.scope.workspace_id,
@@ -709,10 +734,11 @@ class OriginalUploadOrchestrator:
             trace_id=context.trace_id,
             operation=operation,
             status=status,
+            attempt_number=attempt_number,
             subject_id=subject_id,
             error_code=error_category,
             producer_deduplication_id=(
-                f"storage:{operation.value}:{subject_id}:{suffix}"
+                f"storage:{operation.value}:{subject_id}:{suffix}:attempt-{attempt_number}"
             ),
         )
         await record_storage_outcome_safely(self._outcome_recorder, outcome)

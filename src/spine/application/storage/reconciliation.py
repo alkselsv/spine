@@ -186,7 +186,7 @@ class OriginalStorageReconciler:
         *,
         workspace_id: UUID,
         environment_id: UUID | None,
-        trace_id: UUID | None = None,
+        trace_id: UUID,
         upload_records: Iterable[OriginalUploadRecord] = (),
         cursor: str | None = None,
         limit: int = 100,
@@ -250,7 +250,7 @@ class OriginalStorageReconciler:
         workspace_id: UUID,
         environment_id: UUID | None,
         canonical_references: Iterable[CanonicalOriginalReference],
-        trace_id: UUID | None = None,
+        trace_id: UUID,
     ) -> DeletionResult:
         """Delete a reported orphan after rechecking current canonical state."""
 
@@ -294,9 +294,9 @@ class OriginalStorageReconciler:
         self,
         finding: ReconciliationFinding,
         *,
-        trace_id: UUID | None,
+        trace_id: UUID,
     ) -> None:
-        if trace_id is None or finding.workspace_id is None:
+        if finding.workspace_id is None:
             return
         operation = {
             ReconciliationFindingKind.ORPHAN: StorageOutcomeKind.ORPHAN,

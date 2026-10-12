@@ -32,6 +32,7 @@ from .reconciliation import (
 from .diagnostics import (
     RecordingStorageOutcomeRecorder,
     NullStorageOutcomeRecorder,
+    StorageOutcomeEventPublisher,
     StorageOutcome,
     StorageOutcomeKind,
     StorageOutcomeOutboxPayload,
@@ -73,6 +74,7 @@ __all__ = [
     "UploadCleanupStatus",
     "RecordingStorageOutcomeRecorder",
     "NullStorageOutcomeRecorder",
+    "StorageOutcomeEventPublisher",
     "StorageOutcome",
     "StorageOutcomeKind",
     "StorageOutcomeOutboxPayload",

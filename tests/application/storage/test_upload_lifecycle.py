@@ -267,6 +267,11 @@ class _FaultInjectingObjectStore:
         return await self._wrapped.abort_upload(state)
 
 
+class _FailingOutcomeRecorder:
+    async def record(self, outcome: object) -> None:
+        raise RuntimeError("diagnostic transport failed")
+
+
 def _orchestrator(
     store: _FakeStore,
     outcome_recorder: RecordingStorageOutcomeRecorder | None = None,
@@ -311,7 +316,38 @@ async def test_successful_upload_emits_safe_idempotent_storage_outcome() -> None
     assert emitted.trace_id == TRACE_ID
     assert emitted.subject_id == UPLOAD_ID
     assert emitted.status.value == "succeeded"
-    assert emitted.producer_deduplication_id.endswith(":accepted")
+    assert emitted.producer_deduplication_id.endswith(":accepted:attempt-1")
+
+
+@pytest.mark.asyncio
+async def test_outcome_failure_does_not_rollback_finalized_upload() -> None:
+    store = _FakeStore()
+    orchestrator, _ = _orchestrator(store, _FailingOutcomeRecorder())  # type: ignore[arg-type]
+
+    async def chunks() -> AsyncIterable[bytes]:
+        yield b"hello"
+
+    await orchestrator.upload(_context(), _command(), chunks())
+
+    assert store.uploads[UPLOAD_ID].state.state is UploadCommandStateName.FINALIZED
+
+
+@pytest.mark.asyncio
+async def test_finalized_upload_replay_emits_a_replay_outcome() -> None:
+    store = _FakeStore()
+    recorder = RecordingStorageOutcomeRecorder()
+    orchestrator, _ = _orchestrator(store, recorder)
+
+    async def chunks() -> AsyncIterable[bytes]:
+        yield b"hello"
+
+    await orchestrator.upload(_context(), _command(), chunks())
+    await orchestrator.upload(_context(), _command(), chunks())
+
+    assert len(recorder.outcomes) == 2
+    assert recorder.outcomes[1].producer_deduplication_id.endswith(
+        ":replay:attempt-1"
+    )
 
 
 @pytest.mark.asyncio
