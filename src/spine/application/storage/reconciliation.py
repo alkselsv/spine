@@ -273,21 +273,20 @@ class OriginalStorageReconciler:
             finding.object_reference,
             approval,
         )
-        if trace_id is not None:
-            await record_storage_outcome_safely(
-                self._outcome_recorder,
-                StorageOutcome(
-                    workspace_id=workspace_id,
-                    environment_id=environment_id,
-                    trace_id=trace_id,
-                    operation=StorageOutcomeKind.DELETION,
-                    status=StorageOutcomeStatus.APPROVED_DELETION,
-                    subject_id=finding.object_reference.object_id,
-                    producer_deduplication_id=(
-                        f"storage:deletion:{finding.object_reference.object_id}:approved"
-                    ),
+        await record_storage_outcome_safely(
+            self._outcome_recorder,
+            StorageOutcome(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                trace_id=trace_id,
+                operation=StorageOutcomeKind.DELETION,
+                status=StorageOutcomeStatus.APPROVED_DELETION,
+                subject_id=finding.object_reference.object_id,
+                producer_deduplication_id=(
+                    f"storage:deletion:{finding.object_reference.object_id}:approved"
                 ),
             )
+        )
         return result
 
     async def _record_finding_outcome(

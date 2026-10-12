@@ -108,6 +108,53 @@ async def test_event_publisher_writes_distinct_audit_diagnostic_and_outbox_recor
     assert diagnostic_sink.events[0].payload_json()["outcome"] == "indeterminate"
 
 
+@pytest.mark.asyncio
+async def test_event_publisher_reuses_stable_identity_for_repeated_outcome() -> None:
+    audit_writer = _AuditWriter()
+    diagnostic_sink = _DiagnosticSink()
+    outbox_writer = _OutboxWriter()
+    outbox_registry = OutboxEventRegistry()
+    register_storage_outcome_outbox_event(outbox_registry)
+    publisher = StorageOutcomeEventPublisher(
+        audit_writer=audit_writer,
+        diagnostic_sink=diagnostic_sink,
+        outbox_writer=outbox_writer,
+        audit_events=AuditEventRegistry.with_default_families(),
+        diagnostic_events=DiagnosticEventRegistry.with_default_families(),
+        outbox_events=outbox_registry,
+        origin=ContextOrigin.INTERACTIVE,
+        acting_subject_id=ACTOR_ID,
+        service_principal_id=None,
+    )
+
+    await publisher.record(outcome())
+    await publisher.record(outcome())
+
+    assert [event.producer_deduplication_id for event in audit_writer.events] == [
+        "storage:integrity:subject:corrupt",
+        "storage:integrity:subject:corrupt",
+    ]
+    assert [intent.producer_deduplication_id for intent in outbox_writer.intents] == [
+        "storage:integrity:subject:corrupt",
+        "storage:integrity:subject:corrupt",
+    ]
+
+
+def test_storage_outcome_outbox_keeps_workspace_identity_outside_payload() -> None:
+    registry = OutboxEventRegistry()
+    register_storage_outcome_outbox_event(registry)
+    other_workspace = UUID("10000000-0000-0000-0000-000000000100")
+
+    intent = build_storage_outcome_intent(
+        registry,
+        outcome(workspace_id=other_workspace),
+    )
+
+    assert intent.workspace_id == other_workspace
+    assert intent.workspace_id != WORKSPACE_ID
+    assert "workspace_id" not in intent.payload_json()
+
+
 def test_storage_outcome_builds_idempotent_typed_outbox_intent() -> None:
     registry = OutboxEventRegistry()
     register_storage_outcome_outbox_event(registry)
