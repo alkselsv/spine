@@ -21,6 +21,8 @@ class EvaluationResult(SpineModel):
     evaluator_version: str
     subject_type: str
     subject_id: UUID
+    workspace_id: UUID | None = None
+    environment_id: UUID | None = None
     verdict: EvaluationVerdict
     score: float | None = Field(default=None, ge=0.0, le=1.0)
     details: dict[str, Any] = Field(default_factory=dict)

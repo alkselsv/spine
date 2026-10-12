@@ -12,7 +12,7 @@ from typing import Final
 from uuid import UUID, uuid5
 
 from spine.domain.evaluations import EvaluationResult, EvaluationVerdict
-from spine.evals.qa_r1 import QACase, RelevanceLabel
+from spine.evals.qa_r1 import QACase, QADataset, RelevanceLabel
 from spine.memory.contracts import ContextReference, RetrievalResult
 
 
@@ -28,6 +28,7 @@ def evaluate_recall_at_k(
     *,
     k: int,
     subject_id: UUID | None = None,
+    dataset: QADataset | None = None,
 ) -> EvaluationResult:
     """Evaluate the fraction of relevant references found in the top ``k``.
 
@@ -39,7 +40,7 @@ def evaluate_recall_at_k(
     """
 
     _validate_k(k)
-    identity = _evaluation_identity(result, case, RECALL_AT_K_EVALUATOR_KEY, str(k))
+    identity = _evaluation_identity(result, case, RECALL_AT_K_EVALUATOR_KEY, str(k), dataset)
     base = _base_result(
         evaluator_key=RECALL_AT_K_EVALUATOR_KEY,
         case=case,
@@ -74,20 +75,39 @@ def evaluate_recall_at_k(
             }
         )
 
-    ranked_ids, scope_filtered_count = _ranked_ids_in_case_scope(result, case)
+    ranked_ids, scope_filtered_count, ineligible_count = _ranked_ids_in_case_scope(result, case, dataset)
+    if result.references and not ranked_ids:
+        return base.model_copy(
+            update={
+                "verdict": EvaluationVerdict.REVIEW,
+                "score": None,
+                "details": {
+                    "index_version": result.index_version,
+                    "k": k,
+                    "reason": "inaccessible_evidence",
+                    "retrieval_strategy": result.retrieval_strategy,
+                    "scope_filtered_count": scope_filtered_count,
+                    "status": "not_applicable",
+                    "ineligible_reference_count": ineligible_count,
+                },
+            }
+        )
     matched_ids = set(ranked_ids[:k]).intersection(relevant_ids)
     score = len(matched_ids) / len(relevant_ids)
     details = {
+        "index_version": result.index_version,
         "k": k,
         "matched_relevant_count": len(matched_ids),
         "missing_relevant_count": len(relevant_ids) - len(matched_ids),
         "relevant_count": len(relevant_ids),
+        "retrieval_strategy": result.retrieval_strategy,
         "scope_filtered_count": scope_filtered_count,
         "status": "measured",
+        "ineligible_reference_count": ineligible_count,
     }
     return base.model_copy(
         update={
-            "verdict": _verdict_for_score(score),
+            "verdict": EvaluationVerdict.REVIEW,
             "score": score,
             "details": details,
         }
@@ -99,15 +119,17 @@ def evaluate_mrr(
     case: QACase,
     *,
     subject_id: UUID | None = None,
+    dataset: QADataset | None = None,
 ) -> EvaluationResult:
     """Evaluate reciprocal rank of the first relevant reference.
 
-    The order in ``RetrievalResult.references`` is the ranking.  Duplicate
-    evidence IDs are collapsed while preserving their first occurrence, so a
-    retry or duplicate ingestion cannot improve or worsen the rank.
+    The order in ``RetrievalResult.references`` is the ranking and the stable
+    tie-break supplied by the retrieval contract.  Duplicate evidence IDs are
+    collapsed while preserving their first occurrence, so a retry or duplicate
+    ingestion cannot improve or worsen the rank.
     """
 
-    identity = _evaluation_identity(result, case, MRR_EVALUATOR_KEY, "all")
+    identity = _evaluation_identity(result, case, MRR_EVALUATOR_KEY, "all", dataset)
     base = _base_result(
         evaluator_key=MRR_EVALUATOR_KEY,
         case=case,
@@ -140,7 +162,22 @@ def evaluate_mrr(
             }
         )
 
-    ranked_ids, scope_filtered_count = _ranked_ids_in_case_scope(result, case)
+    ranked_ids, scope_filtered_count, ineligible_count = _ranked_ids_in_case_scope(result, case, dataset)
+    if result.references and not ranked_ids:
+        return base.model_copy(
+            update={
+                "verdict": EvaluationVerdict.REVIEW,
+                "score": None,
+                "details": {
+                    "index_version": result.index_version,
+                    "reason": "inaccessible_evidence",
+                    "retrieval_strategy": result.retrieval_strategy,
+                    "scope_filtered_count": scope_filtered_count,
+                    "status": "not_applicable",
+                    "ineligible_reference_count": ineligible_count,
+                },
+            }
+        )
     relevant_set = set(relevant_ids)
     first_rank = next(
         (rank for rank, evidence_id in enumerate(ranked_ids, start=1) if evidence_id in relevant_set),
@@ -148,15 +185,18 @@ def evaluate_mrr(
     )
     score = 0.0 if first_rank is None else 1.0 / first_rank
     details = {
+        "index_version": result.index_version,
         "first_relevant_rank": first_rank,
         "missing_relevant_count": len(relevant_set - set(ranked_ids)),
         "relevant_count": len(relevant_ids),
+        "retrieval_strategy": result.retrieval_strategy,
         "scope_filtered_count": scope_filtered_count,
         "status": "measured",
+        "ineligible_reference_count": ineligible_count,
     }
     return base.model_copy(
         update={
-            "verdict": _verdict_for_score(score),
+            "verdict": EvaluationVerdict.REVIEW,
             "score": score,
             "details": details,
         }
@@ -176,13 +216,21 @@ def _base_result(
         evaluator_version=RETRIEVAL_METRICS_EVALUATOR_VERSION,
         subject_type="qa_case",
         subject_id=subject_id or uuid5(_SUBJECT_NAMESPACE, case.case_id),
+        workspace_id=case.workspace_id,
+        environment_id=case.environment_id,
         verdict=EvaluationVerdict.REVIEW,
     )
 
 
-def _evaluation_identity(result: RetrievalResult, case: QACase, evaluator_key: str, parameter: str) -> UUID:
+def _evaluation_identity(
+    result: RetrievalResult,
+    case: QACase,
+    evaluator_key: str,
+    parameter: str,
+    dataset: QADataset | None,
+) -> UUID:
     reference_signature = ";".join(
-        f"{reference.evidence_id}:{reference.workspace_id}:{reference.environment_id}"
+        f"{reference.evidence_id}:{reference.source_revision_id}:{reference.workspace_id}:{reference.environment_id}"
         for reference in result.references
     )
     label_signature = ";".join(
@@ -192,22 +240,47 @@ def _evaluation_identity(result: RetrievalResult, case: QACase, evaluator_key: s
     return uuid5(
         _SUBJECT_NAMESPACE,
         f"{evaluator_key}:{RETRIEVAL_METRICS_EVALUATOR_VERSION}:{case.case_id}:"
-        f"{parameter}:{label_signature}:{reference_signature}",
+        f"{parameter}:{result.retrieval_strategy}:{result.index_version}:"
+        f"{dataset.dataset_digest if dataset is not None else 'no-dataset'}:"
+        f"{label_signature}:{reference_signature}",
     )
 
 
-def _ranked_ids_in_case_scope(result: RetrievalResult, case: QACase) -> tuple[tuple[str, ...], int]:
+def _ranked_ids_in_case_scope(
+    result: RetrievalResult,
+    case: QACase,
+    dataset: QADataset | None,
+) -> tuple[tuple[str, ...], int, int]:
     ranked_ids: list[str] = []
     seen: set[str] = set()
     scope_filtered_count = 0
+    ineligible_count = 0
+    evidence_by_id = _evidence_by_id(dataset)
     for reference in result.references:
         if not _is_in_case_scope(reference, case):
             scope_filtered_count += 1
             continue
+        if reference.source_revision_id not in case.available_revision_ids:
+            ineligible_count += 1
+            continue
+        expected_revision = evidence_by_id.get(reference.evidence_id)
+        if expected_revision is not None and expected_revision != reference.source_revision_id:
+            ineligible_count += 1
+            continue
         if reference.evidence_id not in seen:
             seen.add(reference.evidence_id)
             ranked_ids.append(reference.evidence_id)
-    return tuple(ranked_ids), scope_filtered_count
+    return tuple(ranked_ids), scope_filtered_count, ineligible_count
+
+
+def _evidence_by_id(dataset: QADataset | None) -> dict[str, UUID]:
+    if dataset is None:
+        return {}
+    return {
+        item.evidence_id: revision.revision_id
+        for revision in dataset.source_revisions
+        for item in revision.evidence
+    }
 
 
 def _is_in_case_scope(reference: ContextReference, case: QACase) -> bool:
@@ -224,10 +297,6 @@ def _relevant_ids(labels: Iterable[RelevanceLabel]) -> tuple[str, ...]:
             raise ValueError(f"conflicting relevance labels for evidence {evidence_id!r}")
         labels_by_id[evidence_id] = value
     return tuple(sorted(evidence_id for evidence_id, value in labels_by_id.items() if value == "relevant"))
-
-
-def _verdict_for_score(score: float) -> EvaluationVerdict:
-    return EvaluationVerdict.PASS if score == 1.0 else EvaluationVerdict.FAIL
 
 
 def _validate_k(k: int) -> None:

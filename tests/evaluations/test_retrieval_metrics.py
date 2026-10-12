@@ -61,16 +61,21 @@ def test_recall_at_k_counts_each_required_reference_once() -> None:
     assert at_one.evaluator_key == RECALL_AT_K_EVALUATOR_KEY
     assert at_one.evaluator_version == "v1"
     assert at_one.score == 0.5
+    assert at_one.workspace_id == case.workspace_id
+    assert at_one.environment_id == case.environment_id
     assert at_one.details == {
+        "index_version": "qa-r1-replay:v1",
         "k": 1,
+        "ineligible_reference_count": 0,
         "matched_relevant_count": 1,
         "missing_relevant_count": 1,
         "relevant_count": 2,
+        "retrieval_strategy": "graph-hybrid:v1",
         "scope_filtered_count": 0,
         "status": "measured",
     }
     assert at_two.score == 1.0
-    assert at_two.verdict is EvaluationVerdict.PASS
+    assert at_two.verdict is EvaluationVerdict.REVIEW
 
 
 def test_mrr_uses_retrieval_order_and_ignores_duplicate_references() -> None:
@@ -83,11 +88,15 @@ def test_mrr_uses_retrieval_order_and_ignores_duplicate_references() -> None:
     assert evaluation.score == 0.5
     assert evaluation.details == {
         "first_relevant_rank": 2,
+        "index_version": "qa-r1-replay:v1",
+        "ineligible_reference_count": 0,
         "missing_relevant_count": 0,
         "relevant_count": 2,
+        "retrieval_strategy": "graph-hybrid:v1",
         "scope_filtered_count": 0,
         "status": "measured",
     }
+    assert evaluation.verdict is EvaluationVerdict.REVIEW
 
 
 def test_non_answer_case_is_explicitly_not_applicable_without_disclosing_content() -> None:
@@ -112,8 +121,10 @@ def test_cross_workspace_reference_is_excluded_without_leaking_protected_content
         _result(case, "ev-policy-current", workspace_id=other_workspace), case, k=1
     )
 
-    assert evaluation.score == 0.0
-    assert evaluation.verdict is EvaluationVerdict.FAIL
+    assert evaluation.score is None
+    assert evaluation.verdict is EvaluationVerdict.REVIEW
+    assert evaluation.details["status"] == "not_applicable"
+    assert evaluation.details["reason"] == "inaccessible_evidence"
     assert evaluation.details["scope_filtered_count"] == 1
     assert "protected excerpt" not in evaluation.model_dump_json()
 
@@ -133,6 +144,8 @@ def test_duplicate_relevance_labels_are_deduplicated_and_results_are_stable() ->
     second = evaluate_recall_at_k(result, case, k=1)
 
     assert first.model_dump(mode="json") == second.model_dump(mode="json")
+    assert first.model_dump(mode="json")["evaluator_version"] == "v1"
+    assert first.model_dump(mode="json")["evaluator_key"] == RECALL_AT_K_EVALUATOR_KEY
     assert first.details["relevant_count"] == 1
 
 
@@ -153,6 +166,7 @@ def test_russian_case_uses_the_same_reference_metric_contract() -> None:
 
     assert evaluation.score == 1.0
     assert evaluation.subject_type == "qa_case"
+    assert evaluation.verdict is EvaluationVerdict.REVIEW
 
 
 @pytest.mark.parametrize(
@@ -177,7 +191,7 @@ def test_answered_dataset_strata_produce_complete_scores(case_id: str, metric: s
     )
 
     assert evaluation.score == 1.0
-    assert evaluation.verdict is EvaluationVerdict.PASS
+    assert evaluation.verdict is EvaluationVerdict.REVIEW
 
 
 def test_missing_relevant_evidence_is_measured_as_zero_with_explicit_missing_count() -> None:
@@ -190,3 +204,49 @@ def test_missing_relevant_evidence_is_measured_as_zero_with_explicit_missing_cou
     assert recall.details["missing_relevant_count"] == 1
     assert mrr.score == 0.0
     assert mrr.details["first_relevant_rank"] is None
+
+
+def test_mixed_language_denied_case_is_not_applicable_without_disclosure() -> None:
+    case = _case("workspace-isolation")
+
+    evaluation = evaluate_mrr(_result(case, "ev-catalog-row"), case)
+
+    assert evaluation.score is None
+    assert evaluation.verdict is EvaluationVerdict.REVIEW
+    assert evaluation.details == {
+        "reason": "no_authorized_evidence",
+        "status": "not_applicable",
+    }
+    assert "protected excerpt" not in evaluation.model_dump_json()
+
+
+def test_stale_or_fabricated_revision_is_excluded_when_dataset_is_supplied() -> None:
+    dataset = load_r1_dataset()
+    case = _case("changed-revision")
+    original = _result(case, "ev-policy-current")
+    stale_reference = original.model_copy(
+        update={
+            "references": (
+                original.references[0].model_copy(
+                    update={"source_revision_id": UUID("11111111-1111-4111-8111-111111111131")}
+                ),
+            )
+        }
+    )
+
+    evaluation = evaluate_recall_at_k(stale_reference, case, k=1, dataset=dataset)
+
+    assert evaluation.score is None
+    assert evaluation.details["status"] == "not_applicable"
+    assert evaluation.details["ineligible_reference_count"] == 1
+
+
+def test_same_ranked_result_is_stable_for_equal_relevance_ties() -> None:
+    case = _case("multi-document-multi-hop")
+    result = _result(case, "ev-policy-current", "ev-price-row")
+
+    first = evaluate_mrr(result, case)
+    second = evaluate_mrr(result, case)
+
+    assert first.model_dump(mode="json") == second.model_dump(mode="json")
+    assert first.details["first_relevant_rank"] == 1
