@@ -34,6 +34,13 @@ Create a GitHub issue.
 
 Run `gh issue view <number> --comments`.
 
+## Work lifecycle
+
+- Claim any issue before starting work with
+  `gh issue edit <number> --add-assignee @me --add-label "in-progress"`.
+- Resolve work by commenting with the result, removing the `in-progress` label
+  and closing the issue.
+
 ## Wayfinding operations
 
 The map is one issue labelled `wayfinder:map`; its child tickets are GitHub
@@ -51,5 +58,3 @@ sub-issues where supported.
 - Represent blocking relationships with native GitHub issue dependencies.
 - If sub-issues or dependencies are unavailable, use task lists and a
   `Blocked by: #<number>` line.
-- Claim work with `gh issue edit <number> --add-assignee @me`.
-- Resolve work by commenting with the result and closing the issue.
