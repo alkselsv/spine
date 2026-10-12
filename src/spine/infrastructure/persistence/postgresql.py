@@ -1843,7 +1843,11 @@ class _PostgreSQLAccessPolicyRepository:
         return PolicyActivation.model_validate(dict(row))
 
     async def resolve_current(
-        self, source_object_id: UUID
+        self,
+        source_object_id: UUID,
+        *,
+        workspace_id: UUID | None = None,
+        environment_id: UUID | None = None,
     ) -> CurrentAccessPolicy | None:
         self._uow._guard_active()
         scope = self._uow.scope
@@ -1866,7 +1870,11 @@ class _PostgreSQLAccessPolicyRepository:
         return self._current(row) if row is not None else None
 
     async def resolve_policy(
-        self, policy_version_id: UUID
+        self,
+        policy_version_id: UUID,
+        *,
+        workspace_id: UUID | None = None,
+        environment_id: UUID | None = None,
     ) -> AccessPolicyVersion | None:
         self._uow._guard_active()
         scope = self._uow.scope
