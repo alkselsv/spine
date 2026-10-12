@@ -49,7 +49,9 @@ def _tenant(table: str, *, mutable: bool) -> None:
     )
     grants = "SELECT, INSERT, UPDATE" if mutable else "SELECT, INSERT"
     op.execute(f"GRANT {grants} ON TABLE {qualified} TO {runtime}")
-    op.execute(f"REVOKE DELETE, TRUNCATE ON TABLE {qualified} FROM {runtime}")
+    op.execute(
+        f"REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE {qualified} FROM {runtime}"
+    )
 
 
 def _immutable(table: str) -> None:
