@@ -1541,6 +1541,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ingestion_warnings": (True, True),
         "ingestion_failures": (True, True),
         "processing_receipts": (True, True),
+        "canonical_generation_counters": (True, True),
+        "canonical_acceptances": (True, True),
+        "current_source_heads": (True, True),
     }
     assert rls == expected_rls
     tenant_rls_tables = {
