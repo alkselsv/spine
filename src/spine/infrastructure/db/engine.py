@@ -115,14 +115,14 @@ class DatabaseRuntime:
                     expire_on_commit=False,
                     autoflush=False,
                 )
-            except Exception:
+            except Exception as error:
                 if engine is not None:
                     try:
                         await engine.dispose()
                     except Exception:
                         pass
                 raise DatabaseStartupError(
-                    f"database startup failed for {REDACTED_DATABASE_URL}"
+                    f"database startup failed for {REDACTED_DATABASE_URL}: {error}"
                 ) from None
 
             self._settings = settings
