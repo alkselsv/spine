@@ -1,0 +1,279 @@
+{
+  "assumptions": [
+    "All source content, questions, identities and ACLs are synthetic fixtures.",
+    "Expected evidence is evaluated against the exact SourceRevision and locator stored here.",
+    "A denied or abstained case must not disclose protected source content."
+  ],
+  "cases": [
+    {
+      "acl": [
+        {"principal_id": "11111111-1111-4111-8111-111111111113", "read_content": true, "source_object_id": "11111111-1111-4111-8111-111111111121"}
+      ],
+      "available_revision_ids": ["11111111-1111-4111-8111-111111111132"],
+      "case_id": "allowed-acl",
+      "case_schema_version": "qa-case:v1",
+      "environment_id": "11111111-1111-4111-8111-111111111112",
+      "expected_answer": "The policy retention period is 24 months.",
+      "expected_claims": [{"claim_id": "retention-period", "evidence_ids": ["ev-policy-current"], "text": "The policy retention period is 24 months."}],
+      "expected_evidence_ids": ["ev-policy-current"],
+      "expected_outcome": "answered",
+      "language": "en",
+      "principal_id": "11111111-1111-4111-8111-111111111113",
+      "question": "What is the policy retention period?",
+      "relevance_labels": [{"evidence_id": "ev-policy-current", "label": "relevant"}],
+      "retrieval_strategy": "hybrid:v1",
+      "scenario_tags": ["allowed_acl", "single_page_fact"],
+      "synthetic": true,
+      "workspace_id": "11111111-1111-4111-8111-111111111111"
+    },
+    {
+      "acl": [],
+      "available_revision_ids": ["11111111-1111-4111-8111-111111111132"],
+      "case_id": "absent-evidence-abstention",
+      "case_schema_version": "qa-case:v1",
+      "environment_id": "11111111-1111-4111-8111-111111111112",
+      "expected_outcome": "abstained",
+      "expected_reason": "insufficient_evidence",
+      "language": "en",
+      "principal_id": "11111111-1111-4111-8111-111111111113",
+      "question": "Which office approved the fictional 2035 exception?",
+      "relevance_labels": [{"evidence_id": "ev-policy-current", "label": "irrelevant"}],
+      "retrieval_strategy": "hybrid:v1",
+      "scenario_tags": ["absent_evidence"],
+      "synthetic": true,
+      "workspace_id": "11111111-1111-4111-8111-111111111111"
+    },
+    {
+      "acl": [
+        {"principal_id": "11111111-1111-4111-8111-111111111113", "read_content": true, "source_object_id": "11111111-1111-4111-8111-111111111121"}
+      ],
+      "available_revision_ids": ["11111111-1111-4111-8111-111111111132", "11111111-1111-4111-8111-111111111133"],
+      "case_id": "changed-revision",
+      "case_schema_version": "qa-case:v1",
+      "environment_id": "11111111-1111-4111-8111-111111111112",
+      "expected_answer": "The current policy retention period is 24 months.",
+      "expected_claims": [{"claim_id": "current-retention-period", "evidence_ids": ["ev-policy-current"], "text": "The current policy retention period is 24 months."}],
+      "expected_evidence_ids": ["ev-policy-current"],
+      "expected_outcome": "answered",
+      "language": "en",
+      "principal_id": "11111111-1111-4111-8111-111111111113",
+      "question": "What is the current policy retention period after the revision?",
+      "relevance_labels": [{"evidence_id": "ev-policy-current", "label": "relevant"}, {"evidence_id": "ev-policy-v1", "label": "irrelevant"}],
+      "retrieval_strategy": "hybrid:v1",
+      "scenario_tags": ["changed_revision", "single_page_fact"],
+      "synthetic": true,
+      "workspace_id": "11111111-1111-4111-8111-111111111111"
+    },
+    {
+      "acl": [
+        {"principal_id": "11111111-1111-4111-8111-111111111113", "read_content": false, "source_object_id": "11111111-1111-4111-8111-111111111121"}
+      ],
+      "available_revision_ids": ["11111111-1111-4111-8111-111111111132"],
+      "case_id": "denied-acl",
+      "case_schema_version": "qa-case:v1",
+      "environment_id": "11111111-1111-4111-8111-111111111112",
+      "expected_outcome": "denied",
+      "expected_reason": "access_not_permitted",
+      "language": "en",
+      "principal_id": "11111111-1111-4111-8111-111111111113",
+      "question": "What is the policy retention period?",
+      "retrieval_strategy": "authorized-hybrid:v1",
+      "scenario_tags": ["denied_acl"],
+      "synthetic": true,
+      "workspace_id": "11111111-1111-4111-8111-111111111111"
+    },
+    {
+      "acl": [
+        {"principal_id": "11111111-1111-4111-8111-111111111113", "read_content": true, "source_object_id": "11111111-1111-4111-8111-111111111122"}
+      ],
+      "available_revision_ids": ["11111111-1111-4111-8111-111111111133"],
+      "case_id": "duplicate-ingestion",
+      "case_schema_version": "qa-case:v1",
+      "environment_id": "11111111-1111-4111-8111-111111111112",
+      "expected_answer": "The standard fictional support plan costs 120 credits per month.",
+      "expected_claims": [{"claim_id": "support-plan-price", "evidence_ids": ["ev-price-row"], "text": "The standard fictional support plan costs 120 credits per month."}],
+      "expected_evidence_ids": ["ev-price-row"],
+      "expected_outcome": "answered",
+      "language": "en",
+      "observation_ids": ["obs-price-first", "obs-price-retry"],
+      "principal_id": "11111111-1111-4111-8111-111111111113",
+      "question": "How much does the standard fictional support plan cost per month?",
+      "relevance_labels": [{"evidence_id": "ev-price-row", "label": "relevant"}],
+      "retrieval_strategy": "hybrid:v1",
+      "scenario_tags": ["duplicate_ingestion", "xlsx_table"],
+      "synthetic": true,
+      "workspace_id": "11111111-1111-4111-8111-111111111111"
+    },
+    {
+      "acl": [
+        {"principal_id": "11111111-1111-4111-8111-111111111113", "read_content": true, "source_object_id": "11111111-1111-4111-8111-111111111121"},
+        {"principal_id": "11111111-1111-4111-8111-111111111113", "read_content": false, "source_object_id": "11111111-1111-4111-8111-111111111122"}
+      ],
+      "available_revision_ids": ["11111111-1111-4111-8111-111111111132", "11111111-1111-4111-8111-111111111133"],
+      "case_id": "mixed-acl",
+      "case_schema_version": "qa-case:v1",
+      "environment_id": "11111111-1111-4111-8111-111111111112",
+      "expected_outcome": "abstained",
+      "expected_reason": "insufficient_authorized_evidence",
+      "language": "en",
+      "principal_id": "11111111-1111-4111-8111-111111111113",
+      "question": "Give the retention period and price for the restricted support package.",
+      "relevance_labels": [{"evidence_id": "ev-policy-current", "label": "relevant"}, {"evidence_id": "ev-price-row", "label": "relevant"}],
+      "retrieval_strategy": "authorized-hybrid:v1",
+      "scenario_tags": ["mixed_acl"],
+      "synthetic": true,
+      "workspace_id": "11111111-1111-4111-8111-111111111111"
+    },
+    {
+      "acl": [
+        {"principal_id": "11111111-1111-4111-8111-111111111113", "read_content": true, "source_object_id": "11111111-1111-4111-8111-111111111121"},
+        {"principal_id": "11111111-1111-4111-8111-111111111113", "read_content": true, "source_object_id": "11111111-1111-4111-8111-111111111122"}
+      ],
+      "available_revision_ids": ["11111111-1111-4111-8111-111111111132", "11111111-1111-4111-8111-111111111133"],
+      "case_id": "multi-document-multi-hop",
+      "case_schema_version": "qa-case:v1",
+      "environment_id": "11111111-1111-4111-8111-111111111112",
+      "expected_answer": "The 24-month retention policy applies to the standard plan, which costs 120 credits per month.",
+      "expected_claims": [
+        {"claim_id": "retention-for-standard-plan", "evidence_ids": ["ev-policy-current"], "text": "The standard plan has a 24-month retention period."},
+        {"claim_id": "standard-plan-price", "evidence_ids": ["ev-price-row"], "text": "The standard plan costs 120 credits per month."}
+      ],
+      "expected_evidence_ids": ["ev-policy-current", "ev-price-row"],
+      "expected_outcome": "answered",
+      "language": "en",
+      "principal_id": "11111111-1111-4111-8111-111111111113",
+      "question": "Which retention policy applies to the standard plan, and what is its monthly price?",
+      "relevance_labels": [{"evidence_id": "ev-policy-current", "label": "relevant"}, {"evidence_id": "ev-price-row", "label": "relevant"}],
+      "retrieval_strategy": "graph-hybrid:v1",
+      "scenario_tags": ["multi_document", "multi_hop"],
+      "synthetic": true,
+      "workspace_id": "11111111-1111-4111-8111-111111111111"
+    },
+    {
+      "acl": [
+        {"principal_id": "11111111-1111-4111-8111-111111111113", "read_content": true, "source_object_id": "11111111-1111-4111-8111-111111111123"}
+      ],
+      "available_revision_ids": ["11111111-1111-4111-8111-111111111134"],
+      "case_id": "multi-chunk-synthesis",
+      "case_schema_version": "qa-case:v1",
+      "environment_id": "11111111-1111-4111-8111-111111111112",
+      "expected_answer": "Requests are acknowledged within one business day and urgent incidents are escalated to the duty team.",
+      "expected_claims": [
+        {"claim_id": "acknowledgement-window", "evidence_ids": ["ev-handbook-intro"], "text": "Requests are acknowledged within one business day."},
+        {"claim_id": "urgent-escalation", "evidence_ids": ["ev-handbook-sla"], "text": "Urgent incidents are escalated to the duty team."}
+      ],
+      "expected_evidence_ids": ["ev-handbook-intro", "ev-handbook-sla"],
+      "expected_outcome": "answered",
+      "language": "en",
+      "principal_id": "11111111-1111-4111-8111-111111111113",
+      "question": "How are normal requests and urgent incidents handled?",
+      "relevance_labels": [{"evidence_id": "ev-handbook-intro", "label": "relevant"}, {"evidence_id": "ev-handbook-sla", "label": "relevant"}],
+      "retrieval_strategy": "hybrid:v1",
+      "scenario_tags": ["multi_chunk_synthesis"],
+      "synthetic": true,
+      "workspace_id": "11111111-1111-4111-8111-111111111111"
+    },
+    {
+      "acl": [
+        {"principal_id": "11111111-1111-4111-8111-111111111113", "read_content": true, "source_object_id": "11111111-1111-4111-8111-111111111121"}
+      ],
+      "available_revision_ids": ["11111111-1111-4111-8111-111111111132", "11111111-1111-4111-8111-111111111131"],
+      "case_id": "pdf-single-page",
+      "case_schema_version": "qa-case:v1",
+      "environment_id": "11111111-1111-4111-8111-111111111112",
+      "expected_answer": "The current policy retention period is 24 months.",
+      "expected_claims": [{"claim_id": "pdf-retention", "evidence_ids": ["ev-policy-current"], "text": "The current policy retention period is 24 months."}],
+      "expected_evidence_ids": ["ev-policy-current"],
+      "expected_outcome": "answered",
+      "language": "en",
+      "principal_id": "11111111-1111-4111-8111-111111111113",
+      "question": "What is the retention period in the current policy PDF?",
+      "relevance_labels": [{"evidence_id": "ev-policy-current", "label": "relevant"}],
+      "retrieval_strategy": "vector:v1",
+      "scenario_tags": ["single_page_fact", "pdf_table"],
+      "synthetic": true,
+      "workspace_id": "11111111-1111-4111-8111-111111111111"
+    },
+    {
+      "acl": [
+        {"principal_id": "11111111-1111-4111-8111-111111111113", "read_content": true, "source_object_id": "11111111-1111-4111-8111-111111111122"}
+      ],
+      "available_revision_ids": ["11111111-1111-4111-8111-111111111133"],
+      "case_id": "russian-xlsx",
+      "case_schema_version": "qa-case:v1",
+      "environment_id": "11111111-1111-4111-8111-111111111112",
+      "expected_answer": "Стандартный пакет стоит 120 условных единиц в месяц.",
+      "expected_claims": [{"claim_id": "russian-price", "evidence_ids": ["ev-price-row"], "text": "Стандартный пакет стоит 120 условных единиц в месяц."}],
+      "expected_evidence_ids": ["ev-price-row"],
+      "expected_outcome": "answered",
+      "language": "ru",
+      "principal_id": "11111111-1111-4111-8111-111111111113",
+      "question": "Сколько стоит стандартный пакет в месяц?",
+      "relevance_labels": [{"evidence_id": "ev-price-row", "label": "relevant"}],
+      "retrieval_strategy": "hybrid:v1",
+      "scenario_tags": ["russian", "xlsx_table"],
+      "synthetic": true,
+      "workspace_id": "11111111-1111-4111-8111-111111111111"
+    },
+    {
+      "acl": [
+        {"principal_id": "22222222-2222-4222-8222-222222222113", "read_content": true, "source_object_id": "22222222-2222-4222-8222-222222222126"}
+      ],
+      "available_revision_ids": ["22222222-2222-4222-8222-222222222137"],
+      "case_id": "workspace-isolation",
+      "case_schema_version": "qa-case:v1",
+      "environment_id": "22222222-2222-4222-8222-222222222112",
+      "expected_outcome": "abstained",
+      "expected_reason": "no_authorized_evidence",
+      "language": "ru+en",
+      "principal_id": "22222222-2222-4222-8222-222222222113",
+      "question": "Какая цена у Acme standard plan?",
+      "relevance_labels": [{"evidence_id": "ev-catalog-row", "label": "irrelevant"}],
+      "retrieval_strategy": "authorized-hybrid:v1",
+      "scenario_tags": ["workspace_isolation", "mixed_language"],
+      "synthetic": true,
+      "workspace_id": "22222222-2222-4222-8222-222222222111"
+    },
+    {
+      "acl": [
+        {"principal_id": "11111111-1111-4111-8111-111111111113", "read_content": false, "source_object_id": "11111111-1111-4111-8111-111111111125"}
+      ],
+      "available_revision_ids": ["11111111-1111-4111-8111-111111111136"],
+      "case_id": "tombstone",
+      "case_schema_version": "qa-case:v1",
+      "environment_id": "11111111-1111-4111-8111-111111111112",
+      "expected_outcome": "abstained",
+      "expected_reason": "source_deleted",
+      "language": "en",
+      "principal_id": "11111111-1111-4111-8111-111111111113",
+      "question": "What did the deleted fictional guide say?",
+      "retrieval_strategy": "authorized-hybrid:v1",
+      "scenario_tags": ["tombstone", "absent_evidence"],
+      "synthetic": true,
+      "workspace_id": "11111111-1111-4111-8111-111111111111"
+    }
+  ],
+  "dataset_digest": "be52b40789182e574ab08d02825d0c5688b2d9c3892c8d0ee922c65779b6f318",
+  "dataset_id": "qa-r1-synthetic",
+  "fixture_schema_version": "qa-case:v1",
+  "release_thresholds": [],
+  "schema_version": "qa-manifest:v1",
+  "source_objects": [
+    {"environment_id": "11111111-1111-4111-8111-111111111112", "external_id": "policy-vault", "source_kind": "document", "source_object_id": "11111111-1111-4111-8111-111111111121", "title": "Synthetic retention policy", "workspace_id": "11111111-1111-4111-8111-111111111111"},
+    {"environment_id": "11111111-1111-4111-8111-111111111112", "external_id": "pricing-sheet", "source_kind": "record", "source_object_id": "11111111-1111-4111-8111-111111111122", "title": "Synthetic pricing workbook", "workspace_id": "11111111-1111-4111-8111-111111111111"},
+    {"environment_id": "11111111-1111-4111-8111-111111111112", "external_id": "service-handbook", "source_kind": "document", "source_object_id": "11111111-1111-4111-8111-111111111123", "title": "Synthetic service handbook", "workspace_id": "11111111-1111-4111-8111-111111111111"},
+    {"environment_id": "11111111-1111-4111-8111-111111111112", "external_id": "support-thread-01", "source_kind": "message", "source_object_id": "11111111-1111-4111-8111-111111111124", "title": "Synthetic support thread", "workspace_id": "11111111-1111-4111-8111-111111111111"},
+    {"environment_id": "11111111-1111-4111-8111-111111111112", "external_id": "deleted-guide", "source_kind": "document", "source_object_id": "11111111-1111-4111-8111-111111111125", "title": "Synthetic deleted guide", "workspace_id": "11111111-1111-4111-8111-111111111111"},
+    {"environment_id": "22222222-2222-4222-8222-222222222112", "external_id": "other-workspace-catalog", "source_kind": "record", "source_object_id": "22222222-2222-4222-8222-222222222126", "title": "Synthetic other-workspace catalog", "workspace_id": "22222222-2222-4222-8222-222222222111"}
+  ],
+  "source_revisions": [
+    {"content": "Synthetic policy v1: retention is 12 months.", "environment_id": "11111111-1111-4111-8111-111111111112", "evidence": [{"evidence_id": "ev-policy-v1", "excerpt": "Retention period: 12 months.", "locator": {"kind": "pdf_page", "page": 1, "schema_version": "locator:pdf-page:v1"}, "source_revision_id": "11111111-1111-4111-8111-111111111131"}], "kind": "content", "media_type": "application/pdf", "revision_id": "11111111-1111-4111-8111-111111111131", "revision_number": 1, "source_object_id": "11111111-1111-4111-8111-111111111121", "workspace_id": "11111111-1111-4111-8111-111111111111"},
+    {"content": "Synthetic policy v2: retention is 24 months.", "environment_id": "11111111-1111-4111-8111-111111111112", "evidence": [{"evidence_id": "ev-policy-current", "excerpt": "Retention period: 24 months.", "locator": {"kind": "pdf_page", "page": 1, "schema_version": "locator:pdf-page:v1"}, "source_revision_id": "11111111-1111-4111-8111-111111111132"}], "kind": "content", "media_type": "application/pdf", "revision_id": "11111111-1111-4111-8111-111111111132", "revision_number": 2, "source_object_id": "11111111-1111-4111-8111-111111111121", "workspace_id": "11111111-1111-4111-8111-111111111111"},
+    {"content": "Plan,Monthly credits\nStandard,120\nPremium,240", "environment_id": "11111111-1111-4111-8111-111111111112", "evidence": [{"evidence_id": "ev-price-row", "excerpt": "Standard | 120", "locator": {"cell_range": "A2:B2", "kind": "xlsx_cell", "row": 2, "schema_version": "locator:xlsx-cell:v1", "sheet": "Plans"}, "source_revision_id": "11111111-1111-4111-8111-111111111133"}], "kind": "content", "media_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "revision_id": "11111111-1111-4111-8111-111111111133", "revision_number": 1, "source_object_id": "11111111-1111-4111-8111-111111111122", "workspace_id": "11111111-1111-4111-8111-111111111111"},
+    {"content": "Requests are acknowledged within one business day. Urgent incidents are escalated to the duty team.", "environment_id": "11111111-1111-4111-8111-111111111112", "evidence": [{"evidence_id": "ev-handbook-intro", "excerpt": "Requests are acknowledged within one business day.", "locator": {"end": 52, "kind": "text_range", "schema_version": "locator:text-range:v1", "start": 0}, "source_revision_id": "11111111-1111-4111-8111-111111111134"}, {"evidence_id": "ev-handbook-sla", "excerpt": "Urgent incidents are escalated to the duty team.", "locator": {"end": 105, "kind": "text_range", "schema_version": "locator:text-range:v1", "start": 53}, "source_revision_id": "11111111-1111-4111-8111-111111111134"}], "kind": "content", "media_type": "text/markdown", "revision_id": "11111111-1111-4111-8111-111111111134", "revision_number": 1, "source_object_id": "11111111-1111-4111-8111-111111111123", "workspace_id": "11111111-1111-4111-8111-111111111111"},
+    {"content": "Synthetic message: package questions are routed to the duty team.", "environment_id": "11111111-1111-4111-8111-111111111112", "evidence": [{"evidence_id": "ev-support-message", "excerpt": "Package questions are routed to the duty team.", "locator": {"kind": "message", "message_id": "synthetic-msg-001", "schema_version": "locator:message:v1"}, "source_revision_id": "11111111-1111-4111-8111-111111111135"}], "kind": "content", "media_type": "text/plain", "revision_id": "11111111-1111-4111-8111-111111111135", "revision_number": 1, "source_object_id": "11111111-1111-4111-8111-111111111124", "workspace_id": "11111111-1111-4111-8111-111111111111"},
+    {"environment_id": "11111111-1111-4111-8111-111111111112", "kind": "tombstone", "revision_id": "11111111-1111-4111-8111-111111111136", "revision_number": 2, "source_object_id": "11111111-1111-4111-8111-111111111125", "tombstone_reason": "source_deleted", "workspace_id": "11111111-1111-4111-8111-111111111111"},
+    {"content": "Product,Monthly credits\nOther workspace plan,999", "environment_id": "22222222-2222-4222-8222-222222222112", "evidence": [{"evidence_id": "ev-catalog-row", "excerpt": "Other workspace plan | 999", "locator": {"cell_range": "A2:B2", "kind": "xlsx_cell", "row": 2, "schema_version": "locator:xlsx-cell:v1", "sheet": "Catalog"}, "source_revision_id": "22222222-2222-4222-8222-222222222137"}], "kind": "content", "media_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "revision_id": "22222222-2222-4222-8222-222222222137", "revision_number": 1, "source_object_id": "22222222-2222-4222-8222-222222222126", "workspace_id": "22222222-2222-4222-8222-222222222111"}
+  ],
+  "version": "1.0.0"
+}
