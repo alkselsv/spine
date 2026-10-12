@@ -204,10 +204,20 @@ class AccessPolicyActivationResult:
 
 class AccessPolicyRepository(Protocol):
     async def resolve_policy(
-        self, policy_version_id: UUID
+        self,
+        policy_version_id: UUID,
+        *,
+        workspace_id: UUID | None = None,
+        environment_id: UUID | None = None,
     ) -> AccessPolicyVersion | None: ...
 
-    async def resolve_current(self, source_object_id: UUID) -> CurrentAccessPolicy | None: ...
+    async def resolve_current(
+        self,
+        source_object_id: UUID,
+        *,
+        workspace_id: UUID | None = None,
+        environment_id: UUID | None = None,
+    ) -> CurrentAccessPolicy | None: ...
 
     async def resolve_activation_result(
         self, command: AccessPolicyActivationCommand
@@ -324,13 +334,19 @@ class AccessPolicyActivationService:
         if policy.document_hash != access_policy_document_hash(policy):
             raise StalePolicyAuthorityError("Policy document hash is invalid.")
 
-        current = await self._repository.resolve_current(policy.source_object_id)
+        current = await self._repository.resolve_current(
+            policy.source_object_id,
+            workspace_id=policy.workspace_id,
+            environment_id=policy.environment_id,
+        )
         if current is None:
             self._validate_initial(command, requester)
             next_generation = 1
         else:
             predecessor = await self._repository.resolve_policy(
-                current.access_policy_version_id
+                current.access_policy_version_id,
+                workspace_id=policy.workspace_id,
+                environment_id=policy.environment_id,
             )
             if predecessor is None:
                 raise StalePolicyBaselineError("The current policy baseline changed.")
@@ -506,7 +522,11 @@ class AccessPolicyActivationService:
         requester = await self._authority.resolve(
             proposal.requester_canonical_human_id
         )
-        current = await self._repository.resolve_current(policy.source_object_id)
+        current = await self._repository.resolve_current(
+            policy.source_object_id,
+            workspace_id=policy.workspace_id,
+            environment_id=policy.environment_id,
+        )
         if current is None or not _same_scope(policy, requester):
             raise StalePolicyBaselineError("The current policy baseline changed.")
         classification = await self._authority.classify_policy_change(

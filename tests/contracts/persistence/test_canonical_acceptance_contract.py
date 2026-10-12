@@ -397,6 +397,7 @@ async def prepare_case(
     number: int,
     *,
     include_association: bool = True,
+    association_reference: object | None = None,
     order_scheme: str | None = None,
     order_token: str | None = None,
 ) -> CanonicalCase:
@@ -425,6 +426,10 @@ async def prepare_case(
             receipt_id=receipt_id,
             number=number,
         )
+        if association_reference is not None:
+            association = association.model_copy(
+                update={"original_reference": association_reference}
+            )
     observation = SourceObservationCommand.create(
         source=source_object,
         revision=source_revision,
@@ -532,6 +537,59 @@ async def test_canonical_happy_path_and_exact_replay(
 
 
 @pytest.mark.asyncio
+async def test_canonical_equal_trusted_order_replays_with_current_authority(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    case = await prepare_case(
+        persistence_adapter,
+        19050,
+        order_scheme="integer.v1",
+        order_token="1",
+    )
+    async with persistence_adapter.uow_factory(case.context) as uow:
+        first = await uow.canonical.accept(case.command)
+        await uow.commit()
+    replay_audit_id = synthetic_uuid(19060)
+    replay_outbox_id = synthetic_uuid(19061)
+    replay_acceptance_id = synthetic_uuid(19062)
+    replay = CanonicalAcceptanceCommand.create(
+        source=case.source,
+        revision=case.revision,
+        provenance=case.provenance,
+        expected_current_revision_id=None,
+        idempotency_key=IdempotencyKey("canonical-equal-order-replay"),
+        canonical_acceptance_id=replay_acceptance_id,
+        admission_decision_id=case.admission_id,
+        access_policy_version_id=case.policy_id,
+        audit_event_id=replay_audit_id,
+        outbox_event_id=replay_outbox_id,
+        accepted_at=NOW,
+        audit_event=_audit(
+            context=case.context,
+            source_revision_id=case.revision.revision_id,
+            event_id=replay_audit_id,
+            reason="source_accepted",
+        ),
+        outbox_intent=_canonical_outbox(
+            persistence_adapter,
+            context=case.context,
+            source_object_id=case.source.source_object_id,
+            source_revision_id=case.revision.revision_id,
+            acceptance_id=replay_acceptance_id,
+            generation=2,
+            audit_event_id=replay_audit_id,
+            event_id=replay_outbox_id,
+        ),
+    )
+    async with persistence_adapter.uow_factory(case.context) as uow:
+        result = await uow.canonical.accept(replay)
+        await uow.rollback()
+    assert first.advanced is True
+    assert result.replay is True
+    assert result.result_reference == first.result_reference
+
+
+@pytest.mark.asyncio
 async def test_canonical_rejects_missing_finalized_receipt_association(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
@@ -539,6 +597,103 @@ async def test_canonical_rejects_missing_finalized_receipt_association(
     async with persistence_adapter.uow_factory(case.context) as uow:
         with pytest.raises(CanonicalEligibilityError):
             await uow.canonical.accept(case.command)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("storage_generation", synthetic_uuid(19153)),
+        ("object_id", synthetic_uuid(19154)),
+        ("schema_version", 2),
+    ),
+)
+@pytest.mark.asyncio
+async def test_canonical_rejects_receipt_with_same_digest_but_other_reference_field(
+    persistence_adapter: PersistenceAdapter,
+    field: str,
+    value: object,
+) -> None:
+    reference = revision(
+        source(synthetic_uuid(19150), synthetic_uuid(19151)),
+        synthetic_uuid(19152),
+    ).original_reference
+    assert reference is not None
+    mismatched_reference = reference.model_copy(update={field: value})
+    case = await prepare_case(
+        persistence_adapter,
+        19150,
+        association_reference=mismatched_reference,
+    )
+    async with persistence_adapter.uow_factory(case.context) as uow:
+        with pytest.raises(CanonicalEligibilityError):
+            await uow.canonical.accept(case.command)
+
+
+@pytest.mark.asyncio
+async def test_canonical_rejects_matching_audit_id_with_wrong_target(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    case = await prepare_case(persistence_adapter, 19160)
+    assert case.command.audit_event is not None
+    bad_audit = case.command.audit_event.model_copy(
+        update={
+            "target": case.command.audit_event.target.model_copy(
+                update={"object_id": synthetic_uuid(19161)}
+            )
+        }
+    )
+    command = CanonicalAcceptanceCommand.create(
+        source=case.command.source,
+        revision=case.command.revision,
+        provenance=case.command.provenance,
+        expected_current_revision_id=case.command.expected_current_revision_id,
+        idempotency_key=IdempotencyKey("canonical-audit-target-mismatch"),
+        canonical_acceptance_id=synthetic_uuid(19162),
+        admission_decision_id=case.command.admission_decision_id,
+        access_policy_version_id=case.command.access_policy_version_id,
+        audit_event_id=case.command.audit_event_id,
+        outbox_event_id=case.command.outbox_event_id,
+        accepted_at=case.command.accepted_at,
+        audit_event=bad_audit,
+        outbox_intent=case.command.outbox_intent,
+    )
+    async with persistence_adapter.uow_factory(case.context) as uow:
+        with pytest.raises(CanonicalAuthorityConflictError):
+            await uow.canonical.accept(command)
+    async with persistence_adapter.uow_factory(case.context) as uow:
+        assert await uow.canonical.resolve_current(case.source.source_object_id) is None
+        await uow.rollback()
+
+
+@pytest.mark.asyncio
+async def test_canonical_rejects_matching_outbox_id_with_wrong_generation(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    case = await prepare_case(persistence_adapter, 19170)
+    assert case.command.outbox_intent is not None
+    assert isinstance(case.command.outbox_intent.payload, CanonicalAcceptanceOutboxPayload)
+    bad_payload = case.command.outbox_intent.payload.model_copy(
+        update={"accepted_generation": 99}
+    )
+    bad_outbox = case.command.outbox_intent.model_copy(update={"payload": bad_payload})
+    command = CanonicalAcceptanceCommand.create(
+        source=case.command.source,
+        revision=case.command.revision,
+        provenance=case.command.provenance,
+        expected_current_revision_id=case.command.expected_current_revision_id,
+        idempotency_key=IdempotencyKey("canonical-outbox-generation-mismatch"),
+        canonical_acceptance_id=synthetic_uuid(19172),
+        admission_decision_id=case.command.admission_decision_id,
+        access_policy_version_id=case.command.access_policy_version_id,
+        audit_event_id=case.command.audit_event_id,
+        outbox_event_id=case.command.outbox_event_id,
+        accepted_at=case.command.accepted_at,
+        audit_event=case.command.audit_event,
+        outbox_intent=bad_outbox,
+    )
+    async with persistence_adapter.uow_factory(case.context) as uow:
+        with pytest.raises(CanonicalAuthorityConflictError):
+            await uow.canonical.accept(command)
 
 
 @pytest.mark.asyncio
