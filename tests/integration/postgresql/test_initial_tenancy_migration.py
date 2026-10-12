@@ -333,7 +333,6 @@ CANONICAL_ACCEPTANCE_CONSTRAINTS = {
     "fk_canonical_acceptances_policy",
     "fk_canonical_acceptances_idempotency",
     "fk_canonical_acceptances_audit",
-    "fk_canonical_acceptances_outbox",
     "ck_canonical_acceptances_generation",
     "ck_canonical_acceptances_ordering",
     "ck_canonical_acceptances_order_pair",
@@ -874,6 +873,7 @@ async def test_source_observation_catalog_and_runtime_security_contract(
             "pk_source_revisions", "uq_source_revisions_digest", "uq_source_revisions_scope_id",
             "ix_source_revisions_source_observed", "ix_source_revisions_original_digest",
             "pk_source_revision_provenance", "uq_source_revision_provenance_event",
+            "uq_source_revision_provenance_scope_id",
             "ix_source_revision_provenance_revision_order",
         }
 
@@ -1409,7 +1409,6 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         | AUDIT_CONSTRAINTS
         | DELIVERY_CONSTRAINTS
         | ADMISSION_CONSTRAINTS
-        | CANONICAL_ACCEPTANCE_CONSTRAINTS
     )
     missing_final_constraints = {
         expected
@@ -1469,6 +1468,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ix_source_revisions_original_digest",
         "pk_source_revision_provenance",
         "uq_source_revision_provenance_event",
+        "uq_source_revision_provenance_scope_id",
         "ix_source_revision_provenance_revision_order",
         "pk_source_receipt_associations",
         "uq_source_receipt_associations_receipt",
@@ -1508,7 +1508,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "uq_processing_receipts_command",
         "ix_processing_receipts_revision",
         "ix_processing_receipts_item",
-    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES | CANONICAL_ACCEPTANCE_INDEXES
+    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
         "workspaces": (True, True),
@@ -1541,9 +1541,6 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ingestion_warnings": (True, True),
         "ingestion_failures": (True, True),
         "processing_receipts": (True, True),
-        "canonical_generation_counters": (True, True),
-        "canonical_acceptances": (True, True),
-        "current_source_heads": (True, True),
     }
     assert rls == expected_rls
     tenant_rls_tables = {
@@ -1632,9 +1629,6 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ingestion_warnings": (True, True, False, False),
         "ingestion_failures": (True, True, False, False),
         "processing_receipts": (True, True, False, False),
-        "canonical_generation_counters": (True, True, False, False),
-        "canonical_acceptances": (True, True, False, False),
-        "current_source_heads": (True, True, True, False),
         "admission_decisions": (True, True, False, False),
         "source_canonical_tables": (True, False, False, False),
         "source_canonical_unicode": (True, False, False, False),
@@ -1944,7 +1938,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         ("workspaces", "display_name"),
         ("workspaces", "id"),
         ("workspaces", "slug"),
-    } | AUTHORIZATION_DIRECTORY_COLUMNS | AUDIT_COLUMNS | DELIVERY_COLUMNS | ADMISSION_COLUMNS | CANONICAL_ACCEPTANCE_COLUMNS
+    } | AUTHORIZATION_DIRECTORY_COLUMNS | AUDIT_COLUMNS | DELIVERY_COLUMNS | ADMISSION_COLUMNS
     assert columns[("workspaces", "id")] == ("uuid", "NO", None)
     assert columns[("environments", "id")] == ("uuid", "NO", None)
     event_id_type, event_id_nullable, event_id_default = columns[
