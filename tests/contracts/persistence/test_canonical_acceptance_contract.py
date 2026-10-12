@@ -432,7 +432,7 @@ async def test_canonical_rejects_unknown_ordering_scheme(
         persistence_adapter,
         19900,
         order_scheme="unknown.v1",
-        order_token="1",
+        order_token="v1",
     )
     async with persistence_adapter.uow_factory(case.context) as uow:
         with pytest.raises(OptimisticConflictError):
