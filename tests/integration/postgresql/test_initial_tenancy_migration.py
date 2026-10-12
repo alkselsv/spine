@@ -1650,7 +1650,6 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "uq_processing_receipts_command",
         "ix_processing_receipts_revision",
         "ix_processing_receipts_item",
-<<<<<<< HEAD
         "pk_backup_fence_leases",
         "pk_fence_operation_tickets",
         "uq_fence_operation_tickets_scope_sequence",
@@ -1660,10 +1659,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ix_storage_recovery_manifests_scope_created",
         "pk_recovery_evidence_invalidations",
         "ix_recovery_evidence_invalidations_scope_digest",
-    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES
-=======
-    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES
->>>>>>> ba2e5ba (test: align canonical migration catalog checks)
+    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES | CANONICAL_ACCEPTANCE_INDEXES
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
         "workspaces": (True, True),
@@ -1696,14 +1692,11 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ingestion_warnings": (True, True),
         "ingestion_failures": (True, True),
         "processing_receipts": (True, True),
-<<<<<<< HEAD
         "backup_fence_leases": (True, True),
         "fence_operation_tickets": (True, True),
         "recovery_quiescence_evidence": (True, True),
         "storage_recovery_manifests": (True, True),
         "recovery_evidence_invalidations": (True, True),
-=======
->>>>>>> ba2e5ba (test: align canonical migration catalog checks)
     }
     assert rls == expected_rls
     tenant_rls_tables = {
@@ -1792,14 +1785,11 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ingestion_warnings": (True, True, False, False),
         "ingestion_failures": (True, True, False, False),
         "processing_receipts": (True, True, False, False),
-<<<<<<< HEAD
         "backup_fence_leases": (True, True, True, False),
         "fence_operation_tickets": (True, True, True, False),
         "recovery_quiescence_evidence": (True, True, False, False),
         "storage_recovery_manifests": (True, True, False, False),
         "recovery_evidence_invalidations": (True, True, False, False),
-=======
->>>>>>> ba2e5ba (test: align canonical migration catalog checks)
         "admission_decisions": (True, True, False, False),
         "source_canonical_tables": (True, False, False, False),
         "source_canonical_unicode": (True, False, False, False),
