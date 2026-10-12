@@ -339,6 +339,9 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "recovery_evidence_invalidations": ExpectedTablePrivileges(
             True, True, True, False, False
         ),
+        "canonical_generation_counters": ExpectedTablePrivileges(True, True, True, False, False),
+        "canonical_acceptances": ExpectedTablePrivileges(True, True, True, False, False),
+        "current_source_heads": ExpectedTablePrivileges(True, True, True, True, False),
         "source_canonical_tables": ExpectedTablePrivileges(False, True, False, False, False),
         "source_canonical_unicode": ExpectedTablePrivileges(False, True, False, False, False),
         "source_canonical_compositions": ExpectedTablePrivileges(False, True, False, False, False),

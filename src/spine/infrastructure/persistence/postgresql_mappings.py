@@ -402,6 +402,50 @@ recovery_evidence_invalidations = Table(
         name="pk_recovery_evidence_invalidations",
     ),
 )
+canonical_generation_counters = Table(
+    "canonical_generation_counters", metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("current_generation", Integer, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
+canonical_acceptances = Table(
+    "canonical_acceptances", metadata,
+    Column("canonical_acceptance_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("predecessor_revision_id", PostgreSQLUUID(as_uuid=True)),
+    Column("predecessor_acceptance_id", PostgreSQLUUID(as_uuid=True)),
+    Column("accepted_generation", Integer, nullable=False),
+    Column("ordering", Text, nullable=False),
+    Column("ordering_scheme", Text),
+    Column("ordering_token", Text),
+    Column("admission_decision_id", PostgreSQLUUID(as_uuid=True)),
+    Column("access_policy_version_id", PostgreSQLUUID(as_uuid=True)),
+    Column("provenance_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("idempotency_receipt_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("audit_event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("outbox_event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("accepted_at", DateTime(timezone=True), nullable=False),
+)
+
+current_source_heads = Table(
+    "current_source_heads", metadata,
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("current_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("current_revision_kind", Text, nullable=False),
+    Column("acceptance_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("accepted_generation", Integer, nullable=False),
+    Column("cas_version", Integer, nullable=False),
+    Column("ordering_scheme", Text),
+    Column("ordering_token", Text),
+    Column("changed_at", DateTime(timezone=True), nullable=False),
+)
 
 __all__ = [
     "access_policy_grants",
@@ -434,4 +478,7 @@ __all__ = [
     "recovery_quiescence_evidence",
     "storage_recovery_manifests",
     "recovery_evidence_invalidations",
+    "canonical_generation_counters",
+    "canonical_acceptances",
+    "current_source_heads",
 ]
