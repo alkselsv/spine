@@ -26,3 +26,23 @@ jobs:
       - run: uv run pytest -q
       - run: uv run python -m compileall -q src tests
       - run: git diff --check
+
+  web:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.11.2
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm web:typecheck
+      - run: pnpm web:build
+      - run: pnpm web:test
+      - run: pnpm --dir web exec playwright install --with-deps chromium
+      - run: pnpm web:test:e2e
+      - run: git diff --check
