@@ -113,6 +113,31 @@ class OriginalUploadAbortOutcome(BaseModel):
         return self
 
 
+class OriginalUploadReconciliationOutcome(BaseModel):
+    """Evidence-based result of a trusted upload reconciliation attempt."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    result: OriginalUploadCommandResult
+    state: UploadCommandStateName
+    write_receipt: WriteReceipt | None = None
+    resolved: bool
+    changed: bool
+
+    @model_validator(mode="after")
+    def validate_reconciliation(self) -> "OriginalUploadReconciliationOutcome":
+        if self.state is UploadCommandStateName.FINALIZED and self.write_receipt is None:
+            raise ValueError("finalized reconciliation requires a write receipt")
+        if self.write_receipt is not None:
+            if self.write_receipt.upload_id != self.result.upload_id:
+                raise ValueError("reconciled receipt upload identity is inconsistent")
+            if self.write_receipt.object_reference.object_id != self.result.object_id:
+                raise ValueError("reconciled receipt object identity is inconsistent")
+        if self.resolved != (self.state is not UploadCommandStateName.RECONCILIATION_REQUIRED):
+            raise ValueError("reconciliation resolution flag is inconsistent")
+        return self
+
+
 class OriginalUploadRepository(Protocol):
     async def add(self, record: OriginalUploadRecord) -> None: ...
 
@@ -157,6 +182,7 @@ class OriginalUploadUnitOfWorkFactory(Protocol):
 __all__ = [
     "OriginalUploadAbortOutcome",
     "OriginalUploadOutcome",
+    "OriginalUploadReconciliationOutcome",
     "OriginalUploadRecord",
     "OriginalUploadRepository",
     "OriginalUploadUnitOfWork",

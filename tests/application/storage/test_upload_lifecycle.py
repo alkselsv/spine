@@ -11,6 +11,7 @@ import pytest
 
 from spine.application.persistence import (
     CommandDigest,
+    digest_command,
     EnvironmentScope,
     IdempotencyConflictError,
     IdempotencyKey,
@@ -36,6 +37,10 @@ from spine.infrastructure.object_storage import (
     ObjectProtected,
     ObjectUnavailable,
     OriginalUploadCommandInput,
+    OriginalUploadCommandPayload,
+    OriginalUploadCommandResult,
+    Issue8ResultReference,
+    PreWriteRequestDigest,
     ReconciliationRequired,
     UploadCommandStateName,
     UploadConflict,
@@ -559,6 +564,87 @@ async def test_postgresql_rollback_after_physical_finalization_requires_reconcil
         await orchestrator.upload(_context(), _command(), forbidden_retry())
 
     assert streamed is False
+
+
+@pytest.mark.asyncio
+async def test_trusted_reconciliation_rehydrates_proven_finalization() -> None:
+    store = _FakeStore(failing_commit_attempts={3})
+    orchestrator, _ = _orchestrator(store)
+
+    async def chunks() -> AsyncIterable[bytes]:
+        yield b"hello"
+
+    with pytest.raises(ReconciliationRequired):
+        await orchestrator.upload(_context(), _command(), chunks())
+
+    reconciled = await orchestrator.reconcile(_context(), _command())
+
+    assert reconciled.resolved is True
+    assert reconciled.changed is True
+    assert reconciled.state is UploadCommandStateName.FINALIZED
+    assert reconciled.write_receipt is not None
+    assert store.uploads[UPLOAD_ID].state.state is UploadCommandStateName.FINALIZED
+
+
+@pytest.mark.asyncio
+async def test_trusted_reconciliation_leaves_ambiguous_evidence_blocked() -> None:
+    store = _FakeStore()
+    orchestrator, _ = _orchestrator(store)
+    command = _command()
+
+    # Seed a durable upload record in the blocked state without physical evidence.
+    record = OriginalUploadRecord(
+        record_version=1,
+        command=command,
+        result=OriginalUploadCommandResult(
+            request_digest=PreWriteRequestDigest(
+                algorithm="sha256",
+                algorithm_version="spine.command-digest.v1",
+                digest_hex="a" * 64,
+            ),
+            upload_id=UPLOAD_ID,
+            object_id=OBJECT_ID,
+            issue8_result_reference=Issue8ResultReference(receipt_id=RECEIPT_ID),
+        ),
+        state=UploadCommandState(
+            issue8_receipt_id=RECEIPT_ID,
+            request_digest=PreWriteRequestDigest(
+                algorithm="sha256",
+                algorithm_version="spine.command-digest.v1",
+                digest_hex="a" * 64,
+            ),
+            upload_id=UPLOAD_ID,
+            object_id=OBJECT_ID,
+            state=UploadCommandStateName.RECONCILIATION_REQUIRED,
+        ),
+    )
+    store.uploads[UPLOAD_ID] = record
+    request_digest = digest_command(
+        operation=PersistenceOperation("original.upload"),
+        operation_schema_version=1,
+        payload=OriginalUploadCommandPayload(
+            workspace_id=command.workspace_id,
+            environment_id=command.environment_id,
+            purpose=command.purpose,
+            expected_sha256=command.expected_sha256,
+            expected_byte_length=command.expected_byte_length,
+        ).model_dump(),
+    )
+    store.receipts[command.idempotency_key] = _StoredIdempotencyReceipt(
+        receipt_id=RECEIPT_ID,
+        digest=request_digest,
+        result=OpaqueResultReference(
+            result_type="original_upload",
+            result_id=UPLOAD_ID,
+            schema_version=1,
+        ),
+    )
+
+    reconciled = await orchestrator.reconcile(_context(), command)
+
+    assert reconciled.resolved is False
+    assert reconciled.changed is False
+    assert reconciled.state is UploadCommandStateName.RECONCILIATION_REQUIRED
 
 
 @pytest.mark.asyncio

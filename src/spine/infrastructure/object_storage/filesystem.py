@@ -433,6 +433,86 @@ class FilesystemOriginalObjectStore:
                 self._close_fd(payload_fd)
         return state.transitioned(UploadCommandStateName.ABORTED)
 
+    async def reconcile_upload(
+        self,
+        command: OriginalUploadCommandInput,
+        state: UploadCommandState,
+    ) -> UploadCommandState:
+        """Classify durable upload evidence without resuming or mutating it."""
+
+        await self._ensure_ready()
+        self._validate_upload_state(state)
+        if state.state is not UploadCommandStateName.RECONCILIATION_REQUIRED:
+            raise ReconciliationRequired()
+        async with self._operation_limit:
+            self._ensure_operational()
+            deadline = self._deadline()
+            return await self._run_blocking(
+                self._reconcile_upload_sync,
+                command,
+                state,
+                deadline,
+                deadline=deadline,
+            )
+
+    def _reconcile_upload_sync(
+        self,
+        command: OriginalUploadCommandInput,
+        state: UploadCommandState,
+        deadline: float,
+    ) -> UploadCommandState:
+        location = self._locate_upload(state.upload_id)
+        if location is None:
+            raise ReconciliationRequired()
+        kind, payload_path, manifest_path, manifest = location
+        if manifest.get("command_fingerprint") != self._command_fingerprint(command):
+            raise ReconciliationRequired()
+        if UUID(manifest["object_id"]) != state.object_id:
+            raise ReconciliationRequired()
+        if kind == "finalized":
+            receipt = self._receipt_from_manifest(manifest, manifest_path)
+            if receipt.upload_id != state.upload_id:
+                raise ReconciliationRequired()
+            try:
+                self._verify_finalized_file(payload_path, receipt, deadline=deadline)
+            except ObjectCorrupt:
+                return state.transitioned(UploadCommandStateName.INTEGRITY_CONFLICT)
+            except ObjectNotFound:
+                raise ReconciliationRequired() from None
+            return state.transitioned(
+                UploadCommandStateName.FINALIZED,
+                provisional_receipt=receipt,
+            )
+        status = manifest.get("status")
+        if status == "integrity_conflict":
+            return state.transitioned(UploadCommandStateName.INTEGRITY_CONFLICT)
+        if status == "aborted":
+            return state.transitioned(UploadCommandStateName.ABORTED)
+        if status in {"staging", "interrupted"}:
+            if not self._exists(payload_path) or self._is_symlink(payload_path):
+                raise ReconciliationRequired()
+            try:
+                observed = self._hash_file(
+                    payload_path,
+                    self._profile.max_object_bytes,
+                    deadline,
+                    None,
+                )
+            except ObjectNotFound:
+                raise ReconciliationRequired() from None
+            except ObjectCorrupt:
+                return state.transitioned(UploadCommandStateName.INTEGRITY_CONFLICT)
+            if (
+                manifest.get("expected_digest") is not None
+                and manifest["expected_digest"] != observed.observed_sha256
+            ) or (
+                manifest.get("expected_length") is not None
+                and manifest["expected_length"] != observed.observed_byte_length
+            ):
+                return state.transitioned(UploadCommandStateName.INTEGRITY_CONFLICT)
+            return state.transitioned(UploadCommandStateName.INTERRUPTED)
+        raise ReconciliationRequired()
+
     async def finalize_upload(
         self,
         state: UploadCommandState,
@@ -793,6 +873,8 @@ class FilesystemOriginalObjectStore:
         *,
         cursor: str | None = None,
         limit: int = 100,
+        workspace_id: UUID | None = None,
+        environment_id: UUID | None = None,
     ) -> tuple[tuple[ReconciliationInventoryEntry, ...], str | None]:
         await self._ensure_ready()
         if limit <= 0 or limit > self._profile.max_inventory_entries:
@@ -805,6 +887,8 @@ class FilesystemOriginalObjectStore:
                 cursor,
                 limit,
                 deadline,
+                workspace_id,
+                environment_id,
                 deadline=deadline,
             )
 
@@ -813,8 +897,15 @@ class FilesystemOriginalObjectStore:
         cursor: str | None,
         limit: int,
         deadline: float,
+        workspace_id: UUID | None,
+        environment_id: UUID | None,
     ) -> tuple[tuple[ReconciliationInventoryEntry, ...], str | None]:
-        start_key = self._inventory_cursor(cursor)
+        scope_key = (
+            self._scope_key(workspace_id, environment_id)
+            if workspace_id is not None
+            else None
+        )
+        start_key = self._inventory_cursor(cursor, scope_key)
         page: list[ReconciliationInventoryEntry] = []
         seen_object_ids: set[UUID] = set()
         self._validate_staged_namespace(deadline=deadline)
@@ -823,6 +914,8 @@ class FilesystemOriginalObjectStore:
         last_key: str | None = None
         for manifest_path in self._iter_final_manifests():
             manifest_key = f"{manifest_path.parent.name}/{manifest_path.name}"
+            if scope_key is not None and manifest_path.parent.name != scope_key:
+                continue
             if start_key is not None and manifest_key <= start_key:
                 continue
             if scanned >= self._profile.max_inventory_entries:
@@ -841,15 +934,23 @@ class FilesystemOriginalObjectStore:
             if manifest_path.name != self._manifest_name(receipt.object_reference.object_id):
                 raise StorageIntegrityIndeterminate()
             payload_path = manifest_path.parent / receipt.object_reference.object_id.hex
+            integrity_status = IntegrityStatus.VERIFIED
             if not self._exists(payload_path) or self._is_symlink(payload_path):
-                raise StorageIntegrityIndeterminate()
-            self._verify_finalized_file(payload_path, receipt, deadline=deadline)
+                integrity_status = IntegrityStatus.UNAVAILABLE
+            else:
+                try:
+                    self._verify_finalized_file(payload_path, receipt, deadline=deadline)
+                except ObjectCorrupt:
+                    integrity_status = IntegrityStatus.MISMATCH
+                except ObjectNotFound:
+                    integrity_status = IntegrityStatus.UNAVAILABLE
             if len(page) < limit:
                 page.append(
                     ReconciliationInventoryEntry(
                         object_reference=receipt.object_reference,
                         upload_id=receipt.upload_id,
                         finalized=True,
+                        integrity_status=integrity_status,
                         observed_at=self._clock(),
                     )
                 )
@@ -857,7 +958,9 @@ class FilesystemOriginalObjectStore:
             else:
                 has_more = True
             scanned += 1
-        next_cursor = self._encode_inventory_cursor(last_key) if has_more else None
+        next_cursor = (
+            self._encode_inventory_cursor(last_key, scope_key) if has_more else None
+        )
         return tuple(page), next_cursor
 
     async def prepare_deletion(
@@ -3002,14 +3105,20 @@ class FilesystemOriginalObjectStore:
         if not isinstance(reference, ObjectReference):
             raise InvalidObjectReference()
 
-    def _inventory_cursor(self, cursor: str | None) -> str | None:
+    def _inventory_cursor(
+        self,
+        cursor: str | None,
+        expected_scope_key: str | None,
+    ) -> str | None:
         if cursor is None:
             return None
         try:
             encoded = cursor.encode("ascii")
             decoded = base64.urlsafe_b64decode(encoded).decode(_JSON_ENCODING)
-            version, raw_value = decoded.split(":", 1)
-            if version != "v1":
+            version, scope_key, raw_value = decoded.split(":", 2)
+            if version != "v2":
+                raise ValueError()
+            if scope_key != (expected_scope_key or "*"):
                 raise ValueError()
             scope_key, manifest_name = raw_value.split("/", 1)
             if (
@@ -3027,8 +3136,11 @@ class FilesystemOriginalObjectStore:
             raise StorageConfigurationError() from None
 
     @staticmethod
-    def _encode_inventory_cursor(value: str) -> str:
-        return base64.urlsafe_b64encode(f"v1:{value}".encode(_JSON_ENCODING)).decode("ascii")
+    def _encode_inventory_cursor(value: str, scope_key: str | None) -> str:
+        marker = scope_key or "*"
+        return base64.urlsafe_b64encode(
+            f"v2:{marker}:{value}".encode(_JSON_ENCODING)
+        ).decode("ascii")
 
     def _observe_io(
         self,

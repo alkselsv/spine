@@ -239,6 +239,7 @@ class UploadCommandState(StorageModel):
                 UploadCommandStateName.RECONCILIATION_REQUIRED,
             },
             UploadCommandStateName.RECONCILIATION_REQUIRED: {
+                UploadCommandStateName.INTERRUPTED,
                 UploadCommandStateName.STAGING,
                 UploadCommandStateName.FINALIZED,
                 UploadCommandStateName.ABORTED,
@@ -518,6 +519,7 @@ class ReconciliationInventoryEntry(StorageModel):
     object_reference: ObjectReference
     upload_id: UUID | None
     finalized: bool
+    integrity_status: IntegrityStatus = IntegrityStatus.VERIFIED
     observed_at: datetime
 
     @model_validator(mode="after")

@@ -50,6 +50,7 @@ from .contracts import (
     OriginalUploadAbortOutcome,
     OriginalUploadOutcome,
     OriginalUploadRecord,
+    OriginalUploadReconciliationOutcome,
     OriginalUploadUnitOfWork,
     OriginalUploadUnitOfWorkFactory,
     UploadCleanupStatus,
@@ -285,6 +286,60 @@ class OriginalUploadOrchestrator:
             replay=replay,
         )
 
+    async def reconcile(
+        self,
+        context: TrustedPersistenceContext,
+        command: OriginalUploadCommandInput,
+    ) -> OriginalUploadReconciliationOutcome:
+        """Resolve an indeterminate upload only from durable adapter evidence."""
+
+        self._validate_context_binding(context, command)
+        record, _ = await self._resolve_or_create(context, command, create=False)
+        if record.state.state is not UploadCommandStateName.RECONCILIATION_REQUIRED:
+            raise ReconciliationRequired()
+
+        try:
+            physical_state = await self._object_store.reconcile_upload(
+                record.command,
+                record.state,
+            )
+        except ReconciliationRequired:
+            return OriginalUploadReconciliationOutcome(
+                result=record.result,
+                state=record.state.state,
+                resolved=False,
+                changed=False,
+            )
+
+        receipt = physical_state.provisional_receipt
+        if physical_state.state is UploadCommandStateName.FINALIZED:
+            if receipt is None:
+                raise ReconciliationRequired()
+            updated = await self._replace_reconciliation_state(
+                context,
+                record.result.upload_id,
+                physical_state,
+                observed_content=receipt.observed_content,
+            )
+        else:
+            updated = await self._replace_reconciliation_state(
+                context,
+                record.result.upload_id,
+                physical_state,
+                cleanup_status=(
+                    UploadCleanupStatus.PENDING
+                    if physical_state.state is UploadCommandStateName.ABORTED
+                    else UploadCleanupStatus.NOT_APPLICABLE
+                ),
+            )
+        return OriginalUploadReconciliationOutcome(
+            result=updated.result,
+            state=updated.state.state,
+            write_receipt=updated.state.provisional_receipt,
+            resolved=True,
+            changed=updated != record,
+        )
+
     async def _resolve_or_create(
         self,
         context: TrustedPersistenceContext,
@@ -467,6 +522,34 @@ class OriginalUploadOrchestrator:
                 current,
                 cleanup_status=status,
                 cleanup_error_category=error_category,
+            )
+            await uow.original_uploads.replace(
+                updated,
+                expected_version=current.record_version,
+            )
+            await uow.commit()
+        return updated
+
+    async def _replace_reconciliation_state(
+        self,
+        context: TrustedPersistenceContext,
+        upload_id: UUID,
+        state: UploadCommandState,
+        *,
+        observed_content: ObservedContentIdentity | None = None,
+        cleanup_status: UploadCleanupStatus = UploadCleanupStatus.NOT_APPLICABLE,
+    ) -> OriginalUploadRecord:
+        async with self._uow_factory(context) as uow:
+            current = await self._resolve_record(uow, upload_id)
+            if current.state.state is not UploadCommandStateName.RECONCILIATION_REQUIRED:
+                raise ReconciliationRequired()
+            if observed_content is None:
+                observed_content = current.observed_content
+            updated = self._updated_record(
+                current,
+                state=state,
+                observed_content=observed_content,
+                cleanup_status=cleanup_status,
             )
             await uow.original_uploads.replace(
                 updated,

@@ -7,6 +7,8 @@ database, or provider I/O.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 from collections.abc import AsyncIterable, AsyncIterator, Callable
 from dataclasses import dataclass, field
@@ -38,6 +40,7 @@ from .errors import (
     ObjectUnavailable,
     ReconciliationRequired,
     StorageError,
+    StorageConfigurationError,
     UploadConflict,
     UploadLimitExceeded,
     UploadNotFound,
@@ -277,6 +280,34 @@ class DeterministicOriginalObjectStoreFake:
         upload.state = upload.state.transitioned(UploadCommandStateName.ABORTED)
         return upload.state
 
+    async def reconcile_upload(
+        self,
+        command: OriginalUploadCommandInput,
+        state: UploadCommandState,
+    ) -> UploadCommandState:
+        if state.state is not UploadCommandStateName.RECONCILIATION_REQUIRED:
+            raise ReconciliationRequired()
+        upload = self._uploads.get(state.upload_id)
+        if upload is None or not self._same_command_semantics(upload.command, command):
+            raise ReconciliationRequired()
+        if upload.integrity_mismatch:
+            return state.transitioned(UploadCommandStateName.INTEGRITY_CONFLICT)
+        if upload.receipt is not None:
+            if upload.receipt.object_reference.object_id != state.object_id:
+                raise ReconciliationRequired()
+            return state.transitioned(
+                UploadCommandStateName.FINALIZED,
+                provisional_receipt=upload.receipt,
+            )
+        if upload.state.state in {
+            UploadCommandStateName.STAGING,
+            UploadCommandStateName.INTERRUPTED,
+        }:
+            return state.transitioned(UploadCommandStateName.INTERRUPTED)
+        if upload.state.state is UploadCommandStateName.ABORTED:
+            return state.transitioned(UploadCommandStateName.ABORTED)
+        raise ReconciliationRequired()
+
     async def open_bounded_read(
         self,
         lease: ConsumedOriginalReadLease,
@@ -353,8 +384,32 @@ class DeterministicOriginalObjectStoreFake:
         *,
         cursor: str | None = None,
         limit: int = 100,
+        workspace_id: UUID | None = None,
+        environment_id: UUID | None = None,
     ) -> tuple[tuple[ReconciliationInventoryEntry, ...], str | None]:
-        del cursor, limit
+        if limit <= 0:
+            raise UploadLimitExceeded()
+        references = tuple(
+            sorted(
+                reference
+                for reference in self._objects
+                if (
+                    workspace_id is None
+                    or self._object_scopes[reference]
+                    == (workspace_id, environment_id)
+                )
+            )
+        )
+        scope_marker = (
+            f"{workspace_id}:{environment_id}" if workspace_id is not None else "*"
+        )
+        start_after = self._decode_inventory_cursor(cursor, scope_marker)
+        references = tuple(
+            item
+            for item in references
+            if start_after is None or item.object_id.hex > start_after
+        )
+        page_references = references[:limit]
         entries = tuple(
             ReconciliationInventoryEntry(
                 object_reference=reference,
@@ -362,9 +417,36 @@ class DeterministicOriginalObjectStoreFake:
                 finalized=True,
                 observed_at=self._clock(),
             )
-            for reference in sorted(self._objects, key=lambda item: item.object_id.int)
+            for reference in page_references
         )
-        return entries, None
+        next_cursor = (
+            self._encode_inventory_cursor(page_references[-1].object_id.hex, scope_marker)
+            if len(references) > limit
+            else None
+        )
+        return entries, next_cursor
+
+    @staticmethod
+    def _encode_inventory_cursor(object_id: str, scope_marker: str) -> str:
+        return base64.urlsafe_b64encode(
+            f"v2:{scope_marker}:{object_id}".encode()
+        ).decode()
+
+    @staticmethod
+    def _decode_inventory_cursor(cursor: str | None, expected_scope: str) -> str | None:
+        if cursor is None:
+            return None
+        try:
+            version, scope_marker, object_id = (
+                base64.urlsafe_b64decode(cursor.encode()).decode().split(":", 2)
+            )
+        except (ValueError, UnicodeError, binascii.Error):
+            raise StorageConfigurationError() from None
+        if version != "v2" or scope_marker != expected_scope or len(object_id) != 32 or any(
+            character not in "0123456789abcdef" for character in object_id
+        ):
+            raise StorageConfigurationError()
+        return object_id
 
     def _observe_io(
         self,

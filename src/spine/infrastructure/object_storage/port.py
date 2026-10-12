@@ -41,6 +41,12 @@ class OriginalObjectStore(Protocol):
 
     async def abort_upload(self, state: UploadCommandState) -> UploadCommandState: ...
 
+    async def reconcile_upload(
+        self,
+        command: OriginalUploadCommandInput,
+        state: UploadCommandState,
+    ) -> UploadCommandState: ...
+
     async def finalize_upload(
         self,
         state: UploadCommandState,
@@ -66,6 +72,8 @@ class OriginalObjectStore(Protocol):
         *,
         cursor: str | None = None,
         limit: int = 100,
+        workspace_id: UUID | None = None,
+        environment_id: UUID | None = None,
     ) -> tuple[tuple[ReconciliationInventoryEntry, ...], str | None]: ...
 
     async def prepare_deletion(

@@ -4,6 +4,7 @@ from .contracts import (
     OriginalUploadAbortOutcome,
     OriginalUploadOutcome,
     OriginalUploadRecord,
+    OriginalUploadReconciliationOutcome,
     OriginalUploadRepository,
     OriginalUploadUnitOfWork,
     OriginalUploadUnitOfWorkFactory,
@@ -20,6 +21,14 @@ from .authorized_read import (
     OriginalReadTarget,
     OriginalReadTargetResolver,
 )
+from .reconciliation import (
+    CanonicalOriginalReference,
+    OriginalStorageReconciler,
+    ReconciliationFinding,
+    ReconciliationFindingKind,
+    ReconciliationReport,
+    ReconciliationStorage,
+)
 
 __all__ = [
     "OriginalUploadAbortOutcome",
@@ -32,8 +41,15 @@ __all__ = [
     "OriginalReadRetention",
     "OriginalReadTarget",
     "OriginalReadTargetResolver",
+    "CanonicalOriginalReference",
+    "OriginalStorageReconciler",
+    "ReconciliationFinding",
+    "ReconciliationFindingKind",
+    "ReconciliationReport",
+    "ReconciliationStorage",
     "OriginalUploadOutcome",
     "OriginalUploadRecord",
+    "OriginalUploadReconciliationOutcome",
     "OriginalUploadRepository",
     "OriginalUploadUnitOfWork",
     "OriginalUploadUnitOfWorkFactory",

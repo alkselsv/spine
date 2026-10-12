@@ -18,6 +18,7 @@ from spine.infrastructure.object_storage import (
     FilesystemStorageProfile,
     ObjectCorrupt,
     ObjectNotFound,
+    IntegrityStatus,
     ObjectUnavailable,
     OriginalUploadCommandInput,
     PreWriteRequestDigest,
@@ -260,9 +261,15 @@ async def test_corrupt_and_missing_finalized_bytes_fail_closed(
     with pytest.raises(ObjectCorrupt):
         await read_receipt(store, registry, receipt, max_bytes=3)
 
+    inventory, _ = await store.reconciliation_inventory()
+    assert inventory[0].integrity_status is IntegrityStatus.MISMATCH
+
     payload.unlink()
     with pytest.raises(ObjectNotFound):
         await store.verify(receipt.object_reference, max_bytes=64)
+
+    inventory, _ = await store.reconciliation_inventory()
+    assert inventory[0].integrity_status is IntegrityStatus.UNAVAILABLE
 
 
 async def test_finalized_retry_producer_failure_is_adapter_neutral(
