@@ -16,6 +16,7 @@ from spine.domain.storage.recovery import (
     BackupFenceLease,
     FenceOperationTicket,
     QuiescentEvidence,
+    RecoveryEvidenceInvalidation,
     StorageRecoveryManifest,
 )
 
@@ -85,6 +86,40 @@ class _Transaction:
     async def get_manifest(self, recovery_set_id: str) -> StorageRecoveryManifest | None:
         return self._repository._manifests.get(recovery_set_id)
 
+    async def list_manifests(
+        self, deployment_scope_id: str
+    ) -> tuple[StorageRecoveryManifest, ...]:
+        return tuple(
+            sorted(
+                (
+                    manifest
+                    for manifest in self._repository._manifests.values()
+                    if manifest.deployment_scope_id == deployment_scope_id
+                ),
+                key=lambda value: (value.created_at, value.recovery_set_id),
+            )
+        )
+
+    async def list_invalidations(
+        self, deployment_scope_id: str
+    ) -> tuple[RecoveryEvidenceInvalidation, ...]:
+        return tuple(
+            sorted(
+                (
+                    event
+                    for event in self._repository._invalidations.values()
+                    if event.deployment_scope_id == deployment_scope_id
+                ),
+                key=lambda value: value.sequence,
+            )
+        )
+
+    async def add_invalidation(self, event: RecoveryEvidenceInvalidation) -> None:
+        key = (event.deployment_scope_id, event.sequence)
+        if key in self._repository._invalidations:
+            raise RecoveryCoordinationError("recovery evidence sequence already exists")
+        self._repository._invalidations[key] = event
+
 
 class InMemoryRecoveryRepository(RecoveryRepository):
     """Deterministic repository fake with transaction rollback semantics."""
@@ -95,6 +130,15 @@ class InMemoryRecoveryRepository(RecoveryRepository):
         self._tickets: dict[str, FenceOperationTicket] = {}
         self._quiescent_evidence: dict[tuple[str, int], QuiescentEvidence] = {}
         self._manifests: dict[str, StorageRecoveryManifest] = {}
+        self._invalidations: dict[tuple[str, int], RecoveryEvidenceInvalidation] = {}
+
+    async def seed_manifest(self, manifest: StorageRecoveryManifest) -> None:
+        """Seed immutable evidence for an application contract test."""
+
+        async with self._lock:
+            if manifest.recovery_set_id in self._manifests:
+                raise RecoveryManifestError("recovery manifest identity already exists")
+            self._manifests[manifest.recovery_set_id] = manifest
 
     @asynccontextmanager
     async def transaction(self, deployment_scope_id: str) -> AsyncIterator[RecoveryTransaction]:
@@ -104,6 +148,7 @@ class InMemoryRecoveryRepository(RecoveryRepository):
             tickets = self._tickets.copy()
             evidence = self._quiescent_evidence.copy()
             manifests = self._manifests.copy()
+            invalidations = self._invalidations.copy()
             try:
                 yield _Transaction(self)
             except BaseException:
@@ -111,6 +156,7 @@ class InMemoryRecoveryRepository(RecoveryRepository):
                 self._tickets = tickets
                 self._quiescent_evidence = evidence
                 self._manifests = manifests
+                self._invalidations = invalidations
                 raise
 
 

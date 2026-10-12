@@ -91,6 +91,27 @@ async def test_start_creates_one_bounded_engine_and_async_session_factory() -> N
 
 
 @pytest.mark.asyncio
+async def test_start_runs_recovery_readiness_gate_before_publishing_resources() -> None:
+    engine = RecordingEngine()
+    checks: list[str] = []
+
+    async def recovery_readiness_check() -> None:
+        checks.append("recovery")
+
+    runtime = DatabaseRuntime(
+        engine_factory=lambda _url, **_kwargs: engine,
+        session_factory_builder=lambda _engine, **_kwargs: object,
+        readiness_check=lambda _engine: _completed_check(),
+        recovery_readiness_check=recovery_readiness_check,
+    )
+
+    await runtime.start(runtime_settings())
+
+    assert checks == ["recovery"]
+    assert runtime.resources is not None
+
+
+@pytest.mark.asyncio
 async def test_default_startup_readiness_receives_validated_runtime_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -379,6 +379,30 @@ storage_recovery_manifests = Table(
     Column("completed_at", DateTime(timezone=True)),
 )
 
+recovery_evidence_invalidations = Table(
+    "recovery_evidence_invalidations",
+    metadata,
+    Column("deployment_scope_id", Text, nullable=False),
+    Column("sequence", BigInteger, nullable=False),
+    Column("schema_version", Integer, nullable=False),
+    Column("recovery_set_id", Text, nullable=False),
+    Column("manifest_digest", String(64), nullable=False),
+    Column("event_kind", String(32), nullable=False),
+    Column("reason_code", String(128), nullable=False),
+    Column("replacement_recovery_set_id", Text),
+    Column("replacement_manifest_digest", String(64)),
+    Column("replacement_validation_reference", Text),
+    Column("replacement_approval_reference", Text),
+    Column("previous_event_digest", String(64)),
+    Column("event_digest", String(64), nullable=False),
+    Column("occurred_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "deployment_scope_id",
+        "sequence",
+        name="pk_recovery_evidence_invalidations",
+    ),
+)
+
 __all__ = [
     "access_policy_grants",
     "access_policy_versions",
@@ -409,4 +433,5 @@ __all__ = [
     "fence_operation_tickets",
     "recovery_quiescence_evidence",
     "storage_recovery_manifests",
+    "recovery_evidence_invalidations",
 ]

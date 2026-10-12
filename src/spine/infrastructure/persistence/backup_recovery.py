@@ -18,6 +18,11 @@ from spine.domain.storage.recovery import (
     BackupFenceLease,
     FenceOperationTicket,
     QuiescentEvidence,
+    ComponentState,
+    RecoveryEvidenceEventKind,
+    RecoveryEvidenceInvalidation,
+    RecoveryManifestProfile,
+    RecoveryManifestStatus,
     StorageRecoveryManifest,
 )
 
@@ -25,6 +30,7 @@ from .postgresql_mappings import (
     backup_fence_leases,
     fence_operation_tickets,
     recovery_quiescence_evidence,
+    recovery_evidence_invalidations,
     storage_recovery_manifests,
 )
 
@@ -153,6 +159,44 @@ class _PostgreSQLRecoveryTransaction:
         row = result.mappings().one_or_none()
         return _manifest_from_row(row) if row is not None else None
 
+    async def list_manifests(
+        self, deployment_scope_id: str
+    ) -> tuple[StorageRecoveryManifest, ...]:
+        result = await self._session.execute(
+            select(storage_recovery_manifests)
+            .where(
+                storage_recovery_manifests.c.deployment_scope_id
+                == deployment_scope_id
+            )
+            .order_by(
+                storage_recovery_manifests.c.created_at,
+                storage_recovery_manifests.c.recovery_set_id,
+            )
+        )
+        return tuple(_manifest_from_row(row) for row in result.mappings())
+
+    async def list_invalidations(
+        self, deployment_scope_id: str
+    ) -> tuple[RecoveryEvidenceInvalidation, ...]:
+        result = await self._session.execute(
+            select(recovery_evidence_invalidations)
+            .where(
+                recovery_evidence_invalidations.c.deployment_scope_id
+                == deployment_scope_id
+            )
+            .order_by(recovery_evidence_invalidations.c.sequence)
+        )
+        return tuple(
+            _invalidation_from_row(row) for row in result.mappings()
+        )
+
+    async def add_invalidation(self, event: RecoveryEvidenceInvalidation) -> None:
+        await self._session.execute(
+            postgresql_insert(recovery_evidence_invalidations).values(
+                **_invalidation_values(event)
+            )
+        )
+
 class PostgreSQLBackupRecoveryRepository:
     """Serialize each scope by locking its single live lease row."""
 
@@ -244,6 +288,12 @@ def _quiescent_evidence_values(
     return values
 
 
+def _invalidation_values(event: RecoveryEvidenceInvalidation) -> dict[str, object]:
+    values = event.model_dump(mode="python")
+    values["event_kind"] = event.event_kind.value
+    return values
+
+
 def _lease_from_row(row: object) -> BackupFenceLease:
     return BackupFenceLease.model_validate(
         {
@@ -322,6 +372,14 @@ def _manifest_from_row(row: object) -> StorageRecoveryManifest:
         values["quiescent_evidence"] = QuiescentEvidence.model_validate(
             values["quiescent_evidence"], strict=False
         )
+    values["profile"] = RecoveryManifestProfile(values["profile"])
+    values["manifest_status"] = RecoveryManifestStatus(values["manifest_status"])
+    values["postgres_component_state"] = ComponentState(
+        values["postgres_component_state"]
+    )
+    values["object_component_state"] = ComponentState(
+        values["object_component_state"]
+    )
     return StorageRecoveryManifest.model_validate(values)
 
 
@@ -340,6 +398,32 @@ def _quiescent_evidence_from_row(row: object) -> QuiescentEvidence:
                 "verification_digest",
             )
         }
+    )
+
+
+def _invalidation_from_row(row: object) -> RecoveryEvidenceInvalidation:
+    values = {
+        key: row[key]
+        for key in (
+            "deployment_scope_id",
+            "sequence",
+            "schema_version",
+            "recovery_set_id",
+            "manifest_digest",
+            "event_kind",
+            "reason_code",
+            "replacement_recovery_set_id",
+            "replacement_manifest_digest",
+            "replacement_validation_reference",
+            "replacement_approval_reference",
+            "previous_event_digest",
+            "event_digest",
+            "occurred_at",
+        )
+    }
+    values["event_kind"] = RecoveryEvidenceEventKind(values["event_kind"])
+    return RecoveryEvidenceInvalidation.model_validate(
+        values
     )
 
 

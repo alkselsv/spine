@@ -40,6 +40,13 @@ from .recovery import (
     RecoveryRepository,
     RecoveryTransaction,
 )
+from .recovery_integrity import (
+    RecoveryEvidenceConflictError,
+    RecoveryEvidenceCoordinator,
+    RecoveryEvidenceRepository,
+    RecoveryEvidenceTransaction,
+    RecoveryEvidenceValidationError,
+)
 from .diagnostics import (
     RecordingStorageOutcomeRecorder,
     NullStorageOutcomeRecorder,
@@ -108,4 +115,9 @@ __all__ = [
     "RecoveryManifestError",
     "RecoveryRepository",
     "RecoveryTransaction",
+    "RecoveryEvidenceConflictError",
+    "RecoveryEvidenceCoordinator",
+    "RecoveryEvidenceRepository",
+    "RecoveryEvidenceTransaction",
+    "RecoveryEvidenceValidationError",
 ]
