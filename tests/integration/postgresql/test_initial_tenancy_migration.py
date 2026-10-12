@@ -317,6 +317,68 @@ ADMISSION_COLUMNS = {
     )
 }
 
+CANONICAL_ACCEPTANCE_CONSTRAINTS = {
+    "pk_canonical_generation_counters",
+    "ck_canonical_generation_nonnegative",
+    "pk_canonical_acceptances",
+    "uq_canonical_acceptances_generation",
+    "uq_canonical_acceptances_revision",
+    "uq_canonical_acceptances_scope_id",
+    "uq_canonical_acceptances_idempotency_receipt",
+    "uq_canonical_acceptances_head_tuple",
+    "fk_canonical_acceptances_source",
+    "fk_canonical_acceptances_revision",
+    "fk_canonical_acceptances_provenance",
+    "fk_canonical_acceptances_admission",
+    "fk_canonical_acceptances_policy",
+    "fk_canonical_acceptances_idempotency",
+    "fk_canonical_acceptances_audit",
+    "fk_canonical_acceptances_outbox",
+    "ck_canonical_acceptances_generation",
+    "ck_canonical_acceptances_ordering",
+    "ck_canonical_acceptances_order_pair",
+    "ck_canonical_acceptances_ordering_shape",
+    "pk_current_source_heads",
+    "fk_current_source_heads_revision",
+    "fk_current_source_heads_acceptance",
+    "fk_current_source_heads_acceptance_tuple",
+    "ck_current_source_heads_kind",
+    "ck_current_source_heads_versions",
+    "ck_current_source_heads_order_pair",
+}
+CANONICAL_ACCEPTANCE_INDEXES = {
+    "pk_canonical_generation_counters",
+    "pk_canonical_acceptances",
+    "uq_canonical_acceptances_generation",
+    "uq_canonical_acceptances_revision",
+    "uq_canonical_acceptances_scope_id",
+    "uq_canonical_acceptances_idempotency_receipt",
+    "uq_canonical_acceptances_head_tuple",
+    "ix_canonical_acceptances_source_generation",
+    "pk_current_source_heads",
+}
+CANONICAL_ACCEPTANCE_COLUMNS = {
+    ("canonical_generation_counters", column)
+    for column in ("workspace_id", "environment_id", "current_generation", "updated_at")
+} | {
+    ("canonical_acceptances", column)
+    for column in (
+        "canonical_acceptance_id", "source_object_id", "source_revision_id",
+        "workspace_id", "environment_id", "predecessor_revision_id",
+        "predecessor_acceptance_id", "accepted_generation", "ordering",
+        "ordering_scheme", "ordering_token", "admission_decision_id",
+        "access_policy_version_id", "provenance_id", "idempotency_receipt_id",
+        "audit_event_id", "outbox_event_id", "accepted_at",
+    )
+} | {
+    ("current_source_heads", column)
+    for column in (
+        "source_object_id", "workspace_id", "environment_id", "current_revision_id",
+        "current_revision_kind", "acceptance_id", "accepted_generation", "cas_version",
+        "ordering_scheme", "ordering_token", "changed_at",
+    )
+}
+
 
 @dataclass(frozen=True, slots=True)
 class MigratedDatabase:
@@ -1195,6 +1257,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ingestion_warnings",
         "ingestion_failures",
         "processing_receipts",
+        "canonical_generation_counters",
+        "canonical_acceptances",
+        "current_source_heads",
     }
     expected_final_constraints = {
         "alembic_version_pkc",
@@ -1344,6 +1409,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         | AUDIT_CONSTRAINTS
         | DELIVERY_CONSTRAINTS
         | ADMISSION_CONSTRAINTS
+        | CANONICAL_ACCEPTANCE_CONSTRAINTS
     )
     missing_final_constraints = {
         expected
@@ -1442,7 +1508,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "uq_processing_receipts_command",
         "ix_processing_receipts_revision",
         "ix_processing_receipts_item",
-    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES
+    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES | CANONICAL_ACCEPTANCE_INDEXES
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
         "workspaces": (True, True),
@@ -1475,6 +1541,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ingestion_warnings": (True, True),
         "ingestion_failures": (True, True),
         "processing_receipts": (True, True),
+        "canonical_generation_counters": (True, True),
+        "canonical_acceptances": (True, True),
+        "current_source_heads": (True, True),
     }
     assert rls == expected_rls
     tenant_rls_tables = {
@@ -1563,6 +1632,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ingestion_warnings": (True, True, False, False),
         "ingestion_failures": (True, True, False, False),
         "processing_receipts": (True, True, False, False),
+        "canonical_generation_counters": (True, True, False, False),
+        "canonical_acceptances": (True, True, False, False),
+        "current_source_heads": (True, True, True, False),
         "admission_decisions": (True, True, False, False),
         "source_canonical_tables": (True, False, False, False),
         "source_canonical_unicode": (True, False, False, False),
@@ -1697,7 +1769,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', "
                             "'processing_receipts', 'access_policy_versions', "
                             "'access_policy_grants', 'policy_proposals', 'policy_approvals', "
-                            "'policy_activations', 'current_access_policies'))"
+                            "'policy_activations', 'current_access_policies', "
+                            "'canonical_generation_counters', 'canonical_acceptances', "
+                            "'current_source_heads'))"
                     )
                 )
             ).scalars()
@@ -1720,7 +1794,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
-                            "'policy_approvals', 'policy_activations', 'current_access_policies')"
+                            "'policy_approvals', 'policy_activations', 'current_access_policies', "
+                            "'canonical_generation_counters', 'canonical_acceptances', 'current_source_heads')"
                     )
                 )
             ).mappings()
@@ -1737,7 +1812,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
-                            "'policy_approvals', 'policy_activations', 'current_access_policies')"
+                            "'policy_approvals', 'policy_activations', 'current_access_policies', "
+                            "'canonical_generation_counters', 'canonical_acceptances', 'current_source_heads')"
                     )
                 )
             ).scalars()
@@ -1753,7 +1829,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
-                            "'policy_approvals', 'policy_activations', 'current_access_policies')"
+                            "'policy_approvals', 'policy_activations', 'current_access_policies', "
+                            "'canonical_generation_counters', 'canonical_acceptances', 'current_source_heads')"
                     )
                 )
             ).scalars()
@@ -1769,7 +1846,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
-                            "'policy_approvals', 'policy_activations', 'current_access_policies')"
+                            "'policy_approvals', 'policy_activations', 'current_access_policies', "
+                            "'canonical_generation_counters', 'canonical_acceptances', 'current_source_heads')"
                     )
                 )
             ).scalars()
@@ -1866,7 +1944,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         ("workspaces", "display_name"),
         ("workspaces", "id"),
         ("workspaces", "slug"),
-    } | AUTHORIZATION_DIRECTORY_COLUMNS | AUDIT_COLUMNS | DELIVERY_COLUMNS | ADMISSION_COLUMNS
+    } | AUTHORIZATION_DIRECTORY_COLUMNS | AUDIT_COLUMNS | DELIVERY_COLUMNS | ADMISSION_COLUMNS | CANONICAL_ACCEPTANCE_COLUMNS
     assert columns[("workspaces", "id")] == ("uuid", "NO", None)
     assert columns[("environments", "id")] == ("uuid", "NO", None)
     event_id_type, event_id_nullable, event_id_default = columns[
@@ -2326,7 +2404,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'ingestion_failures', 'processing_receipts', "
                         "'access_policy_versions', 'access_policy_grants', "
                         "'policy_proposals', 'policy_approvals', "
-                        "'policy_activations', 'current_access_policies')"
+                        "'policy_activations', 'current_access_policies', "
+                        "'canonical_generation_counters', 'canonical_acceptances', 'current_source_heads')"
                     )
                 )
             )
@@ -2386,6 +2465,9 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "policy_approvals": (True, True),
             "policy_activations": (True, True),
             "current_access_policies": (True, True),
+            "canonical_generation_counters": (True, True),
+            "canonical_acceptances": (True, True),
+            "current_source_heads": (True, True),
         }
     standard_tables = set(tables) - {"outbox_deliveries"}
     assert set(policies) == {
@@ -3575,11 +3657,11 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261016_19_canonical_acceptance.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261015_19_injected_failure.py").write_text(
+    (target / "versions" / "20261016_20_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261015_19'\n"
-        "down_revision = '20261015_18'\n"
+        "revision = '20261016_20'\n"
+        "down_revision = '20261016_19'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"
