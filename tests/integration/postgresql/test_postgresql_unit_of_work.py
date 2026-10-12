@@ -44,6 +44,7 @@ from spine.application.persistence.repositories import SourceObservationCommand
 from spine.application.access_policies import (
     AccessPolicyActivationCommand,
     PolicyActivationDraft,
+    StalePolicyBaselineError,
     access_policy_document_hash,
 )
 from spine.application.diagnostics.audit import AuditEventRegistry
@@ -734,7 +735,7 @@ async def test_access_policy_repository_round_trips_proposal_and_complete_policy
             await uow.access_policies.persist_proposal(policy, conflicting)
 
 
-async def test_access_policy_activation_completes_idempotency_and_replays_historical_head(
+async def test_access_policy_activation_has_one_concurrent_cas_winner_and_stable_replay(
     postgresql_adapter: PersistenceAdapter,
 ) -> None:
     assert postgresql_adapter.source_context is not None
@@ -865,8 +866,15 @@ async def test_access_policy_activation_completes_idempotency_and_replays_histor
     )
     async with postgresql_adapter.uow_factory(context) as uow:
         assert await uow.access_policies.resolve_activation_result(first_command) is None
+        rolled_back = await uow.access_policies.activate(first_command, first_draft)
+        await uow.rollback()
+
+    async with postgresql_adapter.uow_factory(context) as uow:
+        assert await uow.access_policies.resolve_activation_result(first_command) is None
         first = await uow.access_policies.activate(first_command, first_draft)
         await uow.commit()
+
+    assert first.activation.policy_activation_id == rolled_back.activation.policy_activation_id
 
     second_policy = AccessPolicyVersion(
         access_policy_version_id=synthetic_uuid(3910),
@@ -943,10 +951,73 @@ async def test_access_policy_activation_completes_idempotency_and_replays_histor
             "outbox_event_id": second_outbox_id,
         }
     )
-    async with postgresql_adapter.uow_factory(context) as uow:
-        assert await uow.access_policies.resolve_activation_result(second_command) is None
-        await uow.access_policies.activate(second_command, second_draft)
-        await uow.commit()
+    third_policy = second_policy.model_copy(
+        update={
+            "access_policy_version_id": synthetic_uuid(3917),
+            "origin_reference": synthetic_uuid(3918),
+            "document_hash": "e" * 64,
+        }
+    )
+    third_policy = third_policy.model_copy(
+        update={"document_hash": access_policy_document_hash(third_policy)}
+    )
+    third_proposal = proposal.model_copy(
+        update={
+            "policy_proposal_id": synthetic_uuid(3919),
+            "proposed_policy_version_id": third_policy.access_policy_version_id,
+            "proposed_policy_hash": third_policy.document_hash,
+        }
+    )
+    third_activation_id = synthetic_uuid(3920)
+    third_audit_id, third_outbox_id = synthetic_uuid(3921), synthetic_uuid(3922)
+    third_audit, third_outbox = evidence(
+        audit_id=third_audit_id,
+        outbox_id=third_outbox_id,
+        activation_id=third_activation_id,
+    )
+    third_command = replace(
+        second_command,
+        policy=third_policy,
+        proposal=third_proposal,
+        activation_id=third_activation_id,
+        idempotency_key=IdempotencyKey("concurrent-successor-policy-activation"),
+        audit_event_id=third_audit_id,
+        outbox_event_id=third_outbox_id,
+        audit_event=third_audit,
+        outbox_intent=third_outbox,
+    )
+    third_draft = PolicyActivationDraft(
+        values={
+            **second_draft.values,
+            "policy_activation_id": third_activation_id,
+            "new_policy_version_id": third_policy.access_policy_version_id,
+            "policy_proposal_id": third_proposal.policy_proposal_id,
+            "policy_proposal_hash": third_proposal.proposed_policy_hash,
+            "audit_event_id": third_audit_id,
+            "outbox_event_id": third_outbox_id,
+        }
+    )
+
+    async def activate(
+        command: AccessPolicyActivationCommand,
+        draft: PolicyActivationDraft,
+    ) -> object:
+        async with postgresql_adapter.uow_factory(context) as uow:
+            assert await uow.access_policies.resolve_activation_result(command) is None
+            result = await uow.access_policies.activate(command, draft)
+            await uow.commit()
+            return result
+
+    outcomes = await asyncio.gather(
+        activate(second_command, second_draft),
+        activate(third_command, third_draft),
+        return_exceptions=True,
+    )
+
+    assert sum(not isinstance(outcome, Exception) for outcome in outcomes) == 1
+    assert sum(
+        isinstance(outcome, StalePolicyBaselineError) for outcome in outcomes
+    ) == 1
 
     async with postgresql_adapter.uow_factory(context) as uow:
         replay = await uow.access_policies.resolve_activation_result(first_command)

@@ -2474,18 +2474,27 @@ async def test_access_policy_catalog_enforces_lineage_immutability_and_receipt_s
             ).scalars()
         )
         triggers = {
-            row.tgname: (row.tgdeferrable, row.tginitdeferred, row.definition)
+            row.tgname: (
+                row.tgdeferrable,
+                row.tginitdeferred,
+                row.definition,
+                row.owner,
+                row.runtime_trigger,
+            )
             for row in (
                 await connection.execute(
                     text(
                         "SELECT trigger.tgname, trigger.tgdeferrable, trigger.tginitdeferred, "
-                        "pg_get_triggerdef(trigger.oid) AS definition FROM pg_trigger AS trigger "
+                        "pg_get_triggerdef(trigger.oid) AS definition, "
+                        "pg_get_userbyid(relation.relowner) AS owner, "
+                        "has_table_privilege(:runtime, relation.oid, 'TRIGGER') "
+                        "AS runtime_trigger FROM pg_trigger AS trigger "
                         "JOIN pg_class AS relation ON relation.oid = trigger.tgrelid "
                         "JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace "
                         "WHERE namespace.nspname = 'spine' AND relation.relname = ANY(:tables) "
                         "AND NOT trigger.tgisinternal"
                     ),
-                    {"tables": list(policy_tables)},
+                    {"tables": list(policy_tables), "runtime": RUNTIME_ROLE},
                 )
             ).mappings()
         }
@@ -2524,22 +2533,69 @@ async def test_access_policy_catalog_enforces_lineage_immutability_and_receipt_s
         }
 
     expected_constraints = {
+        "pk_access_policy_versions",
+        "uq_access_policy_versions_scope_source_id",
+        "uq_access_policy_versions_source_version",
+        "uq_access_policy_versions_source_hash",
+        "fk_access_policy_versions_source",
+        "fk_access_policy_versions_predecessor",
+        "ck_access_policy_versions_positive_versions",
+        "ck_access_policy_versions_chain",
+        "ck_access_policy_versions_hashes",
+        "ck_access_policy_versions_schema",
+        "ck_access_policy_versions_origin",
+        "pk_access_policy_grants",
+        "fk_access_policy_grants_policy",
+        "ck_access_policy_grants_authority_shape",
+        "ck_access_policy_grants_validity",
+        "ck_access_policy_grants_service_identifiers",
+        "pk_policy_proposals",
+        "uq_policy_proposals_scope_source_id",
+        "uq_policy_proposals_exact",
+        "fk_policy_proposals_policy",
+        "fk_policy_proposals_predecessor",
+        "ck_policy_proposals_generations",
+        "ck_policy_proposals_benefit",
+        "pk_policy_approvals",
+        "uq_policy_approvals_scope_source_id",
         "fk_policy_activations_proposal",
         "fk_policy_activations_approval",
         "fk_policy_activations_idempotency",
         "fk_policy_activations_audit",
         "fk_policy_activations_outbox",
-        "fk_current_access_policies_activation",
         "uq_policy_approvals_exact",
+        "fk_policy_approvals_exact_proposal",
+        "uq_policy_approvals_proposal_approver_decision",
+        "ck_policy_approvals_decision",
+        "ck_policy_approvals_reason",
+        "pk_policy_activations",
+        "uq_policy_activations_head_tuple",
+        "uq_policy_activations_source_policy",
+        "uq_policy_activations_source_generation",
         "uq_policy_activations_idempotency_receipt",
-        "ck_access_policy_grants_authority_shape",
-        "ck_access_policy_grants_validity",
+        "fk_policy_activations_new_policy",
+        "fk_policy_activations_predecessor",
+        "ck_policy_activations_generations",
+        "ck_policy_activations_evidence_shape",
+        "pk_current_access_policies",
+        "uq_current_access_policies_scope_source",
+        "fk_current_access_policies_source",
+        "fk_current_access_policies_activation",
+        "ck_current_access_policies_positive_versions",
     }
-    assert all(
-        expected in constraints
-        or any(actual.endswith(expected) for actual in constraints)
+    missing_constraints = {
+        expected
         for expected in expected_constraints
-    )
+        if expected not in constraints
+        and not any(actual.endswith(expected) for actual in constraints)
+        and not any(
+            actual.startswith(f"ck_{table}_{expected}"[:50])
+            for table in policy_tables
+            for actual in constraints
+            if expected.startswith(f"ck_{table}_")
+        )
+    }
+    assert missing_constraints == set()
     expected_indexes = {
         "pk_access_policy_versions",
         "uq_access_policy_versions_scope_source_id",
@@ -2571,8 +2627,12 @@ async def test_access_policy_catalog_enforces_lineage_immutability_and_receipt_s
     assert expected_indexes <= indexes
     receipt_trigger = triggers["trg_policy_activations_receipt_scope"]
     assert receipt_trigger[:2] == (True, True)
+    assert "CREATE CONSTRAINT TRIGGER" in receipt_trigger[2]
     assert "AFTER INSERT OR UPDATE" in receipt_trigger[2]
+    assert "DEFERRABLE INITIALLY DEFERRED" in receipt_trigger[2]
+    assert "FOR EACH ROW" in receipt_trigger[2]
     assert "validate_issue7_receipt_scope" in receipt_trigger[2]
+    assert receipt_trigger[3:] == (MIGRATION_ROLE, False)
     for table in set(policy_tables) - {"current_access_policies"}:
         assert f"trg_{table}_immutable" in triggers
     assert "trg_current_access_policies_cas" in triggers

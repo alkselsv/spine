@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime
 import hashlib
 import json
-from typing import Protocol
+from types import TracebackType
+from typing import Callable, Protocol
 from uuid import UUID
 
 from pydantic import Field
@@ -15,7 +16,10 @@ from spine.domain.common import DefinitionModel
 from spine.domain.audit import AuditEvent
 from spine.application.persistence.outbox import OutboxIntent
 from spine.application.persistence.command_digest import CommandDigest, digest_command
-from spine.application.persistence.context import PersistenceOperation
+from spine.application.persistence.context import (
+    PersistenceOperation,
+    TrustedPersistenceContext,
+)
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.domain.sources.access_policy import (
     AccessPolicyVersion,
@@ -50,6 +54,16 @@ class StalePolicyBaselineError(AccessPolicyError):
     pass
 
 
+class PolicyActivationAuditUnavailableError(StalePolicyBaselineError):
+    """A failed CAS remained rejected, but its durable audit could not be written."""
+
+    reason_code = "audit_unavailable"
+
+    def __init__(self, cas_failure: StalePolicyBaselineError) -> None:
+        super().__init__("Policy activation failed and its audit is unavailable.")
+        self.cas_failure = cas_failure
+
+
 class PolicyAuthoritySnapshot(DefinitionModel):
     canonical_human_id: UUID
     workspace_id: UUID
@@ -82,6 +96,28 @@ class PolicyFailedAttemptAudit(Protocol):
     async def record_failed_cas(
         self, command: "AccessPolicyActivationCommand", reason_code: str
     ) -> None: ...
+
+
+class PolicyActivationUnitOfWork(Protocol):
+    @property
+    def access_policies(self) -> "AccessPolicyRepository": ...
+
+    async def __aenter__(self) -> "PolicyActivationUnitOfWork": ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None: ...
+
+    async def commit(self) -> None: ...
+
+
+class PolicyActivationUnitOfWorkFactory(Protocol):
+    def __call__(
+        self, context: TrustedPersistenceContext
+    ) -> PolicyActivationUnitOfWork: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,25 +285,14 @@ class AccessPolicyActivationService:
         self,
         repository: AccessPolicyRepository,
         authority: PolicyAuthorityPort,
-        failed_attempt_audit: PolicyFailedAttemptAudit,
     ) -> None:
         self._repository = repository
         self._authority = authority
-        self._failed_attempt_audit = failed_attempt_audit
 
     async def activate(
         self, command: AccessPolicyActivationCommand
     ) -> AccessPolicyActivationResult:
-        try:
-            return await self._activate(command)
-        except StalePolicyBaselineError as error:
-            try:
-                await self._failed_attempt_audit.record_failed_cas(
-                    command, "stale_policy_baseline"
-                )
-            except Exception:
-                pass
-            raise error
+        return await self._activate(command)
 
     async def _activate(
         self, command: AccessPolicyActivationCommand
@@ -525,11 +550,63 @@ class AccessPolicyActivationService:
             or approval.authority_generation != approver.authority_generation
         ):
             raise StalePolicyAuthorityError("Approval evidence is stale or mismatched.")
+        if (
+            approval.decision is PolicyApprovalDecision.APPROVED
+            and proposal.benefit_classification
+            is PolicyBenefitClassification.SELF_BENEFITING
+        ):
+            requester = await self._authority.resolve(
+                proposal.requester_canonical_human_id
+            )
+            if not await self._authority.are_independent_humans(requester, approver):
+                raise StalePolicyAuthorityError(
+                    "Approval requires independently verified canonical humans."
+                )
         return await self._repository.persist_approval(approval)
+
+
+class AccessPolicyActivationCoordinator:
+    """Own the activation transaction and audit a rejected CAS after rollback."""
+
+    def __init__(
+        self,
+        uow_factory: PolicyActivationUnitOfWorkFactory,
+        context_factory: Callable[
+            [AccessPolicyActivationCommand], TrustedPersistenceContext
+        ],
+        authority: PolicyAuthorityPort,
+        failed_attempt_audit: PolicyFailedAttemptAudit,
+    ) -> None:
+        self._uow_factory = uow_factory
+        self._context_factory = context_factory
+        self._authority = authority
+        self._failed_attempt_audit = failed_attempt_audit
+
+    async def activate(
+        self, command: AccessPolicyActivationCommand
+    ) -> AccessPolicyActivationResult:
+        try:
+            async with self._uow_factory(self._context_factory(command)) as uow:
+                result = await AccessPolicyActivationService(
+                    uow.access_policies, self._authority
+                ).activate(command)
+                await uow.commit()
+                return result
+        except StalePolicyBaselineError as cas_failure:
+            try:
+                await self._failed_attempt_audit.record_failed_cas(
+                    command, "stale_policy_baseline"
+                )
+            except Exception as audit_failure:
+                raise PolicyActivationAuditUnavailableError(
+                    cas_failure
+                ) from audit_failure
+            raise
 
 
 __all__ = [
     "AccessPolicyActivationCommand",
+    "AccessPolicyActivationCoordinator",
     "AccessPolicyActivationResult",
     "AccessPolicyActivationService",
     "AccessPolicyError",
@@ -537,6 +614,9 @@ __all__ = [
     "InitialPolicyIneligibleError",
     "PolicyApprovalRequiredError",
     "PolicyActivationDraft",
+    "PolicyActivationAuditUnavailableError",
+    "PolicyActivationUnitOfWork",
+    "PolicyActivationUnitOfWorkFactory",
     "PolicyAuthorityPort",
     "PolicyAuthoritySnapshot",
     "PolicyFailedAttemptAudit",
