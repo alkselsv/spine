@@ -39,6 +39,8 @@ from spine.application.persistence.idempotency import (
     OwnedIdempotencyClaim,
 )
 from spine.application.persistence.outbox import OpaqueObjectReference
+from spine.application.persistence.repositories import SourceObservationCommand
+from spine.application.access_policies import access_policy_document_hash
 from spine.domain.common import EnvironmentKind
 from spine.domain.ingestion import (
     IngestionRun,
@@ -46,6 +48,15 @@ from spine.domain.ingestion import (
     IngestionTargetKind,
     IngestionTransition,
     SafeDiagnosticDetail,
+)
+from spine.domain.sources.access_policy import (
+    AccessGrant,
+    AccessPermission,
+    AccessPolicyVersion,
+    PolicyBenefitClassification,
+    PolicyOriginKind,
+    PolicyProposal,
+    PrincipalKind,
 )
 from spine.domain.workspaces import Environment, Workspace
 from spine.infrastructure.db.migrations import upgrade_database
@@ -75,6 +86,10 @@ from tests.contracts.persistence.test_outbox_writer_contract import (
     workspace as outbox_workspace,
 )
 from tests.contracts.persistence.test_source_observation_contract import (
+    prepare as prepare_source_scope,
+    provenance as source_contract_provenance,
+    revision as source_contract_revision,
+    source as source_contract_source,
     test_changed_revision_metadata_creates_new_immutable_revision as contract_source_metadata_change,
     test_source_identity_rejects_mixed_connector_and_upload_identity as contract_source_identity_validation,
     test_same_observation_key_with_changed_digest_conflicts as contract_source_observation_digest_conflict,
@@ -619,6 +634,90 @@ async def test_postgresql_adapter_satisfies_ingestion_repository_contract(
     await exercise_ingestion_run_item_contract(postgresql_adapter)
     await contract_ingestion_binding_receipt(postgresql_adapter)
     await exercise_ingestion_binding_race(postgresql_adapter)
+
+
+async def test_access_policy_repository_round_trips_proposal_and_complete_policy(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    assert postgresql_adapter.source_context is not None
+    workspace_id, environment_id = synthetic_uuid(3800), synthetic_uuid(3801)
+    await prepare_source_scope(postgresql_adapter, workspace_id, environment_id)
+    source_object = source_contract_source(workspace_id, environment_id)
+    source_revision = source_contract_revision(source_object, synthetic_uuid(3802))
+    command = SourceObservationCommand.create(
+        source=source_object,
+        revision=source_revision,
+        provenance=source_contract_provenance(
+            source_object, source_revision.revision_id, "event-1"
+        ),
+        idempotency_key=IdempotencyKey("policy-repository-source"),
+    )
+    context = postgresql_adapter.source_context(workspace_id, environment_id)
+    async with postgresql_adapter.uow_factory(context) as uow:
+        await uow.sources.record_observation(command)
+        await uow.commit()
+
+    policy = AccessPolicyVersion(
+        access_policy_version_id=synthetic_uuid(3803),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        source_object_id=source_object.source_object_id,
+        version=1,
+        predecessor_policy_version_id=None,
+        document_schema_version="access-policy.v1",
+        document_hash="a" * 64,
+        origin_kind=PolicyOriginKind.APPROVED_PROPOSAL,
+        origin_reference=synthetic_uuid(3804),
+        origin_version=1,
+        origin_hash="b" * 64,
+        created_by_canonical_human_id=synthetic_uuid(3805),
+        created_at=datetime(2026, 10, 12, tzinfo=timezone.utc),
+        grants=(
+            AccessGrant(
+                access_grant_id=synthetic_uuid(3806),
+                principal_kind=PrincipalKind.HUMAN,
+                principal_id=synthetic_uuid(3807),
+                permission=AccessPermission.READ_CONTENT,
+            ),
+        ),
+    )
+    policy = policy.model_copy(
+        update={"document_hash": access_policy_document_hash(policy)}
+    )
+    proposal = PolicyProposal(
+        policy_proposal_id=synthetic_uuid(3808),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        source_object_id=source_object.source_object_id,
+        proposal_version=1,
+        proposed_policy_version_id=policy.access_policy_version_id,
+        proposed_policy_hash=policy.document_hash,
+        requester_canonical_human_id=synthetic_uuid(3805),
+        expected_policy_version_id=None,
+        expected_policy_generation=0,
+        benefit_classification=PolicyBenefitClassification.OTHER_ONLY,
+        benefit_schema_version="policy-benefit.v1",
+        membership_generation=1,
+        authority_generation=1,
+        service_authority_generation=1,
+        submitted_at=datetime(2026, 10, 12, tzinfo=timezone.utc),
+    )
+
+    async with postgresql_adapter.uow_factory(context) as uow:
+        persisted = await uow.access_policies.persist_proposal(policy, proposal)
+        await uow.commit()
+    async with postgresql_adapter.uow_factory(context) as uow:
+        resolved_policy = await uow.access_policies.resolve_policy(
+            policy.access_policy_version_id
+        )
+        resolved_proposal = await uow.access_policies.resolve_proposal(
+            proposal.policy_proposal_id
+        )
+        await uow.rollback()
+
+    assert persisted == proposal
+    assert resolved_policy == policy
+    assert resolved_proposal == proposal
 
 
 @pytest.mark.parametrize(

@@ -2328,7 +2328,7 @@ class FilesystemOriginalObjectStore:
                 os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW,
             )
         except OSError as error:
-            if error.errno == getattr(os, "ELOOP", 40):
+            if error.errno == errno.ELOOP:
                 raise StorageIntegrityIndeterminate() from None
             raise self._configuration_or_unavailable(error) from None
 

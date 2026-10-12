@@ -101,6 +101,15 @@ def _current_policy_cas() -> None:
     op.execute(f"GRANT EXECUTE ON FUNCTION {SCHEMA}.enforce_current_access_policy_cas() TO {runtime}")
 
 
+def _receipt_scope_guard() -> None:
+    op.execute(
+        f"CREATE CONSTRAINT TRIGGER trg_policy_activations_receipt_scope "
+        f"AFTER INSERT OR UPDATE OF workspace_id, environment_id, idempotency_receipt_id "
+        f"ON {SCHEMA}.policy_activations DEFERRABLE INITIALLY DEFERRED "
+        f"FOR EACH ROW EXECUTE FUNCTION {SCHEMA}.validate_issue7_receipt_scope()"
+    )
+
+
 def upgrade() -> None:
     uuid = postgresql.UUID(as_uuid=True)
     digest = sa.String(64)
@@ -208,6 +217,7 @@ def upgrade() -> None:
         sa.Column("reason_code", sa.Text(), nullable=False),
         sa.Column("decided_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint("policy_approval_id", name="pk_policy_approvals"),
+        sa.UniqueConstraint("workspace_id", "environment_id", "source_object_id", "policy_approval_id", name="uq_policy_approvals_scope_source_id"),
         sa.ForeignKeyConstraint(["workspace_id", "environment_id", "source_object_id", "policy_proposal_id", "proposal_version", "proposal_hash"], [f"{SCHEMA}.policy_proposals.workspace_id", f"{SCHEMA}.policy_proposals.environment_id", f"{SCHEMA}.policy_proposals.source_object_id", f"{SCHEMA}.policy_proposals.policy_proposal_id", f"{SCHEMA}.policy_proposals.proposal_version", f"{SCHEMA}.policy_proposals.proposed_policy_hash"], name="fk_policy_approvals_exact_proposal"),
         sa.UniqueConstraint("workspace_id", "environment_id", "policy_proposal_id", "approver_canonical_human_id", "decision", name="uq_policy_approvals_proposal_approver_decision"),
         sa.CheckConstraint("decision IN ('approved','rejected')", name="ck_policy_approvals_decision"),
@@ -235,6 +245,7 @@ def upgrade() -> None:
         sa.Column("service_authority_generation", sa.BigInteger(), nullable=False),
         sa.Column("idempotency_receipt_id", uuid, nullable=False),
         sa.Column("audit_event_id", uuid, nullable=False),
+        sa.Column("outbox_event_id", uuid, nullable=False),
         sa.Column("activated_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint("policy_activation_id", name="pk_policy_activations"),
         sa.UniqueConstraint("workspace_id", "environment_id", "source_object_id", "policy_activation_id", "new_policy_version_id", "policy_generation", name="uq_policy_activations_head_tuple"),
@@ -242,9 +253,11 @@ def upgrade() -> None:
         sa.UniqueConstraint("workspace_id", "environment_id", "source_object_id", "policy_generation", name="uq_policy_activations_source_generation"),
         sa.ForeignKeyConstraint(["workspace_id", "environment_id", "source_object_id", "new_policy_version_id"], [f"{SCHEMA}.access_policy_versions.workspace_id", f"{SCHEMA}.access_policy_versions.environment_id", f"{SCHEMA}.access_policy_versions.source_object_id", f"{SCHEMA}.access_policy_versions.access_policy_version_id"], name="fk_policy_activations_new_policy"),
         sa.ForeignKeyConstraint(["workspace_id", "environment_id", "source_object_id", "predecessor_policy_version_id"], [f"{SCHEMA}.access_policy_versions.workspace_id", f"{SCHEMA}.access_policy_versions.environment_id", f"{SCHEMA}.access_policy_versions.source_object_id", f"{SCHEMA}.access_policy_versions.access_policy_version_id"], name="fk_policy_activations_predecessor"),
-        sa.ForeignKeyConstraint(["policy_approval_id"], [f"{SCHEMA}.policy_approvals.policy_approval_id"], name="fk_policy_activations_approval"),
+        sa.ForeignKeyConstraint(["workspace_id", "environment_id", "source_object_id", "policy_proposal_id"], [f"{SCHEMA}.policy_proposals.workspace_id", f"{SCHEMA}.policy_proposals.environment_id", f"{SCHEMA}.policy_proposals.source_object_id", f"{SCHEMA}.policy_proposals.policy_proposal_id"], name="fk_policy_activations_proposal"),
+        sa.ForeignKeyConstraint(["workspace_id", "environment_id", "source_object_id", "policy_approval_id"], [f"{SCHEMA}.policy_approvals.workspace_id", f"{SCHEMA}.policy_approvals.environment_id", f"{SCHEMA}.policy_approvals.source_object_id", f"{SCHEMA}.policy_approvals.policy_approval_id"], name="fk_policy_activations_approval"),
         sa.ForeignKeyConstraint(["idempotency_receipt_id"], [f"{SCHEMA}.idempotency_receipts.receipt_id"], name="fk_policy_activations_idempotency"),
         sa.ForeignKeyConstraint(["audit_event_id"], [f"{SCHEMA}.audit_events.audit_event_id"], name="fk_policy_activations_audit", deferrable=True, initially="DEFERRED"),
+        sa.ForeignKeyConstraint(["outbox_event_id"], [f"{SCHEMA}.outbox_intents.event_id"], name="fk_policy_activations_outbox"),
         sa.CheckConstraint("policy_generation > 0 AND membership_generation > 0 AND authority_generation > 0 AND service_authority_generation > 0", name="ck_policy_activations_generations"),
         sa.CheckConstraint("(policy_generation = 1 AND predecessor_policy_version_id IS NULL AND initial_eligibility_decision_id IS NOT NULL) OR (policy_generation > 1 AND predecessor_policy_version_id IS NOT NULL AND policy_proposal_id IS NOT NULL AND initial_eligibility_decision_id IS NULL)", name="ck_policy_activations_evidence_shape"),
         schema=SCHEMA,
@@ -274,6 +287,7 @@ def upgrade() -> None:
     _tenant("current_access_policies", mutable=True)
     _immutable_history()
     _current_policy_cas()
+    _receipt_scope_guard()
 
 
 def downgrade() -> None:

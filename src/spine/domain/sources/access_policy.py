@@ -216,6 +216,7 @@ class PolicyActivation(DefinitionModel):
     service_authority_generation: int = Field(ge=1)
     idempotency_receipt_id: UUID
     audit_event_id: UUID
+    outbox_event_id: UUID
     activated_at: datetime
 
 

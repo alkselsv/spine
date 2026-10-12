@@ -14,6 +14,8 @@ from spine.domain.sources.access_policy import (
     AccessPolicyVersion,
     CurrentAccessPolicy,
     PolicyActivation,
+    PolicyApproval,
+    PolicyProposal,
 )
 
 
@@ -24,11 +26,77 @@ class InMemoryAccessPolicyRepository:
         self._activations: dict[UUID, PolicyActivation] = {}
         self._current: dict[UUID, CurrentAccessPolicy] = {}
         self._replays: dict[UUID, AccessPolicyActivationResult] = {}
+        self._proposals: dict[UUID, PolicyProposal] = {}
+        self._approvals: dict[UUID, PolicyApproval] = {}
         self._audit_events: set[UUID] = set()
         self._outbox_events: set[UUID] = set()
 
+    async def resolve_policy(
+        self, policy_version_id: UUID
+    ) -> AccessPolicyVersion | None:
+        return self._policies.get(policy_version_id)
+
     async def resolve_current(self, source_object_id: UUID) -> CurrentAccessPolicy | None:
         return self._current.get(source_object_id)
+
+    async def resolve_effective_policy(
+        self, source_object_id: UUID
+    ) -> tuple[CurrentAccessPolicy, AccessPolicyVersion] | None:
+        current = self._current.get(source_object_id)
+        if current is None:
+            return None
+        policy = self._policies.get(current.access_policy_version_id)
+        return (current, policy) if policy is not None else None
+
+    async def seed_effective_policy(
+        self, policy: AccessPolicyVersion, current: CurrentAccessPolicy
+    ) -> None:
+        """Seed a trusted current snapshot for decision-contract tests."""
+
+        async with self._lock:
+            if (
+                current.source_object_id != policy.source_object_id
+                or current.access_policy_version_id
+                != policy.access_policy_version_id
+            ):
+                raise ValueError("current policy does not name the policy document")
+            self._policies[policy.access_policy_version_id] = policy
+            self._current[policy.source_object_id] = current
+
+    async def resolve_activation_result(
+        self, idempotency_receipt_id: UUID
+    ) -> AccessPolicyActivationResult | None:
+        replay = self._replays.get(idempotency_receipt_id)
+        if replay is None:
+            return None
+        return AccessPolicyActivationResult(
+            activation=replay.activation,
+            current=replay.current,
+            outbox_event_id=replay.outbox_event_id,
+            replay=True,
+        )
+
+    async def persist_proposal(
+        self, policy: AccessPolicyVersion, proposal: PolicyProposal
+    ) -> PolicyProposal:
+        async with self._lock:
+            existing = self._proposals.get(proposal.policy_proposal_id)
+            if existing is not None and existing != proposal:
+                raise StalePolicyBaselineError("Proposal identity conflicts.")
+            self._policies[policy.access_policy_version_id] = policy
+            self._proposals[proposal.policy_proposal_id] = proposal
+            return proposal
+
+    async def resolve_proposal(self, proposal_id: UUID) -> PolicyProposal | None:
+        return self._proposals.get(proposal_id)
+
+    async def persist_approval(self, approval: PolicyApproval) -> PolicyApproval:
+        async with self._lock:
+            existing = self._approvals.get(approval.policy_approval_id)
+            if existing is not None and existing != approval:
+                raise StalePolicyBaselineError("Approval identity conflicts.")
+            self._approvals[approval.policy_approval_id] = approval
+            return approval
 
     async def activate(
         self,

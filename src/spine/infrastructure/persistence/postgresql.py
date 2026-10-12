@@ -75,9 +75,12 @@ from spine.domain.audit import AuditEvent, AuditObjectReference, AuditOutcome
 from spine.domain.common import ContextOrigin, EnvironmentKind
 from spine.domain.workspaces import Environment, Workspace
 from spine.domain.sources import (
+    AccessGrant,
     AccessPolicyVersion,
     CurrentAccessPolicy,
     PolicyActivation,
+    PolicyApproval,
+    PolicyProposal,
     AdmissionDecision,
     RevisionKind,
     SourceObject,
@@ -1009,6 +1012,144 @@ class _PostgreSQLAccessPolicyRepository:
         ).mappings().one_or_none()
         return self._current(row) if row is not None else None
 
+    async def resolve_policy(self, policy_version_id: UUID) -> AccessPolicyVersion | None:
+        self._uow._guard_active()
+        row = (
+            await self._uow._execute(
+                select(_ACCESS_POLICY_VERSIONS).where(
+                    _ACCESS_POLICY_VERSIONS.c.access_policy_version_id
+                    == policy_version_id
+                )
+            )
+        ).mappings().one_or_none()
+        if row is None:
+            return None
+        grant_rows = (
+            await self._uow._execute(
+                select(_ACCESS_POLICY_GRANTS).where(
+                    _ACCESS_POLICY_GRANTS.c.access_policy_version_id
+                    == policy_version_id
+                )
+            )
+        ).mappings().all()
+        grants = tuple(
+            AccessGrant.model_validate(
+                {
+                    key: value
+                    for key, value in dict(grant_row).items()
+                    if key
+                    not in {
+                        "workspace_id",
+                        "environment_id",
+                        "source_object_id",
+                        "access_policy_version_id",
+                    }
+                }
+            )
+            for grant_row in grant_rows
+        )
+        return AccessPolicyVersion.model_validate({**dict(row), "grants": grants})
+
+    async def resolve_effective_policy(
+        self, source_object_id: UUID
+    ) -> tuple[CurrentAccessPolicy, AccessPolicyVersion] | None:
+        current = await self.resolve_current(source_object_id)
+        if current is None:
+            return None
+        policy = await self.resolve_policy(current.access_policy_version_id)
+        return (current, policy) if policy is not None else None
+
+    async def resolve_activation_result(
+        self, idempotency_receipt_id: UUID
+    ) -> AccessPolicyActivationResult | None:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return None
+        row = (
+            await self._uow._execute(
+                select(_POLICY_ACTIVATIONS).where(
+                    _POLICY_ACTIVATIONS.c.workspace_id == scope.workspace_id,
+                    _POLICY_ACTIVATIONS.c.environment_id == scope.environment_id,
+                    _POLICY_ACTIVATIONS.c.idempotency_receipt_id
+                    == idempotency_receipt_id,
+                )
+            )
+        ).mappings().one_or_none()
+        if row is None:
+            return None
+        activation = self._activation(row)
+        current = await self.resolve_current(activation.source_object_id)
+        if current is None:
+            raise ConstraintConflictError("Policy activation result is incomplete.")
+        return AccessPolicyActivationResult(
+            activation=activation,
+            current=current,
+            outbox_event_id=activation.outbox_event_id,
+            replay=True,
+        )
+
+    async def _persist_policy(self, policy: AccessPolicyVersion) -> None:
+        self._require_scope(policy)
+        persisted = await self.resolve_policy(policy.access_policy_version_id)
+        if persisted is not None:
+            if persisted != policy:
+                raise ConstraintConflictError("Policy identity conflicts.")
+            return
+        values = policy.model_dump(mode="python", exclude={"grants"})
+        values["origin_kind"] = policy.origin_kind.value
+        await self._uow._execute(insert(_ACCESS_POLICY_VERSIONS).values(**values))
+        for grant in policy.grants:
+            grant_values = grant.model_dump(mode="python")
+            grant_values.update(
+                workspace_id=policy.workspace_id,
+                environment_id=policy.environment_id,
+                source_object_id=policy.source_object_id,
+                access_policy_version_id=policy.access_policy_version_id,
+                principal_kind=grant.principal_kind.value,
+                permission=grant.permission.value,
+            )
+            await self._uow._execute(
+                insert(_ACCESS_POLICY_GRANTS).values(**grant_values)
+            )
+
+    async def persist_proposal(
+        self, policy: AccessPolicyVersion, proposal: PolicyProposal
+    ) -> PolicyProposal:
+        self._uow._guard_active()
+        await self._persist_policy(policy)
+        values = proposal.model_dump(mode="python")
+        values["benefit_classification"] = proposal.benefit_classification.value
+        await self._uow._execute(insert(_POLICY_PROPOSALS).values(**values))
+        return proposal
+
+    async def resolve_proposal(self, proposal_id: UUID) -> PolicyProposal | None:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return None
+        row = (
+            await self._uow._execute(
+                select(_POLICY_PROPOSALS).where(
+                    _POLICY_PROPOSALS.c.workspace_id == scope.workspace_id,
+                    _POLICY_PROPOSALS.c.environment_id == scope.environment_id,
+                    _POLICY_PROPOSALS.c.policy_proposal_id == proposal_id,
+                )
+            )
+        ).mappings().one_or_none()
+        return PolicyProposal.model_validate(dict(row)) if row is not None else None
+
+    async def persist_approval(self, approval: PolicyApproval) -> PolicyApproval:
+        self._uow._guard_active()
+        proposal = await self.resolve_proposal(approval.policy_proposal_id)
+        if proposal is None:
+            raise ConstraintConflictError("Approval proposal is unavailable.")
+        values = approval.model_dump(mode="python")
+        values["source_object_id"] = proposal.source_object_id
+        values["decision"] = approval.decision.value
+        await self._uow._execute(insert(_POLICY_APPROVALS).values(**values))
+        return approval
+
     async def activate(
         self,
         command: AccessPolicyActivationCommand,
@@ -1017,47 +1158,15 @@ class _PostgreSQLAccessPolicyRepository:
         self._uow._guard_active()
         policy = command.policy
         self._require_scope(policy)
+        replay = await self.resolve_activation_result(command.idempotency_receipt_id)
+        if replay is not None:
+            if replay.activation.new_policy_version_id != policy.access_policy_version_id:
+                raise ConstraintConflictError("Policy activation identity conflicts.")
+            return replay
         if command.audit_event is None or command.outbox_intent is None:
             raise ConstraintConflictError(
                 "Policy activation requires atomic audit and outbox evidence."
             )
-        audit_event_id = await self._uow.audit.append(command.audit_event)
-        outbox_event_id = await self._uow.outbox.append(command.outbox_intent)
-        if (
-            audit_event_id != command.audit_event_id
-            or outbox_event_id != command.outbox_event_id
-        ):
-            raise ConstraintConflictError(
-                "Policy activation evidence identity conflicts."
-            )
-        replay_row = (
-            await self._uow._execute(
-                select(_POLICY_ACTIVATIONS).where(
-                    _POLICY_ACTIVATIONS.c.workspace_id == policy.workspace_id,
-                    _POLICY_ACTIVATIONS.c.environment_id == policy.environment_id,
-                    _POLICY_ACTIVATIONS.c.idempotency_receipt_id
-                    == command.idempotency_receipt_id,
-                )
-            )
-        ).mappings().one_or_none()
-        if replay_row is not None:
-            replay = self._activation(replay_row)
-            if replay.new_policy_version_id != policy.access_policy_version_id:
-                await self._uow._fail(
-                    ConstraintConflictError("Policy activation identity conflicts.")
-                )
-            current = await self.resolve_current(policy.source_object_id)
-            if current is None:
-                await self._uow._fail(
-                    ConstraintConflictError("Policy activation result is incomplete.")
-                )
-            return AccessPolicyActivationResult(
-                activation=replay,
-                current=current,
-                outbox_event_id=command.outbox_event_id,
-                replay=True,
-            )
-
         current_row = (
             await self._uow._execute(
                 select(_CURRENT_ACCESS_POLICIES)
@@ -1089,31 +1198,17 @@ class _PostgreSQLAccessPolicyRepository:
         if not valid:
             raise StalePolicyBaselineError("The current policy baseline changed.")
 
-        existing_policy = (
-            await self._uow._execute(
-                select(_ACCESS_POLICY_VERSIONS.c.access_policy_version_id).where(
-                    _ACCESS_POLICY_VERSIONS.c.access_policy_version_id
-                    == policy.access_policy_version_id
-                )
+        audit_event_id = await self._uow.audit.append(command.audit_event)
+        outbox_event_id = await self._uow.outbox.append(command.outbox_intent)
+        if (
+            audit_event_id != command.audit_event_id
+            or outbox_event_id != command.outbox_event_id
+        ):
+            raise ConstraintConflictError(
+                "Policy activation evidence identity conflicts."
             )
-        ).first()
-        if existing_policy is None:
-            values = policy.model_dump(mode="python", exclude={"grants"})
-            values["origin_kind"] = policy.origin_kind.value
-            await self._uow._execute(insert(_ACCESS_POLICY_VERSIONS).values(**values))
-            for grant in policy.grants:
-                grant_values = grant.model_dump(mode="python")
-                grant_values.update(
-                    workspace_id=policy.workspace_id,
-                    environment_id=policy.environment_id,
-                    source_object_id=policy.source_object_id,
-                    access_policy_version_id=policy.access_policy_version_id,
-                    principal_kind=grant.principal_kind.value,
-                    permission=grant.permission.value,
-                )
-                await self._uow._execute(
-                    insert(_ACCESS_POLICY_GRANTS).values(**grant_values)
-                )
+
+        await self._persist_policy(policy)
 
         proposal = command.proposal
         if proposal is not None:

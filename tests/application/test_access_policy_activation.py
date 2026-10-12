@@ -15,8 +15,11 @@ from spine.application.access_policies import (
     PolicyAuthoritySnapshot,
     StalePolicyAuthorityError,
     StalePolicyBaselineError,
+    access_policy_document_hash,
 )
 from spine.domain.sources.access_policy import (
+    AccessGrant,
+    AccessPermission,
     AccessPolicyVersion,
     EligibilityDisposition,
     InitialPolicyEligibilityDecision,
@@ -25,6 +28,7 @@ from spine.domain.sources.access_policy import (
     PolicyBenefitClassification,
     PolicyOriginKind,
     PolicyProposal,
+    PrincipalKind,
 )
 from spine.infrastructure.persistence.access_policies import (
     InMemoryAccessPolicyRepository,
@@ -51,6 +55,8 @@ class Authority:
             snapshot_reference=_id(21),
         )
         self.snapshots = {snapshot.canonical_human_id: snapshot}
+        self.classification = PolicyBenefitClassification.REVOCATION
+        self.failed_cas: list[str] = []
 
     @property
     def snapshot(self) -> PolicyAuthoritySnapshot:
@@ -58,6 +64,28 @@ class Authority:
 
     async def resolve(self, canonical_human_id: UUID) -> PolicyAuthoritySnapshot:
         return self.snapshots[canonical_human_id]
+
+    async def classify_policy_change(
+        self,
+        requester: PolicyAuthoritySnapshot,
+        current_policy_version_id: UUID,
+        proposed_policy: AccessPolicyVersion,
+    ) -> PolicyBenefitClassification:
+        del requester, current_policy_version_id, proposed_policy
+        return self.classification
+
+    async def are_independent_humans(
+        self,
+        requester: PolicyAuthoritySnapshot,
+        approver: PolicyAuthoritySnapshot,
+    ) -> bool:
+        return requester.canonical_human_id != approver.canonical_human_id
+
+    async def record_failed_cas(
+        self, command: AccessPolicyActivationCommand, reason_code: str
+    ) -> None:
+        del command
+        self.failed_cas.append(reason_code)
 
     def add_approver(self) -> PolicyAuthoritySnapshot:
         snapshot = PolicyAuthoritySnapshot(
@@ -75,7 +103,7 @@ class Authority:
 
 
 def _policy() -> AccessPolicyVersion:
-    return AccessPolicyVersion(
+    policy = AccessPolicyVersion(
         access_policy_version_id=_id(1),
         workspace_id=_id(2),
         environment_id=_id(3),
@@ -91,6 +119,7 @@ def _policy() -> AccessPolicyVersion:
         created_by_canonical_human_id=_id(20),
         created_at=NOW,
     )
+    return policy.model_copy(update={"document_hash": access_policy_document_hash(policy)})
 
 
 def _eligibility(policy: AccessPolicyVersion) -> InitialPolicyEligibilityDecision:
@@ -141,7 +170,7 @@ def _command(
 async def test_initial_activation_requires_exact_current_eligibility() -> None:
     authority = Authority()
     repository = InMemoryAccessPolicyRepository()
-    service = AccessPolicyActivationService(repository, authority)
+    service = AccessPolicyActivationService(repository, authority, authority)
     policy = _policy()
 
     result = await service.activate(_command(policy, _eligibility(policy)))
@@ -151,12 +180,19 @@ async def test_initial_activation_requires_exact_current_eligibility() -> None:
     assert result.outbox_event_id == _id(43)
     assert await repository.activation_count() == 1
 
+    replay = await service.activate(_command(policy, _eligibility(policy)))
+
+    assert replay.replay is True
+    assert replay.outbox_event_id == result.outbox_event_id
+    assert await repository.activation_count() == 1
+    assert await repository.success_effect_count() == 2
+
 
 @pytest.mark.asyncio
 async def test_initial_activation_mismatch_has_no_success_effect() -> None:
     authority = Authority()
     repository = InMemoryAccessPolicyRepository()
-    service = AccessPolicyActivationService(repository, authority)
+    service = AccessPolicyActivationService(repository, authority, authority)
     policy = _policy()
     eligibility = _eligibility(policy).model_copy(update={"policy_hash": "c" * 64})
 
@@ -173,7 +209,7 @@ def _successor(
     *,
     version_id: int = 50,
 ) -> AccessPolicyVersion:
-    return AccessPolicyVersion(
+    policy = AccessPolicyVersion(
         access_policy_version_id=_id(version_id),
         workspace_id=predecessor.workspace_id,
         environment_id=predecessor.environment_id,
@@ -189,6 +225,7 @@ def _successor(
         created_by_canonical_human_id=_id(20),
         created_at=NOW,
     )
+    return policy.model_copy(update={"document_hash": access_policy_document_hash(policy)})
 
 
 def _proposal(
@@ -273,7 +310,7 @@ async def _activate_initial(
 async def test_revocation_activates_without_independent_approval_and_retains_history() -> None:
     authority = Authority()
     repository = InMemoryAccessPolicyRepository()
-    service = AccessPolicyActivationService(repository, authority)
+    service = AccessPolicyActivationService(repository, authority, authority)
     predecessor = await _activate_initial(service)
     policy = _successor(predecessor)
     proposal = _proposal(policy, PolicyBenefitClassification.REVOCATION)
@@ -285,10 +322,54 @@ async def test_revocation_activates_without_independent_approval_and_retains_his
 
 
 @pytest.mark.asyncio
-async def test_self_benefiting_change_rejects_same_canonical_human_alias() -> None:
+async def test_caller_cannot_downgrade_self_benefiting_classification() -> None:
+    authority = Authority()
+    authority.classification = PolicyBenefitClassification.SELF_BENEFITING
+    repository = InMemoryAccessPolicyRepository()
+    service = AccessPolicyActivationService(repository, authority, authority)
+    predecessor = await _activate_initial(service)
+    policy = _successor(predecessor)
+    mislabeled = _proposal(policy, PolicyBenefitClassification.OTHER_ONLY)
+
+    with pytest.raises(StalePolicyAuthorityError):
+        await service.activate(_successor_command(policy, mislabeled))
+
+    assert await repository.activation_count() == 1
+
+
+@pytest.mark.asyncio
+async def test_policy_hash_rejects_unapproved_grant_change() -> None:
     authority = Authority()
     repository = InMemoryAccessPolicyRepository()
-    service = AccessPolicyActivationService(repository, authority)
+    service = AccessPolicyActivationService(repository, authority, authority)
+    predecessor = await _activate_initial(service)
+    policy = _successor(predecessor)
+    proposal = _proposal(policy, PolicyBenefitClassification.REVOCATION)
+    tampered = policy.model_copy(
+        update={
+            "grants": (
+                AccessGrant(
+                    access_grant_id=_id(88),
+                    principal_kind=PrincipalKind.HUMAN,
+                    principal_id=_id(89),
+                    permission=AccessPermission.READ_CONTENT,
+                ),
+            )
+        }
+    )
+
+    with pytest.raises(StalePolicyAuthorityError):
+        await service.activate(_successor_command(tampered, proposal))
+
+    assert await repository.activation_count() == 1
+
+
+@pytest.mark.asyncio
+async def test_self_benefiting_change_rejects_same_canonical_human_alias() -> None:
+    authority = Authority()
+    authority.classification = PolicyBenefitClassification.SELF_BENEFITING
+    repository = InMemoryAccessPolicyRepository()
+    service = AccessPolicyActivationService(repository, authority, authority)
     predecessor = await _activate_initial(service)
     policy = _successor(predecessor)
     proposal = _proposal(policy, PolicyBenefitClassification.SELF_BENEFITING)
@@ -310,9 +391,10 @@ async def test_self_benefiting_change_rejects_same_canonical_human_alias() -> No
 @pytest.mark.asyncio
 async def test_generation_change_invalidates_independent_approval() -> None:
     authority = Authority()
+    authority.classification = PolicyBenefitClassification.SELF_BENEFITING
     approver = authority.add_approver()
     repository = InMemoryAccessPolicyRepository()
-    service = AccessPolicyActivationService(repository, authority)
+    service = AccessPolicyActivationService(repository, authority, authority)
     predecessor = await _activate_initial(service)
     policy = _successor(predecessor)
     proposal = _proposal(policy, PolicyBenefitClassification.SELF_BENEFITING)
@@ -335,7 +417,7 @@ async def test_generation_change_invalidates_independent_approval() -> None:
 async def test_stale_baseline_has_no_activation_audit_or_outbox_effect() -> None:
     authority = Authority()
     repository = InMemoryAccessPolicyRepository()
-    service = AccessPolicyActivationService(repository, authority)
+    service = AccessPolicyActivationService(repository, authority, authority)
     predecessor = await _activate_initial(service)
     policy = _successor(predecessor)
     proposal = _proposal(policy, PolicyBenefitClassification.REVOCATION)
@@ -347,18 +429,17 @@ async def test_stale_baseline_has_no_activation_audit_or_outbox_effect() -> None
 
     assert await repository.activation_count() == 1
     assert await repository.success_effect_count() == 2
+    assert authority.failed_cas == ["stale_policy_baseline"]
 
 
 @pytest.mark.asyncio
 async def test_concurrent_successors_have_one_cas_winner() -> None:
     authority = Authority()
     repository = InMemoryAccessPolicyRepository()
-    service = AccessPolicyActivationService(repository, authority)
+    service = AccessPolicyActivationService(repository, authority, authority)
     predecessor = await _activate_initial(service)
     first = _successor(predecessor, version_id=50)
-    second = _successor(predecessor, version_id=51).model_copy(
-        update={"document_hash": "e" * 64}
-    )
+    second = _successor(predecessor, version_id=51)
     commands = (
         _successor_command(
             first, _proposal(first, PolicyBenefitClassification.REVOCATION)
@@ -388,9 +469,10 @@ async def test_concurrent_successors_have_one_cas_winner() -> None:
 @pytest.mark.asyncio
 async def test_edited_proposal_invalidates_predecessor_approval() -> None:
     authority = Authority()
+    authority.classification = PolicyBenefitClassification.SELF_BENEFITING
     approver = authority.add_approver()
     repository = InMemoryAccessPolicyRepository()
-    service = AccessPolicyActivationService(repository, authority)
+    service = AccessPolicyActivationService(repository, authority, authority)
     predecessor = await _activate_initial(service)
     policy = _successor(predecessor)
     original = _proposal(policy, PolicyBenefitClassification.SELF_BENEFITING)
@@ -399,6 +481,12 @@ async def test_edited_proposal_invalidates_predecessor_approval() -> None:
         update={"proposal_version": 2, "proposed_policy_hash": "e" * 64}
     )
     edited_policy = policy.model_copy(update={"document_hash": "e" * 64})
+    edited_policy = edited_policy.model_copy(
+        update={"document_hash": access_policy_document_hash(edited_policy)}
+    )
+    edited = edited.model_copy(
+        update={"proposed_policy_hash": edited_policy.document_hash}
+    )
 
     with pytest.raises(PolicyApprovalRequiredError):
         await service.activate(
@@ -410,4 +498,29 @@ async def test_edited_proposal_invalidates_predecessor_approval() -> None:
             )
         )
 
+    assert await repository.activation_count() == 1
+
+
+@pytest.mark.asyncio
+async def test_pending_proposal_and_rejected_approval_are_retained() -> None:
+    authority = Authority()
+    authority.classification = PolicyBenefitClassification.SELF_BENEFITING
+    approver = authority.add_approver()
+    repository = InMemoryAccessPolicyRepository()
+    service = AccessPolicyActivationService(repository, authority, authority)
+    predecessor = await _activate_initial(service)
+    policy = _successor(predecessor)
+    proposal = _proposal(policy, PolicyBenefitClassification.SELF_BENEFITING)
+
+    persisted = await service.submit_proposal(policy, proposal)
+    rejected = _approval(proposal, approver).model_copy(
+        update={
+            "decision": PolicyApprovalDecision.REJECTED,
+            "reason_code": "rejected",
+        }
+    )
+    recorded = await service.record_approval(rejected)
+
+    assert persisted == proposal
+    assert recorded.decision is PolicyApprovalDecision.REJECTED
     assert await repository.activation_count() == 1
