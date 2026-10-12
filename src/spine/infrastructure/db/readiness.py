@@ -334,22 +334,37 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "authorization_generations": ExpectedTablePrivileges(True, False, False, False, False),
     }
     if set(tables) != set(expected):
-        return False
+        raise DatabaseReadinessError(
+            "database runtime table set is not ready: "
+            f"missing={sorted(set(expected) - set(tables))}, "
+            f"extra={sorted(set(tables) - set(expected))}"
+        )
     for table_name, required in expected.items():
         row = tables[table_name]
         if row.is_owner or row.has_unsafe_privileges:
-            return False
+            raise DatabaseReadinessError(
+                f"database runtime table privileges are not ready for {table_name}: "
+                f"owner={row.is_owner}, unsafe={row.has_unsafe_privileges}"
+            )
         if required.tenant_scoped and (not row.rls_enabled or not row.rls_forced):
-            return False
+            raise DatabaseReadinessError(
+                f"database runtime table RLS is not ready for {table_name}"
+            )
         if not required.tenant_scoped and (row.rls_enabled or row.rls_forced):
-            return False
+            raise DatabaseReadinessError(
+                f"database runtime table RLS is not ready for {table_name}"
+            )
         if (
             row.can_select != required.select
             or row.can_insert != required.insert
             or row.can_update != required.update
             or row.can_delete != required.delete
         ):
-            return False
+            raise DatabaseReadinessError(
+                f"database runtime table grants are not ready for {table_name}: "
+                f"actual={(row.can_select, row.can_insert, row.can_update, row.can_delete)}, "
+                f"expected={(required.select, required.insert, required.update, required.delete)}"
+            )
     return True
 
 
