@@ -47,7 +47,7 @@
       "acl": [
         {"principal_id": "11111111-1111-4111-8111-111111111113", "read_content": true, "source_object_id": "11111111-1111-4111-8111-111111111121"}
       ],
-      "available_revision_ids": ["11111111-1111-4111-8111-111111111132", "11111111-1111-4111-8111-111111111133"],
+      "available_revision_ids": ["11111111-1111-4111-8111-111111111132", "11111111-1111-4111-8111-111111111131"],
       "case_id": "changed-revision",
       "case_schema_version": "qa-case:v1",
       "environment_id": "11111111-1111-4111-8111-111111111112",
@@ -253,7 +253,7 @@
       "workspace_id": "11111111-1111-4111-8111-111111111111"
     }
   ],
-  "dataset_digest": "be52b40789182e574ab08d02825d0c5688b2d9c3892c8d0ee922c65779b6f318",
+  "dataset_digest": "28cfdd0c20c55f6527215c2aa8ed1509b59e04894c7019e86a6e7168f3ee1612",
   "dataset_id": "qa-r1-synthetic",
   "fixture_schema_version": "qa-case:v1",
   "release_thresholds": [],
