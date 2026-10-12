@@ -12,6 +12,7 @@ from spine.domain.common import ActorRef, SpineModel
 
 class RetrievalQuery(SpineModel):
     workspace_id: UUID
+    environment_id: UUID
     query: str
     requested_by: ActorRef
     context_profile: str
@@ -21,6 +22,10 @@ class RetrievalQuery(SpineModel):
 
 class ContextReference(SpineModel):
     source_id: str
+    source_revision_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    evidence_id: str
     locator: dict[str, Any] = Field(default_factory=dict)
     excerpt: str | None = None
 
