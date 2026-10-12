@@ -2294,7 +2294,10 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'ingestion_runs', "
                         "'ingestion_run_sources', 'ingestion_run_source_bindings', "
                         "'ingestion_transitions', 'ingestion_warnings', "
-                        "'ingestion_failures', 'processing_receipts')"
+                        "'ingestion_failures', 'processing_receipts', "
+                        "'access_policy_versions', 'access_policy_grants', "
+                        "'policy_proposals', 'policy_approvals', "
+                        "'policy_activations', 'current_access_policies')"
                     )
                 )
             )
@@ -2347,8 +2350,14 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "ingestion_transitions": (True, True),
         "ingestion_warnings": (True, True),
         "ingestion_failures": (True, True),
-        "processing_receipts": (True, True),
-    }
+            "processing_receipts": (True, True),
+            "access_policy_versions": (True, True),
+            "access_policy_grants": (True, True),
+            "policy_proposals": (True, True),
+            "policy_approvals": (True, True),
+            "policy_activations": (True, True),
+            "current_access_policies": (True, True),
+        }
     standard_tables = set(tables) - {"outbox_deliveries"}
     assert set(policies) == {
         (table_name, f"pol_{table_name}_{policy_kind}")
@@ -3334,13 +3343,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261013_15_ingestion_operational_ledger.py",
         "20261013_16_ingestion_ledger_hardening.py",
         "20261014_17_source_receipt_associations.py",
+        "20261015_18_access_policy_persistence.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261014_18_injected_failure.py").write_text(
+    (target / "versions" / "20261015_19_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261014_18'\n"
-        "down_revision = '20261014_17'\n"
+        "revision = '20261015_19'\n"
+        "down_revision = '20261015_18'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

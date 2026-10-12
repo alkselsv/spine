@@ -6,6 +6,21 @@ from .admission import (
     AdmissionReference,
     ReasonCode,
 )
+from .access_policy import (
+    AccessGrant,
+    AccessPermission,
+    AccessPolicyVersion,
+    CurrentAccessPolicy,
+    EligibilityDisposition,
+    InitialPolicyEligibilityDecision,
+    PolicyActivation,
+    PolicyApproval,
+    PolicyApprovalDecision,
+    PolicyBenefitClassification,
+    PolicyOriginKind,
+    PolicyProposal,
+    PrincipalKind,
+)
 
 from .models import (
     IdentityMode,
@@ -32,6 +47,19 @@ from .profile import BCP47_TABLE_DIGEST, REVISION_METADATA_SCHEMA, UNICODE_TABLE
 from .profile import OBSERVATION_SCHEMA
 
 __all__ = [
+    "AccessGrant",
+    "AccessPermission",
+    "AccessPolicyVersion",
+    "CurrentAccessPolicy",
+    "EligibilityDisposition",
+    "InitialPolicyEligibilityDecision",
+    "PolicyActivation",
+    "PolicyApproval",
+    "PolicyApprovalDecision",
+    "PolicyBenefitClassification",
+    "PolicyOriginKind",
+    "PolicyProposal",
+    "PrincipalKind",
     "AdmissionDecision",
     "AdmissionDisposition",
     "AdmissionReference",
