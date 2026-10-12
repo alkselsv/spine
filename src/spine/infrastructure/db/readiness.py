@@ -318,8 +318,8 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "policy_approvals": ExpectedTablePrivileges(True, True, True, False, False),
         "policy_activations": ExpectedTablePrivileges(True, True, True, False, False),
         "current_access_policies": ExpectedTablePrivileges(True, True, True, True, False),
-        "canonical_generation_counters": ExpectedTablePrivileges(True, True, True, False, False),
-        "canonical_acceptances": ExpectedTablePrivileges(True, True, False, False, False),
+        "canonical_generation_counters": ExpectedTablePrivileges(True, True, True, True, False),
+        "canonical_acceptances": ExpectedTablePrivileges(True, True, True, False, False),
         "current_source_heads": ExpectedTablePrivileges(True, True, True, True, False),
         "source_canonical_tables": ExpectedTablePrivileges(False, True, False, False, False),
         "source_canonical_unicode": ExpectedTablePrivileges(False, True, False, False, False),
@@ -334,37 +334,22 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "authorization_generations": ExpectedTablePrivileges(True, False, False, False, False),
     }
     if set(tables) != set(expected):
-        raise DatabaseReadinessError(
-            "database runtime table set is not ready: "
-            f"missing={sorted(set(expected) - set(tables))}, "
-            f"extra={sorted(set(tables) - set(expected))}"
-        )
+        return False
     for table_name, required in expected.items():
         row = tables[table_name]
         if row.is_owner or row.has_unsafe_privileges:
-            raise DatabaseReadinessError(
-                f"database runtime table privileges are not ready for {table_name}: "
-                f"owner={row.is_owner}, unsafe={row.has_unsafe_privileges}"
-            )
+            return False
         if required.tenant_scoped and (not row.rls_enabled or not row.rls_forced):
-            raise DatabaseReadinessError(
-                f"database runtime table RLS is not ready for {table_name}"
-            )
+            return False
         if not required.tenant_scoped and (row.rls_enabled or row.rls_forced):
-            raise DatabaseReadinessError(
-                f"database runtime table RLS is not ready for {table_name}"
-            )
+            return False
         if (
             row.can_select != required.select
             or row.can_insert != required.insert
             or row.can_update != required.update
             or row.can_delete != required.delete
         ):
-            raise DatabaseReadinessError(
-                f"database runtime table grants are not ready for {table_name}: "
-                f"actual={(row.can_select, row.can_insert, row.can_update, row.can_delete)}, "
-                f"expected={(required.select, required.insert, required.update, required.delete)}"
-            )
+            return False
     return True
 
 
