@@ -13,13 +13,10 @@ from spine.application.persistence.canonical import (
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.application.persistence.errors import OptimisticConflictError
 from spine.application.persistence.errors import (
+    CanonicalAcceptanceAuditUnavailableError,
     CanonicalAuthorityConflictError,
     CanonicalEligibilityError,
 )
-
-
-class CanonicalAcceptanceAuditUnavailableError(RuntimeError):
-    """A rejected attempt stayed denied but its required audit was unavailable."""
 
 
 class CanonicalAcceptanceFailedAttemptAudit(Protocol):
@@ -83,10 +80,32 @@ class CanonicalAcceptanceCoordinator:
             try:
                 await self._failed_attempt_audit.record_failed_cas(command, reason)
             except Exception as audit_failure:
-                raise CanonicalAcceptanceAuditUnavailableError(
-                    "Canonical acceptance remained denied; failed-attempt audit is unavailable."
-                ) from audit_failure
+                raise CanonicalAcceptanceAuditUnavailableError() from audit_failure
             raise
+
+
+def build_canonical_acceptance_coordinator(
+    *,
+    uow_factory: Callable[
+        [TrustedPersistenceContext], CanonicalAcceptanceUnitOfWork
+    ],
+    context_factory: Callable[
+        [CanonicalAcceptanceCommand], TrustedPersistenceContext
+    ],
+    failed_attempt_audit: CanonicalAcceptanceFailedAttemptAudit,
+) -> CanonicalAcceptanceCoordinator:
+    """Build the only application entry point for canonical acceptance.
+
+    Keeping all three dependencies mandatory makes a production composition that
+    omits failed-attempt auditing impossible without an explicit type/runtime
+    error.  Raw repository ports remain available only inside the supplied UoW.
+    """
+
+    return CanonicalAcceptanceCoordinator(
+        uow_factory=uow_factory,
+        context_factory=context_factory,
+        failed_attempt_audit=failed_attempt_audit,
+    )
 
 
 __all__ = [
@@ -94,4 +113,5 @@ __all__ = [
     "CanonicalAcceptanceCoordinator",
     "CanonicalAcceptanceFailedAttemptAudit",
     "CanonicalAcceptanceUnitOfWork",
+    "build_canonical_acceptance_coordinator",
 ]

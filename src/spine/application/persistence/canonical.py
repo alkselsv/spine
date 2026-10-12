@@ -7,21 +7,38 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 import re
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field
+
+from spine.application.diagnostics.audit import validate_audit_event_for_context
 from spine.application.persistence.command_digest import CommandDigest, digest_command
-from spine.application.persistence.context import PersistenceOperation
+from spine.application.persistence.context import (
+    EnvironmentScope,
+    PersistenceOperation,
+    TrustedPersistenceContext,
+)
 from spine.application.persistence.idempotency import (
     IdempotencyClaimResult,
     IdempotencyKey,
     OpaqueResultReference,
 )
-from spine.application.persistence.outbox import OutboxIntent
-from spine.domain.audit import AuditEvent
+from spine.application.persistence.outbox import (
+    OpaqueObjectReference,
+    OutboxEventRegistry,
+    OutboxIntent,
+    validate_outbox_intent_for_context,
+)
+from spine.domain.audit import (
+    AuditEvent,
+    AuditOutcome,
+    CanonicalTransitionAuditPayload,
+)
 from spine.domain.sources import (
     CanonicalAcceptance,
     CurrentSourceHead,
+    RevisionKind,
     SourceObject,
     SourceRevision,
     SourceRevisionProvenance,
@@ -29,6 +46,21 @@ from spine.domain.sources import (
 
 CANONICAL_ACCEPTANCE_SCHEMA_VERSION = 1
 ALLOWED_CANONICAL_ADMISSION_PROFILES = frozenset({"admission:r1"})
+CANONICAL_ACCEPTANCE_OUTBOX_EVENT_TYPE = "canonical.accepted"
+CANONICAL_ACCEPTANCE_OUTBOX_SCHEMA_VERSION = 1
+
+
+class CanonicalAcceptanceOutboxPayload(BaseModel):
+    """Typed, content-free linkage for one committed canonical transition."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    canonical_acceptance_id: UUID
+    source_object_id: UUID
+    source_revision_id: UUID
+    accepted_generation: int = Field(ge=1)
+    audit_event_id: UUID
+    transition: Literal["source.accepted", "source.reappeared", "source.tombstoned"]
 
 
 class SourceOrderComparison(str, Enum):
@@ -87,6 +119,93 @@ def _compare_canonical_decimal(incoming: str, current: str) -> SourceOrderCompar
     if incoming_value > current_value:
         return SourceOrderComparison.HIGHER
     return SourceOrderComparison.EQUAL
+
+
+def canonical_transition_for_revision(
+    revision: SourceRevision,
+) -> Literal["source.accepted", "source.reappeared", "source.tombstoned"]:
+    if revision.kind is RevisionKind.TOMBSTONE:
+        return "source.tombstoned"
+    if revision.reappearance_after_tombstone_revision_id is not None:
+        return "source.reappeared"
+    return "source.accepted"
+
+
+def validate_canonical_acceptance_effects(
+    *,
+    command: "CanonicalAcceptanceCommand",
+    acceptance: CanonicalAcceptance,
+    context: TrustedPersistenceContext,
+    audit_registry: object,
+    outbox_registry: OutboxEventRegistry,
+) -> tuple[AuditEvent, OutboxIntent]:
+    """Validate complete typed audit/outbox linkage before mutation effects."""
+
+    if not isinstance(context.scope, EnvironmentScope):
+        raise ValueError("Canonical acceptance requires an environment scope.")
+    if command.audit_event is None or command.outbox_intent is None:
+        raise ValueError("Canonical acceptance audit and outbox evidence is required.")
+    try:
+        audit = validate_audit_event_for_context(
+            command.audit_event,
+            registry=audit_registry,
+            context=context,
+        )
+        outbox = validate_outbox_intent_for_context(
+            command.outbox_intent,
+            registry=outbox_registry,
+            scope=context.scope,
+            trace_id=context.trace_id,
+        )
+    except Exception as error:
+        raise ValueError("Canonical audit or outbox evidence is invalid.") from error
+
+    expected_transition = canonical_transition_for_revision(command.revision)
+    expected_reason = {
+        "source.accepted": "source_accepted",
+        "source.reappeared": "source_reappeared",
+        "source.tombstoned": "source_tombstoned",
+    }[expected_transition]
+    if (
+        audit.event_type != "canonical.transition"
+        or audit.schema_version != 1
+        or audit.outcome is not AuditOutcome.COMMITTED
+        or audit.target is None
+        or audit.target.object_type != "source_revision"
+        or audit.target.object_id != acceptance.source_revision_id
+        or audit.target.schema_version != 1
+        or not isinstance(audit.payload, CanonicalTransitionAuditPayload)
+        or audit.payload.transition != expected_transition
+        or audit.reason != expected_reason
+        or audit.workspace_id != acceptance.workspace_id
+        or audit.environment_id != acceptance.environment_id
+        or audit.audit_event_id != command.audit_event_id
+    ):
+        raise ValueError("Canonical audit evidence does not describe this acceptance.")
+
+    expected_aggregate = OpaqueObjectReference(
+        object_type="source_object",
+        object_id=acceptance.source_object_id,
+        schema_version=1,
+    )
+    if (
+        outbox.event_type != CANONICAL_ACCEPTANCE_OUTBOX_EVENT_TYPE
+        or outbox.schema_version != CANONICAL_ACCEPTANCE_OUTBOX_SCHEMA_VERSION
+        or outbox.event_id != command.outbox_event_id
+        or outbox.workspace_id != acceptance.workspace_id
+        or outbox.environment_id != acceptance.environment_id
+        or outbox.aggregate != expected_aggregate
+        or not isinstance(outbox.payload, CanonicalAcceptanceOutboxPayload)
+        or outbox.payload.canonical_acceptance_id
+        != acceptance.canonical_acceptance_id
+        or outbox.payload.source_object_id != acceptance.source_object_id
+        or outbox.payload.source_revision_id != acceptance.source_revision_id
+        or outbox.payload.accepted_generation != acceptance.accepted_generation
+        or outbox.payload.audit_event_id != command.audit_event_id
+        or outbox.payload.transition != expected_transition
+    ):
+        raise ValueError("Canonical outbox evidence does not describe this acceptance.")
+    return audit, outbox
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,11 +334,16 @@ class CanonicalAcceptanceRepository(Protocol):
 
 __all__ = [
     "ALLOWED_CANONICAL_ADMISSION_PROFILES",
+    "CANONICAL_ACCEPTANCE_OUTBOX_EVENT_TYPE",
+    "CANONICAL_ACCEPTANCE_OUTBOX_SCHEMA_VERSION",
     "CANONICAL_ACCEPTANCE_SCHEMA_VERSION",
     "CanonicalAcceptanceCommand",
+    "CanonicalAcceptanceOutboxPayload",
     "CanonicalAcceptanceRepository",
     "CanonicalAcceptanceResult",
     "SourceOrderComparison",
     "SourceOrderingPolicyError",
     "SourceOrderingPolicyRegistry",
+    "canonical_transition_for_revision",
+    "validate_canonical_acceptance_effects",
 ]

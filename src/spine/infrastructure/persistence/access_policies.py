@@ -25,9 +25,9 @@ from spine.application.persistence.errors import IdempotencyConflictError
 class InMemoryAccessPolicyRepository:
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
-        self._policies: dict[UUID, AccessPolicyVersion] = {}
+        self._policies: dict[tuple[UUID, UUID, UUID], AccessPolicyVersion] = {}
         self._activations: dict[UUID, PolicyActivation] = {}
-        self._current: dict[UUID, CurrentAccessPolicy] = {}
+        self._current: dict[tuple[UUID, UUID, UUID], CurrentAccessPolicy] = {}
         self._replays: dict[str, AccessPolicyActivationResult] = {}
         self._digests: dict[str, str] = {}
         self._proposals: dict[UUID, PolicyProposal] = {}
@@ -36,12 +36,34 @@ class InMemoryAccessPolicyRepository:
         self._outbox_events: set[UUID] = set()
 
     async def resolve_policy(
-        self, policy_version_id: UUID
+        self,
+        policy_version_id: UUID,
+        *,
+        workspace_id: UUID | None = None,
+        environment_id: UUID | None = None,
     ) -> AccessPolicyVersion | None:
-        return self._policies.get(policy_version_id)
+        if workspace_id is not None and environment_id is not None:
+            return self._policies.get((workspace_id, environment_id, policy_version_id))
+        matches = [
+            value for value in self._policies.values()
+            if value.access_policy_version_id == policy_version_id
+        ]
+        return matches[0] if len(matches) == 1 else None
 
-    async def resolve_current(self, source_object_id: UUID) -> CurrentAccessPolicy | None:
-        return self._current.get(source_object_id)
+    async def resolve_current(
+        self,
+        source_object_id: UUID,
+        *,
+        workspace_id: UUID | None = None,
+        environment_id: UUID | None = None,
+    ) -> CurrentAccessPolicy | None:
+        if workspace_id is not None and environment_id is not None:
+            return self._current.get((workspace_id, environment_id, source_object_id))
+        matches = [
+            value for value in self._current.values()
+            if value.source_object_id == source_object_id
+        ]
+        return matches[0] if len(matches) == 1 else None
 
     async def resolve_activation_result(
         self, command: AccessPolicyActivationCommand
@@ -72,7 +94,11 @@ class InMemoryAccessPolicyRepository:
             existing = self._proposals.get(proposal.policy_proposal_id)
             if existing is not None and existing != proposal:
                 raise StalePolicyBaselineError("Proposal identity conflicts.")
-            self._policies[policy.access_policy_version_id] = policy
+            self._policies[
+                policy.workspace_id,
+                policy.environment_id,
+                policy.access_policy_version_id,
+            ] = policy
             self._proposals[proposal.policy_proposal_id] = proposal
             return proposal
 
@@ -115,7 +141,12 @@ class InMemoryAccessPolicyRepository:
                     outbox_event_id=replay.outbox_event_id,
                     replay=True,
                 )
-            existing = self._current.get(command.policy.source_object_id)
+            scope_key = (
+                command.policy.workspace_id,
+                command.policy.environment_id,
+                command.policy.source_object_id,
+            )
+            existing = self._current.get(scope_key)
             if existing is None:
                 valid = (
                     command.expected_policy_version_id is None
@@ -154,7 +185,11 @@ class InMemoryAccessPolicyRepository:
                 policy_generation=completed_activation.policy_generation,
                 cas_version=cas_version,
             )
-            self._policies[command.policy.access_policy_version_id] = command.policy
+            self._policies[
+                command.policy.workspace_id,
+                command.policy.environment_id,
+                command.policy.access_policy_version_id,
+            ] = command.policy
             if proposal is not None:
                 self._proposals[proposal.policy_proposal_id] = proposal
             if approval is not None:
@@ -162,7 +197,7 @@ class InMemoryAccessPolicyRepository:
             self._activations[completed_activation.policy_activation_id] = (
                 completed_activation
             )
-            self._current[command.policy.source_object_id] = current
+            self._current[scope_key] = current
             self._audit_events.add(command.audit_event_id)
             self._outbox_events.add(command.outbox_event_id)
             result = AccessPolicyActivationResult(

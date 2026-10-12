@@ -50,6 +50,17 @@ class CanonicalEligibilityError(ConstraintConflictError):
     """Current admission, receipt, policy, or disclosure evidence is ineligible."""
 
 
+class CanonicalAcceptanceAuditUnavailableError(PersistenceUnavailableError):
+    """A denied canonical attempt could not persist its required failed audit."""
+
+    reason_code = "canonical_acceptance_audit_unavailable"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Canonical acceptance remained denied; failed-attempt audit is unavailable."
+        )
+
+
 class ObservationIntegrityConflictError(ConstraintConflictError):
     """An observation identity was reused for different content."""
 

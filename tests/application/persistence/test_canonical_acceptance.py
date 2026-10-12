@@ -3,15 +3,18 @@ import asyncio
 from uuid import UUID, NAMESPACE_URL, uuid5
 
 import pytest
-from pydantic import BaseModel, ConfigDict
-
 from spine.application.diagnostics.audit import AuditEventRegistry
 from spine.application.access_policies import (
     AccessPolicyActivationCommand,
     PolicyActivationDraft,
     access_policy_document_hash,
 )
-from spine.application.persistence.canonical import CanonicalAcceptanceCommand
+from spine.application.persistence.canonical import (
+    CANONICAL_ACCEPTANCE_OUTBOX_EVENT_TYPE,
+    CANONICAL_ACCEPTANCE_OUTBOX_SCHEMA_VERSION,
+    CanonicalAcceptanceCommand,
+    CanonicalAcceptanceOutboxPayload,
+)
 from spine.application.persistence.context import (
     EnvironmentScope,
     PersistenceOperation,
@@ -76,14 +79,6 @@ def uid(value: int) -> UUID:
     return uuid5(NAMESPACE_URL, f"canonical-test-{value}")
 
 
-class SourceAcceptedPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    source_revision_id: UUID
-    accepted_generation: int
-    transition: str
-
-
 @pytest.fixture
 def canonical_persistence():
     boundary = TrustedContextBoundary.for_testing(
@@ -92,9 +87,9 @@ def canonical_persistence():
     authority = create_initial_workspace_bootstrap_authority()
     events = OutboxEventRegistry()
     events.register(
-        event_type="source.accepted",
-        schema_version=1,
-        payload_type=SourceAcceptedPayload,
+        event_type=CANONICAL_ACCEPTANCE_OUTBOX_EVENT_TYPE,
+        schema_version=CANONICAL_ACCEPTANCE_OUTBOX_SCHEMA_VERSION,
+        payload_type=CanonicalAcceptanceOutboxPayload,
     )
     policies = InMemoryAccessPolicyRepository()
     persistence = InMemoryPersistence(
@@ -229,12 +224,14 @@ async def add_environment(persistence, workspace_context) -> None:
 def acceptance_command(source_object, revision, provenance_value, *, key, generation, expected=None, tombstone=False):
     audit_id = uid(700 + generation)
     outbox_id = uid(800 + generation)
+    acceptance_id = uid(600 + generation)
+    transition = "source.tombstoned" if tombstone else "source.accepted"
     audit = AuditEventRegistry.with_default_families().build_event(
         workspace_id=source_object.workspace_id,
         environment_id=source_object.environment_id,
         event_type="canonical.transition",
         schema_version=1,
-        payload=CanonicalTransitionAuditPayload(transition="source.accepted"),
+        payload=CanonicalTransitionAuditPayload(transition=transition),
         origin=ContextOrigin.WORKER,
         acting_subject_id=None,
         service_principal_id=uid(902),
@@ -247,15 +244,30 @@ def acceptance_command(source_object, revision, provenance_value, *, key, genera
         audit_event_id=audit_id,
     )
     events = OutboxEventRegistry()
-    events.register(event_type="source.accepted", schema_version=1, payload_type=SourceAcceptedPayload)
+    events.register(
+        event_type=CANONICAL_ACCEPTANCE_OUTBOX_EVENT_TYPE,
+        schema_version=CANONICAL_ACCEPTANCE_OUTBOX_SCHEMA_VERSION,
+        payload_type=CanonicalAcceptanceOutboxPayload,
+    )
     outbox = events.build_intent(
         workspace_id=source_object.workspace_id,
         environment_id=source_object.environment_id,
-        event_type="source.accepted",
-        schema_version=1,
-        payload=SourceAcceptedPayload(source_revision_id=revision.revision_id, accepted_generation=generation, transition="accepted"),
+        event_type=CANONICAL_ACCEPTANCE_OUTBOX_EVENT_TYPE,
+        schema_version=CANONICAL_ACCEPTANCE_OUTBOX_SCHEMA_VERSION,
+        payload=CanonicalAcceptanceOutboxPayload(
+            canonical_acceptance_id=acceptance_id,
+            source_object_id=source_object.source_object_id,
+            source_revision_id=revision.revision_id,
+            accepted_generation=generation,
+            audit_event_id=audit_id,
+            transition=transition,
+        ),
         trace_id=uid(904),
-        aggregate=OpaqueObjectReference(object_type="source_object", object_id=source_object.source_object_id, schema_version=1),
+        aggregate=OpaqueObjectReference(
+            object_type="source_object",
+            object_id=source_object.source_object_id,
+            schema_version=1,
+        ),
         producer_deduplication_id=f"canonical:{revision.revision_id}",
         event_id=outbox_id,
     )
@@ -265,7 +277,7 @@ def acceptance_command(source_object, revision, provenance_value, *, key, genera
         provenance=provenance_value,
         expected_current_revision_id=expected,
         idempotency_key=IdempotencyKey(key),
-        canonical_acceptance_id=uid(600 + generation),
+        canonical_acceptance_id=acceptance_id,
         admission_decision_id=uid(500 + generation) if not tombstone else None,
         access_policy_version_id=uid(400 + generation) if not tombstone else None,
         audit_event_id=audit_id,

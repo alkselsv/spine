@@ -65,6 +65,7 @@ from spine.application.persistence.canonical import (
     SourceOrderComparison,
     SourceOrderingPolicyError,
     SourceOrderingPolicyRegistry,
+    validate_canonical_acceptance_effects,
 )
 from spine.infrastructure.persistence.access_policies import (
     InMemoryAccessPolicyRepository,
@@ -836,9 +837,20 @@ class _CanonicalAcceptanceRepository:
         repository = self._uow._store.canonical_policy_repository
         if repository is None:
             return False
-        current = await repository.resolve_current(source_id)
-        policy = await repository.resolve_policy(policy_id)
         context = self._uow._context_snapshot_active()
+        scope = context.scope
+        if not isinstance(scope, EnvironmentScope):
+            return False
+        current = await repository.resolve_current(
+            source_id,
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+        )
+        policy = await repository.resolve_policy(
+            policy_id,
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+        )
         return bool(
             current is not None
             and current.access_policy_version_id == policy_id
@@ -1072,6 +1084,42 @@ class _CanonicalAcceptanceRepository:
                         "Current source acceptance is unavailable."
                     )
                 )
+            decisions = [
+                value
+                for value in (
+                    *self._uow._base_admission_decisions.values(),
+                    *self._uow._pending_admission_decisions.values(),
+                )
+                if value.workspace_id == current.workspace_id
+                and value.environment_id == current.environment_id
+                and value.source_object_id == current.source_object_id
+                and value.revision_id == current.current_revision_id
+            ]
+            admission = max(decisions, key=lambda value: value.decision_version) if decisions else None
+            if current.current_revision_kind is RevisionKind.CONTENT:
+                if not (
+                    acceptance.admission_decision_id is not None
+                    and admission is not None
+                    and admission.decision_id == acceptance.admission_decision_id
+                    and admission.disposition is AdmissionDisposition.ADMITTED
+                    and admission.validator_profile_version in ALLOWED_CANONICAL_ADMISSION_PROFILES
+                    and acceptance.access_policy_version_id is not None
+                    and await self._eligible_policy(
+                        source.source_object_id,
+                        acceptance.access_policy_version_id,
+                    )
+                ):
+                    self._uow._fail(
+                        CanonicalEligibilityError("Canonical replay is unavailable.")
+                    )
+            elif not (
+                current.current_revision_kind is RevisionKind.TOMBSTONE
+                and acceptance.admission_decision_id is None
+                and acceptance.access_policy_version_id is None
+            ):
+                self._uow._fail(
+                    CanonicalEligibilityError("Canonical replay is unavailable.")
+                )
             reference = OpaqueResultReference(
                 result_type="canonical_acceptance",
                 result_id=acceptance.canonical_acceptance_id,
@@ -1122,6 +1170,7 @@ class _CanonicalAcceptanceRepository:
                     and value.storage_status == "finalized_verified"
                     and value.original_sha256 == revision.original_sha256
                     and value.byte_length == revision.byte_length
+                    and value.original_reference == revision.original_reference
                 ),
                 None,
             )
@@ -1222,8 +1271,20 @@ class _CanonicalAcceptanceRepository:
             changed_at=command.accepted_at,
         )
         self._uow._pending_current_source_heads[source.source_object_id] = head
-        if command.audit_event is None or command.outbox_intent is None:
-            self._uow._fail(ConstraintConflictError("Canonical acceptance audit and outbox evidence is required."))
+        try:
+            validate_canonical_acceptance_effects(
+                command=command,
+                acceptance=acceptance,
+                context=self._uow._context_snapshot_active(),
+                audit_registry=self._uow._audit_events,
+                outbox_registry=self._uow._outbox_events,
+            )
+        except Exception:
+            self._uow._fail(
+                CanonicalAuthorityConflictError(
+                    "Canonical audit or outbox evidence conflicts."
+                )
+            )
         audit_id = await self._uow.audit.append(command.audit_event)
         event_id = await self._uow.outbox.append(command.outbox_intent)
         if audit_id != command.audit_event_id or event_id != command.outbox_event_id:
