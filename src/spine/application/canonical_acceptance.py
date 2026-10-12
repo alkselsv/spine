@@ -54,6 +54,10 @@ class CanonicalAcceptanceCoordinator:
         ],
         failed_attempt_audit: CanonicalAcceptanceFailedAttemptAudit,
     ) -> None:
+        if uow_factory is None or context_factory is None or failed_attempt_audit is None:
+            raise TypeError(
+                "Canonical acceptance requires UoW, trusted-context, and failed-audit dependencies."
+            )
         self._uow_factory = uow_factory
         self._context_factory = context_factory
         self._failed_attempt_audit = failed_attempt_audit
