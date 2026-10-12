@@ -15,9 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 from spine.infrastructure.db.engine import DatabaseRuntime, DatabaseStartupError
 from spine.infrastructure.db.migrations import upgrade_database
 from spine.infrastructure.db.operator import bootstrap_database_roles
+from spine.infrastructure.db.readiness import verify_database_readiness
 from spine.infrastructure.db.settings import (
     MigrationDatabaseSettings,
     OperatorDatabaseSettings,
+    POSTGRESQL_SEARCH_PATH_OPTIONS,
     RuntimeDatabaseSettings,
 )
 from spine.infrastructure.db.test_harness import TestDatabaseProvision
@@ -141,12 +143,25 @@ async def _database_heads(migration_url: SecretStr) -> tuple[str, ...]:
 async def test_runtime_is_ready_at_exact_supported_head(
     readiness_database: ReadinessDatabase,
 ) -> None:
-    runtime = DatabaseRuntime()
-
-    resources = await runtime.start(_runtime_settings(readiness_database.runtime_url))
-
-    assert resources is runtime.resources
-    await runtime.shutdown()
+    settings = _runtime_settings(readiness_database.runtime_url)
+    engine = create_async_engine(
+        settings.url.get_secret_value(),
+        pool_size=settings.pool_size,
+        max_overflow=settings.max_overflow,
+        pool_timeout=settings.pool_timeout_seconds,
+        pool_pre_ping=settings.pool_pre_ping,
+        pool_reset_on_return="rollback",
+        isolation_level="READ COMMITTED",
+        connect_args={
+            "connect_timeout": settings.connect_timeout_seconds,
+            "options": POSTGRESQL_SEARCH_PATH_OPTIONS,
+        },
+        hide_parameters=True,
+    )
+    try:
+        await verify_database_readiness(engine, settings)
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.parametrize(
