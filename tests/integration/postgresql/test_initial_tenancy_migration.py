@@ -1508,7 +1508,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "uq_processing_receipts_command",
         "ix_processing_receipts_revision",
         "ix_processing_receipts_item",
-    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES
+    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES | CANONICAL_ACCEPTANCE_INDEXES
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
         "workspaces": (True, True),
