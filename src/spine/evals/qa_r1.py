@@ -224,8 +224,13 @@ class QADataset(_FrozenModel):
                 if not set(claim.evidence_ids) <= expected_evidence:
                     raise ValueError("claim evidence must be listed as expected evidence")
             for label in case.relevance_labels:
-                if label.evidence_id not in evidence_by_id:
+                revision, evidence = evidence_by_id.get(label.evidence_id, (None, None))
+                if revision is None or evidence is None:
                     raise ValueError("relevance label references unknown evidence")
+                if revision.revision_id not in case.available_revision_ids:
+                    raise ValueError("relevance label must belong to an available revision")
+                if (revision.workspace_id, revision.environment_id) != (case.workspace_id, case.environment_id):
+                    raise ValueError("relevance label crosses a workspace boundary")
             for grant in case.acl:
                 source_object = object_by_id.get(grant.source_object_id)
                 if source_object is None:

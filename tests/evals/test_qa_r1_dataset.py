@@ -87,6 +87,12 @@ def test_r1_dataset_evidence_and_workspace_references_resolve() -> None:
             assert revision.workspace_id == case.workspace_id
             assert revision.environment_id == case.environment_id
             assert item.source_revision_id == revision.revision_id
+        for label in case.relevance_labels:
+            revision, item = evidence[label.evidence_id]
+            assert revision.revision_id in case.available_revision_ids
+            assert revision.workspace_id == case.workspace_id
+            assert revision.environment_id == case.environment_id
+            assert item.source_revision_id == revision.revision_id
 
     assert len({case.workspace_id for case in dataset.cases}) >= 2
 
