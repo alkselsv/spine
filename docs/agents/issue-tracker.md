@@ -11,7 +11,8 @@ user request.
 
 - **Create an issue**: `gh issue create --title "..." --body "..."`.
 - **Read an issue**: `gh issue view <number> --comments`.
-- **List issues**: `gh issue list --state open --json number,title,body,labels,comments`.
+- **List issues**:
+  `gh issue list --state open --json number,title,body,assignees,labels,comments`.
 - **Comment on an issue**: `gh issue comment <number> --body "..."`.
 - **Apply/remove labels**: `gh issue edit <number> --add-label "..."` or `--remove-label "..."`.
 - **Close**: `gh issue close <number> --comment "..."`.
@@ -36,10 +37,25 @@ Run `gh issue view <number> --comments`.
 
 ## Work lifecycle
 
-- Claim any issue before starting work with
-  `gh issue edit <number> --add-assignee @me --add-label "in-progress"`.
-- Resolve work by commenting with the result, removing the `in-progress` label
-  and closing the issue.
+Treat `in-progress` as an ownership lock. An agent may continue an issue carrying
+that label only when it is resuming the branch or worktree already assigned to
+that issue, or when the user explicitly transfers ownership.
+
+1. Immediately before claiming an issue, read its current state, assignees and
+   labels with
+   `gh issue view <number> --json state,assignees,labels`. A claimable issue is
+   open, has `ready-for-agent`, has no `in-progress` label or assignee, and has no
+   open blocking issue. Select another issue when any condition fails.
+2. Claim the issue before creating its branch or changing files:
+   `gh issue edit <number> --add-assignee @me --add-label "in-progress" --remove-label "ready-for-agent"`.
+3. Read the issue again and begin work only after it is open, assigned to the
+   current account and labelled `in-progress`. Stop and ask for coordination if
+   another claim or work branch becomes evident.
+4. When returning unfinished work to the queue, comment with the reason, then
+   run
+   `gh issue edit <number> --remove-assignee @me --remove-label "in-progress" --add-label "ready-for-agent"`.
+5. When resolving work, comment with the result, remove `in-progress` and close
+   the issue. A closed issue does not regain `ready-for-agent`.
 
 ## Wayfinding operations
 

@@ -7,9 +7,9 @@ implementation.
 
 ## Start work
 
-Start from an agent-ready GitHub issue whose blocking issues are closed. Update
-the local view of `main`, claim the issue according to
-`docs/agents/issue-tracker.md`, then create a branch from `origin/main` using:
+Select and claim the issue through the Work lifecycle in
+`docs/agents/issue-tracker.md`. Update the local view of `main`, then create a
+branch from `origin/main` using:
 
 ```text
 <type>/<issue-number>-<short-slug>
