@@ -1697,6 +1697,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "recovery_quiescence_evidence": (True, True),
         "storage_recovery_manifests": (True, True),
         "recovery_evidence_invalidations": (True, True),
+        "canonical_generation_counters": (True, True),
+        "canonical_acceptances": (True, True),
+        "current_source_heads": (True, True),
     }
     assert rls == expected_rls
     tenant_rls_tables = {
