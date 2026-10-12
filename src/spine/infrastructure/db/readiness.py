@@ -205,7 +205,7 @@ async def verify_database_readiness(
             ).mappings().all()
             tables = {row.table_name: row for row in table_rows}
             if not _runtime_table_privileges_are_safe(tables):
-                raise DatabaseReadinessError("database runtime privileges are not ready")
+                raise DatabaseReadinessError("database runtime table privileges are not ready")
 
             resolver_privileges = (
                 await connection.execute(
@@ -223,7 +223,7 @@ async def verify_database_readiness(
                 not resolver_privileges.runtime_execute
                 or resolver_privileges.public_execute
             ):
-                raise DatabaseReadinessError("database runtime privileges are not ready")
+                raise DatabaseReadinessError("database runtime resolver privileges are not ready")
 
             receipt_columns = (
                 await connection.execute(
@@ -250,7 +250,7 @@ async def verify_database_readiness(
                 and receipt_columns.result_schema_version
                 and not receipt_columns.workspace_id
             ):
-                raise DatabaseReadinessError("database runtime privileges are not ready")
+                raise DatabaseReadinessError("database runtime receipt privileges are not ready")
 
             workspace_id = "00000000-0000-0000-0000-000000000048"
             environment_id = "00000000-0000-0000-0000-000000000049"
