@@ -24,6 +24,9 @@ from spine.infrastructure.persistence.contexts import (
     create_initial_workspace_bootstrap_authority,
 )
 from spine.infrastructure.persistence.in_memory import InMemoryPersistence
+from spine.infrastructure.persistence.access_policies import (
+    InMemoryAccessPolicyRepository,
+)
 
 from .adapter import (
     AuditPersistenceAdapter,
@@ -53,6 +56,7 @@ async def create_in_memory_adapter() -> DeliveryPersistenceAdapter:
     )
     delivery_routes.seal()
     audit_events = AuditEventRegistry.with_default_families()
+    access_policies = InMemoryAccessPolicyRepository()
     persistence = InMemoryPersistence(
         context_verifier=boundary,
         outbox_events=outbox_events,
@@ -65,6 +69,8 @@ async def create_in_memory_adapter() -> DeliveryPersistenceAdapter:
         delivery_lease_token_factory=(
             synthetic_uuid(value) for value in range(6600, 6700)
         ).__next__,
+        canonical_policy_repository=access_policies,
+        canonical_clock=lambda: datetime(2026, 10, 12, tzinfo=timezone.utc),
     )
     await persistence.initial_workspace_bootstrap.create_initial_workspace(
         bootstrap_authority,

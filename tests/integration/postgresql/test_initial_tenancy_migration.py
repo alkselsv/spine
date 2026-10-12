@@ -1578,6 +1578,32 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         )
     }
     assert not missing_final_constraints, sorted(missing_final_constraints)
+    outbox_fk = (
+        (
+            await connection.execute(
+                text(
+                    "SELECT constraint_record.condeferrable, "
+                    "constraint_record.condeferred, "
+                    "pg_get_constraintdef(constraint_record.oid) AS definition "
+                    "FROM pg_constraint AS constraint_record "
+                    "JOIN pg_class AS relation "
+                    "ON relation.oid = constraint_record.conrelid "
+                    "JOIN pg_namespace AS namespace "
+                    "ON namespace.oid = relation.relnamespace "
+                    "WHERE namespace.nspname = 'spine' "
+                    "AND relation.relname = 'canonical_acceptances' "
+                    "AND constraint_record.conname = "
+                    "'fk_canonical_acceptances_outbox'"
+                )
+            )
+        )
+        .mappings()
+        .one()
+    )
+    assert outbox_fk.condeferrable is True
+    assert outbox_fk.condeferred is True
+    assert "FOREIGN KEY (outbox_event_id)" in outbox_fk.definition
+    assert "outbox_intents(event_id)" in outbox_fk.definition
     assert indexes == {
         "alembic_version_pkc",
         "ix_environments_workspace_id",

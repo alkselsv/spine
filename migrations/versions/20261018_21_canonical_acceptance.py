@@ -163,6 +163,13 @@ def upgrade() -> None:
             deferrable=True,
             initially="DEFERRED",
         ),
+        sa.ForeignKeyConstraint(
+            ["outbox_event_id"],
+            [f"{SCHEMA}.outbox_intents.event_id"],
+            name="fk_canonical_acceptances_outbox",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
         sa.CheckConstraint("accepted_generation >= 1", name="ck_canonical_acceptances_generation"),
         sa.CheckConstraint("ordering IN ('trusted', 'expected_current')", name="ck_canonical_acceptances_ordering"),
         sa.CheckConstraint("(ordering_scheme IS NULL) = (ordering_token IS NULL)", name="ck_canonical_acceptances_order_pair"),
@@ -283,19 +290,30 @@ def upgrade() -> None:
             END IF;
             RETURN NEW;
         END; $function$
-        """
-    )
+        """)
     op.execute(
         f"CREATE TRIGGER trg_canonical_acceptances_predecessor BEFORE INSERT ON "
         f"{SCHEMA}.canonical_acceptances FOR EACH ROW EXECUTE FUNCTION "
         f"{SCHEMA}.guard_canonical_acceptance_predecessor()"
     )
-    op.execute(f"REVOKE ALL ON FUNCTION {SCHEMA}.guard_canonical_acceptance_predecessor() FROM PUBLIC")
+    op.execute(
+        f"REVOKE ALL ON FUNCTION {SCHEMA}.guard_canonical_acceptance_predecessor() FROM PUBLIC"
+    )
 
 
 def downgrade() -> None:
     runtime = _role("runtime_role")
-    for table in ("current_source_heads", "canonical_acceptances", "canonical_generation_counters"):
+    op.drop_constraint(
+        "fk_canonical_acceptances_outbox",
+        "canonical_acceptances",
+        schema=SCHEMA,
+        type_="foreignkey",
+    )
+    for table in (
+        "current_source_heads",
+        "canonical_acceptances",
+        "canonical_generation_counters",
+    ):
         qualified = f'{SCHEMA}."{table}"'
         op.execute(f"REVOKE ALL PRIVILEGES ON TABLE {qualified} FROM {runtime}")
         op.drop_table(table, schema=SCHEMA)
