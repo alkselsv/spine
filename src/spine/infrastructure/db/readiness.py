@@ -340,7 +340,7 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
             True, True, True, False, False
         ),
         "canonical_generation_counters": ExpectedTablePrivileges(True, True, True, False, False),
-        "canonical_acceptances": ExpectedTablePrivileges(True, True, True, False, False),
+        "canonical_acceptances": ExpectedTablePrivileges(True, True, False, False, False),
         "current_source_heads": ExpectedTablePrivileges(True, True, True, True, False),
         "source_canonical_tables": ExpectedTablePrivileges(False, True, False, False, False),
         "source_canonical_unicode": ExpectedTablePrivileges(False, True, False, False, False),
