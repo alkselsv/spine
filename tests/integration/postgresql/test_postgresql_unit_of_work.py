@@ -253,6 +253,14 @@ class CanonicalTransactionProbe:
         assert self._release is not None
         self._release.set()
 
+    def disarm(self) -> None:
+        release = self._release
+        self._target = None
+        self._reached = None
+        self._release = None
+        if release is not None:
+            release.set()
+
 
 CANONICAL_TRANSACTION_PROBE = CanonicalTransactionProbe()
 
@@ -777,31 +785,43 @@ async def test_postgresql_policy_change_wins_before_acceptance_and_stale_evidenc
         case.source.environment_id,
         "access_policy_activation",
     )
-    CANONICAL_TRANSACTION_PROBE.arm(PostgreSQLTransactionStage.BEFORE_COMMIT)
-    policy_task = asyncio.create_task(
-        activate_canonical_policy(
-            postgresql_adapter,
-            context=policy_context,
-            source_object=case.source,
-            number=19320,
-            expected_policy_id=case.policy_id,
-            expected_generation=1,
-            expected_cas=1,
+    policy_task: asyncio.Task[object] | None = None
+    acceptance_task: asyncio.Task[object] | None = None
+    try:
+        CANONICAL_TRANSACTION_PROBE.arm(PostgreSQLTransactionStage.BEFORE_COMMIT)
+        policy_task = asyncio.create_task(
+            activate_canonical_policy(
+                postgresql_adapter,
+                context=policy_context,
+                source_object=case.source,
+                number=19320,
+                expected_policy_id=case.policy_id,
+                expected_generation=1,
+                expected_cas=1,
+            )
         )
-    )
-    await CANONICAL_TRANSACTION_PROBE.wait_until_reached()
+        await CANONICAL_TRANSACTION_PROBE.wait_until_reached()
 
-    async def accept() -> None:
-        async with postgresql_adapter.uow_factory(case.context) as uow:
-            await uow.canonical.accept(case.command)
-            await uow.commit()
+        async def accept() -> None:
+            async with postgresql_adapter.uow_factory(case.context) as uow:
+                await uow.canonical.accept(case.command)
+                await uow.commit()
 
-    acceptance_task = asyncio.create_task(accept())
-    await asyncio.sleep(0)
-    CANONICAL_TRANSACTION_PROBE.release()
-    await policy_task
-    with pytest.raises(CanonicalEligibilityError):
-        await acceptance_task
+        acceptance_task = asyncio.create_task(accept())
+        await asyncio.sleep(0)
+        CANONICAL_TRANSACTION_PROBE.release()
+        await policy_task
+        with pytest.raises(CanonicalEligibilityError):
+            await acceptance_task
+    finally:
+        CANONICAL_TRANSACTION_PROBE.disarm()
+        for task in (policy_task, acceptance_task):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (policy_task, acceptance_task) if task is not None),
+            return_exceptions=True,
+        )
 
 
 async def test_postgresql_acceptance_locks_authoritative_policy_until_commit(
@@ -816,32 +836,44 @@ async def test_postgresql_acceptance_locks_authoritative_policy_until_commit(
             await uow.commit()
             return result
 
-    CANONICAL_TRANSACTION_PROBE.arm(
-        PostgreSQLTransactionStage.AFTER_CANONICAL_EVIDENCE_LOCKED
-    )
-    acceptance_task = asyncio.create_task(accept())
-    await CANONICAL_TRANSACTION_PROBE.wait_until_reached()
-    policy_context = postgresql_adapter.ingestion_context(
-        case.source.workspace_id,
-        case.source.environment_id,
-        "access_policy_activation",
-    )
-    policy_task = asyncio.create_task(
-        activate_canonical_policy(
-            postgresql_adapter,
-            context=policy_context,
-            source_object=case.source,
-            number=19420,
-            expected_policy_id=case.policy_id,
-            expected_generation=1,
-            expected_cas=1,
+    acceptance_task: asyncio.Task[object] | None = None
+    policy_task: asyncio.Task[object] | None = None
+    try:
+        CANONICAL_TRANSACTION_PROBE.arm(
+            PostgreSQLTransactionStage.AFTER_CANONICAL_EVIDENCE_LOCKED
         )
-    )
-    await asyncio.sleep(0)
-    CANONICAL_TRANSACTION_PROBE.release()
-    result = await acceptance_task
-    await policy_task
-    assert result.advanced is True
+        acceptance_task = asyncio.create_task(accept())
+        await CANONICAL_TRANSACTION_PROBE.wait_until_reached()
+        policy_context = postgresql_adapter.ingestion_context(
+            case.source.workspace_id,
+            case.source.environment_id,
+            "access_policy_activation",
+        )
+        policy_task = asyncio.create_task(
+            activate_canonical_policy(
+                postgresql_adapter,
+                context=policy_context,
+                source_object=case.source,
+                number=19420,
+                expected_policy_id=case.policy_id,
+                expected_generation=1,
+                expected_cas=1,
+            )
+        )
+        await asyncio.sleep(0)
+        CANONICAL_TRANSACTION_PROBE.release()
+        result = await acceptance_task
+        await policy_task
+        assert result.advanced is True
+    finally:
+        CANONICAL_TRANSACTION_PROBE.disarm()
+        for task in (acceptance_task, policy_task):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (acceptance_task, policy_task) if task is not None),
+            return_exceptions=True,
+        )
 
     async with postgresql_adapter.uow_factory(case.context) as uow:
         with pytest.raises(CanonicalEligibilityError):
@@ -880,21 +912,33 @@ async def test_postgresql_admission_change_wins_before_acceptance_and_fails_clos
             )
             await uow.commit()
 
-    CANONICAL_TRANSACTION_PROBE.arm(PostgreSQLTransactionStage.BEFORE_COMMIT)
-    admission_task = asyncio.create_task(deny_admission())
-    await CANONICAL_TRANSACTION_PROBE.wait_until_reached()
+    admission_task: asyncio.Task[object] | None = None
+    acceptance_task: asyncio.Task[object] | None = None
+    try:
+        CANONICAL_TRANSACTION_PROBE.arm(PostgreSQLTransactionStage.BEFORE_COMMIT)
+        admission_task = asyncio.create_task(deny_admission())
+        await CANONICAL_TRANSACTION_PROBE.wait_until_reached()
 
-    async def accept() -> None:
-        async with postgresql_adapter.uow_factory(case.context) as uow:
-            await uow.canonical.accept(case.command)
-            await uow.commit()
+        async def accept() -> None:
+            async with postgresql_adapter.uow_factory(case.context) as uow:
+                await uow.canonical.accept(case.command)
+                await uow.commit()
 
-    acceptance_task = asyncio.create_task(accept())
-    await asyncio.sleep(0)
-    CANONICAL_TRANSACTION_PROBE.release()
-    await admission_task
-    with pytest.raises(CanonicalEligibilityError):
-        await acceptance_task
+        acceptance_task = asyncio.create_task(accept())
+        await asyncio.sleep(0)
+        CANONICAL_TRANSACTION_PROBE.release()
+        await admission_task
+        with pytest.raises(CanonicalEligibilityError):
+            await acceptance_task
+    finally:
+        CANONICAL_TRANSACTION_PROBE.disarm()
+        for task in (admission_task, acceptance_task):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (admission_task, acceptance_task) if task is not None),
+            return_exceptions=True,
+        )
 
 
 async def test_postgresql_adapter_satisfies_ingestion_repository_contract(

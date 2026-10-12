@@ -3106,6 +3106,64 @@ async def test_runtime_grants_are_minimal_and_tables_remain_migration_owned(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_runtime_cannot_mutate_immutable_canonical_evidence(
+    migrated_database: MigratedDatabase,
+) -> None:
+    immutable_tables = (
+        "source_objects",
+        "source_revisions",
+        "source_revision_provenance",
+        "source_revision_receipt_associations",
+        "admission_decisions",
+        "access_policy_versions",
+        "access_policy_grants",
+        "policy_proposals",
+        "policy_approvals",
+        "policy_activations",
+    )
+    async with _connection(migrated_database.migration.url) as connection:
+        privileges = {
+            row.table_name: (
+                row.select_ok,
+                row.insert_ok,
+                row.update_ok,
+                row.delete_ok,
+            )
+            for row in (
+                await connection.execute(
+                    text(
+                        "SELECT relation.relname AS table_name, "
+                        "has_table_privilege(:role, relation.oid, 'SELECT') AS select_ok, "
+                        "has_table_privilege(:role, relation.oid, 'INSERT') AS insert_ok, "
+                        "has_table_privilege(:role, relation.oid, 'UPDATE') AS update_ok, "
+                        "has_table_privilege(:role, relation.oid, 'DELETE') AS delete_ok "
+                        "FROM pg_class AS relation "
+                        "JOIN pg_namespace AS namespace "
+                        "ON namespace.oid = relation.relnamespace "
+                        "WHERE namespace.nspname = 'spine' "
+                        "AND relation.relname IN "
+                        "(:source_objects, :source_revisions, "
+                        ":source_revision_provenance, "
+                        ":source_revision_receipt_associations, "
+                        ":admission_decisions, :access_policy_versions, "
+                        ":access_policy_grants, :policy_proposals, "
+                        ":policy_approvals, :policy_activations)"
+                    ),
+                    {
+                        "role": RUNTIME_ROLE,
+                        **{
+                            table_name: table_name
+                            for table_name in immutable_tables
+                        },
+                    },
+                )
+            ).mappings()
+        }
+    assert set(privileges) == set(immutable_tables)
+    assert set(privileges.values()) == {(True, True, False, False)}
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_k0_receipt_integrity_objects_are_catalogued_and_restricted(
     migrated_database: MigratedDatabase,
 ) -> None:

@@ -169,6 +169,43 @@ _BIND_ENVIRONMENT = text(
 )
 
 
+def _admission_serialization_key(
+    *,
+    workspace_id: UUID,
+    environment_id: UUID,
+    source_object_id: UUID,
+    revision_id: UUID,
+) -> tuple[int, int]:
+    """Return stable namespaced int4 parts for the admission transaction lock."""
+
+    lock_id = uuid5(
+        NAMESPACE_URL,
+        "spine.admission-serialization.v1:"
+        f"{workspace_id}:{environment_id}:{source_object_id}:{revision_id}",
+    )
+    return (
+        int.from_bytes(lock_id.bytes[:4], byteorder="big", signed=True),
+        int.from_bytes(lock_id.bytes[4:8], byteorder="big", signed=True),
+    )
+
+
+async def _lock_admission_revision(
+    uow: "PostgreSQLTenantUnitOfWork",
+    *,
+    workspace_id: UUID,
+    environment_id: UUID,
+    source_object_id: UUID,
+    revision_id: UUID,
+) -> None:
+    key = _admission_serialization_key(
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        source_object_id=source_object_id,
+        revision_id=revision_id,
+    )
+    await uow._execute(select(func.pg_advisory_xact_lock(*key)))
+
+
 class _Lifecycle(Enum):
     NEW = auto()
     ENTERING = auto()
@@ -671,6 +708,7 @@ class _PostgreSQLCanonicalAcceptanceRepository:
                         _CURRENT_ACCESS_POLICIES.c.access_policy_version_id
                         == policy_id,
                     )
+                    .with_for_update()
                 )
             )
             .mappings()
@@ -730,7 +768,7 @@ class _PostgreSQLCanonicalAcceptanceRepository:
                     _CURRENT_SOURCE_HEADS.c.source_object_id == source_object_id,
                     _CURRENT_SOURCE_HEADS.c.workspace_id == scope.workspace_id,
                     _CURRENT_SOURCE_HEADS.c.environment_id == scope.environment_id,
-                )
+                ).with_for_update()
             )
         ).mappings().one_or_none()
         return self._head(row) if row is not None else None
@@ -765,6 +803,13 @@ class _PostgreSQLCanonicalAcceptanceRepository:
                 await self._uow._fail(
                     CanonicalEligibilityError("Canonical replay is unavailable.")
                 )
+            await _lock_admission_revision(
+                self._uow,
+                workspace_id=acceptance.workspace_id,
+                environment_id=acceptance.environment_id,
+                source_object_id=acceptance.source_object_id,
+                revision_id=acceptance.source_revision_id,
+            )
             current = await self.resolve_current(command.source.source_object_id)
             if (
                 current is None
@@ -939,6 +984,14 @@ class _PostgreSQLCanonicalAcceptanceRepository:
                 )
             )
 
+        await _lock_admission_revision(
+            self._uow,
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            source_object_id=source.source_object_id,
+            revision_id=revision.revision_id,
+        )
+
         # The counter is always locked before the source head.  This is the
         # same order used by boundary capture in the next R1 slice.
         await self._uow._execute(
@@ -984,7 +1037,7 @@ class _PostgreSQLCanonicalAcceptanceRepository:
             .one_or_none()
         )
         current = self._head(head_row) if head_row is not None else None
-        locked_revision_row = (
+        authoritative_revision_row = (
             (
                 await self._uow._execute(
                     select(_SOURCE_REVISIONS)
@@ -994,15 +1047,15 @@ class _PostgreSQLCanonicalAcceptanceRepository:
                         _SOURCE_REVISIONS.c.source_object_id == source.source_object_id,
                         _SOURCE_REVISIONS.c.revision_id == revision.revision_id,
                     )
-                    .with_for_update()
                 )
             )
             .mappings()
             .one_or_none()
         )
         if (
-            locked_revision_row is None
-            or self._uow.sources._revision_from_row(locked_revision_row) != revision
+            authoritative_revision_row is None
+            or self._uow.sources._revision_from_row(authoritative_revision_row)
+            != revision
         ):
             await self._uow._fail(
                 CanonicalAuthorityConflictError(
@@ -1175,7 +1228,6 @@ class _PostgreSQLCanonicalAcceptanceRepository:
                         )
                         .order_by(_ADMISSION_DECISIONS.c.decision_version.desc())
                         .limit(1)
-                        .with_for_share()
                     )
                 )
                 .mappings()
@@ -1208,7 +1260,7 @@ class _PostgreSQLCanonicalAcceptanceRepository:
                             _CURRENT_ACCESS_POLICIES.c.access_policy_version_id
                             == command.access_policy_version_id,
                         )
-                        .with_for_share()
+                        .with_for_update()
                     )
                 )
                 .mappings()
@@ -1645,6 +1697,13 @@ class _PostgreSQLAdmissionRepository:
     async def append_decision(self, decision: AdmissionDecision) -> AdmissionDecision:
         self._uow._guard_active()
         scope_predicates = self._scope_predicates(decision)
+        await _lock_admission_revision(
+            self._uow,
+            workspace_id=decision.workspace_id,
+            environment_id=decision.environment_id,
+            source_object_id=decision.source_object_id,
+            revision_id=decision.revision_id,
+        )
         revision_row = (await self._uow._execute(select(_SOURCE_REVISIONS).where(
             _SOURCE_REVISIONS.c.revision_id == decision.revision_id,
             _SOURCE_REVISIONS.c.source_object_id == decision.source_object_id,
