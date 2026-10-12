@@ -474,6 +474,27 @@ class OutboxDeliveryDiagnosticPayload(BaseModel):
     retry_delay: timedelta | None = Field(default=None, ge=timedelta(0))
 
 
+class StorageOutcomeDiagnosticPayload(BaseModel):
+    """Safe storage lifecycle observation without provider or object content."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    operation: DiagnosticIdentifier
+    outcome: DiagnosticIdentifier
+    status: DiagnosticIdentifier
+    attempt_number: int = Field(ge=1)
+    error_code: DiagnosticIdentifier | None = None
+
+    @field_validator("operation", "outcome", "status", "error_code")
+    @classmethod
+    def validate_storage_identifier(cls, value: str | None, info: Any) -> str | None:
+        if value is None:
+            return None
+        if _DIAGNOSTIC_IDENTIFIER.fullmatch(value) is None:
+            raise ValueError(f"{info.field_name} must be a bounded identifier.")
+        return value
+
+
 class HttpRequestDiagnosticState(str, Enum):
     """Disclosure-safe terminal states for one HTTP request."""
 
@@ -600,6 +621,11 @@ class DiagnosticEventRegistry:
             event_type="outbox.delivery",
             schema_version=1,
             payload_type=OutboxDeliveryDiagnosticPayload,
+        )
+        registry.register(
+            event_type="storage.outcome",
+            schema_version=1,
+            payload_type=StorageOutcomeDiagnosticPayload,
         )
         registry.register(
             event_type="http.request",
@@ -826,6 +852,7 @@ __all__ = [
     "FailureDiagnosticPayload",
     "OutboxDeliveryDiagnosticPayload",
     "OutboxDeliveryDiagnosticState",
+    "StorageOutcomeDiagnosticPayload",
     "UnsupportedDiagnosticEventError",
     "emit_diagnostic_safely",
     "validate_diagnostic_event_for_context",

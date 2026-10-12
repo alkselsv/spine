@@ -13,6 +13,7 @@ from spine.domain.audit.models import (
     FeedbackAuditPayload,
     OutboxDeliveryAuditPayload,
     RequestAccessDecisionAuditPayload,
+    StorageOutcomeAuditPayload,
 )
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "FeedbackAuditPayload",
     "OutboxDeliveryAuditPayload",
     "RequestAccessDecisionAuditPayload",
+    "StorageOutcomeAuditPayload",
 ]

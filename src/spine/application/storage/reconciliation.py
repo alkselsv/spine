@@ -33,6 +33,14 @@ from spine.infrastructure.object_storage.errors import (
     StorageError,
     StorageErrorCategory,
 )
+from .diagnostics import (
+    NullStorageOutcomeRecorder,
+    StorageOutcome,
+    StorageOutcomeKind,
+    StorageOutcomeRecorder,
+    StorageOutcomeStatus,
+    record_storage_outcome_safely,
+)
 
 
 class ReconciliationFindingKind(str, Enum):
@@ -166,9 +174,11 @@ class OriginalStorageReconciler:
         *,
         object_store: ReconciliationStorage,
         clock: Callable[[], datetime] | None = None,
+        outcome_recorder: StorageOutcomeRecorder | None = None,
     ) -> None:
         self._object_store = object_store
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._outcome_recorder = outcome_recorder or NullStorageOutcomeRecorder()
 
     async def reconcile_page(
         self,
@@ -176,6 +186,7 @@ class OriginalStorageReconciler:
         *,
         workspace_id: UUID,
         environment_id: UUID | None,
+        trace_id: UUID | None = None,
         upload_records: Iterable[OriginalUploadRecord] = (),
         cursor: str | None = None,
         limit: int = 100,
@@ -222,11 +233,14 @@ class OriginalStorageReconciler:
             )
             if finding is not None:
                 findings.append(finding)
-        return ReconciliationReport(
+        report = ReconciliationReport(
             findings=tuple(finding for finding in findings if finding is not None),
             next_cursor=next_cursor,
             complete=next_cursor is None,
         )
+        for finding in report.findings:
+            await self._record_finding_outcome(finding, trace_id=trace_id)
+        return report
 
     async def cleanup_orphan(
         self,
@@ -236,6 +250,7 @@ class OriginalStorageReconciler:
         workspace_id: UUID,
         environment_id: UUID | None,
         canonical_references: Iterable[CanonicalOriginalReference],
+        trace_id: UUID | None = None,
     ) -> DeletionResult:
         """Delete a reported orphan after rechecking current canonical state."""
 
@@ -254,9 +269,68 @@ class OriginalStorageReconciler:
         ):
             raise ObjectProtected()
         await self._object_store.prepare_deletion(finding.object_reference, approval)
-        return await self._object_store.delete_controlled(
+        result = await self._object_store.delete_controlled(
             finding.object_reference,
             approval,
+        )
+        if trace_id is not None:
+            await record_storage_outcome_safely(
+                self._outcome_recorder,
+                StorageOutcome(
+                    workspace_id=workspace_id,
+                    environment_id=environment_id,
+                    trace_id=trace_id,
+                    operation=StorageOutcomeKind.DELETION,
+                    status=StorageOutcomeStatus.APPROVED_DELETION,
+                    subject_id=finding.object_reference.object_id,
+                    producer_deduplication_id=(
+                        f"storage:deletion:{finding.object_reference.object_id}:approved"
+                    ),
+                ),
+            )
+        return result
+
+    async def _record_finding_outcome(
+        self,
+        finding: ReconciliationFinding,
+        *,
+        trace_id: UUID | None,
+    ) -> None:
+        if trace_id is None or finding.workspace_id is None:
+            return
+        operation = {
+            ReconciliationFindingKind.ORPHAN: StorageOutcomeKind.ORPHAN,
+            ReconciliationFindingKind.MISSING: StorageOutcomeKind.MISSING,
+            ReconciliationFindingKind.CORRUPT: StorageOutcomeKind.INTEGRITY,
+        }.get(finding.kind, StorageOutcomeKind.RECONCILIATION)
+        status = (
+            StorageOutcomeStatus.DEGRADED
+            if finding.kind is ReconciliationFindingKind.ORPHAN
+            else StorageOutcomeStatus.UNAVAILABLE
+            if finding.kind is ReconciliationFindingKind.MISSING
+            else StorageOutcomeStatus.INDETERMINATE
+        )
+        subject_id = (
+            finding.object_reference.object_id
+            if finding.object_reference is not None
+            else finding.upload_id
+        )
+        if subject_id is None:
+            return
+        await record_storage_outcome_safely(
+            self._outcome_recorder,
+            StorageOutcome(
+                workspace_id=finding.workspace_id,
+                environment_id=finding.environment_id,
+                trace_id=trace_id,
+                operation=operation,
+                status=status,
+                subject_id=subject_id,
+                error_code=(finding.category.value if finding.category else None),
+                producer_deduplication_id=(
+                    f"storage:{operation.value}:{subject_id}:{finding.kind.value}"
+                ),
+            ),
         )
 
     def _classify_inventory_entry(

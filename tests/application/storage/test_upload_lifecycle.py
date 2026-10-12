@@ -28,6 +28,7 @@ from spine.application.persistence import (
 from spine.application.storage import (
     OriginalUploadOrchestrator,
     OriginalUploadRecord,
+    RecordingStorageOutcomeRecorder,
     UploadCleanupStatus,
 )
 from spine.domain.common import ContextOrigin
@@ -268,6 +269,7 @@ class _FaultInjectingObjectStore:
 
 def _orchestrator(
     store: _FakeStore,
+    outcome_recorder: RecordingStorageOutcomeRecorder | None = None,
 ) -> tuple[OriginalUploadOrchestrator, _FaultInjectingObjectStore]:
     identities = iter((UPLOAD_ID, OBJECT_ID))
     object_store = _FaultInjectingObjectStore(
@@ -285,9 +287,31 @@ def _orchestrator(
             uow_factory=lambda _context: _FakeUnitOfWork(store),
             object_store=object_store,  # type: ignore[arg-type]
             identity_factory=lambda: next(identities),
+            outcome_recorder=outcome_recorder,
         ),
         object_store,
     )
+
+
+@pytest.mark.asyncio
+async def test_successful_upload_emits_safe_idempotent_storage_outcome() -> None:
+    store = _FakeStore()
+    recorder = RecordingStorageOutcomeRecorder()
+    orchestrator, _ = _orchestrator(store, recorder)
+
+    async def chunks() -> AsyncIterable[bytes]:
+        yield b"hello"
+
+    result = await orchestrator.upload(_context(), _command(), chunks())
+
+    assert result.replay is False
+    assert len(recorder.outcomes) == 1
+    emitted = recorder.outcomes[0]
+    assert emitted.workspace_id == WORKSPACE_ID
+    assert emitted.trace_id == TRACE_ID
+    assert emitted.subject_id == UPLOAD_ID
+    assert emitted.status.value == "succeeded"
+    assert emitted.producer_deduplication_id.endswith(":accepted")
 
 
 @pytest.mark.asyncio

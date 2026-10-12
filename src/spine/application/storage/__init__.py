@@ -29,6 +29,23 @@ from .reconciliation import (
     ReconciliationReport,
     ReconciliationStorage,
 )
+from .diagnostics import (
+    RecordingStorageOutcomeRecorder,
+    NullStorageOutcomeRecorder,
+    StorageOutcome,
+    StorageOutcomeKind,
+    StorageOutcomeOutboxPayload,
+    StorageOutcomeRecorder,
+    StorageOutcomeStatus,
+    STORAGE_OUTCOME_EVENT_TYPE,
+    STORAGE_OUTCOME_SCHEMA_VERSION,
+    build_storage_outcome_intent,
+    build_storage_outcome_audit_payload,
+    build_storage_outcome_diagnostic_payload,
+    audit_outcome_for_storage,
+    register_storage_outcome_outbox_event,
+    record_storage_outcome_safely,
+)
 
 __all__ = [
     "OriginalUploadAbortOutcome",
@@ -54,4 +71,19 @@ __all__ = [
     "OriginalUploadUnitOfWork",
     "OriginalUploadUnitOfWorkFactory",
     "UploadCleanupStatus",
+    "RecordingStorageOutcomeRecorder",
+    "NullStorageOutcomeRecorder",
+    "StorageOutcome",
+    "StorageOutcomeKind",
+    "StorageOutcomeOutboxPayload",
+    "StorageOutcomeRecorder",
+    "StorageOutcomeStatus",
+    "STORAGE_OUTCOME_EVENT_TYPE",
+    "STORAGE_OUTCOME_SCHEMA_VERSION",
+    "build_storage_outcome_intent",
+    "build_storage_outcome_audit_payload",
+    "build_storage_outcome_diagnostic_payload",
+    "audit_outcome_for_storage",
+    "register_storage_outcome_outbox_event",
+    "record_storage_outcome_safely",
 ]
