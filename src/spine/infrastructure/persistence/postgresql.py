@@ -104,6 +104,9 @@ from spine.domain.ingestion import (
     ProcessingReceipt,
 )
 from spine.infrastructure.db.engine import SessionFactory
+from spine.infrastructure.persistence.backup_recovery import (
+    PostgreSQLBackupRecoveryRepository,
+)
 from spine.infrastructure.persistence.postgresql_errors import (
     translate_persistence_error,
 )
@@ -2099,6 +2102,9 @@ class PostgreSQLPersistence:
         )
         self.uow_factory = self.tenant_uow_factory
         self.audit_reader = PostgreSQLAuditReader(self.tenant_uow_factory)
+        self.backup_recovery_repository = PostgreSQLBackupRecoveryRepository(
+            session_factory=session_factory
+        )
 
 
 __all__ = [

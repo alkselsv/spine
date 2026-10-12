@@ -81,6 +81,9 @@ from spine.application.outbox.dispatch import (
     OutboxDeliveryFinalization,
     validate_outbox_delivery_audit,
 )
+from spine.infrastructure.persistence.backup_recovery_in_memory import (
+    InMemoryRecoveryRepository,
+)
 from spine.domain.workspaces import Environment, Workspace
 from spine.domain.sources import (
     AdmissionDecision,
@@ -2498,6 +2501,7 @@ class InMemoryPersistence:
             audit_events=selected_audit_events,
             audit_clock=audit_clock,
         )
+        self.backup_recovery_repository = InMemoryRecoveryRepository()
 
     def fail_next_audit_append(self) -> None:
         self.uow_factory._store.fail_next_audit_append = True

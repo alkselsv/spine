@@ -2216,6 +2216,9 @@ detectors без специальных обходов в platform core.
 - [ADR-021](adr/0021-provider-neutral-oidc-and-canonical-request-authorization.md):
   provider-neutral OIDC JWT authentication, canonical human mapping и trusted
   Workspace/Environment request authorization.
+- [ADR-022](adr/0022-durable-backup-fence-and-recovery-evidence.md): durable
+  deployment-scoped backup fencing, ordered operation tickets, immutable
+  recovery manifests and explicit Profile A/Profile B separation.
 - ADR-TBD: artifact schemas и handoff evaluation protocol.
 - ADR-012: business outcome attribution и cost accounting.
 - ADR-013: future third-party Agent SDK, package trust и certification после появления подтверждённого внешнего кейса.
