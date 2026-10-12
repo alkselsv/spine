@@ -206,6 +206,25 @@ class FeedbackAuditPayload(BaseModel):
         return _require_identifier(value, field_name="feedback_type")
 
 
+class StorageOutcomeAuditPayload(BaseModel):
+    """Safe storage lifecycle outcome owned by the storage application slice."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    operation: AuditIdentifier
+    outcome: AuditIdentifier
+    status: AuditIdentifier
+    attempt_number: int = Field(ge=1)
+    error_code: AuditIdentifier | None = None
+
+    @field_validator("operation", "outcome", "status", "error_code")
+    @classmethod
+    def validate_storage_identifier(cls, value: str | None, info: Any) -> str | None:
+        if value is None:
+            return None
+        return _require_identifier(value, field_name=info.field_name)
+
+
 class AuditEvent(BaseModel):
     """Detached immutable evidence snapshot validated by an event registry."""
 

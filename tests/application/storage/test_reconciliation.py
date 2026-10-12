@@ -9,6 +9,7 @@ from spine.application.storage import (
     CanonicalOriginalReference,
     OriginalStorageReconciler,
     OriginalUploadRecord,
+    RecordingStorageOutcomeRecorder,
     ReconciliationFindingKind,
 )
 from spine.infrastructure.object_storage import (
@@ -37,6 +38,7 @@ WORKSPACE_ID = UUID("10000000-0000-4000-8000-000000000001")
 ENVIRONMENT_ID = UUID("20000000-0000-4000-8000-000000000001")
 REVISION_ID = UUID("30000000-0000-4000-8000-000000000001")
 UPLOAD_ID = UUID("40000000-0000-4000-8000-000000000001")
+TRACE_ID = UUID("90000000-0000-4000-8000-000000000001")
 
 
 def reference(number: int, digest: str = "a" * 64) -> ObjectReference:
@@ -181,6 +183,7 @@ async def test_reconciliation_reports_safe_orphan_and_preserves_restart_cursor()
         (canonical(known),),
         workspace_id=WORKSPACE_ID,
         environment_id=ENVIRONMENT_ID,
+        trace_id=TRACE_ID,
         limit=1,
         max_verify_bytes=16,
     )
@@ -193,6 +196,7 @@ async def test_reconciliation_reports_safe_orphan_and_preserves_restart_cursor()
         (canonical(known),),
         workspace_id=WORKSPACE_ID,
         environment_id=ENVIRONMENT_ID,
+        trace_id=TRACE_ID,
         cursor=report.next_cursor,
         limit=1,
         max_verify_bytes=16,
@@ -226,11 +230,47 @@ async def test_reconciliation_classifies_reference_integrity_failures(
         (canonical(target),),
         workspace_id=WORKSPACE_ID,
         environment_id=ENVIRONMENT_ID,
+        trace_id=TRACE_ID,
         max_verify_bytes=16,
     )
 
     assert [finding.kind for finding in report.findings] == [kind]
     assert report.findings[0].source_revision_id == REVISION_ID
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_emits_workspace_scoped_safe_outcomes() -> None:
+    target = reference(7)
+    storage = _Storage(
+        (
+            ReconciliationInventoryEntry(
+                object_reference=target,
+                upload_id=UPLOAD_ID,
+                finalized=True,
+                observed_at=NOW,
+            ),
+        )
+    )
+    recorder = RecordingStorageOutcomeRecorder()
+    reconciler = OriginalStorageReconciler(
+        object_store=storage,
+        clock=lambda: NOW,
+        outcome_recorder=recorder,
+    )
+
+    report = await reconciler.reconcile_page(
+        (),
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        trace_id=TRACE_ID,
+        max_verify_bytes=16,
+    )
+
+    assert report.findings[0].kind is ReconciliationFindingKind.ORPHAN
+    assert len(recorder.outcomes) == 1
+    assert recorder.outcomes[0].workspace_id == WORKSPACE_ID
+    assert recorder.outcomes[0].trace_id == TRACE_ID
+    assert recorder.outcomes[0].status.value == "degraded"
 
 
 @pytest.mark.asyncio
@@ -258,6 +298,7 @@ async def test_reconciliation_reports_staged_and_ambiguous_upload_evidence() -> 
         (canonical(target), second),
         workspace_id=WORKSPACE_ID,
         environment_id=ENVIRONMENT_ID,
+        trace_id=TRACE_ID,
         upload_records=(staged_record(),),
         max_verify_bytes=16,
     )
@@ -293,6 +334,7 @@ async def test_reconciliation_fails_closed_for_same_object_id_with_new_generatio
         (canonical(target), canonical(stale)),
         workspace_id=WORKSPACE_ID,
         environment_id=ENVIRONMENT_ID,
+        trace_id=TRACE_ID,
         max_verify_bytes=16,
     )
 
@@ -314,6 +356,7 @@ async def test_cleanup_requires_orphan_finding_and_explicit_approval() -> None:
         (),
         workspace_id=WORKSPACE_ID,
         environment_id=ENVIRONMENT_ID,
+        trace_id=TRACE_ID,
         max_verify_bytes=16,
     )
     finding = report.findings[0]
@@ -327,6 +370,7 @@ async def test_cleanup_requires_orphan_finding_and_explicit_approval() -> None:
         approval,
         workspace_id=WORKSPACE_ID,
         environment_id=ENVIRONMENT_ID,
+        trace_id=TRACE_ID,
         canonical_references=(),
     )
 
@@ -339,6 +383,7 @@ async def test_cleanup_requires_orphan_finding_and_explicit_approval() -> None:
             approval,
             workspace_id=WORKSPACE_ID,
             environment_id=ENVIRONMENT_ID,
+            trace_id=TRACE_ID,
             canonical_references=(),
         )
 
@@ -348,6 +393,7 @@ async def test_cleanup_requires_orphan_finding_and_explicit_approval() -> None:
             approval,
             workspace_id=WORKSPACE_ID,
             environment_id=ENVIRONMENT_ID,
+            trace_id=TRACE_ID,
             canonical_references=(canonical(target),),
         )
 
@@ -357,5 +403,6 @@ async def test_cleanup_requires_orphan_finding_and_explicit_approval() -> None:
             approval,
             workspace_id=UUID("11000000-0000-4000-8000-000000000001"),
             environment_id=ENVIRONMENT_ID,
+            trace_id=TRACE_ID,
             canonical_references=(),
         )

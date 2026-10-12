@@ -53,6 +53,7 @@ from spine.domain.audit import (
     FeedbackAuditPayload,
     OutboxDeliveryAuditPayload,
     RequestAccessDecisionAuditPayload,
+    StorageOutcomeAuditPayload,
 )
 from spine.domain.audit.models import AUDIT_IDENTIFIER_PATTERN
 from spine.domain.common import VERSION_IDENTIFIER_PATTERN
@@ -379,6 +380,20 @@ class AuditEventRegistry:
                 "feedback.recorded",
                 FeedbackAuditPayload,
                 frozenset({AuditOutcome.RECORDED}),
+                False,
+            ),
+            (
+                "storage.outcome",
+                StorageOutcomeAuditPayload,
+                frozenset(
+                    {
+                        AuditOutcome.COMPLETED,
+                        AuditOutcome.REJECTED,
+                        AuditOutcome.REPLAYED,
+                        AuditOutcome.RETRY_SCHEDULED,
+                        AuditOutcome.QUARANTINED,
+                    }
+                ),
                 False,
             ),
         ):
