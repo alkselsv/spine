@@ -7,6 +7,9 @@ from uuid import UUID
 
 import pytest
 
+from spine.application.persistence.idempotency import IdempotencyKey
+from spine.application.persistence.errors import IdempotencyConflictError
+
 from spine.application.access_policies import (
     AccessPolicyActivationCommand,
     AccessPolicyActivationService,
@@ -102,6 +105,14 @@ class Authority:
         return snapshot
 
 
+class UnavailableFailedAttemptAudit:
+    async def record_failed_cas(
+        self, command: AccessPolicyActivationCommand, reason_code: str
+    ) -> None:
+        del command, reason_code
+        raise RuntimeError("audit unavailable")
+
+
 def _policy() -> AccessPolicyVersion:
     policy = AccessPolicyVersion(
         access_policy_version_id=_id(1),
@@ -159,7 +170,7 @@ def _command(
         expected_cas_version=0,
         eligibility=eligibility,
         activation_id=_id(40),
-        idempotency_receipt_id=_id(41),
+        idempotency_key=IdempotencyKey("initial-policy"),
         audit_event_id=_id(42),
         outbox_event_id=_id(43),
         activated_at=NOW,
@@ -202,6 +213,22 @@ async def test_initial_activation_mismatch_has_no_success_effect() -> None:
     assert await repository.resolve_current(policy.source_object_id) is None
     assert await repository.activation_count() == 0
     assert await repository.success_effect_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_reused_idempotency_key_with_changed_command_is_rejected() -> None:
+    authority = Authority()
+    repository = InMemoryAccessPolicyRepository()
+    service = AccessPolicyActivationService(repository, authority, authority)
+    policy = _policy()
+    command = _command(policy, _eligibility(policy))
+    await service.activate(command)
+
+    with pytest.raises(IdempotencyConflictError):
+        await service.activate(replace(command, outbox_event_id=_id(44)))
+
+    assert await repository.activation_count() == 1
+    assert await repository.success_effect_count() == 2
 
 
 def _successor(
@@ -291,7 +318,7 @@ def _successor_command(
         proposal=proposal,
         approval=approval,
         activation_id=_id(80),
-        idempotency_receipt_id=_id(81),
+        idempotency_key=IdempotencyKey(f"successor-{policy.access_policy_version_id}"),
         audit_event_id=_id(82),
         outbox_event_id=_id(83),
         activated_at=NOW,
@@ -433,6 +460,48 @@ async def test_stale_baseline_has_no_activation_audit_or_outbox_effect() -> None
 
 
 @pytest.mark.asyncio
+async def test_successor_must_directly_follow_current_policy() -> None:
+    authority = Authority()
+    repository = InMemoryAccessPolicyRepository()
+    service = AccessPolicyActivationService(repository, authority, authority)
+    predecessor = await _activate_initial(service)
+    policy = _successor(predecessor).model_copy(update={"version": 3})
+    policy = policy.model_copy(
+        update={"document_hash": access_policy_document_hash(policy)}
+    )
+    proposal = _proposal(policy, PolicyBenefitClassification.REVOCATION)
+
+    with pytest.raises(StalePolicyBaselineError):
+        await service.activate(_successor_command(policy, proposal))
+
+    assert await repository.activation_count() == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_attempt_audit_outage_cannot_turn_stale_cas_into_success() -> None:
+    authority = Authority()
+    repository = InMemoryAccessPolicyRepository()
+    service = AccessPolicyActivationService(
+        repository, authority, UnavailableFailedAttemptAudit()
+    )
+    predecessor = await _activate_initial(
+        AccessPolicyActivationService(repository, authority, authority)
+    )
+    policy = _successor(predecessor)
+    proposal = _proposal(policy, PolicyBenefitClassification.REVOCATION)
+
+    with pytest.raises(StalePolicyBaselineError):
+        await service.activate(
+            replace(
+                _successor_command(policy, proposal),
+                expected_policy_generation=0,
+            )
+        )
+
+    assert await repository.activation_count() == 1
+
+
+@pytest.mark.asyncio
 async def test_concurrent_successors_have_one_cas_winner() -> None:
     authority = Authority()
     repository = InMemoryAccessPolicyRepository()
@@ -449,7 +518,7 @@ async def test_concurrent_successors_have_one_cas_winner() -> None:
                 second, _proposal(second, PolicyBenefitClassification.REVOCATION)
             ),
             activation_id=_id(84),
-            idempotency_receipt_id=_id(85),
+            idempotency_key=IdempotencyKey("concurrent-second"),
             audit_event_id=_id(86),
             outbox_event_id=_id(87),
         ),

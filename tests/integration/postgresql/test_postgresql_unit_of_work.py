@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 import pytest
@@ -29,6 +29,7 @@ from spine.application.persistence.context import (
 )
 from spine.application.persistence.errors import (
     ConstraintConflictError,
+    IdempotencyConflictError,
     PersistenceUnavailableError,
     UnexpectedPersistenceError,
 )
@@ -40,7 +41,13 @@ from spine.application.persistence.idempotency import (
 )
 from spine.application.persistence.outbox import OpaqueObjectReference
 from spine.application.persistence.repositories import SourceObservationCommand
-from spine.application.access_policies import access_policy_document_hash
+from spine.application.access_policies import (
+    AccessPolicyActivationCommand,
+    PolicyActivationDraft,
+    access_policy_document_hash,
+)
+from spine.application.diagnostics.audit import AuditEventRegistry
+from spine.domain.audit import AuditOutcome, CommandAuditPayload
 from spine.domain.common import EnvironmentKind
 from spine.domain.ingestion import (
     IngestionRun,
@@ -718,6 +725,241 @@ async def test_access_policy_repository_round_trips_proposal_and_complete_policy
     assert persisted == proposal
     assert resolved_policy == policy
     assert resolved_proposal == proposal
+
+    conflicting = proposal.model_copy(
+        update={"benefit_classification": PolicyBenefitClassification.SELF_BENEFITING}
+    )
+    async with postgresql_adapter.uow_factory(context) as uow:
+        with pytest.raises(ConstraintConflictError):
+            await uow.access_policies.persist_proposal(policy, conflicting)
+
+
+async def test_access_policy_activation_completes_idempotency_and_replays_historical_head(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    assert postgresql_adapter.source_context is not None
+    assert postgresql_adapter.ingestion_context is not None
+    workspace_id, environment_id = synthetic_uuid(3900), synthetic_uuid(3901)
+    await prepare_source_scope(postgresql_adapter, workspace_id, environment_id)
+    source_object = source_contract_source(workspace_id, environment_id)
+    source_revision = source_contract_revision(source_object, synthetic_uuid(3902))
+    observation = SourceObservationCommand.create(
+        source=source_object,
+        revision=source_revision,
+        provenance=source_contract_provenance(
+            source_object, source_revision.revision_id, "event-1"
+        ),
+        idempotency_key=IdempotencyKey("policy-activation-source"),
+    )
+    source_context = postgresql_adapter.source_context(workspace_id, environment_id)
+    async with postgresql_adapter.uow_factory(source_context) as uow:
+        await uow.sources.record_observation(observation)
+        await uow.commit()
+
+    context = postgresql_adapter.ingestion_context(
+        workspace_id, environment_id, "access_policy_activation"
+    )
+    audit_events = AuditEventRegistry.with_default_families()
+
+    def evidence(
+        *, audit_id: UUID, outbox_id: UUID, activation_id: UUID
+    ) -> tuple[object, object]:
+        audit = audit_events.build_event(
+            audit_event_id=audit_id,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            event_type="command.outcome",
+            schema_version=1,
+            payload=CommandAuditPayload(command_type="access_policy.activate"),
+            origin=context.origin,
+            acting_subject_id=context.acting_subject_id,
+            service_principal_id=context.service_principal_id,
+            trace_id=context.trace_id,
+            occurred_at=datetime(2026, 10, 12, tzinfo=timezone.utc),
+            outcome=AuditOutcome.ACCEPTED,
+            reason="policy_activated",
+        )
+        outbox = postgresql_adapter.outbox_events.build_intent(
+            event_id=outbox_id,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            event_type="workspace.created",
+            schema_version=1,
+            payload=WorkspaceCreatedPayload(
+                workspace=OpaqueObjectReference(
+                    object_type="policy_activation",
+                    object_id=activation_id,
+                    schema_version=1,
+                ),
+                lifecycle_state="activated",
+            ),
+            trace_id=context.trace_id,
+        )
+        return audit, outbox
+
+    first_policy = AccessPolicyVersion(
+        access_policy_version_id=synthetic_uuid(3903),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        source_object_id=source_object.source_object_id,
+        version=1,
+        predecessor_policy_version_id=None,
+        document_schema_version="access-policy.v1",
+        document_hash="a" * 64,
+        origin_kind=PolicyOriginKind.ELIGIBLE_TEMPLATE,
+        origin_reference=synthetic_uuid(3904),
+        origin_version=1,
+        origin_hash="b" * 64,
+        created_by_canonical_human_id=synthetic_uuid(3905),
+        created_at=datetime(2026, 10, 12, tzinfo=timezone.utc),
+    )
+    first_policy = first_policy.model_copy(
+        update={"document_hash": access_policy_document_hash(first_policy)}
+    )
+    first_activation_id = synthetic_uuid(3906)
+    first_audit_id, first_outbox_id = synthetic_uuid(3907), synthetic_uuid(3908)
+    first_audit, first_outbox = evidence(
+        audit_id=first_audit_id,
+        outbox_id=first_outbox_id,
+        activation_id=first_activation_id,
+    )
+    first_command = AccessPolicyActivationCommand(
+        policy=first_policy,
+        requester_canonical_human_id=synthetic_uuid(3905),
+        activator_canonical_human_id=synthetic_uuid(3905),
+        expected_policy_version_id=None,
+        expected_policy_generation=0,
+        expected_cas_version=0,
+        activation_id=first_activation_id,
+        idempotency_key=IdempotencyKey("initial-policy-activation"),
+        audit_event_id=first_audit_id,
+        outbox_event_id=first_outbox_id,
+        activated_at=datetime(2026, 10, 12, tzinfo=timezone.utc),
+        audit_event=first_audit,
+        outbox_intent=first_outbox,
+    )
+    first_draft = PolicyActivationDraft(
+        values={
+            "policy_activation_id": first_activation_id,
+            "workspace_id": workspace_id,
+            "environment_id": environment_id,
+            "source_object_id": source_object.source_object_id,
+            "predecessor_policy_version_id": None,
+            "new_policy_version_id": first_policy.access_policy_version_id,
+            "policy_generation": 1,
+            "policy_proposal_id": None,
+            "policy_proposal_version": None,
+            "policy_proposal_hash": None,
+            "policy_approval_id": None,
+            "policy_approval_decision": None,
+            "initial_eligibility_decision_id": synthetic_uuid(3909),
+            "requester_canonical_human_id": synthetic_uuid(3905),
+            "activator_canonical_human_id": synthetic_uuid(3905),
+            "membership_generation": 1,
+            "authority_generation": 1,
+            "service_authority_generation": 1,
+            "audit_event_id": first_audit_id,
+            "outbox_event_id": first_outbox_id,
+            "activated_at": datetime(2026, 10, 12, tzinfo=timezone.utc),
+        }
+    )
+    async with postgresql_adapter.uow_factory(context) as uow:
+        assert await uow.access_policies.resolve_activation_result(first_command) is None
+        first = await uow.access_policies.activate(first_command, first_draft)
+        await uow.commit()
+
+    second_policy = AccessPolicyVersion(
+        access_policy_version_id=synthetic_uuid(3910),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        source_object_id=source_object.source_object_id,
+        version=2,
+        predecessor_policy_version_id=first_policy.access_policy_version_id,
+        document_schema_version="access-policy.v1",
+        document_hash="c" * 64,
+        origin_kind=PolicyOriginKind.APPROVED_PROPOSAL,
+        origin_reference=synthetic_uuid(3911),
+        origin_version=1,
+        origin_hash="d" * 64,
+        created_by_canonical_human_id=synthetic_uuid(3905),
+        created_at=datetime(2026, 10, 12, tzinfo=timezone.utc),
+    )
+    second_policy = second_policy.model_copy(
+        update={"document_hash": access_policy_document_hash(second_policy)}
+    )
+    proposal = PolicyProposal(
+        policy_proposal_id=synthetic_uuid(3912),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        source_object_id=source_object.source_object_id,
+        proposal_version=1,
+        proposed_policy_version_id=second_policy.access_policy_version_id,
+        proposed_policy_hash=second_policy.document_hash,
+        requester_canonical_human_id=synthetic_uuid(3905),
+        expected_policy_version_id=first_policy.access_policy_version_id,
+        expected_policy_generation=1,
+        benefit_classification=PolicyBenefitClassification.REVOCATION,
+        benefit_schema_version="policy-benefit.v1",
+        membership_generation=1,
+        authority_generation=1,
+        service_authority_generation=1,
+        submitted_at=datetime(2026, 10, 12, tzinfo=timezone.utc),
+    )
+    second_activation_id = synthetic_uuid(3913)
+    second_audit_id, second_outbox_id = synthetic_uuid(3914), synthetic_uuid(3915)
+    second_audit, second_outbox = evidence(
+        audit_id=second_audit_id,
+        outbox_id=second_outbox_id,
+        activation_id=second_activation_id,
+    )
+    second_command = AccessPolicyActivationCommand(
+        policy=second_policy,
+        requester_canonical_human_id=synthetic_uuid(3905),
+        activator_canonical_human_id=synthetic_uuid(3905),
+        expected_policy_version_id=first_policy.access_policy_version_id,
+        expected_policy_generation=1,
+        expected_cas_version=1,
+        activation_id=second_activation_id,
+        idempotency_key=IdempotencyKey("successor-policy-activation"),
+        audit_event_id=second_audit_id,
+        outbox_event_id=second_outbox_id,
+        activated_at=datetime(2026, 10, 12, tzinfo=timezone.utc),
+        audit_event=second_audit,
+        outbox_intent=second_outbox,
+        proposal=proposal,
+    )
+    second_draft = PolicyActivationDraft(
+        values={
+            **first_draft.values,
+            "policy_activation_id": second_activation_id,
+            "predecessor_policy_version_id": first_policy.access_policy_version_id,
+            "new_policy_version_id": second_policy.access_policy_version_id,
+            "policy_generation": 2,
+            "policy_proposal_id": proposal.policy_proposal_id,
+            "policy_proposal_version": proposal.proposal_version,
+            "policy_proposal_hash": proposal.proposed_policy_hash,
+            "initial_eligibility_decision_id": None,
+            "audit_event_id": second_audit_id,
+            "outbox_event_id": second_outbox_id,
+        }
+    )
+    async with postgresql_adapter.uow_factory(context) as uow:
+        assert await uow.access_policies.resolve_activation_result(second_command) is None
+        await uow.access_policies.activate(second_command, second_draft)
+        await uow.commit()
+
+    async with postgresql_adapter.uow_factory(context) as uow:
+        replay = await uow.access_policies.resolve_activation_result(first_command)
+        await uow.rollback()
+
+    assert replay is not None and replay.replay is True
+    assert replay.activation == first.activation
+    assert replay.current == first.current
+
+    conflicting_replay = replace(first_command, outbox_event_id=synthetic_uuid(3916))
+    async with postgresql_adapter.uow_factory(context) as uow:
+        with pytest.raises(IdempotencyConflictError):
+            await uow.access_policies.resolve_activation_result(conflicting_replay)
 
 
 @pytest.mark.parametrize(

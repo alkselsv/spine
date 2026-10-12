@@ -2489,6 +2489,39 @@ async def test_access_policy_catalog_enforces_lineage_immutability_and_receipt_s
                 )
             ).mappings()
         }
+        indexes = set(
+            (
+                await connection.execute(
+                    text(
+                        "SELECT indexname FROM pg_indexes WHERE schemaname = 'spine' "
+                        "AND tablename = ANY(:tables)"
+                    ),
+                    {"tables": list(policy_tables)},
+                )
+            ).scalars()
+        )
+        functions = {
+            row.proname: (
+                row.security_definer,
+                tuple(row.config or ()),
+                row.public_execute,
+            )
+            for row in (
+                await connection.execute(
+                    text(
+                        "SELECT procedure.proname, procedure.prosecdef AS security_definer, "
+                        "procedure.proconfig AS config, "
+                        "has_function_privilege('public', procedure.oid, 'EXECUTE') "
+                        "AS public_execute FROM pg_proc AS procedure "
+                        "JOIN pg_namespace AS namespace ON namespace.oid = "
+                        "procedure.pronamespace WHERE namespace.nspname = 'spine' "
+                        "AND procedure.proname IN "
+                        "('reject_access_policy_history_mutation', "
+                        "'enforce_current_access_policy_cas')"
+                    )
+                )
+            ).mappings()
+        }
 
     expected_constraints = {
         "fk_policy_activations_proposal",
@@ -2497,6 +2530,8 @@ async def test_access_policy_catalog_enforces_lineage_immutability_and_receipt_s
         "fk_policy_activations_audit",
         "fk_policy_activations_outbox",
         "fk_current_access_policies_activation",
+        "uq_policy_approvals_exact",
+        "uq_policy_activations_idempotency_receipt",
         "ck_access_policy_grants_authority_shape",
         "ck_access_policy_grants_validity",
     }
@@ -2505,6 +2540,35 @@ async def test_access_policy_catalog_enforces_lineage_immutability_and_receipt_s
         or any(actual.endswith(expected) for actual in constraints)
         for expected in expected_constraints
     )
+    expected_indexes = {
+        "pk_access_policy_versions",
+        "uq_access_policy_versions_scope_source_id",
+        "uq_access_policy_versions_source_version",
+        "uq_access_policy_versions_source_hash",
+        "ix_access_policy_versions_source",
+        "pk_access_policy_grants",
+        "uq_access_policy_grants_normalized",
+        "ix_access_policy_grants_principal",
+        "pk_policy_proposals",
+        "uq_policy_proposals_scope_source_id",
+        "uq_policy_proposals_exact",
+        "ix_policy_proposals_baseline",
+        "pk_policy_approvals",
+        "uq_policy_approvals_scope_source_id",
+        "uq_policy_approvals_exact",
+        "uq_policy_approvals_proposal_approver_decision",
+        "ix_policy_approvals_proposal",
+        "pk_policy_activations",
+        "uq_policy_activations_head_tuple",
+        "uq_policy_activations_source_policy",
+        "uq_policy_activations_source_generation",
+        "uq_policy_activations_idempotency_receipt",
+        "ix_policy_activations_source",
+        "pk_current_access_policies",
+        "uq_current_access_policies_scope_source",
+        "ix_current_access_policies_policy_generation",
+    }
+    assert expected_indexes <= indexes
     receipt_trigger = triggers["trg_policy_activations_receipt_scope"]
     assert receipt_trigger[:2] == (True, True)
     assert "AFTER INSERT OR UPDATE" in receipt_trigger[2]
@@ -2512,6 +2576,14 @@ async def test_access_policy_catalog_enforces_lineage_immutability_and_receipt_s
     for table in set(policy_tables) - {"current_access_policies"}:
         assert f"trg_{table}_immutable" in triggers
     assert "trg_current_access_policies_cas" in triggers
+    assert set(functions) == {
+        "reject_access_policy_history_mutation",
+        "enforce_current_access_policy_cas",
+    }
+    for security_definer, config, public_execute in functions.values():
+        assert security_definer is False
+        assert config == ("search_path=pg_catalog, spine",)
+        assert public_execute is False
 
 
 @pytest.mark.asyncio(loop_scope="session")

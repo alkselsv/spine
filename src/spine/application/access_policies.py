@@ -9,14 +9,16 @@ import json
 from typing import Protocol
 from uuid import UUID
 
-from pydantic import Field, model_validator
+from pydantic import Field
 
 from spine.domain.common import DefinitionModel
 from spine.domain.audit import AuditEvent
 from spine.application.persistence.outbox import OutboxIntent
+from spine.application.persistence.command_digest import CommandDigest, digest_command
+from spine.application.persistence.context import PersistenceOperation
+from spine.application.persistence.idempotency import IdempotencyKey
 from spine.domain.sources.access_policy import (
     AccessPolicyVersion,
-    AccessPermission,
     CurrentAccessPolicy,
     EligibilityDisposition,
     InitialPolicyEligibilityDecision,
@@ -25,7 +27,6 @@ from spine.domain.sources.access_policy import (
     PolicyApprovalDecision,
     PolicyBenefitClassification,
     PolicyProposal,
-    PrincipalKind,
 )
 
 
@@ -92,7 +93,7 @@ class AccessPolicyActivationCommand:
     expected_policy_generation: int
     expected_cas_version: int
     activation_id: UUID
-    idempotency_receipt_id: UUID
+    idempotency_key: IdempotencyKey
     audit_event_id: UUID
     outbox_event_id: UUID
     activated_at: datetime
@@ -101,6 +102,60 @@ class AccessPolicyActivationCommand:
     proposal: PolicyProposal | None = None
     approval: PolicyApproval | None = None
     eligibility: InitialPolicyEligibilityDecision | None = None
+
+    def expected_digest(self, operation: PersistenceOperation) -> CommandDigest:
+        return digest_command(
+            operation=operation,
+            operation_schema_version=1,
+            payload={
+                "policy": self.policy.model_dump(mode="json"),
+                "requester_canonical_human_id": self.requester_canonical_human_id,
+                "activator_canonical_human_id": self.activator_canonical_human_id,
+                "expected_policy_version_id": self.expected_policy_version_id,
+                "expected_policy_generation": self.expected_policy_generation,
+                "expected_cas_version": self.expected_cas_version,
+                "activation_id": self.activation_id,
+                "audit_event_id": self.audit_event_id,
+                "outbox_event_id": self.outbox_event_id,
+                "audit_event": (
+                    self.audit_event.model_dump(
+                        mode="json", exclude={"payload_snapshot"}
+                    )
+                    if self.audit_event
+                    else None
+                ),
+                "outbox_intent": (
+                    self.outbox_intent.model_dump(
+                        mode="json", exclude={"payload_snapshot"}
+                    )
+                    if self.outbox_intent
+                    else None
+                ),
+                "activated_at": self.activated_at,
+                "proposal": (
+                    self.proposal.model_dump(mode="json") if self.proposal else None
+                ),
+                "approval": (
+                    self.approval.model_dump(mode="json") if self.approval else None
+                ),
+                "eligibility": (
+                    self.eligibility.model_dump(mode="json")
+                    if self.eligibility
+                    else None
+                ),
+                "idempotency_key": self.idempotency_key.value,
+            },
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyActivationDraft:
+    values: dict[str, object]
+
+    def finalize(self, receipt_id: UUID) -> PolicyActivation:
+        return PolicyActivation.model_validate(
+            {**self.values, "idempotency_receipt_id": receipt_id}
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,13 +174,13 @@ class AccessPolicyRepository(Protocol):
     async def resolve_current(self, source_object_id: UUID) -> CurrentAccessPolicy | None: ...
 
     async def resolve_activation_result(
-        self, idempotency_receipt_id: UUID
+        self, command: AccessPolicyActivationCommand
     ) -> AccessPolicyActivationResult | None: ...
 
     async def activate(
         self,
         command: AccessPolicyActivationCommand,
-        activation: PolicyActivation,
+        activation: PolicyActivationDraft,
     ) -> AccessPolicyActivationResult: ...
 
     async def persist_proposal(
@@ -135,193 +190,6 @@ class AccessPolicyRepository(Protocol):
     async def resolve_proposal(self, proposal_id: UUID) -> PolicyProposal | None: ...
 
     async def persist_approval(self, approval: PolicyApproval) -> PolicyApproval: ...
-
-    async def resolve_effective_policy(
-        self, source_object_id: UUID
-    ) -> tuple[CurrentAccessPolicy, AccessPolicyVersion] | None: ...
-
-
-class ContentAuthorizationContext(DefinitionModel):
-    """Trusted Issue #5 authority snapshot used for one content decision."""
-
-    workspace_id: UUID
-    environment_id: UUID
-    canonical_human_id: UUID | None = None
-    effective_team_ids: frozenset[UUID] = frozenset()
-    membership_generation: int = Field(ge=1)
-    service_principal_id: UUID | None = None
-    service_authority_generation: int = Field(ge=1)
-    purpose: str | None = None
-    operation: str | None = None
-    server_owned_operation: bool = False
-    authority_snapshot_reference: UUID
-
-    @model_validator(mode="after")
-    def validate_service_context(self) -> "ContentAuthorizationContext":
-        service_values = (
-            self.service_principal_id,
-            self.purpose,
-            self.operation,
-        )
-        if any(value is not None for value in service_values) and not all(
-            value is not None for value in service_values
-        ):
-            raise ValueError("service identity, purpose, and operation are inseparable")
-        return self
-
-
-class ContentAuthorizationDecision(DefinitionModel):
-    """Disclosure-safe allow/deny decision over an exact source set."""
-
-    allowed: bool
-    source_object_ids: tuple[UUID, ...]
-    policy_version_ids: dict[UUID, UUID]
-    policy_generations: dict[UUID, int]
-    membership_generation: int = Field(ge=1)
-    service_authority_generation: int = Field(ge=1)
-    authority_snapshot_reference: UUID
-    purpose: str | None = None
-    operation: str | None = None
-    reason_code: str
-    evaluated_at: datetime
-
-
-class ContentAuthorizationService:
-    """Evaluate current allow-only policies without granting from admin authority."""
-
-    def __init__(self, repository: AccessPolicyRepository) -> None:
-        self._repository = repository
-
-    async def decide_human_disclosure(
-        self,
-        context: ContentAuthorizationContext,
-        source_object_ids: tuple[UUID, ...],
-        clock: datetime,
-    ) -> ContentAuthorizationDecision:
-        return await self._decide(context, source_object_ids, clock, "human")
-
-    async def decide_interactive_processing(
-        self,
-        context: ContentAuthorizationContext,
-        source_object_ids: tuple[UUID, ...],
-        clock: datetime,
-    ) -> ContentAuthorizationDecision:
-        return await self._decide(context, source_object_ids, clock, "interactive")
-
-    async def decide_noninteractive_processing(
-        self,
-        context: ContentAuthorizationContext,
-        source_object_ids: tuple[UUID, ...],
-        clock: datetime,
-    ) -> ContentAuthorizationDecision:
-        return await self._decide(context, source_object_ids, clock, "noninteractive")
-
-    async def _decide(
-        self,
-        context: ContentAuthorizationContext,
-        source_object_ids: tuple[UUID, ...],
-        clock: datetime,
-        mode: str,
-    ) -> ContentAuthorizationDecision:
-        if clock.tzinfo is None or clock.utcoffset() is None:
-            raise ValueError("decision clock must be timezone-aware")
-        sources = tuple(dict.fromkeys(source_object_ids))
-        allowed = bool(sources)
-        policy_ids: dict[UUID, UUID] = {}
-        generations: dict[UUID, int] = {}
-        for source_id in sources:
-            resolved = await self._repository.resolve_effective_policy(source_id)
-            if resolved is None:
-                allowed = False
-                break
-            current, policy = resolved
-            if (
-                current.workspace_id != context.workspace_id
-                or current.environment_id != context.environment_id
-                or policy.workspace_id != context.workspace_id
-                or policy.environment_id != context.environment_id
-                or current.access_policy_version_id
-                != policy.access_policy_version_id
-            ):
-                allowed = False
-                break
-            human_allowed = self._human_allowed(policy, context)
-            service_allowed = self._service_allowed(policy, context, clock)
-            if mode == "human":
-                source_allowed = context.canonical_human_id is not None and human_allowed
-            elif mode == "interactive":
-                source_allowed = (
-                    context.canonical_human_id is not None
-                    and context.service_principal_id is not None
-                    and human_allowed
-                    and service_allowed
-                )
-            else:
-                source_allowed = (
-                    context.canonical_human_id is None
-                    and context.service_principal_id is not None
-                    and context.server_owned_operation
-                    and service_allowed
-                )
-            if not source_allowed:
-                allowed = False
-                break
-            policy_ids[source_id] = policy.access_policy_version_id
-            generations[source_id] = current.policy_generation
-        if not allowed:
-            policy_ids = {}
-            generations = {}
-        return ContentAuthorizationDecision(
-            allowed=allowed,
-            source_object_ids=sources,
-            policy_version_ids=policy_ids,
-            policy_generations=generations,
-            membership_generation=context.membership_generation,
-            service_authority_generation=context.service_authority_generation,
-            authority_snapshot_reference=context.authority_snapshot_reference,
-            purpose=context.purpose,
-            operation=context.operation,
-            reason_code=("content_authority_allowed" if allowed else "content_authority_denied"),
-            evaluated_at=clock,
-        )
-
-    @staticmethod
-    def _human_allowed(
-        policy: AccessPolicyVersion, context: ContentAuthorizationContext
-    ) -> bool:
-        principals = set(context.effective_team_ids)
-        if context.canonical_human_id is not None:
-            principals.add(context.canonical_human_id)
-        return any(
-            grant.permission is AccessPermission.READ_CONTENT
-            and grant.principal_id in principals
-            and (
-                grant.principal_kind is PrincipalKind.TEAM
-                or (
-                    grant.principal_kind is PrincipalKind.HUMAN
-                    and grant.principal_id == context.canonical_human_id
-                )
-            )
-            for grant in policy.grants
-        )
-
-    @staticmethod
-    def _service_allowed(
-        policy: AccessPolicyVersion,
-        context: ContentAuthorizationContext,
-        clock: datetime,
-    ) -> bool:
-        return any(
-            grant.principal_kind is PrincipalKind.SERVICE
-            and grant.permission is AccessPermission.PROCESS_CONTENT
-            and grant.principal_id == context.service_principal_id
-            and grant.purpose == context.purpose
-            and grant.operation == context.operation
-            and (grant.valid_from is None or grant.valid_from <= clock)
-            and (grant.valid_until is None or clock < grant.valid_until)
-            for grant in policy.grants
-        )
-
 
 def _same_scope(policy: AccessPolicyVersion, snapshot: PolicyAuthoritySnapshot) -> bool:
     return (
@@ -392,13 +260,14 @@ class AccessPolicyActivationService:
     ) -> AccessPolicyActivationResult:
         try:
             return await self._activate(command)
-        except StalePolicyBaselineError:
+        except StalePolicyBaselineError as error:
             try:
                 await self._failed_attempt_audit.record_failed_cas(
                     command, "stale_policy_baseline"
                 )
-            finally:
-                raise
+            except Exception:
+                pass
+            raise error
 
     async def _activate(
         self, command: AccessPolicyActivationCommand
@@ -414,7 +283,7 @@ class AccessPolicyActivationService:
             raise StalePolicyAuthorityError("Current policy authority is required.")
 
         replay = await self._repository.resolve_activation_result(
-            command.idempotency_receipt_id
+            command
         )
         if replay is not None:
             if (
@@ -435,6 +304,11 @@ class AccessPolicyActivationService:
             self._validate_initial(command, requester)
             next_generation = 1
         else:
+            predecessor = await self._repository.resolve_policy(
+                current.access_policy_version_id
+            )
+            if predecessor is None:
+                raise StalePolicyBaselineError("The current policy baseline changed.")
             classification = await self._authority.classify_policy_change(
                 requester,
                 current.access_policy_version_id,
@@ -448,6 +322,7 @@ class AccessPolicyActivationService:
                 requester,
                 activator,
                 current,
+                predecessor,
                 classification,
                 independent,
             )
@@ -456,26 +331,48 @@ class AccessPolicyActivationService:
         evidence = command.eligibility
         proposal = command.proposal
         approval = command.approval
-        activation = PolicyActivation(
-            policy_activation_id=command.activation_id,
-            workspace_id=policy.workspace_id,
-            environment_id=policy.environment_id,
-            source_object_id=policy.source_object_id,
-            predecessor_policy_version_id=command.expected_policy_version_id,
-            new_policy_version_id=policy.access_policy_version_id,
-            policy_generation=next_generation,
-            policy_proposal_id=(proposal.policy_proposal_id if proposal else None),
-            policy_approval_id=(approval.policy_approval_id if approval else None),
-            initial_eligibility_decision_id=(evidence.decision_id if evidence else None),
-            requester_canonical_human_id=command.requester_canonical_human_id,
-            activator_canonical_human_id=command.activator_canonical_human_id,
-            membership_generation=requester.membership_generation,
-            authority_generation=requester.authority_generation,
-            service_authority_generation=requester.service_authority_generation,
-            idempotency_receipt_id=command.idempotency_receipt_id,
-            audit_event_id=command.audit_event_id,
-            outbox_event_id=command.outbox_event_id,
-            activated_at=command.activated_at,
+        activation = PolicyActivationDraft(
+            values={
+                "policy_activation_id": command.activation_id,
+                "workspace_id": policy.workspace_id,
+                "environment_id": policy.environment_id,
+                "source_object_id": policy.source_object_id,
+                "predecessor_policy_version_id": command.expected_policy_version_id,
+                "new_policy_version_id": policy.access_policy_version_id,
+                "policy_generation": next_generation,
+                "policy_proposal_id": (
+                    proposal.policy_proposal_id if proposal else None
+                ),
+                "policy_proposal_version": (
+                    proposal.proposal_version if proposal else None
+                ),
+                "policy_proposal_hash": (
+                    proposal.proposed_policy_hash if proposal else None
+                ),
+                "policy_approval_id": (
+                    approval.policy_approval_id if approval else None
+                ),
+                "policy_approval_decision": (
+                    approval.decision if approval else None
+                ),
+                "initial_eligibility_decision_id": (
+                    evidence.decision_id if evidence else None
+                ),
+                "requester_canonical_human_id": (
+                    command.requester_canonical_human_id
+                ),
+                "activator_canonical_human_id": (
+                    command.activator_canonical_human_id
+                ),
+                "membership_generation": requester.membership_generation,
+                "authority_generation": requester.authority_generation,
+                "service_authority_generation": (
+                    requester.service_authority_generation
+                ),
+                "audit_event_id": command.audit_event_id,
+                "outbox_event_id": command.outbox_event_id,
+                "activated_at": command.activated_at,
+            }
         )
         return await self._repository.activate(command, activation)
 
@@ -521,6 +418,7 @@ class AccessPolicyActivationService:
         requester: PolicyAuthoritySnapshot,
         activator: PolicyAuthoritySnapshot,
         current: CurrentAccessPolicy,
+        predecessor: AccessPolicyVersion,
         classification: PolicyBenefitClassification,
         independent: bool,
     ) -> None:
@@ -532,6 +430,9 @@ class AccessPolicyActivationService:
             or current.access_policy_version_id != command.expected_policy_version_id
             or current.policy_generation != command.expected_policy_generation
             or current.cas_version != command.expected_cas_version
+            or policy.predecessor_policy_version_id
+            != current.access_policy_version_id
+            or policy.version != predecessor.version + 1
         ):
             raise StalePolicyBaselineError("The current policy baseline changed.")
         if proposal is None or (
@@ -633,11 +534,9 @@ __all__ = [
     "AccessPolicyActivationService",
     "AccessPolicyError",
     "AccessPolicyRepository",
-    "ContentAuthorizationContext",
-    "ContentAuthorizationDecision",
-    "ContentAuthorizationService",
     "InitialPolicyIneligibleError",
     "PolicyApprovalRequiredError",
+    "PolicyActivationDraft",
     "PolicyAuthorityPort",
     "PolicyAuthoritySnapshot",
     "PolicyFailedAttemptAudit",

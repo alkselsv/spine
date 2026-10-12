@@ -138,6 +138,47 @@ class AccessPolicyVersion(DefinitionModel):
             raise ValueError("grant identities must be unique")
         return self
 
+    def allows_human_read(
+        self, canonical_human_id: UUID, effective_team_ids: frozenset[UUID]
+    ) -> bool:
+        """Evaluate explicit human/team grants from an already trusted identity snapshot."""
+
+        return any(
+            grant.permission is AccessPermission.READ_CONTENT
+            and (
+                (
+                    grant.principal_kind is PrincipalKind.HUMAN
+                    and grant.principal_id == canonical_human_id
+                )
+                or (
+                    grant.principal_kind is PrincipalKind.TEAM
+                    and grant.principal_id in effective_team_ids
+                )
+            )
+            for grant in self.grants
+        )
+
+    def allows_service_processing(
+        self,
+        service_principal_id: UUID,
+        purpose: str,
+        operation: str,
+        evaluated_at: datetime,
+    ) -> bool:
+        """Evaluate exact service authority using the injected decision clock."""
+
+        _aware(evaluated_at, "evaluated_at")
+        return any(
+            grant.principal_kind is PrincipalKind.SERVICE
+            and grant.permission is AccessPermission.PROCESS_CONTENT
+            and grant.principal_id == service_principal_id
+            and grant.purpose == purpose
+            and grant.operation == operation
+            and (grant.valid_from is None or grant.valid_from <= evaluated_at)
+            and (grant.valid_until is None or evaluated_at < grant.valid_until)
+            for grant in self.grants
+        )
+
 
 class PolicyProposal(DefinitionModel):
     policy_proposal_id: UUID
@@ -207,7 +248,10 @@ class PolicyActivation(DefinitionModel):
     new_policy_version_id: UUID
     policy_generation: int = Field(ge=1)
     policy_proposal_id: UUID | None = None
+    policy_proposal_version: int | None = Field(default=None, ge=1)
+    policy_proposal_hash: Digest | None = None
     policy_approval_id: UUID | None = None
+    policy_approval_decision: PolicyApprovalDecision | None = None
     initial_eligibility_decision_id: UUID | None = None
     requester_canonical_human_id: UUID
     activator_canonical_human_id: UUID

@@ -118,3 +118,37 @@ def test_grant_rejects_permission_or_interval_that_could_widen_authority(
             principal_id=_id(21),
             **values,
         )
+
+
+def test_policy_without_explicit_read_grant_denies_administrator_identity() -> None:
+    assert _policy().allows_human_read(_id(6), frozenset()) is False
+
+
+@pytest.mark.parametrize(
+    ("evaluated_at", "allowed"),
+    [
+        (NOW - timedelta(microseconds=1), False),
+        (NOW, True),
+        (NOW + timedelta(hours=1) - timedelta(microseconds=1), True),
+        (NOW + timedelta(hours=1), False),
+    ],
+)
+def test_service_grant_enforces_half_open_validity_interval(
+    evaluated_at: datetime, allowed: bool
+) -> None:
+    policy = _policy(
+        AccessGrant(
+            access_grant_id=_id(30),
+            principal_kind=PrincipalKind.SERVICE,
+            principal_id=_id(31),
+            permission=AccessPermission.PROCESS_CONTENT,
+            purpose="answer_question",
+            operation="retrieve_context",
+            valid_from=NOW,
+            valid_until=NOW + timedelta(hours=1),
+        )
+    )
+
+    assert policy.allows_service_processing(
+        _id(31), "answer_question", "retrieve_context", evaluated_at
+    ) is allowed
