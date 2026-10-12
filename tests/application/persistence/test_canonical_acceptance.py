@@ -26,10 +26,12 @@ from spine.application.persistence.errors import (
     CanonicalAuthorityConflictError,
     CanonicalEligibilityError,
     OptimisticConflictError,
+    PersistenceUnavailableError,
 )
 from spine.application.canonical_acceptance import (
     CanonicalAcceptanceAuditUnavailableError,
     CanonicalAcceptanceCoordinator,
+    build_canonical_acceptance_coordinator,
 )
 from spine.application.persistence.canonical import (
     SourceOrderComparison,
@@ -64,6 +66,9 @@ from spine.infrastructure.persistence.in_memory import InMemoryPersistence
 from spine.infrastructure.persistence.access_policies import (
     InMemoryAccessPolicyRepository,
 )
+from spine.infrastructure.persistence.canonical_composition import (
+    build_production_canonical_acceptance_coordinator,
+)
 from tests.application.persistence.test_source_observation import (
     NOW,
     provenance,
@@ -77,6 +82,24 @@ from tests.application.persistence.test_source_observation import command as obs
 
 def uid(value: int) -> UUID:
     return uuid5(NAMESPACE_URL, f"canonical-test-{value}")
+
+
+def test_canonical_production_composition_requires_failed_audit() -> None:
+    with pytest.raises(TypeError):
+        build_canonical_acceptance_coordinator(
+            uow_factory=lambda context: None,
+            context_factory=lambda command: None,
+            failed_attempt_audit=None,
+        )
+    coordinator = build_production_canonical_acceptance_coordinator(
+        uow_factory=lambda context: None,
+        context_factory=lambda command: None,
+    )
+    assert isinstance(coordinator, CanonicalAcceptanceCoordinator)
+    assert issubclass(
+        CanonicalAcceptanceAuditUnavailableError,
+        PersistenceUnavailableError,
+    )
 
 
 @pytest.fixture

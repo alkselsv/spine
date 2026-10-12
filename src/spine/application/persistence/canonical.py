@@ -12,7 +12,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from spine.application.diagnostics.audit import validate_audit_event_for_context
 from spine.application.persistence.command_digest import CommandDigest, digest_command
 from spine.application.persistence.context import (
     EnvironmentScope,
@@ -140,6 +139,8 @@ def validate_canonical_acceptance_effects(
     outbox_registry: OutboxEventRegistry,
 ) -> tuple[AuditEvent, OutboxIntent]:
     """Validate complete typed audit/outbox linkage before mutation effects."""
+
+    from spine.application.diagnostics.audit import validate_audit_event_for_context
 
     if not isinstance(context.scope, EnvironmentScope):
         raise ValueError("Canonical acceptance requires an environment scope.")
