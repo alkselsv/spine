@@ -334,7 +334,7 @@ ADMISSION_COLUMNS = {
 
 CANONICAL_ACCEPTANCE_CONSTRAINTS = {
     "pk_canonical_generation_counters",
-    "ck_canonical_generation_nonnegative",
+    "ck_canonical_generation_counters_generation_nonnegative",
     "pk_canonical_acceptances",
     "uq_canonical_acceptances_generation",
     "uq_canonical_acceptances_revision",
@@ -1582,42 +1582,35 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                 for actual in constraints
             )
         )
-        and not (
-            expected == "ck_canonical_generation_nonnegative"
-            and any(
-                actual.startswith(
-                    "ck_canonical_generation_counters_ck_canonical_generation_nonneg"
-                )
-                for actual in constraints
-            )
-        )
-        and not (
-            expected == "ck_canonical_acceptances_ordering_shape"
-            and any(
-                actual.startswith(
-                    "ck_canonical_acceptances_ck_canonical_acceptances_ordering_sh"
-                )
-                for actual in constraints
-            )
-        )
     }
     assert not missing_final_constraints, sorted(missing_final_constraints)
     outbox_fk = (
         (
             await connection.execute(
                 text(
-                    "SELECT constraint_record.condeferrable, "
+                    "SELECT constraint_record.conname, "
+                    "constraint_record.condeferrable, "
                     "constraint_record.condeferred, "
                     "pg_get_constraintdef(constraint_record.oid) AS definition "
                     "FROM pg_constraint AS constraint_record "
-                    "JOIN pg_class AS relation "
-                    "ON relation.oid = constraint_record.conrelid "
+                    "JOIN pg_class AS source_relation "
+                    "ON source_relation.oid = constraint_record.conrelid "
+                    "JOIN pg_class AS referenced_relation "
+                    "ON referenced_relation.oid = constraint_record.confrelid "
                     "JOIN pg_namespace AS namespace "
-                    "ON namespace.oid = relation.relnamespace "
+                    "ON namespace.oid = source_relation.relnamespace "
+                    "JOIN pg_attribute AS source_column "
+                    "ON source_column.attrelid = source_relation.oid "
+                    "AND source_column.attnum = ANY(constraint_record.conkey) "
+                    "JOIN pg_attribute AS referenced_column "
+                    "ON referenced_column.attrelid = referenced_relation.oid "
+                    "AND referenced_column.attnum = ANY(constraint_record.confkey) "
                     "WHERE namespace.nspname = 'spine' "
-                    "AND relation.relname = 'canonical_acceptances' "
-                    "AND constraint_record.conname = "
-                    "'fk_canonical_acceptances_outbox'"
+                    "AND constraint_record.contype = 'f' "
+                    "AND source_relation.relname = 'canonical_acceptances' "
+                    "AND source_column.attname = 'outbox_event_id' "
+                    "AND referenced_relation.relname = 'outbox_intents' "
+                    "AND referenced_column.attname = 'event_id'"
                 )
             )
         )
@@ -2319,37 +2312,40 @@ async def test_outbox_intent_is_immutable_after_insert(
         )
         await connection.commit()
 
-    for statement in (
-        "UPDATE spine.outbox_intents SET event_schema_version = 2 "
-        "WHERE event_id = :event_id",
-        "DELETE FROM spine.outbox_intents WHERE event_id = :event_id",
-    ):
-        with pytest.raises(IntegrityError) as error:
-            async with _connection(migrated_database.migration.url) as connection:
-                await connection.execute(text(statement), {"event_id": event_id})
-        assert error.value.orig.diag.constraint_name == "ck_outbox_intents_immutable"
+    try:
+        for statement in (
+            "UPDATE spine.outbox_intents SET event_schema_version = 2 "
+            "WHERE event_id = :event_id",
+            "DELETE FROM spine.outbox_intents WHERE event_id = :event_id",
+        ):
+            with pytest.raises(IntegrityError) as error:
+                async with _connection(migrated_database.migration.url) as connection:
+                    await connection.execute(text(statement), {"event_id": event_id})
+            assert (
+                error.value.orig.diag.constraint_name
+                == "ck_outbox_intents_immutable"
+            )
 
-    async with _connection(migrated_database.migration.url) as connection:
-        await connection.execute(
-            text(
-                "ALTER TABLE spine.outbox_intents "
-                "DISABLE TRIGGER trg_outbox_intents_immutable"
+    finally:
+        async with _connection(migrated_database.migration.url) as connection:
+            await connection.execute(
+                text(
+                    "ALTER TABLE spine.outbox_intents "
+                    "DISABLE TRIGGER trg_outbox_intents_immutable"
+                )
             )
-        )
-        await connection.execute(
-            text("DELETE FROM spine.outbox_intents WHERE event_id = :event_id"),
-            {"event_id": event_id},
-        )
-        await connection.execute(
-            text("SET CONSTRAINTS fk_canonical_acceptances_outbox IMMEDIATE")
-        )
-        await connection.execute(
-            text(
-                "ALTER TABLE spine.outbox_intents "
-                "ENABLE TRIGGER trg_outbox_intents_immutable"
+            await connection.execute(
+                text("DELETE FROM spine.outbox_intents WHERE event_id = :event_id"),
+                {"event_id": event_id},
             )
-        )
-        await connection.commit()
+            await connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
+            await connection.execute(
+                text(
+                    "ALTER TABLE spine.outbox_intents "
+                    "ENABLE TRIGGER trg_outbox_intents_immutable"
+                )
+            )
+            await connection.commit()
 
 
 @pytest.mark.asyncio(loop_scope="session")

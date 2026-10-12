@@ -100,7 +100,7 @@ def upgrade() -> None:
             [f"{SCHEMA}.environments.workspace_id", f"{SCHEMA}.environments.id"],
             name="fk_canonical_generation_counters_environment",
         ),
-        sa.CheckConstraint("current_generation >= 0", name="ck_canonical_generation_nonnegative"),
+        sa.CheckConstraint("current_generation >= 0", name="generation_nonnegative"),
         schema=SCHEMA,
     )
     op.create_table(
@@ -180,7 +180,7 @@ def upgrade() -> None:
         sa.CheckConstraint("accepted_generation >= 1", name="ck_canonical_acceptances_generation"),
         sa.CheckConstraint("ordering IN ('trusted', 'expected_current')", name="ck_canonical_acceptances_ordering"),
         sa.CheckConstraint("(ordering_scheme IS NULL) = (ordering_token IS NULL)", name="ck_canonical_acceptances_order_pair"),
-        sa.CheckConstraint("(ordering = 'trusted' AND ordering_scheme IS NOT NULL) OR (ordering = 'expected_current' AND ordering_scheme IS NULL)", name="ck_canonical_acceptances_ordering_shape"),
+        sa.CheckConstraint("(ordering = 'trusted' AND ordering_scheme IS NOT NULL) OR (ordering = 'expected_current' AND ordering_scheme IS NULL)", name="ordering_shape"),
         schema=SCHEMA,
     )
     op.create_index(
