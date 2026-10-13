@@ -3,12 +3,16 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from enum import Enum
+import hashlib
+import json
+from typing import Annotated, Literal
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, StrictInt, field_validator, model_validator
 
-from spine.domain.common import ActorRef, SchemaRef, SpineModel
+from spine.domain.common import ActorRef, DefinitionModel, SchemaRef, SpineModel
+from spine.domain.sources import SourceRevision
 
 
 class ArtifactRef(SpineModel):
@@ -85,3 +89,296 @@ class Artifact(SpineModel):
         if self.id in self.upstream_artifact_ids:
             raise ValueError("artifact cannot include itself in upstream lineage")
         return self
+
+
+class ParseCoverage(str, Enum):
+    COMPLETE = "complete"
+    PARTIAL = "partial"
+    FAILED = "failed"
+
+
+class PhysicalLineLocator(DefinitionModel):
+    """A half-open raw Unicode code-point range on one physical line."""
+
+    kind: Literal["physical_line"] = "physical_line"
+    line_number: StrictInt = Field(gt=0)
+    start_codepoint: StrictInt = Field(ge=0)
+    end_codepoint: StrictInt = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "PhysicalLineLocator":
+        if self.end_codepoint < self.start_codepoint:
+            raise ValueError("locator end must not precede start")
+        return self
+
+
+Locator = Annotated[PhysicalLineLocator, Field(discriminator="kind")]
+
+
+class ParseExclusion(DefinitionModel):
+    """A content-free reason why a portion was not parsed."""
+
+    schema_version: Literal["parse-exclusion:v1"] = "parse-exclusion:v1"
+    code: Literal[
+        "invalid_utf8",
+        "unsupported_structure",
+        "malformed_structure",
+        "bounded_input",
+    ]
+    count: StrictInt = Field(gt=0)
+    locator: PhysicalLineLocator | None = None
+
+
+class ParsedSegment(DefinitionModel):
+    schema_version: Literal["parsed-segment:v1"] = "parsed-segment:v1"
+    segment_id: UUID
+    segment_digest: str = Field(pattern=r"[0-9a-f]{64}")
+    artifact_digest: str = Field(pattern=r"[0-9a-f]{64}")
+    text: str
+    text_digest: str = Field(pattern=r"[0-9a-f]{64}")
+    locator: Locator
+    heading_path: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_digest(self) -> "ParsedSegment":
+        expected_text_digest = hashlib.sha256(self.text.encode("utf-8")).hexdigest()
+        if self.text_digest != expected_text_digest:
+            raise ValueError("segment text digest does not match text")
+        expected_segment_digest = segment_digest(
+            artifact_digest=self.artifact_digest,
+            locator=self.locator,
+            text_digest=self.text_digest,
+            heading_path=self.heading_path,
+        )
+        if self.segment_digest != expected_segment_digest:
+            raise ValueError("segment digest does not match segment identity")
+        if self.segment_id != uuid5(NAMESPACE_URL, f"spine:parsed-segment:v1:{self.segment_digest}"):
+            raise ValueError("segment id does not match segment identity")
+        return self
+
+
+class ParsedDocument(DefinitionModel):
+    """Immutable, digest-addressed parser output for one source revision."""
+
+    schema_version: Literal["parsed-document:v1"] = "parsed-document:v1"
+    artifact_id: UUID
+    artifact_digest: str = Field(pattern=r"[0-9a-f]{64}")
+    workspace_id: UUID
+    environment_id: UUID
+    source_object_id: UUID
+    source_revision_id: UUID
+    source_revision_digest: str = Field(pattern=r"[0-9a-f]{64}")
+    original_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    parser_name: str
+    parser_version: str
+    parser_config_reference: str
+    locator_contract_version: str
+    media_type: str
+    coverage: ParseCoverage
+    segments: tuple[ParsedSegment, ...] = ()
+    exclusions: tuple[ParseExclusion, ...] = ()
+    source_byte_length: StrictInt = Field(ge=0)
+    source_codepoint_length: StrictInt = Field(ge=0)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> "ParsedDocument":
+        if any(identifier.int == 0 for identifier in (
+            self.artifact_id, self.workspace_id, self.environment_id,
+            self.source_object_id, self.source_revision_id,
+        )):
+            raise ValueError("parsed document identifiers must be non-zero")
+        if self.created_at.tzinfo is None or self.created_at.utcoffset() is None:
+            raise ValueError("created_at must be timezone-aware")
+        if self.coverage is ParseCoverage.COMPLETE and self.exclusions:
+            raise ValueError("complete parsing cannot contain exclusions")
+        if self.coverage is not ParseCoverage.COMPLETE and not self.exclusions:
+            raise ValueError("partial or failed parsing requires exclusions")
+        if self.coverage is ParseCoverage.FAILED and self.segments:
+            raise ValueError("failed parsing cannot contain segments")
+        if any(segment.artifact_digest != self.artifact_digest for segment in self.segments):
+            raise ValueError("segment belongs to another parsed document")
+        if self.artifact_digest != parsed_document_digest(
+            workspace_id=self.workspace_id,
+            environment_id=self.environment_id,
+            source_object_id=self.source_object_id,
+            source_revision_id=self.source_revision_id,
+            source_revision_digest=self.source_revision_digest,
+            original_sha256=self.original_sha256,
+            parser_name=self.parser_name,
+            parser_version=self.parser_version,
+            parser_config_reference=self.parser_config_reference,
+            locator_contract_version=self.locator_contract_version,
+            media_type=self.media_type,
+            coverage=self.coverage,
+            segments=self.segments,
+            exclusions=self.exclusions,
+            source_byte_length=self.source_byte_length,
+            source_codepoint_length=self.source_codepoint_length,
+        ):
+            raise ValueError("parsed document digest does not match its identity")
+        return self
+
+    def resolve_locator(self, source_text: str, locator: PhysicalLineLocator) -> str:
+        segment = next((value for value in self.segments if value.locator == locator), None)
+        if segment is None:
+            raise ValueError("locator does not resolve")
+        return resolve_locator(source_text, locator, expected_text=segment.text)
+
+    @classmethod
+    def from_source(
+        cls,
+        source_revision: SourceRevision,
+        *,
+        parser_name: str,
+        parser_version: str,
+        parser_config_reference: str,
+        locator_contract_version: str,
+        media_type: str,
+        coverage: ParseCoverage,
+        segments: tuple[ParsedSegment, ...],
+        exclusions: tuple[ParseExclusion, ...],
+        source_byte_length: int,
+        source_codepoint_length: int,
+    ) -> "ParsedDocument":
+        digest = parsed_document_digest(
+            workspace_id=source_revision.workspace_id,
+            environment_id=source_revision.environment_id,
+            source_object_id=source_revision.source_object_id,
+            source_revision_id=source_revision.revision_id,
+            source_revision_digest=source_revision.revision_digest,
+            original_sha256=source_revision.original_sha256,
+            parser_name=parser_name,
+            parser_version=parser_version,
+            parser_config_reference=parser_config_reference,
+            locator_contract_version=locator_contract_version,
+            media_type=media_type,
+            coverage=coverage,
+            segments=segments,
+            exclusions=exclusions,
+            source_byte_length=source_byte_length,
+            source_codepoint_length=source_codepoint_length,
+        )
+        artifact_id = uuid5(NAMESPACE_URL, f"spine:parsed-document:v1:{digest}")
+        rebound_segments = tuple(
+            _build_segment(
+                artifact_digest=digest,
+                text=segment.text,
+                text_digest=segment.text_digest,
+                locator=segment.locator,
+                heading_path=segment.heading_path,
+                segment_digest=segment_digest(
+                    artifact_digest=digest,
+                    locator=segment.locator,
+                    text_digest=segment.text_digest,
+                    heading_path=segment.heading_path,
+                ),
+            )
+            for segment in segments
+        )
+        return cls(
+            artifact_id=artifact_id,
+            artifact_digest=digest,
+            workspace_id=source_revision.workspace_id,
+            environment_id=source_revision.environment_id,
+            source_object_id=source_revision.source_object_id,
+            source_revision_id=source_revision.revision_id,
+            source_revision_digest=source_revision.revision_digest,
+            original_sha256=source_revision.original_sha256,
+            parser_name=parser_name,
+            parser_version=parser_version,
+            parser_config_reference=parser_config_reference,
+            locator_contract_version=locator_contract_version,
+            media_type=media_type,
+            coverage=coverage,
+            segments=rebound_segments,
+            exclusions=exclusions,
+            source_byte_length=source_byte_length,
+            source_codepoint_length=source_codepoint_length,
+            created_at=source_revision.observed_at,
+        )
+
+
+def segment_digest(
+    *, artifact_digest: str, locator: PhysicalLineLocator, text_digest: str, heading_path: tuple[str, ...]
+) -> str:
+    return hashlib.sha256(_canonical_json({
+        "schema_version": "parsed-segment:v1",
+        "artifact_digest": artifact_digest,
+        "locator": locator.model_dump(mode="json"),
+        "text_digest": text_digest,
+        "heading_path": heading_path,
+    })).hexdigest()
+
+
+def parsed_document_digest(
+    *, workspace_id: UUID, environment_id: UUID, source_object_id: UUID,
+    source_revision_id: UUID, source_revision_digest: str, original_sha256: str,
+    parser_name: str, parser_version: str, parser_config_reference: str,
+    locator_contract_version: str, media_type: str, coverage: ParseCoverage,
+    segments: tuple[ParsedSegment, ...], exclusions: tuple[ParseExclusion, ...],
+    source_byte_length: int, source_codepoint_length: int,
+) -> str:
+    return hashlib.sha256(_canonical_json({
+        "schema_version": "parsed-document:v1",
+        "workspace_id": str(workspace_id), "environment_id": str(environment_id),
+        "source_object_id": str(source_object_id), "source_revision_id": str(source_revision_id),
+        "source_revision_digest": source_revision_digest, "original_sha256": original_sha256,
+        "parser_name": parser_name, "parser_version": parser_version,
+        "parser_config_reference": parser_config_reference,
+        "locator_contract_version": locator_contract_version, "media_type": media_type,
+        "coverage": coverage.value,
+        "segments": [
+            {"text_digest": segment.text_digest, "locator": segment.locator.model_dump(mode="json"),
+             "heading_path": segment.heading_path}
+            for segment in segments
+        ],
+        "exclusions": [exclusion.model_dump(mode="json") for exclusion in exclusions],
+        "source_byte_length": source_byte_length, "source_codepoint_length": source_codepoint_length,
+    })).hexdigest()
+
+
+def _build_segment(
+    *, artifact_digest: str, text: str, text_digest: str, locator: PhysicalLineLocator,
+    heading_path: tuple[str, ...], segment_digest: str,
+) -> ParsedSegment:
+    return ParsedSegment(
+        segment_id=uuid5(NAMESPACE_URL, f"spine:parsed-segment:v1:{segment_digest}"),
+        segment_digest=segment_digest,
+        artifact_digest=artifact_digest,
+        text=text,
+        text_digest=text_digest,
+        locator=locator,
+        heading_path=heading_path,
+    )
+
+
+def resolve_locator(
+    source_text: str,
+    locator: PhysicalLineLocator,
+    *,
+    expected_text: str | None = None,
+) -> str:
+    if not isinstance(source_text, str):
+        raise TypeError("source_text must be text")
+    starts: list[int] = []
+    offset = 0
+    for line in source_text.splitlines(keepends=True):
+        starts.append(offset)
+        offset += len(line)
+    if source_text and (not starts or offset < len(source_text)):
+        starts.append(offset)
+    if locator.line_number > len(starts):
+        raise ValueError("locator does not resolve")
+    start = starts[locator.line_number - 1]
+    line_end = start + len(source_text[start:].splitlines(keepends=True)[0].rstrip("\r\n")) if source_text[start:] else start
+    if locator.start_codepoint != start or locator.end_codepoint > line_end:
+        raise ValueError("locator does not resolve")
+    value = source_text[locator.start_codepoint:locator.end_codepoint]
+    if expected_text is not None and value != expected_text:
+        raise ValueError("locator does not resolve")
+    return value
+
+
+def _canonical_json(value: object) -> bytes:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")

@@ -230,6 +230,46 @@ ingestion_run_source_bindings = Table(
     Column("binding_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("ingestion_run_source_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("binding_command_identity", Text, nullable=False), Column("binding_command_digest", String(64), nullable=False), Column("original_reference", JSONB), Column("original_receipt_kind", Text), Column("original_receipt_id", PostgreSQLUUID(as_uuid=True)), Column("original_receipt_digest", String(64)), Column("idempotency_receipt_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("bound_at", DateTime(timezone=True), nullable=False),
 )
 
+parsed_documents = Table(
+    "parsed_documents", metadata,
+    Column("artifact_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_revision_digest", String(64), nullable=False),
+    Column("original_sha256", String(64), nullable=False),
+    Column("artifact_digest", String(64), nullable=False),
+    Column("schema_version", Text, nullable=False),
+    Column("parser_name", Text, nullable=False),
+    Column("parser_version", Text, nullable=False),
+    Column("parser_config_reference", Text, nullable=False),
+    Column("locator_contract_version", Text, nullable=False),
+    Column("media_type", Text, nullable=False),
+    Column("coverage", Text, nullable=False),
+    Column("exclusions", JSONB, nullable=False),
+    Column("source_byte_length", Integer, nullable=False),
+    Column("source_codepoint_length", Integer, nullable=False),
+    Column("command_identity", Text, nullable=False),
+    Column("command_digest", String(64), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+
+parsed_document_segments = Table(
+    "parsed_document_segments", metadata,
+    Column("segment_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("artifact_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("segment_ordinal", Integer, nullable=False),
+    Column("schema_version", Text, nullable=False),
+    Column("segment_digest", String(64), nullable=False),
+    Column("text", Text, nullable=False),
+    Column("text_digest", String(64), nullable=False),
+    Column("locator", JSONB, nullable=False),
+    Column("heading_path", JSONB, nullable=False),
+)
+
 ingestion_transitions = Table(
     "ingestion_transitions", metadata,
     Column("ingestion_transition_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("target_kind", Text, nullable=False), Column("ingestion_run_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("ingestion_run_source_id", PostgreSQLUUID(as_uuid=True)), Column("predecessor_transition_id", PostgreSQLUUID(as_uuid=True)), Column("state", Text, nullable=False), Column("attempt", Integer, nullable=False), Column("safe_metrics_schema", Text), Column("safe_metrics", JSONB), Column("actor_or_service", Text, nullable=False), Column("trace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("occurred_at", DateTime(timezone=True), nullable=False),

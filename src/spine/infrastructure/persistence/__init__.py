@@ -8,10 +8,16 @@ from spine.infrastructure.persistence.backup_recovery import (
 from spine.infrastructure.persistence.backup_recovery_in_memory import (
     InMemoryRecoveryRepository,
 )
+from spine.infrastructure.persistence.parsed_artifacts import (
+    InMemoryParsedArtifactRepository,
+    PostgreSQLParsedArtifactRepository,
+)
 
 __all__ = [
     "InMemoryPersistence",
     "PostgreSQLPersistence",
     "PostgreSQLBackupRecoveryRepository",
     "InMemoryRecoveryRepository",
+    "InMemoryParsedArtifactRepository",
+    "PostgreSQLParsedArtifactRepository",
 ]

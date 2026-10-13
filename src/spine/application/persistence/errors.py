@@ -76,3 +76,7 @@ class UnexpectedPersistenceError(PersistenceError):
 
 class UnitOfWorkLifecycleError(PersistenceError):
     """A Unit of Work was used outside its single-owner lifecycle."""
+
+
+class ParsedArtifactConflictError(ConstraintConflictError):
+    """A parsed artifact command or immutable identity conflicts with history."""
