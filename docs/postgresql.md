@@ -218,7 +218,9 @@ to monotonic policy and CAS generations.
 Revision `20261016_19` adds the deployment-scoped backup fence, ordered
 operation tickets, immutable epoch-scoped quiescence evidence and immutable
 recovery manifests. Revision `20261017_20` adds the append-only, hash-linked
-recovery-evidence invalidation chain. The live lease is the serialized
+recovery-evidence invalidation chain. Revision `20261018_21` adds immutable,
+versioned parsed-document artifacts and physical-line segment locators for
+strict TXT and Markdown parsing. The live lease is the serialized
 coordination boundary; historical evidence cannot be rewritten by the runtime
 role, and recovery readiness must fail closed unless the complete chain verifies.
 Revision `20261018_21` adds the canonical acceptance ledger, serialized
