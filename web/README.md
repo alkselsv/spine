@@ -71,3 +71,11 @@ pnpm --dir web exec playwright install --with-deps chromium
 через injection, безопасно отображает structured errors и передаёт server state
 в TanStack Query. Frontend не обращается к базе, Cognee, model provider или
 отдельному Node BFF: FastAPI остаётся единственным backend/control-plane server.
+
+## Browser qualification
+
+`pnpm web:test:e2e` запускает собранную SPA в Chromium. Тестовые URL с
+`fixture=controlled` включают только синтетический API/SSE boundary для
+квалификации foundation; этот режим не является авторизацией и не заменяет
+будущую интеграцию с Issue #26. Описание сценариев находится в
+[`docs/design/issue-167-frontend-qualification.md`](../docs/design/issue-167-frontend-qualification.md).

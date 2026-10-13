@@ -58,6 +58,7 @@ export interface ChatTransport {
 export interface ChatTransportOptions {
   heartbeatTimeoutMs?: number;
   maxReconnectAttempts?: number;
+  onReconnect?: (attempt: number) => void;
 }
 
 export interface ChatRequestContext extends ChatScope {
@@ -71,6 +72,7 @@ export class SpineChatTransport implements ChatTransport {
   private readonly canonicalMessages = new Map<string, Message>();
   private readonly heartbeatTimeoutMs: number;
   private readonly maxReconnectAttempts: number;
+  private readonly onReconnect: (attempt: number) => void;
 
   constructor(
     private readonly api: ChatApi,
@@ -78,6 +80,7 @@ export class SpineChatTransport implements ChatTransport {
   ) {
     this.heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? 30_000;
     this.maxReconnectAttempts = options.maxReconnectAttempts ?? 2;
+    this.onReconnect = options.onReconnect ?? (() => undefined);
     if (!Number.isFinite(this.heartbeatTimeoutMs) || this.heartbeatTimeoutMs <= 0) {
       throw new Error('heartbeatTimeoutMs must be positive.');
     }
@@ -270,6 +273,7 @@ export class SpineChatTransport implements ChatTransport {
           return;
         }
         reconnectAttempts += 1;
+        this.onReconnect(reconnectAttempts);
         continue;
       }
 
@@ -283,6 +287,7 @@ export class SpineChatTransport implements ChatTransport {
         return;
       }
       reconnectAttempts += 1;
+      this.onReconnect(reconnectAttempts);
     }
   }
 
