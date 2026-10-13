@@ -16,6 +16,7 @@ from spine.application.persistence.repositories import (
 from spine.application.persistence.outbox import OutboxWriter
 from spine.application.persistence.ingestion import IngestionRepository
 from spine.application.persistence.canonical import CanonicalAcceptanceRepository
+from spine.application.persistence.boundary import CanonicalBoundaryRepository
 
 if TYPE_CHECKING:
     from spine.application.diagnostics.audit import AuditWriter
@@ -55,6 +56,11 @@ class UnitOfWork(TenantUnitOfWork, Protocol):
     def admissions(self) -> AdmissionRepository: ...
     @property
     def canonical(self) -> CanonicalAcceptanceRepository: ...
+    @property
+    def boundaries(self) -> CanonicalBoundaryRepository: ...
+
+    @property
+    def canonical_boundaries(self) -> CanonicalBoundaryRepository: ...
     @property
     def idempotency(self) -> IdempotencyRepository: ...
 

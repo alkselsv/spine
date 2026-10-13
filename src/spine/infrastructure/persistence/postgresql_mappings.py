@@ -487,6 +487,34 @@ current_source_heads = Table(
     Column("changed_at", DateTime(timezone=True), nullable=False),
 )
 
+canonical_boundaries = Table(
+    "canonical_boundaries",
+    metadata,
+    Column("boundary_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("projection_kind", Text, nullable=False),
+    Column("scope_version", Text, nullable=False),
+    Column("accepted_through_generation", Integer, nullable=False),
+    Column("boundary_time", DateTime(timezone=True), nullable=False),
+    Column("manifest_digest", String(64), nullable=False),
+    Column("idempotency_receipt_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+)
+
+canonical_boundary_members = Table(
+    "canonical_boundary_members",
+    metadata,
+    Column("boundary_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("acceptance_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("revision_kind", Text, nullable=False),
+    Column("accepted_generation", Integer, nullable=False),
+    PrimaryKeyConstraint("boundary_id", "source_object_id", name="pk_canonical_boundary_members"),
+)
+
 __all__ = [
     "access_policy_grants",
     "access_policy_versions",
@@ -521,4 +549,6 @@ __all__ = [
     "canonical_generation_counters",
     "canonical_acceptances",
     "current_source_heads",
+    "canonical_boundaries",
+    "canonical_boundary_members",
 ]

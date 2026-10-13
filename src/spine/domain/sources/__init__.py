@@ -22,6 +22,11 @@ from .access_policy import (
     PrincipalKind,
 )
 from .canonical import CanonicalAcceptance, CanonicalOrdering, CurrentSourceHead
+from .boundary import (
+    CanonicalBoundary,
+    CanonicalBoundaryMember,
+    canonical_boundary_manifest_digest,
+)
 
 from .models import (
     IdentityMode,
@@ -50,8 +55,11 @@ from .profile import OBSERVATION_SCHEMA
 __all__ = [
     "AccessGrant",
     "CanonicalAcceptance",
+    "CanonicalBoundary",
+    "CanonicalBoundaryMember",
     "CanonicalOrdering",
     "CurrentSourceHead",
+    "canonical_boundary_manifest_digest",
     "AccessPermission",
     "AccessPolicyVersion",
     "CurrentAccessPolicy",

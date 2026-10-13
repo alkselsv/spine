@@ -395,6 +395,47 @@ CANONICAL_ACCEPTANCE_COLUMNS = {
     )
 }
 
+CANONICAL_BOUNDARY_CONSTRAINTS = {
+    "pk_canonical_boundaries",
+    "uq_canonical_boundaries_scope_id",
+    "uq_canonical_boundaries_idempotency_receipt",
+    "fk_canonical_boundaries_environment",
+    "fk_canonical_boundaries_idempotency",
+    "ck_canonical_boundaries_generation",
+    "ck_canonical_boundaries_projection_kind",
+    "ck_canonical_boundaries_scope_version",
+    "ck_canonical_boundaries_digest",
+    "pk_canonical_boundary_members",
+    "fk_canonical_boundary_members_boundary",
+    "fk_canonical_boundary_members_source",
+    "fk_canonical_boundary_members_revision",
+    "fk_canonical_boundary_members_acceptance",
+    "ck_canonical_boundary_members_kind",
+    "ck_canonical_boundary_members_generation",
+}
+CANONICAL_BOUNDARY_INDEXES = {
+    "pk_canonical_boundaries",
+    "uq_canonical_boundaries_scope_id",
+    "uq_canonical_boundaries_idempotency_receipt",
+    "pk_canonical_boundary_members",
+    "ix_canonical_boundary_members_scope_source",
+}
+CANONICAL_BOUNDARY_COLUMNS = {
+    ("canonical_boundaries", column)
+    for column in (
+        "boundary_id", "workspace_id", "environment_id", "projection_kind",
+        "scope_version", "accepted_through_generation", "boundary_time",
+        "manifest_digest", "idempotency_receipt_id",
+    )
+} | {
+    ("canonical_boundary_members", column)
+    for column in (
+        "boundary_id", "workspace_id", "environment_id", "source_object_id",
+        "source_revision_id", "acceptance_id", "revision_kind",
+        "accepted_generation",
+    )
+}
+
 
 @dataclass(frozen=True, slots=True)
 class MigratedDatabase:
@@ -1383,6 +1424,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "current_source_heads",
         "parsed_documents",
         "parsed_document_segments",
+        "canonical_boundaries",
+        "canonical_boundary_members",
     }
     expected_final_constraints = {
         "alembic_version_pkc",
@@ -1731,7 +1774,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "uq_parsed_segments_digest",
         "uq_parsed_segments_ordinal",
         "ix_parsed_segments_artifact",
-    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES | CANONICAL_ACCEPTANCE_INDEXES
+    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES | CANONICAL_ACCEPTANCE_INDEXES | CANONICAL_BOUNDARY_INDEXES
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
         "workspaces": (True, True),
@@ -1774,6 +1817,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "current_source_heads": (True, True),
         "parsed_documents": (True, True),
         "parsed_document_segments": (True, True),
+        "canonical_boundaries": (True, True),
+        "canonical_boundary_members": (True, True),
     }
     assert rls == expected_rls
     tenant_rls_tables = {
@@ -1873,6 +1918,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "canonical_generation_counters": (True, True, True, False),
         "canonical_acceptances": (True, True, False, False),
         "current_source_heads": (True, True, True, False),
+            "canonical_boundaries": (True, True, False, False),
+            "canonical_boundary_members": (True, True, False, False),
         "source_canonical_tables": (True, False, False, False),
         "source_canonical_unicode": (True, False, False, False),
         "source_canonical_compositions": (True, False, False, False),
@@ -2008,7 +2055,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'access_policy_grants', 'policy_proposals', 'policy_approvals', "
                             "'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', "
-                            "'current_source_heads', 'backup_fence_leases', "
+                            "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', 'backup_fence_leases', "
                             "'fence_operation_tickets', 'recovery_quiescence_evidence', "
                             "'storage_recovery_manifests', 'recovery_evidence_invalidations', "
                             "'parsed_documents', 'parsed_document_segments'))"
@@ -2036,7 +2083,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', "
-                            "'current_source_heads', 'backup_fence_leases', 'fence_operation_tickets', "
+                            "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations', 'parsed_documents', "
                             "'parsed_document_segments')"
@@ -2058,7 +2105,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', "
-                            "'current_source_heads', 'backup_fence_leases', 'fence_operation_tickets', "
+                            "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations', 'parsed_documents', "
                             "'parsed_document_segments')"
@@ -2079,7 +2126,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', "
-                            "'current_source_heads', 'backup_fence_leases', 'fence_operation_tickets', "
+                            "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations', 'parsed_documents', "
                             "'parsed_document_segments')"
@@ -2100,7 +2147,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', "
-                            "'current_source_heads', 'backup_fence_leases', 'fence_operation_tickets', "
+                            "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations', 'parsed_documents', "
                             "'parsed_document_segments')"
@@ -2672,6 +2719,9 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'recovery_evidence_invalidations', "
                         "'canonical_generation_counters', 'canonical_acceptances', "
                         "'current_source_heads', 'parsed_documents', 'parsed_document_segments')"
+                        "'canonical_generation_counters', 'canonical_acceptances', 'current_source_heads', "
+                        "'canonical_boundaries', 'canonical_boundary_members', "
+                        "'parsed_documents', 'parsed_document_segments')"
                     )
                 )
             )
@@ -2741,6 +2791,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "current_source_heads": (True, True),
             "parsed_documents": (True, True),
             "parsed_document_segments": (True, True),
+            "canonical_boundaries": (True, True),
+            "canonical_boundary_members": (True, True),
         }
     standard_tables = set(tables) - {"outbox_deliveries"}
     assert set(policies) == {
@@ -3999,13 +4051,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261017_20_recovery_evidence_integrity.py",
         "20261018_21_canonical_acceptance.py",
         "20261019_22_parsed_artifacts.py",
+        "20261020_23_canonical_boundaries.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261020_23_injected_failure.py").write_text(
+    (target / "versions" / "20261021_24_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261020_23'\n"
-        "down_revision = '20261019_22'\n"
+        "revision = '20261021_24'\n"
+        "down_revision = '20261020_23'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

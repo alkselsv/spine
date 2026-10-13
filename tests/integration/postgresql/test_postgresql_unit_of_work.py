@@ -40,6 +40,7 @@ from spine.application.persistence.idempotency import (
     IdempotencyReplay,
     OwnedIdempotencyClaim,
 )
+from spine.application.persistence.boundary import CanonicalBoundaryCaptureCommand
 from spine.application.persistence.outbox import OpaqueObjectReference
 from spine.application.persistence.repositories import SourceObservationCommand
 from spine.application.access_policies import (
@@ -123,6 +124,9 @@ from tests.contracts.persistence.test_canonical_acceptance_contract import (
     test_canonical_rejects_superseded_admission as contract_canonical_admission,
     test_canonical_rejects_unknown_ordering_scheme as contract_canonical_unknown_ordering,
     test_canonical_replay_requires_current_policy_authority as contract_canonical_replay_authority,
+)
+from tests.contracts.persistence.test_canonical_boundary_contract import (
+    test_boundary_capture_materializes_exact_current_heads_and_replays as contract_canonical_boundary,
 )
 from tests.contracts.persistence.test_ingestion_repository_contract import (
     exercise_ingestion_run_item_contract,
@@ -704,6 +708,7 @@ async def test_postgresql_adapter_satisfies_source_observation_contract(
         contract_canonical_admission,
         contract_canonical_replay_authority,
         contract_canonical_unknown_ordering,
+        contract_canonical_boundary,
     ),
     ids=lambda contract: contract.__name__.removeprefix("test_"),
 )
@@ -712,6 +717,73 @@ async def test_postgresql_adapter_satisfies_canonical_acceptance_contract(
     contract: ContractTest,
 ) -> None:
     await contract(postgresql_adapter)
+
+
+async def test_postgresql_boundary_capture_fences_acceptance_at_counter_lock(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    case = await prepare_canonical_case(postgresql_adapter, 26000)
+    assert postgresql_adapter.ingestion_context is not None
+    boundary_context = postgresql_adapter.ingestion_context(
+        case.source.workspace_id,
+        case.source.environment_id,
+        "canonical_boundary_capture",
+    )
+    boundary_command = CanonicalBoundaryCaptureCommand.create(
+        projection_kind="qa",
+        scope_version="r1",
+        idempotency_key=IdempotencyKey("boundary-race-26000"),
+    )
+
+    async def capture() -> object:
+        async with postgresql_adapter.uow_factory(boundary_context) as uow:
+            result = await uow.boundaries.capture(boundary_command)
+            await uow.commit()
+            return result
+
+    async def accept() -> None:
+        async with postgresql_adapter.uow_factory(case.context) as uow:
+            await uow.canonical.accept(case.command)
+            await uow.commit()
+
+    capture_task: asyncio.Task[object] | None = None
+    acceptance_task: asyncio.Task[None] | None = None
+    try:
+        CANONICAL_TRANSACTION_PROBE.arm(
+            PostgreSQLTransactionStage.AFTER_CANONICAL_BOUNDARY_COUNTER_LOCKED
+        )
+        capture_task = asyncio.create_task(capture())
+        await CANONICAL_TRANSACTION_PROBE.wait_until_reached()
+        acceptance_task = asyncio.create_task(accept())
+        await asyncio.sleep(0)
+        CANONICAL_TRANSACTION_PROBE.release()
+        captured = await capture_task
+        await acceptance_task
+    finally:
+        CANONICAL_TRANSACTION_PROBE.disarm()
+        for task in (capture_task, acceptance_task):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (capture_task, acceptance_task) if task is not None),
+            return_exceptions=True,
+        )
+
+    assert captured.boundary.accepted_through_generation == 0
+    assert captured.members == ()
+
+    later_command = CanonicalBoundaryCaptureCommand.create(
+        projection_kind="qa",
+        scope_version="r1",
+        idempotency_key=IdempotencyKey("boundary-race-26001"),
+    )
+    async with postgresql_adapter.uow_factory(boundary_context) as uow:
+        later = await uow.boundaries.capture(later_command)
+        await uow.rollback()
+
+    assert later.boundary.accepted_through_generation == 1
+    assert len(later.members) == 1
+    assert later.members[0].source_revision_id == case.revision.revision_id
 
 
 async def test_postgresql_canonical_acceptance_requires_corresponding_outbox_intent(
