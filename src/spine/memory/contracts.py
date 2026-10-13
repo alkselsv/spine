@@ -39,6 +39,33 @@ class ProjectionOutcome(str, Enum):
     INCOMPLETE = "incomplete"
 
 
+class ProjectionLifecycle(str, Enum):
+    """Provider-neutral lifecycle of one projection command."""
+
+    SUCCEEDED = "succeeded"
+    REPLAYED = "replayed"
+    RECOVERED = "recovered"
+    RECOVERABLE = "recoverable"
+    FAILED = "failed"
+    FENCED = "fenced"
+
+
+class ProjectionEffectAction(str, Enum):
+    """The only source-scoped physical mutations a projection may request."""
+
+    UPSERT_SOURCE = "upsert_source"
+    REMOVE_SOURCE = "remove_source"
+
+
+class ProjectionEffectStatus(str, Enum):
+    """Safe state returned for one physical effect."""
+
+    PLANNED = "planned"
+    APPLIED = "applied"
+    REPLAYED = "replayed"
+    FAILED = "failed"
+
+
 class ProjectionFailureCode(str, Enum):
     INTEGRITY_CONFLICT = "integrity_conflict"
     MISSING_EVIDENCE = "missing_evidence"
@@ -47,6 +74,8 @@ class ProjectionFailureCode(str, Enum):
     AMBIGUOUS_EVIDENCE = "ambiguous_evidence"
     INCOMPLETE_EVIDENCE = "incomplete_evidence"
     NAMESPACE_UNAVAILABLE = "namespace_unavailable"
+    REVISION_FENCED = "revision_fenced"
+    PHYSICAL_FAILURE = "physical_failure"
 
 
 class _ProjectionModel(DefinitionModel):
@@ -70,6 +99,7 @@ class ProjectionSourceRevision(_ProjectionModel):
     source_object_id: UUID
     source_revision_id: UUID
     revision_digest: str = Field(pattern=_DIGEST)
+    revision_number: int = Field(default=1, ge=1)
     status: Literal["current", "stale", "tombstoned", "missing", "ambiguous", "incomplete"] = "current"
     processing_receipt_id: UUID | None = None
     locator_contract_version: str = Field(min_length=1, max_length=128)
@@ -220,6 +250,52 @@ class ProjectionCount(_ProjectionModel):
     value: StrictInt = Field(ge=0)
 
 
+class ProjectionEffect(_ProjectionModel):
+    """Deterministic, source-scoped work handed to a physical adapter."""
+
+    schema_version: Literal["projection-effect:v1"] = "projection-effect:v1"
+    effect_id: str = Field(min_length=1, max_length=256)
+    operation: ProjectionOperation
+    action: ProjectionEffectAction
+    status: ProjectionEffectStatus = ProjectionEffectStatus.PLANNED
+    workspace_id: UUID
+    environment_id: UUID
+    command_identity: str = Field(min_length=1, max_length=64, pattern=_IDENTIFIER)
+    projection_candidate: ProjectionCandidate
+    projection_config: ProjectionConfigVersion
+    canonical_boundary: CanonicalBoundary
+    physical_namespace: ProjectionNamespace
+    source_object_id: UUID
+    source_revision_id: UUID
+    revision_digest: str = Field(pattern=_DIGEST)
+    revision_number: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> "ProjectionEffect":
+        for field_name in (
+            "workspace_id",
+            "environment_id",
+            "source_object_id",
+            "source_revision_id",
+        ):
+            _require_non_zero(getattr(self, field_name), field_name)
+        return self
+
+
+class ProjectionRecovery(_ProjectionModel):
+    """Typed continuation data for a command interrupted by physical failure."""
+
+    schema_version: Literal["projection-recovery:v1"] = "projection-recovery:v1"
+    attempt: StrictInt = Field(ge=1)
+    pending_effect_ids: tuple[str, ...] = Field(min_length=1)
+
+
+class ProjectionEffectStore(Protocol):
+    """Provider-neutral physical mutation port."""
+
+    async def apply(self, effect: ProjectionEffect) -> ProjectionEffect: ...
+
+
 class ProjectionCommand(_ProjectionModel):
     """Common immutable command envelope for every physical operation."""
 
@@ -241,6 +317,9 @@ class ProjectionCommand(_ProjectionModel):
             _require_non_zero(getattr(self, field_name), field_name)
         if self.projection_candidate.run_id != self.projection_run_id:
             raise ValueError("projection candidate must belong to the command run")
+        source_ids = [source.source_object_id for source in self.source_revisions]
+        if len(source_ids) != len(set(source_ids)):
+            raise ValueError("a command may contain one revision per source object")
         return self
 
 
@@ -272,9 +351,84 @@ class ProjectionResult(_ProjectionModel):
     outcome: ProjectionOutcome
     command_identity: str = Field(min_length=1, max_length=64, pattern=_IDENTIFIER)
     command_digest: str = Field(pattern=_DIGEST)
+    lifecycle: ProjectionLifecycle = ProjectionLifecycle.SUCCEEDED
     artifact_reference: str | None = Field(default=None, min_length=1, max_length=256)
     counts: tuple[ProjectionCount, ...] = ()
+    effects: tuple[ProjectionEffect, ...] = ()
+    recovery: ProjectionRecovery | None = None
     failure: ProjectionFailure | None = None
+
+    @model_validator(mode="after")
+    def validate_lifecycle(self) -> "ProjectionResult":
+        if self.lifecycle in {
+            ProjectionLifecycle.SUCCEEDED,
+            ProjectionLifecycle.RECOVERED,
+        }:
+            if self.outcome is not ProjectionOutcome.SUCCEEDED:
+                raise ValueError("successful lifecycle requires a succeeded outcome")
+            if self.failure is not None or self.recovery is not None:
+                raise ValueError("successful lifecycle cannot contain failure state")
+            if any(
+                effect.status
+                not in {
+                    ProjectionEffectStatus.APPLIED,
+                    ProjectionEffectStatus.REPLAYED,
+                }
+                for effect in self.effects
+            ):
+                raise ValueError("successful lifecycle cannot contain failed effects")
+        elif self.lifecycle is ProjectionLifecycle.RECOVERABLE:
+            if self.outcome is not ProjectionOutcome.FAILED:
+                raise ValueError("recoverable lifecycle requires a failed outcome")
+            if (
+                self.failure is None
+                or self.failure.code is not ProjectionFailureCode.PHYSICAL_FAILURE
+                or self.recovery is None
+            ):
+                raise ValueError("recoverable lifecycle requires failure and recovery")
+            pending_effect_ids = {
+                effect.effect_id
+                for effect in self.effects
+                if effect.status
+                not in {
+                    ProjectionEffectStatus.APPLIED,
+                    ProjectionEffectStatus.REPLAYED,
+                }
+            }
+            if (
+                not pending_effect_ids
+                or set(self.recovery.pending_effect_ids) != pending_effect_ids
+            ):
+                raise ValueError("recovery must list exactly the pending effects")
+        elif self.lifecycle is ProjectionLifecycle.REPLAYED:
+            if (
+                self.outcome is not ProjectionOutcome.REPLAYED
+                or self.failure is not None
+                or self.recovery is not None
+                or any(
+                    effect.status is not ProjectionEffectStatus.REPLAYED
+                    for effect in self.effects
+                )
+            ):
+                raise ValueError("replayed lifecycle requires a replayed outcome")
+        elif self.lifecycle is ProjectionLifecycle.FENCED:
+            if self.outcome is not ProjectionOutcome.STALE:
+                raise ValueError("fenced lifecycle requires a stale outcome")
+            if (
+                self.failure is None
+                or self.failure.code is not ProjectionFailureCode.REVISION_FENCED
+                or self.effects
+            ):
+                raise ValueError("fenced lifecycle must contain only a revision fence")
+        elif self.lifecycle is ProjectionLifecycle.FAILED:
+            if self.failure is None:
+                raise ValueError("failed lifecycle requires a failure")
+            if self.outcome in {
+                ProjectionOutcome.SUCCEEDED,
+                ProjectionOutcome.REPLAYED,
+            }:
+                raise ValueError("failed lifecycle cannot have a success outcome")
+        return self
 
 
 class ProjectionRetrievalResult(_ProjectionModel):
