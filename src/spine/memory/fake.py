@@ -426,6 +426,7 @@ class DeterministicContextProjection(ContextProjection):
                 workspace_id=command.workspace_id,
                 environment_id=command.environment_id,
                 command_identity=command.command_identity,
+                command_digest=command.command_digest,
                 projection_candidate=command.projection_candidate,
                 projection_config=command.projection_config,
                 canonical_boundary=command.canonical_boundary,

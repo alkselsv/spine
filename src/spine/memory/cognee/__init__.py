@@ -12,6 +12,14 @@ from .extraction import (
     RelationCandidate,
     extract_projection,
 )
+from .indexing import (
+    ChunkProjectionMapping,
+    CogneeChunkProjectionStore,
+    CogneePublicSdk,
+    CogneeSdk,
+    CogneeVersionError,
+    SUPPORTED_COGNEE_VERSION,
+)
 
 __all__ = [
     "AcceptedEntity",
@@ -24,4 +32,10 @@ __all__ = [
     "ProjectionGraphWriter",
     "RelationCandidate",
     "extract_projection",
+    "ChunkProjectionMapping",
+    "CogneeChunkProjectionStore",
+    "CogneePublicSdk",
+    "CogneeSdk",
+    "CogneeVersionError",
+    "SUPPORTED_COGNEE_VERSION",
 ]

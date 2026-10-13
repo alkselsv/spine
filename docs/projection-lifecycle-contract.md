@@ -46,6 +46,36 @@ logical context. The deterministic fake rejects mismatches with the typed
 diagnostics. Ordinary retrieval accepts only `active` namespaces; shadow,
 rebuilding, failed and retired artifacts cannot serve retrieval content.
 
+## Cognee chunk write-side adapter
+
+`spine.memory.cognee.indexing.CogneeChunkProjectionStore` implements the
+`ProjectionEffectStore` seam for Cognee 1.5.4. It consumes an immutable
+`ParsedDocument` catalog keyed by `source_revision_id`, validates workspace,
+environment, source identity and revision digest before writing, and sends each
+parsed segment as a Cognee `DataItem`. External metadata pins the source
+revision, parsed artifact, stable locator, projection configuration, canonical
+boundary and routed physical namespace. The adapter derives the dataset name
+from the server-routed namespace and uses the namespace digest as the node set;
+callers cannot select an arbitrary Cognee dataset.
+
+Project and rebuild effects use public `add` and `cognify` calls. Update effects
+use public `update` for shared physical data IDs, add newly introduced segments,
+and soft-delete removed segments before re-cognifying. Remove effects soft-delete
+all mapped data IDs and retain a tombstone fence. Replayed effect IDs and
+revision fences produce status-only outcomes without another physical write;
+provider exceptions are also reduced to a failed effect without returning
+provider messages or source content. Durable command/receipt persistence and
+publication authority remain outside the adapter.
+
+Rebuild qualification uses a new server-routed shadow namespace, runs the same
+offline contract/evidence suite against its fake SDK, and promotes it only via
+the PostgreSQL-owned publication workflow. A failed rebuild is retired without
+changing the active namespace; rollback is a new successor publication of the
+last validated canonical boundary, never a reader switch to stale physical
+state. Changes to `chunk-artifact:v1` require a new adapter contract version,
+rebuild of the target namespace and replay/regression evaluation before
+activation.
+
 `ProjectionNamespaceRegistry` is an offline lifecycle catalog for deterministic
 qualification. Its active-candidate view excludes failed and retired records;
 it does not own PostgreSQL publication or active-pointer authority.

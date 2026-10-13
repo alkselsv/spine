@@ -15,3 +15,9 @@ The suite covers command replay and digest conflicts, revision/evidence fences,
 structured retrieval provenance, tenant/environment isolation, safe diagnostics,
 shadow namespace exclusion, physical partial failure recovery, and the
 project/update/remove/rebuild operations.
+
+`CogneeChunkProjectionStore` is a lower-level `ProjectionEffectStore` write
+adapter, not a complete `ContextProjection`: it intentionally has no retrieval
+or seed hook. Its public effect seam is covered by the provider-free SDK fake
+tests in `tests/memory/cognee/test_indexing.py`; the shared suite above remains
+for complete ContextProjection implementations.
