@@ -2,12 +2,306 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from enum import Enum
+from typing import Any, Literal, Protocol
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import ConfigDict, Field, StrictBool, StrictInt, model_validator
 
-from spine.domain.common import ActorRef, SpineModel
+from spine.domain.common import ActorRef, DefinitionModel, SpineModel
+
+
+_DIGEST = r"[0-9a-f]{64}"
+_IDENTIFIER = r"^[a-z][a-z0-9_.:-]{0,63}$"
+
+
+def _require_non_zero(value: UUID, field_name: str) -> None:
+    if not isinstance(value, UUID) or value.int == 0:
+        raise ValueError(f"{field_name} must be a non-zero UUID")
+
+
+class ProjectionOperation(str, Enum):
+    PROJECT = "project"
+    UPDATE = "update"
+    REMOVE = "remove"
+    REBUILD = "rebuild"
+    RETRIEVE = "retrieve"
+
+
+class ProjectionOutcome(str, Enum):
+    SUCCEEDED = "succeeded"
+    REPLAYED = "replayed"
+    FAILED = "failed"
+    MISSING = "missing"
+    STALE = "stale"
+    TOMBSTONED = "tombstoned"
+    AMBIGUOUS = "ambiguous"
+    INCOMPLETE = "incomplete"
+
+
+class ProjectionFailureCode(str, Enum):
+    INTEGRITY_CONFLICT = "integrity_conflict"
+    MISSING_EVIDENCE = "missing_evidence"
+    STALE_EVIDENCE = "stale_evidence"
+    TOMBSTONED_SOURCE = "tombstoned_source"
+    AMBIGUOUS_EVIDENCE = "ambiguous_evidence"
+    INCOMPLETE_EVIDENCE = "incomplete_evidence"
+    NAMESPACE_UNAVAILABLE = "namespace_unavailable"
+
+
+class _ProjectionModel(DefinitionModel):
+    """Immutable provider-neutral contract with a closed JSON shape."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class StableLocator(_ProjectionModel):
+    """A provider-neutral, source-revision-scoped evidence locator."""
+
+    schema_version: Literal["stable-locator:v1"] = "stable-locator:v1"
+    kind: Literal["page", "sheet_row", "message", "character_range", "record_field", "custom"]
+    value: str = Field(min_length=1, max_length=512)
+
+
+class ProjectionSourceRevision(_ProjectionModel):
+    """The minimum source lineage an adapter may receive or return."""
+
+    schema_version: Literal["projection-source-revision:v1"] = "projection-source-revision:v1"
+    source_object_id: UUID
+    source_revision_id: UUID
+    revision_digest: str = Field(pattern=_DIGEST)
+    status: Literal["current", "stale", "tombstoned", "missing", "ambiguous", "incomplete"] = "current"
+    processing_receipt_id: UUID | None = None
+    locator_contract_version: str = Field(min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> "ProjectionSourceRevision":
+        _require_non_zero(self.source_object_id, "source_object_id")
+        _require_non_zero(self.source_revision_id, "source_revision_id")
+        if self.processing_receipt_id is not None:
+            _require_non_zero(self.processing_receipt_id, "processing_receipt_id")
+        return self
+
+
+class ProjectionConfigVersion(_ProjectionModel):
+    """Pinned processing configuration; never a provider-owned setting."""
+
+    schema_version: Literal["projection-config:v1"] = "projection-config:v1"
+    config_id: UUID
+    version: str = Field(min_length=1, max_length=128)
+    config_digest: str = Field(pattern=_DIGEST)
+    ontology_version: str = Field(min_length=1, max_length=128)
+    adapter_contract_version: str = Field(min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> "ProjectionConfigVersion":
+        _require_non_zero(self.config_id, "config_id")
+        return self
+
+
+class CanonicalBoundary(_ProjectionModel):
+    """The canonical input cut selected by the owning persistence layer."""
+
+    schema_version: Literal["canonical-boundary:v1"] = "canonical-boundary:v1"
+    boundary_id: UUID
+    boundary_digest: str = Field(pattern=_DIGEST)
+    accepted_through_generation: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> "CanonicalBoundary":
+        _require_non_zero(self.boundary_id, "boundary_id")
+        return self
+
+
+class ProjectionCandidate(_ProjectionModel):
+    """Opaque candidate context for an isolated shadow namespace."""
+
+    schema_version: Literal["projection-candidate:v1"] = "projection-candidate:v1"
+    candidate_id: UUID
+    run_id: UUID
+    partition_id: UUID
+    snapshot_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> "ProjectionCandidate":
+        for field_name in ("candidate_id", "run_id", "partition_id", "snapshot_id"):
+            value = getattr(self, field_name)
+            if value is not None:
+                _require_non_zero(value, field_name)
+        return self
+
+
+class ProjectionNamespace(_ProjectionModel):
+    """Opaque physical namespace selected by Spine, never by a provider."""
+
+    schema_version: Literal["projection-namespace:v1"] = "projection-namespace:v1"
+    namespace: str = Field(min_length=1, max_length=512)
+    namespace_digest: str = Field(pattern=_DIGEST)
+
+
+class EvidenceReference(_ProjectionModel):
+    """A structured, revision-specific pointer returned with projected data."""
+
+    schema_version: Literal["projection-evidence-reference:v1"] = "projection-evidence-reference:v1"
+    evidence_id: str = Field(min_length=1, max_length=128)
+    workspace_id: UUID
+    environment_id: UUID
+    source_object_id: UUID
+    source_revision_id: UUID
+    locator: StableLocator
+    evidence_digest: str = Field(pattern=_DIGEST)
+    status: Literal["valid", "missing", "stale", "tombstoned", "ambiguous", "incomplete"] = "valid"
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> "EvidenceReference":
+        for field_name in (
+            "workspace_id",
+            "environment_id",
+            "source_object_id",
+            "source_revision_id",
+        ):
+            _require_non_zero(getattr(self, field_name), field_name)
+        return self
+
+
+class ProjectionChunk(_ProjectionModel):
+    schema_version: Literal["projection-chunk:v1"] = "projection-chunk:v1"
+    chunk_id: str = Field(min_length=1, max_length=128)
+    text: str = Field(min_length=1)
+    evidence: tuple[EvidenceReference, ...] = Field(min_length=1)
+
+
+class ProjectionEntity(_ProjectionModel):
+    schema_version: Literal["projection-entity:v1"] = "projection-entity:v1"
+    entity_id: str = Field(min_length=1, max_length=128)
+    kind: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=512)
+    evidence: tuple[EvidenceReference, ...] = Field(min_length=1)
+
+
+class ProjectionRelation(_ProjectionModel):
+    schema_version: Literal["projection-relation:v1"] = "projection-relation:v1"
+    relation_id: str = Field(min_length=1, max_length=128)
+    kind: str = Field(min_length=1, max_length=128)
+    subject_entity_id: str = Field(min_length=1, max_length=128)
+    object_entity_id: str = Field(min_length=1, max_length=128)
+    evidence: tuple[EvidenceReference, ...] = Field(min_length=1)
+
+
+class ProjectionDiagnostic(_ProjectionModel):
+    """Safe operational detail; it deliberately has no free-form provider text."""
+
+    schema_version: Literal["projection-safe-diagnostic:v1"] = "projection-safe-diagnostic:v1"
+    attempt: StrictInt | None = Field(default=None, ge=1)
+    item_count: StrictInt | None = Field(default=None, ge=0)
+    duration_ms: StrictInt | None = Field(default=None, ge=0)
+    opaque_detail_ref: UUID | None = None
+    excerpt: None = None
+
+    @model_validator(mode="after")
+    def validate_reference(self) -> "ProjectionDiagnostic":
+        if self.opaque_detail_ref is not None:
+            _require_non_zero(self.opaque_detail_ref, "opaque_detail_ref")
+        return self
+
+
+class ProjectionFailure(_ProjectionModel):
+    schema_version: Literal["projection-failure:v1"] = "projection-failure:v1"
+    code: ProjectionFailureCode
+    retryable: StrictBool
+    safe_detail: ProjectionDiagnostic
+
+
+class ProjectionCount(_ProjectionModel):
+    """One immutable, content-free adapter count."""
+
+    schema_version: Literal["projection-count:v1"] = "projection-count:v1"
+    name: str = Field(min_length=1, max_length=64, pattern=_IDENTIFIER)
+    value: StrictInt = Field(ge=0)
+
+
+class ProjectionCommand(_ProjectionModel):
+    """Common immutable command envelope for every physical operation."""
+
+    schema_version: Literal["context-projection-command:v1"] = "context-projection-command:v1"
+    workspace_id: UUID
+    environment_id: UUID
+    projection_run_id: UUID
+    projection_candidate: ProjectionCandidate
+    projection_config: ProjectionConfigVersion
+    canonical_boundary: CanonicalBoundary
+    source_revisions: tuple[ProjectionSourceRevision, ...] = ()
+    physical_namespace: ProjectionNamespace
+    command_identity: str = Field(min_length=1, max_length=64, pattern=_IDENTIFIER)
+    command_digest: str = Field(pattern=_DIGEST)
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> "ProjectionCommand":
+        for field_name in ("workspace_id", "environment_id", "projection_run_id"):
+            _require_non_zero(getattr(self, field_name), field_name)
+        if self.projection_candidate.run_id != self.projection_run_id:
+            raise ValueError("projection candidate must belong to the command run")
+        return self
+
+
+class ProjectCommand(ProjectionCommand):
+    operation: Literal[ProjectionOperation.PROJECT] = ProjectionOperation.PROJECT
+
+
+class UpdateCommand(ProjectionCommand):
+    operation: Literal[ProjectionOperation.UPDATE] = ProjectionOperation.UPDATE
+
+
+class RemoveCommand(ProjectionCommand):
+    operation: Literal[ProjectionOperation.REMOVE] = ProjectionOperation.REMOVE
+
+
+class RebuildCommand(ProjectionCommand):
+    operation: Literal[ProjectionOperation.REBUILD] = ProjectionOperation.REBUILD
+
+
+class RetrieveCommand(ProjectionCommand):
+    operation: Literal[ProjectionOperation.RETRIEVE] = ProjectionOperation.RETRIEVE
+    query: str = Field(min_length=1, max_length=4096)
+    limit: int = Field(default=15, ge=1, le=100)
+
+
+class ProjectionResult(_ProjectionModel):
+    schema_version: Literal["projection-result:v1"] = "projection-result:v1"
+    operation: ProjectionOperation
+    outcome: ProjectionOutcome
+    command_identity: str = Field(min_length=1, max_length=64, pattern=_IDENTIFIER)
+    command_digest: str = Field(pattern=_DIGEST)
+    artifact_reference: str | None = Field(default=None, min_length=1, max_length=256)
+    counts: tuple[ProjectionCount, ...] = ()
+    failure: ProjectionFailure | None = None
+
+
+class ProjectionRetrievalResult(_ProjectionModel):
+    schema_version: Literal["projection-retrieval-result:v1"] = "projection-retrieval-result:v1"
+    operation: Literal[ProjectionOperation.RETRIEVE] = ProjectionOperation.RETRIEVE
+    outcome: ProjectionOutcome
+    command_identity: str = Field(min_length=1, max_length=64, pattern=_IDENTIFIER)
+    command_digest: str = Field(pattern=_DIGEST)
+    chunks: tuple[ProjectionChunk, ...] = ()
+    entities: tuple[ProjectionEntity, ...] = ()
+    relations: tuple[ProjectionRelation, ...] = ()
+    evidence: tuple[EvidenceReference, ...] = ()
+    failure: ProjectionFailure | None = None
+
+
+class ContextProjection(Protocol):
+    """Replaceable physical projection port; it has no publication authority."""
+
+    async def project(self, command: ProjectCommand) -> ProjectionResult: ...
+
+    async def update(self, command: UpdateCommand) -> ProjectionResult: ...
+
+    async def remove(self, command: RemoveCommand) -> ProjectionResult: ...
+
+    async def rebuild(self, command: RebuildCommand) -> ProjectionResult: ...
+
+    async def retrieve(self, command: RetrieveCommand) -> ProjectionRetrievalResult: ...
 
 
 class RetrievalQuery(SpineModel):
