@@ -367,6 +367,7 @@ class ProjectionResult(_ProjectionModel):
             if self.outcome is not ProjectionOutcome.SUCCEEDED:
                 if (
                     self.lifecycle is ProjectionLifecycle.SUCCEEDED
+                    and "lifecycle" not in self.model_fields_set
                     and self.failure is not None
                 ):
                     # Preserve construction compatibility for callers of the
@@ -380,8 +381,15 @@ class ProjectionResult(_ProjectionModel):
         elif self.lifecycle is ProjectionLifecycle.RECOVERABLE:
             if self.outcome is not ProjectionOutcome.FAILED:
                 raise ValueError("recoverable lifecycle requires a failed outcome")
-            if self.failure is None or self.recovery is None:
+            if (
+                self.failure is None
+                or self.failure.code is not ProjectionFailureCode.PHYSICAL_FAILURE
+                or self.recovery is None
+            ):
                 raise ValueError("recoverable lifecycle requires failure and recovery")
+        elif self.lifecycle is ProjectionLifecycle.REPLAYED:
+            if self.outcome is not ProjectionOutcome.REPLAYED:
+                raise ValueError("replayed lifecycle requires a replayed outcome")
         elif self.lifecycle is ProjectionLifecycle.FENCED:
             if self.outcome is not ProjectionOutcome.STALE:
                 raise ValueError("fenced lifecycle requires a stale outcome")
@@ -391,8 +399,14 @@ class ProjectionResult(_ProjectionModel):
                 or self.effects
             ):
                 raise ValueError("fenced lifecycle must contain only a revision fence")
-        elif self.lifecycle is ProjectionLifecycle.FAILED and self.failure is None:
-            raise ValueError("failed lifecycle requires a failure")
+        elif self.lifecycle is ProjectionLifecycle.FAILED:
+            if self.failure is None:
+                raise ValueError("failed lifecycle requires a failure")
+            if self.outcome in {
+                ProjectionOutcome.SUCCEEDED,
+                ProjectionOutcome.REPLAYED,
+            }:
+                raise ValueError("failed lifecycle cannot have a success outcome")
         return self
 
 

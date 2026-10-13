@@ -398,6 +398,19 @@ async def test_projection_fencing_and_effects_are_workspace_isolated() -> None:
     assert workspace_b.outcome is ProjectionOutcome.SUCCEEDED
     assert workspace_a.effects[0].effect_id != workspace_b.effects[0].effect_id
 
+    namespace_b = await projection.project(
+        project_command().model_copy(
+            update={
+                "physical_namespace": ProjectionNamespace(
+                    namespace="shadow/run-5/candidate-6/partition-7",
+                    namespace_digest="f" * 64,
+                )
+            }
+        )
+    )
+    assert namespace_b.outcome is ProjectionOutcome.SUCCEEDED
+    assert namespace_b.effects[0].effect_id != workspace_a.effects[0].effect_id
+
 
 @pytest.mark.asyncio
 async def test_tombstone_fences_prior_content_but_allows_newer_reappearance() -> None:
@@ -481,6 +494,31 @@ async def test_partial_physical_failure_is_recoverable_and_retry_is_idempotent()
     assert recovered.outcome is ProjectionOutcome.SUCCEEDED
     assert store.attempts_for("project-1:1") == 1
     assert store.attempts_for("project-1:2") == 2
+
+
+@pytest.mark.asyncio
+async def test_newer_revision_fences_recovery_of_older_partial_command() -> None:
+    store = DeterministicPhysicalStore(fail_once_for={"project-1:1"})
+    projection = DeterministicContextProjection(physical_store=store)
+    older = project_command()
+    newer = project_command(identity="project-2").model_copy(
+        update={
+            "source_revisions": (
+                projection_source(revision_id=UUID(int=12), revision_number=2),
+            )
+        }
+    )
+
+    partial = await projection.project(older)
+    applied = await projection.project(newer)
+    fenced = await projection.project(older)
+
+    assert partial.lifecycle is ProjectionLifecycle.RECOVERABLE
+    assert applied.outcome is ProjectionOutcome.SUCCEEDED
+    assert fenced.lifecycle is ProjectionLifecycle.FENCED
+    assert fenced.failure is not None
+    assert fenced.failure.code is ProjectionFailureCode.REVISION_FENCED
+    assert store.attempts_for("project-1:1") == 1
 
 
 @pytest.mark.asyncio

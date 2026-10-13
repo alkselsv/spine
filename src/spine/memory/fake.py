@@ -99,9 +99,9 @@ class DeterministicContextProjection(ContextProjection):
 
     def __init__(self, physical_store: ProjectionEffectStore | None = None) -> None:
         self._commands: list[ProjectionCommand] = []
-        self._executions: dict[tuple[UUID, UUID, str, str], _Execution] = {}
+        self._executions: dict[tuple[UUID, UUID, str, str, str], _Execution] = {}
         self._retrieval_results: dict[
-            tuple[UUID, UUID, str, str], ProjectionRetrievalResult
+            tuple[UUID, UUID, str, str, str], ProjectionRetrievalResult
         ] = {}
         self._retrieval: dict[
             tuple[UUID, UUID],
@@ -220,6 +220,11 @@ class DeterministicContextProjection(ContextProjection):
                     )
                 if execution.terminal_result is not None:
                     return self._replayed(execution.terminal_result)
+                fenced = self._preflight(command)
+                if fenced is not None:
+                    result = self._failure_result(command, fenced)
+                    execution.terminal_result = result
+                    return result
                 return await self._continue_execution(execution)
 
             self._commands.append(command)
@@ -438,11 +443,12 @@ class DeterministicContextProjection(ContextProjection):
         )
 
     @staticmethod
-    def _key(command: ProjectionCommand) -> tuple[UUID, UUID, str, str]:
+    def _key(command: ProjectionCommand) -> tuple[UUID, UUID, str, str, str]:
         return (
             command.workspace_id,
             command.environment_id,
             command.physical_namespace.namespace,
+            command.physical_namespace.namespace_digest,
             command.command_identity,
         )
 
