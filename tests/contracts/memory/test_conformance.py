@@ -15,6 +15,7 @@ from spine.memory.contracts import (
     ProjectionFailureCode,
     ProjectionLifecycle,
     ProjectionNamespace,
+    ProjectionNamespaceState,
     ProjectionOutcome,
     ProjectionRelation,
     ProjectionSourceRevision,
@@ -27,6 +28,7 @@ from spine.memory.contracts import (
 )
 
 from .adapter import ContextProjectionFactory
+from spine.memory.namespace import ProjectionNamespaceContext, ProjectionNamespaceRouter
 
 
 WORKSPACE_ID = UUID("10000000-0000-4000-8000-000000000001")
@@ -38,8 +40,7 @@ SOURCE_REVISION_ID = UUID("40000000-0000-4000-8000-000000000001")
 RUN_ID = UUID("50000000-0000-4000-8000-000000000001")
 CANDIDATE_ID = UUID("60000000-0000-4000-8000-000000000001")
 PARTITION_ID = UUID("70000000-0000-4000-8000-000000000001")
-ACTIVE_NAMESPACE = "active/snapshot-1"
-SHADOW_NAMESPACE = "shadow/candidate-1"
+SHADOW_CANDIDATE_ID = UUID("60000000-0000-4000-8000-000000000002")
 
 
 def source_revision(
@@ -65,37 +66,49 @@ def command_context(
     workspace_id: UUID = WORKSPACE_ID,
     environment_id: UUID = ENVIRONMENT_ID,
     source_revisions: tuple[ProjectionSourceRevision, ...] | None = None,
-    namespace: str = ACTIVE_NAMESPACE,
+    namespace: ProjectionNamespace | None = None,
     candidate_id: UUID = CANDIDATE_ID,
+    state: ProjectionNamespaceState = ProjectionNamespaceState.ACTIVE,
 ) -> dict[str, object]:
+    candidate = ProjectionCandidate(
+        candidate_id=candidate_id,
+        run_id=RUN_ID,
+        partition_id=PARTITION_ID,
+    )
+    config = ProjectionConfigVersion(
+        config_id=UUID("90000000-0000-4000-8000-000000000001"),
+        version="config-1",
+        config_digest="b" * 64,
+        ontology_version="ontology-1",
+        adapter_contract_version="context-projection:v1",
+    )
+    boundary = CanonicalBoundary(
+        boundary_id=UUID("a0000000-0000-4000-8000-000000000001"),
+        boundary_digest="c" * 64,
+        accepted_through_generation=1,
+    )
+    if namespace is None:
+        namespace = ProjectionNamespaceRouter().route(
+            ProjectionNamespaceContext(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                projection_candidate=candidate,
+                projection_config=config,
+                canonical_boundary=boundary,
+                state=state,
+            )
+        )
     return {
         "workspace_id": workspace_id,
         "environment_id": environment_id,
         "projection_run_id": RUN_ID,
-        "projection_candidate": ProjectionCandidate(
-            candidate_id=candidate_id,
-            run_id=RUN_ID,
-            partition_id=PARTITION_ID,
-        ),
-        "projection_config": ProjectionConfigVersion(
-            config_id=UUID("90000000-0000-4000-8000-000000000001"),
-            version="config-1",
-            config_digest="b" * 64,
-            ontology_version="ontology-1",
-            adapter_contract_version="context-projection:v1",
-        ),
-        "canonical_boundary": CanonicalBoundary(
-            boundary_id=UUID("a0000000-0000-4000-8000-000000000001"),
-            boundary_digest="c" * 64,
-            accepted_through_generation=1,
-        ),
+        "projection_candidate": candidate,
+        "projection_config": config,
+        "canonical_boundary": boundary,
         "source_revisions": (
             source_revision(),
             ) if source_revisions is None else source_revisions,
-        "physical_namespace": ProjectionNamespace(
-            namespace=namespace,
-            namespace_digest="d" * 64,
-        ),
+        "physical_namespace": namespace,
     }
 
 
@@ -137,13 +150,17 @@ def retrieve_command(
     digest: str = "1" * 64,
     workspace_id: UUID = WORKSPACE_ID,
     environment_id: UUID = ENVIRONMENT_ID,
-    namespace: str = ACTIVE_NAMESPACE,
+    namespace: ProjectionNamespace | None = None,
+    candidate_id: UUID = CANDIDATE_ID,
+    state: ProjectionNamespaceState = ProjectionNamespaceState.ACTIVE,
 ) -> RetrieveCommand:
     return RetrieveCommand(
         **command_context(
             workspace_id=workspace_id,
             environment_id=environment_id,
             namespace=namespace,
+            candidate_id=candidate_id,
+            state=state,
         ),
         command_identity=identity,
         command_digest=digest,
@@ -427,10 +444,14 @@ async def test_shadow_namespace_is_not_visible_to_ordinary_retrieval(
     context_projection_factory: ContextProjectionFactory,
 ) -> None:
     adapter = context_projection_factory()
+    shadow_namespace = command_context(
+        candidate_id=SHADOW_CANDIDATE_ID,
+        state=ProjectionNamespaceState.SHADOW,
+    )["physical_namespace"]
     adapter.seed_retrieval(
         workspace_id=WORKSPACE_ID,
         environment_id=ENVIRONMENT_ID,
-        physical_namespace=SHADOW_NAMESPACE,
+        physical_namespace=shadow_namespace,
         chunks=(
             ProjectionChunk(
                 chunk_id="shadow-only",
@@ -441,12 +462,20 @@ async def test_shadow_namespace_is_not_visible_to_ordinary_retrieval(
     )
 
     ordinary_result = await adapter.projection.retrieve(
-        retrieve_command(identity="ordinary-retrieval", digest="5" * 64)
+        retrieve_command(
+            identity="ordinary-retrieval",
+            digest="5" * 64,
+            namespace=shadow_namespace,
+            candidate_id=SHADOW_CANDIDATE_ID,
+            state=ProjectionNamespaceState.SHADOW,
+        )
     )
 
-    assert ordinary_result.outcome is ProjectionOutcome.MISSING
+    assert ordinary_result.outcome is ProjectionOutcome.FAILED
     assert ordinary_result.chunks == ()
     assert "candidate content" not in ordinary_result.model_dump_json()
+    assert ordinary_result.failure is not None
+    assert ordinary_result.failure.code.value == "namespace_unavailable"
 
 
 async def test_update_remove_and_rebuild_return_provider_neutral_results(

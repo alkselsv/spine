@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-from spine.memory.contracts import ProjectionFailureCode, ProjectionOutcome, RebuildCommand
+from spine.memory.contracts import (
+    ProjectionFailureCode,
+    ProjectionNamespaceState,
+    ProjectionOutcome,
+    RebuildCommand,
+)
 
 from .adapter import ContextProjectionFactory
 from .test_conformance import (
-    SHADOW_NAMESPACE,
+    SHADOW_CANDIDATE_ID,
     WORKSPACE_ID,
     ENVIRONMENT_ID,
     command_context,
@@ -36,10 +41,14 @@ async def test_shadow_rebuild_artifacts_require_explicit_namespace_selection(
     context_projection_factory: ContextProjectionFactory,
 ) -> None:
     adapter = context_projection_factory()
+    shadow_namespace = command_context(
+        candidate_id=SHADOW_CANDIDATE_ID,
+        state=ProjectionNamespaceState.SHADOW,
+    )["physical_namespace"]
     adapter.seed_retrieval(
         workspace_id=WORKSPACE_ID,
         environment_id=ENVIRONMENT_ID,
-        physical_namespace=SHADOW_NAMESPACE,
+        physical_namespace=shadow_namespace,
         chunks=(
             ProjectionChunk(
                 chunk_id="candidate-only",
@@ -50,9 +59,15 @@ async def test_shadow_rebuild_artifacts_require_explicit_namespace_selection(
     )
 
     result = await adapter.projection.retrieve(
-        retrieve_command(identity="ordinary-after-rebuild", digest="7" * 64)
+        retrieve_command(
+            identity="ordinary-after-rebuild",
+            digest="7" * 64,
+            namespace=shadow_namespace,
+            candidate_id=SHADOW_CANDIDATE_ID,
+            state=ProjectionNamespaceState.SHADOW,
+        )
     )
 
-    assert result.outcome is ProjectionOutcome.MISSING
+    assert result.outcome is ProjectionOutcome.FAILED
     assert result.failure is not None
-    assert result.failure.code is ProjectionFailureCode.MISSING_EVIDENCE
+    assert result.failure.code is ProjectionFailureCode.NAMESPACE_UNAVAILABLE
