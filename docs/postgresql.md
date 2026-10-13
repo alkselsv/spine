@@ -223,6 +223,9 @@ versioned parsed-document artifacts and physical-line segment locators for
 strict TXT and Markdown parsing. The live lease is the serialized
 coordination boundary; historical evidence cannot be rewritten by the runtime
 role, and recovery readiness must fail closed unless the complete chain verifies.
+Parsed artifacts retain the source-revision digest, parser/configuration
+versions, bounded diagnostics, and tenant-scoped physical-line locators so a
+projection can be replayed without replacing the source of truth.
 
 `spine-db-bootstrap-workspace` is a one-time migration-authority action. It
 atomically inserts the first Workspace and an operator audit record, then seals
