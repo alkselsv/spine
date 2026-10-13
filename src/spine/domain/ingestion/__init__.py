@@ -17,6 +17,7 @@ from .models import (
     WarningStage,
     FailureStage,
 )
+from spine.domain.artifacts import ParseCoverage, ParseExclusion, ParsedDocument, ParsedSegment, PhysicalLineLocator
 
 __all__ = [
     "FailureStage",
@@ -34,4 +35,9 @@ __all__ = [
     "ProcessingReceipt",
     "SafeDiagnosticDetail",
     "WarningStage",
+    "ParseCoverage",
+    "ParseExclusion",
+    "ParsedDocument",
+    "ParsedSegment",
+    "PhysicalLineLocator",
 ]

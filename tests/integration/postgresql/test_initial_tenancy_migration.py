@@ -1381,6 +1381,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "canonical_generation_counters",
         "canonical_acceptances",
         "current_source_heads",
+        "parsed_documents",
+        "parsed_document_segments",
     }
     expected_final_constraints = {
         "alembic_version_pkc",
@@ -1553,6 +1555,22 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ck_recovery_evidence_invalidations_digests",
         "ck_recovery_evidence_invalidations_event_kind",
         "ck_recovery_evidence_invalidations_replacement",
+        "pk_parsed_documents",
+        "uq_parsed_documents_scope_id",
+        "uq_parsed_documents_digest",
+        "uq_parsed_documents_command",
+        "fk_parsed_documents_revision",
+        "ck_parsed_documents_schema",
+        "ck_parsed_documents_coverage",
+        "ck_parsed_documents_digests",
+        "ck_parsed_documents_exclusions",
+        "pk_parsed_document_segments",
+        "uq_parsed_segments_digest",
+        "uq_parsed_segments_ordinal",
+        "fk_parsed_segments_document",
+        "ck_parsed_segments_schema",
+        "ck_parsed_segments_identity",
+        "ck_parsed_segments_metadata",
     }
     expected_final_constraints |= (
         AUTHORIZATION_DIRECTORY_CONSTRAINTS
@@ -1704,6 +1722,15 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ix_storage_recovery_manifests_scope_created",
         "pk_recovery_evidence_invalidations",
         "ix_recovery_evidence_invalidations_scope_digest",
+        "pk_parsed_documents",
+        "uq_parsed_documents_scope_id",
+        "uq_parsed_documents_digest",
+        "uq_parsed_documents_command",
+        "ix_parsed_documents_revision",
+        "pk_parsed_document_segments",
+        "uq_parsed_segments_digest",
+        "uq_parsed_segments_ordinal",
+        "ix_parsed_segments_artifact",
     } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES | CANONICAL_ACCEPTANCE_INDEXES
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
@@ -1745,6 +1772,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "canonical_generation_counters": (True, True),
         "canonical_acceptances": (True, True),
         "current_source_heads": (True, True),
+        "parsed_documents": (True, True),
+        "parsed_document_segments": (True, True),
     }
     assert rls == expected_rls
     tenant_rls_tables = {
@@ -1838,6 +1867,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "recovery_quiescence_evidence": (True, True, False, False),
         "storage_recovery_manifests": (True, True, False, False),
         "recovery_evidence_invalidations": (True, True, False, False),
+        "parsed_documents": (True, True, False, False),
+        "parsed_document_segments": (True, True, False, False),
         "admission_decisions": (True, True, False, False),
         "canonical_generation_counters": (True, True, True, False),
         "canonical_acceptances": (True, True, False, False),
@@ -1979,7 +2010,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'canonical_generation_counters', 'canonical_acceptances', "
                             "'current_source_heads', 'backup_fence_leases', "
                             "'fence_operation_tickets', 'recovery_quiescence_evidence', "
-                            "'storage_recovery_manifests', 'recovery_evidence_invalidations'))"
+                            "'storage_recovery_manifests', 'recovery_evidence_invalidations', "
+                            "'parsed_documents', 'parsed_document_segments'))"
                     )
                 )
             ).scalars()
@@ -2006,7 +2038,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'canonical_generation_counters', 'canonical_acceptances', "
                             "'current_source_heads', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
-                            "'recovery_evidence_invalidations')"
+                            "'recovery_evidence_invalidations', 'parsed_documents', "
+                            "'parsed_document_segments')"
                     )
                 )
             ).mappings()
@@ -2027,7 +2060,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'canonical_generation_counters', 'canonical_acceptances', "
                             "'current_source_heads', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
-                            "'recovery_evidence_invalidations')"
+                            "'recovery_evidence_invalidations', 'parsed_documents', "
+                            "'parsed_document_segments')"
                     )
                 )
             ).scalars()
@@ -2047,7 +2081,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'canonical_generation_counters', 'canonical_acceptances', "
                             "'current_source_heads', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
-                            "'recovery_evidence_invalidations')"
+                            "'recovery_evidence_invalidations', 'parsed_documents', "
+                            "'parsed_document_segments')"
                     )
                 )
             ).scalars()
@@ -2067,7 +2102,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'canonical_generation_counters', 'canonical_acceptances', "
                             "'current_source_heads', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
-                            "'recovery_evidence_invalidations')"
+                            "'recovery_evidence_invalidations', 'parsed_documents', "
+                            "'parsed_document_segments')"
                     )
                 )
             ).scalars()
@@ -2634,7 +2670,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'backup_fence_leases', 'fence_operation_tickets', "
                         "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                         "'recovery_evidence_invalidations', "
-                        "'canonical_generation_counters', 'canonical_acceptances', 'current_source_heads')"
+                        "'canonical_generation_counters', 'canonical_acceptances', "
+                        "'current_source_heads', 'parsed_documents', 'parsed_document_segments')"
                     )
                 )
             )
@@ -2702,6 +2739,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "canonical_generation_counters": (True, True),
             "canonical_acceptances": (True, True),
             "current_source_heads": (True, True),
+            "parsed_documents": (True, True),
+            "parsed_document_segments": (True, True),
         }
     standard_tables = set(tables) - {"outbox_deliveries"}
     assert set(policies) == {
@@ -3959,13 +3998,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261016_19_backup_recovery_coordination.py",
         "20261017_20_recovery_evidence_integrity.py",
         "20261018_21_canonical_acceptance.py",
+        "20261019_22_parsed_artifacts.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261019_22_injected_failure.py").write_text(
+    (target / "versions" / "20261020_23_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261019_22'\n"
-        "down_revision = '20261018_21'\n"
+        "revision = '20261020_23'\n"
+        "down_revision = '20261019_22'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"
