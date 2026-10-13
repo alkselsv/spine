@@ -46,6 +46,8 @@ pnpm install --frozen-lockfile
 
 ```bash
 pnpm web:dev       # Vite development server
+pnpm web:api:generate # export FastAPI OpenAPI and regenerate TypeScript types
+pnpm web:api:check # regenerate and fail if committed artifacts differ
 pnpm web:typecheck # strict TypeScript
 pnpm web:build     # static SPA production build
 pnpm web:test      # Vitest + Testing Library
@@ -60,6 +62,9 @@ Playwright в CI устанавливает Chromium вместе с систе�
 pnpm --dir web exec playwright install --with-deps chromium
 ```
 
-`web/api/generated/` зарезервирован для generated OpenAPI client и не изменяется
-вручную. Frontend не обращается к базе, Cognee, model provider или отдельному
-Node BFF: FastAPI остаётся единственным backend/control-plane server.
+`web/api/openapi.json` и `web/api/generated/` создаются только командой
+`pnpm web:api:generate` и не изменяются вручную. Typed runtime boundary находится
+в `web/src/api/`: он получает bearer credential и Workspace/Environment scope
+через injection, безопасно отображает structured errors и передаёт server state
+в TanStack Query. Frontend не обращается к базе, Cognee, model provider или
+отдельному Node BFF: FastAPI остаётся единственным backend/control-plane server.
