@@ -14,6 +14,9 @@ Playwright. FastAPI остаётся единственным backend/control-pl
 Halaska UI. Chat использует Spine-owned transport поверх API/SSE. Эти решения и
 условия их проверки описаны в
 [`docs/INTERFACE.md`](../docs/INTERFACE.md#8-решения-по-реализации-интерфейса).
+Route shell, URL scope context, administrator boundary, localized states and
+reference decisions реализованы в
+[`docs/design/issue-165-control-plane-shell.md`](../docs/design/issue-165-control-plane-shell.md).
 
 ```text
 app/

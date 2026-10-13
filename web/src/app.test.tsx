@@ -13,10 +13,8 @@ describe('application bootstrap', () => {
 
     render(<RouterProvider router={router} />);
 
-    expect(
-      screen.getByRole('heading', { name: 'Spine Control Plane' }),
-    ).toBeVisible();
-    expect(screen.getByRole('status')).toHaveTextContent('Workspace connected');
+    expect(screen.getByRole('heading', { name: 'Control Plane Spine' })).toBeVisible();
+    expect(screen.getByRole('status')).toHaveTextContent('Подключено');
   });
 
   it('test_connection_check_updates_workspace_status', async () => {
@@ -24,8 +22,46 @@ describe('application bootstrap', () => {
     const router = createMemoryRouter(appRoutes, { initialEntries: ['/'] });
 
     render(<RouterProvider router={router} />);
-    await user.click(screen.getByRole('button', { name: 'Check connection' }));
+    await user.click(screen.getByRole('button', { name: 'Проверить соединение' }));
 
-    expect(screen.getByRole('status')).toHaveTextContent('Connection checked');
+    expect(screen.getByRole('status')).toHaveTextContent('Соединение проверено');
+  });
+
+  it('test_direct_link_restores_scope_and_scope_change_updates_url', async () => {
+    const user = userEvent.setup();
+    const router = createMemoryRouter(appRoutes, {
+      initialEntries: [
+        '/knowledge/documents?workspace=10000000-0000-4000-8000-000000000002&environment=20000000-0000-4000-8000-000000000002',
+      ],
+    });
+
+    render(<RouterProvider router={router} />);
+
+    expect(screen.getByRole('combobox', { name: 'Рабочая область' })).toHaveTextContent(
+      'Продажи',
+    );
+    expect(screen.getByRole('combobox', { name: 'Среда' })).toHaveTextContent('Staging');
+
+    await user.click(screen.getByRole('combobox', { name: 'Рабочая область' }));
+    await user.click(screen.getByRole('option', { name: 'Основная' }));
+
+    expect(router.state.location.search).toBe(
+      '?workspace=10000000-0000-4000-8000-000000000001&environment=20000000-0000-4000-8000-000000000002',
+    );
+  });
+
+  it('test_navigation_exposes_required_route_boundaries', async () => {
+    const user = userEvent.setup();
+    const router = createMemoryRouter(appRoutes, { initialEntries: ['/'] });
+
+    render(<RouterProvider router={router} />);
+    await user.click(screen.getByRole('link', { name: 'Знания' }));
+    expect(router.state.location.pathname).toBe('/knowledge/documents');
+    await user.click(screen.getByRole('link', { name: 'Чат' }));
+    expect(router.state.location.pathname).toBe('/chat/demo-session');
+    await user.click(screen.getByRole('link', { name: 'Запуски' }));
+    expect(router.state.location.pathname).toBe('/runs/demo-run');
+    await user.click(screen.getByRole('link', { name: 'Настройки' }));
+    expect(router.state.location.pathname).toBe('/settings');
   });
 });
