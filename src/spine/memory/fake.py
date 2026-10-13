@@ -219,7 +219,12 @@ class DeterministicContextProjection(ContextProjection):
                         ProjectionFailureCode.INTEGRITY_CONFLICT,
                     )
                 if execution.terminal_result is not None:
-                    return self._replayed(execution.terminal_result)
+                    if execution.terminal_result.lifecycle in {
+                        ProjectionLifecycle.SUCCEEDED,
+                        ProjectionLifecycle.RECOVERED,
+                    }:
+                        return self._replayed(execution.terminal_result)
+                    return execution.terminal_result
                 fenced = self._preflight(command)
                 if fenced is not None:
                     result = self._failure_result(command, fenced)

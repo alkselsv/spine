@@ -131,6 +131,22 @@ def test_projection_result_rejects_inconsistent_recovery_lifecycle() -> None:
         )
 
 
+def test_projection_result_rejects_success_with_failure_state() -> None:
+    with pytest.raises(ValidationError):
+        ProjectionResult(
+            operation="project",
+            outcome=ProjectionOutcome.SUCCEEDED,
+            command_identity="project-1",
+            command_digest="e" * 64,
+            lifecycle=ProjectionLifecycle.SUCCEEDED,
+            failure={
+                "code": ProjectionFailureCode.PHYSICAL_FAILURE,
+                "retryable": True,
+                "safe_detail": {},
+            },
+        )
+
+
 @pytest.mark.asyncio
 async def test_fake_replays_same_command_and_rejects_digest_conflict() -> None:
     projection = DeterministicContextProjection()
@@ -377,6 +393,9 @@ async def test_fake_fences_older_revision_after_newer_revision() -> None:
     assert fenced.failure is not None
     assert fenced.failure.code is ProjectionFailureCode.REVISION_FENCED
     assert fenced.effects == ()
+    fenced_replay = await projection.project(older)
+    assert fenced_replay.lifecycle is ProjectionLifecycle.FENCED
+    assert fenced_replay.outcome is ProjectionOutcome.STALE
 
 
 @pytest.mark.asyncio
@@ -519,6 +538,27 @@ async def test_newer_revision_fences_recovery_of_older_partial_command() -> None
     assert fenced.failure is not None
     assert fenced.failure.code is ProjectionFailureCode.REVISION_FENCED
     assert store.attempts_for("project-1:1") == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_rebuild_does_not_replace_prior_successful_projection() -> None:
+    store = DeterministicPhysicalStore(fail_for={"rebuild-1:1"})
+    projection = DeterministicContextProjection(physical_store=store)
+    project = project_command()
+    rebuild = RebuildCommand(
+        **command_context(),
+        command_identity="rebuild-1",
+        command_digest="a" * 64,
+    )
+
+    prior = await projection.project(project)
+    failed_rebuild = await projection.rebuild(rebuild)
+    replay = await projection.project(project)
+
+    assert prior.outcome is ProjectionOutcome.SUCCEEDED
+    assert failed_rebuild.lifecycle is ProjectionLifecycle.RECOVERABLE
+    assert replay.outcome is ProjectionOutcome.REPLAYED
+    assert replay.artifact_reference == prior.artifact_reference
 
 
 @pytest.mark.asyncio

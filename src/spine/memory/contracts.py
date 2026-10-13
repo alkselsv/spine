@@ -365,19 +365,18 @@ class ProjectionResult(_ProjectionModel):
             ProjectionLifecycle.RECOVERED,
         }:
             if self.outcome is not ProjectionOutcome.SUCCEEDED:
-                if (
-                    self.lifecycle is ProjectionLifecycle.SUCCEEDED
-                    and "lifecycle" not in self.model_fields_set
-                    and self.failure is not None
-                ):
-                    # Preserve construction compatibility for callers of the
-                    # pre-lifecycle result contract.
-                    object.__setattr__(self, "lifecycle", ProjectionLifecycle.FAILED)
-                else:
-                    raise ValueError("successful lifecycle requires a succeeded outcome")
+                raise ValueError("successful lifecycle requires a succeeded outcome")
             if self.failure is not None or self.recovery is not None:
-                if self.lifecycle is not ProjectionLifecycle.FAILED:
-                    raise ValueError("successful lifecycle cannot contain failure state")
+                raise ValueError("successful lifecycle cannot contain failure state")
+            if any(
+                effect.status
+                not in {
+                    ProjectionEffectStatus.APPLIED,
+                    ProjectionEffectStatus.REPLAYED,
+                }
+                for effect in self.effects
+            ):
+                raise ValueError("successful lifecycle cannot contain failed effects")
         elif self.lifecycle is ProjectionLifecycle.RECOVERABLE:
             if self.outcome is not ProjectionOutcome.FAILED:
                 raise ValueError("recoverable lifecycle requires a failed outcome")
@@ -387,8 +386,30 @@ class ProjectionResult(_ProjectionModel):
                 or self.recovery is None
             ):
                 raise ValueError("recoverable lifecycle requires failure and recovery")
+            pending_effect_ids = {
+                effect.effect_id
+                for effect in self.effects
+                if effect.status
+                not in {
+                    ProjectionEffectStatus.APPLIED,
+                    ProjectionEffectStatus.REPLAYED,
+                }
+            }
+            if (
+                not pending_effect_ids
+                or set(self.recovery.pending_effect_ids) != pending_effect_ids
+            ):
+                raise ValueError("recovery must list exactly the pending effects")
         elif self.lifecycle is ProjectionLifecycle.REPLAYED:
-            if self.outcome is not ProjectionOutcome.REPLAYED:
+            if (
+                self.outcome is not ProjectionOutcome.REPLAYED
+                or self.failure is not None
+                or self.recovery is not None
+                or any(
+                    effect.status is not ProjectionEffectStatus.REPLAYED
+                    for effect in self.effects
+                )
+            ):
                 raise ValueError("replayed lifecycle requires a replayed outcome")
         elif self.lifecycle is ProjectionLifecycle.FENCED:
             if self.outcome is not ProjectionOutcome.STALE:
