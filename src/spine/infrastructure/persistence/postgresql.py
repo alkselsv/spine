@@ -31,6 +31,12 @@ from spine.application.persistence.canonical import (
     SourceOrderingPolicyRegistry,
     validate_canonical_acceptance_effects,
 )
+from spine.application.persistence.boundary import (
+    CANONICAL_BOUNDARY_RESULT_TYPE,
+    CANONICAL_BOUNDARY_SCHEMA_VERSION,
+    CanonicalBoundaryCaptureCommand,
+    CanonicalBoundaryCaptureResult,
+)
 from spine.application.access_policies import (
     AccessPolicyActivationCommand,
     AccessPolicyActivationResult,
@@ -99,6 +105,9 @@ from spine.domain.sources import (
     CanonicalAcceptance,
     CanonicalOrdering,
     CurrentSourceHead,
+    CanonicalBoundary,
+    CanonicalBoundaryMember,
+    canonical_boundary_manifest_digest,
     RevisionKind,
     SourceObject,
     SourceRevision,
@@ -153,6 +162,8 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     canonical_generation_counters as _CANONICAL_GENERATION_COUNTERS,
     canonical_acceptances as _CANONICAL_ACCEPTANCES,
     current_source_heads as _CURRENT_SOURCE_HEADS,
+    canonical_boundaries as _CANONICAL_BOUNDARIES,
+    canonical_boundary_members as _CANONICAL_BOUNDARY_MEMBERS,
 )
 
 _BIND_CONTEXT = text(
@@ -222,6 +233,7 @@ class PostgreSQLTransactionStage(Enum):
     BEFORE_AUDIT_IDENTITY = auto()
     AFTER_AUDIT_FLUSH = auto()
     AFTER_CANONICAL_EVIDENCE_LOCKED = auto()
+    AFTER_CANONICAL_BOUNDARY_COUNTER_LOCKED = auto()
     BEFORE_COMMIT = auto()
 
 
@@ -1428,6 +1440,174 @@ class _PostgreSQLCanonicalAcceptanceRepository:
         )
 
 
+class _PostgreSQLCanonicalBoundaryRepository:
+    """PostgreSQL implementation of the counter-first immutable cut."""
+
+    def __init__(self, uow: "PostgreSQLTenantUnitOfWork") -> None:
+        self._uow = uow
+
+    def _scope(self) -> EnvironmentScope:
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            raise InvalidPersistenceContextError("Persistence context is invalid.")
+        return scope
+
+    @staticmethod
+    def _boundary(row: Mapping[str, Any]) -> CanonicalBoundary:
+        return CanonicalBoundary.model_validate(dict(row))
+
+    @staticmethod
+    def _member(row: Mapping[str, Any]) -> CanonicalBoundaryMember:
+        return CanonicalBoundaryMember.model_validate(dict(row))
+
+    async def resolve(self, boundary_id: UUID) -> CanonicalBoundary | None:
+        scope = self._scope()
+        row = (
+            await self._uow._execute(
+                select(_CANONICAL_BOUNDARIES).where(
+                    _CANONICAL_BOUNDARIES.c.boundary_id == boundary_id,
+                    _CANONICAL_BOUNDARIES.c.workspace_id == scope.workspace_id,
+                    _CANONICAL_BOUNDARIES.c.environment_id == scope.environment_id,
+                )
+            )
+        ).mappings().one_or_none()
+        return self._boundary(row) if row is not None else None
+
+    async def resolve_members(self, boundary_id: UUID) -> tuple[CanonicalBoundaryMember, ...]:
+        scope = self._scope()
+        rows = (
+            await self._uow._execute(
+                select(_CANONICAL_BOUNDARY_MEMBERS)
+                .where(
+                    _CANONICAL_BOUNDARY_MEMBERS.c.boundary_id == boundary_id,
+                    _CANONICAL_BOUNDARY_MEMBERS.c.workspace_id == scope.workspace_id,
+                    _CANONICAL_BOUNDARY_MEMBERS.c.environment_id == scope.environment_id,
+                )
+                .order_by(_CANONICAL_BOUNDARY_MEMBERS.c.source_object_id)
+            )
+        ).mappings().all()
+        return tuple(self._member(row) for row in rows)
+
+    async def capture(
+        self, command: CanonicalBoundaryCaptureCommand
+    ) -> CanonicalBoundaryCaptureResult:
+        scope = self._scope()
+        if command.expected_digest() != command.digest:
+            await self._uow._fail(
+                ConstraintConflictError("Canonical boundary command digest is invalid.")
+            )
+
+        # This is the global serialization barrier. It must precede all source
+        # head reads so READ COMMITTED cannot mix generations.
+        counter_updated_at = (
+            self._uow._boundary_clock()
+            if self._uow._boundary_clock is not None
+            else func.current_timestamp()
+        )
+        await self._uow._execute(
+            postgresql_insert(_CANONICAL_GENERATION_COUNTERS)
+            .values(
+                workspace_id=scope.workspace_id,
+                environment_id=scope.environment_id,
+                current_generation=0,
+                updated_at=counter_updated_at,
+            )
+            .on_conflict_do_nothing()
+        )
+        counter_row = (
+            await self._uow._execute(
+                select(_CANONICAL_GENERATION_COUNTERS)
+                .where(
+                    _CANONICAL_GENERATION_COUNTERS.c.workspace_id == scope.workspace_id,
+                    _CANONICAL_GENERATION_COUNTERS.c.environment_id == scope.environment_id,
+                )
+                .with_for_update()
+            )
+        ).mappings().one()
+        accepted_through_generation = int(counter_row.current_generation)
+        if self._uow._boundary_clock is not None:
+            boundary_time = self._uow._boundary_clock()
+        else:
+            boundary_time = (await self._uow._execute(select(func.current_timestamp()))).scalar_one()
+        await self._uow._run_transaction_probe(
+            PostgreSQLTransactionStage.AFTER_CANONICAL_BOUNDARY_COUNTER_LOCKED
+        )
+
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=CANONICAL_BOUNDARY_SCHEMA_VERSION,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        if isinstance(claim, IdempotencyReplay):
+            boundary = await self.resolve(claim.result.result_id)
+            if boundary is None:
+                await self._uow._fail(
+                    ConstraintConflictError("Canonical boundary replay is unavailable.")
+                )
+            members = await self.resolve_members(boundary.boundary_id)
+            if canonical_boundary_manifest_digest(boundary, members) != boundary.manifest_digest:
+                await self._uow._fail(
+                    ConstraintConflictError("Canonical boundary replay is unavailable.")
+                )
+            return CanonicalBoundaryCaptureResult(boundary, members, True, claim, claim.result)
+
+        boundary_id = self._uow._boundary_id_factory()
+        heads = (
+            await self._uow._execute(
+                select(_CURRENT_SOURCE_HEADS)
+                .where(
+                    _CURRENT_SOURCE_HEADS.c.workspace_id == scope.workspace_id,
+                    _CURRENT_SOURCE_HEADS.c.environment_id == scope.environment_id,
+                    _CURRENT_SOURCE_HEADS.c.accepted_generation <= accepted_through_generation,
+                )
+                .order_by(_CURRENT_SOURCE_HEADS.c.source_object_id)
+            )
+        ).mappings().all()
+        members = tuple(
+            CanonicalBoundaryMember(
+                boundary_id=boundary_id,
+                source_object_id=row["source_object_id"],
+                source_revision_id=row["current_revision_id"],
+                acceptance_id=row["acceptance_id"],
+                workspace_id=row["workspace_id"],
+                environment_id=row["environment_id"],
+                revision_kind=row["current_revision_kind"],
+                accepted_generation=row["accepted_generation"],
+            )
+            for row in heads
+        )
+        boundary_without_digest = CanonicalBoundary(
+            boundary_id=boundary_id,
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            projection_kind=command.projection_kind,
+            scope_version=command.scope_version,
+            accepted_through_generation=accepted_through_generation,
+            boundary_time=boundary_time,
+            manifest_digest="0" * 64,
+            idempotency_receipt_id=claim.receipt_id,
+        )
+        boundary = boundary_without_digest.model_copy(
+            update={"manifest_digest": canonical_boundary_manifest_digest(boundary_without_digest, members)}
+        )
+        await self._uow._execute(
+            insert(_CANONICAL_BOUNDARIES).values(**boundary.model_dump(mode="python"))
+        )
+        if members:
+            await self._uow._execute(
+                insert(_CANONICAL_BOUNDARY_MEMBERS).values(
+                    [member.model_dump(mode="python") for member in members]
+                )
+            )
+        reference = OpaqueResultReference(
+            result_type=CANONICAL_BOUNDARY_RESULT_TYPE,
+            result_id=boundary.boundary_id,
+            schema_version=CANONICAL_BOUNDARY_SCHEMA_VERSION,
+        )
+        await self._uow.idempotency.complete(claim, reference)
+        return CanonicalBoundaryCaptureResult(boundary, members, False, claim, reference)
+
+
 class _PostgreSQLIngestionRepository:
     """Tenant-scoped PostgreSQL implementation of the append-only ledger."""
 
@@ -2477,6 +2657,8 @@ class PostgreSQLTenantUnitOfWork:
         outbox_events: OutboxEventRegistry,
         audit_events: AuditEventRegistry,
         transaction_probe: PostgreSQLTransactionProbe,
+        boundary_id_factory: Callable[[], UUID],
+        boundary_clock: Callable[[], datetime] | None,
     ) -> None:
         self._session_factory = session_factory
         self._source_context = source_context
@@ -2486,6 +2668,8 @@ class PostgreSQLTenantUnitOfWork:
         self._outbox_events = outbox_events
         self._audit_events = audit_events
         self._transaction_probe = transaction_probe
+        self._boundary_id_factory = boundary_id_factory
+        self._boundary_clock = boundary_clock
         self._scope: PersistenceScope | None = None
         self._operation: PersistenceOperation | None = None
         self._trace_id: UUID | None = None
@@ -2497,6 +2681,7 @@ class PostgreSQLTenantUnitOfWork:
         self._environments = _PostgreSQLEnvironmentRepository(self)
         self._sources = _PostgreSQLSourceObservationRepository(self)
         self._canonical = _PostgreSQLCanonicalAcceptanceRepository(self)
+        self._boundaries = _PostgreSQLCanonicalBoundaryRepository(self)
         self._ingestion = _PostgreSQLIngestionRepository(self)
         self._admissions = _PostgreSQLAdmissionRepository(self)
         self._access_policies = _PostgreSQLAccessPolicyRepository(self)
@@ -2532,6 +2717,16 @@ class PostgreSQLTenantUnitOfWork:
     def canonical(self) -> _PostgreSQLCanonicalAcceptanceRepository:
         self._guard_active()
         return self._canonical
+
+    @property
+    def boundaries(self) -> _PostgreSQLCanonicalBoundaryRepository:
+        self._guard_active()
+        return self._boundaries
+
+    @property
+    def canonical_boundaries(self) -> _PostgreSQLCanonicalBoundaryRepository:
+        self._guard_active()
+        return self._boundaries
 
     @property
     def ingestion(self) -> IngestionRepository:
@@ -2919,6 +3114,8 @@ class PostgreSQLTenantUnitOfWorkFactory:
         audit_events: AuditEventRegistry,
         transaction_probe: PostgreSQLTransactionProbe,
         receipt_id_factory: Callable[[], UUID] = uuid4,
+        boundary_id_factory: Callable[[], UUID] = uuid4,
+        boundary_clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._context_verifier = context_verifier
@@ -2926,6 +3123,8 @@ class PostgreSQLTenantUnitOfWorkFactory:
         self._outbox_events = outbox_events
         self._audit_events = audit_events
         self._transaction_probe = transaction_probe
+        self._boundary_id_factory = boundary_id_factory
+        self._boundary_clock = boundary_clock
 
     def __call__(
         self, context: TrustedPersistenceContext
@@ -2942,6 +3141,8 @@ class PostgreSQLTenantUnitOfWorkFactory:
             outbox_events=self._outbox_events,
             audit_events=self._audit_events,
             transaction_probe=self._transaction_probe,
+            boundary_id_factory=self._boundary_id_factory,
+            boundary_clock=self._boundary_clock,
         )
 
 
@@ -2974,6 +3175,8 @@ class PostgreSQLPersistence:
         audit_events: AuditEventRegistry | None = None,
         transaction_probe: PostgreSQLTransactionProbe = _ignore_transaction_stage,
         receipt_id_factory: Callable[[], UUID] = uuid4,
+        boundary_id_factory: Callable[[], UUID] = uuid4,
+        boundary_clock: Callable[[], datetime] | None = None,
     ) -> None:
         selected_audit_events = (
             audit_events or AuditEventRegistry.with_default_families()
@@ -2986,6 +3189,8 @@ class PostgreSQLPersistence:
             outbox_events=outbox_events,
             audit_events=selected_audit_events,
             transaction_probe=transaction_probe,
+            boundary_id_factory=boundary_id_factory,
+            boundary_clock=boundary_clock,
         )
         self.uow_factory = self.tenant_uow_factory
         self.audit_reader = PostgreSQLAuditReader(self.tenant_uow_factory)

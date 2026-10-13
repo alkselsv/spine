@@ -194,7 +194,7 @@ access, forced RLS protection, and existing schema owner before it changes the
 schema. Runtime, dispatcher, and migration connections use the controlled
 search path `pg_catalog,spine`. The Alembic version table is
 `spine.alembic_version`, and the committed history has one linear head:
-`20261019_22`. The source-observation migrations add the source ledger tables,
+`20261020_23`. The source-observation migrations add the source ledger tables,
 integrity constraints, persisted canonicalization profile identity, and
 database-side canonical validation. The admission migration adds the
 environment-scoped append-only `admission_decisions` CAS ledger, including
@@ -228,6 +228,17 @@ role, and recovery readiness must fail closed unless the complete chain verifies
 Parsed artifacts retain the source-revision digest, parser/configuration
 versions, bounded diagnostics, and tenant-scoped physical-line locators so a
 projection can be replayed without replacing the source of truth.
+Revision `20261018_21` adds the canonical acceptance ledger, serialized
+environment generation counters, and PostgreSQL-owned current source heads.
+Canonical acceptance locks the environment counter before the source head,
+requires current admission/policy evidence for content, and commits its
+idempotency completion, audit event, outbox intent, acceptance row, and head
+transition together. A tombstone does not require content admission or policy.
+Revision `20261020_23` adds immutable server-selected canonical boundaries and
+their exact current-revision/tombstone membership. Boundary capture locks the
+same environment generation counter before reading heads, so `READ COMMITTED`
+cannot produce a mixed cut; the boundary manifest and membership are retained
+as the reproducible `as_of` input for projection work.
 
 `spine-db-bootstrap-workspace` is a one-time migration-authority action. It
 atomically inserts the first Workspace and an operator audit record, then seals
@@ -237,7 +248,7 @@ invoke it or access its tables.
 
 Application startup never creates roles or schemas, invokes Alembic, or calls
 `metadata.create_all`. Readiness succeeds only when PostgreSQL major 17 is in
-use, the database reports exactly head `20261019_22`, the connected user is the
+use, the database reports exactly head `20261020_23`, the connected user is the
 configured restricted runtime role, required grants and forced RLS are intact,
 and transaction-local Workspace/Environment context can be bound. Empty,
 older, newer, unknown, and multiple-head states fail closed; the newly created

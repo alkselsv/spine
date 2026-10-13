@@ -67,6 +67,12 @@ from spine.application.persistence.canonical import (
     SourceOrderingPolicyRegistry,
     validate_canonical_acceptance_effects,
 )
+from spine.application.persistence.boundary import (
+    CANONICAL_BOUNDARY_RESULT_TYPE,
+    CANONICAL_BOUNDARY_SCHEMA_VERSION,
+    CanonicalBoundaryCaptureCommand,
+    CanonicalBoundaryCaptureResult,
+)
 from spine.infrastructure.persistence.access_policies import (
     InMemoryAccessPolicyRepository,
 )
@@ -111,6 +117,9 @@ from spine.domain.sources import (
     CanonicalAcceptance,
     CanonicalOrdering,
     CurrentSourceHead,
+    CanonicalBoundary,
+    CanonicalBoundaryMember,
+    canonical_boundary_manifest_digest,
 )
 from spine.domain.sources.canonicalization import assert_revision_digest
 from spine.domain.sources.errors import RevisionDigestMismatchError as DomainRevisionDigestMismatchError
@@ -154,6 +163,8 @@ class _StoreState:
     canonical_acceptances: dict[UUID, CanonicalAcceptance]
     current_source_heads: dict[UUID, CurrentSourceHead]
     canonical_generations: dict[tuple[UUID, UUID], int]
+    canonical_boundaries: dict[UUID, CanonicalBoundary]
+    canonical_boundary_members: dict[tuple[UUID, UUID], CanonicalBoundaryMember]
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +191,8 @@ class _Store:
         transaction_lock: asyncio.Lock | None = None,
         canonical_policy_repository: InMemoryAccessPolicyRepository | None = None,
         canonical_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        boundary_id_factory: Callable[[], UUID] = uuid4,
+        boundary_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self.state = _StoreState(
             workspaces={},
@@ -202,6 +215,8 @@ class _Store:
             canonical_acceptances={},
             current_source_heads={},
             canonical_generations={},
+            canonical_boundaries={},
+            canonical_boundary_members={},
         )
         self.lock = transaction_lock or asyncio.Lock()
         self.observation_lock = asyncio.Lock()
@@ -211,6 +226,8 @@ class _Store:
         self.fail_next_audit_append = False
         self.canonical_policy_repository = canonical_policy_repository
         self.canonical_clock = canonical_clock
+        self.boundary_id_factory = boundary_id_factory
+        self.boundary_clock = boundary_clock
         self.outbox_deliveries: dict[UUID, OutboxDelivery] = {}
 
     @property
@@ -292,6 +309,14 @@ class _Store:
     @property
     def canonical_generations(self) -> dict[tuple[UUID, UUID], int]:
         return self.state.canonical_generations
+
+    @property
+    def canonical_boundaries(self) -> dict[UUID, CanonicalBoundary]:
+        return self.state.canonical_boundaries
+
+    @property
+    def canonical_boundary_members(self) -> dict[tuple[UUID, UUID], CanonicalBoundaryMember]:
+        return self.state.canonical_boundary_members
 
 
 def _workspace_copy(value: Workspace) -> Workspace:
@@ -1334,6 +1359,137 @@ class _AuditWriter:
         return self._uow._repository_call(operation)
 
 
+class _CanonicalBoundaryRepository:
+    """In-memory implementation of the counter-first boundary protocol."""
+
+    def __init__(self, uow: "InMemoryUnitOfWork") -> None:
+        self._uow = uow
+
+    def _boundaries(self) -> dict[UUID, CanonicalBoundary]:
+        return self._uow._base_canonical_boundaries | self._uow._pending_canonical_boundaries
+
+    def _members(self) -> dict[tuple[UUID, UUID], CanonicalBoundaryMember]:
+        return self._uow._base_canonical_boundary_members | self._uow._pending_canonical_boundary_members
+
+    def _heads(self) -> dict[UUID, CurrentSourceHead]:
+        return self._uow._base_current_source_heads | self._uow._pending_current_source_heads
+
+    def _revisions(self) -> dict[UUID, SourceRevision]:
+        return self._uow._base_source_revisions | self._uow._pending_source_revisions
+
+    async def resolve(self, boundary_id: UUID) -> CanonicalBoundary | None:
+        self._uow._guard_active()
+        value = self._boundaries().get(boundary_id)
+        if value is None or not isinstance(self._uow.scope, EnvironmentScope):
+            return None
+        if (value.workspace_id, value.environment_id) != (
+            self._uow.scope.workspace_id,
+            self._uow.scope.environment_id,
+        ):
+            return None
+        return value.model_copy(deep=True)
+
+    async def resolve_members(self, boundary_id: UUID) -> tuple[CanonicalBoundaryMember, ...]:
+        boundary = await self.resolve(boundary_id)
+        if boundary is None:
+            return ()
+        return tuple(
+            member.model_copy(deep=True)
+            for (candidate_id, _), member in sorted(
+                self._members().items(), key=lambda item: item[0][1].hex
+            )
+            if candidate_id == boundary_id
+        )
+
+    async def capture(
+        self, command: CanonicalBoundaryCaptureCommand
+    ) -> CanonicalBoundaryCaptureResult:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            self._uow._fail(InvalidPersistenceContextError("Persistence context is invalid."))
+        if command.expected_digest() != command.digest:
+            self._uow._fail(ConstraintConflictError("Canonical boundary command digest is invalid."))
+        if not self._uow._canonical_lock_held:
+            await self._uow._store.canonical_lock.acquire()
+            self._uow._canonical_lock_held = True
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=CANONICAL_BOUNDARY_SCHEMA_VERSION,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        if isinstance(claim, IdempotencyReplay):
+            boundary = await self.resolve(claim.result.result_id)
+            if boundary is None:
+                self._uow._fail(ConstraintConflictError("Canonical boundary replay is unavailable."))
+            members = await self.resolve_members(boundary.boundary_id)
+            if canonical_boundary_manifest_digest(boundary, members) != boundary.manifest_digest:
+                self._uow._fail(ConstraintConflictError("Canonical boundary replay is unavailable."))
+            return CanonicalBoundaryCaptureResult(
+                boundary, members, True, claim, claim.result
+            )
+
+        generation_key = (scope.workspace_id, scope.environment_id)
+        accepted_through_generation = max(
+            self._uow._base_canonical_generations.get(generation_key, 0),
+            self._uow._pending_canonical_generations.get(generation_key, 0),
+        )
+        boundary_id = self._uow._store.boundary_id_factory()
+        boundary_time = self._uow._store.boundary_clock()
+        heads = sorted(
+            (
+                head
+                for head in self._heads().values()
+                if (head.workspace_id, head.environment_id)
+                == (scope.workspace_id, scope.environment_id)
+                and head.accepted_generation <= accepted_through_generation
+            ),
+            key=lambda head: head.source_object_id.hex,
+        )
+        members = tuple(
+            CanonicalBoundaryMember(
+                boundary_id=boundary_id,
+                source_object_id=head.source_object_id,
+                source_revision_id=head.current_revision_id,
+                acceptance_id=head.acceptance_id,
+                workspace_id=head.workspace_id,
+                environment_id=head.environment_id,
+                revision_kind=head.current_revision_kind,
+                accepted_generation=head.accepted_generation,
+            )
+            for head in heads
+            if head.current_revision_id in self._revisions()
+        )
+        if len(members) != len(heads):
+            self._uow._fail(ConstraintConflictError("Canonical boundary membership is incomplete."))
+        boundary_without_digest = CanonicalBoundary(
+            boundary_id=boundary_id,
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            projection_kind=command.projection_kind,
+            scope_version=command.scope_version,
+            accepted_through_generation=accepted_through_generation,
+            boundary_time=boundary_time,
+            manifest_digest="0" * 64,
+            idempotency_receipt_id=claim.receipt_id,
+        )
+        boundary = boundary_without_digest.model_copy(
+            update={"manifest_digest": canonical_boundary_manifest_digest(boundary_without_digest, members)}
+        )
+        self._uow._pending_canonical_boundaries[boundary.boundary_id] = boundary
+        for member in members:
+            self._uow._pending_canonical_boundary_members[
+                (member.boundary_id, member.source_object_id)
+            ] = member
+        reference = OpaqueResultReference(
+            result_type=CANONICAL_BOUNDARY_RESULT_TYPE,
+            result_id=boundary.boundary_id,
+            schema_version=CANONICAL_BOUNDARY_SCHEMA_VERSION,
+        )
+        await self._uow.idempotency.complete(claim, reference)
+        return CanonicalBoundaryCaptureResult(boundary, members, False, claim, reference)
+
+
 class _InMemoryIngestionRepository:
     """Transactional in-memory implementation of the operational ledger."""
 
@@ -1886,6 +2042,8 @@ class InMemoryUnitOfWork:
         self._base_canonical_acceptances: dict[UUID, CanonicalAcceptance] = {}
         self._base_current_source_heads: dict[UUID, CurrentSourceHead] = {}
         self._base_canonical_generations: dict[tuple[UUID, UUID], int] = {}
+        self._base_canonical_boundaries: dict[UUID, CanonicalBoundary] = {}
+        self._base_canonical_boundary_members: dict[tuple[UUID, UUID], CanonicalBoundaryMember] = {}
         self._pending_workspaces: dict[UUID, Workspace] = {}
         self._pending_environments: dict[UUID, Environment] = {}
         self._pending_receipts: dict[_ReceiptKey, _IdempotencyReceipt] = {}
@@ -1906,6 +2064,8 @@ class InMemoryUnitOfWork:
         self._pending_canonical_acceptances: dict[UUID, CanonicalAcceptance] = {}
         self._pending_current_source_heads: dict[UUID, CurrentSourceHead] = {}
         self._pending_canonical_generations: dict[tuple[UUID, UUID], int] = {}
+        self._pending_canonical_boundaries: dict[UUID, CanonicalBoundary] = {}
+        self._pending_canonical_boundary_members: dict[tuple[UUID, UUID], CanonicalBoundaryMember] = {}
         self._source_observation_lock_held = False
         self._canonical_lock_held = False
         self._workspaces = _WorkspaceRepository(self)
@@ -1916,6 +2076,7 @@ class InMemoryUnitOfWork:
         self._ingestion = _InMemoryIngestionRepository(self)
         self._admissions = _AdmissionRepository(self)
         self._canonical = _CanonicalAcceptanceRepository(self)
+        self._boundaries = _CanonicalBoundaryRepository(self)
         self._audit = _AuditWriter(self)
 
     @property
@@ -1957,6 +2118,16 @@ class InMemoryUnitOfWork:
     def canonical(self) -> "_CanonicalAcceptanceRepository":
         self._guard_active()
         return self._canonical
+
+    @property
+    def boundaries(self) -> _CanonicalBoundaryRepository:
+        self._guard_active()
+        return self._boundaries
+
+    @property
+    def canonical_boundaries(self) -> _CanonicalBoundaryRepository:
+        self._guard_active()
+        return self._boundaries
 
     @property
     def access_policies(self) -> InMemoryAccessPolicyRepository:
@@ -2060,6 +2231,14 @@ class InMemoryUnitOfWork:
                     for key, value in self._store.current_source_heads.items()
                 }
                 self._base_canonical_generations = dict(self._store.canonical_generations)
+                self._base_canonical_boundaries = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.canonical_boundaries.items()
+                }
+                self._base_canonical_boundary_members = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.canonical_boundary_members.items()
+                }
                 self._initialized = self._store.initialized
                 if not self._initialized:
                     raise InvalidBootstrapAuthorityError(
@@ -2207,6 +2386,26 @@ class InMemoryUnitOfWork:
                 )
                 prepared_canonical_generations = dict(self._store.canonical_generations)
                 prepared_canonical_generations.update(self._pending_canonical_generations)
+                prepared_canonical_boundaries = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.canonical_boundaries.items()
+                }
+                prepared_canonical_boundaries.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_canonical_boundaries.items()
+                    }
+                )
+                prepared_canonical_boundary_members = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.canonical_boundary_members.items()
+                }
+                prepared_canonical_boundary_members.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_canonical_boundary_members.items()
+                    }
+                )
                 self._store.state = _StoreState(
                     workspaces=prepared_workspaces,
                     environments=prepared_environments,
@@ -2228,6 +2427,8 @@ class InMemoryUnitOfWork:
                     canonical_acceptances=prepared_canonical_acceptances,
                     current_source_heads=prepared_current_source_heads,
                     canonical_generations=prepared_canonical_generations,
+                    canonical_boundaries=prepared_canonical_boundaries,
+                    canonical_boundary_members=prepared_canonical_boundary_members,
                 )
         except BaseException as error:
             self._raise_terminal(error)
@@ -2262,6 +2463,8 @@ class InMemoryUnitOfWork:
         self._pending_canonical_acceptances.clear()
         self._pending_current_source_heads.clear()
         self._pending_canonical_generations.clear()
+        self._pending_canonical_boundaries.clear()
+        self._pending_canonical_boundary_members.clear()
         self._lifecycle = _Lifecycle.ROLLED_BACK
         self._release_source_observation_lock()
         self._release_canonical_lock()
@@ -2326,6 +2529,10 @@ class InMemoryUnitOfWork:
             raise OutboxConflictError("Outbox event identity already exists.")
         if self._pending_admission_decisions.keys() & self._store.admission_decisions.keys():
             raise ConstraintConflictError("Admission decision identity already exists.")
+        if self._pending_canonical_boundaries.keys() & self._store.canonical_boundaries.keys():
+            raise ConstraintConflictError("Canonical boundary identity already exists.")
+        if self._pending_canonical_boundary_members.keys() & self._store.canonical_boundary_members.keys():
+            raise ConstraintConflictError("Canonical boundary membership identity already exists.")
         committed_decisions = tuple(self._store.admission_decisions.values())
         pending_decisions = tuple(self._pending_admission_decisions.values())
         for decision in pending_decisions:
@@ -2576,6 +2783,8 @@ class InMemoryUnitOfWork:
         self._base_canonical_acceptances.clear()
         self._base_current_source_heads.clear()
         self._base_canonical_generations.clear()
+        self._base_canonical_boundaries.clear()
+        self._base_canonical_boundary_members.clear()
         self._pending_workspaces.clear()
         self._pending_environments.clear()
         self._pending_receipts.clear()
@@ -2596,6 +2805,8 @@ class InMemoryUnitOfWork:
         self._pending_canonical_acceptances.clear()
         self._pending_current_source_heads.clear()
         self._pending_canonical_generations.clear()
+        self._pending_canonical_boundaries.clear()
+        self._pending_canonical_boundary_members.clear()
         self._scope = None
         self._operation = None
         self._trace_id = None
@@ -3088,6 +3299,8 @@ class InMemoryPersistence:
         delivery_lease_token_factory: Callable[[], UUID] = uuid4,
         canonical_policy_repository: InMemoryAccessPolicyRepository | None = None,
         canonical_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        boundary_id_factory: Callable[[], UUID] = uuid4,
+        boundary_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         selected_audit_events = (
             audit_events or AuditEventRegistry.with_default_families()
@@ -3097,6 +3310,8 @@ class InMemoryPersistence:
             transaction_lock=transaction_lock,
             canonical_policy_repository=canonical_policy_repository,
             canonical_clock=canonical_clock,
+            boundary_id_factory=boundary_id_factory,
+            boundary_clock=boundary_clock,
         )
         self.uow_factory = _InMemoryUnitOfWorkFactory(
             store,

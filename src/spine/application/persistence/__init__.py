@@ -10,6 +10,13 @@ from spine.application.persistence.canonical import (
     CanonicalAcceptanceRepository,
     CanonicalAcceptanceResult,
 )
+from spine.application.persistence.boundary import (
+    CANONICAL_BOUNDARY_RESULT_TYPE,
+    CANONICAL_BOUNDARY_SCHEMA_VERSION,
+    CanonicalBoundaryCaptureCommand,
+    CanonicalBoundaryCaptureResult,
+    CanonicalBoundaryRepository,
+)
 from spine.application.persistence.context import (
     ContextOrigin,
     EnvironmentScope,
@@ -101,6 +108,11 @@ __all__ = [
     "CanonicalAcceptanceCommand",
     "CanonicalAcceptanceRepository",
     "CanonicalAcceptanceResult",
+    "CanonicalBoundaryCaptureCommand",
+    "CanonicalBoundaryCaptureResult",
+    "CanonicalBoundaryRepository",
+    "CANONICAL_BOUNDARY_RESULT_TYPE",
+    "CANONICAL_BOUNDARY_SCHEMA_VERSION",
     "ContextOrigin",
     "COMMAND_DIGEST_ALGORITHM_VERSION",
     "CommandDigest",
