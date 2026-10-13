@@ -287,7 +287,7 @@ class ProjectionRecovery(_ProjectionModel):
 
     schema_version: Literal["projection-recovery:v1"] = "projection-recovery:v1"
     attempt: StrictInt = Field(ge=1)
-    pending_effect_ids: tuple[str, ...] = ()
+    pending_effect_ids: tuple[str, ...] = Field(min_length=1)
 
 
 class ProjectionEffectStore(Protocol):
@@ -357,6 +357,43 @@ class ProjectionResult(_ProjectionModel):
     effects: tuple[ProjectionEffect, ...] = ()
     recovery: ProjectionRecovery | None = None
     failure: ProjectionFailure | None = None
+
+    @model_validator(mode="after")
+    def validate_lifecycle(self) -> "ProjectionResult":
+        if self.lifecycle in {
+            ProjectionLifecycle.SUCCEEDED,
+            ProjectionLifecycle.RECOVERED,
+        }:
+            if self.outcome is not ProjectionOutcome.SUCCEEDED:
+                if (
+                    self.lifecycle is ProjectionLifecycle.SUCCEEDED
+                    and self.failure is not None
+                ):
+                    # Preserve construction compatibility for callers of the
+                    # pre-lifecycle result contract.
+                    object.__setattr__(self, "lifecycle", ProjectionLifecycle.FAILED)
+                else:
+                    raise ValueError("successful lifecycle requires a succeeded outcome")
+            if self.failure is not None or self.recovery is not None:
+                if self.lifecycle is not ProjectionLifecycle.FAILED:
+                    raise ValueError("successful lifecycle cannot contain failure state")
+        elif self.lifecycle is ProjectionLifecycle.RECOVERABLE:
+            if self.outcome is not ProjectionOutcome.FAILED:
+                raise ValueError("recoverable lifecycle requires a failed outcome")
+            if self.failure is None or self.recovery is None:
+                raise ValueError("recoverable lifecycle requires failure and recovery")
+        elif self.lifecycle is ProjectionLifecycle.FENCED:
+            if self.outcome is not ProjectionOutcome.STALE:
+                raise ValueError("fenced lifecycle requires a stale outcome")
+            if (
+                self.failure is None
+                or self.failure.code is not ProjectionFailureCode.REVISION_FENCED
+                or self.effects
+            ):
+                raise ValueError("fenced lifecycle must contain only a revision fence")
+        elif self.lifecycle is ProjectionLifecycle.FAILED and self.failure is None:
+            raise ValueError("failed lifecycle requires a failure")
+        return self
 
 
 class ProjectionRetrievalResult(_ProjectionModel):

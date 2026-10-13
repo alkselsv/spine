@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from dataclasses import dataclass
+from hashlib import sha256
 from uuid import UUID
 
 from .contracts import (
@@ -98,9 +99,9 @@ class DeterministicContextProjection(ContextProjection):
 
     def __init__(self, physical_store: ProjectionEffectStore | None = None) -> None:
         self._commands: list[ProjectionCommand] = []
-        self._executions: dict[tuple[UUID, UUID, str], _Execution] = {}
+        self._executions: dict[tuple[UUID, UUID, str, str], _Execution] = {}
         self._retrieval_results: dict[
-            tuple[UUID, UUID, str], ProjectionRetrievalResult
+            tuple[UUID, UUID, str, str], ProjectionRetrievalResult
         ] = {}
         self._retrieval: dict[
             tuple[UUID, UUID],
@@ -110,7 +111,7 @@ class DeterministicContextProjection(ContextProjection):
                 tuple[ProjectionRelation, ...],
             ],
         ] = {}
-        self._revision_fences: dict[UUID, _RevisionFence] = {}
+        self._revision_fences: dict[tuple[UUID, UUID, str, str, UUID], _RevisionFence] = {}
         self._physical_store = physical_store or DeterministicPhysicalStore()
         self._lock = asyncio.Lock()
 
@@ -310,7 +311,9 @@ class DeterministicContextProjection(ContextProjection):
 
     def _preflight(self, command: ProjectionCommand) -> ProjectionFailureCode | None:
         for source in command.source_revisions:
-            known = self._revision_fences.get(source.source_object_id)
+            known = self._revision_fences.get(
+                self._fence_key(command, source.source_object_id)
+            )
             if known is not None and source.revision_number < known.revision_number:
                 return ProjectionFailureCode.REVISION_FENCED
             if (
@@ -339,7 +342,9 @@ class DeterministicContextProjection(ContextProjection):
                 if command.operation.value == "remove" and source.status == "tombstoned":
                     continue
                 if source.status == "tombstoned":
-                    self._revision_fences[source.source_object_id] = _RevisionFence(
+                    self._revision_fences[
+                        self._fence_key(command, source.source_object_id)
+                    ] = _RevisionFence(
                         revision_number=source.revision_number,
                         source_revision_id=source.source_revision_id,
                         revision_digest=source.revision_digest,
@@ -348,7 +353,9 @@ class DeterministicContextProjection(ContextProjection):
                 return self._failure_code_for_status(source.status)
 
         for source in command.source_revisions:
-            self._revision_fences[source.source_object_id] = _RevisionFence(
+            self._revision_fences[
+                self._fence_key(command, source.source_object_id)
+            ] = _RevisionFence(
                 revision_number=source.revision_number,
                 source_revision_id=source.source_revision_id,
                 revision_digest=source.revision_digest,
@@ -365,7 +372,9 @@ class DeterministicContextProjection(ContextProjection):
         return tuple(
             ProjectionEffect(
                 effect_id=(
-                    f"{command.command_identity}:{source.source_object_id.hex}:"
+                    f"{command.workspace_id.hex}:{command.environment_id.hex}:"
+                    f"{self._namespace_key(command)}:{command.command_identity}:"
+                    f"{source.source_object_id.hex}:"
                     f"{source.revision_number}:{action.value}"
                 ),
                 operation=command.operation,
@@ -429,8 +438,35 @@ class DeterministicContextProjection(ContextProjection):
         )
 
     @staticmethod
-    def _key(command: ProjectionCommand) -> tuple[UUID, UUID, str]:
-        return (command.workspace_id, command.environment_id, command.command_identity)
+    def _key(command: ProjectionCommand) -> tuple[UUID, UUID, str, str]:
+        return (
+            command.workspace_id,
+            command.environment_id,
+            command.physical_namespace.namespace,
+            command.command_identity,
+        )
+
+    @staticmethod
+    def _namespace_key(command: ProjectionCommand) -> str:
+        payload = (
+            f"{command.physical_namespace.namespace}\0"
+            f"{command.physical_namespace.namespace_digest}"
+        ).encode("utf-8")
+        return sha256(payload).hexdigest()
+
+    @classmethod
+    def _fence_key(
+        cls,
+        command: ProjectionCommand,
+        source_object_id: UUID,
+    ) -> tuple[UUID, UUID, str, str, UUID]:
+        return (
+            command.workspace_id,
+            command.environment_id,
+            command.physical_namespace.namespace,
+            command.physical_namespace.namespace_digest,
+            source_object_id,
+        )
 
     @staticmethod
     def _artifact_reference(command: ProjectionCommand) -> str:

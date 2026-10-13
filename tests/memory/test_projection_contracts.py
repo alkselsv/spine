@@ -19,6 +19,7 @@ from spine.memory.contracts import (
     ProjectionLifecycle,
     ProjectionNamespace,
     ProjectionOutcome,
+    ProjectionResult,
     ProjectionRelation,
     ProjectionSourceRevision,
     ProjectCommand,
@@ -117,6 +118,17 @@ def test_projection_commands_are_immutable_versioned_and_tenant_scoped() -> None
 def test_projection_commands_reject_unknown_fields() -> None:
     with pytest.raises(ValidationError):
         ProjectCommand(**project_command().model_dump(), unexpected="rejected")
+
+
+def test_projection_result_rejects_inconsistent_recovery_lifecycle() -> None:
+    with pytest.raises(ValidationError):
+        ProjectionResult(
+            operation="project",
+            outcome=ProjectionOutcome.SUCCEEDED,
+            command_identity="project-1",
+            command_digest="e" * 64,
+            lifecycle=ProjectionLifecycle.RECOVERABLE,
+        )
 
 
 @pytest.mark.asyncio
@@ -365,6 +377,26 @@ async def test_fake_fences_older_revision_after_newer_revision() -> None:
     assert fenced.failure is not None
     assert fenced.failure.code is ProjectionFailureCode.REVISION_FENCED
     assert fenced.effects == ()
+
+
+@pytest.mark.asyncio
+async def test_projection_fencing_and_effects_are_workspace_isolated() -> None:
+    projection = DeterministicContextProjection()
+    workspace_a = await projection.project(project_command())
+    workspace_b = await projection.project(
+        ProjectCommand(
+            **command_context(
+                workspace_id=UUID(int=11),
+                environment_id=UUID(int=12),
+            ),
+            command_identity="project-1",
+            command_digest="e" * 64,
+        )
+    )
+
+    assert workspace_a.outcome is ProjectionOutcome.SUCCEEDED
+    assert workspace_b.outcome is ProjectionOutcome.SUCCEEDED
+    assert workspace_a.effects[0].effect_id != workspace_b.effects[0].effect_id
 
 
 @pytest.mark.asyncio

@@ -16,9 +16,10 @@ with an applied, replayed or failed status. `ProjectionResult.effects` retains
 the safe effect statuses and `ProjectionResult.lifecycle` distinguishes normal
 success, replay, recovery, recoverable partial failure and revision fencing.
 
-Command identity is scoped to workspace and environment. Repeating the same
-identity and digest replays the stored logical result; a digest or operation
-conflict fails without another physical effect. If one effect fails after
+Command identity is scoped to workspace, environment and physical namespace.
+Repeating the same identity and digest in that scope replays the stored logical
+result; a digest or operation conflict fails without another physical effect.
+If one effect fails after
 earlier effects were applied, the result is `recoverable` and names only the
 pending effect IDs. Retrying the same command resumes pending effects and
 never reapplies completed effects.
