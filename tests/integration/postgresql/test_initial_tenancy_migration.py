@@ -2717,8 +2717,6 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'backup_fence_leases', 'fence_operation_tickets', "
                         "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                         "'recovery_evidence_invalidations', "
-                        "'canonical_generation_counters', 'canonical_acceptances', "
-                        "'current_source_heads', 'parsed_documents', 'parsed_document_segments')"
                         "'canonical_generation_counters', 'canonical_acceptances', 'current_source_heads', "
                         "'canonical_boundaries', 'canonical_boundary_members', "
                         "'parsed_documents', 'parsed_document_segments')"
