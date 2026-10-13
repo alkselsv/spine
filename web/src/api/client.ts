@@ -65,7 +65,18 @@ export class SpineApiError extends Error {
   }
 }
 
-export type ScopedApiClient = Client<paths>;
+export type ScopedApiClient = Pick<
+  Client<paths>,
+  | 'request'
+  | 'GET'
+  | 'PUT'
+  | 'POST'
+  | 'DELETE'
+  | 'OPTIONS'
+  | 'HEAD'
+  | 'PATCH'
+  | 'TRACE'
+>;
 
 export function createScopedApiClient(
   options: ScopedApiClientOptions,
@@ -77,7 +88,45 @@ export function createScopedApiClient(
     fetch: options.fetch,
   });
   client.use(createScopeMiddleware(baseUrl, scope, options.getBearerCredential));
-  return client;
+  return lockClient(client);
+}
+
+function lockClient(client: Client<paths>): ScopedApiClient {
+  return Object.freeze({
+    request: guardRequestOptions(client.request),
+    GET: guardRequestOptions(client.GET),
+    PUT: guardRequestOptions(client.PUT),
+    POST: guardRequestOptions(client.POST),
+    DELETE: guardRequestOptions(client.DELETE),
+    OPTIONS: guardRequestOptions(client.OPTIONS),
+    HEAD: guardRequestOptions(client.HEAD),
+    PATCH: guardRequestOptions(client.PATCH),
+    TRACE: guardRequestOptions(client.TRACE),
+  });
+}
+
+function guardRequestOptions<T>(method: T): T {
+  const callable = method as (...args: unknown[]) => unknown;
+  return (async (...args: unknown[]) => {
+    assertSafeRequestOptions(args.at(-1));
+    return callable(...args);
+  }) as T;
+}
+
+function assertSafeRequestOptions(candidate: unknown): void {
+  if (!candidate || typeof candidate !== 'object') return;
+  const options = candidate as Record<string, unknown>;
+  if (
+    ['baseUrl', 'fetch', 'Request', 'headers', 'middleware'].some((key) =>
+      Object.hasOwn(options, key),
+    )
+  ) {
+    throw clientError(
+      'spine.client.invalid_request',
+      'request',
+      'The API request configuration is invalid.',
+    );
+  }
 }
 
 function createScopeMiddleware(
@@ -123,7 +172,13 @@ function createScopeMiddleware(
         throw await mapErrorResponse(response);
       }
     },
-    onError() {
+    onError({ error, request }) {
+      if (request.signal.aborted) {
+        if (error instanceof Error) return error;
+        const abortError = new Error('The operation was aborted.');
+        abortError.name = 'AbortError';
+        return abortError;
+      }
       return clientError(
         'spine.client.api_unavailable',
         'unavailable',
@@ -154,11 +209,12 @@ async function mapErrorResponse(response: Response): Promise<SpineApiError> {
     });
   }
 
+  const fallback = fallbackForStatus(response.status);
   return new SpineApiError({
-    code: fallbackCode(response.status),
-    kind: failureKind(response.status),
-    retryability: response.status >= 500 ? 'after_delay' : 'never',
-    safeMessage: fallbackMessage(response.status),
+    code: fallback.code,
+    kind: fallback.kind,
+    retryability: fallback.retryability,
+    safeMessage: fallback.safeMessage,
     status: response.status,
     traceId: traceHeader,
   });
@@ -192,28 +248,56 @@ function failureKind(status: number, code?: string): ApiFailureKind {
   if (status === 403 || code?.startsWith('spine.authorization.')) {
     return 'authorization';
   }
-  if (status === 400 || status === 422 || code === 'spine.request.validation') {
+  if (code === 'spine.request.validation') {
     return 'validation';
   }
-  if (status >= 500) return 'unavailable';
-  if (status >= 400) return 'request';
-  return 'unexpected';
+  return fallbackForStatus(status).kind;
 }
 
-function fallbackCode(status: number): string {
-  if (status === 401) return 'spine.authentication.invalid';
-  if (status === 403) return 'spine.authorization.denied';
-  if (status === 400 || status === 422) return 'spine.request.validation';
-  if (status >= 500) return 'spine.client.api_unavailable';
-  return 'spine.client.request_failed';
-}
-
-function fallbackMessage(status: number): string {
-  if (status === 401) return 'Authentication is invalid.';
-  if (status === 403) return 'Authorization is denied.';
-  if (status === 400 || status === 422) return 'Request validation failed.';
-  if (status >= 500) return 'The API is temporarily unavailable.';
-  return 'The API request failed.';
+function fallbackForStatus(status: number): {
+  code: string;
+  kind: ApiFailureKind;
+  retryability: ApiRetryability;
+  safeMessage: string;
+} {
+  if (status === 401) {
+    return {
+      code: 'spine.authentication.invalid',
+      kind: 'authentication',
+      retryability: 'never',
+      safeMessage: 'Authentication is invalid.',
+    };
+  }
+  if (status === 403) {
+    return {
+      code: 'spine.authorization.denied',
+      kind: 'authorization',
+      retryability: 'never',
+      safeMessage: 'Authorization is denied.',
+    };
+  }
+  if (status === 400 || status === 422) {
+    return {
+      code: 'spine.request.validation',
+      kind: 'validation',
+      retryability: 'never',
+      safeMessage: 'Request validation failed.',
+    };
+  }
+  if (status >= 500) {
+    return {
+      code: 'spine.client.api_unavailable',
+      kind: 'unavailable',
+      retryability: 'after_delay',
+      safeMessage: 'The API is temporarily unavailable.',
+    };
+  }
+  return {
+    code: 'spine.client.request_failed',
+    kind: status >= 400 ? 'request' : 'unexpected',
+    retryability: 'never',
+    safeMessage: 'The API request failed.',
+  };
 }
 
 function parseBaseUrl(value: string): URL {

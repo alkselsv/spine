@@ -5,7 +5,8 @@ not be edited by hand. `web/api/codegen/export_openapi.py` exports the canonical
 document from `spine.api.main.create_app`; `openapi-typescript` 7.13.0 generates
 the request, response and operation types consumed by `openapi-fetch` 0.17.0.
 The generator runs in an isolated workspace on TypeScript 5.9.3, while the web
-application keeps its TypeScript 7 compiler.
+application keeps its TypeScript 7 compiler. The exporter runs through `uv run`
+so CI uses the repository's locked Python environment.
 
 Every protected R1 operation has a stable server-owned `operationId`, HTTP
 Bearer security, and required UUID headers named `X-Workspace-ID` and
@@ -30,7 +31,8 @@ CI exports the backend schema again, regenerates TypeScript and fails if either
 committed artifact differs. A backend contract change therefore updates both
 files through the command above, never by editing generated output.
 
-The client rejects cross-origin overrides before requesting a credential,
+The client exposes a frozen request-only surface, rejects per-request transport,
+header, middleware and cross-origin overrides before requesting a credential,
 forces redirects to fail, and sends credentials only in the `Authorization`
 header. Structured failures are reduced to stable code, safe message,
 retryability, trace ID and a frontend category; unknown or transport failures

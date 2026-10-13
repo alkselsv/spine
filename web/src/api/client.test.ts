@@ -34,6 +34,7 @@ describe('scoped API client', () => {
       environmentId,
     );
     expect((request as Request).url).not.toContain('injected-secret');
+    expect((request as Request).redirect).toBe('error');
   });
 
   it('test_request_rejects_an_origin_override_before_reading_credential', async () => {
@@ -47,6 +48,25 @@ describe('scoped API client', () => {
 
     await expect(
       client.GET('/api/v1/health/live', { baseUrl: 'https://attacker.test' }),
+    ).rejects.toMatchObject({ code: 'spine.client.invalid_request' });
+    expect(getBearerCredential).not.toHaveBeenCalled();
+  });
+
+  it('test_client_rejects_per_request_transport_overrides_before_credentials', async () => {
+    const getBearerCredential = vi.fn(() => 'injected-secret');
+    const client = createScopedApiClient({
+      baseUrl: 'https://spine.test',
+      fetch: vi.fn(),
+      getBearerCredential,
+      scope: { environmentId, workspaceId },
+    });
+
+    expect('use' in client).toBe(false);
+    await expect(
+      client.GET('/api/v1/health/live', {
+        fetch: vi.fn(),
+        middleware: [{ onRequest: ({ request }) => request }],
+      }),
     ).rejects.toMatchObject({ code: 'spine.client.invalid_request' });
     expect(getBearerCredential).not.toHaveBeenCalled();
   });
@@ -70,6 +90,53 @@ describe('scoped API client', () => {
     await expect(request).rejects.not.toThrow('raw-secret');
     await expect(request).rejects.not.toThrow('oidc provider');
   });
+
+  it('test_malformed_credential_is_rejected_before_transport', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const client = createScopedApiClient({
+      baseUrl: 'https://spine.test',
+      fetch,
+      getBearerCredential: () => 'secret\r\nX-Injected: value',
+      scope: { environmentId, workspaceId },
+    });
+
+    await expect(client.GET('/api/v1/health/live')).rejects.toMatchObject({
+      code: 'spine.client.invalid_credential',
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['notaurl', 'spine.client.invalid_configuration'],
+    ['https://user:secret@spine.test', 'spine.client.invalid_configuration'],
+  ])('test_invalid_base_url_%s_is_rejected', (baseUrl, code) => {
+    expect(() =>
+      createScopedApiClient({
+        baseUrl,
+        getBearerCredential: () => 'secret',
+        scope: { environmentId, workspaceId },
+      }),
+    ).toThrow(expect.objectContaining({ code }));
+  });
+
+  it.each([
+    ['invalid-workspace', environmentId],
+    [workspaceId, 'invalid-environment'],
+  ])(
+    'test_invalid_scope_%s_%s_is_rejected',
+    (invalidWorkspaceId, invalidEnvironmentId) => {
+      expect(() =>
+        createScopedApiClient({
+          baseUrl: 'https://spine.test',
+          getBearerCredential: () => 'secret',
+          scope: {
+            environmentId: invalidEnvironmentId,
+            workspaceId: invalidWorkspaceId,
+          },
+        }),
+      ).toThrow(expect.objectContaining({ code: 'spine.client.invalid_scope' }));
+    },
+  );
 
   it.each([
     [401, 'spine.authentication.invalid', 'authentication'],
@@ -157,5 +224,49 @@ describe('scoped API client', () => {
     });
     await expect(request).rejects.not.toThrow('provider.internal');
     await expect(request).rejects.not.toThrow('bearer-secret');
+  });
+
+  it.each([
+    [401, 'spine.authentication.invalid', 'authentication'],
+    [403, 'spine.authorization.denied', 'authorization'],
+    [422, 'spine.request.validation', 'validation'],
+    [503, 'spine.client.api_unavailable', 'unavailable'],
+    [409, 'spine.client.request_failed', 'request'],
+  ] as const)(
+    'test_unstructured_failure_%s_uses_safe_fallback',
+    async (status, code, kind) => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        new Response('raw protected provider failure', {
+          headers: { 'X-Trace-ID': traceId },
+          status,
+        }),
+      );
+
+      const request = createClient(fetch).GET('/api/v1/health/live');
+
+      await expect(request).rejects.toMatchObject({ code, kind, status, traceId });
+      await expect(request).rejects.not.toThrow('raw protected provider failure');
+    },
+  );
+
+  it('test_request_cancellation_preserves_abort_outcome', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(
+      (request) =>
+        new Promise((_resolve, reject) => {
+          (request as Request).signal.addEventListener('abort', () => {
+            reject(new DOMException('The operation was aborted.', 'AbortError'));
+          });
+        }),
+    );
+    const controller = new AbortController();
+    const request = createClient(fetch).GET('/api/v1/health/live', {
+      signal: controller.signal,
+    });
+
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+    controller.abort();
+
+    await expect(request).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(request).rejects.not.toBeInstanceOf(SpineApiError);
   });
 });
