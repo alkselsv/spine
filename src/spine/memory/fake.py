@@ -104,7 +104,7 @@ class DeterministicContextProjection(ContextProjection):
             tuple[UUID, UUID, str, str, str], ProjectionRetrievalResult
         ] = {}
         self._retrieval: dict[
-            tuple[UUID, UUID],
+            tuple[UUID, UUID, str | None],
             tuple[
                 tuple[ProjectionChunk, ...],
                 tuple[ProjectionEntity, ...],
@@ -127,8 +127,13 @@ class DeterministicContextProjection(ContextProjection):
         chunks: tuple[ProjectionChunk, ...] = (),
         entities: tuple[ProjectionEntity, ...] = (),
         relations: tuple[ProjectionRelation, ...] = (),
+        physical_namespace: str | None = None,
     ) -> None:
-        self._retrieval[(workspace_id, environment_id)] = (chunks, entities, relations)
+        self._retrieval[(workspace_id, environment_id, physical_namespace)] = (
+            chunks,
+            entities,
+            relations,
+        )
 
     async def project(self, command: ProjectCommand) -> ProjectionResult:
         return await self._execute(command)
@@ -158,7 +163,17 @@ class DeterministicContextProjection(ContextProjection):
             if unsafe is not None:
                 result = self._retrieval_failure(command, unsafe)
             else:
-                seeded = self._retrieval.get((command.workspace_id, command.environment_id))
+                seeded = self._retrieval.get(
+                    (
+                        command.workspace_id,
+                        command.environment_id,
+                        command.physical_namespace.namespace,
+                    )
+                )
+                if seeded is None:
+                    seeded = self._retrieval.get(
+                        (command.workspace_id, command.environment_id, None)
+                    )
                 if seeded is None:
                     result = self._retrieval_failure(
                         command, ProjectionFailureCode.MISSING_EVIDENCE
