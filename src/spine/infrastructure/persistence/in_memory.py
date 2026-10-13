@@ -945,9 +945,15 @@ class _CanonicalAcceptanceRepository:
                 self._uow._fail(
                     CanonicalEligibilityError("Canonical replay is unavailable.")
                 )
-            revision = self._revisions().get(current.current_revision_id)
-            source = self._uow._base_source_objects.get(current.source_object_id)
-            if revision is None or source is None:
+            revision = self._revisions().get(acceptance.source_revision_id)
+            source = self._uow._base_source_objects.get(
+                acceptance.source_object_id
+            ) or self._uow._pending_source_objects.get(acceptance.source_object_id)
+            if (
+                revision is None
+                or source is None
+                or acceptance.source_object_id != current.source_object_id
+            ):
                 self._uow._fail(
                     CanonicalEligibilityError("Canonical replay is unavailable.")
                 )
@@ -959,37 +965,35 @@ class _CanonicalAcceptanceRepository:
                 )
                 if value.workspace_id == current.workspace_id
                 and value.environment_id == current.environment_id
-                and value.source_object_id == current.source_object_id
-                and value.revision_id == current.current_revision_id
+                and value.source_object_id == acceptance.source_object_id
+                and value.revision_id == acceptance.source_revision_id
             ]
             admission = (
                 max(decisions, key=lambda value: value.decision_version)
                 if decisions
                 else None
             )
-            eligible = current.acceptance_id == acceptance.canonical_acceptance_id
-            if current.current_revision_kind is RevisionKind.CONTENT:
-                eligible = (
-                    eligible
-                    and acceptance.admission_decision_id is not None
-                    and admission is not None
-                    and admission.decision_id == acceptance.admission_decision_id
-                    and admission.disposition is AdmissionDisposition.ADMITTED
-                    and admission.validator_profile_version
-                    in ALLOWED_CANONICAL_ADMISSION_PROFILES
-                    and acceptance.access_policy_version_id is not None
-                    and await self._eligible_policy(
-                        source.source_object_id,
-                        acceptance.access_policy_version_id,
-                    )
+            content_is_eligible = (
+                current.current_revision_kind is RevisionKind.CONTENT
+                and revision.kind is RevisionKind.CONTENT
+                and acceptance.admission_decision_id is not None
+                and admission is not None
+                and admission.decision_id == acceptance.admission_decision_id
+                and admission.disposition is AdmissionDisposition.ADMITTED
+                and admission.validator_profile_version
+                in ALLOWED_CANONICAL_ADMISSION_PROFILES
+                and acceptance.access_policy_version_id is not None
+                and await self._eligible_policy(
+                    source.source_object_id,
+                    acceptance.access_policy_version_id,
                 )
-            else:
-                eligible = (
-                    eligible
-                    and current.current_revision_kind is RevisionKind.TOMBSTONE
-                    and acceptance.admission_decision_id is None
-                    and acceptance.access_policy_version_id is None
-                )
+            )
+            tombstone_is_eligible = (
+                revision.kind is RevisionKind.TOMBSTONE
+                and acceptance.admission_decision_id is None
+                and acceptance.access_policy_version_id is None
+            )
+            eligible = content_is_eligible or tombstone_is_eligible
             if not eligible:
                 self._uow._fail(
                     CanonicalEligibilityError("Canonical replay is unavailable.")

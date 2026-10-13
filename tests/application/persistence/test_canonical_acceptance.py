@@ -57,6 +57,7 @@ from spine.domain.sources import (
     PolicyOriginKind,
     PrincipalKind,
 )
+from spine.domain.sources.canonicalization import content_revision
 from spine.domain.workspaces import Environment, Workspace
 from spine.infrastructure.persistence.contexts import (
     TrustedContextBoundary,
@@ -244,7 +245,17 @@ async def add_environment(persistence, workspace_context) -> None:
         await uow.commit()
 
 
-def acceptance_command(source_object, revision, provenance_value, *, key, generation, expected=None, tombstone=False):
+def acceptance_command(
+    source_object,
+    revision,
+    provenance_value,
+    *,
+    key,
+    generation,
+    expected=None,
+    tombstone=False,
+    policy_id=None,
+):
     audit_id = uid(700 + generation)
     outbox_id = uid(800 + generation)
     acceptance_id = uid(600 + generation)
@@ -302,7 +313,11 @@ def acceptance_command(source_object, revision, provenance_value, *, key, genera
         idempotency_key=IdempotencyKey(key),
         canonical_acceptance_id=acceptance_id,
         admission_decision_id=uid(500 + generation) if not tombstone else None,
-        access_policy_version_id=uid(400 + generation) if not tombstone else None,
+        access_policy_version_id=(
+            policy_id if policy_id is not None else uid(400 + generation)
+        )
+        if not tombstone
+        else None,
         audit_event_id=audit_id,
         outbox_event_id=outbox_id,
         accepted_at=NOW,
@@ -383,8 +398,80 @@ async def test_canonical_acceptance_advances_head_and_replays_without_second_eff
     assert first.advanced is True
     assert replay.replay is True
     assert replay.acceptance == first.acceptance
-    assert len(persistence.uow_factory._store.state.canonical_acceptances) == 1
-    assert len(persistence.uow_factory._store.state.current_source_heads) == 1
+    async with persistence.uow_factory(canonical_context()) as verification:
+        stored_acceptance = await verification.canonical.resolve_acceptance(
+            first.acceptance.canonical_acceptance_id
+        )
+        stored_head = await verification.canonical.resolve_current(
+            resolved.source_object_id
+        )
+        await verification.rollback()
+    assert stored_acceptance == first.acceptance
+    assert stored_head == first.current
+
+    async with persistence.uow_factory(source_context()) as uow:
+        successor_seed = valid_revision(resolved, uid(102))
+        successor_values = successor_seed.model_dump()
+        successor_values.pop("revision_digest")
+        successor_values["original_sha256"] = "f" * 64
+        successor_values["original_reference"] = successor_seed.original_reference.model_copy(
+            update={"digest_hex": "f" * 64}
+        )
+        successor = content_revision(**successor_values)
+        successor_provenance = provenance(resolved, successor, 2)
+        await uow.sources.record_observation(
+            observation_command(
+                resolved,
+                successor,
+                successor_provenance,
+                "observe-successor",
+                receipt_association(
+                    resolved, successor, successor_provenance, number=2
+                ),
+            )
+        )
+        await uow.commit()
+    async with persistence.uow_factory(canonical_context()) as uow:
+        await uow.admissions.append_decision(
+            AdmissionDecision(
+                decision_id=uid(502),
+                source_object_id=resolved.source_object_id,
+                revision_id=successor.revision_id,
+                workspace_id=resolved.workspace_id,
+                environment_id=resolved.environment_id,
+                decision_version=1,
+                disposition=AdmissionDisposition.ADMITTED,
+                validator_profile_version="admission:r1",
+                reason_schema_version="reason.v1",
+                reason_codes=("clean",),
+                authority_reference={
+                    "reference_type": "validator",
+                    "reference_id": uid(505),
+                    "schema_version": 1,
+                },
+                trace_id=uid(904),
+                audit_event_id=uid(506),
+                decided_at=NOW,
+            )
+        )
+        successor_command = acceptance_command(
+            resolved,
+            successor,
+            successor_provenance,
+            key="accept-successor",
+            generation=2,
+            expected=first.current.current_revision_id,
+            policy_id=policy_id,
+        )
+        successor_result = await uow.canonical.accept(successor_command)
+        await uow.commit()
+    async with persistence.uow_factory(canonical_context()) as uow:
+        historical_replay = await uow.canonical.accept(command)
+        await uow.rollback()
+    assert successor_result.advanced is True
+    assert historical_replay.replay is True
+    assert historical_replay.revision.revision_id == revision.revision_id
+    assert historical_replay.current.current_revision_id == successor.revision_id
 
     forged_snapshots = (
         (

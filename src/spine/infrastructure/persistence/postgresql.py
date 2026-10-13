@@ -804,17 +804,10 @@ class _PostgreSQLCanonicalAcceptanceRepository:
                 await self._uow._fail(
                     CanonicalEligibilityError("Canonical replay is unavailable.")
                 )
-            await _lock_admission_revision(
-                self._uow,
-                workspace_id=acceptance.workspace_id,
-                environment_id=acceptance.environment_id,
-                source_object_id=acceptance.source_object_id,
-                revision_id=acceptance.source_revision_id,
-            )
             current = await self.resolve_current(command.source.source_object_id)
             if (
                 current is None
-                or current.acceptance_id != acceptance.canonical_acceptance_id
+                or current.source_object_id != acceptance.source_object_id
             ):
                 await self._uow._fail(
                     CanonicalEligibilityError("Canonical replay is unavailable.")
@@ -831,8 +824,7 @@ class _PostgreSQLCanonicalAcceptanceRepository:
                 )
             )
             tombstone_is_eligible = (
-                current.current_revision_kind is RevisionKind.TOMBSTONE
-                and acceptance.admission_decision_id is None
+                acceptance.admission_decision_id is None
                 and acceptance.access_policy_version_id is None
             )
             if not content_is_eligible and not tombstone_is_eligible:
@@ -875,9 +867,20 @@ class _PostgreSQLCanonicalAcceptanceRepository:
                 await self._uow._fail(
                     CanonicalEligibilityError("Canonical replay is unavailable.")
                 )
+            replayed_revision = self._uow.sources._revision_from_row(revision_row)
+            if (
+                content_is_eligible
+                and replayed_revision.kind is not RevisionKind.CONTENT
+            ) or (
+                tombstone_is_eligible
+                and replayed_revision.kind is not RevisionKind.TOMBSTONE
+            ):
+                await self._uow._fail(
+                    CanonicalEligibilityError("Canonical replay is unavailable.")
+                )
             return CanonicalAcceptanceResult(
                 source=self._source(source_row),
-                revision=self._uow.sources._revision_from_row(revision_row),
+                revision=replayed_revision,
                 current=current,
                 acceptance=acceptance,
                 replay=True,
@@ -985,14 +988,6 @@ class _PostgreSQLCanonicalAcceptanceRepository:
                 )
             )
 
-        await _lock_admission_revision(
-            self._uow,
-            workspace_id=scope.workspace_id,
-            environment_id=scope.environment_id,
-            source_object_id=source.source_object_id,
-            revision_id=revision.revision_id,
-        )
-
         # The counter is always locked before the source head.  This is the
         # same order used by boundary capture in the next R1 slice.
         await self._uow._execute(
@@ -1020,6 +1015,13 @@ class _PostgreSQLCanonicalAcceptanceRepository:
             )
             .mappings()
             .one()
+        )
+        await _lock_admission_revision(
+            self._uow,
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            source_object_id=source.source_object_id,
+            revision_id=revision.revision_id,
         )
         head_row = (
             (

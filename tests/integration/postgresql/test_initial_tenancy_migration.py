@@ -348,6 +348,8 @@ CANONICAL_ACCEPTANCE_CONSTRAINTS = {
     "fk_canonical_acceptances_policy",
     "fk_canonical_acceptances_idempotency",
     "fk_canonical_acceptances_audit",
+    "fk_canonical_acceptances_outbox",
+    "fk_canonical_acceptances_outbox",
     "ck_canonical_acceptances_generation",
     "ck_canonical_acceptances_ordering",
     "ck_canonical_acceptances_order_pair",
@@ -2631,7 +2633,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'policy_activations', 'current_access_policies', "
                         "'backup_fence_leases', 'fence_operation_tickets', "
                         "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
-                        "'recovery_evidence_invalidations')"
+                        "'recovery_evidence_invalidations', "
                         "'canonical_generation_counters', 'canonical_acceptances', 'current_source_heads')"
                     )
                 )
