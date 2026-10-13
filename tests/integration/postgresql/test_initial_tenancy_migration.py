@@ -332,6 +332,69 @@ ADMISSION_COLUMNS = {
     )
 }
 
+CANONICAL_ACCEPTANCE_CONSTRAINTS = {
+    "pk_canonical_generation_counters",
+    "ck_canonical_generation_counters_generation_nonnegative",
+    "pk_canonical_acceptances",
+    "uq_canonical_acceptances_generation",
+    "uq_canonical_acceptances_revision",
+    "uq_canonical_acceptances_scope_id",
+    "uq_canonical_acceptances_idempotency_receipt",
+    "uq_canonical_acceptances_head_tuple",
+    "fk_canonical_acceptances_source",
+    "fk_canonical_acceptances_revision",
+    "fk_canonical_acceptances_provenance",
+    "fk_canonical_acceptances_admission",
+    "fk_canonical_acceptances_policy",
+    "fk_canonical_acceptances_idempotency",
+    "fk_canonical_acceptances_audit",
+    "fk_canonical_acceptances_outbox",
+    "fk_canonical_acceptances_outbox",
+    "ck_canonical_acceptances_generation",
+    "ck_canonical_acceptances_ordering",
+    "ck_canonical_acceptances_order_pair",
+    "ck_canonical_acceptances_ordering_shape",
+    "pk_current_source_heads",
+    "fk_current_source_heads_revision",
+    "fk_current_source_heads_acceptance",
+    "fk_current_source_heads_acceptance_tuple",
+    "ck_current_source_heads_kind",
+    "ck_current_source_heads_versions",
+    "ck_current_source_heads_order_pair",
+}
+CANONICAL_ACCEPTANCE_INDEXES = {
+    "pk_canonical_generation_counters",
+    "pk_canonical_acceptances",
+    "uq_canonical_acceptances_generation",
+    "uq_canonical_acceptances_revision",
+    "uq_canonical_acceptances_scope_id",
+    "uq_canonical_acceptances_idempotency_receipt",
+    "uq_canonical_acceptances_head_tuple",
+    "ix_canonical_acceptances_source_generation",
+    "pk_current_source_heads",
+}
+CANONICAL_ACCEPTANCE_COLUMNS = {
+    ("canonical_generation_counters", column)
+    for column in ("workspace_id", "environment_id", "current_generation", "updated_at")
+} | {
+    ("canonical_acceptances", column)
+    for column in (
+        "canonical_acceptance_id", "source_object_id", "source_revision_id",
+        "workspace_id", "environment_id", "predecessor_revision_id",
+        "predecessor_acceptance_id", "accepted_generation", "ordering",
+        "ordering_scheme", "ordering_token", "admission_decision_id",
+        "access_policy_version_id", "provenance_id", "idempotency_receipt_id",
+        "audit_event_id", "outbox_event_id", "accepted_at",
+    )
+} | {
+    ("current_source_heads", column)
+    for column in (
+        "source_object_id", "workspace_id", "environment_id", "current_revision_id",
+        "current_revision_kind", "acceptance_id", "accepted_generation", "cas_version",
+        "ordering_scheme", "ordering_token", "changed_at",
+    )
+}
+
 
 @dataclass(frozen=True, slots=True)
 class MigratedDatabase:
@@ -920,6 +983,7 @@ async def test_source_observation_catalog_and_runtime_security_contract(
             "pk_source_revisions", "uq_source_revisions_digest", "uq_source_revisions_scope_id",
             "ix_source_revisions_source_observed", "ix_source_revisions_original_digest",
             "pk_source_revision_provenance", "uq_source_revision_provenance_event",
+            "uq_source_revision_provenance_scope_id",
             "ix_source_revision_provenance_revision_order",
         }
 
@@ -1036,7 +1100,8 @@ async def test_source_observation_catalog_and_runtime_security_contract(
                         "AND procedure.proname IN ('source_canonical_nfc', 'source_canonical_trim', "
                         "'source_canonical_language', 'validate_source_revision_canonical', "
                         "'check_source_reappearance', 'reject_source_objects_mutation', "
-                        "'reject_source_revisions_mutation', 'reject_source_revision_provenance_mutation')"
+                        "'reject_source_revisions_mutation', 'reject_source_revision_provenance_mutation', "
+                        "'validate_source_receipt_association')"
                     ),
                     {"runtime": RUNTIME_ROLE},
                 )
@@ -1047,10 +1112,13 @@ async def test_source_observation_catalog_and_runtime_security_contract(
             "validate_source_revision_canonical", "check_source_reappearance",
             "reject_source_objects_mutation", "reject_source_revisions_mutation",
             "reject_source_revision_provenance_mutation",
+            "validate_source_receipt_association",
         }
         for row in function_rows.values():
             assert row.owner == MIGRATION_ROLE
-            assert row.security_definer is False
+            assert row.security_definer is (
+                row.proname == "validate_source_receipt_association"
+            )
             expected_volatility = {
                 "source_canonical_nfc": "i",
                 "source_canonical_trim": "i",
@@ -1060,12 +1128,14 @@ async def test_source_observation_catalog_and_runtime_security_contract(
                 "reject_source_objects_mutation": "v",
                 "reject_source_revisions_mutation": "v",
                 "reject_source_revision_provenance_mutation": "v",
+                "validate_source_receipt_association": "v",
             }[row.proname]
             assert row.volatility == expected_volatility
             assert "search_path=pg_catalog, spine" in tuple(row.config or ())
             assert row.public_execute is False
             assert row.runtime_execute is (
                 row.proname.startswith("source_canonical_")
+                and row.proname != "validate_source_receipt_association"
             )
 
 
@@ -1308,6 +1378,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "recovery_quiescence_evidence",
         "storage_recovery_manifests",
         "recovery_evidence_invalidations",
+        "canonical_generation_counters",
+        "canonical_acceptances",
+        "current_source_heads",
     }
     expected_final_constraints = {
         "alembic_version_pkc",
@@ -1513,6 +1586,43 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         )
     }
     assert not missing_final_constraints, sorted(missing_final_constraints)
+    outbox_fk = (
+        (
+            await connection.execute(
+                text(
+                    "SELECT constraint_record.conname, "
+                    "constraint_record.condeferrable, "
+                    "constraint_record.condeferred, "
+                    "pg_get_constraintdef(constraint_record.oid) AS definition "
+                    "FROM pg_constraint AS constraint_record "
+                    "JOIN pg_class AS source_relation "
+                    "ON source_relation.oid = constraint_record.conrelid "
+                    "JOIN pg_class AS referenced_relation "
+                    "ON referenced_relation.oid = constraint_record.confrelid "
+                    "JOIN pg_namespace AS namespace "
+                    "ON namespace.oid = source_relation.relnamespace "
+                    "JOIN pg_attribute AS source_column "
+                    "ON source_column.attrelid = source_relation.oid "
+                    "AND source_column.attnum = ANY(constraint_record.conkey) "
+                    "JOIN pg_attribute AS referenced_column "
+                    "ON referenced_column.attrelid = referenced_relation.oid "
+                    "AND referenced_column.attnum = ANY(constraint_record.confkey) "
+                    "WHERE namespace.nspname = 'spine' "
+                    "AND constraint_record.contype = 'f' "
+                    "AND source_relation.relname = 'canonical_acceptances' "
+                    "AND source_column.attname = 'outbox_event_id' "
+                    "AND referenced_relation.relname = 'outbox_intents' "
+                    "AND referenced_column.attname = 'event_id'"
+                )
+            )
+        )
+        .mappings()
+        .one()
+    )
+    assert outbox_fk.condeferrable is True
+    assert outbox_fk.condeferred is True
+    assert "FOREIGN KEY (outbox_event_id)" in outbox_fk.definition
+    assert "outbox_intents(event_id)" in outbox_fk.definition
     assert indexes == {
         "alembic_version_pkc",
         "ix_environments_workspace_id",
@@ -1545,6 +1655,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ix_source_revisions_original_digest",
         "pk_source_revision_provenance",
         "uq_source_revision_provenance_event",
+        "uq_source_revision_provenance_scope_id",
         "ix_source_revision_provenance_revision_order",
         "pk_source_receipt_associations",
         "uq_source_receipt_associations_receipt",
@@ -1593,7 +1704,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ix_storage_recovery_manifests_scope_created",
         "pk_recovery_evidence_invalidations",
         "ix_recovery_evidence_invalidations_scope_digest",
-    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES
+    } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES | CANONICAL_ACCEPTANCE_INDEXES
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
         "workspaces": (True, True),
@@ -1631,6 +1742,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "recovery_quiescence_evidence": (True, True),
         "storage_recovery_manifests": (True, True),
         "recovery_evidence_invalidations": (True, True),
+        "canonical_generation_counters": (True, True),
+        "canonical_acceptances": (True, True),
+        "current_source_heads": (True, True),
     }
     assert rls == expected_rls
     tenant_rls_tables = {
@@ -1725,6 +1839,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "storage_recovery_manifests": (True, True, False, False),
         "recovery_evidence_invalidations": (True, True, False, False),
         "admission_decisions": (True, True, False, False),
+        "canonical_generation_counters": (True, True, True, False),
+        "canonical_acceptances": (True, True, False, False),
+        "current_source_heads": (True, True, True, False),
         "source_canonical_tables": (True, False, False, False),
         "source_canonical_unicode": (True, False, False, False),
         "source_canonical_compositions": (True, False, False, False),
@@ -1859,9 +1976,10 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'processing_receipts', 'access_policy_versions', "
                             "'access_policy_grants', 'policy_proposals', 'policy_approvals', "
                             "'policy_activations', 'current_access_policies', "
-                            "'backup_fence_leases', 'fence_operation_tickets', "
-                            "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
-                            "'recovery_evidence_invalidations'))"
+                            "'canonical_generation_counters', 'canonical_acceptances', "
+                            "'current_source_heads', 'backup_fence_leases', "
+                            "'fence_operation_tickets', 'recovery_quiescence_evidence', "
+                            "'storage_recovery_manifests', 'recovery_evidence_invalidations'))"
                     )
                 )
             ).scalars()
@@ -1885,7 +2003,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
-                            "'backup_fence_leases', 'fence_operation_tickets', "
+                            "'canonical_generation_counters', 'canonical_acceptances', "
+                            "'current_source_heads', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations')"
                     )
@@ -1905,7 +2024,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
-                            "'backup_fence_leases', 'fence_operation_tickets', "
+                            "'canonical_generation_counters', 'canonical_acceptances', "
+                            "'current_source_heads', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations')"
                     )
@@ -1924,7 +2044,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
-                            "'backup_fence_leases', 'fence_operation_tickets', "
+                            "'canonical_generation_counters', 'canonical_acceptances', "
+                            "'current_source_heads', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations')"
                     )
@@ -1943,7 +2064,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
-                            "'backup_fence_leases', 'fence_operation_tickets', "
+                            "'canonical_generation_counters', 'canonical_acceptances', "
+                            "'current_source_heads', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations')"
                     )
@@ -2192,34 +2314,40 @@ async def test_outbox_intent_is_immutable_after_insert(
         )
         await connection.commit()
 
-    for statement in (
-        "UPDATE spine.outbox_intents SET event_schema_version = 2 "
-        "WHERE event_id = :event_id",
-        "DELETE FROM spine.outbox_intents WHERE event_id = :event_id",
-    ):
-        with pytest.raises(IntegrityError) as error:
-            async with _connection(migrated_database.migration.url) as connection:
-                await connection.execute(text(statement), {"event_id": event_id})
-        assert error.value.orig.diag.constraint_name == "ck_outbox_intents_immutable"
+    try:
+        for statement in (
+            "UPDATE spine.outbox_intents SET event_schema_version = 2 "
+            "WHERE event_id = :event_id",
+            "DELETE FROM spine.outbox_intents WHERE event_id = :event_id",
+        ):
+            with pytest.raises(IntegrityError) as error:
+                async with _connection(migrated_database.migration.url) as connection:
+                    await connection.execute(text(statement), {"event_id": event_id})
+            assert (
+                error.value.orig.diag.constraint_name
+                == "ck_outbox_intents_immutable"
+            )
 
-    async with _connection(migrated_database.migration.url) as connection:
-        await connection.execute(
-            text(
-                "ALTER TABLE spine.outbox_intents "
-                "DISABLE TRIGGER trg_outbox_intents_immutable"
+    finally:
+        async with _connection(migrated_database.migration.url) as connection:
+            await connection.execute(
+                text(
+                    "ALTER TABLE spine.outbox_intents "
+                    "DISABLE TRIGGER trg_outbox_intents_immutable"
+                )
             )
-        )
-        await connection.execute(
-            text("DELETE FROM spine.outbox_intents WHERE event_id = :event_id"),
-            {"event_id": event_id},
-        )
-        await connection.execute(
-            text(
-                "ALTER TABLE spine.outbox_intents "
-                "ENABLE TRIGGER trg_outbox_intents_immutable"
+            await connection.execute(
+                text("DELETE FROM spine.outbox_intents WHERE event_id = :event_id"),
+                {"event_id": event_id},
             )
-        )
-        await connection.commit()
+            await connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
+            await connection.execute(
+                text(
+                    "ALTER TABLE spine.outbox_intents "
+                    "ENABLE TRIGGER trg_outbox_intents_immutable"
+                )
+            )
+            await connection.commit()
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -2505,7 +2633,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'policy_activations', 'current_access_policies', "
                         "'backup_fence_leases', 'fence_operation_tickets', "
                         "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
-                        "'recovery_evidence_invalidations')"
+                        "'recovery_evidence_invalidations', "
+                        "'canonical_generation_counters', 'canonical_acceptances', 'current_source_heads')"
                     )
                 )
             )
@@ -2570,6 +2699,9 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "recovery_quiescence_evidence": (True, True),
             "storage_recovery_manifests": (True, True),
             "recovery_evidence_invalidations": (True, True),
+            "canonical_generation_counters": (True, True),
+            "canonical_acceptances": (True, True),
+            "current_source_heads": (True, True),
         }
     standard_tables = set(tables) - {"outbox_deliveries"}
     assert set(policies) == {
@@ -2973,6 +3105,64 @@ async def test_runtime_grants_are_minimal_and_tables_remain_migration_owned(
         column for column, allowed in receipt_update_columns.items() if allowed
     } == {"result_type", "result_id", "result_schema_version"}
     assert tuple(schema_privileges) == (True, False)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_runtime_cannot_mutate_immutable_canonical_evidence(
+    migrated_database: MigratedDatabase,
+) -> None:
+    immutable_tables = (
+        "source_objects",
+        "source_revisions",
+        "source_revision_provenance",
+        "source_revision_receipt_associations",
+        "admission_decisions",
+        "access_policy_versions",
+        "access_policy_grants",
+        "policy_proposals",
+        "policy_approvals",
+        "policy_activations",
+    )
+    async with _connection(migrated_database.migration.url) as connection:
+        privileges = {
+            row.table_name: (
+                row.select_ok,
+                row.insert_ok,
+                row.update_ok,
+                row.delete_ok,
+            )
+            for row in (
+                await connection.execute(
+                    text(
+                        "SELECT relation.relname AS table_name, "
+                        "has_table_privilege(:role, relation.oid, 'SELECT') AS select_ok, "
+                        "has_table_privilege(:role, relation.oid, 'INSERT') AS insert_ok, "
+                        "has_table_privilege(:role, relation.oid, 'UPDATE') AS update_ok, "
+                        "has_table_privilege(:role, relation.oid, 'DELETE') AS delete_ok "
+                        "FROM pg_class AS relation "
+                        "JOIN pg_namespace AS namespace "
+                        "ON namespace.oid = relation.relnamespace "
+                        "WHERE namespace.nspname = 'spine' "
+                        "AND relation.relname IN "
+                        "(:source_objects, :source_revisions, "
+                        ":source_revision_provenance, "
+                        ":source_revision_receipt_associations, "
+                        ":admission_decisions, :access_policy_versions, "
+                        ":access_policy_grants, :policy_proposals, "
+                        ":policy_approvals, :policy_activations)"
+                    ),
+                    {
+                        "role": RUNTIME_ROLE,
+                        **{
+                            table_name: table_name
+                            for table_name in immutable_tables
+                        },
+                    },
+                )
+            ).mappings()
+        }
+    assert set(privileges) == set(immutable_tables)
+    assert set(privileges.values()) == {(True, True, False, False)}
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -3768,13 +3958,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261015_18_access_policy_persistence.py",
         "20261016_19_backup_recovery_coordination.py",
         "20261017_20_recovery_evidence_integrity.py",
+        "20261018_21_canonical_acceptance.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261017_21_injected_failure.py").write_text(
+    (target / "versions" / "20261019_22_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261017_21'\n"
-        "down_revision = '20261017_20'\n"
+        "revision = '20261019_22'\n"
+        "down_revision = '20261018_21'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

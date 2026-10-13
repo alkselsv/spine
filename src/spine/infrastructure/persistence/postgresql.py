@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 import hashlib
 import json
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from enum import Enum, auto
 from types import TracebackType
@@ -21,6 +22,15 @@ from spine.application.diagnostics.audit import (
     validate_audit_event_for_context,
 )
 from spine.application.persistence.command_digest import CommandDigest
+from spine.application.persistence.canonical import (
+    ALLOWED_CANONICAL_ADMISSION_PROFILES,
+    CanonicalAcceptanceCommand,
+    CanonicalAcceptanceResult,
+    SourceOrderComparison,
+    SourceOrderingPolicyError,
+    SourceOrderingPolicyRegistry,
+    validate_canonical_acceptance_effects,
+)
 from spine.application.access_policies import (
     AccessPolicyActivationCommand,
     AccessPolicyActivationResult,
@@ -37,9 +47,12 @@ from spine.application.persistence.context import (
 )
 from spine.application.persistence.errors import (
     AuditConflictError,
+    CanonicalAuthorityConflictError,
+    CanonicalEligibilityError,
     ConstraintConflictError,
     IdempotencyConflictError,
     InvalidPersistenceContextError,
+    OptimisticConflictError,
     ObservationIntegrityConflictError,
     ObservationCommandDigestMismatchError,
     PersistenceError,
@@ -83,6 +96,9 @@ from spine.domain.sources import (
     PolicyApproval,
     PolicyProposal,
     AdmissionDecision,
+    CanonicalAcceptance,
+    CanonicalOrdering,
+    CurrentSourceHead,
     RevisionKind,
     SourceObject,
     SourceRevision,
@@ -134,6 +150,9 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     policy_activations as _POLICY_ACTIVATIONS,
     policy_approvals as _POLICY_APPROVALS,
     policy_proposals as _POLICY_PROPOSALS,
+    canonical_generation_counters as _CANONICAL_GENERATION_COUNTERS,
+    canonical_acceptances as _CANONICAL_ACCEPTANCES,
+    current_source_heads as _CURRENT_SOURCE_HEADS,
 )
 
 _BIND_CONTEXT = text(
@@ -151,6 +170,43 @@ _BIND_ENVIRONMENT = text(
 )
 
 
+def _admission_serialization_key(
+    *,
+    workspace_id: UUID,
+    environment_id: UUID,
+    source_object_id: UUID,
+    revision_id: UUID,
+) -> tuple[int, int]:
+    """Return stable namespaced int4 parts for the admission transaction lock."""
+
+    lock_id = uuid5(
+        NAMESPACE_URL,
+        "spine.admission-serialization.v1:"
+        f"{workspace_id}:{environment_id}:{source_object_id}:{revision_id}",
+    )
+    return (
+        int.from_bytes(lock_id.bytes[:4], byteorder="big", signed=True),
+        int.from_bytes(lock_id.bytes[4:8], byteorder="big", signed=True),
+    )
+
+
+async def _lock_admission_revision(
+    uow: "PostgreSQLTenantUnitOfWork",
+    *,
+    workspace_id: UUID,
+    environment_id: UUID,
+    source_object_id: UUID,
+    revision_id: UUID,
+) -> None:
+    key = _admission_serialization_key(
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        source_object_id=source_object_id,
+        revision_id=revision_id,
+    )
+    await uow._execute(select(func.pg_advisory_xact_lock(*key)))
+
+
 class _Lifecycle(Enum):
     NEW = auto()
     ENTERING = auto()
@@ -165,6 +221,7 @@ class PostgreSQLTransactionStage(Enum):
 
     BEFORE_AUDIT_IDENTITY = auto()
     AFTER_AUDIT_FLUSH = auto()
+    AFTER_CANONICAL_EVIDENCE_LOCKED = auto()
     BEFORE_COMMIT = auto()
 
 
@@ -587,6 +644,790 @@ class _PostgreSQLSourceObservationRepository:
         return tuple(self._receipt_association_from_row(row) for row in rows)
 
 
+class _PostgreSQLCanonicalAcceptanceRepository:
+    """PostgreSQL-owned source-head CAS and canonical generation ledger."""
+
+    def __init__(self, uow: "PostgreSQLTenantUnitOfWork") -> None:
+        self._uow = uow
+        self._ordering = SourceOrderingPolicyRegistry.r1()
+
+    @staticmethod
+    def _source(row: Mapping[str, Any]) -> SourceObject:
+        return SourceObject.model_validate(dict(row))
+
+    @staticmethod
+    def _provenance(row: Mapping[str, Any]) -> SourceRevisionProvenance:
+        return SourceRevisionProvenance.model_validate(dict(row))
+
+    async def _current_content_is_eligible(
+        self,
+        *,
+        source_id: UUID,
+        revision_id: UUID,
+        admission_id: UUID,
+        policy_id: UUID,
+    ) -> bool:
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return False
+        admission = (
+            (
+                await self._uow._execute(
+                    select(_ADMISSION_DECISIONS).where(
+                        _ADMISSION_DECISIONS.c.workspace_id == scope.workspace_id,
+                        _ADMISSION_DECISIONS.c.environment_id == scope.environment_id,
+                        _ADMISSION_DECISIONS.c.source_object_id == source_id,
+                        _ADMISSION_DECISIONS.c.source_revision_id == revision_id,
+                        _ADMISSION_DECISIONS.c.admission_decision_id == admission_id,
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        current_admission = (
+            await self._uow._execute(
+                select(_ADMISSION_DECISIONS.c.admission_decision_id)
+                .where(
+                    _ADMISSION_DECISIONS.c.workspace_id == scope.workspace_id,
+                    _ADMISSION_DECISIONS.c.environment_id == scope.environment_id,
+                    _ADMISSION_DECISIONS.c.source_object_id == source_id,
+                    _ADMISSION_DECISIONS.c.source_revision_id == revision_id,
+                )
+                .order_by(_ADMISSION_DECISIONS.c.decision_version.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        current_policy = (
+            (
+                await self._uow._execute(
+                    select(_CURRENT_ACCESS_POLICIES).where(
+                        _CURRENT_ACCESS_POLICIES.c.workspace_id == scope.workspace_id,
+                        _CURRENT_ACCESS_POLICIES.c.environment_id
+                        == scope.environment_id,
+                        _CURRENT_ACCESS_POLICIES.c.source_object_id == source_id,
+                        _CURRENT_ACCESS_POLICIES.c.access_policy_version_id
+                        == policy_id,
+                    )
+                    .with_for_update()
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if (
+            admission is None
+            or current_admission != admission_id
+            or admission.disposition != "admitted"
+            or admission.validator_profile_version
+            not in ALLOWED_CANONICAL_ADMISSION_PROFILES
+            or current_policy is None
+        ):
+            return False
+        policy = await self._uow.access_policies.resolve_policy(policy_id)
+        context = self._uow._context_snapshot_active()
+        return bool(
+            policy is not None
+            and context.service_principal_id is not None
+            and policy.allows_service_processing(
+                context.service_principal_id,
+                context.purpose.value,
+                context.operation.value,
+                datetime.now(timezone.utc),
+            )
+        )
+
+    def _scope(self, command: CanonicalAcceptanceCommand) -> EnvironmentScope:
+        scope = self._uow.scope
+        values = (
+            command.source.workspace_id,
+            command.source.environment_id,
+        )
+        if not isinstance(scope, EnvironmentScope) or (
+            scope.workspace_id,
+            scope.environment_id,
+        ) != values:
+            raise InvalidPersistenceContextError("Persistence context is invalid.")
+        return scope
+
+    @staticmethod
+    def _head(row: Mapping[str, Any]) -> CurrentSourceHead:
+        return CurrentSourceHead.model_validate(dict(row))
+
+    @staticmethod
+    def _acceptance(row: Mapping[str, Any]) -> CanonicalAcceptance:
+        return CanonicalAcceptance.model_validate(dict(row))
+
+    async def resolve_current(self, source_object_id: UUID) -> CurrentSourceHead | None:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return None
+        row = (
+            await self._uow._execute(
+                select(_CURRENT_SOURCE_HEADS).where(
+                    _CURRENT_SOURCE_HEADS.c.source_object_id == source_object_id,
+                    _CURRENT_SOURCE_HEADS.c.workspace_id == scope.workspace_id,
+                    _CURRENT_SOURCE_HEADS.c.environment_id == scope.environment_id,
+                ).with_for_update()
+            )
+        ).mappings().one_or_none()
+        return self._head(row) if row is not None else None
+
+    async def resolve_acceptance(
+        self, canonical_acceptance_id: UUID
+    ) -> CanonicalAcceptance | None:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return None
+        row = (
+            await self._uow._execute(
+                select(_CANONICAL_ACCEPTANCES).where(
+                    _CANONICAL_ACCEPTANCES.c.canonical_acceptance_id
+                    == canonical_acceptance_id,
+                    _CANONICAL_ACCEPTANCES.c.workspace_id == scope.workspace_id,
+                    _CANONICAL_ACCEPTANCES.c.environment_id == scope.environment_id,
+                )
+            )
+        ).mappings().one_or_none()
+        return self._acceptance(row) if row is not None else None
+
+    async def _replay(
+        self,
+        command: CanonicalAcceptanceCommand,
+        claim: IdempotencyReplay,
+    ) -> CanonicalAcceptanceResult:
+        if claim.result.result_type == "canonical_acceptance":
+            acceptance = await self.resolve_acceptance(claim.result.result_id)
+            if acceptance is None:
+                await self._uow._fail(
+                    CanonicalEligibilityError("Canonical replay is unavailable.")
+                )
+            current = await self.resolve_current(command.source.source_object_id)
+            if (
+                current is None
+                or current.source_object_id != acceptance.source_object_id
+            ):
+                await self._uow._fail(
+                    CanonicalEligibilityError("Canonical replay is unavailable.")
+                )
+            content_is_eligible = (
+                current.current_revision_kind is RevisionKind.CONTENT
+                and acceptance.admission_decision_id is not None
+                and acceptance.access_policy_version_id is not None
+                and await self._current_content_is_eligible(
+                    source_id=acceptance.source_object_id,
+                    revision_id=acceptance.source_revision_id,
+                    admission_id=acceptance.admission_decision_id,
+                    policy_id=acceptance.access_policy_version_id,
+                )
+            )
+            tombstone_is_eligible = (
+                acceptance.admission_decision_id is None
+                and acceptance.access_policy_version_id is None
+            )
+            if not content_is_eligible and not tombstone_is_eligible:
+                await self._uow._fail(
+                    CanonicalEligibilityError("Canonical replay is unavailable.")
+                )
+            source_row = (
+                (
+                    await self._uow._execute(
+                        select(_SOURCE_OBJECTS).where(
+                            _SOURCE_OBJECTS.c.workspace_id == acceptance.workspace_id,
+                            _SOURCE_OBJECTS.c.environment_id
+                            == acceptance.environment_id,
+                            _SOURCE_OBJECTS.c.source_object_id
+                            == acceptance.source_object_id,
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            revision_row = (
+                (
+                    await self._uow._execute(
+                        select(_SOURCE_REVISIONS).where(
+                            _SOURCE_REVISIONS.c.workspace_id == acceptance.workspace_id,
+                            _SOURCE_REVISIONS.c.environment_id
+                            == acceptance.environment_id,
+                            _SOURCE_REVISIONS.c.source_object_id
+                            == acceptance.source_object_id,
+                            _SOURCE_REVISIONS.c.revision_id
+                            == acceptance.source_revision_id,
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if source_row is None or revision_row is None:
+                await self._uow._fail(
+                    CanonicalEligibilityError("Canonical replay is unavailable.")
+                )
+            replayed_revision = self._uow.sources._revision_from_row(revision_row)
+            if (
+                content_is_eligible
+                and replayed_revision.kind is not RevisionKind.CONTENT
+            ) or (
+                tombstone_is_eligible
+                and replayed_revision.kind is not RevisionKind.TOMBSTONE
+            ):
+                await self._uow._fail(
+                    CanonicalEligibilityError("Canonical replay is unavailable.")
+                )
+            return CanonicalAcceptanceResult(
+                source=self._source(source_row),
+                revision=replayed_revision,
+                current=current,
+                acceptance=acceptance,
+                replay=True,
+                advanced=False,
+                claim=claim,
+                result_reference=claim.result,
+            )
+        await self._uow._fail(
+            CanonicalEligibilityError("Canonical replay is unavailable.")
+        )
+
+    async def accept(
+        self, command: CanonicalAcceptanceCommand
+    ) -> CanonicalAcceptanceResult:
+        self._uow._guard_active()
+        scope = self._scope(command)
+        if command.expected_digest() != command.digest:
+            await self._uow._fail(
+                CanonicalAuthorityConflictError(
+                    "Canonical acceptance command digest is invalid."
+                )
+            )
+        if (
+            command.revision.source_object_id != command.source.source_object_id
+            or command.provenance.source_object_id != command.source.source_object_id
+            or command.provenance.revision_id != command.revision.revision_id
+            or command.provenance.workspace_id != scope.workspace_id
+            or command.provenance.environment_id != scope.environment_id
+        ):
+            await self._uow._fail(
+                CanonicalAuthorityConflictError(
+                    "Canonical acceptance references are invalid."
+                )
+            )
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=command.digest.operation_schema_version,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        if isinstance(claim, IdempotencyReplay):
+            return await self._replay(command, claim)
+
+        revision_row = (
+            (
+                await self._uow._execute(
+                    select(_SOURCE_REVISIONS).where(
+                        _SOURCE_REVISIONS.c.revision_id == command.revision.revision_id,
+                        _SOURCE_REVISIONS.c.source_object_id
+                        == command.source.source_object_id,
+                        _SOURCE_REVISIONS.c.workspace_id == scope.workspace_id,
+                        _SOURCE_REVISIONS.c.environment_id == scope.environment_id,
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        provenance_row = (
+            (
+                await self._uow._execute(
+                    select(_SOURCE_PROVENANCE).where(
+                        _SOURCE_PROVENANCE.c.provenance_id
+                        == command.provenance.provenance_id,
+                        _SOURCE_PROVENANCE.c.revision_id
+                        == command.revision.revision_id,
+                        _SOURCE_PROVENANCE.c.workspace_id == scope.workspace_id,
+                        _SOURCE_PROVENANCE.c.environment_id == scope.environment_id,
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        source_row = (
+            (
+                await self._uow._execute(
+                    select(_SOURCE_OBJECTS).where(
+                        _SOURCE_OBJECTS.c.source_object_id
+                        == command.source.source_object_id,
+                        _SOURCE_OBJECTS.c.workspace_id == scope.workspace_id,
+                        _SOURCE_OBJECTS.c.environment_id == scope.environment_id,
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if revision_row is None or provenance_row is None or source_row is None:
+            await self._uow._fail(
+                CanonicalEligibilityError(
+                    "Canonical acceptance evidence is incomplete."
+                )
+            )
+        revision = self._uow.sources._revision_from_row(revision_row)
+        provenance = self._provenance(provenance_row)
+        source = self._source(source_row)
+        if (
+            command.source != source
+            or command.revision != revision
+            or command.provenance != provenance
+        ):
+            await self._uow._fail(
+                CanonicalAuthorityConflictError(
+                    "Canonical acceptance evidence conflicts."
+                )
+            )
+
+        # The counter is always locked before the source head.  This is the
+        # same order used by boundary capture in the next R1 slice.
+        await self._uow._execute(
+            postgresql_insert(_CANONICAL_GENERATION_COUNTERS)
+            .values(
+                workspace_id=scope.workspace_id,
+                environment_id=scope.environment_id,
+                current_generation=0,
+                updated_at=command.accepted_at,
+            )
+            .on_conflict_do_nothing()
+        )
+        counter_row = (
+            (
+                await self._uow._execute(
+                    select(_CANONICAL_GENERATION_COUNTERS)
+                    .where(
+                        _CANONICAL_GENERATION_COUNTERS.c.workspace_id
+                        == scope.workspace_id,
+                        _CANONICAL_GENERATION_COUNTERS.c.environment_id
+                        == scope.environment_id,
+                    )
+                    .with_for_update()
+                )
+            )
+            .mappings()
+            .one()
+        )
+        await _lock_admission_revision(
+            self._uow,
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            source_object_id=source.source_object_id,
+            revision_id=revision.revision_id,
+        )
+        head_row = (
+            (
+                await self._uow._execute(
+                    select(_CURRENT_SOURCE_HEADS)
+                    .where(
+                        _CURRENT_SOURCE_HEADS.c.source_object_id
+                        == command.source.source_object_id,
+                        _CURRENT_SOURCE_HEADS.c.workspace_id == scope.workspace_id,
+                        _CURRENT_SOURCE_HEADS.c.environment_id == scope.environment_id,
+                    )
+                    .with_for_update()
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        current = self._head(head_row) if head_row is not None else None
+        authoritative_revision_row = (
+            (
+                await self._uow._execute(
+                    select(_SOURCE_REVISIONS)
+                    .where(
+                        _SOURCE_REVISIONS.c.workspace_id == scope.workspace_id,
+                        _SOURCE_REVISIONS.c.environment_id == scope.environment_id,
+                        _SOURCE_REVISIONS.c.source_object_id == source.source_object_id,
+                        _SOURCE_REVISIONS.c.revision_id == revision.revision_id,
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if (
+            authoritative_revision_row is None
+            or self._uow.sources._revision_from_row(authoritative_revision_row)
+            != revision
+        ):
+            await self._uow._fail(
+                CanonicalAuthorityConflictError(
+                    "Canonical acceptance evidence conflicts."
+                )
+            )
+
+        incoming_ordered = provenance.order_scheme is not None
+        comparison: SourceOrderComparison | None = None
+        if incoming_ordered:
+            try:
+                self._ordering.compare(
+                    str(provenance.order_scheme),
+                    str(provenance.order_token),
+                    str(provenance.order_token),
+                )
+            except SourceOrderingPolicyError:
+                await self._uow._fail(
+                    OptimisticConflictError("Trusted source order is invalid.")
+                )
+        if current is None:
+            if (
+                not incoming_ordered
+                and command.expected_current_revision_id is not None
+            ):
+                await self._uow._fail(
+                    OptimisticConflictError("The expected source head is stale.")
+                )
+        elif (
+            incoming_ordered
+            and current.ordering_scheme == provenance.order_scheme
+            and current.ordering_token is not None
+        ):
+            try:
+                comparison = self._ordering.compare(
+                    str(provenance.order_scheme),
+                    str(provenance.order_token),
+                    current.ordering_token,
+                )
+            except SourceOrderingPolicyError:
+                await self._uow._fail(
+                    OptimisticConflictError("Trusted source order is invalid.")
+                )
+        elif incoming_ordered:
+            await self._uow._fail(
+                OptimisticConflictError("Trusted source order is incomparable.")
+            )
+        else:
+            if command.expected_current_revision_id != current.current_revision_id:
+                await self._uow._fail(
+                    OptimisticConflictError("The expected source head is stale.")
+                )
+
+        if comparison is SourceOrderComparison.EQUAL and current is not None:
+            current_revision = self._uow.sources._revision_from_row(
+                (
+                    await self._uow._execute(
+                        select(_SOURCE_REVISIONS).where(
+                            _SOURCE_REVISIONS.c.workspace_id == scope.workspace_id,
+                            _SOURCE_REVISIONS.c.environment_id == scope.environment_id,
+                            _SOURCE_REVISIONS.c.source_object_id
+                            == source.source_object_id,
+                            _SOURCE_REVISIONS.c.revision_id
+                            == current.current_revision_id,
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            if current_revision.revision_digest != revision.revision_digest:
+                await self._uow._fail(
+                    OptimisticConflictError(
+                        "Trusted source order conflicts with a different revision."
+                    )
+                )
+            acceptance = await self.resolve_acceptance(current.acceptance_id)
+            if acceptance is None:
+                await self._uow._fail(
+                    CanonicalEligibilityError(
+                        "Current source acceptance is unavailable."
+                    )
+                )
+            content_is_eligible = (
+                current.current_revision_kind is RevisionKind.CONTENT
+                and acceptance.admission_decision_id is not None
+                and acceptance.access_policy_version_id is not None
+                and await self._current_content_is_eligible(
+                    source_id=acceptance.source_object_id,
+                    revision_id=acceptance.source_revision_id,
+                    admission_id=acceptance.admission_decision_id,
+                    policy_id=acceptance.access_policy_version_id,
+                )
+            )
+            tombstone_is_eligible = (
+                current.current_revision_kind is RevisionKind.TOMBSTONE
+                and acceptance.admission_decision_id is None
+                and acceptance.access_policy_version_id is None
+            )
+            if not content_is_eligible and not tombstone_is_eligible:
+                await self._uow._fail(
+                    CanonicalEligibilityError("Canonical replay is unavailable.")
+                )
+            result_reference = OpaqueResultReference(
+                result_type="canonical_acceptance",
+                result_id=acceptance.canonical_acceptance_id,
+                schema_version=1,
+            )
+            await self._uow.idempotency.complete(claim, result_reference)
+            return CanonicalAcceptanceResult(
+                source,
+                revision,
+                current,
+                acceptance,
+                True,
+                False,
+                claim,
+                result_reference,
+            )
+        if comparison is SourceOrderComparison.LOWER:
+            await self._uow._fail(
+                OptimisticConflictError("Trusted source order is stale.")
+            )
+        if (
+            current is not None
+            and current.current_revision_kind is RevisionKind.TOMBSTONE
+            and revision.kind is RevisionKind.CONTENT
+        ):
+            if (
+                revision.reappearance_after_tombstone_revision_id
+                != current.current_revision_id
+            ):
+                await self._uow._fail(
+                    CanonicalEligibilityError(
+                        "Source reappearance continuity is invalid."
+                    )
+                )
+        elif revision.reappearance_after_tombstone_revision_id is not None:
+            await self._uow._fail(
+                CanonicalEligibilityError("Source reappearance continuity is invalid.")
+            )
+
+        if revision.kind is RevisionKind.CONTENT:
+            association = (
+                (
+                    await self._uow._execute(
+                        select(_SOURCE_RECEIPT_ASSOCIATIONS).where(
+                            _SOURCE_RECEIPT_ASSOCIATIONS.c.workspace_id
+                            == scope.workspace_id,
+                            _SOURCE_RECEIPT_ASSOCIATIONS.c.environment_id
+                            == scope.environment_id,
+                            _SOURCE_RECEIPT_ASSOCIATIONS.c.source_object_id
+                            == source.source_object_id,
+                            _SOURCE_RECEIPT_ASSOCIATIONS.c.revision_id
+                            == revision.revision_id,
+                            _SOURCE_RECEIPT_ASSOCIATIONS.c.provenance_id
+                            == provenance.provenance_id,
+                            _SOURCE_RECEIPT_ASSOCIATIONS.c.verification_status
+                            == "verified",
+                            _SOURCE_RECEIPT_ASSOCIATIONS.c.storage_status
+                            == "finalized_verified",
+                            _SOURCE_RECEIPT_ASSOCIATIONS.c.original_sha256
+                            == revision.original_sha256,
+                            _SOURCE_RECEIPT_ASSOCIATIONS.c.byte_length
+                            == revision.byte_length,
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if association is None:
+                await self._uow._fail(
+                    CanonicalEligibilityError(
+                        "Canonical acceptance evidence is incomplete."
+                    )
+                )
+            if (
+                self._uow.sources._receipt_association_from_row(association)
+                .original_reference
+                != revision.original_reference
+            ):
+                await self._uow._fail(
+                    CanonicalEligibilityError(
+                        "Canonical acceptance evidence is incomplete."
+                    )
+                )
+            admission = (
+                (
+                    await self._uow._execute(
+                        select(_ADMISSION_DECISIONS)
+                        .where(
+                            _ADMISSION_DECISIONS.c.source_object_id
+                            == source.source_object_id,
+                            _ADMISSION_DECISIONS.c.source_revision_id
+                            == revision.revision_id,
+                            _ADMISSION_DECISIONS.c.workspace_id == scope.workspace_id,
+                            _ADMISSION_DECISIONS.c.environment_id
+                            == scope.environment_id,
+                        )
+                        .order_by(_ADMISSION_DECISIONS.c.decision_version.desc())
+                        .limit(1)
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                admission is None
+                or admission.disposition != "admitted"
+                or admission.validator_profile_version
+                not in ALLOWED_CANONICAL_ADMISSION_PROFILES
+                or (
+                    command.admission_decision_id is None
+                    or admission.admission_decision_id != command.admission_decision_id
+                )
+            ):
+                await self._uow._fail(
+                    CanonicalEligibilityError("Content admission is not eligible.")
+                )
+            policy = (
+                (
+                    await self._uow._execute(
+                        select(_CURRENT_ACCESS_POLICIES)
+                        .where(
+                            _CURRENT_ACCESS_POLICIES.c.source_object_id
+                            == source.source_object_id,
+                            _CURRENT_ACCESS_POLICIES.c.workspace_id
+                            == scope.workspace_id,
+                            _CURRENT_ACCESS_POLICIES.c.environment_id
+                            == scope.environment_id,
+                            _CURRENT_ACCESS_POLICIES.c.access_policy_version_id
+                            == command.access_policy_version_id,
+                        )
+                        .with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            policy_version = (
+                await self._uow.access_policies.resolve_policy(
+                    command.access_policy_version_id
+                )
+                if command.access_policy_version_id is not None
+                else None
+            )
+            context = self._uow._context_snapshot_active()
+            if (
+                policy is None
+                or policy_version is None
+                or context.service_principal_id is None
+                or not policy_version.allows_service_processing(
+                    context.service_principal_id,
+                    context.purpose.value,
+                    context.operation.value,
+                    datetime.now(timezone.utc),
+                )
+            ):
+                await self._uow._fail(
+                    CanonicalEligibilityError(
+                        "An eligible current access policy is required."
+                    )
+                )
+            policy_id = policy.access_policy_version_id
+            admission_id = admission.admission_decision_id
+        else:
+            policy_id = None
+            admission_id = None
+
+        await self._uow._run_transaction_probe(
+            PostgreSQLTransactionStage.AFTER_CANONICAL_EVIDENCE_LOCKED
+        )
+
+        generation = int(counter_row.current_generation) + 1
+        ordering = (
+            CanonicalOrdering.TRUSTED
+            if incoming_ordered
+            else CanonicalOrdering.EXPECTED_CURRENT
+        )
+        acceptance = CanonicalAcceptance(
+            canonical_acceptance_id=command.canonical_acceptance_id,
+            source_object_id=source.source_object_id,
+            source_revision_id=revision.revision_id,
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            predecessor_revision_id=current.current_revision_id if current else None,
+            predecessor_acceptance_id=current.acceptance_id if current else None,
+            accepted_generation=generation,
+            ordering=ordering,
+            ordering_scheme=provenance.order_scheme,
+            ordering_token=provenance.order_token,
+            admission_decision_id=admission_id,
+            access_policy_version_id=policy_id,
+            provenance_id=provenance.provenance_id,
+            idempotency_receipt_id=claim.receipt_id,
+            audit_event_id=command.audit_event_id,
+            outbox_event_id=command.outbox_event_id,
+            accepted_at=command.accepted_at,
+        )
+        try:
+            validate_canonical_acceptance_effects(
+                command=command,
+                acceptance=acceptance,
+                context=self._uow._context_snapshot_active(),
+                audit_registry=self._uow._audit_events,
+                outbox_registry=self._uow._outbox_events,
+            )
+        except Exception:
+            await self._uow._fail(
+                CanonicalAuthorityConflictError(
+                    "Canonical audit or outbox evidence conflicts."
+                )
+            )
+        await self._uow._execute(insert(_CANONICAL_ACCEPTANCES).values(**acceptance.model_dump(mode="python")))
+        await self._uow._execute(
+            update(_CANONICAL_GENERATION_COUNTERS)
+            .where(
+                _CANONICAL_GENERATION_COUNTERS.c.workspace_id == scope.workspace_id,
+                _CANONICAL_GENERATION_COUNTERS.c.environment_id == scope.environment_id,
+            )
+            .values(current_generation=generation, updated_at=command.accepted_at)
+        )
+        head = CurrentSourceHead(
+            source_object_id=source.source_object_id,
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            current_revision_id=revision.revision_id,
+            current_revision_kind=revision.kind,
+            acceptance_id=acceptance.canonical_acceptance_id,
+            accepted_generation=generation,
+            cas_version=(current.cas_version + 1 if current else 1),
+            ordering_scheme=acceptance.ordering_scheme,
+            ordering_token=acceptance.ordering_token,
+            changed_at=command.accepted_at,
+        )
+        await self._uow._execute(
+            postgresql_insert(_CURRENT_SOURCE_HEADS)
+            .values(**head.model_dump(mode="python"))
+            .on_conflict_do_update(
+                index_elements=[_CURRENT_SOURCE_HEADS.c.source_object_id],
+                set_=head.model_dump(mode="python", exclude={"source_object_id"}),
+            )
+        )
+        if command.audit_event.audit_event_id not in (None, command.audit_event_id):
+            await self._uow._fail(
+                ConstraintConflictError("Canonical audit identity is invalid.")
+            )
+        if command.outbox_intent.event_id not in (None, command.outbox_event_id):
+            await self._uow._fail(
+                ConstraintConflictError("Canonical outbox identity is invalid.")
+            )
+        audit_id = await self._uow.audit.append(command.audit_event)
+        event_id = await self._uow.outbox.append(command.outbox_intent)
+        if audit_id != command.audit_event_id or event_id != command.outbox_event_id:
+            await self._uow._fail(
+                ConstraintConflictError("Canonical evidence identity is invalid.")
+            )
+        result_reference = OpaqueResultReference(
+            result_type="canonical_acceptance",
+            result_id=acceptance.canonical_acceptance_id,
+            schema_version=1,
+        )
+        await self._uow.idempotency.complete(claim, result_reference)
+        return CanonicalAcceptanceResult(
+            source, revision, head, acceptance, False, True, claim, result_reference
+        )
+
+
 class _PostgreSQLIngestionRepository:
     """Tenant-scoped PostgreSQL implementation of the append-only ledger."""
 
@@ -897,6 +1738,13 @@ class _PostgreSQLAdmissionRepository:
     async def append_decision(self, decision: AdmissionDecision) -> AdmissionDecision:
         self._uow._guard_active()
         scope_predicates = self._scope_predicates(decision)
+        await _lock_admission_revision(
+            self._uow,
+            workspace_id=decision.workspace_id,
+            environment_id=decision.environment_id,
+            source_object_id=decision.source_object_id,
+            revision_id=decision.revision_id,
+        )
         revision_row = (await self._uow._execute(select(_SOURCE_REVISIONS).where(
             _SOURCE_REVISIONS.c.revision_id == decision.revision_id,
             _SOURCE_REVISIONS.c.source_object_id == decision.source_object_id,
@@ -1000,43 +1848,76 @@ class _PostgreSQLAccessPolicyRepository:
         return PolicyActivation.model_validate(dict(row))
 
     async def resolve_current(
-        self, source_object_id: UUID
+        self,
+        source_object_id: UUID,
+        *,
+        workspace_id: UUID | None = None,
+        environment_id: UUID | None = None,
     ) -> CurrentAccessPolicy | None:
         self._uow._guard_active()
         scope = self._uow.scope
         if not isinstance(scope, EnvironmentScope):
             return None
         row = (
-            await self._uow._execute(
-                select(_CURRENT_ACCESS_POLICIES).where(
-                    _CURRENT_ACCESS_POLICIES.c.workspace_id == scope.workspace_id,
-                    _CURRENT_ACCESS_POLICIES.c.environment_id == scope.environment_id,
-                    _CURRENT_ACCESS_POLICIES.c.source_object_id == source_object_id,
+            (
+                await self._uow._execute(
+                    select(_CURRENT_ACCESS_POLICIES).where(
+                        _CURRENT_ACCESS_POLICIES.c.workspace_id == scope.workspace_id,
+                        _CURRENT_ACCESS_POLICIES.c.environment_id
+                        == scope.environment_id,
+                        _CURRENT_ACCESS_POLICIES.c.source_object_id == source_object_id,
+                    )
                 )
             )
-        ).mappings().one_or_none()
+            .mappings()
+            .one_or_none()
+        )
         return self._current(row) if row is not None else None
 
-    async def resolve_policy(self, policy_version_id: UUID) -> AccessPolicyVersion | None:
+    async def resolve_policy(
+        self,
+        policy_version_id: UUID,
+        *,
+        workspace_id: UUID | None = None,
+        environment_id: UUID | None = None,
+    ) -> AccessPolicyVersion | None:
         self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return None
         row = (
-            await self._uow._execute(
-                select(_ACCESS_POLICY_VERSIONS).where(
-                    _ACCESS_POLICY_VERSIONS.c.access_policy_version_id
-                    == policy_version_id
+            (
+                await self._uow._execute(
+                    select(_ACCESS_POLICY_VERSIONS).where(
+                        _ACCESS_POLICY_VERSIONS.c.access_policy_version_id
+                        == policy_version_id,
+                        _ACCESS_POLICY_VERSIONS.c.workspace_id == scope.workspace_id,
+                        _ACCESS_POLICY_VERSIONS.c.environment_id
+                        == scope.environment_id,
+                    )
                 )
             )
-        ).mappings().one_or_none()
+            .mappings()
+            .one_or_none()
+        )
         if row is None:
             return None
         grant_rows = (
-            await self._uow._execute(
-                select(_ACCESS_POLICY_GRANTS).where(
-                    _ACCESS_POLICY_GRANTS.c.access_policy_version_id
-                    == policy_version_id
+            (
+                await self._uow._execute(
+                    select(_ACCESS_POLICY_GRANTS).where(
+                        _ACCESS_POLICY_GRANTS.c.access_policy_version_id
+                        == policy_version_id,
+                        _ACCESS_POLICY_GRANTS.c.workspace_id == scope.workspace_id,
+                        _ACCESS_POLICY_GRANTS.c.environment_id == scope.environment_id,
+                        _ACCESS_POLICY_GRANTS.c.source_object_id
+                        == row.source_object_id,
+                    )
                 )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         grants = tuple(
             AccessGrant.model_validate(
                 {
@@ -1615,6 +2496,7 @@ class PostgreSQLTenantUnitOfWork:
         self._workspaces = _PostgreSQLWorkspaceRepository(self)
         self._environments = _PostgreSQLEnvironmentRepository(self)
         self._sources = _PostgreSQLSourceObservationRepository(self)
+        self._canonical = _PostgreSQLCanonicalAcceptanceRepository(self)
         self._ingestion = _PostgreSQLIngestionRepository(self)
         self._admissions = _PostgreSQLAdmissionRepository(self)
         self._access_policies = _PostgreSQLAccessPolicyRepository(self)
@@ -1645,6 +2527,11 @@ class PostgreSQLTenantUnitOfWork:
     def sources(self) -> _PostgreSQLSourceObservationRepository:
         self._guard_active()
         return self._sources
+
+    @property
+    def canonical(self) -> _PostgreSQLCanonicalAcceptanceRepository:
+        self._guard_active()
+        return self._canonical
 
     @property
     def ingestion(self) -> IngestionRepository:
