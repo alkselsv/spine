@@ -160,6 +160,19 @@ uv run uvicorn spine.api.main:app --reload --port 8080
 curl http://localhost:8080/health
 ```
 
+### Run the offline regression gate
+
+The gate replays the synthetic R1 dataset twice without external services,
+credentials or production providers. It validates versioned schemas, retrieval,
+evidence safety and expected outcomes, and writes a CI artifact:
+
+```bash
+uv run spine-eval-gate --output offline-regression-gate.json
+```
+
+This is an offline contract gate, not qualification of the real Context Broker,
+LLM or production retrieval path.
+
 Вопрос через API:
 
 ```bash
