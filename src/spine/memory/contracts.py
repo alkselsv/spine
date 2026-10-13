@@ -279,6 +279,7 @@ class ProjectionEffect(_ProjectionModel):
     workspace_id: UUID
     environment_id: UUID
     command_identity: str = Field(min_length=1, max_length=64, pattern=_IDENTIFIER)
+    command_digest: str | None = Field(default=None, pattern=_DIGEST)
     projection_candidate: ProjectionCandidate
     projection_config: ProjectionConfigVersion
     canonical_boundary: CanonicalBoundary
