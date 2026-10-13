@@ -23,12 +23,23 @@
   → заменить источник или запустить повторную обработку
 ```
 
-Продуктовым и визуальным референсом служит
+Продуктовым, композиционным и визуальным референсом служит
 [Agno Control Plane](https://www.agno.com/products/control-plane): прежде всего
-его представления Knowledge, Chat, Sessions и Tracing. Spine не принимает Agno
-как runtime-зависимость и не копирует его browser-to-runtime архитектуру. Web UI
-обращается к API Spine; браузер не работает напрямую с Cognee, model provider,
-Temporal или хранилищами.
+его панель управления и представления Knowledge, Chat, Sessions и Tracing.
+Интерфейс Spine должен повторять релевантные элементы, компоновку и interaction
+patterns Agno настолько близко, насколько это совместимо с требованиями Spine к
+авторизации, evidence, состояниям, локализации и accessibility. Это не только
+источник общего вдохновения: для каждого продуктового экрана требуется явное
+сопоставление элементов Agno с реализацией Spine и объяснение существенных
+отклонений.
+
+Предпочтительный способ реализации такого сопоставления — подходящие компоненты
+и presentation patterns [Halaska UI](https://ui.halaska.com/), адаптированные в
+Spine-owned design system. Если Halaska не содержит подходящего эквивалента,
+элемент собирается из Base UI primitives и локальных Spine tokens/styles без
+смены целевого Agno-паттерна. Spine не принимает Agno как runtime-зависимость и
+не копирует его browser-to-runtime архитектуру. Web UI обращается к API Spine;
+браузер не работает напрямую с Cognee, model provider, Temporal или хранилищами.
 
 ## 2. Пользователь и права
 
@@ -258,12 +269,28 @@ projection snapshot. Versioned confidence metadata optional и не заменя
 Статус решений в этом разделе: **приняты для R1**. Prototype gate проверяет их на
 вертикальном сценарии до расширения frontend scope.
 
-### 8.1. Halaska задаёт визуальное направление
+### 8.1. Agno задаёт целевой интерфейс, Halaska — способ его реализации
 
-[Halaska UI](https://ui.halaska.com/) используется как визуальный и UX-референс
-для Spine Control Plane. Наиболее релевантны его паттерны для административных
-экранов, streaming, evidence/confidence, feedback, action receipts, recovery и
-run diagnostics.
+[Agno Control Plane](https://www.agno.com/products/control-plane) задаёт целевую
+информационную архитектуру, компоновку, элементы и interaction patterns панели
+управления. [Halaska UI](https://ui.halaska.com/) используется как основной
+компонентный и визуальный источник для воспроизведения этого интерфейса в Spine.
+Наиболее релевантны его паттерны для административных экранов, streaming,
+evidence/confidence, feedback, action receipts, recovery и run diagnostics.
+
+Для каждого экрана design note содержит mapping:
+
+```text
+элемент или pattern Agno
+  → компонент/pattern Halaska либо Base UI/Spine fallback
+  → адаптация к контрактам и состояниям Spine
+  → обоснование заметного визуального или поведенческого отклонения
+```
+
+Если подходящий Halaska pattern существует, он является предпочтительной
+реализацией соответствующего Agno-элемента. Fallback допустим, когда прямой
+аналог отсутствует, нарушает accessibility или не способен выразить обязательные
+состояния и безопасные outcomes Spine.
 
 Halaska не становится внешней доменной моделью или runtime Spine. Его единый JSX
 kit не добавляется в production-код без изменений и не устанавливается широким
