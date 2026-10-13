@@ -194,7 +194,7 @@ access, forced RLS protection, and existing schema owner before it changes the
 schema. Runtime, dispatcher, and migration connections use the controlled
 search path `pg_catalog,spine`. The Alembic version table is
 `spine.alembic_version`, and the committed history has one linear head:
-`20261019_22`. The source-observation migrations add the source ledger tables,
+`20261020_23`. The source-observation migrations add the source ledger tables,
 integrity constraints, persisted canonicalization profile identity, and
 database-side canonical validation. The admission migration adds the
 environment-scoped append-only `admission_decisions` CAS ledger, including
