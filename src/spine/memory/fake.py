@@ -23,6 +23,8 @@ from .contracts import (
     ProjectionCount,
     ProjectionLifecycle,
     ProjectionOutcome,
+    ProjectionNamespace,
+    ProjectionNamespaceState,
     ProjectionRelation,
     ProjectionRecovery,
     ProjectionResult,
@@ -32,6 +34,11 @@ from .contracts import (
     RemoveCommand,
     RetrieveCommand,
     UpdateCommand,
+)
+from .namespace import (
+    NamespaceRoutingError,
+    ProjectionNamespaceContext,
+    ProjectionNamespaceRouter,
 )
 
 
@@ -97,14 +104,18 @@ class DeterministicContextProjection(ContextProjection):
     authority; those facts arrive on the command boundary.
     """
 
-    def __init__(self, physical_store: ProjectionEffectStore | None = None) -> None:
+    def __init__(
+        self,
+        physical_store: ProjectionEffectStore | None = None,
+        namespace_router: ProjectionNamespaceRouter | None = None,
+    ) -> None:
         self._commands: list[ProjectionCommand] = []
         self._executions: dict[tuple[UUID, UUID, str, str, str], _Execution] = {}
         self._retrieval_results: dict[
             tuple[UUID, UUID, str, str, str], ProjectionRetrievalResult
         ] = {}
         self._retrieval: dict[
-            tuple[UUID, UUID, str | None],
+            tuple[UUID, UUID, str | None, str | None],
             tuple[
                 tuple[ProjectionChunk, ...],
                 tuple[ProjectionEntity, ...],
@@ -113,6 +124,7 @@ class DeterministicContextProjection(ContextProjection):
         ] = {}
         self._revision_fences: dict[tuple[UUID, UUID, str, str, UUID], _RevisionFence] = {}
         self._physical_store = physical_store or DeterministicPhysicalStore()
+        self._namespace_router = namespace_router or ProjectionNamespaceRouter()
         self._lock = asyncio.Lock()
 
     @property
@@ -127,9 +139,9 @@ class DeterministicContextProjection(ContextProjection):
         chunks: tuple[ProjectionChunk, ...] = (),
         entities: tuple[ProjectionEntity, ...] = (),
         relations: tuple[ProjectionRelation, ...] = (),
-        physical_namespace: str | None = None,
+        physical_namespace: ProjectionNamespace | str | None = None,
     ) -> None:
-        self._retrieval[(workspace_id, environment_id, physical_namespace)] = (
+        self._retrieval[self._seed_key(workspace_id, environment_id, physical_namespace)] = (
             chunks,
             entities,
             relations,
@@ -159,20 +171,23 @@ class DeterministicContextProjection(ContextProjection):
                 return previous.model_copy(update={"outcome": ProjectionOutcome.REPLAYED})
 
             self._commands.append(command)
+            namespace_failure = self._namespace_failure(command)
             unsafe = self._unsafe_source_status(command)
-            if unsafe is not None:
+            if namespace_failure is not None:
+                result = self._retrieval_failure(command, namespace_failure)
+            elif unsafe is not None:
                 result = self._retrieval_failure(command, unsafe)
             else:
                 seeded = self._retrieval.get(
-                    (
+                    self._seed_key(
                         command.workspace_id,
                         command.environment_id,
-                        command.physical_namespace.namespace,
+                        command.physical_namespace,
                     )
                 )
                 if seeded is None:
                     seeded = self._retrieval.get(
-                        (command.workspace_id, command.environment_id, None)
+                        self._seed_key(command.workspace_id, command.environment_id, None)
                     )
                 if seeded is None:
                     result = self._retrieval_failure(
@@ -335,6 +350,10 @@ class DeterministicContextProjection(ContextProjection):
         return result
 
     def _preflight(self, command: ProjectionCommand) -> ProjectionFailureCode | None:
+        namespace_failure = self._namespace_failure(command)
+        if namespace_failure is not None:
+            return namespace_failure
+
         for source in command.source_revisions:
             known = self._revision_fences.get(
                 self._fence_key(command, source.source_object_id)
@@ -447,7 +466,14 @@ class DeterministicContextProjection(ContextProjection):
                 if code is ProjectionFailureCode.REVISION_FENCED
                 else ProjectionLifecycle.FAILED
             ),
-            failure=self._failure(code),
+            failure=self._failure(
+                code,
+                namespace_digest=(
+                    command.physical_namespace.namespace_digest
+                    if code is ProjectionFailureCode.NAMESPACE_UNAVAILABLE
+                    else None
+                ),
+            ),
         )
 
     def _retrieval_failure(
@@ -459,7 +485,14 @@ class DeterministicContextProjection(ContextProjection):
             outcome=self._outcome_for_code(code),
             command_identity=command.command_identity,
             command_digest=command.command_digest,
-            failure=self._failure(code),
+            failure=self._failure(
+                code,
+                namespace_digest=(
+                    command.physical_namespace.namespace_digest
+                    if code is ProjectionFailureCode.NAMESPACE_UNAVAILABLE
+                    else None
+                ),
+            ),
         )
 
     @staticmethod
@@ -471,6 +504,44 @@ class DeterministicContextProjection(ContextProjection):
             command.physical_namespace.namespace_digest,
             command.command_identity,
         )
+
+    @staticmethod
+    def _seed_key(
+        workspace_id: UUID,
+        environment_id: UUID,
+        physical_namespace: ProjectionNamespace | str | None,
+    ) -> tuple[UUID, UUID, str | None, str | None]:
+        if isinstance(physical_namespace, ProjectionNamespace):
+            return (
+                workspace_id,
+                environment_id,
+                physical_namespace.namespace,
+                physical_namespace.namespace_digest,
+            )
+        return workspace_id, environment_id, physical_namespace, None
+
+    def _namespace_failure(
+        self,
+        command: ProjectionCommand,
+    ) -> ProjectionFailureCode | None:
+        try:
+            context = ProjectionNamespaceContext.from_command(command)
+            self._namespace_router.validate(command.physical_namespace, context)
+        except (NamespaceRoutingError, ValueError):
+            return ProjectionFailureCode.NAMESPACE_UNAVAILABLE
+
+        state = command.physical_namespace.state
+        if state in {
+            ProjectionNamespaceState.FAILED,
+            ProjectionNamespaceState.RETIRED,
+        }:
+            return ProjectionFailureCode.NAMESPACE_UNAVAILABLE
+        if (
+            command.operation.value == "retrieve"
+            and not self._namespace_router.is_ordinary_retrieval(command.physical_namespace)
+        ):
+            return ProjectionFailureCode.NAMESPACE_UNAVAILABLE
+        return None
 
     @staticmethod
     def _namespace_key(command: ProjectionCommand) -> str:
@@ -530,7 +601,11 @@ class DeterministicContextProjection(ContextProjection):
         }[code]
 
     @staticmethod
-    def _failure(code: ProjectionFailureCode) -> ProjectionFailure:
+    def _failure(
+        code: ProjectionFailureCode,
+        *,
+        namespace_digest: str | None = None,
+    ) -> ProjectionFailure:
         return ProjectionFailure(
             code=code,
             retryable=code
@@ -539,7 +614,7 @@ class DeterministicContextProjection(ContextProjection):
                 ProjectionFailureCode.NAMESPACE_UNAVAILABLE,
                 ProjectionFailureCode.PHYSICAL_FAILURE,
             },
-            safe_detail=ProjectionDiagnostic(),
+            safe_detail=ProjectionDiagnostic(namespace_digest=namespace_digest),
         )
 
 

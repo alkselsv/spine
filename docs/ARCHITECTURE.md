@@ -752,6 +752,16 @@ expected physical artifacts, source-revision identity/integrity и configuration
 version. Missing, corrupt, incomplete или ambiguous backend state fenced и
 reported degraded.
 
+Physical projection namespaces are derived by a provider-neutral router from
+workspace, environment, projection kind, candidate/snapshot context, canonical
+boundary and pinned configuration. The identity digest excludes lifecycle
+state, while the namespace record distinguishes `shadow`, `rebuilding`,
+`active`, `failed` and `retired`. Different tenant or candidate scope therefore
+cannot share a physical namespace, and only an explicitly active namespace may
+serve ordinary retrieval. Namespace lifecycle and candidate eligibility remain
+adapter concerns; PostgreSQL remains the publication and active-pointer
+authority.
+
 Artifact существующего immutable snapshot можно reconstruct только при
 доказуемой artifact identity и integrity. Byte equality не предполагается для
 nondeterministic ML/LLM processing. Если требуемая эквивалентность не доказана,

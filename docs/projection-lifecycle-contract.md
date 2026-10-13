@@ -29,3 +29,23 @@ the adapter serializes its lifecycle decision and produces at most one logical
 physical effect per command/effect identity. The deterministic physical store
 in `spine.memory.fake` is an offline qualification implementation with
 controlled one-shot or persistent failures; it is not a production store.
+
+## Physical namespace routing
+
+`ProjectionNamespaceRouter` derives an opaque physical namespace from the
+trusted workspace, environment, projection kind, candidate/snapshot context,
+canonical boundary and pinned projection configuration. Lifecycle state is
+tracked separately from the identity digest, so a namespace can move through
+`shadow`, `rebuilding`, `active`, `failed` and `retired` without changing its
+physical address. A different workspace, candidate, snapshot or configuration
+therefore always receives a different namespace digest.
+
+The router validates the namespace carried by a command against that trusted
+logical context. The deterministic fake rejects mismatches with the typed
+`namespace_unavailable` failure and reports only the namespace digest in safe
+diagnostics. Ordinary retrieval accepts only `active` namespaces; shadow,
+rebuilding, failed and retired artifacts cannot serve retrieval content.
+
+`ProjectionNamespaceRegistry` is an offline lifecycle catalog for deterministic
+qualification. Its active-candidate view excludes failed and retired records;
+it does not own PostgreSQL publication or active-pointer authority.

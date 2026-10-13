@@ -18,6 +18,7 @@ from spine.memory.contracts import (
     ProjectionEffectStatus,
     ProjectionLifecycle,
     ProjectionNamespace,
+    ProjectionNamespaceState,
     ProjectionOutcome,
     ProjectionResult,
     ProjectionRelation,
@@ -31,6 +32,7 @@ from spine.memory.contracts import (
 )
 from spine.memory.fake import DeterministicContextProjection
 from spine.memory.fake import DeterministicPhysicalStore
+from spine.memory.namespace import ProjectionNamespaceContext, ProjectionNamespaceRouter
 
 
 WORKSPACE = UUID(int=1)
@@ -65,13 +67,14 @@ def command_context(
     source_status: str = "current",
     workspace_id: UUID = WORKSPACE,
     environment_id: UUID = ENVIRONMENT,
+    candidate_id: UUID = CANDIDATE,
 ) -> dict[str, object]:
-    return {
+    context = {
         "workspace_id": workspace_id,
         "environment_id": environment_id,
         "projection_run_id": RUN,
         "projection_candidate": ProjectionCandidate(
-            candidate_id=CANDIDATE,
+            candidate_id=candidate_id,
             run_id=RUN,
             partition_id=PARTITION,
         ),
@@ -88,16 +91,29 @@ def command_context(
             accepted_through_generation=1,
         ),
         "source_revisions": (projection_source(status=source_status),),
-        "physical_namespace": ProjectionNamespace(
-            namespace="shadow/run-5/candidate-6/partition-7",
-            namespace_digest="d" * 64,
-        ),
     }
+    context["physical_namespace"] = ProjectionNamespaceRouter().route(
+        ProjectionNamespaceContext(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            projection_candidate=context["projection_candidate"],  # type: ignore[arg-type]
+            projection_config=context["projection_config"],  # type: ignore[arg-type]
+            canonical_boundary=context["canonical_boundary"],  # type: ignore[arg-type]
+            state=ProjectionNamespaceState.ACTIVE,
+        )
+    )
+    return context
 
 
-def project_command(*, identity: str = "project-1", digest: str = "e" * 64, source_status: str = "current") -> ProjectCommand:
+def project_command(
+    *,
+    identity: str = "project-1",
+    digest: str = "e" * 64,
+    source_status: str = "current",
+    candidate_id: UUID = CANDIDATE,
+) -> ProjectCommand:
     return ProjectCommand(
-        **command_context(source_status=source_status),
+        **command_context(source_status=source_status, candidate_id=candidate_id),
         command_identity=identity,
         command_digest=digest,
     )
@@ -165,6 +181,27 @@ async def test_fake_replays_same_command_and_rejects_digest_conflict() -> None:
     assert conflict.failure is not None
     assert conflict.failure.code is ProjectionFailureCode.INTEGRITY_CONFLICT
     assert len(projection.recorded_commands) == 1
+
+
+@pytest.mark.asyncio
+async def test_fake_rejects_untrusted_physical_namespace_without_content_leak() -> None:
+    projection = DeterministicContextProjection()
+    command = project_command().model_copy(
+        update={
+            "physical_namespace": ProjectionNamespace(
+                namespace="provider-owned/arbitrary",
+                namespace_digest="f" * 64,
+            )
+        }
+    )
+
+    result = await projection.project(command)
+
+    assert result.outcome is ProjectionOutcome.FAILED
+    assert result.failure is not None
+    assert result.failure.code is ProjectionFailureCode.NAMESPACE_UNAVAILABLE
+    assert result.failure.safe_detail.namespace_digest == "f" * 64
+    assert result.failure.safe_detail.excerpt is None
 
 
 @pytest.mark.asyncio
@@ -418,14 +455,7 @@ async def test_projection_fencing_and_effects_are_workspace_isolated() -> None:
     assert workspace_a.effects[0].effect_id != workspace_b.effects[0].effect_id
 
     namespace_b = await projection.project(
-        project_command().model_copy(
-            update={
-                "physical_namespace": ProjectionNamespace(
-                    namespace="shadow/run-5/candidate-6/partition-7",
-                    namespace_digest="f" * 64,
-                )
-            }
-        )
+        project_command(candidate_id=UUID(int=14))
     )
     assert namespace_b.outcome is ProjectionOutcome.SUCCEEDED
     assert namespace_b.effects[0].effect_id != workspace_a.effects[0].effect_id

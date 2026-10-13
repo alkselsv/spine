@@ -78,6 +78,16 @@ class ProjectionFailureCode(str, Enum):
     PHYSICAL_FAILURE = "physical_failure"
 
 
+class ProjectionNamespaceState(str, Enum):
+    """Lifecycle of one provider-neutral physical namespace."""
+
+    ACTIVE = "active"
+    SHADOW = "shadow"
+    REBUILDING = "rebuilding"
+    FAILED = "failed"
+    RETIRED = "retired"
+
+
 class _ProjectionModel(DefinitionModel):
     """Immutable provider-neutral contract with a closed JSON shape."""
 
@@ -167,6 +177,13 @@ class ProjectionNamespace(_ProjectionModel):
     schema_version: Literal["projection-namespace:v1"] = "projection-namespace:v1"
     namespace: str = Field(min_length=1, max_length=512)
     namespace_digest: str = Field(pattern=_DIGEST)
+    projection_kind: str = Field(
+        default="context",
+        min_length=1,
+        max_length=64,
+        pattern=_IDENTIFIER,
+    )
+    state: ProjectionNamespaceState = ProjectionNamespaceState.ACTIVE
 
 
 class EvidenceReference(_ProjectionModel):
@@ -226,6 +243,7 @@ class ProjectionDiagnostic(_ProjectionModel):
     item_count: StrictInt | None = Field(default=None, ge=0)
     duration_ms: StrictInt | None = Field(default=None, ge=0)
     opaque_detail_ref: UUID | None = None
+    namespace_digest: str | None = Field(default=None, pattern=_DIGEST)
     excerpt: None = None
 
     @model_validator(mode="after")
