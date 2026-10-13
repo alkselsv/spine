@@ -14,6 +14,11 @@ export type AuthenticationStatus =
 export interface AuthState {
   status: AuthenticationStatus;
   role?: 'administrator' | 'member';
+  /**
+   * The identity adapter injects the access token. The shell never accepts a
+   * token from a route, request body or user-controlled scope.
+   */
+  getBearerCredential?: () => Promise<string> | string;
 }
 
 const defaultAuthState: AuthState = {

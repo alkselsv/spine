@@ -186,11 +186,12 @@ describe('SpineChatTransport', () => {
 
   it('test_transport_reconnects_with_resume_cursor_after_stream_failure', async () => {
     let attempts = 0;
+    const reconnectNotifications: number[] = [];
     const { api, transport } = buildTransport(() => {
       attempts += 1;
       if (attempts === 1) return failingStream([runStarted]);
       return [runStarted, completed];
-    }, { maxReconnectAttempts: 2 });
+    }, { maxReconnectAttempts: 2, onReconnect: (attempt) => reconnectNotifications.push(attempt) });
 
     const events = await collect(
       transport.sendMessage(session.id, { text: 'Вопрос', idempotencyKey: 'send-2' }, new AbortController().signal),
@@ -199,6 +200,7 @@ describe('SpineChatTransport', () => {
     expect(events.map(({ type }) => type)).toEqual(['run_started', 'completed']);
     expect(api.streamCalls.map(({ resumeFromSequence }) => resumeFromSequence)).toEqual([0, 1]);
     expect(api.streamCalls[1]?.resumeFromEventId).toBe(runStarted.eventId);
+    expect(reconnectNotifications).toEqual([1]);
   });
 
   it('test_transport_times_out_heartbeats_and_fails_closed_after_retries', async () => {

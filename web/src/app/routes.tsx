@@ -1,11 +1,16 @@
 import type { RouteObject } from 'react-router';
-import { Link } from 'react-router';
+import { Link, useParams, useSearchParams } from 'react-router';
+import { useMemo, useState } from 'react';
 
+import { ChatPanel } from '../features/chat/ChatPanel';
+import { createQualificationChatHarness } from '../features/chat/qualification';
 import { ru } from '../i18n/resources';
 import { AdministratorBoundary } from './auth';
 import styles from './AppShell.module.css';
 import { AppShell } from './AppShell';
 import { localizeApiError } from './errors';
+import { readBrowserQualificationFixture } from './fixture';
+import { useScope } from './scope';
 
 export type InterfaceState =
   | 'loading'
@@ -47,13 +52,17 @@ export function ApiErrorPanel({ error }: { error: unknown }) {
 }
 
 function OverviewPage() {
+  const [searchParams] = useSearchParams();
   return (
     <section className={styles.pageSection} aria-labelledby="overview-heading">
       <p className={styles.eyebrow}>{ru.page.eyebrow}</p>
       <h2 id="overview-heading">{ru.page.overviewTitle}</h2>
       <p className={styles.lede}>{ru.page.overviewDescription}</p>
       <StatusPanel state="ready" />
-      <Link className={styles.textLink} to="/knowledge/documents">
+      <Link
+        className={styles.textLink}
+        to={{ pathname: '/knowledge/documents', search: searchParams.toString() }}
+      >
         {ru.page.openKnowledge}
       </Link>
     </section>
@@ -68,6 +77,29 @@ function PlaceholderPage({ title }: { title: string }) {
       <p className={styles.lede}>{ru.page.reserved}</p>
       <StatusPanel state="ready" />
     </section>
+  );
+}
+
+function ChatPage() {
+  const { sessionId = 'demo-session' } = useParams();
+  const { scope } = useScope();
+  const [reconnectCount, setReconnectCount] = useState(0);
+  const fixture = readBrowserQualificationFixture();
+  const harness = useMemo(
+    () =>
+      fixture === 'controlled'
+        ? createQualificationChatHarness(scope, (attempt) => setReconnectCount(attempt))
+        : null,
+    [fixture, scope],
+  );
+
+  if (!harness) return <PlaceholderPage title={ru.page.chatSession} />;
+  return (
+    <ChatPanel
+      reconnectCount={reconnectCount}
+      sessionId={sessionId}
+      transport={harness.transport}
+    />
   );
 }
 
@@ -91,7 +123,7 @@ export const appRoutes: RouteObject[] = [
       },
       {
         path: 'chat/:sessionId',
-        element: <PlaceholderPage title={ru.page.chatSession} />,
+        element: <ChatPage />,
       },
       { path: 'runs/:runId', element: <PlaceholderPage title={ru.page.runDetails} /> },
       { path: 'settings', element: <PlaceholderPage title={ru.page.settings} /> },

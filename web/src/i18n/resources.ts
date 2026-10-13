@@ -19,6 +19,8 @@ export const ru = {
   connection: {
     connected: 'Подключено',
     checked: 'Соединение проверено',
+    checking: 'Проверяем соединение…',
+    failed: 'Соединение недоступно',
     check: 'Проверить соединение',
   },
   auth: {
@@ -86,8 +88,28 @@ export const ru = {
     documentDetails: 'Документ',
     chat: 'Чат',
     chatSession: 'Сессия чата',
+    chatTitle: 'Диагностический чат',
+    chatDescription: 'Контролируемый поток показывает прогресс, переподключение и канонический результат.',
     runDetails: 'Запуск',
     settings: 'Настройки',
+  },
+  chat: {
+    loading: 'Восстанавливаем сессию…',
+    empty: 'В этой сессии пока нет сообщений.',
+    inputLabel: 'Вопрос',
+    inputPlaceholder: 'Задайте диагностический вопрос',
+    send: 'Отправить',
+    cancel: 'Отменить',
+    retry: 'Повторить',
+    createSession: 'Создать сессию',
+    ready: 'Сессия готова',
+    running: 'Выполняем запрос',
+    reconnecting: 'SSE переподключение',
+    completed: 'Ответ восстановлен',
+    cancelled: 'Операция отменена',
+    failed: 'Операция завершилась безопасной ошибкой',
+    stage: 'Этап',
+    canonical: 'Канонический ответ',
   },
 } as const;
 

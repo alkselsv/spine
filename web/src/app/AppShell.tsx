@@ -2,7 +2,10 @@ import { Button, Select } from '@base-ui/react';
 import { useState } from 'react';
 import { NavLink, Outlet, useNavigate, useSearchParams } from 'react-router';
 
+import { createScopedApiClient, type SpineApiError } from '../api/client';
 import { ru } from '../i18n/resources';
+import { useAuth } from './auth';
+import { localizeApiError } from './errors';
 import {
   environmentOptions,
   parseScopeSearch,
@@ -26,7 +29,10 @@ const navigation = [
 export function AppShell() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const auth = useAuth();
   const [statusMessage, setStatusMessage] = useState<string>(ru.connection.connected);
+  const [connectionError, setConnectionError] = useState<SpineApiError | null>(null);
+  const [isCheckingConnection, setIsCheckingConnection] = useState(false);
   const scope = parseScopeSearch(`?${searchParams.toString()}`);
 
   function changeScope(next: Partial<Scope>) {
@@ -34,6 +40,31 @@ export function AppShell() {
     navigate({ search: `?${updateScopeSearch(searchParams.toString(), nextScope)}` }, {
       replace: true,
     });
+    setConnectionError(null);
+  }
+
+  async function checkConnection() {
+    if (!auth.getBearerCredential) {
+      setStatusMessage(ru.connection.checked);
+      return;
+    }
+
+    setIsCheckingConnection(true);
+    setConnectionError(null);
+    try {
+      const client = createScopedApiClient({
+        baseUrl: window.location.origin,
+        getBearerCredential: auth.getBearerCredential,
+        scope,
+      });
+      await client.GET('/api/v1/health/ready');
+      setStatusMessage(ru.connection.checked);
+    } catch (error) {
+      setConnectionError(error instanceof Error ? (error as SpineApiError) : null);
+      setStatusMessage(ru.connection.failed);
+    } finally {
+      setIsCheckingConnection(false);
+    }
   }
 
   return (
@@ -59,14 +90,15 @@ export function AppShell() {
             />
             <span className={styles.status} role="status" aria-live="polite">
               <span className={styles.statusDot} aria-hidden="true" />
-              {statusMessage}
+              {isCheckingConnection ? ru.connection.checking : statusMessage}
             </span>
             <Button
               className={styles.refreshButton}
-              onClick={() => setStatusMessage(ru.connection.checked)}
+              disabled={isCheckingConnection}
+              onClick={() => void checkConnection()}
               type="button"
             >
-              {ru.connection.check}
+              {isCheckingConnection ? ru.connection.checking : ru.connection.check}
             </Button>
           </div>
         </header>
@@ -80,18 +112,30 @@ export function AppShell() {
                   isActive ? `${styles.navLink} ${styles.navLinkActive}` : styles.navLink
                 }
                 key={item.to}
-                to={item.to}
+                to={{ pathname: item.to, search: searchParams.toString() }}
               >
                 {item.label}
               </NavLink>
             ))}
           </nav>
           <main className={styles.content}>
+            {connectionError ? <ConnectionErrorPanel error={connectionError} /> : null}
             <Outlet />
           </main>
         </div>
       </div>
     </ScopeContext.Provider>
+  );
+}
+
+function ConnectionErrorPanel({ error }: { error: SpineApiError }) {
+  const copy = localizeApiError(error);
+  return (
+    <div className={`${styles.statusPanel} ${styles[`statusPanel_${copy.state}`]}`} role="alert">
+      <strong>{copy.title}</strong>
+      <span>{copy.description}</span>
+      {copy.traceId ? <small>Код обращения: {copy.traceId}</small> : null}
+    </div>
   );
 }
 
