@@ -18,7 +18,9 @@ The backend compatibility test in `tests/api/test_authorization.py` verifies
 these generator-facing OpenAPI fields. `web/src/api/client.ts` creates the typed
 client with an injected credential and immutable Workspace/Environment scope;
 `web/src/api/query.ts` is the TanStack Query boundary for cancellation,
-freshness and retry policy.
+freshness and retry policy. Its generic path transform removes only the two
+injected scope headers from operation inputs, so later generated protected
+resources do not make authorization context caller-controlled.
 
 Run generation and the same no-diff check used by CI from the repository root:
 

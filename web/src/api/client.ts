@@ -65,8 +65,37 @@ export class SpineApiError extends Error {
   }
 }
 
+type ScopeHeaderName = 'X-Workspace-ID' | 'X-Environment-ID';
+
+type RemoveScopeHeader<Parameters> = Parameters extends {
+  header: infer Header;
+}
+  ? Header extends object
+    ? Omit<Header, ScopeHeaderName> extends infer Remaining extends object
+      ? Omit<Parameters, 'header'> &
+          (keyof Remaining extends never
+            ? { header?: never }
+            : { header: Remaining })
+      : Parameters
+    : Parameters
+  : Parameters;
+
+type RemoveScopeParameters<Operation> = Operation extends {
+  parameters: infer Parameters;
+}
+  ? Omit<Operation, 'parameters'> & {
+      parameters: RemoveScopeHeader<Parameters>;
+    }
+  : Operation;
+
+export type ScopedPaths<Paths> = {
+  [Path in keyof Paths]: {
+    [Method in keyof Paths[Path]]: RemoveScopeParameters<Paths[Path][Method]>;
+  };
+};
+
 export type ScopedApiClient = Pick<
-  Client<paths>,
+  Client<ScopedPaths<paths>>,
   | 'request'
   | 'GET'
   | 'PUT'
@@ -102,7 +131,7 @@ function lockClient(client: Client<paths>): ScopedApiClient {
     HEAD: guardRequestOptions(client.HEAD),
     PATCH: guardRequestOptions(client.PATCH),
     TRACE: guardRequestOptions(client.TRACE),
-  });
+  }) as ScopedApiClient;
 }
 
 function guardRequestOptions<T>(method: T): T {
@@ -242,10 +271,10 @@ function isStructuredError(value: unknown): value is {
 }
 
 function failureKind(status: number, code?: string): ApiFailureKind {
-  if (status === 401 || code?.startsWith('spine.authentication.')) {
+  if (code?.startsWith('spine.authentication.')) {
     return 'authentication';
   }
-  if (status === 403 || code?.startsWith('spine.authorization.')) {
+  if (code?.startsWith('spine.authorization.')) {
     return 'authorization';
   }
   if (code === 'spine.request.validation') {

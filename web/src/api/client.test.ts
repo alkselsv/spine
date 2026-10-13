@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { Client } from 'openapi-fetch';
 
-import { createScopedApiClient, SpineApiError } from './client';
+import {
+  createScopedApiClient,
+  type ScopedPaths,
+  SpineApiError,
+} from './client';
 
 const workspaceId = '20000000-0000-4000-8000-000000000001';
 const environmentId = '30000000-0000-4000-8000-000000000001';
@@ -16,6 +21,17 @@ function createClient(fetch: typeof globalThis.fetch) {
 }
 
 describe('scoped API client', () => {
+  it('test_scoped_type_contract_omits_generated_scope_headers', () => {
+    type ProtectedClient = Client<ScopedPaths<ProtectedPathsFixture>>;
+    const protectedClient = null as unknown as ProtectedClient;
+
+    if (false) {
+      void protectedClient.GET('/api/v1/protected');
+    }
+
+    expect(true).toBe(true);
+  });
+
   it('test_request_applies_injected_bearer_and_required_scope_headers', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
       Response.json({ status: 'ok' }),
@@ -270,3 +286,24 @@ describe('scoped API client', () => {
     await expect(request).rejects.not.toBeInstanceOf(SpineApiError);
   });
 });
+
+interface ProtectedPathsFixture {
+  '/api/v1/protected': {
+    get: {
+      parameters: {
+        cookie?: never;
+        header: {
+          'X-Environment-ID': string;
+          'X-Workspace-ID': string;
+        };
+        path?: never;
+        query?: never;
+      };
+      responses: {
+        200: {
+          content: { 'application/json': { status: string } };
+        };
+      };
+    };
+  };
+}
