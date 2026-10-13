@@ -1723,8 +1723,13 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "pk_recovery_evidence_invalidations",
         "ix_recovery_evidence_invalidations_scope_digest",
         "pk_parsed_documents",
+        "uq_parsed_documents_scope_id",
+        "uq_parsed_documents_digest",
+        "uq_parsed_documents_command",
         "ix_parsed_documents_revision",
         "pk_parsed_document_segments",
+        "uq_parsed_segments_digest",
+        "uq_parsed_segments_ordinal",
         "ix_parsed_segments_artifact",
     } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES | CANONICAL_ACCEPTANCE_INDEXES
     assert owners == {MIGRATION_ROLE}
