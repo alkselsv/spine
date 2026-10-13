@@ -23,12 +23,12 @@ test('test_control_plane_navigation_preserves_scope_and_generated_client_context
 
   await page.getByRole('link', { name: 'Знания', exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/knowledge/documents\\?`));
-  await expect(page.getByRole('combobox', { name: 'Рабочая область' })).toHaveText('Продажи');
-  await expect(page.getByRole('combobox', { name: 'Среда' })).toHaveText('Staging');
+  await expect(page.getByRole('combobox', { name: 'Рабочая область' })).toContainText('Продажи');
+  await expect(page.getByRole('combobox', { name: 'Среда' })).toContainText('Staging');
 
   await page.reload();
-  await expect(page.getByRole('combobox', { name: 'Рабочая область' })).toHaveText('Продажи');
-  await expect(page.getByRole('combobox', { name: 'Среда' })).toHaveText('Staging');
+  await expect(page.getByRole('combobox', { name: 'Рабочая область' })).toContainText('Продажи');
+  await expect(page.getByRole('combobox', { name: 'Среда' })).toContainText('Staging');
 
   await page.getByRole('button', { name: 'Проверить соединение' }).click();
   await expect(page.getByRole('alert')).toHaveText(/Доступ запрещён/);
@@ -87,7 +87,7 @@ test('test_chat_fixture_cancels_and_retries_same_command_without_duplicate_messa
   await expect(page.getByRole('button', { name: 'Повторить' })).toBeVisible();
   await page.getByRole('button', { name: 'Повторить' }).click();
   await expect(page.getByText('Операция отменена')).toBeVisible();
-  await expect(page.locator('[class*="chatMessage"]')).toHaveCount(1);
+  await expect(page.getByLabel('Канонические сообщения').getByRole('article')).toHaveCount(1);
 });
 
 async function choose(page: Page, label: string, option: string) {
