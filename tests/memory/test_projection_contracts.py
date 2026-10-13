@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from uuid import UUID
 
 import pytest
@@ -13,6 +14,9 @@ from spine.memory.contracts import (
     ProjectionConfigVersion,
     ProjectionEntity,
     ProjectionFailureCode,
+    ProjectionEffectAction,
+    ProjectionEffectStatus,
+    ProjectionLifecycle,
     ProjectionNamespace,
     ProjectionOutcome,
     ProjectionRelation,
@@ -25,6 +29,7 @@ from spine.memory.contracts import (
     UpdateCommand,
 )
 from spine.memory.fake import DeterministicContextProjection
+from spine.memory.fake import DeterministicPhysicalStore
 
 
 WORKSPACE = UUID(int=1)
@@ -40,11 +45,14 @@ def projection_source(
     *,
     status: str = "current",
     revision_id: UUID = REVISION,
+    revision_number: int = 1,
+    source_object_id: UUID = SOURCE,
 ) -> ProjectionSourceRevision:
     return ProjectionSourceRevision(
-        source_object_id=SOURCE,
+        source_object_id=source_object_id,
         source_revision_id=revision_id,
         revision_digest="a" * 64,
+        revision_number=revision_number,
         status=status,
         processing_receipt_id=UUID(int=8),
         locator_contract_version="locator:v1",
@@ -331,3 +339,130 @@ async def test_retrieval_rejects_unsafe_evidence_without_returning_content(
     assert result.chunks == ()
     assert result.failure is not None
     assert result.failure.code is code
+
+
+@pytest.mark.asyncio
+async def test_fake_fences_older_revision_after_newer_revision() -> None:
+    projection = DeterministicContextProjection()
+    newer = project_command()
+    newer = newer.model_copy(
+        update={
+            "source_revisions": (
+                projection_source(revision_id=UUID(int=12), revision_number=2),
+            )
+        }
+    )
+    older = project_command(identity="project-older").model_copy(
+        update={"source_revisions": (projection_source(revision_number=1),)}
+    )
+
+    applied = await projection.project(newer)
+    fenced = await projection.project(older)
+
+    assert applied.lifecycle is ProjectionLifecycle.SUCCEEDED
+    assert fenced.lifecycle is ProjectionLifecycle.FENCED
+    assert fenced.outcome is ProjectionOutcome.STALE
+    assert fenced.failure is not None
+    assert fenced.failure.code is ProjectionFailureCode.REVISION_FENCED
+    assert fenced.effects == ()
+
+
+@pytest.mark.asyncio
+async def test_tombstone_fences_prior_content_but_allows_newer_reappearance() -> None:
+    projection = DeterministicContextProjection()
+    await projection.project(project_command())
+
+    tombstone = RemoveCommand(
+        **command_context(source_status="tombstoned"),
+        command_identity="remove-1",
+        command_digest="3" * 64,
+    ).model_copy(
+        update={
+            "source_revisions": (
+                projection_source(
+                    status="tombstoned",
+                    revision_id=UUID(int=12),
+                    revision_number=2,
+                ),
+            )
+        }
+    )
+    stale_rebuild = RebuildCommand(
+        **command_context(),
+        command_identity="rebuild-stale",
+        command_digest="4" * 64,
+    )
+    reappearance = ProjectCommand(
+        **command_context(),
+        command_identity="project-reappearance",
+        command_digest="5" * 64,
+    ).model_copy(
+        update={
+            "source_revisions": (
+                projection_source(revision_id=UUID(int=13), revision_number=3),
+            )
+        }
+    )
+
+    removed = await projection.remove(tombstone)
+    stale = await projection.rebuild(stale_rebuild)
+    restored = await projection.project(reappearance)
+
+    assert removed.lifecycle is ProjectionLifecycle.SUCCEEDED
+    assert removed.effects[0].action is ProjectionEffectAction.REMOVE_SOURCE
+    assert removed.effects[0].status is ProjectionEffectStatus.APPLIED
+    assert stale.outcome is ProjectionOutcome.STALE
+    assert stale.failure is not None
+    assert stale.failure.code is ProjectionFailureCode.REVISION_FENCED
+    assert restored.outcome is ProjectionOutcome.SUCCEEDED
+
+
+@pytest.mark.asyncio
+async def test_partial_physical_failure_is_recoverable_and_retry_is_idempotent() -> None:
+    store = DeterministicPhysicalStore(fail_once_for={"project-1:2"})
+    projection = DeterministicContextProjection(physical_store=store)
+    command = project_command().model_copy(
+        update={
+            "source_revisions": (
+                projection_source(revision_id=UUID(int=11), revision_number=1),
+                projection_source(
+                    revision_id=UUID(int=12),
+                    revision_number=2,
+                    source_object_id=UUID(int=13),
+                ),
+            )
+        }
+    )
+
+    first = await projection.project(command)
+    recovered = await projection.project(command)
+
+    assert first.lifecycle is ProjectionLifecycle.RECOVERABLE
+    assert first.failure is not None
+    assert first.failure.code is ProjectionFailureCode.PHYSICAL_FAILURE
+    assert first.failure.retryable is True
+    assert [effect.status for effect in first.effects] == [
+        ProjectionEffectStatus.APPLIED,
+        ProjectionEffectStatus.FAILED,
+    ]
+    assert recovered.lifecycle is ProjectionLifecycle.RECOVERED
+    assert recovered.outcome is ProjectionOutcome.SUCCEEDED
+    assert store.attempts_for("project-1:1") == 1
+    assert store.attempts_for("project-1:2") == 2
+
+
+@pytest.mark.asyncio
+async def test_concurrent_same_command_has_one_physical_effect() -> None:
+    store = DeterministicPhysicalStore()
+    projection = DeterministicContextProjection(physical_store=store)
+    command = project_command()
+
+    first, second = await asyncio.gather(
+        projection.project(command), projection.project(command)
+    )
+
+    assert {first.outcome, second.outcome} == {
+        ProjectionOutcome.SUCCEEDED,
+        ProjectionOutcome.REPLAYED,
+    }
+    assert store.attempts_for("project-1:1") == 1

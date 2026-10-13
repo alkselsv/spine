@@ -1,8 +1,10 @@
-"""Deterministic provider-neutral ContextProjection fake for contract tests."""
+"""Deterministic provider-neutral ContextProjection fakes."""
 
 from __future__ import annotations
 
-from typing import TypeVar
+import asyncio
+from collections import defaultdict
+from dataclasses import dataclass
 from uuid import UUID
 
 from .contracts import (
@@ -10,12 +12,18 @@ from .contracts import (
     ProjectionChunk,
     ProjectionCommand,
     ProjectionDiagnostic,
+    ProjectionEffect,
+    ProjectionEffectAction,
+    ProjectionEffectStatus,
+    ProjectionEffectStore,
     ProjectionEntity,
     ProjectionFailure,
     ProjectionFailureCode,
     ProjectionCount,
+    ProjectionLifecycle,
     ProjectionOutcome,
     ProjectionRelation,
+    ProjectionRecovery,
     ProjectionResult,
     ProjectionRetrievalResult,
     ProjectCommand,
@@ -26,21 +34,74 @@ from .contracts import (
 )
 
 
-_Result = TypeVar("_Result", ProjectionResult, ProjectionRetrievalResult)
+class DeterministicPhysicalStore:
+    """A provider-neutral physical store with deterministic failure injection.
+
+    ``fail_once_for`` and ``fail_for`` use ``<command_identity>:<revision_number>``
+    selectors. This keeps tests independent of provider IDs while allowing a
+    partial write and its recovery to be observed explicitly.
+    """
+
+    def __init__(
+        self,
+        *,
+        fail_once_for: set[str] | tuple[str, ...] = (),
+        fail_for: set[str] | tuple[str, ...] = (),
+    ) -> None:
+        self._fail_once_for = set(fail_once_for)
+        self._fail_for = set(fail_for)
+        self._attempts: defaultdict[str, int] = defaultdict(int)
+        self._applied_effects: set[str] = set()
+
+    async def apply(self, effect: ProjectionEffect) -> ProjectionEffect:
+        selector = f"{effect.command_identity}:{effect.revision_number}"
+        self._attempts[selector] += 1
+        if effect.effect_id in self._applied_effects:
+            return effect.model_copy(update={"status": ProjectionEffectStatus.REPLAYED})
+        if selector in self._fail_for or (
+            selector in self._fail_once_for and self._attempts[selector] == 1
+        ):
+            return effect.model_copy(update={"status": ProjectionEffectStatus.FAILED})
+        self._applied_effects.add(effect.effect_id)
+        return effect.model_copy(update={"status": ProjectionEffectStatus.APPLIED})
+
+    def attempts_for(self, selector: str) -> int:
+        """Return deterministic physical-attempt count for a test selector."""
+
+        return self._attempts[selector]
+
+
+@dataclass
+class _RevisionFence:
+    revision_number: int
+    source_revision_id: UUID
+    revision_digest: str
+    tombstoned: bool
+
+
+@dataclass
+class _Execution:
+    command: ProjectionCommand
+    effects: tuple[ProjectionEffect, ...]
+    attempt: int = 0
+    terminal_result: ProjectionResult | None = None
 
 
 class DeterministicContextProjection(ContextProjection):
-    """Small in-memory implementation of the public adapter port.
+    """In-memory implementation of the public projection port.
 
-    The fake deliberately models replay and safe outcomes, but does not claim
-    canonical currentness, access control, publication or receipt authority.
-    Its seeded retrieval data is keyed by workspace and environment so a test
-    cannot accidentally observe another tenant's projection.
+    The fake models command identity/digest idempotency, source revision
+    fencing, tombstones and recoverable physical partial failure. It never
+    owns canonical currentness, access control, publication or receipt
+    authority; those facts arrive on the command boundary.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, physical_store: ProjectionEffectStore | None = None) -> None:
         self._commands: list[ProjectionCommand] = []
-        self._results: dict[tuple[UUID, UUID, str], _Result] = {}
+        self._executions: dict[tuple[UUID, UUID, str], _Execution] = {}
+        self._retrieval_results: dict[
+            tuple[UUID, UUID, str], ProjectionRetrievalResult
+        ] = {}
         self._retrieval: dict[
             tuple[UUID, UUID],
             tuple[
@@ -49,6 +110,9 @@ class DeterministicContextProjection(ContextProjection):
                 tuple[ProjectionRelation, ...],
             ],
         ] = {}
+        self._revision_fences: dict[UUID, _RevisionFence] = {}
+        self._physical_store = physical_store or DeterministicPhysicalStore()
+        self._lock = asyncio.Lock()
 
     @property
     def recorded_commands(self) -> tuple[ProjectionCommand, ...]:
@@ -66,99 +130,273 @@ class DeterministicContextProjection(ContextProjection):
         self._retrieval[(workspace_id, environment_id)] = (chunks, entities, relations)
 
     async def project(self, command: ProjectCommand) -> ProjectionResult:
-        return self._execute(command)
+        return await self._execute(command)
 
     async def update(self, command: UpdateCommand) -> ProjectionResult:
-        return self._execute(command)
+        return await self._execute(command)
 
     async def remove(self, command: RemoveCommand) -> ProjectionResult:
-        return self._execute(command)
+        return await self._execute(command)
 
     async def rebuild(self, command: RebuildCommand) -> ProjectionResult:
-        return self._execute(command)
+        return await self._execute(command)
 
     async def retrieve(self, command: RetrieveCommand) -> ProjectionRetrievalResult:
-        key = self._key(command)
-        previous = self._results.get(key)
-        if previous is not None:
-            if previous.command_digest != command.command_digest:
-                return self._retrieval_failure(command, ProjectionFailureCode.INTEGRITY_CONFLICT)
-            return previous.model_copy(update={"outcome": ProjectionOutcome.REPLAYED})
+        async with self._lock:
+            key = self._key(command)
+            previous = self._retrieval_results.get(key)
+            if previous is not None:
+                if previous.command_digest != command.command_digest:
+                    return self._retrieval_failure(
+                        command, ProjectionFailureCode.INTEGRITY_CONFLICT
+                    )
+                return previous.model_copy(update={"outcome": ProjectionOutcome.REPLAYED})
 
-        self._commands.append(command)
-        unsafe = self._unsafe_source_status(command)
-        if unsafe is not None:
-            result = self._retrieval_failure(command, unsafe)
-        else:
-            seeded = self._retrieval.get((command.workspace_id, command.environment_id))
-            if seeded is None:
-                result = self._retrieval_failure(command, ProjectionFailureCode.MISSING_EVIDENCE)
-                self._results[key] = result
-                return result
-            chunks, entities, relations = seeded
-            limited_chunks = chunks[: command.limit]
-            evidence = tuple(
-                reference
-                for item in (*limited_chunks, *entities, *relations)
-                for reference in item.evidence
-            )
-            unsafe_evidence = next(
-                (reference.status for reference in evidence if reference.status != "valid"),
-                None,
-            )
-            if unsafe_evidence is not None:
-                result = self._retrieval_failure(
-                    command,
-                    self._failure_code_for_status(unsafe_evidence),
-                )
-            elif any(
-                reference.workspace_id != command.workspace_id
-                or reference.environment_id != command.environment_id
-                for item in (*limited_chunks, *entities, *relations)
-                for reference in item.evidence
-            ):
-                result = self._retrieval_failure(command, ProjectionFailureCode.MISSING_EVIDENCE)
+            self._commands.append(command)
+            unsafe = self._unsafe_source_status(command)
+            if unsafe is not None:
+                result = self._retrieval_failure(command, unsafe)
             else:
-                result = ProjectionRetrievalResult(
-                    outcome=ProjectionOutcome.SUCCEEDED,
-                    command_identity=command.command_identity,
-                    command_digest=command.command_digest,
-                    chunks=limited_chunks,
-                    entities=entities,
-                    relations=relations,
-                    evidence=evidence,
+                seeded = self._retrieval.get((command.workspace_id, command.environment_id))
+                if seeded is None:
+                    result = self._retrieval_failure(
+                        command, ProjectionFailureCode.MISSING_EVIDENCE
+                    )
+                else:
+                    chunks, entities, relations = seeded
+                    limited_chunks = chunks[: command.limit]
+                    evidence = tuple(
+                        reference
+                        for item in (*limited_chunks, *entities, *relations)
+                        for reference in item.evidence
+                    )
+                    unsafe_evidence = next(
+                        (
+                            reference.status
+                            for reference in evidence
+                            if reference.status != "valid"
+                        ),
+                        None,
+                    )
+                    if unsafe_evidence is not None:
+                        result = self._retrieval_failure(
+                            command, self._failure_code_for_status(unsafe_evidence)
+                        )
+                    elif any(
+                        reference.workspace_id != command.workspace_id
+                        or reference.environment_id != command.environment_id
+                        for item in (*limited_chunks, *entities, *relations)
+                        for reference in item.evidence
+                    ):
+                        result = self._retrieval_failure(
+                            command, ProjectionFailureCode.MISSING_EVIDENCE
+                        )
+                    else:
+                        result = ProjectionRetrievalResult(
+                            outcome=ProjectionOutcome.SUCCEEDED,
+                            command_identity=command.command_identity,
+                            command_digest=command.command_digest,
+                            chunks=limited_chunks,
+                            entities=entities,
+                            relations=relations,
+                            evidence=evidence,
+                        )
+            self._retrieval_results[key] = result
+            return result
+
+    async def _execute(self, command: ProjectionCommand) -> ProjectionResult:
+        async with self._lock:
+            key = self._key(command)
+            execution = self._executions.get(key)
+            if execution is not None:
+                if (
+                    execution.command.command_digest != command.command_digest
+                    or execution.command.operation != command.operation
+                ):
+                    return self._failure_result(
+                        command,
+                        ProjectionFailureCode.INTEGRITY_CONFLICT,
+                    )
+                if execution.terminal_result is not None:
+                    return self._replayed(execution.terminal_result)
+                return await self._continue_execution(execution)
+
+            self._commands.append(command)
+            fenced = self._preflight(command)
+            if fenced is not None:
+                result = self._failure_result(command, fenced)
+                self._executions[key] = _Execution(
+                    command=command,
+                    effects=(),
+                    terminal_result=result,
                 )
-        self._results[key] = result
-        return result
+                return result
 
-    def _execute(self, command: ProjectionCommand) -> ProjectionResult:
-        key = self._key(command)
-        previous = self._results.get(key)
-        if previous is not None:
-            if previous.command_digest != command.command_digest:
-                return self._failure_result(command, ProjectionFailureCode.INTEGRITY_CONFLICT)
-            return previous.model_copy(update={"outcome": ProjectionOutcome.REPLAYED})
-
-        self._commands.append(command)
-        unsafe = self._unsafe_source_status(command)
-        if unsafe is None:
-            result = ProjectionResult(
-                operation=command.operation,
-                outcome=ProjectionOutcome.SUCCEEDED,
-                command_identity=command.command_identity,
-                command_digest=command.command_digest,
-                artifact_reference=self._artifact_reference(command),
-                counts=(
-                    ProjectionCount(
-                        name="source_revisions",
-                        value=len(command.source_revisions),
-                    ),
-                ),
+            execution = _Execution(
+                command=command,
+                effects=self._effects_for(command),
             )
-        else:
-            result = self._failure_result(command, unsafe)
-        self._results[key] = result
+            self._executions[key] = execution
+            return await self._continue_execution(execution)
+
+    async def _continue_execution(self, execution: _Execution) -> ProjectionResult:
+        execution.attempt += 1
+        completed: list[ProjectionEffect] = []
+        failed = False
+        for effect in execution.effects:
+            if effect.status in {
+                ProjectionEffectStatus.APPLIED,
+                ProjectionEffectStatus.REPLAYED,
+            }:
+                completed.append(effect)
+                continue
+            try:
+                applied = await self._physical_store.apply(effect)
+            except Exception:
+                applied = effect.model_copy(update={"status": ProjectionEffectStatus.FAILED})
+            completed.append(applied)
+            if applied.status not in {
+                ProjectionEffectStatus.APPLIED,
+                ProjectionEffectStatus.REPLAYED,
+            }:
+                failed = True
+        execution.effects = tuple(completed)
+
+        if failed:
+            pending = tuple(
+                effect.effect_id
+                for effect in execution.effects
+                if effect.status
+                not in {
+                    ProjectionEffectStatus.APPLIED,
+                    ProjectionEffectStatus.REPLAYED,
+                }
+            )
+            return ProjectionResult(
+                operation=execution.command.operation,
+                outcome=ProjectionOutcome.FAILED,
+                command_identity=execution.command.command_identity,
+                command_digest=execution.command.command_digest,
+                lifecycle=ProjectionLifecycle.RECOVERABLE,
+                effects=execution.effects,
+                recovery=ProjectionRecovery(
+                    attempt=execution.attempt,
+                    pending_effect_ids=pending,
+                ),
+                failure=self._failure(ProjectionFailureCode.PHYSICAL_FAILURE),
+            )
+
+        result = ProjectionResult(
+            operation=execution.command.operation,
+            outcome=ProjectionOutcome.SUCCEEDED,
+            command_identity=execution.command.command_identity,
+            command_digest=execution.command.command_digest,
+            lifecycle=(
+                ProjectionLifecycle.RECOVERED
+                if execution.attempt > 1
+                else ProjectionLifecycle.SUCCEEDED
+            ),
+            artifact_reference=self._artifact_reference(execution.command),
+            effects=execution.effects,
+            counts=(
+                ProjectionCount(
+                    name="source_revisions",
+                    value=len(execution.command.source_revisions),
+                ),
+            ),
+        )
+        execution.terminal_result = result
         return result
+
+    def _preflight(self, command: ProjectionCommand) -> ProjectionFailureCode | None:
+        for source in command.source_revisions:
+            known = self._revision_fences.get(source.source_object_id)
+            if known is not None and source.revision_number < known.revision_number:
+                return ProjectionFailureCode.REVISION_FENCED
+            if (
+                known is not None
+                and source.revision_number == known.revision_number
+                and (
+                    source.source_revision_id != known.source_revision_id
+                    or source.revision_digest != known.revision_digest
+                )
+            ):
+                return ProjectionFailureCode.REVISION_FENCED
+
+            if (
+                known is not None
+                and known.tombstoned
+                and source.revision_number <= known.revision_number
+                and not (
+                    command.operation.value == "remove"
+                    and source.status == "tombstoned"
+                    and source.source_revision_id == known.source_revision_id
+                )
+            ):
+                return ProjectionFailureCode.TOMBSTONED_SOURCE
+
+            if source.status != "current":
+                if command.operation.value == "remove" and source.status == "tombstoned":
+                    continue
+                if source.status == "tombstoned":
+                    self._revision_fences[source.source_object_id] = _RevisionFence(
+                        revision_number=source.revision_number,
+                        source_revision_id=source.source_revision_id,
+                        revision_digest=source.revision_digest,
+                        tombstoned=True,
+                    )
+                return self._failure_code_for_status(source.status)
+
+        for source in command.source_revisions:
+            self._revision_fences[source.source_object_id] = _RevisionFence(
+                revision_number=source.revision_number,
+                source_revision_id=source.source_revision_id,
+                revision_digest=source.revision_digest,
+                tombstoned=source.status == "tombstoned",
+            )
+        return None
+
+    def _effects_for(self, command: ProjectionCommand) -> tuple[ProjectionEffect, ...]:
+        action = (
+            ProjectionEffectAction.REMOVE_SOURCE
+            if command.operation.value == "remove"
+            else ProjectionEffectAction.UPSERT_SOURCE
+        )
+        return tuple(
+            ProjectionEffect(
+                effect_id=(
+                    f"{command.command_identity}:{source.source_object_id.hex}:"
+                    f"{source.revision_number}:{action.value}"
+                ),
+                operation=command.operation,
+                action=action,
+                workspace_id=command.workspace_id,
+                environment_id=command.environment_id,
+                command_identity=command.command_identity,
+                projection_candidate=command.projection_candidate,
+                projection_config=command.projection_config,
+                canonical_boundary=command.canonical_boundary,
+                physical_namespace=command.physical_namespace,
+                source_object_id=source.source_object_id,
+                source_revision_id=source.source_revision_id,
+                revision_digest=source.revision_digest,
+                revision_number=source.revision_number,
+            )
+            for source in command.source_revisions
+        )
+
+    @staticmethod
+    def _replayed(result: ProjectionResult) -> ProjectionResult:
+        return result.model_copy(
+            update={
+                "outcome": ProjectionOutcome.REPLAYED,
+                "lifecycle": ProjectionLifecycle.REPLAYED,
+                "effects": tuple(
+                    effect.model_copy(update={"status": ProjectionEffectStatus.REPLAYED})
+                    for effect in result.effects
+                ),
+            }
+        )
 
     def _failure_result(
         self,
@@ -170,6 +408,11 @@ class DeterministicContextProjection(ContextProjection):
             outcome=self._outcome_for_code(code),
             command_identity=command.command_identity,
             command_digest=command.command_digest,
+            lifecycle=(
+                ProjectionLifecycle.FENCED
+                if code is ProjectionFailureCode.REVISION_FENCED
+                else ProjectionLifecycle.FAILED
+            ),
             failure=self._failure(code),
         )
 
@@ -216,10 +459,12 @@ class DeterministicContextProjection(ContextProjection):
             ProjectionFailureCode.INTEGRITY_CONFLICT: ProjectionOutcome.FAILED,
             ProjectionFailureCode.MISSING_EVIDENCE: ProjectionOutcome.MISSING,
             ProjectionFailureCode.STALE_EVIDENCE: ProjectionOutcome.STALE,
+            ProjectionFailureCode.REVISION_FENCED: ProjectionOutcome.STALE,
             ProjectionFailureCode.TOMBSTONED_SOURCE: ProjectionOutcome.TOMBSTONED,
             ProjectionFailureCode.AMBIGUOUS_EVIDENCE: ProjectionOutcome.AMBIGUOUS,
             ProjectionFailureCode.INCOMPLETE_EVIDENCE: ProjectionOutcome.INCOMPLETE,
             ProjectionFailureCode.NAMESPACE_UNAVAILABLE: ProjectionOutcome.FAILED,
+            ProjectionFailureCode.PHYSICAL_FAILURE: ProjectionOutcome.FAILED,
         }[code]
 
     @staticmethod
@@ -230,9 +475,10 @@ class DeterministicContextProjection(ContextProjection):
             in {
                 ProjectionFailureCode.MISSING_EVIDENCE,
                 ProjectionFailureCode.NAMESPACE_UNAVAILABLE,
+                ProjectionFailureCode.PHYSICAL_FAILURE,
             },
             safe_detail=ProjectionDiagnostic(),
         )
 
 
-__all__ = ["DeterministicContextProjection"]
+__all__ = ["DeterministicContextProjection", "DeterministicPhysicalStore"]
