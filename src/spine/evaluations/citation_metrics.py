@@ -290,7 +290,7 @@ def evaluate_answer_outcome(
             "expected_outcome": case.expected_outcome,
             "deterministic_gate": "passed" if passed else "failed",
         },
-        identity=f"outcome:{answer.outcome}:{case.expected_outcome}",
+        identity=f"outcome:{case.case_id}:{answer.outcome}:{case.expected_outcome}",
     )
 
 
@@ -334,15 +334,23 @@ def _metric_result(
         {"citation_precision": "precision", "citation_recall": "recall"}.get(metric_name, metric_name),
     )
     passed = score == 1.0 and assessment.deterministic_passed
+    verdict = (
+        EvaluationVerdict.PASS
+        if passed
+        else EvaluationVerdict.REVIEW
+        if score is None and case.expected_outcome != "answered"
+        else EvaluationVerdict.FAIL
+    )
     return _result(
         evaluator_key=evaluator_key,
         case=case,
         subject_id=subject_id,
         score=score,
-        verdict=EvaluationVerdict.PASS if passed else EvaluationVerdict.FAIL,
+        verdict=verdict,
         details={
             metric_name: score,
             "failure_counts": dict(sorted(assessment.failures.items())),
+            "status": "measured" if score is not None else "not_applicable",
             "deterministic_gate": "passed" if assessment.deterministic_passed else "failed",
         },
         identity=f"{evaluator_key}:{answer.model_dump_json()}:{context_bundle.model_dump_json()}",

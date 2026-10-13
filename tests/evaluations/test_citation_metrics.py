@@ -144,6 +144,43 @@ def test_multi_evidence_claim_requires_all_labelled_evidence() -> None:
     }
 
 
+def test_non_answer_citation_recall_is_explicitly_not_applicable() -> None:
+    case = _case("absent-evidence-abstention")
+    answer = AnswerSubmission(outcome="abstained")
+    bundle = _bundle(case)
+
+    evaluation = evaluate_citation_recall(
+        answer,
+        case,
+        dataset=DATASET,
+        context_bundle=bundle,
+    )
+
+    assert evaluation.verdict is EvaluationVerdict.REVIEW
+    assert evaluation.score is None
+    assert evaluation.details["status"] == "not_applicable"
+
+
+def test_answer_outcome_evaluation_identity_includes_case() -> None:
+    first_case = _case("absent-evidence-abstention")
+    second_case = _case("workspace-isolation")
+
+    first = evaluate_answer_outcome(
+        AnswerSubmission(outcome="abstained"),
+        first_case,
+        dataset=DATASET,
+        context_bundle=_bundle(first_case),
+    )
+    second = evaluate_answer_outcome(
+        AnswerSubmission(outcome="abstained"),
+        second_case,
+        dataset=DATASET,
+        context_bundle=_bundle(second_case),
+    )
+
+    assert first.id != second.id
+
+
 @pytest.mark.parametrize(
     ("case_id", "citation", "expected_failure"),
     [
