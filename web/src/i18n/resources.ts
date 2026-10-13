@@ -1,0 +1,94 @@
+export const ru = {
+  brand: 'SPINE',
+  shellTitle: 'Control Plane Spine',
+  navigation: {
+    label: 'Разделы workspace',
+    knowledge: 'Знания',
+    chat: 'Чат',
+    runs: 'Запуски',
+    settings: 'Настройки',
+  },
+  scope: {
+    workspaceLabel: 'Рабочая область',
+    environmentLabel: 'Среда',
+    workspacePrimary: 'Основная',
+    workspaceSales: 'Продажи',
+    environmentLocal: 'Local',
+    environmentStaging: 'Staging',
+  },
+  connection: {
+    connected: 'Подключено',
+    checked: 'Соединение проверено',
+    check: 'Проверить соединение',
+  },
+  auth: {
+    unauthenticated: {
+      title: 'Войдите в Control Plane',
+      description: 'Для доступа к административной панели требуется аутентификация.',
+      action: 'Войти',
+    },
+    expired: {
+      title: 'Сеанс истёк',
+      description: 'Войдите снова, чтобы безопасно продолжить работу.',
+      action: 'Войти снова',
+    },
+    unavailable: {
+      title: 'Сервис аутентификации недоступен',
+      description: 'Повторите попытку позже или обратитесь к администратору.',
+      action: 'Повторить',
+    },
+    forbidden: {
+      title: 'Доступ запрещён',
+      description: 'Control Plane доступен только пользователю с ролью администратора.',
+      action: 'Вернуться',
+    },
+  },
+  errors: {
+    authentication: {
+      title: 'Сеанс истёк',
+      description: 'Войдите снова, чтобы безопасно продолжить работу.',
+    },
+    authorization: {
+      title: 'Доступ запрещён',
+      description: 'Сервер не разрешил эту операцию для текущей области.',
+    },
+    validation: {
+      title: 'Проверьте данные',
+      description: 'Запрос не прошёл проверку.',
+    },
+    unavailable: {
+      title: 'Сервис временно недоступен',
+      description: 'Некоторые операции могут быть недоступны. Повторите попытку позже.',
+    },
+    failed: {
+      title: 'Не удалось выполнить операцию',
+      description: 'Попробуйте ещё раз. Защищённые данные не раскрыты.',
+    },
+  },
+  status: {
+    loading: { title: 'Загрузка', description: 'Получаем данные для текущей области.' },
+    empty: { title: 'Пока нет данных', description: 'В этом разделе ещё ничего нет.' },
+    partial: { title: 'Показаны не все данные', description: 'Часть данных временно недоступна.' },
+    stale: { title: 'Данные устарели', description: 'Доступно последнее сохранённое состояние.' },
+    degraded: { title: 'Сервис работает с ограничениями', description: 'Некоторые операции могут быть недоступны.' },
+    permissionDenied: { title: 'Нет доступа к данным', description: 'Сервер не разрешил эту операцию для текущей области.' },
+    validationFailed: { title: 'Проверьте данные', description: 'Запрос не прошёл проверку.' },
+    failed: { title: 'Не удалось загрузить раздел', description: 'Попробуйте ещё раз. Защищённые данные не раскрыты.' },
+    ready: { title: 'Готово', description: 'Раздел готов к работе.' },
+  },
+  page: {
+    eyebrow: 'Административная панель',
+    overviewTitle: 'Workspace готов к работе',
+    overviewDescription: 'Здесь появятся Knowledge, Chat и Runs для текущей области.',
+    openKnowledge: 'Открыть знания',
+    reserved: 'Этот маршрут подготовлен для следующего вертикального среза.',
+    knowledge: 'Знания',
+    documentDetails: 'Документ',
+    chat: 'Чат',
+    chatSession: 'Сессия чата',
+    runDetails: 'Запуск',
+    settings: 'Настройки',
+  },
+} as const;
+
+export type RussianResources = typeof ru;

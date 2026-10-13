@@ -46,6 +46,77 @@ h1 {
   text-align: right;
 }
 
+.scopeSelector {
+  display: grid;
+  gap: 0.2rem;
+  justify-items: end;
+}
+
+.scopeLabel {
+  color: var(--color-header-muted);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.scopeTrigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 10rem;
+  justify-content: space-between;
+  border: 1px solid rgb(255 255 255 / 20%);
+  border-radius: 0.45rem;
+  padding: 0.42rem 0.6rem;
+  background: rgb(255 255 255 / 8%);
+  color: var(--color-header-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.scopeTrigger:hover,
+.scopeTrigger[data-popup-open],
+.scopeTrigger:focus-visible {
+  background: rgb(255 255 255 / 16%);
+}
+
+.scopeIcon {
+  color: var(--color-accent);
+}
+
+.scopePositioner {
+  z-index: 10;
+}
+
+.scopePopup {
+  min-width: 10rem;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 0.65rem;
+  padding: 0.3rem;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+}
+
+.scopeOption {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 0.4rem;
+  padding: 0.55rem 0.65rem;
+  background: transparent;
+  color: var(--color-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.scopeOption[data-highlighted],
+.scopeOption[data-selected] {
+  background: var(--color-surface-strong);
+}
+
 .context strong {
   color: var(--color-header-ink);
   font-weight: 600;
@@ -83,6 +154,17 @@ h1 {
 .refreshButton:hover,
 .refreshButton:focus-visible {
   background: rgb(255 255 255 / 16%);
+}
+
+.primaryButton {
+  border: 0;
+  border-radius: 0.5rem;
+  padding: 0.7rem 1rem;
+  background: var(--color-link);
+  color: white;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .layout {
@@ -152,6 +234,40 @@ h1 {
   font-weight: 700;
 }
 
+.statusPanel {
+  display: grid;
+  gap: 0.25rem;
+  margin: var(--space-6) 0;
+  border-left: 0.25rem solid var(--color-accent);
+  padding: 0.8rem 1rem;
+  background: var(--color-surface-strong);
+}
+
+.statusPanel span {
+  color: var(--color-muted);
+  font-size: 0.92rem;
+}
+
+.statusPanel_loading,
+.statusPanel_stale {
+  border-left-color: #e8b949;
+}
+
+.statusPanel_degraded,
+.statusPanel_failed,
+.statusPanel_permissionDenied,
+.statusPanel_validationFailed {
+  border-left-color: #dd6b63;
+}
+
+.authBoundary {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: var(--space-8);
+  background: var(--color-canvas);
+}
+
 @media (max-width: 720px) {
   .header,
   .layout {
@@ -161,6 +277,10 @@ h1 {
   .context {
     margin-top: var(--space-6);
     text-align: left;
+  }
+
+  .scopeSelector {
+    justify-items: start;
   }
 
   .status {
