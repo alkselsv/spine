@@ -64,8 +64,10 @@ platform.
 - [x] Единые trace ID, structured errors и audit events.
       `implemented`, `qualified: offline diagnostics/delivery foundation`,
       `not integrated: complete governed R1 flow`.
-- [ ] Минимальный app shell и сгенерированный API client.
-      `not implemented`; выбран стек и определён OpenAPI handoff.
+- [x] Минимальный app shell и сгенерированный API client.
+      `implemented and qualified: reproducible OpenAPI generation, scoped typed
+      client and TanStack Query boundary`; business resources are added by R1
+      vertical slices.
 
 R0 не является самостоятельным продуктовым релизом: задачи из него выполняются
 по мере необходимости для R1.

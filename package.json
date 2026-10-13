@@ -6,11 +6,13 @@
     "node": ">=22.12.0"
   },
   "scripts": {
+    "web:api:generate": "corepack pnpm --dir web/api/codegen generate",
+    "web:api:check": "corepack pnpm web:api:generate && git diff --exit-code -- web/api/openapi.json web/api/generated",
     "web:dev": "corepack pnpm --dir web dev",
     "web:build": "corepack pnpm --dir web build",
     "web:typecheck": "corepack pnpm --dir web typecheck",
     "web:test": "corepack pnpm --dir web test:unit",
     "web:test:e2e": "corepack pnpm --dir web test:e2e",
-    "web:check": "corepack pnpm web:typecheck && corepack pnpm web:build && corepack pnpm web:test && corepack pnpm web:test:e2e"
+    "web:check": "corepack pnpm web:api:check && corepack pnpm web:typecheck && corepack pnpm web:build && corepack pnpm web:test && corepack pnpm web:test:e2e"
   }
 }

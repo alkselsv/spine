@@ -1,5 +1,6 @@
 packages:
   - web
+  - web/api/codegen
 minimumReleaseAgeExclude:
   - '@vitest/mocker@5.0.4'
   - '@vitest/spy@5.0.4'

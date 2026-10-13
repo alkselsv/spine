@@ -90,7 +90,8 @@ Gateway, PostgreSQL Artifact persistence, Temporal Activity, Cognee projection
 - versioned Context projection и Cognee adapter за Context Broker;
 - реальная capability `answer_question`, grounded outcomes, abstention и
   структурированные citations;
-- Knowledge Control Plane, сгенерированный API client и web-интерфейс;
+- Knowledge Control Plane resources и пользовательский путь через готовые
+  generated API client и web foundation;
 - R1 datasets, regression evaluations и release qualification.
 
 Поэтому `/ask` и `/ingest` остаются prototype endpoints, а наличие
