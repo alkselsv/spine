@@ -21,7 +21,7 @@ test('test_control_plane_navigation_preserves_scope_and_generated_client_context
     new RegExp(`workspace=${salesWorkspace}&environment=${stagingEnvironment}`),
   );
 
-  await page.getByRole('link', { name: 'Знания' }).click();
+  await page.getByRole('link', { name: 'Знания', exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/knowledge/documents\\?`));
   await expect(page.getByRole('combobox', { name: 'Рабочая область' })).toHaveText('Продажи');
   await expect(page.getByRole('combobox', { name: 'Среда' })).toHaveText('Staging');

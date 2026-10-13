@@ -23,6 +23,7 @@ export function ChatPanel({
   const [error, setError] = useState<string | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
   const commandNumberRef = useRef(0);
+  const lastCommandRef = useRef<{ text: string; idempotencyKey: string } | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -53,12 +54,22 @@ export function ChatPanel({
     if (reconnectCount === 0) setEvents([]);
   }, [reconnectCount, state]);
 
-  async function submit(text = input) {
-    const trimmed = text.trim();
+  async function submit(
+    text = input,
+    repeatedCommand: { text: string; idempotencyKey: string } | null = null,
+  ) {
+    const trimmed = repeatedCommand?.text ?? text.trim();
     if (!session || !trimmed || controllerRef.current) return;
 
-    commandNumberRef.current += 1;
-    const idempotencyKey = `browser-command-${commandNumberRef.current}`;
+    let command = repeatedCommand;
+    if (!command) {
+      commandNumberRef.current += 1;
+      command = {
+        text: trimmed,
+        idempotencyKey: `browser-command-${commandNumberRef.current}`,
+      };
+    }
+    lastCommandRef.current = command;
     const controller = new AbortController();
     controllerRef.current = controller;
     setInput('');
@@ -70,7 +81,7 @@ export function ChatPanel({
     try {
       for await (const event of transport.sendMessage(
         session.id,
-        { text: trimmed, idempotencyKey },
+        command,
         controller.signal,
       )) {
         setEvents((previous) => [...previous, event]);
@@ -148,7 +159,11 @@ export function ChatPanel({
             </button>
           ) : null}
           {!controllerRef.current && (state === 'failed' || state === 'cancelled') && lastInput ? (
-            <button className={styles.secondaryButton} onClick={() => void submit(lastInput)} type="button">
+            <button
+              className={styles.secondaryButton}
+              onClick={() => void submit(lastInput, lastCommandRef.current)}
+              type="button"
+            >
               {ru.chat.retry}
             </button>
           ) : null}
