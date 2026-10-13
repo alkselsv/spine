@@ -51,6 +51,7 @@ packages = ["src/spine"]
 asyncio_mode = "auto"
 pythonpath = ["src"]
 markers = [
+    "cognee_live: opt-in qualification against the local Cognee 1.5.4 profile",
     "live_oidc: opt-in qualification against a real RFC 9068 OIDC provider",
     "postgresql: mandatory tests against the pinned real PostgreSQL major",
 ]
