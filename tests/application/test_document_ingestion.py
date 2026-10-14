@@ -3,9 +3,12 @@ from __future__ import annotations
 import hashlib
 from collections.abc import AsyncIterable, AsyncIterator
 from datetime import datetime, timezone
+from io import BytesIO
 from types import SimpleNamespace
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from docx import Document
+from openpyxl import Workbook
 import pytest
 from pydantic import ValidationError
 
@@ -40,7 +43,15 @@ from spine.infrastructure.object_storage import (
     WriteReceipt,
 )
 from spine.infrastructure.persistence.parsed_artifacts import InMemoryParsedArtifactRepository
-from spine.ingestion.parsers import parse_document
+from spine.ingestion.parsers import (
+    DOCX_MEDIA_TYPE,
+    XLSX_MEDIA_TYPE,
+    DocxParser,
+    PdfParser,
+    XlsxParser,
+    parse_document,
+)
+from tests.ingestion.test_pdf_parser import pdf_bytes
 
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
@@ -306,25 +317,54 @@ def _orchestrator(content: bytes, *, media_type: str, parser_calls: list[int]):
         uow_factory=lambda context: uow,
         uploader=uploader,
         validation_reader=reader,
-        validator=BoundedContentValidator(max_bytes=64, max_chunk_bytes=64),
+        validator=BoundedContentValidator(max_bytes=10_000_000, max_chunk_bytes=10_000_000),
         parsed_artifacts=InMemoryParsedArtifactRepository(),
         context_factory=context_factory,
         canonical_command_factory=canonical_command_factory,
         outbox_events=OutboxEventRegistry(),
         parser=parse,
         clock=lambda: NOW,
-        max_validation_bytes=64,
-        max_parse_bytes=64,
+        max_validation_bytes=10_000_000,
+        max_parse_bytes=10_000_000,
     ), uploader, reader, canonical, outbox, ingestion
 
 
 def _request(media_type: str, *, key: str = "document-1") -> DocumentUploadCommand:
+    filename = {
+        "text/plain": "document.txt",
+        "text/markdown": "document.md",
+        "application/pdf": "document.pdf",
+        DOCX_MEDIA_TYPE: "document.docx",
+        XLSX_MEDIA_TYPE: "document.xlsx",
+    }.get(media_type, "document.bin")
     return DocumentUploadCommand(
         workspace_id=WORKSPACE, environment_id=ENVIRONMENT,
         command_identity="document-upload", idempotency_key=key,
         upload_identity="uploaded-document", purpose="document.upload.v1",
-        declared_media_type=media_type, declared_filename="document.txt",
+        declared_media_type=media_type, declared_filename=filename,
     )
+
+
+def _r1_document(media_type: str) -> bytes:
+    if media_type == "text/plain":
+        return b"hello\nworld\n"
+    if media_type == "text/markdown":
+        return b"# heading\n\nmarkdown body\n"
+    if media_type == "application/pdf":
+        return pdf_bytes(("visible PDF text",))
+    if media_type == DOCX_MEDIA_TYPE:
+        document = Document()
+        document.add_paragraph("visible DOCX text")
+        target = BytesIO()
+        document.save(target)
+        return target.getvalue()
+    if media_type == XLSX_MEDIA_TYPE:
+        workbook = Workbook()
+        workbook.active["A1"] = "visible XLSX text"
+        target = BytesIO()
+        workbook.save(target)
+        return target.getvalue()
+    raise AssertionError(f"unhandled media type: {media_type}")
 
 
 @pytest.mark.asyncio
@@ -401,14 +441,57 @@ async def test_document_ingestion_completes_text_path_and_replays_stably() -> No
     ]
 
 
+@pytest.mark.parametrize(
+    "media_type",
+    ("text/plain", "text/markdown", "application/pdf", DOCX_MEDIA_TYPE, XLSX_MEDIA_TYPE),
+)
 @pytest.mark.asyncio
-async def test_document_ingestion_marks_pdf_unsupported_without_parser_access() -> None:
+async def test_document_ingestion_completes_each_r1_format_with_parser_metadata(
+    media_type: str,
+) -> None:
+    content = _r1_document(media_type)
     parser_calls: list[int] = []
     orchestrator, _, _, _, outbox, _ = _orchestrator(
-        b"%PDF-1.4\n%%EOF", media_type="application/pdf", parser_calls=parser_calls
+        content, media_type=media_type, parser_calls=parser_calls
+    )
+
+    result = await orchestrator.ingest(
+        request=_request(media_type), chunks=_stream(content)
+    )
+
+    assert result.status is DocumentIngestionStatus.SUCCEEDED
+    assert result.artifact is not None
+    assert result.processing_receipt is not None
+    assert result.processing_receipt.parser_name == result.artifact.parser_name
+    assert result.processing_receipt.parser_version == result.artifact.parser_version
+    assert result.processing_receipt.locator_contract_version == (
+        result.artifact.locator_contract_version
+    )
+    assert result.processing_receipt.output_reference == result.artifact.artifact_id
+    segment = result.artifact.segments[0]
+    if media_type in {"text/plain", "text/markdown"}:
+        assert result.artifact.resolve_locator(content.decode(), segment.locator) == segment.text
+    elif media_type == "application/pdf":
+        assert PdfParser().resolve_locator(result.revision, content, result.artifact, segment.locator) == segment.text
+    elif media_type == DOCX_MEDIA_TYPE:
+        assert DocxParser().resolve_locator(result.revision, content, result.artifact, segment.locator) == segment.text
+    else:
+        assert XlsxParser().resolve_locator(result.artifact, content, segment.locator) == segment.text
+    assert len(parser_calls) == 1
+    assert [event.event_type for event in outbox.events] == [
+        "ingestion.processing.requested",
+        "ingestion.projection.requested",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_document_ingestion_marks_unknown_format_unsupported_without_parser_access() -> None:
+    parser_calls: list[int] = []
+    orchestrator, _, _, _, outbox, _ = _orchestrator(
+        b"opaque", media_type="application/octet-stream", parser_calls=parser_calls
     )
     result = await orchestrator.ingest(
-        request=_request("application/pdf"), chunks=_stream(b"%PDF-1.4\n%%EOF")
+        request=_request("application/octet-stream"), chunks=_stream(b"opaque")
     )
 
     assert result.status is DocumentIngestionStatus.UNSUPPORTED
@@ -419,6 +502,26 @@ async def test_document_ingestion_marks_pdf_unsupported_without_parser_access() 
 
 
 @pytest.mark.asyncio
+async def test_document_ingestion_failed_parse_keeps_parser_evidence_without_output_artifact() -> None:
+    content = pdf_bytes(())
+    orchestrator, _, _, _, outbox, _ = _orchestrator(
+        content, media_type="application/pdf", parser_calls=[]
+    )
+
+    result = await orchestrator.ingest(
+        request=_request("application/pdf"), chunks=_stream(content)
+    )
+
+    assert result.status is DocumentIngestionStatus.FAILED
+    assert result.artifact is not None
+    assert result.processing_receipt is not None
+    assert result.processing_receipt.parser_name == "pdf"
+    assert result.processing_receipt.output_reference is None
+    assert result.processing_receipt.output_digest is None
+    assert result.processing_receipt.exclusions[0].code == "invalid_locator"
+    assert result.processing_receipt.failure_ids
+    assert outbox.events == []
+
 async def test_projection_request_is_not_visible_when_its_transaction_fails() -> None:
     parser_calls: list[int] = []
     orchestrator, _, _, _, outbox, ingestion = _orchestrator(

@@ -10,7 +10,7 @@ from uuid import UUID
 
 from pydantic import ConfigDict, Field, StrictBool, StrictInt, model_validator
 
-from spine.domain.common import DefinitionModel
+from spine.domain.common import DefinitionModel, VersionIdentifier
 from spine.domain.sources.original_reference import ObjectReference
 
 
@@ -296,9 +296,9 @@ class ProcessingReceipt(_FrozenRecord):
     source_revision_id: UUID
     processor_kind: BoundedIdentifier
     parser_name: BoundedIdentifier
-    parser_version: BoundedIdentifier
-    parser_config_reference: BoundedIdentifier
-    locator_contract_version: BoundedIdentifier
+    parser_version: VersionIdentifier
+    parser_config_reference: VersionIdentifier
+    locator_contract_version: VersionIdentifier
     original_sha256: DigestHex
     output_kind: BoundedIdentifier | None = None
     output_reference: UUID | None = None

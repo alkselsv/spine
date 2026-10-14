@@ -128,7 +128,9 @@ class ProcessingReceiptCommand:
                 "output_reference": receipt.output_reference,
                 "output_digest": receipt.output_digest,
                 "coverage": receipt.coverage,
-                "exclusions": receipt.exclusions,
+                "exclusions": [
+                    item.model_dump(mode="json") for item in receipt.exclusions
+                ],
                 "idempotency_key": idempotency_key.value,
             },
         )
