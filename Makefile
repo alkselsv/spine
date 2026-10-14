@@ -1,10 +1,12 @@
 UV ?= uv
 PORT ?= 8080
+WEB_PORT ?= 5173
+PNPM ?= corepack pnpm
 PYTEST_ARGS ?=
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install test test-fast test-release compile diff-check check verify api
+.PHONY: help install test test-fast test-release compile diff-check check verify api backend frontend
 
 help: ## Show available commands.
 	@printf '%s\n' \
@@ -15,7 +17,9 @@ help: ## Show available commands.
 		'make compile  Compile Python sources and tests' \
 		'make check    Run tests and compilation checks' \
 		'make verify   Install dependencies and run all checks' \
-		'make api      Start the development API (PORT=8080)'
+		'make backend  Start the development backend (PORT=8080)' \
+		'make frontend Start the frontend development server (WEB_PORT=5173)' \
+		'make api      Alias for make backend'
 
 install: ## Install development dependencies.
 	$(UV) sync --extra dev
@@ -39,5 +43,10 @@ check: test-release ## Run all checks without installing dependencies.
 
 verify: install check ## Run the complete repository verification gate.
 
-api: ## Start the development API; override PORT if needed.
+backend: ## Start the development backend; override PORT if needed.
 	$(UV) run uvicorn spine.api.main:app --reload --port $(PORT)
+
+frontend: ## Start the frontend development server; override WEB_PORT if needed.
+	$(PNPM) web:dev -- --port $(WEB_PORT)
+
+api: backend ## Backward-compatible alias for the backend development server.
