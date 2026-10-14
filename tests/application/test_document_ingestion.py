@@ -7,11 +7,14 @@ from types import SimpleNamespace
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 import pytest
+from pydantic import ValidationError
 
 from spine.application.document_ingestion import (
     DocumentIngestionOrchestrator,
     DocumentIngestionStatus,
     DocumentUploadCommand,
+    ProjectionRequestPayload,
+    build_projection_request_intent,
 )
 from spine.application.ingestion import BoundedContentValidator
 from spine.application.persistence.context import PersistenceOperation
@@ -177,6 +180,22 @@ class _Ingestion:
     async def resolve_item(self, item_id):
         return self.item
 
+    def snapshot(self):
+        return (
+            self.run,
+            self.item,
+            list(self.transitions),
+            self.binding,
+            self.receipt,
+        )
+
+    def restore(self, snapshot) -> None:
+        self.run = snapshot[0]
+        self.item = snapshot[1]
+        self.transitions = list(snapshot[2])
+        self.binding = snapshot[3]
+        self.receipt = snapshot[4]
+
 
 class _Admissions:
     def __init__(self) -> None:
@@ -193,10 +212,18 @@ class _Admissions:
 class _Canonical:
     def __init__(self) -> None:
         self.calls = 0
+        self.current_revision_id: UUID | None = None
 
     async def accept(self, command):
         self.calls += 1
+        self.current_revision_id = command.revision.revision_id
         return command
+
+    async def resolve_current(self, source_object_id):
+        del source_object_id
+        if self.current_revision_id is None:
+            return None
+        return SimpleNamespace(current_revision_id=self.current_revision_id)
 
 
 class _Uow:
@@ -206,18 +233,27 @@ class _Uow:
         self.canonical = canonical
         self.outbox = outbox
         self.trace_id = _id("trace")
+        self._ingestion_snapshot = ingestion.snapshot()
 
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, *args):
+        if args[0] is not None:
+            await self.rollback()
         return None
 
     async def commit(self):
-        return None
+        try:
+            self.outbox.commit()
+        except Exception:
+            self.ingestion.restore(self._ingestion_snapshot)
+            raise
+        self._ingestion_snapshot = self.ingestion.snapshot()
 
     async def rollback(self):
-        return None
+        self.ingestion.restore(self._ingestion_snapshot)
+        self.outbox.rollback()
 
     def _trace_id_snapshot(self):
         return self.trace_id
@@ -226,10 +262,25 @@ class _Uow:
 class _Outbox:
     def __init__(self) -> None:
         self.events = []
+        self.pending = []
+        self.fail_commit_with_event_type: str | None = None
 
     async def append(self, intent):
-        self.events.append(intent)
+        self.pending.append(intent)
         return intent.event_id
+
+    def commit(self) -> None:
+        if any(
+            event.event_type == self.fail_commit_with_event_type
+            for event in self.pending
+        ):
+            self.pending.clear()
+            raise RuntimeError("injected transaction failure")
+        self.events.extend(self.pending)
+        self.pending.clear()
+
+    def rollback(self) -> None:
+        self.pending.clear()
 
 
 def _orchestrator(content: bytes, *, media_type: str, parser_calls: list[int]):
@@ -249,7 +300,7 @@ def _orchestrator(content: bytes, *, media_type: str, parser_calls: list[int]):
         return SimpleNamespace(operation=operation, trace_id=trace_id)
 
     def canonical_command_factory(**kwargs):
-        return SimpleNamespace()
+        return SimpleNamespace(revision=kwargs["revision"])
 
     return DocumentIngestionOrchestrator(
         uow_factory=lambda context: uow,
@@ -264,7 +315,7 @@ def _orchestrator(content: bytes, *, media_type: str, parser_calls: list[int]):
         clock=lambda: NOW,
         max_validation_bytes=64,
         max_parse_bytes=64,
-    ), uploader, reader, canonical, outbox
+    ), uploader, reader, canonical, outbox, ingestion
 
 
 def _request(media_type: str, *, key: str = "document-1") -> DocumentUploadCommand:
@@ -279,7 +330,7 @@ def _request(media_type: str, *, key: str = "document-1") -> DocumentUploadComma
 @pytest.mark.asyncio
 async def test_document_ingestion_completes_text_path_and_replays_stably() -> None:
     parser_calls: list[int] = []
-    orchestrator, uploader, reader, canonical, outbox = _orchestrator(
+    orchestrator, uploader, reader, canonical, outbox, ingestion = _orchestrator(
         b"hello\nworld\n", media_type="text/plain", parser_calls=parser_calls
     )
     first = await orchestrator.ingest(request=_request("text/plain"), chunks=_stream(b"hello\nworld\n"))
@@ -294,13 +345,66 @@ async def test_document_ingestion_completes_text_path_and_replays_stably() -> No
     assert uploader.calls == 2
     assert reader.calls == 3
     assert canonical.calls == 1
-    assert len(outbox.events) == 1
+    assert [event.event_type for event in outbox.events] == [
+        "ingestion.processing.requested",
+        "ingestion.projection.requested",
+    ]
+    projection_request = outbox.events[1]
+    assert projection_request.payload_json() == {
+        "schema_version": "ingestion-projection-request:v1",
+        "ingestion_run_id": str(first.run.ingestion_run_id),
+        "ingestion_run_source_id": str(first.item.ingestion_run_source_id),
+        "source_revision_id": str(first.revision.revision_id),
+        "processing_receipt_id": str(first.processing_receipt.processing_receipt_id),
+        "processor_kind": "document-ingestion",
+        "parser_version": "text-markdown:v1",
+        "parser_config_reference": "text-markdown-default:v1",
+        "locator_contract_version": "physical-line-codepoint:v1",
+    }
+    assert projection_request.correlation_id == first.run.ingestion_run_id
+    assert projection_request.causation_id == outbox.events[0].event_id
+    replayed_request = build_projection_request_intent(
+        registry=orchestrator.outbox_events,
+        run=first.run,
+        item=first.item,
+        receipt=first.processing_receipt,
+        trace_id=projection_request.trace_id,
+        causation_id=outbox.events[0].event_id,
+    )
+    changed_digest_request = build_projection_request_intent(
+        registry=orchestrator.outbox_events,
+        run=first.run,
+        item=first.item,
+        receipt=first.processing_receipt.model_copy(
+            update={"original_sha256": "f" * 64}
+        ),
+        trace_id=projection_request.trace_id,
+        causation_id=outbox.events[0].event_id,
+    )
+    assert replayed_request.event_id == projection_request.event_id
+    assert changed_digest_request.event_id != projection_request.event_id
+    assert (
+        changed_digest_request.producer_deduplication_id
+        == projection_request.producer_deduplication_id
+    )
+    assert (
+        await ingestion.resolve_item_head(first.item.ingestion_run_source_id)
+    ).state is IngestionItemState.PROJECTION_REQUESTED
+    item_states = [
+        transition.state
+        for transition in ingestion.transitions
+        if transition.ingestion_run_source_id == first.item.ingestion_run_source_id
+    ]
+    assert item_states[-2:] == [
+        IngestionItemState.PROCESSED,
+        IngestionItemState.PROJECTION_REQUESTED,
+    ]
 
 
 @pytest.mark.asyncio
 async def test_document_ingestion_marks_pdf_unsupported_without_parser_access() -> None:
     parser_calls: list[int] = []
-    orchestrator, _, _, _, outbox = _orchestrator(
+    orchestrator, _, _, _, outbox, _ = _orchestrator(
         b"%PDF-1.4\n%%EOF", media_type="application/pdf", parser_calls=parser_calls
     )
     result = await orchestrator.ingest(
@@ -312,3 +416,130 @@ async def test_document_ingestion_marks_pdf_unsupported_without_parser_access() 
     assert result.processing_receipt.coverage.value == "failed"
     assert parser_calls == []
     assert outbox.events == []
+
+
+@pytest.mark.asyncio
+async def test_projection_request_is_not_visible_when_its_transaction_fails() -> None:
+    parser_calls: list[int] = []
+    orchestrator, _, _, _, outbox, ingestion = _orchestrator(
+        b"hello\n", media_type="text/plain", parser_calls=parser_calls
+    )
+    outbox.fail_commit_with_event_type = "ingestion.projection.requested"
+
+    with pytest.raises(RuntimeError, match="injected transaction failure"):
+        await orchestrator.ingest(
+            request=_request("text/plain"),
+            chunks=_stream(b"hello\n"),
+        )
+
+    assert outbox.events == []
+    assert ingestion.receipt is None
+    assert (
+        await ingestion.resolve_item_head(ingestion.item.ingestion_run_source_id)
+    ).state is IngestionItemState.PROCESSING
+
+    outbox.fail_commit_with_event_type = None
+    recovered = await orchestrator.ingest(
+        request=_request("text/plain"),
+        chunks=_stream(b"hello\n"),
+    )
+
+    assert recovered.replay is True
+    assert recovered.processing_receipt is not None
+    assert [event.event_type for event in outbox.events] == [
+        "ingestion.processing.requested",
+        "ingestion.projection.requested",
+    ]
+    assert (
+        await ingestion.resolve_item_head(recovered.item.ingestion_run_source_id)
+    ).state is IngestionItemState.PROJECTION_REQUESTED
+
+
+@pytest.mark.asyncio
+async def test_stale_revision_is_processed_without_projection_request() -> None:
+    parser_calls: list[int] = []
+    orchestrator, _, _, canonical, outbox, ingestion = _orchestrator(
+        b"hello\n", media_type="text/plain", parser_calls=parser_calls
+    )
+
+    async def resolve_newer_current(source_object_id: UUID):
+        del source_object_id
+        return SimpleNamespace(current_revision_id=_id("newer-revision"))
+
+    canonical.resolve_current = resolve_newer_current
+    result = await orchestrator.ingest(
+        request=_request("text/plain"),
+        chunks=_stream(b"hello\n"),
+    )
+
+    assert result.status is DocumentIngestionStatus.SUCCEEDED
+    assert [event.event_type for event in outbox.events] == [
+        "ingestion.processing.requested"
+    ]
+    assert (
+        await ingestion.resolve_item_head(result.item.ingestion_run_source_id)
+    ).state is IngestionItemState.PROCESSED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mismatch", ("workspace", "lineage"))
+async def test_projection_request_rejects_mismatched_scope_or_lineage(
+    mismatch: str,
+) -> None:
+    parser_calls: list[int] = []
+    orchestrator, _, _, _, outbox, _ = _orchestrator(
+        b"hello\n", media_type="text/plain", parser_calls=parser_calls
+    )
+    result = await orchestrator.ingest(
+        request=_request("text/plain"),
+        chunks=_stream(b"hello\n"),
+    )
+    assert result.processing_receipt is not None
+    item = result.item
+    receipt = result.processing_receipt
+    if mismatch == "workspace":
+        item = item.model_copy(update={"workspace_id": _id("other-workspace")})
+    else:
+        receipt = receipt.model_copy(
+            update={"ingestion_run_source_id": _id("other-item")}
+        )
+    event_count = len(outbox.events)
+
+    with pytest.raises(
+        ValueError,
+        match="projection request ingestion scope or lineage is invalid",
+    ) as captured:
+        build_projection_request_intent(
+            registry=orchestrator.outbox_events,
+            run=result.run,
+            item=item,
+            receipt=receipt,
+            trace_id=_id("mismatch-trace"),
+            causation_id=_id("mismatch-causation"),
+        )
+
+    assert "hello" not in str(captured.value)
+    assert len(outbox.events) == event_count
+
+
+@pytest.mark.parametrize(
+    "forbidden_field",
+    ("filename", "path", "parsed_text", "credentials", "provider_error"),
+)
+def test_projection_request_payload_rejects_content_bearing_fields(
+    forbidden_field: str,
+) -> None:
+    values = {
+        "ingestion_run_id": _id("safe-run"),
+        "ingestion_run_source_id": _id("safe-item"),
+        "source_revision_id": _id("safe-revision"),
+        "processing_receipt_id": _id("safe-receipt"),
+        "processor_kind": "document-ingestion",
+        "parser_version": "text-markdown:v1",
+        "parser_config_reference": "text-markdown-default:v1",
+        "locator_contract_version": "physical-line-codepoint:v1",
+        forbidden_field: "protected customer content",
+    }
+
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        ProjectionRequestPayload.model_validate(values)
