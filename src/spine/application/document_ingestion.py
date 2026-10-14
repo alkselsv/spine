@@ -79,6 +79,7 @@ from spine.infrastructure.object_storage.contracts import OriginalUploadCommandI
 from spine.application.persistence.outbox import (
     OpaqueObjectReference,
     OutboxEventRegistry,
+    OutboxIntent,
 )
 from spine.ingestion.parsers import DOCX_MEDIA_TYPE, XLSX_MEDIA_TYPE
 
@@ -86,6 +87,9 @@ from spine.ingestion.parsers import DOCX_MEDIA_TYPE, XLSX_MEDIA_TYPE
 PROCESSING_REQUEST_EVENT_TYPE = "ingestion.processing.requested"
 PROCESSING_REQUEST_SCHEMA_VERSION = 1
 PROCESSING_REQUEST_PAYLOAD_SCHEMA = "ingestion-processing-request:v1"
+PROJECTION_REQUEST_EVENT_TYPE = "ingestion.projection.requested"
+PROJECTION_REQUEST_SCHEMA_VERSION = 1
+PROJECTION_REQUEST_PAYLOAD_SCHEMA = "ingestion-projection-request:v1"
 
 
 class DocumentIngestionStatus(str, Enum):
@@ -114,6 +118,84 @@ class IngestionRequestPayload(BaseModel):
     processing_receipt_id: UUID
     artifact_id: UUID
     artifact_digest: str = Field(pattern=r"[0-9a-f]{64}")
+
+
+class ProjectionRequestPayload(BaseModel):
+    """Content-free handoff for a future projection worker."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: str = Field(default=PROJECTION_REQUEST_PAYLOAD_SCHEMA)
+    ingestion_run_id: UUID
+    ingestion_run_source_id: UUID
+    source_revision_id: UUID
+    processing_receipt_id: UUID
+    processor_kind: str = Field(min_length=1, max_length=128, pattern=r"^[a-z0-9][a-z0-9_.:-]{0,127}$")
+    parser_version: str = Field(min_length=1, max_length=128, pattern=r"^[a-z0-9][a-z0-9_.:-]{0,127}$")
+    parser_config_reference: str = Field(min_length=1, max_length=128, pattern=r"^[a-z0-9][a-z0-9_.:-]{0,127}$")
+    locator_contract_version: str = Field(min_length=1, max_length=128, pattern=r"^[a-z0-9][a-z0-9_.:-]{0,127}$")
+
+
+def build_projection_request_intent(
+    *,
+    registry: OutboxEventRegistry,
+    run: IngestionRun,
+    item: IngestionRunSource,
+    receipt: ProcessingReceipt,
+    trace_id: UUID,
+    causation_id: UUID,
+) -> OutboxIntent:
+    """Build one stable projection request from committed ingestion identities."""
+
+    if (
+        item.ingestion_run_id != run.ingestion_run_id
+        or receipt.ingestion_run_source_id != item.ingestion_run_source_id
+        or (item.workspace_id, item.environment_id)
+        != (run.workspace_id, run.environment_id)
+        or (receipt.workspace_id, receipt.environment_id)
+        != (run.workspace_id, run.environment_id)
+    ):
+        raise ValueError("projection request ingestion scope or lineage is invalid")
+    event_id = uuid5(
+        NAMESPACE_URL,
+        "|".join(
+            (
+                "spine:ingestion-projection-request:v1",
+                str(run.workspace_id),
+                str(run.environment_id),
+                str(item.ingestion_run_source_id),
+                receipt.original_sha256,
+            )
+        ),
+    )
+    return registry.build_intent(
+        event_id=event_id,
+        workspace_id=run.workspace_id,
+        environment_id=run.environment_id,
+        event_type=PROJECTION_REQUEST_EVENT_TYPE,
+        schema_version=PROJECTION_REQUEST_SCHEMA_VERSION,
+        payload=ProjectionRequestPayload(
+            ingestion_run_id=run.ingestion_run_id,
+            ingestion_run_source_id=item.ingestion_run_source_id,
+            source_revision_id=receipt.source_revision_id,
+            processing_receipt_id=receipt.processing_receipt_id,
+            processor_kind=receipt.processor_kind,
+            parser_version=receipt.parser_version,
+            parser_config_reference=receipt.parser_config_reference,
+            locator_contract_version=receipt.locator_contract_version,
+        ),
+        trace_id=trace_id,
+        correlation_id=run.ingestion_run_id,
+        causation_id=causation_id,
+        aggregate=OpaqueObjectReference(
+            object_type="ingestion_run_source",
+            object_id=item.ingestion_run_source_id,
+            schema_version=1,
+        ),
+        producer_deduplication_id=(
+            f"projection-request:{item.ingestion_run_source_id}"
+        ),
+    )
 
 
 class DocumentUploadCommand(BaseModel):
@@ -240,6 +322,11 @@ class DocumentIngestionOrchestrator:
             event_type=PROCESSING_REQUEST_EVENT_TYPE,
             schema_version=PROCESSING_REQUEST_SCHEMA_VERSION,
             payload_type=IngestionRequestPayload,
+        )
+        self.outbox_events.register(
+            event_type=PROJECTION_REQUEST_EVENT_TYPE,
+            schema_version=PROJECTION_REQUEST_SCHEMA_VERSION,
+            payload_type=ProjectionRequestPayload,
         )
 
     async def ingest(
@@ -592,6 +679,7 @@ class DocumentIngestionOrchestrator:
             head = await uow.ingestion.resolve_item_head(item.ingestion_run_source_id)
             if head is None or head.state not in {
                 IngestionItemState.PROCESSED,
+                IngestionItemState.PROJECTION_REQUESTED,
                 IngestionItemState.PROCESSING_FAILED,
                 IngestionItemState.REJECTED,
                 IngestionItemState.QUARANTINED,
@@ -704,6 +792,7 @@ class DocumentIngestionOrchestrator:
         )
         stored_receipt = await self._persist_processing(
             request=request,
+            run=values["run"],
             item=item,
             receipt=receipt,
             warning=warning,
@@ -721,6 +810,7 @@ class DocumentIngestionOrchestrator:
         self,
         *,
         request: DocumentUploadCommand,
+        run: IngestionRun,
         item: IngestionRunSource,
         receipt: ProcessingReceipt,
         warning: IngestionWarning | None,
@@ -739,6 +829,9 @@ class DocumentIngestionOrchestrator:
                     idempotency_key=_key(request, "processing-receipt"),
                 )
             )
+            if not isinstance(result.value, ProcessingReceipt):
+                raise TypeError("processing receipt repository returned an invalid value")
+            stored_receipt = result.value
             target = IngestionItemState.PROCESSED if artifact is not None and receipt.coverage is not ProcessingCoverage.FAILED else IngestionItemState.PROCESSING_FAILED
             await self._advance_item_in_uow(uow, item, target, self._now())
             if artifact is not None and receipt.coverage is not ProcessingCoverage.FAILED:
@@ -767,8 +860,32 @@ class DocumentIngestionOrchestrator:
                     event_id=_id(request, "processing-request"),
                 )
                 await uow.outbox.append(intent)
+                current = await uow.canonical.resolve_current(
+                    stored_receipt.source_object_id
+                )
+                if (
+                    current is not None
+                    and current.current_revision_id
+                    == stored_receipt.source_revision_id
+                ):
+                    await uow.outbox.append(
+                        build_projection_request_intent(
+                            registry=self.outbox_events,
+                            run=run,
+                            item=item,
+                            receipt=stored_receipt,
+                            trace_id=context.trace_id,
+                            causation_id=intent.event_id,
+                        )
+                    )
+                    await self._advance_item_in_uow(
+                        uow,
+                        item,
+                        IngestionItemState.PROJECTION_REQUESTED,
+                        self._now(),
+                    )
             await uow.commit()
-            return result.value
+            return stored_receipt
 
     async def _advance_run_in_uow(self, uow: object, run: IngestionRun, state: IngestionRunState, occurred_at: datetime) -> None:
         head = await uow.ingestion.resolve_run_head(run.ingestion_run_id)
@@ -1106,5 +1223,9 @@ __all__ = [
     "IngestionRequestPayload",
     "PROCESSING_REQUEST_EVENT_TYPE",
     "PROCESSING_REQUEST_SCHEMA_VERSION",
+    "PROJECTION_REQUEST_EVENT_TYPE",
+    "PROJECTION_REQUEST_SCHEMA_VERSION",
+    "ProjectionRequestPayload",
     "UnsupportedDocumentFormat",
+    "build_projection_request_intent",
 ]

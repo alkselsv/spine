@@ -276,6 +276,7 @@ class ProjectionEffect(_ProjectionModel):
     operation: ProjectionOperation
     action: ProjectionEffectAction
     status: ProjectionEffectStatus = ProjectionEffectStatus.PLANNED
+    failure_code: ProjectionFailureCode | None = None
     workspace_id: UUID
     environment_id: UUID
     command_identity: str = Field(min_length=1, max_length=64, pattern=_IDENTIFIER)

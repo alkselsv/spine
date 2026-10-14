@@ -65,13 +65,22 @@ class DeterministicPhysicalStore:
         selector = f"{effect.command_identity}:{effect.revision_number}"
         self._attempts[selector] += 1
         if effect.effect_id in self._applied_effects:
-            return effect.model_copy(update={"status": ProjectionEffectStatus.REPLAYED})
+            return effect.model_copy(
+                update={"status": ProjectionEffectStatus.REPLAYED, "failure_code": None}
+            )
         if selector in self._fail_for or (
             selector in self._fail_once_for and self._attempts[selector] == 1
         ):
-            return effect.model_copy(update={"status": ProjectionEffectStatus.FAILED})
+            return effect.model_copy(
+                update={
+                    "status": ProjectionEffectStatus.FAILED,
+                    "failure_code": ProjectionFailureCode.PHYSICAL_FAILURE,
+                }
+            )
         self._applied_effects.add(effect.effect_id)
-        return effect.model_copy(update={"status": ProjectionEffectStatus.APPLIED})
+        return effect.model_copy(
+            update={"status": ProjectionEffectStatus.APPLIED, "failure_code": None}
+        )
 
     def attempts_for(self, selector: str) -> int:
         """Return deterministic physical-attempt count for a test selector."""
@@ -294,7 +303,12 @@ class DeterministicContextProjection(ContextProjection):
             try:
                 applied = await self._physical_store.apply(effect)
             except Exception:
-                applied = effect.model_copy(update={"status": ProjectionEffectStatus.FAILED})
+                applied = effect.model_copy(
+                    update={
+                        "status": ProjectionEffectStatus.FAILED,
+                        "failure_code": ProjectionFailureCode.PHYSICAL_FAILURE,
+                    }
+                )
             completed.append(applied)
             if applied.status not in {
                 ProjectionEffectStatus.APPLIED,

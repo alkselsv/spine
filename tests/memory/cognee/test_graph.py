@@ -21,6 +21,7 @@ from spine.memory.cognee.extraction import (
     extract_projection,
 )
 from spine.memory.cognee.graph import CogneeGraphProjectionWriter, GraphProjectionStatus
+from spine.memory.cognee.validation import PhysicalArtifact
 from spine.memory.cognee.models.baseline import (
     BASELINE_EXTRACTION_CONFIG,
     BASELINE_ONTOLOGY,
@@ -262,6 +263,9 @@ async def test_graph_writer_preserves_approved_artifacts_and_evidence_lineage() 
     assert entity_metadata["source_revision_id"] == str(result.entities[0].source_revision_id)
     assert entity_metadata["ontology_version"] == result.ontology_version
     assert entity_metadata["evidence"][0]["evidence_id"] == "evidence-acme"
+    physical = PhysicalArtifact.from_graph_mapping(written.mappings[0])
+    assert physical.projection_config_digest == request(result).projection_config.config_digest
+    assert physical.locators[0].digest
 
 
 @pytest.mark.asyncio
