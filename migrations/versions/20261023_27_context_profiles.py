@@ -113,36 +113,36 @@ def upgrade() -> None:
             name="fk_context_profiles_environment",
         ),
         sa.CheckConstraint(
-            "profile_version > 0", name="ck_context_profiles_version_positive"
+            "profile_version > 0", name=op.f("ck_context_profiles_version_positive")
         ),
         sa.CheckConstraint(
             "schema_version = 'context-profile:v1'",
-            name="ck_context_profiles_schema",
+            name=op.f("ck_context_profiles_schema"),
         ),
         sa.CheckConstraint(
             "profile_digest ~ '^[0-9a-f]{64}$'",
-            name="ck_context_profiles_digest",
+            name=op.f("ck_context_profiles_digest"),
         ),
         sa.CheckConstraint(
             "retrieval_strategy IN ('chunks', 'hybrid', 'graph_completion')",
-            name="ck_context_profiles_strategy",
+            name=op.f("ck_context_profiles_strategy"),
         ),
         sa.CheckConstraint(
             "max_results BETWEEN 1 AND 1000 AND max_tokens BETWEEN 1 AND 65536 "
             "AND max_relation_hops BETWEEN 0 AND 8 "
             "AND freshness_max_age_seconds BETWEEN 0 AND 31536000",
-            name="ck_context_profiles_bounds",
+            name=op.f("ck_context_profiles_bounds"),
         ),
         sa.CheckConstraint(
             "completeness_requirement IN ('best_effort', 'complete', 'exhaustive')",
-            name="ck_context_profiles_completeness",
+            name=op.f("ck_context_profiles_completeness"),
         ),
         sa.CheckConstraint(
             "partial_answer_fallback IN ('allowed', 'disallowed')",
-            name="ck_context_profiles_partial_fallback",
+            name=op.f("ck_context_profiles_partial_fallback"),
         ),
         sa.CheckConstraint(
-            "server_approved", name="ck_context_profiles_server_approved"
+            "server_approved", name=op.f("ck_context_profiles_server_approved")
         ),
         schema=SCHEMA,
     )

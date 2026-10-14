@@ -2191,6 +2191,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "audit_events": (True, True, False, False),
         "workspaces": (True, True, True, True),
         "environments": (True, True, True, True),
+        "context_profiles": (True, True, False, False),
         "idempotency_receipts": (True, True, False, False),
         "initial_workspace_bootstrap": (False, False, False, False),
         "outbox_intents": (False, True, False, False),
