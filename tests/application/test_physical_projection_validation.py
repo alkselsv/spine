@@ -30,6 +30,11 @@ from spine.memory.validation import (
     PhysicalProjectionSource,
     validate_physical_projection,
 )
+from spine.memory.contracts import (
+    ProjectionRecoveryEvidence,
+    ProjectionRecoveryOperation,
+    ProjectionRecoveryStatus,
+)
 from spine.domain.projections import (
     ProjectionActivation,
     ProjectionActivationKind,
@@ -135,6 +140,8 @@ async def test_physical_evidence_translates_to_canonical_validation_with_lineage
             "revision_digest": "a" * 64,
             "revision_number": 1,
             "status": "current",
+            "processing_receipt_id": str(UUID(int=10)),
+            "locator_contract_version": "locator:v1",
         },
     )
 
@@ -192,6 +199,27 @@ async def test_physical_gate_must_cover_every_candidate_partition() -> None:
     )
     assert not has_complete_physical_validation(
         (incomplete,),
+        (partition,),
+        (mapped.handoff.receipt_command.receipt,),
+        mapped.handoff.source_references,
+        _context(command).run,
+        _context(command).projection_config,
+    )
+    tampered_metadata = validation.validation.model_copy(
+        update={
+            "metrics_payload": {
+                **validation.validation.metrics_payload,
+                "source_lineage": [
+                    {
+                        **validation.validation.metrics_payload["source_lineage"][0],
+                        "processing_receipt_id": str(UUID(int=99)),
+                    }
+                ],
+            }
+        }
+    )
+    assert not has_complete_physical_validation(
+        (tampered_metadata,),
         (partition,),
         (mapped.handoff.receipt_command.receipt,),
         mapped.handoff.source_references,
@@ -291,6 +319,38 @@ async def test_failed_physical_evidence_becomes_failed_validation_and_degraded_r
     assert reconciliation.result.findings_payload["validation_id"] == str(
         validation.validation.projection_validation_id
     )
+
+
+@pytest.mark.asyncio
+async def test_repair_outcome_is_retained_and_failed_recovery_cannot_pass_physical_gate() -> None:
+    command = _command()
+    mapped = await _mapped_result(command)
+    evidence = _evidence(command, mapped)
+    recovery = ProjectionRecoveryEvidence(
+        operation=ProjectionRecoveryOperation.REPAIR,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        projection_run_id=RUN,
+        projection_candidate_id=CANDIDATE,
+        namespace_digest=command.physical_namespace.namespace_digest,
+        status=ProjectionRecoveryStatus.SUCCEEDED,
+        source_revisions=command.source_revisions,
+    )
+
+    passed = PhysicalProjectionEvidenceTranslator().to_validation_command(
+        evidence.model_copy(update={"recovery": recovery})
+    )
+    assert passed.validation.decision.value == "passed"
+    assert passed.validation.metrics_payload["recovery"]["status"] == "succeeded"
+    assert passed.validation.metrics_payload["recovery"]["source_revisions"]
+
+    failed_recovery = recovery.model_copy(
+        update={"status": ProjectionRecoveryStatus.RECOVERABLE}
+    )
+    failed = PhysicalProjectionEvidenceTranslator().to_validation_command(
+        evidence.model_copy(update={"recovery": failed_recovery})
+    )
+    assert failed.validation.decision.value == "failed"
 
 
 class _Repository:

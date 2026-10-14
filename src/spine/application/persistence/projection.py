@@ -532,6 +532,19 @@ def has_complete_physical_validation(
         )
         for reference in references
     }
+    reference_lineage: dict[tuple[str, str], set[tuple[str | None, str]]] = {}
+    for reference in references:
+        reference_lineage.setdefault(
+            (str(reference.source_object_id), str(reference.source_revision_id)),
+            set(),
+        ).add(
+            (
+                str(reference.processing_receipt_id)
+                if reference.processing_receipt_id is not None
+                else None,
+                reference.locator_schema_version,
+            )
+        )
     covered: set[str] = set()
     for validation in validations:
         if validation.gate_kind != PROJECTION_PHYSICAL_VALIDATION_GATE_KIND:
@@ -582,6 +595,8 @@ def has_complete_physical_validation(
                 source.get("revision_digest"),
                 source.get("revision_number"),
                 source.get("status"),
+                source.get("processing_receipt_id"),
+                source.get("locator_contract_version"),
             )
             for source in source_lineage
             if isinstance(source, Mapping)
@@ -599,6 +614,19 @@ def has_complete_physical_validation(
             for reference in source_references
             if isinstance(reference, Mapping)
         }
+        for source in source_lineage:
+            if not isinstance(source, Mapping):
+                return False
+            source_key = (source.get("source_object_id"), source.get("source_revision_id"))
+            source_metadata = (
+                source.get("processing_receipt_id"),
+                source.get("locator_contract_version"),
+            )
+            if (
+                source_key not in reference_lineage
+                or source_metadata not in reference_lineage[source_key]
+            ):
+                return False
         if (
             not isinstance(partition_id, str)
             or partition_id not in expected

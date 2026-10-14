@@ -176,3 +176,25 @@ diagnostics. Command identity/digest replay is serialized per tenant and
 namespace, and digest conflicts do not issue another physical search. ACL,
 active-pointer selection, ContextBundle construction and PostgreSQL UnitOfWork
 remain outside this adapter.
+
+## Publication handoff
+
+Issue #210 connects completed physical results and recovery to the Issue #89
+publication seam through `ProjectionPublicationCoordinator`. A candidate must
+first pass the physical validation gate; only then may the coordinator submit
+the existing `ProjectionActivationCommand` to the PostgreSQL repository. The
+coordinator never writes the active pointer, allocates an activation generation,
+or emits publication effects itself.
+
+Recovery is exposed as `ProjectionRecoveryEvidence`, retaining the projection
+run, candidate, namespace, status and exact `ProjectionSourceRevision` lineage.
+Successful or replayed repair evidence may support a physical gate; recoverable,
+failed, fenced or cleanup evidence fails closed and remains available as safe
+validation/reconciliation diagnostics. Runtime drift and repair are append-only
+reconciliation evidence and do not mutate a snapshot.
+
+Rollback is a normal activation of a finalized successor snapshot. The handoff
+copies the current active snapshot, activation generation and pointer CAS version
+into the expected-predecessor claims; PostgreSQL revalidates those claims and
+the successor's canonical boundary under lock. A historical snapshot can never
+be selected directly by the physical adapter or recovery coordinator.

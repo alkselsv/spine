@@ -44,7 +44,12 @@ from spine.domain.projections import (
     ProjectionValidationDecision,
     projection_reconciliation_findings_digest,
 )
-from spine.memory.contracts import ProjectionLifecycle
+from spine.memory.contracts import (
+    ProjectionLifecycle,
+    ProjectionRecoveryEvidence,
+    ProjectionRecoveryOperation,
+    ProjectionRecoveryStatus,
+)
 from spine.memory.validation import (
     ArtifactKind,
     PhysicalProjectionExpectation,
@@ -74,6 +79,7 @@ class PhysicalProjectionEvidence(DefinitionModel):
     mapping: ProjectionMappingResult
     expectation: PhysicalProjectionExpectation
     result: PhysicalValidationResult
+    recovery: ProjectionRecoveryEvidence | None = None
     evaluated_at: datetime
 
     @model_validator(mode="after")
@@ -156,6 +162,35 @@ class PhysicalProjectionEvidence(DefinitionModel):
                 or reference.projection_receipt_id != receipt.projection_receipt_id
             ):
                 raise ValueError("physical validation source reference run mismatch")
+        if self.recovery is not None:
+            if (
+                self.recovery.workspace_id != command.workspace_id
+                or self.recovery.environment_id != command.environment_id
+                or
+                self.recovery.projection_run_id != command.projection_run_id
+                or self.recovery.projection_candidate_id
+                != command.projection_candidate.candidate_id
+                or self.recovery.namespace_digest
+                != command.physical_namespace.namespace_digest
+            ):
+                raise ValueError("physical recovery evidence lineage mismatch")
+            recovery_sources = {
+                source.source_object_id: source for source in self.recovery.source_revisions
+            }
+            if set(recovery_sources) != set(command_sources):
+                raise ValueError("physical recovery source lineage is incomplete")
+            for source_id, recovered in recovery_sources.items():
+                expected = command_sources[source_id]
+                if (
+                    recovered.source_revision_id != expected.source_revision_id
+                    or recovered.revision_digest != expected.revision_digest
+                    or recovered.revision_number != expected.revision_number
+                    or recovered.status != expected.status
+                    or recovered.processing_receipt_id != expected.processing_receipt_id
+                    or recovered.locator_contract_version
+                    != expected.locator_contract_version
+                ):
+                    raise ValueError("physical recovery SourceRevision lineage mismatch")
         return self
 
 
@@ -383,7 +418,12 @@ class PhysicalProjectionEvidenceCoordinator:
 
 def _validation_passed(evidence: PhysicalProjectionEvidence) -> bool:
     lifecycle = evidence.mapping.handoff.adapter_receipt.result.lifecycle
-    return evidence.result.passed and lifecycle in {
+    recovery_passed = evidence.recovery is None or (
+        evidence.recovery.operation is ProjectionRecoveryOperation.REPAIR
+        and evidence.recovery.status
+        in {ProjectionRecoveryStatus.SUCCEEDED, ProjectionRecoveryStatus.REPLAYED}
+    )
+    return evidence.result.passed and recovery_passed and lifecycle in {
         ProjectionLifecycle.SUCCEEDED,
         ProjectionLifecycle.REPLAYED,
         ProjectionLifecycle.RECOVERED,
@@ -422,9 +462,15 @@ def _validation_metrics(evidence: PhysicalProjectionEvidence) -> dict[str, Any]:
                 "revision_digest": source.revision_digest,
                 "revision_number": source.revision_number,
                 "status": source.status,
+                "processing_receipt_id": (
+                    str(source.processing_receipt_id)
+                    if source.processing_receipt_id is not None
+                    else None
+                ),
+                "locator_contract_version": source.locator_contract_version,
             }
             for source in sorted(
-                expectation.sources,
+                command.source_revisions,
                 key=lambda item: (item.source_object_id.int, item.source_revision_id.int),
             )
         ],
@@ -468,6 +514,31 @@ def _validation_metrics(evidence: PhysicalProjectionEvidence) -> dict[str, Any]:
                 for failure in evidence.mapping.handoff.adapter_receipt.failures
             ],
         },
+        "recovery": (
+            {
+                "operation": evidence.recovery.operation.value,
+                "status": evidence.recovery.status.value,
+                "workspace_id": str(evidence.recovery.workspace_id),
+                "environment_id": str(evidence.recovery.environment_id),
+                "projection_run_id": str(evidence.recovery.projection_run_id),
+                "projection_candidate_id": str(
+                    evidence.recovery.projection_candidate_id
+                ),
+                "namespace_digest": evidence.recovery.namespace_digest,
+                "source_revisions": [
+                    source.model_dump(mode="json")
+                    for source in evidence.recovery.source_revisions
+                ],
+                "artifact_ids": evidence.recovery.artifact_ids,
+                "failure_code": (
+                    evidence.recovery.failure_code.value
+                    if evidence.recovery.failure_code is not None
+                    else None
+                ),
+            }
+            if evidence.recovery is not None
+            else None
+        ),
         "input_digest": result.input_digest,
         "passed": _validation_passed(evidence),
     }

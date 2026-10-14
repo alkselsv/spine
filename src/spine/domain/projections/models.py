@@ -749,6 +749,7 @@ class PublishedActivePublication(ValidatedDefinitionModel):
     projection_snapshot: ProjectionSnapshot
     projection_activation: ProjectionActivation
     activation_generation: int = Field(ge=1)
+    active_pointer_cas_version: int = Field(ge=1)
     canonical_boundary_id: UUID
     canonical_boundary_manifest_digest: str = Field(pattern=_DIGEST)
     accepted_through_generation: int = Field(ge=0)

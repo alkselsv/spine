@@ -11,6 +11,7 @@ from spine.memory.cognee.recovery import (
     ProjectionRepairPlan,
     ProjectionRepairStatus,
     ProjectionRecoveryCoordinator,
+    recovery_evidence_for_repair,
 )
 from spine.memory.cognee.rebuild import (
     ProjectionReplayItem,
@@ -305,3 +306,22 @@ async def test_repair_replays_current_immutable_input_with_source_lineage() -> N
 
     assert result.status is ProjectionRepairStatus.SUCCEEDED
     assert lane.effects == [expected_effect]
+
+
+@pytest.mark.asyncio
+async def test_repair_evidence_retains_candidate_namespace_and_source_revision_lineage() -> None:
+    plan, _ = _repair_plan("current")
+    lane = _RecordingChunkLane()
+    result = await ProjectionRecoveryCoordinator(
+        DeterministicPhysicalCleanupStore(),
+        rebuild_orchestrator=ShadowRebuildOrchestrator(chunk_lane=lane),
+    ).repair(plan)
+
+    evidence = recovery_evidence_for_repair(plan, result)
+
+    assert evidence.status.value == "succeeded"
+    assert evidence.projection_run_id == RUN
+    assert evidence.projection_candidate_id == CANDIDATE
+    assert evidence.namespace_digest == plan.rebuild_plan.physical_namespace.namespace_digest
+    assert evidence.source_revisions[0].source_revision_id == UUID(int=21)
+    assert evidence.source_revisions[0].revision_digest == "e" * 64
