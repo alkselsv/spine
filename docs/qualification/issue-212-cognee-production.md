@@ -37,7 +37,7 @@ its own ticket and architecture review before it can become production code.
 
 | Criterion | Evidence | Result |
 | --- | --- | --- |
-| AC1 | `tests/integration/cognee/test_production_profile.py::test_public_cognee_profile_exercises_structured_sdk_lifecycle` | Not run on the real profile; public SDK smoke is present but cannot grant production approval. |
+| AC1 | `tests/integration/cognee/test_production_profile.py::test_production_qualification_records_one_coherent_run` | Not run on the real profile; public SDK smoke is present but cannot grant production approval. |
 | AC2 | `tests/contracts/memory/test_conformance.py::test_retrieval_round_trips_chunks_entities_relations_and_provenance` runs for `cognee-composition`; the same real-backend round trip remains to be run | No-go until live evidence exists. |
 | AC3 | `tests/contracts/memory/test_conformance.py::test_unsafe_evidence_never_leaks_projected_content` runs for `cognee-composition` | Offline behavior passes; real missing/ambiguous/stale/incomplete/tombstoned evidence is not qualified. |
 | AC4 | The isolation contract runs for `cognee-composition` | Real two-workspace and active/shadow isolation are not qualified. |

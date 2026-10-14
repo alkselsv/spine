@@ -85,9 +85,7 @@ def test_production_profile_preflight_requires_exact_backends() -> None:
     assert missing == (), f"missing qualification settings: {', '.join(missing)}"
 
 
-@pytest.mark.asyncio
-async def test_public_cognee_profile_exercises_structured_sdk_lifecycle() -> None:
-    run_id = os.environ["SPINE_COGNEE_QUALIFICATION_RUN_ID"]
+async def _assert_public_sdk_lifecycle(run_id: str) -> None:
     assert re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", run_id)
     report = await run_local_smoke(
         LiveSmokeConfig(
@@ -123,14 +121,12 @@ async def test_public_cognee_profile_exercises_structured_sdk_lifecycle() -> Non
     }.issubset(report.operation_names)
 
 
-@pytest.mark.asyncio
-async def test_complete_context_projection_round_trips_public_cognee_profile() -> None:
+async def _assert_complete_context_projection_round_trip(run_id: str) -> None:
     from spine.memory.cognee_memory import configure_environment
 
     configure_environment()
     import cognee
 
-    run_id = os.environ["SPINE_COGNEE_QUALIFICATION_RUN_ID"]
     extraction = extraction_result()
     current = next(
         source for source in extraction.source_revisions if source.status == "current"
@@ -218,30 +214,42 @@ async def test_complete_context_projection_round_trips_public_cognee_profile() -
         for reference in retrieved.evidence
     )
 
-    report_path = os.environ.get("SPINE_COGNEE_QUALIFICATION_REPORT")
-    if report_path:
-        passed = {
-            "public_sdk",
-            "structured_round_trip",
-            "explicit_retrieval_context",
-        }
-        write_issue212_report(
-            Path(report_path),
-            qualification_run_id=run_id,
-            observations=tuple(
-                GateObservation(
-                    gate_id=gate_id,
-                    status=(
-                        GateStatus.PASSED
-                        if gate_id in passed
-                        else GateStatus.NOT_RUN
-                    ),
-                    safe_code=(
-                        None
-                        if gate_id in passed
-                        else "live_prerequisite_unavailable"
-                    ),
-                )
-                for gate_id in required_gate_ids()
-            ),
-        )
+
+
+@pytest.mark.asyncio
+async def test_production_qualification_records_one_coherent_run() -> None:
+    run_id = os.environ["SPINE_COGNEE_QUALIFICATION_RUN_ID"]
+    assert re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", run_id)
+    statuses = {gate_id: GateStatus.NOT_RUN for gate_id in required_gate_ids()}
+    active_gate = "public_sdk"
+    try:
+        await _assert_public_sdk_lifecycle(run_id)
+        statuses["public_sdk"] = GateStatus.PASSED
+        active_gate = "structured_round_trip"
+        await _assert_complete_context_projection_round_trip(run_id)
+        statuses["structured_round_trip"] = GateStatus.PASSED
+        statuses["explicit_retrieval_context"] = GateStatus.PASSED
+    except Exception:
+        statuses[active_gate] = GateStatus.FAILED
+        raise
+    finally:
+        report_path = os.environ.get("SPINE_COGNEE_QUALIFICATION_REPORT")
+        if report_path:
+            write_issue212_report(
+                Path(report_path),
+                qualification_run_id=run_id,
+                observations=tuple(
+                    GateObservation(
+                        gate_id=gate_id,
+                        status=statuses[gate_id],
+                        safe_code=(
+                            None
+                            if statuses[gate_id] is GateStatus.PASSED
+                            else "physical_failure"
+                            if statuses[gate_id] is GateStatus.FAILED
+                            else "live_prerequisite_unavailable"
+                        ),
+                    )
+                    for gate_id in required_gate_ids()
+                ),
+            )
