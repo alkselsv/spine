@@ -136,6 +136,21 @@ def test_projection_commands_reject_unknown_fields() -> None:
         ProjectCommand(**project_command().model_dump(), unexpected="rejected")
 
 
+def test_evidence_reference_accepts_legacy_v1_during_lineage_upgrade() -> None:
+    reference = EvidenceReference(
+        schema_version="projection-evidence-reference:v1",
+        evidence_id="evidence-1",
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        source_object_id=SOURCE,
+        source_revision_id=REVISION,
+        locator=StableLocator(kind="page", value="1"),
+        evidence_digest="f" * 64,
+    )
+
+    assert reference.schema_version == "projection-evidence-reference:v1"
+
+
 def test_projection_result_rejects_inconsistent_recovery_lifecycle() -> None:
     with pytest.raises(ValidationError):
         ProjectionResult(

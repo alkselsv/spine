@@ -332,6 +332,10 @@ class CogneeStructuredRetrieval:
                     environment_id=command.environment_id,
                     source_object_id=source.source_object_id,
                     source_revision_id=source.source_revision_id,
+                    revision_digest=source.revision_digest,
+                    revision_number=source.revision_number,
+                    processing_receipt_id=source.processing_receipt_id,
+                    locator_contract_version=source.locator_contract_version,
                     locator=locator,
                     evidence_digest=digest,
                 )

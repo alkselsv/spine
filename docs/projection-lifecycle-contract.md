@@ -163,6 +163,10 @@ only public Cognee 1.5.4 `search` with explicit `CHUNKS` and
 maps chunks, entities and relations into provider-neutral contracts and
 revalidates every returned reference against the command's SourceRevision,
 workspace/environment, revision digest, processing receipt and stable locator.
+The v2 `EvidenceReference` retains the source revision digest and number,
+processing receipt ID and locator-contract version alongside the stable locator,
+so the provenance checked at the physical boundary survives the retrieval
+round-trip. The adapter accepts v1 references while migrating callers to v2.
 Completion strings are never used as retrieval answers.
 
 Missing, ambiguous, stale, tombstoned, cross-scope or incomplete physical

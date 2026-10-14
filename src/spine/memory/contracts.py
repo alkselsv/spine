@@ -189,12 +189,18 @@ class ProjectionNamespace(_ProjectionModel):
 class EvidenceReference(_ProjectionModel):
     """A structured, revision-specific pointer returned with projected data."""
 
-    schema_version: Literal["projection-evidence-reference:v1"] = "projection-evidence-reference:v1"
+    schema_version: Literal[
+        "projection-evidence-reference:v1", "projection-evidence-reference:v2"
+    ] = "projection-evidence-reference:v2"
     evidence_id: str = Field(min_length=1, max_length=128)
     workspace_id: UUID
     environment_id: UUID
     source_object_id: UUID
     source_revision_id: UUID
+    revision_digest: str | None = Field(default=None, pattern=_DIGEST)
+    revision_number: int | None = Field(default=None, ge=1)
+    processing_receipt_id: UUID | None = None
+    locator_contract_version: str | None = Field(default=None, min_length=1, max_length=128)
     locator: StableLocator
     evidence_digest: str = Field(pattern=_DIGEST)
     status: Literal["valid", "missing", "stale", "tombstoned", "ambiguous", "incomplete"] = "valid"
@@ -208,6 +214,8 @@ class EvidenceReference(_ProjectionModel):
             "source_revision_id",
         ):
             _require_non_zero(getattr(self, field_name), field_name)
+        if self.processing_receipt_id is not None:
+            _require_non_zero(self.processing_receipt_id, "processing_receipt_id")
         return self
 
 

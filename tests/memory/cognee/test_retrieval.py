@@ -184,6 +184,12 @@ async def test_retrieval_maps_public_structured_search_to_provider_neutral_resul
     assert result.entities[0].name == "Acme"
     assert result.relations[0].kind == "employs"
     assert result.evidence[0].source_revision_id == SOURCE_REVISION_ID
+    assert result.evidence[0].revision_digest == "a" * 64
+    assert result.evidence[0].revision_number == 1
+    assert result.evidence[0].processing_receipt_id == UUID(
+        "a0000000-0000-4000-8000-000000000001"
+    )
+    assert result.evidence[0].locator_contract_version == "locator:v1"
     assert result.evidence[0].locator.value == "2"
     assert {call["query_type"] for call in sdk.calls} == {"chunks", "hybrid_completion"}
     assert all(call["datasets"] == [f"spine_context_{command().physical_namespace.namespace_digest}"] for call in sdk.calls)
