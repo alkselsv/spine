@@ -61,3 +61,4 @@ async def test_public_cognee_154_local_smoke_matrix() -> None:
     }.issubset(report.operation_names)
     assert report.updated_content_observed is True
     assert report.deleted_content_absent is True
+    assert report.cleanup_confirmed is True

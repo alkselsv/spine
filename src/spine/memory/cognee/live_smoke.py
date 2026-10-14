@@ -39,6 +39,7 @@ class LiveSmokeReport:
     operation_names: tuple[str, ...]
     updated_content_observed: bool
     deleted_content_absent: bool
+    cleanup_confirmed: bool
 
 
 def payload_contains_text(payload: object, expected: str) -> bool:
@@ -50,9 +51,9 @@ def payload_contains_text(payload: object, expected: str) -> bool:
         return any(payload_contains_text(value, expected) for value in payload.values())
     if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes, bytearray)):
         return any(payload_contains_text(value, expected) for value in payload)
-    attributes = getattr(payload, "__dict__", None)
-    if isinstance(attributes, Mapping):
-        return any(payload_contains_text(value, expected) for value in attributes.values())
+    model_dump = getattr(payload, "model_dump", None)
+    if callable(model_dump):
+        return payload_contains_text(model_dump(mode="json"), expected)
     return False
 
 
@@ -94,13 +95,15 @@ async def run_local_smoke(config: LiveSmokeConfig) -> LiveSmokeReport:
             operation_names=(),
             updated_content_observed=False,
             deleted_content_absent=False,
+            cleanup_confirmed=False,
         )
 
     operations: list[str] = []
     searches: list[SearchObservation] = []
     dataset_id = None
     data_id = None
-    dataset_created = False
+    cleanup_required = False
+    cleanup_confirmed = False
     try:
         await cognee.add(
             config.source_text,
@@ -108,6 +111,7 @@ async def run_local_smoke(config: LiveSmokeConfig) -> LiveSmokeReport:
             node_set=list(config.node_set),
             run_in_background=False,
         )
+        cleanup_required = True
         operations.append("add")
 
         datasets = await cognee.datasets.list_datasets()
@@ -117,7 +121,6 @@ async def run_local_smoke(config: LiveSmokeConfig) -> LiveSmokeReport:
         )
         if dataset is None:
             raise RuntimeError("local smoke dataset was not returned by the public dataset API")
-        dataset_created = True
         dataset_id = _dataset_id(dataset)
         data_rows = await cognee.datasets.list_data(dataset_id)
         if not data_rows:
@@ -193,9 +196,13 @@ async def run_local_smoke(config: LiveSmokeConfig) -> LiveSmokeReport:
     finally:
         # Cleanup is also public and dataset-scoped.  If the smoke flow removed
         # the row already, Cognee still accepts the dataset-level cleanup.
-        if dataset_created:
+        if cleanup_required:
             await cognee.forget(dataset=config.dataset_name)
             operations.append("forget:dataset")
+            remaining = await cognee.datasets.list_datasets()
+            cleanup_confirmed = all(
+                _dataset_name(dataset) != config.dataset_name for dataset in remaining
+            )
 
     return LiveSmokeReport(
         api=api,
@@ -205,6 +212,7 @@ async def run_local_smoke(config: LiveSmokeConfig) -> LiveSmokeReport:
         operation_names=tuple(operations),
         updated_content_observed=updated_content_observed,
         deleted_content_absent=deleted_content_absent,
+        cleanup_confirmed=cleanup_confirmed,
     )
 
 

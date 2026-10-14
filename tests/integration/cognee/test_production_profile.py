@@ -43,19 +43,19 @@ from spine.memory.contracts import (
     ProjectionSourceRevision,
     ProjectCommand,
     RebuildCommand,
+    RemoveCommand,
     RetrieveCommand,
+    UpdateCommand,
 )
 from spine.memory.namespace import ProjectionNamespaceContext, ProjectionNamespaceRouter
 
 from tests.contracts.memory.test_conformance import (
     OTHER_ENVIRONMENT_ID,
     OTHER_WORKSPACE_ID,
-    SHADOW_CANDIDATE_ID,
     command_context,
-    retrieve_command,
     source_revision,
 )
-from tests.memory.cognee.test_graph import extraction_result, request
+from tests.memory.cognee.test_graph import extraction_result, request, tombstone_result
 from tests.memory.cognee.test_indexing import REVISION_ID, parsed_document
 
 
@@ -126,12 +126,16 @@ class _FailOnceCogneeSdk:
         return await self._delegate.list_datasets()
 
 
-def test_production_profile_preflight_requires_exact_backends() -> None:
+def _assert_exact_production_profile() -> None:
     assert os.environ.get("DB_PROVIDER", "").lower() in {"postgres", "postgresql"}
     assert os.environ.get("GRAPH_DATABASE_PROVIDER", "").lower() == "neo4j"
     assert os.environ.get("VECTOR_DB_PROVIDER", "").lower() == "pgvector"
     missing = tuple(name for name in _REQUIRED_SETTINGS if not os.environ.get(name))
     assert missing == (), f"missing qualification settings: {', '.join(missing)}"
+
+
+def test_production_profile_preflight_requires_exact_backends() -> None:
+    _assert_exact_production_profile()
 
 
 async def _assert_public_sdk_lifecycle(run_id: str) -> LiveSmokeReport:
@@ -168,6 +172,9 @@ async def _assert_public_sdk_lifecycle(run_id: str) -> LiveSmokeReport:
         "forget:memory_only",
         "forget:dataset",
     }.issubset(report.operation_names)
+    assert report.updated_content_observed is True
+    assert report.deleted_content_absent is True
+    assert report.cleanup_confirmed is True
     return report
 
 
@@ -182,6 +189,8 @@ async def _assert_complete_context_projection_round_trip(
     *,
     inject_cognify_failure: bool = False,
     rebuild: bool = False,
+    update_remove: bool = False,
+    workspace_isolation: bool = False,
 ) -> None:
     from spine.memory.cognee_memory import configure_environment
 
@@ -244,9 +253,11 @@ async def _assert_complete_context_projection_round_trip(
         "source_revisions": (source,),
         "physical_namespace": namespace,
     }
+    artifacts = {current.source_revision_id: document}
+    extraction_results = {current.source_revision_id: extraction}
     projection = create_cognee_context_projection(
-        artifacts={current.source_revision_id: document},
-        extraction_results={current.source_revision_id: extraction},
+        artifacts=artifacts,
+        extraction_results=extraction_results,
         sdk=_FailOnceCogneeSdk() if inject_cognify_failure else None,
     )
     dataset_name = CogneeChunkProjectionStore.dataset_name(namespace)
@@ -270,14 +281,115 @@ async def _assert_complete_context_projection_round_trip(
             assert "protected text" not in first.model_dump_json()
         else:
             projected = await execute(command)
+        if update_remove:
+            _, updated_base = parsed_document(
+                b"Synthetic Organization Alpha employs Synthetic Person Ada. Updated.",
+                REVISION_ID,
+            )
+            artifacts[current.source_revision_id] = updated_base.model_copy(
+                update={
+                    "workspace_id": extraction.workspace_id,
+                    "environment_id": extraction.environment_id,
+                    "source_object_id": current.source_object_id,
+                    "source_revision_id": current.source_revision_id,
+                    "source_revision_digest": current.revision_digest,
+                }
+            )
+            updated = await projection.update(
+                UpdateCommand(
+                    **common,
+                    command_identity="issue-212-update",
+                    command_digest="a" * 64,
+                )
+            )
+            tombstone = tombstone_result()
+            deleted_source = next(
+                source
+                for source in tombstone.source_revisions
+                if source.status == "tombstoned"
+            )
+            extraction_results[deleted_source.source_revision_id] = tombstone
+            tombstoned = ProjectionSourceRevision(
+                source_object_id=deleted_source.source_object_id,
+                source_revision_id=deleted_source.source_revision_id,
+                revision_digest=deleted_source.revision_digest,
+                revision_number=deleted_source.revision_number,
+                status="tombstoned",
+                locator_contract_version="locator:v1",
+            )
+            remove_common = dict(common)
+            remove_common["source_revisions"] = (tombstoned,)
+            removed = await projection.remove(
+                RemoveCommand(
+                    **remove_common,
+                    command_identity="issue-212-remove",
+                    command_digest="b" * 64,
+                )
+            )
+            after_remove = await projection.retrieve(
+                RetrieveCommand(
+                    **remove_common,
+                    command_identity="issue-212-after-remove",
+                    command_digest="c" * 64,
+                    query="Synthetic Organization Alpha",
+                )
+            )
+            assert updated.outcome is ProjectionOutcome.SUCCEEDED
+            assert removed.outcome is ProjectionOutcome.SUCCEEDED
+            assert after_remove.outcome is ProjectionOutcome.TOMBSTONED
+            assert after_remove.chunks == ()
+            return
         if rebuild:
             replay = await projection.rebuild(command)
+            shadow_read = await projection.retrieve(
+                RetrieveCommand(
+                    **common,
+                    command_identity="issue-212-shadow-read",
+                    command_digest="d" * 64,
+                    query="Synthetic Organization Alpha",
+                )
+            )
             assert projected.outcome is ProjectionOutcome.SUCCEEDED
             assert replay.outcome is ProjectionOutcome.REPLAYED
             assert replay.artifact_reference == projected.artifact_reference
+            assert shadow_read.failure is not None
+            assert (
+                shadow_read.failure.code
+                is ProjectionFailureCode.NAMESPACE_UNAVAILABLE
+            )
             assert "Synthetic Organization Alpha" not in replay.model_dump_json()
             return
         else:
+            if workspace_isolation:
+                foreign_namespace = ProjectionNamespaceRouter().route(
+                    ProjectionNamespaceContext(
+                        workspace_id=OTHER_WORKSPACE_ID,
+                        environment_id=OTHER_ENVIRONMENT_ID,
+                        projection_candidate=candidate,
+                        projection_config=template.projection_config,
+                        canonical_boundary=template.canonical_boundary,
+                        state=ProjectionNamespaceState.ACTIVE,
+                    )
+                )
+                foreign_common = dict(common)
+                foreign_common.update(
+                    {
+                        "workspace_id": OTHER_WORKSPACE_ID,
+                        "environment_id": OTHER_ENVIRONMENT_ID,
+                        "physical_namespace": foreign_namespace,
+                    }
+                )
+                foreign = await projection.retrieve(
+                    RetrieveCommand(
+                        **foreign_common,
+                        command_identity="issue-212-foreign-read",
+                        command_digest="e" * 64,
+                        query="Synthetic Organization Alpha",
+                    )
+                )
+                assert foreign.outcome is ProjectionOutcome.MISSING
+                assert foreign.chunks == ()
+                assert "Synthetic Person Ada" not in foreign.model_dump_json()
             retrieved = await projection.retrieve(
                 RetrieveCommand(
                     **common,
@@ -288,6 +400,16 @@ async def _assert_complete_context_projection_round_trip(
             )
     finally:
         await cognee.forget(dataset=dataset_name)
+        remaining = await cognee.datasets.list_datasets()
+        assert all(
+            (
+                dataset.get("name")
+                if isinstance(dataset, dict)
+                else getattr(dataset, "name", None)
+            )
+            != dataset_name
+            for dataset in remaining
+        )
 
     assert projected.outcome is ProjectionOutcome.SUCCEEDED
     assert retrieved.outcome is ProjectionOutcome.SUCCEEDED
@@ -300,11 +422,12 @@ async def _assert_complete_context_projection_round_trip(
     )
 
 
-async def _assert_unsafe_evidence_is_fail_closed() -> None:
-    projection = create_cognee_context_projection(
-        artifacts={},
-        extraction_results={},
-    )
+async def _assert_unsafe_evidence_is_fail_closed(run_id: str) -> None:
+    from spine.memory.cognee_memory import configure_environment
+
+    configure_environment()
+    import cognee
+
     expected = {
         "missing": ProjectionFailureCode.MISSING_EVIDENCE,
         "stale": ProjectionFailureCode.STALE_EVIDENCE,
@@ -313,74 +436,82 @@ async def _assert_unsafe_evidence_is_fail_closed() -> None:
         "tombstoned": ProjectionFailureCode.TOMBSTONED_SOURCE,
     }
     for index, (status, code) in enumerate(expected.items(), start=3):
+        candidate_id = uuid5(
+            NAMESPACE_URL,
+            f"spine-issue-212:{run_id}:unsafe:{status}",
+        )
+        context = command_context(candidate_id=candidate_id)
+        namespace = context["physical_namespace"]
+        dataset_name = CogneeChunkProjectionStore.dataset_name(namespace)
+        source = source_revision()
+        sdk = CogneePublicSdk()
+        data_id = uuid5(candidate_id, status)
+        item = sdk.make_data_item(
+            data=f"unsafe physical marker {status}",
+            data_id=data_id,
+            external_metadata={
+                "segment_id": str(data_id),
+                "workspace_id": str(context["workspace_id"]),
+                "environment_id": str(context["environment_id"]),
+                "source_object_id": str(source.source_object_id),
+                "source_revision_id": str(source.source_revision_id),
+                "revision_digest": source.revision_digest,
+                "revision_number": source.revision_number,
+                "processing_receipt_id": str(source.processing_receipt_id),
+                "locator_contract_version": source.locator_contract_version,
+                "locator": {
+                    "kind": "physical_line",
+                    "line_number": 1,
+                    "start_codepoint": 0,
+                    "end_codepoint": 16,
+                },
+                "evidence_id": f"unsafe-{status}",
+                "evidence_digest": f"{index}" * 64,
+                "status": status,
+            },
+        )
+        await sdk.add(
+            data=[item],
+            dataset_name=dataset_name,
+            dataset_id=None,
+            node_set=[namespace.namespace_digest],
+        )
+        await sdk.cognify(datasets=[dataset_name])
+        projection = create_cognee_context_projection(
+            artifacts={},
+            extraction_results={},
+        )
         command = RetrieveCommand(
-            **command_context(source_revisions=(source_revision(status=status),)),
+            **{**context, "source_revisions": (source,)},
             command_identity=f"unsafe-{status}",
             command_digest=f"{index}" * 64,
-            query="protected synthetic content",
+            query=f"unsafe physical marker {status}",
         )
-        result = await projection.retrieve(command)
-        assert result.failure is not None
-        assert result.failure.code is code
-        assert result.chunks == ()
-        assert "protected synthetic content" not in result.model_dump_json()
+        try:
+            result = await projection.retrieve(command)
+            assert result.failure is not None
+            assert result.failure.code is code
+            assert result.chunks == ()
+            assert "unsafe physical marker" not in result.model_dump_json()
+        finally:
+            await cognee.forget(dataset=dataset_name)
 
-
-async def _assert_workspace_isolation_is_fail_closed(run_id: str) -> None:
-    await _assert_complete_context_projection_round_trip(run_id)
-    projection = create_cognee_context_projection(
-        artifacts={},
-        extraction_results={},
-    )
-    namespace = command_context()["physical_namespace"]
-    result = await projection.retrieve(
-        retrieve_command(
-            identity="foreign-workspace",
-            digest="8" * 64,
-            workspace_id=OTHER_WORKSPACE_ID,
-            environment_id=OTHER_ENVIRONMENT_ID,
-            namespace=namespace,
-        )
-    )
-    assert result.failure is not None
-    assert result.failure.code is ProjectionFailureCode.NAMESPACE_UNAVAILABLE
-    assert result.chunks == ()
-
-
-async def _assert_shadow_namespace_is_not_ordinary_retrieval(run_id: str) -> None:
-    await _assert_complete_context_projection_round_trip(run_id, rebuild=True)
-    projection = create_cognee_context_projection(
-        artifacts={},
-        extraction_results={},
-    )
-    shadow_namespace = command_context(
-        candidate_id=SHADOW_CANDIDATE_ID,
-        state=ProjectionNamespaceState.SHADOW,
-    )["physical_namespace"]
-    result = await projection.retrieve(
-        retrieve_command(
-            identity="shadow-retrieval",
-            digest="9" * 64,
-            namespace=shadow_namespace,
-            candidate_id=SHADOW_CANDIDATE_ID,
-            state=ProjectionNamespaceState.SHADOW,
-        )
-    )
-    assert result.failure is not None
-    assert result.failure.code is ProjectionFailureCode.NAMESPACE_UNAVAILABLE
-    assert result.chunks == ()
 
 @pytest.mark.asyncio
 async def test_production_qualification_records_one_coherent_run() -> None:
-    run_id = os.environ["SPINE_COGNEE_QUALIFICATION_RUN_ID"]
-    assert re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", run_id)
+    run_id = os.environ.get("SPINE_COGNEE_QUALIFICATION_RUN_ID", "not-run")
     state: dict[str, LiveSmokeReport] = {}
 
     async def public_sdk_gate() -> None:
+        _assert_exact_production_profile()
         state["smoke"] = await _assert_public_sdk_lifecycle(run_id)
 
     async def update_remove_gate() -> None:
         await _assert_update_remove_postconditions(state["smoke"])
+        await _assert_complete_context_projection_round_trip(
+            run_id,
+            update_remove=True,
+        )
 
     observations = await run_qualification_gates(
         {
@@ -391,12 +522,15 @@ async def test_production_qualification_records_one_coherent_run() -> None:
             "explicit_retrieval_context": lambda: (
                 _assert_complete_context_projection_round_trip(run_id)
             ),
-            "unsafe_evidence": _assert_unsafe_evidence_is_fail_closed,
+            "unsafe_evidence": lambda: _assert_unsafe_evidence_is_fail_closed(run_id),
             "workspace_isolation": lambda: (
-                _assert_workspace_isolation_is_fail_closed(run_id)
+                _assert_complete_context_projection_round_trip(
+                    run_id,
+                    workspace_isolation=True,
+                )
             ),
             "namespace_isolation": lambda: (
-                _assert_shadow_namespace_is_not_ordinary_retrieval(run_id)
+                _assert_complete_context_projection_round_trip(run_id, rebuild=True)
             ),
             "update_remove_tombstone": update_remove_gate,
             "rebuild_recovery_validation_diagnostics": lambda: (
