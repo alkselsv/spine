@@ -192,6 +192,8 @@ def effect(
         source_revision_id=source_revision.revision_id,
         revision_digest=source_revision.revision_digest,
         revision_number=revision_number,
+        processing_receipt_id=UUID("a0000000-0000-4000-8000-000000000099"),
+        locator_contract_version="physical-line-codepoint:v1",
     )
 
 
@@ -214,6 +216,11 @@ async def test_indexing_preserves_revision_locator_and_namespace_provenance() ->
     assert metadata["environment_id"] == str(ENVIRONMENT_ID)
     assert metadata["source_revision_id"] == str(REVISION_ID)
     assert metadata["revision_digest"] == source_revision.revision_digest
+    assert metadata["processing_receipt_id"] == str(
+        command_effect.processing_receipt_id
+    )
+    assert metadata["evidence_id"] == str(document.segments[0].segment_id)
+    assert metadata["evidence_digest"] == document.segments[0].segment_digest
     assert metadata["namespace_digest"] == command_effect.physical_namespace.namespace_digest
     assert metadata["locator"] == document.segments[0].locator.model_dump(mode="json")
     mappings = await store.mappings_for(

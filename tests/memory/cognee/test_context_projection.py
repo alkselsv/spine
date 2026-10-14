@@ -40,6 +40,11 @@ async def test_context_projection_composes_physical_write_and_structured_read() 
 
     assert written.outcome is ProjectionOutcome.SUCCEEDED
     assert written.effects[0].status is ProjectionEffectStatus.APPLIED
+    assert (
+        written.effects[0].processing_receipt_id
+        == project_command().source_revisions[0].processing_receipt_id
+    )
+    assert written.effects[0].locator_contract_version == "locator:v1"
     assert retrieved.outcome is ProjectionOutcome.MISSING
 
 
@@ -111,18 +116,62 @@ class _GraphWriter:
         )
 
 
-async def test_graph_effect_store_builds_request_from_the_command_envelope() -> None:
+def _extraction_for_effect(effect: ProjectionEffect):
     from tests.memory.cognee.test_graph import extraction_result
 
     extraction = extraction_result(
         workspace_id=WORKSPACE_ID,
         environment_id=ENVIRONMENT_ID,
     )
+    revision_update = {
+        "source_object_id": effect.source_object_id,
+        "source_revision_id": effect.source_revision_id,
+        "revision_digest": effect.revision_digest,
+        "revision_number": effect.revision_number,
+        "status": "current",
+    }
+    fact_update = {"source_revision_id": effect.source_revision_id}
+    return extraction.model_copy(
+        update={
+            "source_revisions": (
+                extraction.source_revisions[0].model_copy(update=revision_update),
+            ),
+            "entities": tuple(
+                entity.model_copy(
+                    update={
+                        **fact_update,
+                        "evidence": tuple(
+                            reference.model_copy(update=fact_update)
+                            for reference in entity.evidence
+                        ),
+                    }
+                )
+                for entity in extraction.entities
+            ),
+            "relations": tuple(
+                relation.model_copy(
+                    update={
+                        **fact_update,
+                        "evidence": tuple(
+                            reference.model_copy(update=fact_update)
+                            for reference in relation.evidence
+                        ),
+                    }
+                )
+                for relation in extraction.relations
+            ),
+            "result_digest": "",
+        }
+    )
+
+
+async def test_graph_effect_store_builds_request_from_the_command_envelope() -> None:
     writer = _GraphWriter(GraphProjectionStatus.APPLIED)
     effect = (await CogneeContextProjection(
         effect_store=DeterministicPhysicalStore(),
         retrieval=_Retrieval(),
     ).project(project_command())).effects[0]
+    extraction = _extraction_for_effect(effect)
     store = CogneeGraphEffectStore(
         writer=writer,
         extraction_results={effect.source_revision_id: extraction},
@@ -132,20 +181,21 @@ async def test_graph_effect_store_builds_request_from_the_command_envelope() -> 
 
     assert result.status is ProjectionEffectStatus.APPLIED
     assert writer.requests[0].projection_run_id == effect.projection_candidate.run_id
+    assert writer.requests[0].source_revision.source_revision_id == effect.source_revision_id
+    assert writer.requests[0].source_revision.processing_receipt_id == effect.processing_receipt_id
+    assert (
+        writer.requests[0].source_revision.locator_contract_version
+        == effect.locator_contract_version
+    )
     assert writer.requests[0].result == extraction
 
 
 async def test_graph_effect_store_maps_recoverable_provider_failure_safely() -> None:
-    from tests.memory.cognee.test_graph import extraction_result
-
-    extraction = extraction_result(
-        workspace_id=WORKSPACE_ID,
-        environment_id=ENVIRONMENT_ID,
-    )
     effect = (await CogneeContextProjection(
         effect_store=DeterministicPhysicalStore(),
         retrieval=_Retrieval(),
     ).project(project_command())).effects[0]
+    extraction = _extraction_for_effect(effect)
     store = CogneeGraphEffectStore(
         writer=_GraphWriter(GraphProjectionStatus.RECOVERABLE),
         extraction_results={effect.source_revision_id: extraction},

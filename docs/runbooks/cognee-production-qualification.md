@@ -99,10 +99,12 @@ serialized.
 ## Interpreting the result
 
 The current committed result is **no-go** from coherent live run
-`issue212-docker-006`. The pinned PostgreSQL + Neo4j + PGVector profile failed
-the public search evidence, structured provenance, isolation, update/remove and
-concurrency retrieval gates. The rebuild/recovery/validation gate passed, but
-one passing gate cannot grant production approval.
+`issue212-docker-013`. All nine real PostgreSQL + Neo4j + PGVector gates passed,
+including public SDK compatibility, structured provenance, isolation,
+update/remove, rebuild/recovery and concurrency cleanup. Production approval is
+still withheld because the PostgreSQL-backed projection-request resolver needed
+to observe canonical lifecycle separation does not exist yet; that gate remains
+explicitly `not_run` rather than being inferred from architecture.
 
 Do not convert a partial pass, skipped test, local Cognee profile or Issue #211
 fake-backed result into production approval. A future `go` requires every gate

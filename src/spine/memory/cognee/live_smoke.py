@@ -143,7 +143,13 @@ async def run_local_smoke(config: LiveSmokeConfig) -> LiveSmokeReport:
             query_type=cognee.SearchType.CHUNKS,
             **common,
         )
-        searches.append(inspect_search_payload(SearchLane.CHUNKS, chunks))
+        searches.append(
+            inspect_search_payload(
+                SearchLane.CHUNKS,
+                chunks,
+                dataset_data_ids=(str(data_id),),
+            )
+        )
         operations.append("search:chunks")
 
         graph = await cognee.search(

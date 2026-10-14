@@ -8,6 +8,7 @@ canonical source state, receipts and publication remain outside the adapter.
 from __future__ import annotations
 
 import asyncio
+from hashlib import sha256
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -550,33 +551,51 @@ class CogneeGraphProjectionWriter:
                 "object_entity_id": relation.object_entity_id,
             }
             evidence = relation.evidence
+        metadata: dict[str, object] = {
+            "spine_schema": "graph-artifact:v1",
+            "artifact_kind": mapping.artifact_kind,
+            "artifact_id": mapping.artifact_id,
+            "workspace_id": str(request.workspace_id),
+            "environment_id": str(request.environment_id),
+            "namespace": request.physical_namespace.namespace,
+            "namespace_digest": mapping.namespace_digest,
+            "projection_candidate_id": str(request.projection_candidate.candidate_id),
+            "projection_run_id": str(request.projection_candidate.run_id),
+            "projection_config_id": str(request.projection_config.config_id),
+            "projection_config_version": request.projection_config.version,
+            "projection_config_digest": request.projection_config.config_digest,
+            "ontology_version": result.ontology_version,
+            "ontology_digest": result.ontology_digest,
+            "extraction_config_version": result.extraction_config_version,
+            "extraction_config_digest": result.extraction_config_digest,
+            "source_object_id": str(mapping.source_object_id),
+            "source_revision_id": str(mapping.source_revision_id),
+            "revision_digest": mapping.revision_digest,
+            "revision_number": mapping.revision_number,
+            "locator_contract_version": request.source_revision.locator_contract_version,
+            "evidence": [self._evidence_payload(reference) for reference in evidence],
+        }
+        if request.source_revision.processing_receipt_id is not None:
+            metadata["processing_receipt_id"] = str(
+                request.source_revision.processing_receipt_id
+            )
         return self._sdk.make_data_item(
             data=json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
             data_id=mapping.data_id,
-            external_metadata={
-                "spine_schema": "graph-artifact:v1",
-                "artifact_kind": mapping.artifact_kind,
-                "artifact_id": mapping.artifact_id,
-                "workspace_id": str(request.workspace_id),
-                "environment_id": str(request.environment_id),
-                "namespace": request.physical_namespace.namespace,
-                "namespace_digest": mapping.namespace_digest,
-                "projection_candidate_id": str(request.projection_candidate.candidate_id),
-                "projection_run_id": str(request.projection_candidate.run_id),
-                "projection_config_id": str(request.projection_config.config_id),
-                "projection_config_version": request.projection_config.version,
-                "projection_config_digest": request.projection_config.config_digest,
-                "ontology_version": result.ontology_version,
-                "ontology_digest": result.ontology_digest,
-                "extraction_config_version": result.extraction_config_version,
-                "extraction_config_digest": result.extraction_config_digest,
-                "source_object_id": str(mapping.source_object_id),
-                "source_revision_id": str(mapping.source_revision_id),
-                "revision_digest": mapping.revision_digest,
-                "revision_number": mapping.revision_number,
-                "evidence": [reference.model_dump(mode="json") for reference in evidence],
-            },
+            external_metadata=metadata,
         )
+
+    @staticmethod
+    def _evidence_payload(reference: object) -> dict[str, object]:
+        payload = reference.model_dump(mode="json")
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        payload["evidence_digest"] = sha256(encoded).hexdigest()
+        return payload
 
     async def _delete_mappings(self, record: _GraphRecord) -> None:
         if record.dataset_id is None:
@@ -681,7 +700,8 @@ class CogneeGraphProjectionWriter:
         return tuple(
             source
             for source in request.result.source_revisions
-            if source.status in statuses
+            if source.source_revision_id == request.source_revision.source_revision_id
+            and source.status in statuses
         )
 
     @staticmethod

@@ -44,7 +44,7 @@ def test_issue212_report_is_explicit_no_go_from_one_live_run() -> None:
 
     assert report.schema_version == "cognee-production-qualification:v2"
     assert report.ticket == 212
-    assert report.qualification_run_id == "issue212-docker-006"
+    assert report.qualification_run_id == "issue212-docker-013"
     assert report.profile.model_dump() == {
         "relational": "postgresql",
         "graph": "neo4j",
@@ -58,18 +58,13 @@ def test_issue212_report_is_explicit_no_go_from_one_live_run() -> None:
         required_gate_ids()
     )
     statuses = {item.gate_id: item.status.value for item in report.observations}
-    assert statuses["rebuild_recovery_validation_diagnostics"] == "passed"
+    assert all(
+        statuses[gate_id] == "passed"
+        for gate_id in required_gate_ids()
+        if gate_id != "canonical_lifecycle_separation"
+    )
     assert statuses["canonical_lifecycle_separation"] == "not_run"
-    assert set(report.failed_gate_ids) == {
-        "public_sdk",
-        "structured_round_trip",
-        "unsafe_evidence",
-        "workspace_isolation",
-        "namespace_isolation",
-        "explicit_retrieval_context",
-        "update_remove_tombstone",
-        "concurrency_failure_cleanup",
-    }
+    assert report.failed_gate_ids == ()
     assert report.not_run_gate_ids == ("canonical_lifecycle_separation",)
     assert report.fallback == "owned_postgresql_projection_mapping"
 

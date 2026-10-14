@@ -358,7 +358,7 @@ async def _assert_complete_context_projection_round_trip(
             NAMESPACE_URL,
             f"spine-issue-212:{run_id}:processing-receipt",
         ),
-        locator_contract_version="locator:v1",
+        locator_contract_version=document.locator_contract_version,
     )
     common = {
         "workspace_id": extraction.workspace_id,
@@ -522,6 +522,7 @@ async def _assert_complete_context_projection_round_trip(
                         )
                         for relation in extraction.relations
                     ),
+                    "result_digest": "",
                 }
             )
             extraction_results[NEXT_REVISION_ID] = updated_extraction
@@ -569,6 +570,7 @@ async def _assert_complete_context_projection_round_trip(
                     ),
                     "entities": (),
                     "relations": (),
+                    "result_digest": "",
                 }
             )
             tombstoned = updated_source.model_copy(
@@ -823,9 +825,7 @@ async def _assert_complete_context_projection_round_trip(
                     for result in mismatched_results
                 )
     finally:
-        for cleanup_dataset_name in cleanup_dataset_names:
-            await cognee.forget(dataset=cleanup_dataset_name)
-        remaining = await cognee.datasets.list_datasets()
+        remaining = await _forget_existing_datasets(cognee, cleanup_dataset_names)
         assert all(
             (
                 dataset.get("name")
@@ -937,7 +937,35 @@ async def _assert_unsafe_evidence_is_fail_closed(run_id: str) -> None:
             assert result.chunks == ()
             assert "unsafe physical marker" not in result.model_dump_json()
         finally:
-            await cognee.forget(dataset=dataset_name)
+            await _forget_existing_datasets(cognee, (dataset_name,))
+
+
+async def _forget_existing_datasets(
+    cognee: object,
+    dataset_names: tuple[str, ...] | list[str],
+) -> object:
+    """Forget only datasets confirmed by the public inventory.
+
+    Cognee 1.5.4 raises an ``AttributeError`` when ``forget(dataset=name)`` is
+    called for a missing dataset.  That cleanup error must not mask the gate's
+    original fail-closed observation.
+    """
+
+    datasets_api = getattr(cognee, "datasets")
+    datasets = await datasets_api.list_datasets()
+    existing = {
+        (
+            dataset.get("name")
+            if isinstance(dataset, dict)
+            else getattr(dataset, "name", None)
+        )
+        for dataset in datasets
+    }
+    forget = getattr(cognee, "forget")
+    for dataset_name in dataset_names:
+        if dataset_name in existing:
+            await forget(dataset=dataset_name)
+    return await datasets_api.list_datasets()
 
 
 @pytest.mark.asyncio

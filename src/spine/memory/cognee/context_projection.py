@@ -29,8 +29,10 @@ from spine.memory.contracts import (
     ProjectionEffectStatus,
     ProjectionEffectStore,
     ProjectionFailureCode,
+    ProjectionOperation,
     ProjectionResult,
     ProjectionRetrievalResult,
+    ProjectionSourceRevision,
     ProjectCommand,
     RebuildCommand,
     RemoveCommand,
@@ -79,6 +81,19 @@ class CogneeGraphEffectStore(ProjectionEffectStore):
                 projection_config=effect.projection_config,
                 canonical_boundary=effect.canonical_boundary,
                 physical_namespace=effect.physical_namespace,
+                source_revision=ProjectionSourceRevision(
+                    source_object_id=effect.source_object_id,
+                    source_revision_id=effect.source_revision_id,
+                    revision_digest=effect.revision_digest,
+                    revision_number=effect.revision_number,
+                    status=(
+                        "tombstoned"
+                        if effect.operation is ProjectionOperation.REMOVE
+                        else "current"
+                    ),
+                    processing_receipt_id=effect.processing_receipt_id,
+                    locator_contract_version=effect.locator_contract_version,
+                ),
                 result=result,
             )
         )
