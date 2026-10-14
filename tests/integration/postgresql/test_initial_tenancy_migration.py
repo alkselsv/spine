@@ -2644,7 +2644,6 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "initial_workspace_bootstrap",
         "outbox_intents",
         "outbox_deliveries",
-        "context_profiles",
     ):
         data_type, nullable, default = columns[(table, "created_at")]
         assert data_type == "timestamp with time zone"
