@@ -827,6 +827,8 @@ class InMemoryProjectionRepository(ProjectionRepository):
         """Atomically publish a finalized snapshot in the in-memory test adapter."""
 
         self._uow._guard_active()
+        if command.digest != command.expected_digest():
+            self._uow._fail(IdempotencyConflictError("Projection activation command digest is invalid."))
         claim = await self._uow.idempotency.claim(
             operation_schema_version=command.digest.operation_schema_version,
             key=command.idempotency_key,

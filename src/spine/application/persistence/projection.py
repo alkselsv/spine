@@ -38,7 +38,7 @@ from spine.domain.projections import (
 )
 
 
-PROJECTION_RUN_SCHEMA_VERSION = 1
+PROJECTION_RUN_SCHEMA_VERSION = 2
 PROJECTION_RECEIPT_SCHEMA_VERSION = 1
 PROJECTION_SEAL_SCHEMA_VERSION = 1
 PROJECTION_RESULT_SCHEMA_VERSION = 1
@@ -326,6 +326,22 @@ class ProjectionActivationCommand:
             command_identity=command_identity,
             idempotency_key=idempotency_key,
             digest=digest,
+        )
+
+    def expected_digest(self) -> CommandDigest:
+        return digest_command(
+            operation=PersistenceOperation("projection_activation"),
+            operation_schema_version=PROJECTION_ACTIVATION_SCHEMA_VERSION,
+            payload={
+                "projection_kind": self.projection_kind,
+                "projection_snapshot_id": self.projection_snapshot_id,
+                "activation_kind": self.activation_kind,
+                "expected_predecessor_snapshot_id": self.expected_predecessor_snapshot_id,
+                "expected_predecessor_activation_generation": self.expected_predecessor_activation_generation,
+                "expected_active_pointer_cas_version": self.expected_active_pointer_cas_version,
+                "command_identity": self.command_identity,
+                "idempotency_key": self.idempotency_key.value,
+            },
         )
 
 
