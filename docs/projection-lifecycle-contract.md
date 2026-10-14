@@ -103,6 +103,33 @@ never serve ordinary retrieval. The orchestrator does not transition an active
 pointer or publish a candidate; those decisions remain PostgreSQL-owned and
 outside this ticket.
 
+## Physical cleanup and repair
+
+Issue #206 exposes `ProjectionRecoveryCoordinator` as the physical recovery
+seam. Cleanup plans are immutable, workspace/environment scoped and may target
+only a `failed` or `retired` namespace plus the content-free artifact mappings
+listed by the caller. The coordinator revalidates the scope, orders deletion
+deterministically, records applied effects and retries only pending effects
+after a physical failure. A repeated successful plan returns a replay result;
+the coordinator never hard-deletes or changes a canonical record.
+
+The Cognee cleanup adapter uses the public `delete_data(..., mode="soft")`
+operation and treats an absent dataset as an idempotent replay. Provider
+exceptions become typed safe failures without provider messages or source
+content. Cross-workspace, cross-namespace and active-namespace cleanup is
+rejected before physical calls. Chunk and graph adapters expose only
+content-free mappings, including pending mappings left by an interrupted
+operation, so cleanup can remove failed derived state without reopening
+payloads.
+
+Repair plans replay the original immutable `ProjectionEffect` or graph request
+inputs through `ShadowRebuildOrchestrator`. The coordinator fences every input
+whose source revision is stale, tombstoned or otherwise not current, so repair
+cannot resurrect deleted content. Source revision identity, revision digest and
+stable locator mappings are carried through unchanged. Cleanup and repair are
+derived-state maintenance outside the PostgreSQL UnitOfWork; publication and
+ordinary retrieval remain governed by PostgreSQL-owned lifecycle state.
+
 ## Cognee graph write-side adapter
 
 `spine.memory.cognee.graph.CogneeGraphProjectionWriter` consumes only an

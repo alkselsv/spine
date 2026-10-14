@@ -44,7 +44,7 @@ from spine.memory.namespace import (
     ProjectionNamespaceContext,
     ProjectionNamespaceRouter,
 )
-from spine.memory.cognee.validation import PhysicalArtifactLocator
+from spine.memory.cognee.validation import PhysicalArtifact, PhysicalArtifactLocator
 
 
 class GraphProjectionStatus(str, Enum):
@@ -270,6 +270,41 @@ class CogneeGraphProjectionWriter:
                     mapping.workspace_id == workspace_id
                     and mapping.environment_id == environment_id
                     and mapping.namespace_digest == namespace_digest
+                )
+            )
+
+    async def physical_artifacts_for(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        namespace_digest: str,
+    ) -> tuple[PhysicalArtifact, ...]:
+        """Return content-free mappings needed for derived cleanup."""
+
+        async with self._lock:
+            records = dict(self._records)
+            for key, pending in self._pending_records.items():
+                records[key] = pending.record
+            mappings: list[GraphArtifactMapping] = []
+            for key, record in records.items():
+                if (
+                    key[0] != workspace_id
+                    or key[1] != environment_id
+                    or key[2] != namespace_digest
+                ):
+                    continue
+                pending = self._pending_records.get(key)
+                mappings.extend(
+                    pending.existing_mappings
+                    if pending is not None and pending.record.tombstoned
+                    else record.mappings
+                )
+            return tuple(
+                PhysicalArtifact.from_graph_mapping(mapping)
+                for mapping in sorted(
+                    mappings,
+                    key=lambda item: (item.artifact_kind, item.artifact_id),
                 )
             )
 

@@ -32,6 +32,7 @@ from spine.memory.namespace import (
     ProjectionNamespaceContext,
     ProjectionNamespaceRouter,
 )
+from spine.memory.cognee.validation import PhysicalArtifact
 
 
 SUPPORTED_COGNEE_VERSION = "1.5.4"
@@ -330,6 +331,41 @@ class CogneeChunkProjectionStore:
                     mapping.workspace_id == workspace_id
                     and mapping.environment_id == environment_id
                     and mapping.source_object_id == source_object_id
+                )
+            )
+
+    async def physical_artifacts_for(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        namespace_digest: str,
+    ) -> tuple[PhysicalArtifact, ...]:
+        """Return content-free mappings needed for derived cleanup."""
+
+        async with self._lock:
+            records = dict(self._records)
+            for key, pending in self._pending_records.items():
+                records[key] = pending.record
+            mappings: list[ChunkProjectionMapping] = []
+            for key, record in records.items():
+                if (
+                    key[0] != workspace_id
+                    or key[1] != environment_id
+                    or key[2] != namespace_digest
+                ):
+                    continue
+                pending = self._pending_records.get(key)
+                mappings.extend(
+                    pending.existing_mappings
+                    if pending is not None and pending.record.tombstoned
+                    else record.mappings
+                )
+            return tuple(
+                PhysicalArtifact.from_chunk_mapping(mapping)
+                for mapping in sorted(
+                    mappings,
+                    key=lambda item: (str(item.segment_id), str(item.data_id)),
                 )
             )
 
