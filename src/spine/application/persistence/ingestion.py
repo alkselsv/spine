@@ -153,6 +153,7 @@ class IngestionMutationResult:
 class IngestionRunStateView:
     run: IngestionRun
     state: IngestionRunState
+    items: tuple[IngestionRunSource, ...]
     item_states: tuple[IngestionItemState, ...]
 
 

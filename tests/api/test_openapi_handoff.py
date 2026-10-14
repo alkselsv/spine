@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from spine.api.main import create_app
+from spine.api.openapi import create_openapi_app
 
 
 def test_generation_export_matches_backend_openapi_document(tmp_path: Path) -> None:
@@ -20,4 +20,8 @@ def test_generation_export_matches_backend_openapi_document(tmp_path: Path) -> N
         check=True,
     )
 
-    assert json.loads(output.read_text(encoding="utf-8")) == create_app().openapi()
+    document = json.loads(output.read_text(encoding="utf-8"))
+
+    assert document == create_openapi_app().openapi()
+    assert "/api/v1/documents/batches" in document["paths"]
+    assert "/api/v1/ingestion/runs/{run_id}" in document["paths"]

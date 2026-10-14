@@ -14,9 +14,14 @@ from spine.application.batch_ingestion import (
     BatchDocumentUploadItem,
     BatchIngestionStatus,
 )
+from spine.application.batch_ingestion_api import (
+    OrchestratedBatchDocumentIngestionService,
+)
 from spine.application.document_ingestion import DocumentIngestionStatus
+from spine.application.persistence.context import EnvironmentScope
 from spine.application.persistence.errors import IdempotencyConflictError
 from spine.domain.ingestion import (
+    FailureStage,
     IngestionItemState,
     IngestionRunState,
     IngestionTargetKind,
@@ -91,10 +96,24 @@ class _Ledger:
             state = IngestionRunState.SUCCEEDED
         elif state is IngestionRunState.PROCESSING and any(value is IngestionItemState.PROCESSING_FAILED for value in states) and any(value is IngestionItemState.PROCESSED for value in states):
             state = IngestionRunState.PARTIALLY_SUCCEEDED
-        return SimpleNamespace(run=run, state=state, item_states=states)
+        items = tuple(
+            sorted(
+                (
+                    item
+                    for item in self.items.values()
+                    if item.ingestion_run_id == run_id
+                ),
+                key=lambda item: item.input_ordinal,
+            )
+        )
+        return SimpleNamespace(run=run, state=state, items=items, item_states=states)
 
     async def resolve_processing_receipt(self, item_id):
         return self.receipts.get(item_id)
+
+    async def resolve_binding(self, item_id):
+        del item_id
+        return None
 
     async def resolve_warnings(self, item_id):
         return ()
@@ -151,7 +170,13 @@ class _Processor:
         await self.ledger.append_transition(processing)
         if self.failures_left.get(item.input_identity, 0):
             self.failures_left[item.input_identity] -= 1
-            failure = SimpleNamespace(ingestion_failure_id=_id(f"failure:{item.input_identity}"), retryable=True)
+            failure = SimpleNamespace(
+                ingestion_failure_id=_id(f"failure:{item.input_identity}"),
+                attempt=processing.attempt,
+                stage=FailureStage.PARSING,
+                code="parser_failed",
+                retryable=True,
+            )
             self.ledger.failures[item.ingestion_run_source_id] = [failure]
             await self.ledger.append_transition(self.ledger._transition(run.ingestion_run_id, item.ingestion_run_source_id, IngestionItemState.PROCESSING_FAILED, processing.attempt + 1))
             return SimpleNamespace(status=DocumentIngestionStatus.FAILED)
@@ -232,3 +257,34 @@ async def test_batch_changed_digest_conflicts_before_creating_another_run() -> N
         await orchestrator.ingest(request=changed, items=_inputs())
 
     assert len(ledger.runs) == 1
+
+
+@pytest.mark.asyncio
+async def test_batch_api_service_reads_ordered_independent_item_progress() -> None:
+    orchestrator, _, ledger = _orchestrator()
+    result = await orchestrator.ingest(request=_request(), items=_inputs())
+    service = OrchestratedBatchDocumentIngestionService(
+        orchestrator=orchestrator,
+        uow_factory=lambda context: _Uow(ledger),
+    )
+    context = SimpleNamespace(
+        scope=EnvironmentScope(
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+        )
+    )
+
+    snapshot = await service.status(
+        context=context,  # type: ignore[arg-type]
+        run_id=result.run.ingestion_run_id,
+    )
+
+    assert snapshot is not None
+    assert snapshot.run_state is IngestionRunState.PARTIALLY_SUCCEEDED
+    assert [item.input_identity for item in snapshot.items] == ["file-a", "file-b"]
+    assert [item.item_state for item in snapshot.items] == [
+        IngestionItemState.PROCESSED,
+        IngestionItemState.PROCESSING_FAILED,
+    ]
+    assert snapshot.items[1].retryable is True
+    assert snapshot.items[1].failure_ids == (_id("failure:file-b"),)

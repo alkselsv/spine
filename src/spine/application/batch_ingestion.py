@@ -253,6 +253,16 @@ class BatchDocumentIngestionOrchestrator:
             head = await uow.ingestion.resolve_run_head(actual_run.ingestion_run_id)
             if head is not None and head.state is IngestionRunState.REQUESTED:
                 await self._advance_run(uow, actual_run, IngestionRunState.RECEIVING, now)
+                head = await uow.ingestion.resolve_run_head(
+                    actual_run.ingestion_run_id
+                )
+            if head is not None and head.state is IngestionRunState.RECEIVING:
+                await self._advance_run(
+                    uow,
+                    actual_run,
+                    IngestionRunState.PROCESSING,
+                    now,
+                )
             await uow.commit()
         return actual_run, tuple(ledger_items), created.replay
 
