@@ -27,6 +27,10 @@ from spine.infrastructure.persistence.in_memory import InMemoryPersistence
 from spine.infrastructure.persistence.access_policies import (
     InMemoryAccessPolicyRepository,
 )
+from spine.application.document_ingestion import (
+    PROJECTION_REQUEST_EVENT_TYPE,
+    PROJECTION_REQUEST_SCHEMA_VERSION,
+)
 
 from .adapter import (
     AuditPersistenceAdapter,
@@ -53,6 +57,11 @@ async def create_in_memory_adapter() -> DeliveryPersistenceAdapter:
         event_type="workspace.created",
         schema_version=1,
         consumer_name="workspace_projection",
+    )
+    delivery_routes.register(
+        event_type=PROJECTION_REQUEST_EVENT_TYPE,
+        schema_version=PROJECTION_REQUEST_SCHEMA_VERSION,
+        consumer_name="projection_request",
     )
     delivery_routes.seal()
     audit_events = AuditEventRegistry.with_default_families()

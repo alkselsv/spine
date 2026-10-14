@@ -4,6 +4,11 @@ from uuid import UUID
 
 import pytest
 
+from spine.application.document_ingestion import (
+    PROJECTION_REQUEST_EVENT_TYPE,
+    PROJECTION_REQUEST_SCHEMA_VERSION,
+    ProjectionRequestPayload,
+)
 from spine.application.persistence.errors import (
     InvalidPersistenceContextError,
     OutboxConflictError,
@@ -16,6 +21,7 @@ from spine.domain.workspaces import Environment, Workspace
 from .adapter import PersistenceAdapter
 from .ids import synthetic_uuid
 from .outbox_events import WorkspaceCreatedPayload
+from .test_idempotency_repository_contract import persist_environment, persist_workspace
 
 
 def workspace(workspace_id: UUID) -> Workspace:
@@ -51,6 +57,39 @@ def intent(
         ),
         producer_deduplication_id=producer_deduplication_id,
         trace_id=trace_id,
+    )
+
+
+def projection_intent(
+    adapter: PersistenceAdapter,
+    *,
+    workspace_id: UUID,
+    environment_id: UUID,
+    event_id: UUID,
+    item_id: UUID,
+    revision_id: UUID,
+    trace_id: UUID,
+):
+    return adapter.outbox_events.build_intent(
+        event_id=event_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        event_type=PROJECTION_REQUEST_EVENT_TYPE,
+        schema_version=PROJECTION_REQUEST_SCHEMA_VERSION,
+        payload=ProjectionRequestPayload(
+            ingestion_run_id=synthetic_uuid(2140),
+            ingestion_run_source_id=item_id,
+            source_revision_id=revision_id,
+            processing_receipt_id=synthetic_uuid(2141),
+            processor_kind="document-ingestion",
+            parser_version="text-markdown:v1",
+            parser_config_reference="text-markdown-default:v1",
+            locator_contract_version="physical-line-codepoint:v1",
+        ),
+        producer_deduplication_id=f"projection-request:{item_id}",
+        trace_id=trace_id,
+        correlation_id=synthetic_uuid(2140),
+        causation_id=synthetic_uuid(2142),
     )
 
 
@@ -242,3 +281,68 @@ async def test_duplicate_producer_identity_has_stable_conflict(
     with pytest.raises(OutboxConflictError, match="producer identity"):
         async with persistence_adapter.uow_factory(context) as uow:
             await uow.outbox.append(duplicate)
+
+
+@pytest.mark.asyncio
+async def test_changed_projection_digest_conflicts_on_stable_item_identity(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(2120)
+    environment_id = synthetic_uuid(2121)
+    item_id = synthetic_uuid(2122)
+    await persist_workspace(persistence_adapter, workspace_id)
+    await persist_environment(persistence_adapter, workspace_id, environment_id)
+    context = persistence_adapter.environment_context(workspace_id, environment_id)
+    first = projection_intent(
+        persistence_adapter,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        event_id=synthetic_uuid(2123),
+        item_id=item_id,
+        revision_id=synthetic_uuid(2124),
+        trace_id=context.trace_id,
+    )
+    changed_digest = projection_intent(
+        persistence_adapter,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        event_id=synthetic_uuid(2125),
+        item_id=item_id,
+        revision_id=synthetic_uuid(2126),
+        trace_id=context.trace_id,
+    )
+    async with persistence_adapter.uow_factory(context) as uow:
+        await uow.outbox.append(first)
+        await uow.commit()
+
+    with pytest.raises(OutboxConflictError, match="producer identity"):
+        async with persistence_adapter.uow_factory(context) as uow:
+            await uow.outbox.append(changed_digest)
+
+
+@pytest.mark.asyncio
+async def test_projection_request_cannot_cross_environment_scope(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(2130)
+    environment_id = synthetic_uuid(2131)
+    other_environment_id = synthetic_uuid(2132)
+    await persist_workspace(persistence_adapter, workspace_id)
+    await persist_environment(persistence_adapter, workspace_id, environment_id)
+    await persist_environment(persistence_adapter, workspace_id, other_environment_id)
+    other_context = persistence_adapter.environment_context(
+        workspace_id, other_environment_id
+    )
+    protected = projection_intent(
+        persistence_adapter,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        event_id=synthetic_uuid(2133),
+        item_id=synthetic_uuid(2134),
+        revision_id=synthetic_uuid(2135),
+        trace_id=other_context.trace_id,
+    )
+
+    with pytest.raises(InvalidPersistenceContextError, match="scope"):
+        async with persistence_adapter.uow_factory(other_context) as uow:
+            await uow.outbox.append(protected)

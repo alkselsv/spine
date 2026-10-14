@@ -24,6 +24,11 @@ from spine.application.outbox.dispatch import (
 from spine.application.persistence.delivery import OutboxDeliveryStatus
 from spine.application.persistence.errors import UnexpectedPersistenceError
 from spine.application.persistence.outbox import OutboxIntent
+from spine.application.document_ingestion import (
+    PROJECTION_REQUEST_EVENT_TYPE,
+    PROJECTION_REQUEST_SCHEMA_VERSION,
+    ProjectionRequestPayload,
+)
 from spine.domain.audit import AuditOutcome
 from spine.infrastructure.diagnostics import RecordingDiagnosticSink
 from tests.contracts.persistence.conftest import create_in_memory_adapter
@@ -31,6 +36,10 @@ from tests.contracts.persistence.adapter import DeliveryPersistenceAdapter
 from tests.contracts.persistence.ids import synthetic_uuid
 from tests.contracts.persistence.test_outbox_writer_contract import intent, workspace
 from tests.contracts.persistence.outbox_events import WorkspaceCreatedPayload
+from tests.contracts.persistence.test_idempotency_repository_contract import (
+    persist_environment,
+    persist_workspace,
+)
 
 
 class IdempotentRecordingConsumer:
@@ -621,10 +630,128 @@ async def test_acknowledgement_loss_redelivers_one_logical_consumer_effect() -> 
     assert report.delivered == 1
     assert consumer.effects == {event_id}
     assert len(consumer.contexts) == 2
+
     delivery = await adapter.delivery_repository.resolve(event_id)
     assert delivery is not None
     assert delivery.attempt_count == 2
     assert delivery.status is OutboxDeliveryStatus.DELIVERED
+
+
+@pytest.mark.asyncio
+async def test_projection_request_redelivery_has_one_logical_consumer_effect() -> None:
+    adapter = await create_in_memory_adapter()
+    workspace_id = synthetic_uuid(6720)
+    environment_id = synthetic_uuid(6721)
+    event_id = synthetic_uuid(6722)
+    await persist_workspace(adapter, workspace_id)
+    await persist_environment(adapter, workspace_id, environment_id)
+    context = adapter.environment_context(workspace_id, environment_id)
+    projection_request = adapter.outbox_events.build_intent(
+        event_id=event_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        event_type=PROJECTION_REQUEST_EVENT_TYPE,
+        schema_version=PROJECTION_REQUEST_SCHEMA_VERSION,
+        payload=ProjectionRequestPayload(
+            ingestion_run_id=synthetic_uuid(6723),
+            ingestion_run_source_id=synthetic_uuid(6724),
+            source_revision_id=synthetic_uuid(6725),
+            processing_receipt_id=synthetic_uuid(6726),
+            processor_kind="document-ingestion",
+            parser_version="text-markdown:v1",
+            parser_config_reference="text-markdown-default:v1",
+            locator_contract_version="physical-line-codepoint:v1",
+        ),
+        producer_deduplication_id=f"projection-request:{synthetic_uuid(6724)}",
+        trace_id=context.trace_id,
+        correlation_id=synthetic_uuid(6723),
+        causation_id=synthetic_uuid(6727),
+    )
+    async with adapter.uow_factory(context) as uow:
+        await uow.outbox.append(projection_request)
+        await uow.commit()
+
+    consumer = IdempotentRecordingConsumer()
+    consumers = OutboxConsumerRegistry()
+    consumers.register("projection_request", consumer)
+    repository = FailBeforeFirstFinalization(adapter.delivery_repository)
+    base = datetime(2026, 10, 12, 17, tzinfo=timezone.utc)
+    dispatcher, _, _ = _build_dispatcher(
+        adapter,
+        consumers=consumers,
+        repository=repository,  # type: ignore[arg-type]
+        clock=iter(
+            (
+                base,
+                base + timedelta(seconds=1),
+                base + timedelta(seconds=30),
+                base + timedelta(seconds=31),
+            )
+        ).__next__,
+        audit_id_start=6728,
+    )
+
+    with pytest.raises(UnexpectedPersistenceError):
+        await dispatcher.dispatch_batch(limit=1, worker_identity="worker_alpha")
+    report = await dispatcher.dispatch_batch(limit=1, worker_identity="worker_beta")
+
+    assert report.delivered == 1
+    assert consumer.effects == {event_id}
+    assert len(consumer.contexts) == 2
+
+
+@pytest.mark.asyncio
+async def test_concurrent_projection_request_dispatch_has_one_logical_consumer_effect() -> None:
+    adapter = await create_in_memory_adapter()
+    workspace_id = synthetic_uuid(6730)
+    environment_id = synthetic_uuid(6731)
+    event_id = synthetic_uuid(6732)
+    await persist_workspace(adapter, workspace_id)
+    await persist_environment(adapter, workspace_id, environment_id)
+    context = adapter.environment_context(workspace_id, environment_id)
+    projection_request = adapter.outbox_events.build_intent(
+        event_id=event_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        event_type=PROJECTION_REQUEST_EVENT_TYPE,
+        schema_version=PROJECTION_REQUEST_SCHEMA_VERSION,
+        payload=ProjectionRequestPayload(
+            ingestion_run_id=synthetic_uuid(6733),
+            ingestion_run_source_id=synthetic_uuid(6734),
+            source_revision_id=synthetic_uuid(6735),
+            processing_receipt_id=synthetic_uuid(6736),
+            processor_kind="document-ingestion",
+            parser_version="text-markdown:v1",
+            parser_config_reference="text-markdown-default:v1",
+            locator_contract_version="physical-line-codepoint:v1",
+        ),
+        producer_deduplication_id=f"projection-request:{synthetic_uuid(6734)}",
+        trace_id=context.trace_id,
+        correlation_id=synthetic_uuid(6733),
+        causation_id=synthetic_uuid(6737),
+    )
+    async with adapter.uow_factory(context) as uow:
+        await uow.outbox.append(projection_request)
+        await uow.commit()
+
+    consumer = IdempotentRecordingConsumer()
+    consumers = OutboxConsumerRegistry()
+    consumers.register("projection_request", consumer)
+    dispatcher, _, _ = _build_dispatcher(
+        adapter,
+        consumers=consumers,
+        clock=lambda: datetime(2026, 10, 12, 18, tzinfo=timezone.utc),
+        audit_id_start=6738,
+    )
+
+    reports = await asyncio.gather(
+        dispatcher.dispatch_batch(limit=1, worker_identity="worker_concurrent_a"),
+        dispatcher.dispatch_batch(limit=1, worker_identity="worker_concurrent_b"),
+    )
+
+    assert sum(value.claimed for value in reports) == 1
+    assert sum(value.delivered for value in reports) == 1
+    assert consumer.effects == {event_id}
 
 
 class BarrierConsumer(IdempotentRecordingConsumer):

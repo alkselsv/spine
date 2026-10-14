@@ -11,6 +11,11 @@ from spine.application.persistence.canonical import (
     CANONICAL_ACCEPTANCE_OUTBOX_SCHEMA_VERSION,
     CanonicalAcceptanceOutboxPayload,
 )
+from spine.application.document_ingestion import (
+    PROJECTION_REQUEST_EVENT_TYPE,
+    PROJECTION_REQUEST_SCHEMA_VERSION,
+    ProjectionRequestPayload,
+)
 
 
 class WorkspaceCreatedPayload(BaseModel):
@@ -31,5 +36,10 @@ def create_outbox_event_registry() -> OutboxEventRegistry:
         event_type=CANONICAL_ACCEPTANCE_OUTBOX_EVENT_TYPE,
         schema_version=CANONICAL_ACCEPTANCE_OUTBOX_SCHEMA_VERSION,
         payload_type=CanonicalAcceptanceOutboxPayload,
+    )
+    registry.register(
+        event_type=PROJECTION_REQUEST_EVENT_TYPE,
+        schema_version=PROJECTION_REQUEST_SCHEMA_VERSION,
+        payload_type=ProjectionRequestPayload,
     )
     return registry

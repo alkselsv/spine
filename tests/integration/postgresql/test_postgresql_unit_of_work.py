@@ -91,10 +91,12 @@ from tests.contracts.persistence.outbox_events import (
 )
 from tests.contracts.persistence.test_outbox_writer_contract import (
     test_canonical_mutation_and_intent_become_visible_only_after_commit as contract_outbox_commit,
+    test_changed_projection_digest_conflicts_on_stable_item_identity as contract_outbox_projection_conflict,
     test_duplicate_producer_identity_has_stable_conflict as contract_outbox_producer_conflict,
     test_environment_intent_requires_matching_environment_scope as contract_outbox_environment_scope,
     test_intent_scope_must_exactly_match_unit_of_work_scope as contract_outbox_scope,
     test_missing_event_identity_is_generated_and_returned as contract_outbox_generated_identity,
+    test_projection_request_cannot_cross_environment_scope as contract_outbox_projection_scope,
     test_rollback_discards_canonical_mutation_and_intent as contract_outbox_rollback,
     test_trace_mismatch_is_terminal_and_discards_pending_mutation as contract_outbox_trace_scope,
     workspace as outbox_workspace,
@@ -664,6 +666,8 @@ async def test_postgresql_adapter_satisfies_idempotency_contract(
         contract_outbox_scope,
         contract_outbox_environment_scope,
         contract_outbox_producer_conflict,
+        contract_outbox_projection_conflict,
+        contract_outbox_projection_scope,
         contract_outbox_generated_identity,
         contract_outbox_trace_scope,
     ),
