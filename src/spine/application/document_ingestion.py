@@ -80,6 +80,7 @@ from spine.application.persistence.outbox import (
     OpaqueObjectReference,
     OutboxEventRegistry,
 )
+from spine.ingestion.parsers import DOCX_MEDIA_TYPE, XLSX_MEDIA_TYPE
 
 
 PROCESSING_REQUEST_EVENT_TYPE = "ingestion.processing.requested"
@@ -646,7 +647,14 @@ class DocumentIngestionOrchestrator:
         failure: IngestionFailure | None = None
         warning: IngestionWarning | None = None
         try:
-            if revision.media_type not in {"text/plain", "text/markdown", "text/x-markdown"}:
+            if revision.media_type not in {
+                "text/plain",
+                "text/markdown",
+                "text/x-markdown",
+                "application/pdf",
+                DOCX_MEDIA_TYPE,
+                XLSX_MEDIA_TYPE,
+            }:
                 raise UnsupportedDocumentFormat()
             stream = self.validation_reader.read_finalized(
                 workspace_id=request.workspace_id,
@@ -689,7 +697,7 @@ class DocumentIngestionOrchestrator:
             request=request,
             item=item,
             revision=revision,
-            artifact=artifact if status in {DocumentIngestionStatus.SUCCEEDED, DocumentIngestionStatus.PARTIAL} else None,
+            artifact=artifact,
             status=status,
             warning=warning,
             failure=failure,
@@ -887,24 +895,51 @@ class DocumentIngestionOrchestrator:
             "unsupported_structure": "unsupported_format",
             "malformed_structure": "invalid_locator",
             "bounded_input": "policy_excluded",
+            "blank_page": "invalid_locator",
+            "malformed_document": "invalid_locator",
+            "extraction_failed": "unreadable_content",
+            "unlocatable_content": "unreadable_content",
+            "unsupported_story": "unsupported_format",
+            "unsupported_drawing": "unsupported_format",
+            "ambiguous_merged_cell": "invalid_locator",
+            "formula_without_cached_value": "unsupported_format",
+            "hidden_content": "unsupported_format",
+            "external_link": "unsupported_format",
         }
         exclusions = () if artifact is None else tuple(
-            ProcessingExclusion(code=exclusion_codes[exclusion.code], count=exclusion.count)
+            ProcessingExclusion(
+                schema_version="ingestion-exclusion:v1",
+                code=exclusion_codes.get(exclusion.code, "unsupported_format"),
+                count=exclusion.count,
+            )
             for exclusion in artifact.exclusions
         )
+        output_artifact = (
+            artifact
+            if artifact is not None
+            and status
+            in {DocumentIngestionStatus.SUCCEEDED, DocumentIngestionStatus.PARTIAL}
+            else None
+        )
+        (
+            parser_name,
+            parser_version,
+            parser_config_reference,
+            locator_contract_version,
+        ) = _parser_metadata(revision.media_type, artifact)
         return ProcessingReceipt(
             processing_receipt_id=_id(request, "processing-receipt"), workspace_id=request.workspace_id,
             environment_id=request.environment_id, ingestion_run_source_id=item.ingestion_run_source_id,
             binding_id=_id(request, "binding"), source_object_id=revision.source_object_id,
             source_revision_id=revision.revision_id, processor_kind="document-ingestion",
-            parser_name="text" if revision.media_type == "text/plain" else "markdown" if revision.media_type in {"text/markdown", "text/x-markdown"} else "unsupported",
-            parser_version="text-markdown:v1" if revision.media_type in {"text/plain", "text/markdown", "text/x-markdown"} else "unsupported:v1",
-            parser_config_reference="text-markdown-default:v1" if revision.media_type in {"text/plain", "text/markdown", "text/x-markdown"} else "unsupported:v1",
-            locator_contract_version="physical-line-codepoint:v1" if artifact is not None else "unsupported:v1",
+            parser_name=parser_name,
+            parser_version=parser_version,
+            parser_config_reference=parser_config_reference,
+            locator_contract_version=locator_contract_version,
             original_sha256=revision.original_sha256 or "0" * 64,
-            output_kind="parsed_document" if artifact is not None else None,
-            output_reference=artifact.artifact_id if artifact is not None else None,
-            output_digest=artifact.artifact_digest if artifact is not None else None,
+            output_kind="parsed_document" if output_artifact is not None else None,
+            output_reference=output_artifact.artifact_id if output_artifact is not None else None,
+            output_digest=output_artifact.artifact_digest if output_artifact is not None else None,
             coverage=coverage, exclusions=exclusions,
             warning_ids=(warning.ingestion_warning_id,) if warning else (),
             failure_ids=(failure.ingestion_failure_id,) if failure else (),
@@ -1004,7 +1039,43 @@ def _media_type(request: DocumentUploadCommand) -> str:
     if request.declared_media_type:
         return request.declared_media_type.strip().lower()
     suffix = PurePath((request.declared_filename or "").replace("\\", "/")).suffix.lower()
-    return {".txt": "text/plain", ".md": "text/markdown"}.get(suffix, "application/octet-stream")
+    return {
+        ".txt": "text/plain",
+        ".md": "text/markdown",
+        ".pdf": "application/pdf",
+        ".docx": DOCX_MEDIA_TYPE,
+        ".xlsx": XLSX_MEDIA_TYPE,
+    }.get(suffix, "application/octet-stream")
+
+
+def _parser_metadata(
+    media_type: str,
+    artifact: ParsedDocument | None,
+) -> tuple[str, str, str, str]:
+    """Return stable parser identity even when parsing ends in a failure."""
+
+    if artifact is not None:
+        return (
+            artifact.parser_name,
+            artifact.parser_version,
+            artifact.parser_config_reference,
+            artifact.locator_contract_version,
+        )
+    if media_type == "text/plain":
+        return (
+            "text",
+            "text-markdown:v1",
+            "text-markdown-default:v1",
+            "physical-line-codepoint:v1",
+        )
+    if media_type in {"text/markdown", "text/x-markdown"}:
+        return (
+            "markdown",
+            "text-markdown:v1",
+            "text-markdown-default:v1",
+            "physical-line-codepoint:v1",
+        )
+    return "unsupported", "unsupported:v1", "unsupported:v1", "unsupported:v1"
 
 
 def _disposition(outcome: ValidationOutcome) -> AdmissionDisposition:
