@@ -237,6 +237,7 @@ def _repair_plan(status: str) -> tuple[ProjectionRepairPlan, ProjectionEffect]:
         source_revision_id=UUID(int=21),
         revision_digest="e" * 64,
         revision_number=1,
+        locator_contract_version="locator:v1",
     )
     rebuild = ShadowRebuildPlan(
         workspace_id=WORKSPACE,

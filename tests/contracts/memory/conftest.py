@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from spine.memory.cognee.context_projection import CogneeContextProjection
 from spine.memory.fake import DeterministicContextProjection, DeterministicPhysicalStore
 
 from .adapter import (
@@ -32,9 +33,42 @@ def create_deterministic_context_projection() -> ContextProjectionContractAdapte
     )
 
 
+def create_composed_projection(
+    *,
+    fail_once_for: tuple[str, ...] = (),
+    fail_for: tuple[str, ...] = (),
+) -> CogneeContextProjection:
+    retrieval = DeterministicContextProjection()
+    return CogneeContextProjection(
+        effect_store=DeterministicPhysicalStore(
+            fail_once_for=fail_once_for,
+            fail_for=fail_for,
+        ),
+        graph_effect_store=DeterministicPhysicalStore(),
+        retrieval=retrieval,
+    )
+
+
+def create_composed_context_projection() -> ContextProjectionContractAdapter:
+    retrieval = DeterministicContextProjection()
+    projection = CogneeContextProjection(
+        effect_store=DeterministicPhysicalStore(),
+        graph_effect_store=DeterministicPhysicalStore(),
+        retrieval=retrieval,
+    )
+    return ContextProjectionContractAdapter(
+        projection=projection,
+        seed_retrieval=retrieval.seed_retrieval,
+        create_projection=create_composed_projection,
+    )
+
+
 @pytest.fixture(
-    params=[create_deterministic_context_projection],
-    ids=["deterministic-fake"],
+    params=[
+        create_deterministic_context_projection,
+        create_composed_context_projection,
+    ],
+    ids=["deterministic-fake", "cognee-composition"],
 )
 def context_projection_factory(
     request: pytest.FixtureRequest,

@@ -22,6 +22,7 @@ from spine.memory.contracts import (
     ProjectionConfigVersion,
     ProjectionNamespace,
     ProjectionOperation,
+    ProjectionSourceRevision,
 )
 from spine.memory.cognee.models.baseline import (
     ChunkFixture,
@@ -317,7 +318,7 @@ class ExtractionResult(DefinitionModel):
 class GraphProjectionRequest(DefinitionModel):
     """Server-scoped input for writing one extraction result physically."""
 
-    schema_version: Literal["graph-projection-request:v1"] = "graph-projection-request:v1"
+    schema_version: Literal["graph-projection-request:v2"] = "graph-projection-request:v2"
     operation: Literal[
         ProjectionOperation.PROJECT,
         ProjectionOperation.UPDATE,
@@ -333,6 +334,7 @@ class GraphProjectionRequest(DefinitionModel):
     projection_config: ProjectionConfigVersion
     canonical_boundary: CanonicalBoundary
     physical_namespace: ProjectionNamespace
+    source_revision: ProjectionSourceRevision
     result: ExtractionResult
 
     @model_validator(mode="after")
@@ -347,6 +349,21 @@ class GraphProjectionRequest(DefinitionModel):
             self.environment_id,
         ):
             raise ValueError("extraction result scope must match graph projection request")
+        matching_sources = tuple(
+            source
+            for source in self.result.source_revisions
+            if source.source_revision_id == self.source_revision.source_revision_id
+        )
+        if len(matching_sources) != 1:
+            raise ValueError("graph projection source revision must be unambiguous")
+        source = matching_sources[0]
+        if (
+            source.source_object_id != self.source_revision.source_object_id
+            or source.revision_digest != self.source_revision.revision_digest
+            or source.revision_number != self.source_revision.revision_number
+            or source.status != self.source_revision.status
+        ):
+            raise ValueError("graph projection source lineage must match extraction")
         return self
 
 

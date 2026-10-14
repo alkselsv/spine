@@ -12,6 +12,7 @@ from spine.memory.contracts import (
     ProjectionConfigVersion,
     ProjectionNamespaceState,
     ProjectionOperation,
+    ProjectionSourceRevision,
 )
 from spine.memory.cognee.extraction import (
     EntityCandidate,
@@ -36,6 +37,8 @@ PARTITION_ID = UUID("70000000-0000-4000-8000-000000000001")
 CONFIG_ID = UUID("80000000-0000-4000-8000-000000000001")
 BOUNDARY_ID = UUID("90000000-0000-4000-8000-000000000001")
 DATASET_ID = UUID("a0000000-0000-4000-8000-000000000001")
+PROCESSING_RECEIPT_ID = UUID("b0000000-0000-4000-8000-000000000001")
+LOCATOR_CONTRACT_VERSION = "stable-locator:r1"
 
 
 @dataclass(frozen=True)
@@ -225,6 +228,11 @@ def request(
             state=ProjectionNamespaceState.ACTIVE,
         )
     )
+    source = next(
+        item
+        for item in result.source_revisions
+        if item.status == ("tombstoned" if operation is ProjectionOperation.REMOVE else "current")
+    )
     return GraphProjectionRequest(
         operation=operation,
         workspace_id=result.workspace_id,
@@ -236,6 +244,15 @@ def request(
         projection_config=config,
         canonical_boundary=boundary,
         physical_namespace=namespace,
+        source_revision=ProjectionSourceRevision(
+            source_object_id=source.source_object_id,
+            source_revision_id=source.source_revision_id,
+            revision_digest=source.revision_digest,
+            revision_number=source.revision_number,
+            status=source.status,
+            processing_receipt_id=PROCESSING_RECEIPT_ID,
+            locator_contract_version=LOCATOR_CONTRACT_VERSION,
+        ),
         result=result,
     )
 
@@ -261,8 +278,11 @@ async def test_graph_writer_preserves_approved_artifacts_and_evidence_lineage() 
         item.external_metadata for item in items if item.external_metadata["artifact_id"] == "entity-acme"
     )
     assert entity_metadata["source_revision_id"] == str(result.entities[0].source_revision_id)
+    assert entity_metadata["processing_receipt_id"] == str(PROCESSING_RECEIPT_ID)
+    assert entity_metadata["locator_contract_version"] == LOCATOR_CONTRACT_VERSION
     assert entity_metadata["ontology_version"] == result.ontology_version
     assert entity_metadata["evidence"][0]["evidence_id"] == "evidence-acme"
+    assert len(entity_metadata["evidence"][0]["evidence_digest"]) == 64
     physical = PhysicalArtifact.from_graph_mapping(written.mappings[0])
     assert physical.projection_config_digest == request(result).projection_config.config_digest
     assert physical.locators[0].digest

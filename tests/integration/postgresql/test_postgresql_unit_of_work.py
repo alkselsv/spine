@@ -42,6 +42,9 @@ from spine.application.persistence.idempotency import (
 )
 from spine.application.persistence.boundary import CanonicalBoundaryCaptureCommand
 from spine.application.persistence.outbox import OpaqueObjectReference
+from spine.application.persistence.unit_of_work_activity import (
+    unit_of_work_is_active,
+)
 from spine.application.persistence.repositories import SourceObservationCommand
 from spine.application.access_policies import (
     AccessPolicyActivationCommand,
@@ -656,6 +659,22 @@ async def test_postgresql_adapter_satisfies_shared_contract(
     contract: ContractTest,
 ) -> None:
     await contract(postgresql_adapter)
+
+
+async def test_postgresql_unit_of_work_tracks_activity_until_context_exit(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(3670)
+
+    assert unit_of_work_is_active() is False
+    async with postgresql_adapter.uow_factory(
+        postgresql_adapter.workspace_context(workspace_id)
+    ) as uow:
+        assert unit_of_work_is_active() is True
+        await uow.rollback()
+        assert unit_of_work_is_active() is True
+
+    assert unit_of_work_is_active() is False
 
 
 @pytest.mark.parametrize(
