@@ -19,7 +19,8 @@ versions, locator-contract version, coverage, exclusions and segment content
 digests. Each `ParsedSegment` has a digest-derived UUID and a format-specific
 locator governed by the document's independently versioned locator contract.
 TXT/Markdown use physical-line, raw-Unicode-code-point locators; Markdown
-heading paths are context and do not change locator semantics.
+heading paths are context and do not change locator semantics. The XLSX adapter
+uses a worksheet name, physical row and A1 cell/range locator.
 
 PDF parsing uses a lazy `pypdf` adapter. Its parser identity pins the installed
 `pypdf` version, and its configuration identity pins byte, page, per-page text
@@ -35,6 +36,13 @@ code-point range within the paragraph. The parser identity pins the installed
 `python-docx` version; the configuration identity pins compressed input,
 archive-entry, uncompressed-size, structural-block, paragraph-text,
 total-extracted-text and nesting-depth limits.
+
+The production XLSX adapter emits only visible, scalar cell values and cached
+formula values. Hidden content, external links, unsupported structures,
+uncached formulas and parser limits are typed exclusions, so incomplete output
+is never reported as complete. XLSX locator validation reopens the exact
+authorized original and rejects source-digest, parser-version or
+locator-contract mismatches.
 
 TXT/Markdown parsing is strict UTF-8 and bounded. Unsupported Markdown fenced
 structures and malformed input produce typed exclusions; partial or failed

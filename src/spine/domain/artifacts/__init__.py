@@ -1,14 +1,9 @@
 """Typed outputs passed between workflow steps."""
 
-from spine.domain.artifacts.models import (
+from .models import (
     Artifact,
     ArtifactRef,
     ArtifactState,
-    validate_artifact_lineage,
-)
-
-__all__ = ["Artifact", "ArtifactRef", "ArtifactState", "validate_artifact_lineage"]
-from .models import (
     ExtractedPageText,
     ExtractedOoxmlText,
     Locator,
@@ -20,11 +15,16 @@ from .models import (
     ParsedDocument,
     ParsedSegment,
     PhysicalLineLocator,
+    XlsxCellLocator,
     parsed_document_digest,
     resolve_locator,
+    validate_artifact_lineage,
 )
 
 __all__ = [
+    "Artifact",
+    "ArtifactRef",
+    "ArtifactState",
     "ExtractedPageText",
     "ExtractedOoxmlText",
     "Locator",
@@ -36,6 +36,8 @@ __all__ = [
     "ParsedDocument",
     "ParsedSegment",
     "PhysicalLineLocator",
+    "XlsxCellLocator",
     "parsed_document_digest",
     "resolve_locator",
+    "validate_artifact_lineage",
 ]

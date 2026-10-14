@@ -166,8 +166,28 @@ class ExtractedPageText(DefinitionModel):
     text: str
 
 
+class XlsxCellLocator(DefinitionModel):
+    """A physical worksheet cell or merged range in an XLSX revision."""
+
+    kind: Literal["xlsx_cell"] = "xlsx_cell"
+    schema_version: Literal["locator:xlsx-cell:v1"] = "locator:xlsx-cell:v1"
+    sheet: str = Field(min_length=1)
+    row: StrictInt = Field(gt=0)
+    cell_range: str = Field(pattern=r"^[A-Z]+[1-9][0-9]*(?::[A-Z]+[1-9][0-9]*)?$")
+
+    @model_validator(mode="after")
+    def validate_coordinates(self) -> "XlsxCellLocator":
+        start, end = _parse_a1_range(self.cell_range)
+        if start[1] != self.row:
+            raise ValueError("locator row must match the first A1 row")
+        if end is not None and (end[1] < start[1] or end[0] < start[0]):
+            raise ValueError("locator range must be ordered")
+        return self
+
+
+
 Locator = Annotated[
-    PhysicalLineLocator | PageTextLocator | OoxmlTextLocator,
+    PhysicalLineLocator | PageTextLocator | OoxmlTextLocator | XlsxCellLocator,
     Field(discriminator="kind"),
 ]
 
@@ -188,6 +208,9 @@ class ParseExclusion(DefinitionModel):
         "unsupported_story",
         "unsupported_drawing",
         "ambiguous_merged_cell",
+        "formula_without_cached_value",
+        "hidden_content",
+        "external_link",
     ]
     count: StrictInt = Field(gt=0)
     locator: Locator | None = None
@@ -427,6 +450,8 @@ def resolve_locator(
     *,
     expected_text: str | None = None,
 ) -> str:
+    if isinstance(locator, XlsxCellLocator):
+        raise TypeError("XLSX locator source must be resolved by the XLSX parser")
     if isinstance(locator, OoxmlTextLocator):
         if not isinstance(source, ExtractedOoxmlText):
             raise TypeError("OOXML locator source must identify one paragraph path")
@@ -474,3 +499,20 @@ def resolve_locator(
 
 def _canonical_json(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+
+def _parse_a1_range(value: str) -> tuple[tuple[int, int], tuple[int, int] | None]:
+    parts = value.split(":")
+    coordinates = tuple(_parse_a1_coordinate(part) for part in parts)
+    return coordinates[0], coordinates[1] if len(coordinates) == 2 else None
+
+
+def _parse_a1_coordinate(value: str) -> tuple[int, int]:
+    split = next((index for index, character in enumerate(value) if character.isdigit()), len(value))
+    column, row = value[:split], value[split:]
+    if not column or not row:
+        raise ValueError("invalid A1 coordinate")
+    column_number = 0
+    for character in column:
+        column_number = column_number * 26 + ord(character) - ord("A") + 1
+    return column_number, int(row)

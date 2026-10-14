@@ -28,6 +28,7 @@ from spine.domain.artifacts import (
     ParsedDocument,
     ParsedSegment,
     PhysicalLineLocator,
+    XlsxCellLocator,
 )
 
 __all__ = [
@@ -56,4 +57,5 @@ __all__ = [
     "ParsedDocument",
     "ParsedSegment",
     "PhysicalLineLocator",
+    "XlsxCellLocator",
 ]
