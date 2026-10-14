@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from spine.application.persistence.command_digest import CommandDigest, digest_command
 from spine.application.persistence.context import PersistenceOperation
@@ -16,7 +18,10 @@ from spine.application.persistence.idempotency import (
 )
 from spine.domain.projections import (
     OntologyVersion,
+    ProjectionActivation,
+    ProjectionActivationKind,
     ProjectionConfigVersion,
+    ProjectionDrift,
     ProjectionPartition,
     ProjectionReceipt,
     ProjectionReconciliationResult,
@@ -25,18 +30,68 @@ from spine.domain.projections import (
     ProjectionRunTransition,
     ProjectionSnapshot,
     ProjectionSnapshotMember,
+    PublishedActivePublication,
     ProjectionValidation,
     SourceProjectionReference,
+    UnavailableActivePublication,
+    UnpublishedActivePublication,
 )
 
 
-PROJECTION_RUN_SCHEMA_VERSION = 1
+PROJECTION_RUN_SCHEMA_VERSION = 2
 PROJECTION_RECEIPT_SCHEMA_VERSION = 1
 PROJECTION_SEAL_SCHEMA_VERSION = 1
 PROJECTION_RESULT_SCHEMA_VERSION = 1
 PROJECTION_VALIDATION_SCHEMA_VERSION = 1
 PROJECTION_SNAPSHOT_SCHEMA_VERSION = 1
 PROJECTION_RECONCILIATION_SCHEMA_VERSION = 1
+PROJECTION_ACTIVATION_SCHEMA_VERSION = 1
+PROJECTION_ACTIVATED_OUTBOX_EVENT_TYPE = "projection.activated"
+PROJECTION_CATCH_UP_OUTBOX_EVENT_TYPE = "projection.catch_up_requested"
+PROJECTION_OUTBOX_SCHEMA_VERSION = 1
+
+
+class ProjectionActivatedOutboxPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    projection_activation_id: UUID
+    projection_snapshot_id: UUID
+    projection_kind: str = Field(pattern=r"^[a-z][a-z0-9_.:-]{0,63}$")
+    activation_generation: int = Field(ge=1)
+    activation_kind: ProjectionActivationKind
+    canonical_boundary_id: UUID
+    accepted_through_generation: int = Field(ge=0)
+    drift_count: int = Field(ge=0)
+    audit_event_id: UUID
+
+
+class ProjectionCatchUpRequestedOutboxPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    projection_drift_id: UUID
+    projection_activation_id: UUID
+    projection_kind: str = Field(pattern=r"^[a-z][a-z0-9_.:-]{0,63}$")
+    activation_generation: int = Field(ge=1)
+    canonical_acceptance_id: UUID
+    source_object_id: UUID
+    source_revision_id: UUID
+    accepted_generation: int = Field(ge=1)
+
+
+def register_projection_outbox_events(registry: object) -> None:
+    """Add the Issue #89 event schemas to an adapter-owned registry."""
+
+    register = getattr(registry, "register")
+    register(
+        event_type=PROJECTION_ACTIVATED_OUTBOX_EVENT_TYPE,
+        schema_version=PROJECTION_OUTBOX_SCHEMA_VERSION,
+        payload_type=ProjectionActivatedOutboxPayload,
+    )
+    register(
+        event_type=PROJECTION_CATCH_UP_OUTBOX_EVENT_TYPE,
+        schema_version=PROJECTION_OUTBOX_SCHEMA_VERSION,
+        payload_type=ProjectionCatchUpRequestedOutboxPayload,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +112,7 @@ class ProjectionRunCommand:
                 "operation": run.operation,
                 "projection_config_version_id": run.projection_config_version_id,
                 "canonical_boundary_id": run.canonical_boundary_id,
+                "predecessor_snapshot_id": run.predecessor_snapshot_id,
                 "command_identity": run.command_identity,
                 "command_digest": run.command_digest,
                 "idempotency_key": idempotency_key.value,
@@ -226,11 +282,135 @@ class ProjectionReconciliationCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class ProjectionActivationCommand:
+    projection_kind: str
+    projection_snapshot_id: UUID
+    activation_kind: ProjectionActivationKind
+    expected_predecessor_snapshot_id: UUID | None
+    expected_predecessor_activation_generation: int | None
+    expected_active_pointer_cas_version: int | None
+    command_identity: str
+    idempotency_key: IdempotencyKey
+    digest: CommandDigest
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        projection_kind: str,
+        projection_snapshot_id: UUID,
+        activation_kind: ProjectionActivationKind,
+        expected_predecessor_snapshot_id: UUID | None,
+        expected_predecessor_activation_generation: int | None,
+        expected_active_pointer_cas_version: int | None,
+        command_identity: str,
+        idempotency_key: IdempotencyKey,
+    ) -> "ProjectionActivationCommand":
+        digest = digest_command(
+            operation=PersistenceOperation("projection_activation"),
+            operation_schema_version=PROJECTION_ACTIVATION_SCHEMA_VERSION,
+            payload={
+                "projection_kind": projection_kind,
+                "projection_snapshot_id": projection_snapshot_id,
+                "activation_kind": activation_kind,
+                "expected_predecessor_snapshot_id": expected_predecessor_snapshot_id,
+                "expected_predecessor_activation_generation": expected_predecessor_activation_generation,
+                "expected_active_pointer_cas_version": expected_active_pointer_cas_version,
+                "command_identity": command_identity,
+                "idempotency_key": idempotency_key.value,
+            },
+        )
+        return cls(
+            projection_kind=projection_kind,
+            projection_snapshot_id=projection_snapshot_id,
+            activation_kind=activation_kind,
+            expected_predecessor_snapshot_id=expected_predecessor_snapshot_id,
+            expected_predecessor_activation_generation=expected_predecessor_activation_generation,
+            expected_active_pointer_cas_version=expected_active_pointer_cas_version,
+            command_identity=command_identity,
+            idempotency_key=idempotency_key,
+            digest=digest,
+        )
+
+    def expected_digest(self) -> CommandDigest:
+        return digest_command(
+            operation=PersistenceOperation("projection_activation"),
+            operation_schema_version=PROJECTION_ACTIVATION_SCHEMA_VERSION,
+            payload={
+                "projection_kind": self.projection_kind,
+                "projection_snapshot_id": self.projection_snapshot_id,
+                "activation_kind": self.activation_kind,
+                "expected_predecessor_snapshot_id": self.expected_predecessor_snapshot_id,
+                "expected_predecessor_activation_generation": self.expected_predecessor_activation_generation,
+                "expected_active_pointer_cas_version": self.expected_active_pointer_cas_version,
+                "command_identity": self.command_identity,
+                "idempotency_key": self.idempotency_key.value,
+            },
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ProjectionMutationResult:
     value: object
     replay: bool
     claim: IdempotencyClaimResult
     result_reference: OpaqueResultReference
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectionActivationCommitted:
+    activation: ProjectionActivation
+    drift_count: int
+    result_reference: OpaqueResultReference
+    replay: Literal[False] = False
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectionActivationReplay:
+    activation: ProjectionActivation
+    drift_count: int
+    result_reference: OpaqueResultReference
+    replay: Literal[True] = True
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectionActivationRejected:
+    code: Literal[
+        "expected_predecessor_conflict",
+        "candidate_not_finalized",
+        "candidate_ineligible",
+        "candidate_integrity_conflict",
+        "boundary_regression",
+        "unsupported_scope",
+        "idempotency_digest_conflict",
+        "idempotency_claim_incomplete",
+        "tenant_or_environment_conflict",
+    ]
+    retryable: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectionActivationUnavailable:
+    code: Literal[
+        "required_snapshot_unavailable",
+        "required_boundary_unavailable",
+        "required_configuration_unavailable",
+        "persistence_unavailable",
+        "publication_unavailable",
+    ]
+    retryable: bool
+
+
+ProjectionActivationResult = (
+    ProjectionActivationCommitted
+    | ProjectionActivationReplay
+    | ProjectionActivationRejected
+    | ProjectionActivationUnavailable
+)
+
+ProjectionPublicationResolution = (
+    PublishedActivePublication | UnpublishedActivePublication | UnavailableActivePublication
+)
 
 
 class ProjectionRepository(Protocol):
@@ -284,6 +464,22 @@ class ProjectionRepository(Protocol):
         self, projection_snapshot_id: UUID
     ) -> tuple[ProjectionReconciliationResult, ...]: ...
 
+    async def activate(
+        self, command: ProjectionActivationCommand
+    ) -> ProjectionActivationResult: ...
+
+    async def resolve_active_publication(
+        self, projection_kind: str
+    ) -> ProjectionPublicationResolution: ...
+
+    async def list_activations(
+        self, projection_kind: str
+    ) -> tuple[ProjectionActivation, ...]: ...
+
+    async def list_drifts(
+        self, projection_activation_id: UUID
+    ) -> tuple[ProjectionDrift, ...]: ...
+
 
 def transition_allowed(previous: ProjectionRunState | None, current: ProjectionRunState) -> bool:
     transitions = {
@@ -311,7 +507,14 @@ __all__ = [
     "PROJECTION_RECONCILIATION_SCHEMA_VERSION",
     "PROJECTION_SNAPSHOT_SCHEMA_VERSION",
     "PROJECTION_VALIDATION_SCHEMA_VERSION",
+    "PROJECTION_ACTIVATION_SCHEMA_VERSION",
     "ProjectionCandidateSealCommand",
+    "ProjectionActivationCommand",
+    "ProjectionActivationCommitted",
+    "ProjectionActivationRejected",
+    "ProjectionActivationReplay",
+    "ProjectionActivationResult",
+    "ProjectionActivationUnavailable",
     "ProjectionMutationResult",
     "ProjectionReconciliationCommand",
     "ProjectionReceiptCommand",
@@ -320,6 +523,7 @@ __all__ = [
     "ProjectionSnapshotAssemblyCommand",
     "ProjectionSnapshotCommand",
     "ProjectionValidationCommand",
+    "ProjectionPublicationResolution",
     "require_expected_candidate",
     "transition_allowed",
 ]

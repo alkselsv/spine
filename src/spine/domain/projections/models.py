@@ -227,6 +227,7 @@ class ProjectionRun(DefinitionModel):
     operation: ProjectionOperation
     projection_config_version_id: UUID
     canonical_boundary_id: UUID
+    predecessor_snapshot_id: UUID | None = None
     command_identity: str = Field(pattern=_IDENTIFIER)
     command_digest: str = Field(pattern=_DIGEST)
     idempotency_receipt_id: UUID
@@ -251,6 +252,8 @@ class ProjectionRun(DefinitionModel):
             "canonical_boundary_id",
             "idempotency_receipt_id",
         )
+        if self.predecessor_snapshot_id is not None:
+            _require_ids(self, "predecessor_snapshot_id")
         _require_time(self.started_at, "started_at")
         if self.candidate_state is ProjectionCandidateState.OPEN:
             if self.candidate_evidence_digest is not None or self.candidate_sealed_at is not None:
@@ -600,6 +603,215 @@ class ProjectionReconciliationResult(ValidatedDefinitionModel):
         return self
 
 
+class ProjectionActivationKind(str, Enum):
+    PUBLISH = "publish"
+    ROLLBACK = "rollback"
+
+
+class ProjectionActivation(ValidatedDefinitionModel):
+    """Append-only PostgreSQL publication history for one snapshot."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    projection_activation_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    projection_kind: str = Field(pattern=_IDENTIFIER)
+    projection_snapshot_id: UUID
+    predecessor_snapshot_id: UUID | None = None
+    activation_generation: int = Field(ge=1)
+    activation_kind: ProjectionActivationKind
+    command_identity: str = Field(min_length=1, max_length=256)
+    command_digest: str = Field(pattern=_DIGEST)
+    idempotency_receipt_id: UUID
+    audit_event_id: UUID
+    activated_at: datetime
+
+    @model_validator(mode="after")
+    def validate_activation(self) -> "ProjectionActivation":
+        _require_ids(
+            self,
+            "projection_activation_id",
+            "workspace_id",
+            "environment_id",
+            "projection_snapshot_id",
+            "idempotency_receipt_id",
+            "audit_event_id",
+        )
+        if self.predecessor_snapshot_id is not None:
+            _require_ids(self, "predecessor_snapshot_id")
+        _require_time(self.activated_at, "activated_at")
+        return self
+
+
+class ActiveProjection(ValidatedDefinitionModel):
+    """The single mutable PostgreSQL pointer for a projection kind."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    workspace_id: UUID
+    environment_id: UUID
+    projection_kind: str = Field(pattern=_IDENTIFIER)
+    projection_snapshot_id: UUID
+    projection_activation_id: UUID
+    activation_generation: int = Field(ge=1)
+    cas_version: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def validate_pointer(self) -> "ActiveProjection":
+        _require_ids(
+            self,
+            "workspace_id",
+            "environment_id",
+            "projection_snapshot_id",
+            "projection_activation_id",
+        )
+        return self
+
+
+class ProjectionDriftDetectedBy(str, Enum):
+    ACTIVATION = "activation"
+    CANONICAL_ACCEPTANCE = "canonical_acceptance"
+
+
+class ProjectionDrift(ValidatedDefinitionModel):
+    """Immutable evidence that canonical state advanced beyond a publication."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    projection_drift_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    projection_kind: str = Field(pattern=_IDENTIFIER)
+    projection_snapshot_id: UUID
+    projection_activation_id: UUID
+    activation_generation: int = Field(ge=1)
+    canonical_acceptance_id: UUID
+    source_object_id: UUID
+    source_revision_id: UUID
+    accepted_generation: int = Field(ge=1)
+    detected_by: ProjectionDriftDetectedBy
+    detected_at: datetime
+
+    @model_validator(mode="after")
+    def validate_drift(self) -> "ProjectionDrift":
+        _require_ids(
+            self,
+            "projection_drift_id",
+            "workspace_id",
+            "environment_id",
+            "projection_snapshot_id",
+            "projection_activation_id",
+            "canonical_acceptance_id",
+            "source_object_id",
+            "source_revision_id",
+        )
+        if self.accepted_generation <= 0:
+            raise ValueError("accepted_generation must be positive")
+        _require_time(self.detected_at, "detected_at")
+        return self
+
+
+class CanonicalAsOf(ValidatedDefinitionModel):
+    """Server-selected canonical cut used by active publication serving."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    canonical_boundary_id: UUID
+    accepted_through_generation: int = Field(ge=0)
+    boundary_time: datetime
+
+    @model_validator(mode="after")
+    def validate_as_of(self) -> "CanonicalAsOf":
+        _require_ids(self, "canonical_boundary_id")
+        _require_time(self.boundary_time, "boundary_time")
+        return self
+
+
+class ProjectionFreshness(str, Enum):
+    CURRENT = "current"
+    STALE = "stale"
+
+
+class ProjectionHealth(str, Enum):
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+
+
+class PublishedActivePublication(ValidatedDefinitionModel):
+    """One internally consistent active-publication resolution."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    workspace_id: UUID
+    environment_id: UUID
+    projection_kind: str = Field(pattern=_IDENTIFIER)
+    projection_snapshot: ProjectionSnapshot
+    projection_activation: ProjectionActivation
+    activation_generation: int = Field(ge=1)
+    canonical_boundary_id: UUID
+    canonical_boundary_manifest_digest: str = Field(pattern=_DIGEST)
+    accepted_through_generation: int = Field(ge=0)
+    canonical_boundary_membership_ref: str = Field(min_length=1, max_length=512)
+    as_of: CanonicalAsOf
+    projection_config_version: ProjectionConfigVersion
+    freshness: ProjectionFreshness
+    health: ProjectionHealth
+    effective_reconciliation: ProjectionReconciliationResult | None = None
+
+    @model_validator(mode="after")
+    def validate_publication(self) -> "PublishedActivePublication":
+        _require_ids(self, "workspace_id", "environment_id", "canonical_boundary_id")
+        if (
+            self.projection_snapshot.projection_snapshot_id
+            != self.projection_activation.projection_snapshot_id
+            or self.projection_activation.activation_generation != self.activation_generation
+            or self.projection_snapshot.canonical_boundary_id != self.canonical_boundary_id
+            or self.as_of.canonical_boundary_id != self.canonical_boundary_id
+            or self.as_of.accepted_through_generation != self.accepted_through_generation
+        ):
+            raise ValueError("active publication lineage is inconsistent")
+        if self.effective_reconciliation is not None and (
+            self.effective_reconciliation.projection_snapshot_id
+            != self.projection_snapshot.projection_snapshot_id
+            or self.effective_reconciliation.projection_activation_id
+            != self.projection_activation.projection_activation_id
+            or self.effective_reconciliation.activation_generation
+            != self.activation_generation
+        ):
+            raise ValueError("reconciliation lineage is inconsistent")
+        return self
+
+
+class UnpublishedActivePublication(ValidatedDefinitionModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    workspace_id: UUID
+    environment_id: UUID
+    projection_kind: str = Field(pattern=_IDENTIFIER)
+    status: Literal["unpublished"] = "unpublished"
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> "UnpublishedActivePublication":
+        _require_ids(self, "workspace_id", "environment_id")
+        return self
+
+
+class UnavailableActivePublication(ValidatedDefinitionModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    workspace_id: UUID
+    environment_id: UUID
+    projection_kind: str = Field(pattern=_IDENTIFIER)
+    status: Literal["unavailable"] = "unavailable"
+    reason_code: str = Field(pattern=_IDENTIFIER)
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> "UnavailableActivePublication":
+        _require_ids(self, "workspace_id", "environment_id")
+        return self
+
+
 def projection_snapshot_manifest_digest(
     snapshot: ProjectionSnapshot,
     members: tuple[ProjectionSnapshotMember, ...],
@@ -686,9 +898,15 @@ __all__ = [
     "PROJECTION_CONFIG_SCHEMA",
     "PROJECTION_EVIDENCE_SCHEMA",
     "OntologyVersion",
+    "ActiveProjection",
+    "CanonicalAsOf",
     "ProjectionCandidateState",
     "ProjectionConfigVersion",
     "ProjectionDiagnostic",
+    "ProjectionActivation",
+    "ProjectionActivationKind",
+    "ProjectionDrift",
+    "ProjectionDriftDetectedBy",
     "ProjectionOperation",
     "ProjectionPartition",
     "ProjectionReceipt",
@@ -703,6 +921,11 @@ __all__ = [
     "ProjectionSnapshotState",
     "ProjectionValidation",
     "ProjectionValidationDecision",
+    "ProjectionFreshness",
+    "ProjectionHealth",
+    "PublishedActivePublication",
+    "UnpublishedActivePublication",
+    "UnavailableActivePublication",
     "SourceProjectionReference",
     "projection_evidence_digest",
     "projection_reconciliation_findings_digest",

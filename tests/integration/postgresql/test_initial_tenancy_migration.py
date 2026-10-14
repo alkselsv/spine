@@ -1437,6 +1437,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "projection_snapshots",
         "projection_snapshot_members",
         "projection_reconciliation_results",
+        "projection_activations",
+        "active_projections",
+        "projection_drifts",
     }
     expected_final_constraints = {
         "alembic_version_pkc",
@@ -1722,6 +1725,31 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ck_projection_reconciliation_results_attempt_digest",
         "ck_projection_reconciliation_results_findings_digest",
         "ck_projection_reconciliation_results_artifact_digest",
+        "fk_projection_runs_predecessor_snapshot",
+        "pk_projection_activations",
+        "uq_projection_activations_scope_id",
+        "uq_projection_activations_generation",
+        "uq_projection_activations_snapshot",
+        "uq_projection_activations_pointer_target",
+        "fk_projection_activations_snapshot",
+        "fk_projection_activations_predecessor",
+        "fk_projection_activations_idempotency",
+        "fk_projection_activations_audit",
+        "ck_projection_activations_generation",
+        "ck_projection_activations_kind",
+        "ck_projection_activations_digest",
+        "pk_active_projections",
+        "fk_active_projections_activation",
+        "ck_active_projections_generation",
+        "ck_active_projections_cas",
+        "pk_projection_drifts",
+        "uq_projection_drifts_scope_id",
+        "uq_projection_drifts_activation_acceptance",
+        "fk_projection_drifts_activation",
+        "fk_projection_drifts_acceptance",
+        "ck_projection_drifts_activation_generation",
+        "ck_projection_drifts_accepted_generation",
+        "ck_projection_drifts_detected_by",
     }
     expected_final_constraints |= (
         AUTHORIZATION_DIRECTORY_CONSTRAINTS
@@ -1805,6 +1833,20 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
             "ck_projection_reconciliation_results_attempt_digest",
             "ck_projection_reconciliation_results_findings_digest",
             "ck_projection_reconciliation_results_artifact_digest",
+        },
+        "projection_activations": {
+            "ck_projection_activations_generation",
+            "ck_projection_activations_kind",
+            "ck_projection_activations_digest",
+        },
+        "active_projections": {
+            "ck_active_projections_generation",
+            "ck_active_projections_cas",
+        },
+        "projection_drifts": {
+            "ck_projection_drifts_activation_generation",
+            "ck_projection_drifts_accepted_generation",
+            "ck_projection_drifts_detected_by",
         },
     }
     for table_name, expected_checks in projection_check_constraints.items():
@@ -1996,6 +2038,18 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ix_projection_reconciliation_results_activation",
         "uq_projection_reconciliation_results_root",
         "uq_projection_reconciliation_results_successor",
+        "pk_projection_activations",
+        "uq_projection_activations_scope_id",
+        "uq_projection_activations_generation",
+        "uq_projection_activations_snapshot",
+        "uq_projection_activations_pointer_target",
+        "pk_active_projections",
+        "pk_projection_drifts",
+        "uq_projection_drifts_scope_id",
+        "uq_projection_drifts_activation_acceptance",
+        "ix_projection_activations_kind_generation",
+        "ix_active_projections_snapshot_generation",
+        "ix_projection_drifts_source",
     } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES | CANONICAL_ACCEPTANCE_INDEXES | CANONICAL_BOUNDARY_INDEXES
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
@@ -2052,6 +2106,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "projection_snapshots": (True, True),
         "projection_snapshot_members": (True, True),
         "projection_reconciliation_results": (True, True),
+        "projection_activations": (True, True),
+        "active_projections": (True, True),
+        "projection_drifts": (True, True),
     }
     assert rls == expected_rls
     tenant_rls_tables = {
@@ -2164,6 +2221,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "projection_snapshots": (True, True, True, False),
         "projection_snapshot_members": (True, True, False, False),
         "projection_reconciliation_results": (True, True, False, False),
+        "projection_activations": (True, True, False, False),
+        "active_projections": (True, True, True, False),
+        "projection_drifts": (True, True, False, False),
         "source_canonical_tables": (True, False, False, False),
         "source_canonical_unicode": (True, False, False, False),
         "source_canonical_compositions": (True, False, False, False),
@@ -2306,7 +2366,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_config_versions', 'projection_runs', 'projection_run_transitions', "
                             "'projection_partitions', 'projection_receipts', 'source_projection_references', "
                             "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
-                            "'projection_reconciliation_results'))"
+                            "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
+                            "'projection_drifts'))"
                     )
                 )
             ).scalars()
@@ -2338,7 +2399,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_runs', 'projection_run_transitions', 'projection_partitions', "
                             "'projection_receipts', 'source_projection_references', "
                             "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
-                            "'projection_reconciliation_results')"
+                            "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
+                            "'projection_drifts')"
                     )
                 )
             ).mappings()
@@ -2364,7 +2426,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_runs', 'projection_run_transitions', 'projection_partitions', "
                             "'projection_receipts', 'source_projection_references', "
                             "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
-                            "'projection_reconciliation_results')"
+                            "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
+                            "'projection_drifts')"
                     )
                 )
             ).scalars()
@@ -2389,7 +2452,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_runs', 'projection_run_transitions', 'projection_partitions', "
                             "'projection_receipts', 'source_projection_references', "
                             "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
-                            "'projection_reconciliation_results')"
+                            "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
+                            "'projection_drifts')"
                     )
                 )
             ).scalars()
@@ -2414,7 +2478,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_runs', 'projection_run_transitions', 'projection_partitions', "
                             "'projection_receipts', 'source_projection_references', "
                             "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
-                            "'projection_reconciliation_results')"
+                            "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
+                            "'projection_drifts')"
                     )
                 )
             ).scalars()
@@ -2987,7 +3052,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'projection_config_versions', 'projection_runs', 'projection_run_transitions', "
                         "'projection_partitions', 'projection_receipts', 'source_projection_references', "
                         "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
-                        "'projection_reconciliation_results')"
+                        "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
+                        "'projection_drifts')"
                     )
                 )
             )
@@ -3070,6 +3136,9 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "projection_snapshots": (True, True),
             "projection_snapshot_members": (True, True),
             "projection_reconciliation_results": (True, True),
+            "projection_activations": (True, True),
+            "active_projections": (True, True),
+            "projection_drifts": (True, True),
         }
     standard_tables = set(tables) - {"outbox_deliveries"}
     assert set(policies) == {
@@ -4331,13 +4400,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261020_23_canonical_boundaries.py",
         "20261021_24_projection_candidate_ledgers.py",
         "20261021_25_projection_snapshot_sealing.py",
+        "20261022_26_projection_publication.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "20261021_26_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
         "revision = '20261021_26'\n"
-        "down_revision = '20261021_25'\n"
+        "down_revision = '20261022_26'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"
