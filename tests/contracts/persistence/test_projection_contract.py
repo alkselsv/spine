@@ -10,12 +10,14 @@ import pytest
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.persistence.boundary import CanonicalBoundaryCaptureCommand
 from spine.application.persistence.projection import (
+    ProjectionActivationCommand,
     ProjectionCandidateSealCommand,
     ProjectionReceiptCommand,
     ProjectionRunCommand,
     ProjectionSnapshotCommand,
     ProjectionValidationCommand,
 )
+from spine.domain.projections import ProjectionActivationKind, PublishedActivePublication
 from spine.domain.projections import (
     OntologyVersion,
     ProjectionConfigVersion,
@@ -306,6 +308,33 @@ async def test_projection_candidate_seal_freezes_evidence_and_replays(
         )
         await uow.rollback()
     assert persisted_snapshot == assembled.value
+
+    activation_context = persistence_adapter.ingestion_context(
+        case.source.workspace_id, case.source.environment_id, "projection_activation"
+    )
+    activation = ProjectionActivationCommand.create(
+        projection_kind="qa",
+        projection_snapshot_id=assembled.value.projection_snapshot_id,
+        activation_kind=ProjectionActivationKind.PUBLISH,
+        expected_predecessor_snapshot_id=None,
+        expected_predecessor_activation_generation=None,
+        expected_active_pointer_cas_version=None,
+        command_identity="projection-activation-24000",
+        idempotency_key=IdempotencyKey("projection-activation-24000"),
+    )
+    async with persistence_adapter.uow_factory(activation_context) as uow:
+        activated = await uow.projections.activate(activation)
+        await uow.commit()
+    assert activated.replay is False
+    assert activated.activation.activation_generation == 1
+    async with persistence_adapter.uow_factory(activation_context) as uow:
+        resolved = await uow.projections.resolve_active_publication("qa")
+        replayed = await uow.projections.activate(activation)
+        await uow.rollback()
+    assert isinstance(resolved, PublishedActivePublication)
+    assert resolved.freshness.value == "current"
+    assert replayed.replay is True
+    assert replayed.result_reference == activated.result_reference
 
     async with persistence_adapter.uow_factory(seal_context) as uow:
         replay = await uow.projections.seal_candidate(seal)

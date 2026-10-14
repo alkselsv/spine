@@ -79,6 +79,16 @@ from spine.application.persistence.ingestion import (
     validate_transition,
 )
 from spine.application.persistence.projection import (
+    PROJECTION_ACTIVATED_OUTBOX_EVENT_TYPE,
+    PROJECTION_CATCH_UP_OUTBOX_EVENT_TYPE,
+    PROJECTION_OUTBOX_SCHEMA_VERSION,
+    ProjectionActivatedOutboxPayload,
+    ProjectionCatchUpRequestedOutboxPayload,
+    ProjectionActivationCommand,
+    ProjectionActivationCommitted,
+    ProjectionActivationReplay,
+    ProjectionActivationResult,
+    ProjectionPublicationResolution,
     ProjectionCandidateSealCommand,
     ProjectionMutationResult,
     ProjectionReconciliationCommand,
@@ -87,6 +97,7 @@ from spine.application.persistence.projection import (
     ProjectionRunCommand,
     ProjectionSnapshotCommand,
     ProjectionValidationCommand,
+    register_projection_outbox_events,
     transition_allowed,
 )
 from spine.application.persistence.idempotency import (
@@ -98,11 +109,17 @@ from spine.application.persistence.idempotency import (
     idempotency_conflict,
 )
 from spine.application.persistence.outbox import (
+    OpaqueObjectReference,
     OutboxEventRegistry,
     OutboxIntent,
     validate_outbox_intent_for_context,
 )
-from spine.domain.audit import AuditEvent, AuditObjectReference, AuditOutcome
+from spine.domain.audit import (
+    AuditEvent,
+    AuditObjectReference,
+    AuditOutcome,
+    CanonicalTransitionAuditPayload,
+)
 from spine.domain.common import ContextOrigin, EnvironmentKind
 from spine.domain.workspaces import Environment, Workspace
 from spine.domain.sources import (
@@ -140,9 +157,17 @@ from spine.domain.ingestion import (
     ProcessingReceipt,
 )
 from spine.domain.projections import (
+    ActiveProjection,
+    CanonicalAsOf,
+    ProjectionActivation,
+    ProjectionActivationKind,
     OntologyVersion,
     ProjectionCandidateState,
     ProjectionConfigVersion,
+    ProjectionDrift,
+    ProjectionDriftDetectedBy,
+    ProjectionFreshness,
+    ProjectionHealth,
     ProjectionPartition,
     ProjectionReceipt,
     ProjectionReconciliationResult,
@@ -154,7 +179,10 @@ from spine.domain.projections import (
     ProjectionSnapshotMemberDisposition,
     ProjectionSnapshotState,
     ProjectionValidation,
+    PublishedActivePublication,
     SourceProjectionReference,
+    UnavailableActivePublication,
+    UnpublishedActivePublication,
     projection_evidence_digest,
     projection_snapshot_manifest_digest,
 )
@@ -205,6 +233,9 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     projection_snapshots as _PROJECTION_SNAPSHOTS,
     projection_snapshot_members as _PROJECTION_SNAPSHOT_MEMBERS,
     projection_reconciliation_results as _PROJECTION_RECONCILIATION_RESULTS,
+    projection_activations as _PROJECTION_ACTIVATIONS,
+    active_projections as _ACTIVE_PROJECTIONS,
+    projection_drifts as _PROJECTION_DRIFTS,
 )
 
 _BIND_CONTEXT = text(
@@ -1472,6 +1503,90 @@ class _PostgreSQLCanonicalAcceptanceRepository:
                 set_=head.model_dump(mode="python", exclude={"source_object_id"}),
             )
         )
+        # Serialize the acceptance-to-drift sink after the canonical head is
+        # visible and before acceptance audit/outbox completion.
+        active_rows = (
+            await self._uow._execute(
+                select(_ACTIVE_PROJECTIONS).where(
+                    _ACTIVE_PROJECTIONS.c.workspace_id == scope.workspace_id,
+                    _ACTIVE_PROJECTIONS.c.environment_id == scope.environment_id,
+                ).with_for_update()
+            )
+        ).mappings().all()
+        for active_row in active_rows:
+            active = self._projections._pointer(active_row)
+            snapshot_row = (
+                await self._uow._execute(
+                    select(_PROJECTION_SNAPSHOTS).where(
+                        _PROJECTION_SNAPSHOTS.c.projection_snapshot_id == active.projection_snapshot_id,
+                        _PROJECTION_SNAPSHOTS.c.workspace_id == scope.workspace_id,
+                        _PROJECTION_SNAPSHOTS.c.environment_id == scope.environment_id,
+                    )
+                )
+            ).mappings().one_or_none()
+            boundary_row = (
+                await self._uow._execute(
+                    select(_CANONICAL_BOUNDARIES).where(
+                        _CANONICAL_BOUNDARIES.c.boundary_id
+                        == snapshot_row["canonical_boundary_id"],
+                        _CANONICAL_BOUNDARIES.c.workspace_id == scope.workspace_id,
+                        _CANONICAL_BOUNDARIES.c.environment_id == scope.environment_id,
+                    )
+                )
+            ).mappings().one_or_none() if snapshot_row is not None else None
+            if (
+                snapshot_row is None
+                or boundary_row is None
+                or acceptance.accepted_generation <= boundary_row["accepted_through_generation"]
+            ):
+                continue
+            if boundary_row["scope_version"] != "r1":
+                await self._uow._fail(ConstraintConflictError("Projection boundary scope is unsupported."))
+            drift = ProjectionDrift(
+                projection_drift_id=uuid4(),
+                workspace_id=scope.workspace_id,
+                environment_id=scope.environment_id,
+                projection_kind=active.projection_kind,
+                projection_snapshot_id=active.projection_snapshot_id,
+                projection_activation_id=active.projection_activation_id,
+                activation_generation=active.activation_generation,
+                canonical_acceptance_id=acceptance.canonical_acceptance_id,
+                source_object_id=acceptance.source_object_id,
+                source_revision_id=acceptance.source_revision_id,
+                accepted_generation=acceptance.accepted_generation,
+                detected_by=ProjectionDriftDetectedBy.CANONICAL_ACCEPTANCE,
+                detected_at=command.accepted_at,
+            )
+            drift_values = drift.model_dump(mode="python")
+            drift_values["detected_by"] = drift.detected_by.value
+            await self._uow._execute(insert(_PROJECTION_DRIFTS).values(**drift_values))
+            context = self._uow._context_snapshot_active()
+            await self._uow.outbox.append(
+                self._uow._outbox_events.build_intent(
+                    event_id=uuid4(),
+                    workspace_id=scope.workspace_id,
+                    environment_id=scope.environment_id,
+                    event_type=PROJECTION_CATCH_UP_OUTBOX_EVENT_TYPE,
+                    schema_version=PROJECTION_OUTBOX_SCHEMA_VERSION,
+                    payload=ProjectionCatchUpRequestedOutboxPayload(
+                        projection_drift_id=drift.projection_drift_id,
+                        projection_activation_id=drift.projection_activation_id,
+                        projection_kind=drift.projection_kind,
+                        activation_generation=drift.activation_generation,
+                        canonical_acceptance_id=drift.canonical_acceptance_id,
+                        source_object_id=drift.source_object_id,
+                        source_revision_id=drift.source_revision_id,
+                        accepted_generation=drift.accepted_generation,
+                    ),
+                    aggregate=OpaqueObjectReference(
+                        object_type="projection_drift",
+                        object_id=drift.projection_drift_id,
+                        schema_version=1,
+                    ),
+                    producer_deduplication_id=f"projection-catch-up:{drift.projection_drift_id}",
+                    trace_id=context.trace_id,
+                )
+            )
         if command.audit_event.audit_event_id not in (None, command.audit_event_id):
             await self._uow._fail(
                 ConstraintConflictError("Canonical audit identity is invalid.")
@@ -2994,6 +3109,441 @@ class _PostgreSQLProjectionSnapshotMixin:
         ).order_by(_PROJECTION_RECONCILIATION_RESULTS.c.checked_at))).mappings().all()
         return tuple(self._reconciliation(row) for row in rows)
 
+    async def activate(
+        self, command: ProjectionActivationCommand
+    ) -> ProjectionActivationResult:
+        """Publish a finalized snapshot under the counter-first PostgreSQL CAS."""
+
+        self._uow._guard_active()
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=command.digest.operation_schema_version,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        if isinstance(claim, IdempotencyReplay):
+            row = (
+                await self._uow._execute(
+                    select(_PROJECTION_ACTIVATIONS).where(
+                        _PROJECTION_ACTIVATIONS.c.projection_activation_id
+                        == claim.result.result_id,
+                        _PROJECTION_ACTIVATIONS.c.workspace_id == self._scope().workspace_id,
+                        _PROJECTION_ACTIVATIONS.c.environment_id == self._scope().environment_id,
+                    )
+                )
+            ).mappings().one_or_none()
+            if row is None:
+                await self._uow._fail(ConstraintConflictError("Projection activation replay is unavailable."))
+            activation = self._activation(row)
+            drift_count = (
+                await self._uow._execute(
+                    select(func.count())
+                    .select_from(_PROJECTION_DRIFTS)
+                    .where(
+                        _PROJECTION_DRIFTS.c.projection_activation_id
+                        == activation.projection_activation_id,
+                        _PROJECTION_DRIFTS.c.workspace_id == activation.workspace_id,
+                        _PROJECTION_DRIFTS.c.environment_id == activation.environment_id,
+                    )
+                )
+            ).scalar_one()
+            return ProjectionActivationReplay(
+                activation=activation,
+                drift_count=int(drift_count),
+                result_reference=claim.result,
+            )
+
+        scope = self._scope()
+        await self._uow._execute(
+            postgresql_insert(_CANONICAL_GENERATION_COUNTERS)
+            .values(
+                workspace_id=scope.workspace_id,
+                environment_id=scope.environment_id,
+                current_generation=0,
+                updated_at=datetime.now(timezone.utc),
+            )
+            .on_conflict_do_nothing()
+        )
+        generation_row = (
+            await self._uow._execute(
+                select(_CANONICAL_GENERATION_COUNTERS)
+                .where(
+                    _CANONICAL_GENERATION_COUNTERS.c.workspace_id == scope.workspace_id,
+                    _CANONICAL_GENERATION_COUNTERS.c.environment_id == scope.environment_id,
+                )
+                .with_for_update()
+            )
+        ).mappings().one()
+        pointer_row = (
+            await self._uow._execute(
+                select(_ACTIVE_PROJECTIONS)
+                .where(
+                    _ACTIVE_PROJECTIONS.c.workspace_id == scope.workspace_id,
+                    _ACTIVE_PROJECTIONS.c.environment_id == scope.environment_id,
+                    _ACTIVE_PROJECTIONS.c.projection_kind == command.projection_kind,
+                )
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        pointer = self._pointer(pointer_row) if pointer_row is not None else None
+
+        snapshot_row = (
+            await self._uow._execute(
+                select(_PROJECTION_SNAPSHOTS)
+                .where(
+                    _PROJECTION_SNAPSHOTS.c.projection_snapshot_id == command.projection_snapshot_id,
+                    _PROJECTION_SNAPSHOTS.c.workspace_id == scope.workspace_id,
+                    _PROJECTION_SNAPSHOTS.c.environment_id == scope.environment_id,
+                )
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        if snapshot_row is None:
+            await self._uow._fail(ConstraintConflictError("Projection snapshot is unavailable."))
+        snapshot = self._snapshot(snapshot_row)
+        if snapshot.snapshot_state is not ProjectionSnapshotState.FINALIZED:
+            await self._uow._fail(ConstraintConflictError("Projection snapshot is not finalized."))
+        if snapshot.projection_kind != command.projection_kind:
+            await self._uow._fail(ConstraintConflictError("Projection activation kind is invalid."))
+        boundary_row = (
+            await self._uow._execute(
+                select(_CANONICAL_BOUNDARIES).where(
+                    _CANONICAL_BOUNDARIES.c.boundary_id == snapshot.canonical_boundary_id,
+                    _CANONICAL_BOUNDARIES.c.workspace_id == scope.workspace_id,
+                    _CANONICAL_BOUNDARIES.c.environment_id == scope.environment_id,
+                )
+            )
+        ).mappings().one_or_none()
+        if boundary_row is None:
+            await self._uow._fail(ConstraintConflictError("Projection boundary is unavailable."))
+        boundary = CanonicalBoundary.model_validate(dict(boundary_row))
+        if boundary.scope_version != "r1":
+            await self._uow._fail(ConstraintConflictError("Projection boundary scope is unsupported."))
+        run_row = (
+            await self._uow._execute(
+                select(_PROJECTION_RUNS)
+                .where(
+                    _PROJECTION_RUNS.c.projection_run_id == snapshot.projection_run_id,
+                    _PROJECTION_RUNS.c.workspace_id == scope.workspace_id,
+                    _PROJECTION_RUNS.c.environment_id == scope.environment_id,
+                )
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        if (
+            run_row is None
+            or run_row["projection_candidate_id"] != snapshot.projection_candidate_id
+            or run_row["candidate_state"] != ProjectionCandidateState.SEALED.value
+            or run_row["candidate_evidence_digest"] != snapshot.candidate_evidence_digest
+            or run_row["projection_kind"] != snapshot.projection_kind
+            or run_row["projection_config_version_id"] != snapshot.projection_config_version_id
+            or run_row["canonical_boundary_id"] != snapshot.canonical_boundary_id
+        ):
+            await self._uow._fail(ConstraintConflictError("Projection snapshot run lineage is invalid."))
+        if command.activation_kind is ProjectionActivationKind.ROLLBACK and run_row["operation"] != "rollback":
+            await self._uow._fail(ConstraintConflictError("Rollback requires a rollback projection run."))
+        if command.activation_kind is ProjectionActivationKind.PUBLISH and run_row["operation"] == "rollback":
+            await self._uow._fail(ConstraintConflictError("Publish cannot use a rollback projection run."))
+        if pointer is None:
+            if any(
+                value is not None
+                for value in (
+                    command.expected_predecessor_snapshot_id,
+                    command.expected_predecessor_activation_generation,
+                    command.expected_active_pointer_cas_version,
+                )
+            ) or snapshot.predecessor_snapshot_id is not None:
+                await self._uow._fail(OptimisticConflictError("First publication predecessor is not empty."))
+            activation_generation, cas_version = 1, 1
+        else:
+            if (
+                command.expected_predecessor_snapshot_id != pointer.projection_snapshot_id
+                or command.expected_predecessor_activation_generation != pointer.activation_generation
+                or command.expected_active_pointer_cas_version != pointer.cas_version
+                or snapshot.predecessor_snapshot_id != pointer.projection_snapshot_id
+            ):
+                await self._uow._fail(OptimisticConflictError("Active projection predecessor is stale."))
+            active_snapshot = await self.resolve_snapshot(pointer.projection_snapshot_id)
+            active_boundary_row = (
+                await self._uow._execute(
+                    select(_CANONICAL_BOUNDARIES).where(
+                        _CANONICAL_BOUNDARIES.c.boundary_id == active_snapshot.canonical_boundary_id,
+                        _CANONICAL_BOUNDARIES.c.workspace_id == scope.workspace_id,
+                        _CANONICAL_BOUNDARIES.c.environment_id == scope.environment_id,
+                    )
+                )
+            ).mappings().one_or_none()
+            if active_boundary_row is None or boundary.accepted_through_generation < active_boundary_row["accepted_through_generation"]:
+                await self._uow._fail(OptimisticConflictError("Projection boundary regressed."))
+            activation_generation, cas_version = pointer.activation_generation + 1, pointer.cas_version + 1
+
+        activation_id = uuid4()
+        context = self._uow._context_snapshot_active()
+        audit = self._uow._audit_events.build_event(
+            audit_event_id=None,
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            event_type="canonical.transition",
+            schema_version=1,
+            payload=CanonicalTransitionAuditPayload(transition="projection.activated"),
+            origin=context.origin,
+            acting_subject_id=context.acting_subject_id,
+            service_principal_id=context.service_principal_id,
+            trace_id=context.trace_id,
+            occurred_at=datetime.now(timezone.utc),
+            outcome=AuditOutcome.COMMITTED,
+            reason="projection_activation_committed",
+            target=AuditObjectReference(
+                object_type="projection_activation", object_id=activation_id, schema_version=1
+            ),
+            producer_deduplication_id=f"projection-activated:{activation_id}",
+        )
+        audit_id = await self._uow.audit.append(audit)
+        activation = ProjectionActivation(
+            projection_activation_id=activation_id,
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            projection_kind=command.projection_kind,
+            projection_snapshot_id=snapshot.projection_snapshot_id,
+            predecessor_snapshot_id=pointer.projection_snapshot_id if pointer else None,
+            activation_generation=activation_generation,
+            activation_kind=command.activation_kind,
+            command_identity=command.command_identity,
+            command_digest=command.digest.value,
+            idempotency_receipt_id=claim.receipt_id,
+            audit_event_id=audit_id,
+            activated_at=datetime.now(timezone.utc),
+        )
+        activation_values = activation.model_dump(mode="python")
+        activation_values["activation_kind"] = activation.activation_kind.value
+        await self._uow._execute(insert(_PROJECTION_ACTIVATIONS).values(**activation_values))
+        drift_rows = (
+            await self._uow._execute(
+                select(_CANONICAL_ACCEPTANCES).where(
+                    _CANONICAL_ACCEPTANCES.c.workspace_id == scope.workspace_id,
+                    _CANONICAL_ACCEPTANCES.c.environment_id == scope.environment_id,
+                    _CANONICAL_ACCEPTANCES.c.accepted_generation > boundary.accepted_through_generation,
+                    _CANONICAL_ACCEPTANCES.c.accepted_generation <= generation_row["current_generation"],
+                ).order_by(_CANONICAL_ACCEPTANCES.c.accepted_generation)
+            )
+        ).mappings().all()
+        drifts: list[ProjectionDrift] = []
+        for row in drift_rows:
+            drift = ProjectionDrift(
+                projection_drift_id=uuid4(),
+                workspace_id=scope.workspace_id,
+                environment_id=scope.environment_id,
+                projection_kind=command.projection_kind,
+                projection_snapshot_id=snapshot.projection_snapshot_id,
+                projection_activation_id=activation_id,
+                activation_generation=activation_generation,
+                canonical_acceptance_id=row["canonical_acceptance_id"],
+                source_object_id=row["source_object_id"],
+                source_revision_id=row["source_revision_id"],
+                accepted_generation=row["accepted_generation"],
+                detected_by=ProjectionDriftDetectedBy.ACTIVATION,
+                detected_at=datetime.now(timezone.utc),
+            )
+            drifts.append(drift)
+            drift_values = drift.model_dump(mode="python")
+            drift_values["detected_by"] = drift.detected_by.value
+            await self._uow._execute(insert(_PROJECTION_DRIFTS).values(**drift_values))
+        pointer_values = ActiveProjection(
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            projection_kind=command.projection_kind,
+            projection_snapshot_id=snapshot.projection_snapshot_id,
+            projection_activation_id=activation_id,
+            activation_generation=activation_generation,
+            cas_version=cas_version,
+        ).model_dump(mode="python")
+        if pointer is None:
+            await self._uow._execute(insert(_ACTIVE_PROJECTIONS).values(**pointer_values))
+        else:
+            updated = await self._uow._execute(
+                update(_ACTIVE_PROJECTIONS)
+                .where(
+                    _ACTIVE_PROJECTIONS.c.workspace_id == scope.workspace_id,
+                    _ACTIVE_PROJECTIONS.c.environment_id == scope.environment_id,
+                    _ACTIVE_PROJECTIONS.c.projection_kind == command.projection_kind,
+                    _ACTIVE_PROJECTIONS.c.projection_snapshot_id == pointer.projection_snapshot_id,
+                    _ACTIVE_PROJECTIONS.c.activation_generation == pointer.activation_generation,
+                    _ACTIVE_PROJECTIONS.c.cas_version == pointer.cas_version,
+                )
+                .values(**pointer_values)
+            )
+            if updated.rowcount != 1:
+                await self._uow._fail(OptimisticConflictError("Active projection CAS failed."))
+        await self._uow.outbox.append(
+            self._uow._outbox_events.build_intent(
+                event_id=uuid4(),
+                workspace_id=scope.workspace_id,
+                environment_id=scope.environment_id,
+                event_type=PROJECTION_ACTIVATED_OUTBOX_EVENT_TYPE,
+                schema_version=PROJECTION_OUTBOX_SCHEMA_VERSION,
+                payload=ProjectionActivatedOutboxPayload(
+                    projection_activation_id=activation_id,
+                    projection_snapshot_id=snapshot.projection_snapshot_id,
+                    projection_kind=command.projection_kind,
+                    activation_generation=activation_generation,
+                    activation_kind=command.activation_kind,
+                    canonical_boundary_id=boundary.boundary_id,
+                    accepted_through_generation=boundary.accepted_through_generation,
+                    drift_count=len(drifts),
+                    audit_event_id=audit_id,
+                ),
+                aggregate=OpaqueObjectReference(
+                    object_type="projection_activation",
+                    object_id=activation_id,
+                    schema_version=1,
+                ),
+                producer_deduplication_id=f"projection-activated:{activation_id}",
+                trace_id=context.trace_id,
+            )
+        )
+        for drift in drifts:
+            await self._uow.outbox.append(
+                self._uow._outbox_events.build_intent(
+                    event_id=uuid4(),
+                    workspace_id=scope.workspace_id,
+                    environment_id=scope.environment_id,
+                    event_type=PROJECTION_CATCH_UP_OUTBOX_EVENT_TYPE,
+                    schema_version=PROJECTION_OUTBOX_SCHEMA_VERSION,
+                    payload=ProjectionCatchUpRequestedOutboxPayload(
+                        projection_drift_id=drift.projection_drift_id,
+                        projection_activation_id=activation_id,
+                        projection_kind=command.projection_kind,
+                        activation_generation=activation_generation,
+                        canonical_acceptance_id=drift.canonical_acceptance_id,
+                        source_object_id=drift.source_object_id,
+                        source_revision_id=drift.source_revision_id,
+                        accepted_generation=drift.accepted_generation,
+                    ),
+                    aggregate=OpaqueObjectReference(
+                        object_type="projection_drift",
+                        object_id=drift.projection_drift_id,
+                        schema_version=1,
+                    ),
+                    producer_deduplication_id=f"projection-catch-up:{drift.projection_drift_id}",
+                    trace_id=context.trace_id,
+                )
+            )
+        result = ProjectionActivationCommitted(
+            activation=activation,
+            drift_count=len(drifts),
+            result_reference=OpaqueResultReference("projection_activation", activation_id, 1),
+        )
+        await self._uow.idempotency.complete(claim, result.result_reference)
+        return result
+
+    async def resolve_active_publication(
+        self, projection_kind: str
+    ) -> ProjectionPublicationResolution:
+        self._uow._guard_active()
+        scope = self._scope()
+        pointer_row = (
+            await self._uow._execute(
+                select(_ACTIVE_PROJECTIONS).where(
+                    _ACTIVE_PROJECTIONS.c.workspace_id == scope.workspace_id,
+                    _ACTIVE_PROJECTIONS.c.environment_id == scope.environment_id,
+                    _ACTIVE_PROJECTIONS.c.projection_kind == projection_kind,
+                )
+            )
+        ).mappings().one_or_none()
+        if pointer_row is None:
+            return UnpublishedActivePublication(
+                workspace_id=scope.workspace_id,
+                environment_id=scope.environment_id,
+                projection_kind=projection_kind,
+            )
+        pointer = self._pointer(pointer_row)
+        snapshot = await self.resolve_snapshot(pointer.projection_snapshot_id)
+        activation_row = (
+            await self._uow._execute(
+                select(_PROJECTION_ACTIVATIONS).where(
+                    _PROJECTION_ACTIVATIONS.c.projection_activation_id == pointer.projection_activation_id,
+                    _PROJECTION_ACTIVATIONS.c.workspace_id == scope.workspace_id,
+                    _PROJECTION_ACTIVATIONS.c.environment_id == scope.environment_id,
+                )
+            )
+        ).mappings().one_or_none()
+        activation = self._activation(activation_row) if activation_row is not None else None
+        boundary_row = (
+            await self._uow._execute(
+                select(_CANONICAL_BOUNDARIES).where(
+                    _CANONICAL_BOUNDARIES.c.boundary_id == snapshot.canonical_boundary_id,
+                    _CANONICAL_BOUNDARIES.c.workspace_id == scope.workspace_id,
+                    _CANONICAL_BOUNDARIES.c.environment_id == scope.environment_id,
+                )
+            )
+        ).mappings().one_or_none() if snapshot is not None else None
+        config = await self.resolve_config_version(snapshot.projection_config_version_id) if snapshot else None
+        if snapshot is None or activation is None or boundary_row is None or config is None:
+            return UnavailableActivePublication(
+                workspace_id=scope.workspace_id,
+                environment_id=scope.environment_id,
+                projection_kind=projection_kind,
+                reason_code="active_publication_integrity_conflict",
+            )
+        boundary = CanonicalBoundary.model_validate(dict(boundary_row))
+        drifts = await self.list_drifts(activation.projection_activation_id)
+        reconciliations = await self.list_reconciliation_results(snapshot.projection_snapshot_id)
+        effective = reconciliations[-1] if reconciliations else None
+        return PublishedActivePublication(
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            projection_kind=projection_kind,
+            projection_snapshot=snapshot,
+            projection_activation=activation,
+            activation_generation=pointer.activation_generation,
+            canonical_boundary_id=boundary.boundary_id,
+            canonical_boundary_manifest_digest=boundary.manifest_digest,
+            accepted_through_generation=boundary.accepted_through_generation,
+            canonical_boundary_membership_ref=f"canonical-boundary-members:{boundary.boundary_id}",
+            as_of=CanonicalAsOf(
+                canonical_boundary_id=boundary.boundary_id,
+                accepted_through_generation=boundary.accepted_through_generation,
+                boundary_time=boundary.boundary_time,
+            ),
+            projection_config_version=config,
+            freshness=ProjectionFreshness.STALE if drifts else ProjectionFreshness.CURRENT,
+            health=ProjectionHealth.HEALTHY
+            if effective is not None and effective.outcome.value == "healthy"
+            else ProjectionHealth.DEGRADED,
+            effective_reconciliation=effective,
+        )
+
+    async def list_activations(self, projection_kind: str) -> tuple[ProjectionActivation, ...]:
+        self._uow._guard_active()
+        scope = self._scope()
+        rows = (
+            await self._uow._execute(
+                select(_PROJECTION_ACTIVATIONS)
+                .where(
+                    _PROJECTION_ACTIVATIONS.c.workspace_id == scope.workspace_id,
+                    _PROJECTION_ACTIVATIONS.c.environment_id == scope.environment_id,
+                    _PROJECTION_ACTIVATIONS.c.projection_kind == projection_kind,
+                )
+                .order_by(_PROJECTION_ACTIVATIONS.c.activation_generation)
+            )
+        ).mappings().all()
+        return tuple(self._activation(row) for row in rows)
+
+    async def list_drifts(self, projection_activation_id: UUID) -> tuple[ProjectionDrift, ...]:
+        self._uow._guard_active()
+        scope = self._scope()
+        rows = (
+            await self._uow._execute(
+                select(_PROJECTION_DRIFTS)
+                .where(
+                    _PROJECTION_DRIFTS.c.projection_activation_id == projection_activation_id,
+                    _PROJECTION_DRIFTS.c.workspace_id == scope.workspace_id,
+                    _PROJECTION_DRIFTS.c.environment_id == scope.environment_id,
+                )
+                .order_by(_PROJECTION_DRIFTS.c.accepted_generation)
+            )
+        ).mappings().all()
+        return tuple(self._drift(row) for row in rows)
+
 
 class _PostgreSQLProjectionRepository(_PostgreSQLProjectionSnapshotMixin, ProjectionRepository):
     """PostgreSQL-owned ontology/configuration and candidate evidence ledger."""
@@ -3058,6 +3608,18 @@ class _PostgreSQLProjectionRepository(_PostgreSQLProjectionSnapshotMixin, Projec
     @staticmethod
     def _reconciliation(row: Mapping[str, Any]) -> ProjectionReconciliationResult:
         return ProjectionReconciliationResult.model_validate(dict(row))
+
+    @staticmethod
+    def _activation(row: Mapping[str, Any]) -> ProjectionActivation:
+        return ProjectionActivation.model_validate(dict(row))
+
+    @staticmethod
+    def _pointer(row: Mapping[str, Any]) -> ActiveProjection:
+        return ActiveProjection.model_validate(dict(row))
+
+    @staticmethod
+    def _drift(row: Mapping[str, Any]) -> ProjectionDrift:
+        return ProjectionDrift.model_validate(dict(row))
 
     async def add_ontology_version(self, ontology: OntologyVersion) -> OntologyVersion:
         self._uow._guard_active()
@@ -3218,6 +3780,14 @@ class _PostgreSQLProjectionRepository(_PostgreSQLProjectionSnapshotMixin, Projec
             or boundary_row["projection_kind"] != run.projection_kind
         ):
             await self._uow._fail(ConstraintConflictError("Projection run configuration is invalid."))
+        if run.predecessor_snapshot_id is not None:
+            predecessor = await self.resolve_snapshot(run.predecessor_snapshot_id)
+            if (
+                predecessor is None
+                or predecessor.projection_kind != run.projection_kind
+                or predecessor.snapshot_state is not ProjectionSnapshotState.FINALIZED
+            ):
+                await self._uow._fail(ConstraintConflictError("Projection run predecessor is invalid."))
         existing_command = (
             await self._uow._execute(
                 select(_PROJECTION_RUNS).where(
@@ -4065,6 +4635,7 @@ class PostgreSQLPersistence:
         selected_audit_events = (
             audit_events or AuditEventRegistry.with_default_families()
         )
+        register_projection_outbox_events(outbox_events)
         selected_audit_events.require_sealed()
         self.tenant_uow_factory = PostgreSQLTenantUnitOfWorkFactory(
             session_factory=session_factory,

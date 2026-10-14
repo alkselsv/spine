@@ -67,6 +67,19 @@ from spine.application.persistence.canonical import (
     SourceOrderingPolicyRegistry,
     validate_canonical_acceptance_effects,
 )
+from spine.application.persistence.projection import (
+    PROJECTION_ACTIVATED_OUTBOX_EVENT_TYPE,
+    PROJECTION_CATCH_UP_OUTBOX_EVENT_TYPE,
+    PROJECTION_OUTBOX_SCHEMA_VERSION,
+    ProjectionActivationCommand,
+    ProjectionActivationCommitted,
+    ProjectionActivationRejected,
+    ProjectionActivationReplay,
+    ProjectionActivationUnavailable,
+    ProjectionActivatedOutboxPayload,
+    ProjectionCatchUpRequestedOutboxPayload,
+    register_projection_outbox_events,
+)
 from spine.application.persistence.boundary import (
     CANONICAL_BOUNDARY_RESULT_TYPE,
     CANONICAL_BOUNDARY_SCHEMA_VERSION,
@@ -87,6 +100,7 @@ from spine.application.persistence.ingestion import (
 )
 from spine.application.persistence.command_digest import CommandDigest
 from spine.application.persistence.outbox import (
+    OpaqueObjectReference,
     OutboxEventRegistry,
     OutboxIntent,
     validate_outbox_intent_for_context,
@@ -106,6 +120,7 @@ from spine.infrastructure.persistence.backup_recovery_in_memory import (
     InMemoryRecoveryRepository,
 )
 from spine.domain.workspaces import Environment, Workspace
+from spine.domain.audit import AuditObjectReference, AuditOutcome, CanonicalTransitionAuditPayload
 from spine.domain.sources import (
     AdmissionDecision,
     AdmissionDisposition,
@@ -134,6 +149,19 @@ from spine.domain.ingestion import (
     IngestionTransition,
     IngestionWarning,
     ProcessingReceipt,
+)
+from spine.domain.projections import (
+    ActiveProjection,
+    CanonicalAsOf,
+    ProjectionActivation,
+    ProjectionActivationKind,
+    ProjectionDrift,
+    ProjectionDriftDetectedBy,
+    ProjectionFreshness,
+    ProjectionHealth,
+    PublishedActivePublication,
+    UnavailableActivePublication,
+    UnpublishedActivePublication,
 )
 from spine.infrastructure.persistence.projection import InMemoryProjectionRepository
 
@@ -177,6 +205,9 @@ class _StoreState:
     projection_snapshots: dict[UUID, object]
     projection_snapshot_members: dict[UUID, object]
     projection_reconciliation_results: dict[UUID, object]
+    projection_activations: dict[UUID, ProjectionActivation]
+    active_projections: dict[tuple[UUID, UUID, str], ActiveProjection]
+    projection_drifts: dict[UUID, ProjectionDrift]
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +271,9 @@ class _Store:
             projection_snapshots={},
             projection_snapshot_members={},
             projection_reconciliation_results={},
+            projection_activations={},
+            active_projections={},
+            projection_drifts={},
         )
         self.lock = transaction_lock or asyncio.Lock()
         self.observation_lock = asyncio.Lock()
@@ -384,6 +418,18 @@ class _Store:
     @property
     def projection_reconciliation_results(self) -> dict[UUID, object]:
         return self.state.projection_reconciliation_results
+
+    @property
+    def projection_activations(self) -> dict[UUID, ProjectionActivation]:
+        return self.state.projection_activations
+
+    @property
+    def active_projections(self) -> dict[tuple[UUID, UUID, str], ActiveProjection]:
+        return self.state.active_projections
+
+    @property
+    def projection_drifts(self) -> dict[UUID, ProjectionDrift]:
+        return self.state.projection_drifts
 
 
 def _workspace_copy(value: Workspace) -> Workspace:
@@ -1401,6 +1447,73 @@ class _CanonicalAcceptanceRepository:
                     "Canonical audit or outbox evidence conflicts."
                 )
             )
+        # The acceptance transaction is the narrow R1 sink for changes after
+        # an active publication.  It runs before acceptance audit/outbox and
+        # therefore rolls back together with canonical state on failure.
+        active_pointers = (
+            self._uow._base_active_projections | self._uow._pending_active_projections
+        )
+        snapshots = self._uow._base_projection_snapshots | self._uow._pending_projection_snapshots
+        boundaries = self._uow._base_canonical_boundaries | self._uow._pending_canonical_boundaries
+        for pointer in active_pointers.values():
+            if (pointer.workspace_id, pointer.environment_id) != (
+                acceptance.workspace_id,
+                acceptance.environment_id,
+            ):
+                continue
+            snapshot = snapshots.get(pointer.projection_snapshot_id)
+            boundary = boundaries.get(snapshot.canonical_boundary_id) if snapshot else None
+            if (
+                snapshot is None
+                or boundary is None
+                or acceptance.accepted_generation <= boundary.accepted_through_generation
+            ):
+                continue
+            if boundary.scope_version != "r1":
+                self._uow._fail(ConstraintConflictError("Projection boundary scope is unsupported."))
+            drift = ProjectionDrift(
+                projection_drift_id=uuid4(),
+                workspace_id=acceptance.workspace_id,
+                environment_id=acceptance.environment_id,
+                projection_kind=pointer.projection_kind,
+                projection_snapshot_id=pointer.projection_snapshot_id,
+                projection_activation_id=pointer.projection_activation_id,
+                activation_generation=pointer.activation_generation,
+                canonical_acceptance_id=acceptance.canonical_acceptance_id,
+                source_object_id=acceptance.source_object_id,
+                source_revision_id=acceptance.source_revision_id,
+                accepted_generation=acceptance.accepted_generation,
+                detected_by=ProjectionDriftDetectedBy.CANONICAL_ACCEPTANCE,
+                detected_at=command.accepted_at,
+            )
+            self._uow._pending_projection_drifts[drift.projection_drift_id] = drift
+            context = self._uow._context_snapshot_active()
+            await self._uow.outbox.append(
+                self._uow._outbox_events.build_intent(
+                    event_id=uuid4(),
+                    workspace_id=acceptance.workspace_id,
+                    environment_id=acceptance.environment_id,
+                    event_type=PROJECTION_CATCH_UP_OUTBOX_EVENT_TYPE,
+                    schema_version=PROJECTION_OUTBOX_SCHEMA_VERSION,
+                    payload=ProjectionCatchUpRequestedOutboxPayload(
+                        projection_drift_id=drift.projection_drift_id,
+                        projection_activation_id=drift.projection_activation_id,
+                        projection_kind=drift.projection_kind,
+                        activation_generation=drift.activation_generation,
+                        canonical_acceptance_id=acceptance.canonical_acceptance_id,
+                        source_object_id=acceptance.source_object_id,
+                        source_revision_id=acceptance.source_revision_id,
+                        accepted_generation=acceptance.accepted_generation,
+                    ),
+                    aggregate=OpaqueObjectReference(
+                        object_type="projection_drift",
+                        object_id=drift.projection_drift_id,
+                        schema_version=1,
+                    ),
+                    producer_deduplication_id=f"projection-catch-up:{drift.projection_drift_id}",
+                    trace_id=context.trace_id,
+                )
+            )
         audit_id = await self._uow.audit.append(command.audit_event)
         event_id = await self._uow.outbox.append(command.outbox_intent)
         if audit_id != command.audit_event_id or event_id != command.outbox_event_id:
@@ -2226,6 +2339,9 @@ class InMemoryUnitOfWork:
         self._base_projection_snapshots: dict[UUID, object] = {}
         self._base_projection_snapshot_members: dict[UUID, object] = {}
         self._base_projection_reconciliation_results: dict[UUID, object] = {}
+        self._base_projection_activations: dict[UUID, ProjectionActivation] = {}
+        self._base_active_projections: dict[tuple[UUID, UUID, str], ActiveProjection] = {}
+        self._base_projection_drifts: dict[UUID, ProjectionDrift] = {}
         self._pending_workspaces: dict[UUID, Workspace] = {}
         self._pending_environments: dict[UUID, Environment] = {}
         self._pending_receipts: dict[_ReceiptKey, _IdempotencyReceipt] = {}
@@ -2259,6 +2375,9 @@ class InMemoryUnitOfWork:
         self._pending_projection_snapshots: dict[UUID, object] = {}
         self._pending_projection_snapshot_members: dict[UUID, object] = {}
         self._pending_projection_reconciliation_results: dict[UUID, object] = {}
+        self._pending_projection_activations: dict[UUID, ProjectionActivation] = {}
+        self._pending_active_projections: dict[tuple[UUID, UUID, str], ActiveProjection] = {}
+        self._pending_projection_drifts: dict[UUID, ProjectionDrift] = {}
         self._pending_projection_run_claims: dict[UUID, OwnedIdempotencyClaim] = {}
         self._source_observation_lock_held = False
         self._canonical_lock_held = False
@@ -2487,6 +2606,18 @@ class InMemoryUnitOfWork:
                 self._base_projection_reconciliation_results = {
                     key: value.model_copy(deep=True)
                     for key, value in self._store.projection_reconciliation_results.items()
+                }
+                self._base_projection_activations = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_activations.items()
+                }
+                self._base_active_projections = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.active_projections.items()
+                }
+                self._base_projection_drifts = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_drifts.items()
                 }
                 self._initialized = self._store.initialized
                 if not self._initialized:
@@ -2765,6 +2896,36 @@ class InMemoryUnitOfWork:
                         for key, value in self._pending_projection_reconciliation_results.items()
                     }
                 )
+                prepared_projection_activations = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_activations.items()
+                }
+                prepared_projection_activations.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_projection_activations.items()
+                    }
+                )
+                prepared_active_projections = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.active_projections.items()
+                }
+                prepared_active_projections.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_active_projections.items()
+                    }
+                )
+                prepared_projection_drifts = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_drifts.items()
+                }
+                prepared_projection_drifts.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_projection_drifts.items()
+                    }
+                )
                 self._store.state = _StoreState(
                     workspaces=prepared_workspaces,
                     environments=prepared_environments,
@@ -2799,6 +2960,9 @@ class InMemoryUnitOfWork:
                     projection_snapshots=prepared_projection_snapshots,
                     projection_snapshot_members=prepared_projection_snapshot_members,
                     projection_reconciliation_results=prepared_projection_reconciliation_results,
+                    projection_activations=prepared_projection_activations,
+                    active_projections=prepared_active_projections,
+                    projection_drifts=prepared_projection_drifts,
                 )
         except BaseException as error:
             self._raise_terminal(error)
@@ -2846,6 +3010,9 @@ class InMemoryUnitOfWork:
         self._pending_projection_snapshots.clear()
         self._pending_projection_snapshot_members.clear()
         self._pending_projection_reconciliation_results.clear()
+        self._pending_projection_activations.clear()
+        self._pending_active_projections.clear()
+        self._pending_projection_drifts.clear()
         self._pending_projection_run_claims.clear()
         self._lifecycle = _Lifecycle.ROLLED_BACK
         self._release_source_observation_lock()
@@ -2987,9 +3154,16 @@ class InMemoryUnitOfWork:
                 self._pending_projection_reconciliation_results,
                 self._store.projection_reconciliation_results,
             ),
+            (self._pending_projection_activations, self._store.projection_activations),
+            (self._pending_projection_drifts, self._store.projection_drifts),
         )
         if any(pending.keys() & stored.keys() for pending, stored in maps):
             raise ConstraintConflictError("Projection ledger identity already exists.")
+        if self._pending_active_projections:
+            for key, pointer in self._pending_active_projections.items():
+                existing = self._store.active_projections.get(key)
+                if existing is not None and pointer.cas_version <= existing.cas_version:
+                    raise OptimisticConflictError("Active projection CAS version regressed.")
         for run_id, pending_run in self._pending_projection_runs.items():
             stored_run = self._store.projection_runs.get(run_id)
             if stored_run is not None:
@@ -3240,6 +3414,9 @@ class InMemoryUnitOfWork:
         self._base_projection_snapshots.clear()
         self._base_projection_snapshot_members.clear()
         self._base_projection_reconciliation_results.clear()
+        self._base_projection_activations.clear()
+        self._base_active_projections.clear()
+        self._base_projection_drifts.clear()
         self._pending_workspaces.clear()
         self._pending_environments.clear()
         self._pending_receipts.clear()
@@ -3273,6 +3450,9 @@ class InMemoryUnitOfWork:
         self._pending_projection_snapshots.clear()
         self._pending_projection_snapshot_members.clear()
         self._pending_projection_reconciliation_results.clear()
+        self._pending_projection_activations.clear()
+        self._pending_active_projections.clear()
+        self._pending_projection_drifts.clear()
         self._pending_projection_run_claims.clear()
         self._scope = None
         self._operation = None
@@ -3772,6 +3952,7 @@ class InMemoryPersistence:
         selected_audit_events = (
             audit_events or AuditEventRegistry.with_default_families()
         )
+        register_projection_outbox_events(outbox_events)
         selected_audit_events.require_sealed()
         store = _Store(
             transaction_lock=transaction_lock,

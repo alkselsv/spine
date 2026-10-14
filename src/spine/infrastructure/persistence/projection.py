@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, TypeVar
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from spine.application.persistence.errors import (
     ConstraintConflictError,
@@ -17,6 +17,15 @@ from spine.application.persistence.idempotency import (
     OwnedIdempotencyClaim,
 )
 from spine.application.persistence.projection import (
+    PROJECTION_ACTIVATED_OUTBOX_EVENT_TYPE,
+    PROJECTION_CATCH_UP_OUTBOX_EVENT_TYPE,
+    PROJECTION_OUTBOX_SCHEMA_VERSION,
+    ProjectionActivatedOutboxPayload,
+    ProjectionCatchUpRequestedOutboxPayload,
+    ProjectionActivationCommand,
+    ProjectionActivationCommitted,
+    ProjectionActivationReplay,
+    ProjectionActivationResult,
     ProjectionCandidateSealCommand,
     ProjectionMutationResult,
     ProjectionReconciliationCommand,
@@ -25,9 +34,13 @@ from spine.application.persistence.projection import (
     ProjectionSnapshotCommand,
     ProjectionValidationCommand,
     ProjectionRepository,
+    ProjectionPublicationResolution,
     transition_allowed,
 )
+from spine.application.persistence.outbox import OpaqueObjectReference
 from spine.domain.projections import (
+    ActiveProjection,
+    CanonicalAsOf,
     OntologyVersion,
     ProjectionCandidateState,
     ProjectionConfigVersion,
@@ -38,12 +51,22 @@ from spine.domain.projections import (
     ProjectionRunTransition,
     ProjectionSnapshot,
     ProjectionSnapshotMember,
+    ProjectionActivation,
+    ProjectionActivationKind,
+    ProjectionDrift,
+    ProjectionDriftDetectedBy,
+    ProjectionFreshness,
+    ProjectionHealth,
+    PublishedActivePublication,
+    UnavailableActivePublication,
+    UnpublishedActivePublication,
     ProjectionSnapshotState,
     ProjectionValidation,
     SourceProjectionReference,
     projection_evidence_digest,
     projection_snapshot_manifest_digest,
 )
+from spine.domain.audit import AuditObjectReference, AuditOutcome, CanonicalTransitionAuditPayload
 
 if TYPE_CHECKING:
     from spine.infrastructure.persistence.in_memory import InMemoryUnitOfWork
@@ -217,6 +240,17 @@ class InMemoryProjectionRepository(ProjectionRepository):
                 or boundary.projection_kind != run.projection_kind
             ):
                 self._uow._fail(ConstraintConflictError("Projection run lineage is invalid."))
+            if run.predecessor_snapshot_id is not None:
+                predecessor = self._all(
+                    "_base_projection_snapshots", "_pending_projection_snapshots"
+                ).get(run.predecessor_snapshot_id)
+                if (
+                    predecessor is None
+                    or predecessor.projection_kind != run.projection_kind
+                    or predecessor.snapshot_state is not ProjectionSnapshotState.FINALIZED
+                    or not self._in_scope(predecessor)
+                ):
+                    self._uow._fail(ConstraintConflictError("Projection run predecessor is invalid."))
             runs = self._all("_base_projection_runs", "_pending_projection_runs")
             if run.projection_run_id in runs or any(
                 item.projection_candidate_id == run.projection_candidate_id
@@ -785,6 +819,310 @@ class InMemoryProjectionRepository(ProjectionRepository):
             self._copy(value)
             for value in sorted(values, key=lambda item: item.checked_at)
             if value.projection_snapshot_id == projection_snapshot_id and self._in_scope(value)
+        )
+
+    async def activate(
+        self, command: ProjectionActivationCommand
+    ) -> ProjectionActivationResult:
+        """Atomically publish a finalized snapshot in the in-memory test adapter."""
+
+        self._uow._guard_active()
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=command.digest.operation_schema_version,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        if isinstance(claim, IdempotencyReplay):
+            activation = self._all(
+                "_base_projection_activations", "_pending_projection_activations"
+            ).get(claim.result.result_id)
+            if activation is None:
+                self._uow._fail(ConstraintConflictError("Projection activation replay is unavailable."))
+            return ProjectionActivationReplay(
+                activation=self._copy(activation),
+                drift_count=len(await self.list_drifts(activation.projection_activation_id)),
+                result_reference=claim.result,
+            )
+
+        snapshot = self._all(
+            "_base_projection_snapshots", "_pending_projection_snapshots"
+        ).get(command.projection_snapshot_id)
+        if snapshot is None or not self._in_scope(snapshot):
+            self._uow._fail(ConstraintConflictError("Projection snapshot is unavailable."))
+        if snapshot.snapshot_state is not ProjectionSnapshotState.FINALIZED:
+            self._uow._fail(ConstraintConflictError("Projection snapshot is not finalized."))
+        if snapshot.projection_kind != command.projection_kind:
+            self._uow._fail(ConstraintConflictError("Projection activation kind is invalid."))
+        boundary = self._all(
+            "_base_canonical_boundaries", "_pending_canonical_boundaries"
+        ).get(snapshot.canonical_boundary_id)
+        if boundary is None or not self._in_scope(boundary):
+            self._uow._fail(ConstraintConflictError("Projection boundary is unavailable."))
+        if boundary.scope_version != "r1":
+            self._uow._fail(ConstraintConflictError("Projection boundary scope is unsupported."))
+        run = self._all("_base_projection_runs", "_pending_projection_runs").get(
+            snapshot.projection_run_id
+        )
+        if (
+            run is None
+            or run.projection_candidate_id != snapshot.projection_candidate_id
+            or run.candidate_state is not ProjectionCandidateState.SEALED
+            or run.candidate_evidence_digest != snapshot.candidate_evidence_digest
+            or run.projection_kind != snapshot.projection_kind
+            or run.projection_config_version_id != snapshot.projection_config_version_id
+            or run.canonical_boundary_id != snapshot.canonical_boundary_id
+        ):
+            self._uow._fail(ConstraintConflictError("Projection snapshot run lineage is invalid."))
+        if command.activation_kind is ProjectionActivationKind.ROLLBACK and run.operation.value != "rollback":
+            self._uow._fail(ConstraintConflictError("Rollback requires a rollback projection run."))
+        if command.activation_kind is ProjectionActivationKind.PUBLISH and run.operation.value == "rollback":
+            self._uow._fail(ConstraintConflictError("Publish cannot use a rollback projection run."))
+        key = (snapshot.workspace_id, snapshot.environment_id, snapshot.projection_kind)
+        current = self._all("_base_active_projections", "_pending_active_projections").get(key)
+        if current is None:
+            if any(
+                value is not None
+                for value in (
+                    command.expected_predecessor_snapshot_id,
+                    command.expected_predecessor_activation_generation,
+                    command.expected_active_pointer_cas_version,
+                )
+            ) or snapshot.predecessor_snapshot_id is not None:
+                self._uow._fail(OptimisticConflictError("First publication predecessor is not empty."))
+            generation, cas_version = 1, 1
+        else:
+            if (
+                command.expected_predecessor_snapshot_id != current.projection_snapshot_id
+                or command.expected_predecessor_activation_generation != current.activation_generation
+                or command.expected_active_pointer_cas_version != current.cas_version
+                or snapshot.predecessor_snapshot_id != current.projection_snapshot_id
+            ):
+                self._uow._fail(OptimisticConflictError("Active projection predecessor is stale."))
+            active_snapshot = self._all(
+                "_base_projection_snapshots", "_pending_projection_snapshots"
+            ).get(current.projection_snapshot_id)
+            active_boundary = self._all(
+                "_base_canonical_boundaries", "_pending_canonical_boundaries"
+            ).get(active_snapshot.canonical_boundary_id if active_snapshot else None)
+            if active_boundary is None or boundary.accepted_through_generation < active_boundary.accepted_through_generation:
+                self._uow._fail(OptimisticConflictError("Projection boundary regressed."))
+            generation, cas_version = current.activation_generation + 1, current.cas_version + 1
+
+        generation_key = (snapshot.workspace_id, snapshot.environment_id)
+        canonical_generation = max(
+            self._uow._base_canonical_generations.get(generation_key, 0),
+            self._uow._pending_canonical_generations.get(generation_key, 0),
+        )
+        activation_id = uuid4()
+        acceptances = tuple(
+            value
+            for value in self._all(
+                "_base_canonical_acceptances", "_pending_canonical_acceptances"
+            ).values()
+            if value.workspace_id == snapshot.workspace_id
+            and value.environment_id == snapshot.environment_id
+            and value.accepted_generation > boundary.accepted_through_generation
+            and value.accepted_generation <= canonical_generation
+        )
+        drift_values = [
+            ProjectionDrift(
+                projection_drift_id=uuid4(),
+                workspace_id=snapshot.workspace_id,
+                environment_id=snapshot.environment_id,
+                projection_kind=snapshot.projection_kind,
+                projection_snapshot_id=snapshot.projection_snapshot_id,
+                projection_activation_id=activation_id,
+                activation_generation=generation,
+                canonical_acceptance_id=acceptance.canonical_acceptance_id,
+                source_object_id=acceptance.source_object_id,
+                source_revision_id=acceptance.source_revision_id,
+                accepted_generation=acceptance.accepted_generation,
+                detected_by=ProjectionDriftDetectedBy.ACTIVATION,
+                detected_at=datetime.now(timezone.utc),
+            )
+            for acceptance in sorted(acceptances, key=lambda item: item.accepted_generation)
+        ]
+
+        context = self._uow._context_snapshot_active()
+        audit = self._uow._audit_events.build_event(
+            audit_event_id=None,
+            workspace_id=snapshot.workspace_id,
+            environment_id=snapshot.environment_id,
+            event_type="canonical.transition",
+            schema_version=1,
+            payload=CanonicalTransitionAuditPayload(transition="projection.activated"),
+            origin=context.origin,
+            acting_subject_id=context.acting_subject_id,
+            service_principal_id=context.service_principal_id,
+            trace_id=context.trace_id,
+            occurred_at=datetime.now(timezone.utc),
+            outcome=AuditOutcome.COMMITTED,
+            reason="projection_activation_committed",
+            target=AuditObjectReference(
+                object_type="projection_activation", object_id=activation_id, schema_version=1
+            ),
+            producer_deduplication_id=f"projection-activated:{activation_id}",
+        )
+        audit_id = await self._uow.audit.append(audit)
+        activation = ProjectionActivation(
+            projection_activation_id=activation_id,
+            workspace_id=snapshot.workspace_id,
+            environment_id=snapshot.environment_id,
+            projection_kind=snapshot.projection_kind,
+            projection_snapshot_id=snapshot.projection_snapshot_id,
+            predecessor_snapshot_id=current.projection_snapshot_id if current else None,
+            activation_generation=generation,
+            activation_kind=command.activation_kind,
+            command_identity=command.command_identity,
+            command_digest=command.digest.value,
+            idempotency_receipt_id=claim.receipt_id,
+            audit_event_id=audit_id,
+            activated_at=datetime.now(timezone.utc),
+        )
+        pointer = ActiveProjection(
+            workspace_id=snapshot.workspace_id,
+            environment_id=snapshot.environment_id,
+            projection_kind=snapshot.projection_kind,
+            projection_snapshot_id=snapshot.projection_snapshot_id,
+            projection_activation_id=activation_id,
+            activation_generation=generation,
+            cas_version=cas_version,
+        )
+        self._uow._pending_projection_activations[activation_id] = activation
+        self._uow._pending_active_projections[key] = pointer
+        for drift in drift_values:
+            self._uow._pending_projection_drifts[drift.projection_drift_id] = drift
+        await self._uow.outbox.append(
+            self._uow._outbox_events.build_intent(
+                event_id=uuid4(),
+                workspace_id=snapshot.workspace_id,
+                environment_id=snapshot.environment_id,
+                event_type=PROJECTION_ACTIVATED_OUTBOX_EVENT_TYPE,
+                schema_version=PROJECTION_OUTBOX_SCHEMA_VERSION,
+                payload=ProjectionActivatedOutboxPayload(
+                    projection_activation_id=activation_id,
+                    projection_snapshot_id=snapshot.projection_snapshot_id,
+                    projection_kind=snapshot.projection_kind,
+                    activation_generation=generation,
+                    activation_kind=command.activation_kind,
+                    canonical_boundary_id=boundary.boundary_id,
+                    accepted_through_generation=boundary.accepted_through_generation,
+                    drift_count=len(drift_values),
+                    audit_event_id=audit_id,
+                ),
+                aggregate=OpaqueObjectReference(
+                    object_type="projection_activation",
+                    object_id=activation_id,
+                    schema_version=1,
+                ),
+                producer_deduplication_id=f"projection-activated:{activation_id}",
+                trace_id=context.trace_id,
+            )
+        )
+        for drift in drift_values:
+            await self._uow.outbox.append(
+                self._uow._outbox_events.build_intent(
+                    event_id=uuid4(),
+                    workspace_id=snapshot.workspace_id,
+                    environment_id=snapshot.environment_id,
+                    event_type=PROJECTION_CATCH_UP_OUTBOX_EVENT_TYPE,
+                    schema_version=PROJECTION_OUTBOX_SCHEMA_VERSION,
+                    payload=ProjectionCatchUpRequestedOutboxPayload(
+                        projection_drift_id=drift.projection_drift_id,
+                        projection_activation_id=activation_id,
+                        projection_kind=snapshot.projection_kind,
+                        activation_generation=generation,
+                        canonical_acceptance_id=drift.canonical_acceptance_id,
+                        source_object_id=drift.source_object_id,
+                        source_revision_id=drift.source_revision_id,
+                        accepted_generation=drift.accepted_generation,
+                    ),
+                    aggregate=OpaqueObjectReference(
+                        object_type="projection_drift",
+                        object_id=drift.projection_drift_id,
+                        schema_version=1,
+                    ),
+                    producer_deduplication_id=f"projection-catch-up:{drift.projection_drift_id}",
+                    trace_id=context.trace_id,
+                )
+            )
+        result = ProjectionActivationCommitted(
+            activation=activation,
+            drift_count=len(drift_values),
+            result_reference=OpaqueResultReference("projection_activation", activation_id, 1),
+        )
+        await self._uow.idempotency.complete(claim, result.result_reference)
+        return result
+
+    async def resolve_active_publication(
+        self, projection_kind: str
+    ) -> ProjectionPublicationResolution:
+        self._uow._guard_active()
+        scope = self._scope()
+        key = (scope[0], scope[1], projection_kind)
+        pointer = self._all("_base_active_projections", "_pending_active_projections").get(key)
+        if pointer is None:
+            return UnpublishedActivePublication(
+                workspace_id=scope[0], environment_id=scope[1], projection_kind=projection_kind
+            )
+        snapshots = self._all("_base_projection_snapshots", "_pending_projection_snapshots")
+        snapshot = snapshots.get(pointer.projection_snapshot_id)
+        activations = self._all("_base_projection_activations", "_pending_projection_activations")
+        activation = activations.get(pointer.projection_activation_id)
+        boundary = self._all("_base_canonical_boundaries", "_pending_canonical_boundaries").get(
+            snapshot.canonical_boundary_id if snapshot else None
+        )
+        config = self._all("_base_projection_configs", "_pending_projection_configs").get(
+            snapshot.projection_config_version_id if snapshot else None
+        )
+        if snapshot is None or activation is None or boundary is None or config is None:
+            return UnavailableActivePublication(
+                workspace_id=scope[0], environment_id=scope[1], projection_kind=projection_kind,
+                reason_code="active_publication_integrity_conflict",
+            )
+        drifts = await self.list_drifts(activation.projection_activation_id)
+        reconciliations = await self.list_reconciliation_results(snapshot.projection_snapshot_id)
+        effective = reconciliations[-1] if reconciliations else None
+        return PublishedActivePublication(
+            workspace_id=scope[0],
+            environment_id=scope[1],
+            projection_kind=projection_kind,
+            projection_snapshot=snapshot,
+            projection_activation=activation,
+            activation_generation=pointer.activation_generation,
+            canonical_boundary_id=boundary.boundary_id,
+            canonical_boundary_manifest_digest=boundary.manifest_digest,
+            accepted_through_generation=boundary.accepted_through_generation,
+            canonical_boundary_membership_ref=f"canonical-boundary-members:{boundary.boundary_id}",
+            as_of=CanonicalAsOf(
+                canonical_boundary_id=boundary.boundary_id,
+                accepted_through_generation=boundary.accepted_through_generation,
+                boundary_time=boundary.boundary_time,
+            ),
+            projection_config_version=config,
+            freshness=ProjectionFreshness.STALE if drifts else ProjectionFreshness.CURRENT,
+            health=ProjectionHealth.HEALTHY
+            if effective is not None and effective.outcome.value == "healthy"
+            else ProjectionHealth.DEGRADED,
+            effective_reconciliation=effective,
+        )
+
+    async def list_activations(self, projection_kind: str) -> tuple[ProjectionActivation, ...]:
+        self._uow._guard_active()
+        values = self._all("_base_projection_activations", "_pending_projection_activations").values()
+        return tuple(
+            self._copy(value)
+            for value in sorted(values, key=lambda item: item.activation_generation)
+            if value.projection_kind == projection_kind and self._in_scope(value)
+        )
+
+    async def list_drifts(self, projection_activation_id: UUID) -> tuple[ProjectionDrift, ...]:
+        self._uow._guard_active()
+        values = self._all("_base_projection_drifts", "_pending_projection_drifts").values()
+        return tuple(
+            self._copy(value)
+            for value in sorted(values, key=lambda item: item.accepted_generation)
+            if value.projection_activation_id == projection_activation_id and self._in_scope(value)
         )
 
 

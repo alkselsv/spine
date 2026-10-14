@@ -566,6 +566,7 @@ projection_runs = Table(
     Column("operation", Text, nullable=False),
     Column("projection_config_version_id", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("canonical_boundary_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("predecessor_snapshot_id", PostgreSQLUUID(as_uuid=True)),
     Column("command_identity", Text, nullable=False),
     Column("command_digest", String(64), nullable=False),
     Column("idempotency_receipt_id", PostgreSQLUUID(as_uuid=True), nullable=False),
@@ -731,6 +732,54 @@ projection_reconciliation_results = Table(
     Column("checked_at", DateTime(timezone=True), nullable=False),
 )
 
+projection_activations = Table(
+    "projection_activations",
+    metadata,
+    Column("projection_activation_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("projection_kind", Text, nullable=False),
+    Column("projection_snapshot_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("predecessor_snapshot_id", PostgreSQLUUID(as_uuid=True)),
+    Column("activation_generation", Integer, nullable=False),
+    Column("activation_kind", Text, nullable=False),
+    Column("command_identity", Text, nullable=False),
+    Column("command_digest", String(64), nullable=False),
+    Column("idempotency_receipt_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("audit_event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("activated_at", DateTime(timezone=True), nullable=False),
+)
+
+active_projections = Table(
+    "active_projections",
+    metadata,
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("projection_kind", Text, primary_key=True),
+    Column("projection_snapshot_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("projection_activation_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("activation_generation", Integer, nullable=False),
+    Column("cas_version", Integer, nullable=False),
+)
+
+projection_drifts = Table(
+    "projection_drifts",
+    metadata,
+    Column("projection_drift_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("projection_kind", Text, nullable=False),
+    Column("projection_snapshot_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("projection_activation_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("activation_generation", Integer, nullable=False),
+    Column("canonical_acceptance_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_revision_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("accepted_generation", Integer, nullable=False),
+    Column("detected_by", Text, nullable=False),
+    Column("detected_at", DateTime(timezone=True), nullable=False),
+)
+
 __all__ = [
     "access_policy_grants",
     "access_policy_versions",
@@ -778,4 +827,7 @@ __all__ = [
     "projection_snapshots",
     "projection_snapshot_members",
     "projection_reconciliation_results",
+    "projection_activations",
+    "active_projections",
+    "projection_drifts",
 ]
