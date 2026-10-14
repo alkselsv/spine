@@ -586,6 +586,14 @@ Context Graph.
 не возвращает Cognee answer string и не требует от caller знания datasets,
 `DataPoint` или внутренних pipeline tasks.
 
+Физическое восстановление является отдельным derived-state seam: cleanup
+работает только с content-free mappings failed/retired namespace и не меняет
+SourceRevision, tombstone, manifest или active pointer. Repair повторяет
+immutable projection inputs, а stale/tombstoned revisions fenced до physical
+write; partial deletion возвращает typed pending outcome для at-least-once
+retry. Эти операции выполняются вне PostgreSQL UnitOfWork, а physical
+exceptions не раскрывают provider payload или source content.
+
 ### Онтология и извлечение
 
 Production extraction использует закреплённую `OntologyVersion`: набор типов
