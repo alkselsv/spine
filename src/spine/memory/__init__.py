@@ -43,6 +43,17 @@ from spine.memory.namespace import (
     ProjectionNamespaceRouter,
     namespace_identity_digest,
 )
+from spine.memory.read_plan import (
+    PhysicalNamespaceRegistry,
+    PhysicalReadContext,
+    PhysicalReadIsolationRequirement,
+    PhysicalReadOperation,
+    PhysicalReadPlan,
+    PhysicalReadPlanBuilder,
+    PhysicalReadPlanOutcome,
+    PhysicalReadPlanReason,
+    PhysicalReadPlanResolution,
+)
 
 __all__ = [
     "ContextProjection",
@@ -84,6 +95,15 @@ __all__ = [
     "ask",
     "format_answers",
     "namespace_identity_digest",
+    "PhysicalNamespaceRegistry",
+    "PhysicalReadContext",
+    "PhysicalReadIsolationRequirement",
+    "PhysicalReadOperation",
+    "PhysicalReadPlan",
+    "PhysicalReadPlanBuilder",
+    "PhysicalReadPlanOutcome",
+    "PhysicalReadPlanReason",
+    "PhysicalReadPlanResolution",
     "remember_texts",
     "TrustedContextValidator",
 ]
