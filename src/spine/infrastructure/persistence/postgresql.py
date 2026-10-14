@@ -1663,6 +1663,29 @@ class _PostgreSQLIngestionRepository:
         return IngestionTransition.model_validate(values)
 
     @staticmethod
+    def _warning_from_row(row: Mapping[str, Any]) -> IngestionWarning:
+        values = dict(row)
+        detail_schema = values.pop("safe_detail_schema", None)
+        detail = values.pop("safe_detail", None)
+        values.pop("safe_detail_digest", None)
+        values.pop("retryable", None)
+        if detail is not None and "schema_version" not in detail:
+            detail = {"schema_version": detail_schema, **detail}
+        values["safe_detail"] = detail
+        return IngestionWarning.model_validate_json(json.dumps(values, default=str))
+
+    @staticmethod
+    def _failure_from_row(row: Mapping[str, Any]) -> IngestionFailure:
+        values = dict(row)
+        detail_schema = values.pop("safe_detail_schema", None)
+        detail = values.pop("safe_detail", None)
+        values.pop("safe_detail_digest", None)
+        if detail is not None and "schema_version" not in detail:
+            detail = {"schema_version": detail_schema, **detail}
+        values["safe_detail"] = detail
+        return IngestionFailure.model_validate_json(json.dumps(values, default=str))
+
+    @staticmethod
     def _binding_from_row(row: Mapping[str, Any]) -> IngestionRunSourceBinding:
         # asyncpg decodes JSONB UUID members as strings.  JSON validation lets
         # the strict domain model parse those wire values without weakening the
@@ -1980,6 +2003,36 @@ class _PostgreSQLIngestionRepository:
             )
         ).mappings().one_or_none()
         return ProcessingReceipt.model_validate(dict(row)) if row is not None else None
+
+    async def resolve_warnings(self, item_id: UUID) -> tuple[IngestionWarning, ...]:
+        self._uow._guard_active()
+        rows = (
+            await self._uow._execute(
+                select(_INGESTION_WARNINGS)
+                .where(
+                    _INGESTION_WARNINGS.c.ingestion_run_source_id == item_id,
+                    _INGESTION_WARNINGS.c.workspace_id == self._uow.scope.workspace_id,
+                    _INGESTION_WARNINGS.c.environment_id == self._uow.scope.environment_id,
+                )
+                .order_by(_INGESTION_WARNINGS.c.attempt, _INGESTION_WARNINGS.c.occurred_at)
+            )
+        ).mappings().all()
+        return tuple(self._warning_from_row(row) for row in rows)
+
+    async def resolve_failures(self, item_id: UUID) -> tuple[IngestionFailure, ...]:
+        self._uow._guard_active()
+        rows = (
+            await self._uow._execute(
+                select(_INGESTION_FAILURES)
+                .where(
+                    _INGESTION_FAILURES.c.ingestion_run_source_id == item_id,
+                    _INGESTION_FAILURES.c.workspace_id == self._uow.scope.workspace_id,
+                    _INGESTION_FAILURES.c.environment_id == self._uow.scope.environment_id,
+                )
+                .order_by(_INGESTION_FAILURES.c.attempt, _INGESTION_FAILURES.c.occurred_at)
+            )
+        ).mappings().all()
+        return tuple(self._failure_from_row(row) for row in rows)
 
 
 class _PostgreSQLAdmissionRepository:

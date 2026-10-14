@@ -252,6 +252,34 @@ class DocumentIngestionOrchestrator:
         self._validate_request_scope(request)
         command_digest = _request_digest(request)
         run, item, replay = await self._ensure_run(request, command_digest)
+        return await self.ingest_item(
+            request=request,
+            chunks=chunks,
+            run=run,
+            item=item,
+            replay=replay,
+        )
+
+    async def ingest_item(
+        self,
+        *,
+        request: DocumentUploadCommand,
+        chunks: AsyncIterable[bytes],
+        run: IngestionRun,
+        item: IngestionRunSource,
+        replay: bool = False,
+    ) -> DocumentIngestionResult:
+        """Process an already-created item inside a caller-owned ingestion run."""
+
+        self._validate_request_scope(request)
+        if (
+            item.ingestion_run_id != run.ingestion_run_id
+            or (item.workspace_id, item.environment_id)
+            != (run.workspace_id, run.environment_id)
+            or (request.workspace_id, request.environment_id)
+            != (run.workspace_id, run.environment_id)
+        ):
+            raise ValueError("ingestion item scope does not match its run")
         upload = await self.uploader.upload(
             self.context_factory(PersistenceOperation("original.upload"), _id(request, "upload-trace")),
             OriginalUploadCommandInput(
@@ -269,7 +297,7 @@ class DocumentIngestionOrchestrator:
             chunks,
         )
         source, revision, provenance, binding, observation = self._build_observation(
-            request, run, upload
+            request, run, item, upload
         )
         await self._bind_source(request, run, item, binding, observation)
         validation = await self._validate(request, revision, upload)
@@ -327,6 +355,43 @@ class DocumentIngestionOrchestrator:
             upload=upload,
             replay=replay,
         )
+
+    async def record_item_failure(
+        self,
+        *,
+        request: DocumentUploadCommand,
+        item: IngestionRunSource,
+        retryable: bool = True,
+    ) -> None:
+        """Persist a safe batch-boundary failure after an item exception."""
+
+        context = self.context_factory(
+            PersistenceOperation("ingestion_run"), _id(request, "batch-failure-trace")
+        )
+        async with self.uow_factory(context) as uow:
+            head = await uow.ingestion.resolve_item_head(item.ingestion_run_source_id)
+            if head is None:
+                await uow.rollback()
+                return
+            failure = self._failure(
+                item,
+                code="persistence_failed",
+                stage=FailureStage.PERSISTING,
+                retryable=retryable,
+                attempt=head.attempt,
+            )
+            await uow.ingestion.append_failure(failure)
+            if head.state not in {
+                IngestionItemState.PROCESSED,
+                IngestionItemState.PROJECTION_REQUESTED,
+                IngestionItemState.REJECTED,
+                IngestionItemState.QUARANTINED,
+                IngestionItemState.PROCESSING_FAILED,
+            }:
+                await self._advance_item_in_uow(
+                    uow, item, IngestionItemState.PROCESSING_FAILED, self._now()
+                )
+            await uow.commit()
 
     async def _ensure_run(
         self, request: DocumentUploadCommand, command_digest: str
@@ -575,6 +640,7 @@ class DocumentIngestionOrchestrator:
         assert isinstance(revision, SourceRevision)
         item = values["item"]
         assert isinstance(item, IngestionRunSource)
+        attempt = await self._item_attempt(request, item)
         status = DocumentIngestionStatus.SUCCEEDED
         artifact: ParsedDocument | None = None
         failure: IngestionFailure | None = None
@@ -608,13 +674,16 @@ class DocumentIngestionOrchestrator:
                 ParsedArtifactCommand.create(artifact, command_identity=f"{request.command_identity}.parse")
             )
             if artifact.coverage is ParseCoverage.PARTIAL:
-                warning = self._warning(item, code="partial_coverage", stage=WarningStage.PARSING)
+                warning = self._warning(
+                    item, code="partial_coverage", stage=WarningStage.PARSING, attempt=attempt
+                )
         if status in {DocumentIngestionStatus.FAILED, DocumentIngestionStatus.UNSUPPORTED}:
             failure = self._failure(
                 item,
                 code="parser_failed",
                 stage=FailureStage.PARSING,
                 retryable=status is DocumentIngestionStatus.FAILED,
+                attempt=attempt,
             )
         receipt = self._processing_receipt(
             request=request,
@@ -726,7 +795,13 @@ class DocumentIngestionOrchestrator:
             )
         )
 
-    def _build_observation(self, request: DocumentUploadCommand, run: IngestionRun, upload: OriginalUploadOutcome):
+    def _build_observation(
+        self,
+        request: DocumentUploadCommand,
+        run: IngestionRun,
+        item: IngestionRunSource,
+        upload: OriginalUploadOutcome,
+    ):
         now = self._now()
         source = SourceObject(
             source_object_id=_source_object_id(request),
@@ -774,11 +849,16 @@ class DocumentIngestionOrchestrator:
             command_result=upload.result, write_receipt=receipt, associated_at=now,
         )
         item = IngestionRunSource(
-            ingestion_run_source_id=_id(request, "item"), ingestion_run_id=run.ingestion_run_id,
-            workspace_id=request.workspace_id, environment_id=request.environment_id,
-            input_ordinal=1, input_identity=request.upload_identity,
-            input_digest=_request_digest(request), command_identity=request.command_identity,
-            command_digest=_request_digest(request), created_at=run.requested_at,
+            ingestion_run_source_id=item.ingestion_run_source_id,
+            ingestion_run_id=run.ingestion_run_id,
+            workspace_id=item.workspace_id,
+            environment_id=item.environment_id,
+            input_ordinal=item.input_ordinal,
+            input_identity=item.input_identity,
+            input_digest=item.input_digest,
+            command_identity=item.command_identity,
+            command_digest=item.command_digest,
+            created_at=item.created_at,
         )
         binding = IngestionRunSourceBinding(
             binding_id=_id(request, "binding"), ingestion_run_source_id=item.ingestion_run_source_id,
@@ -832,20 +912,29 @@ class DocumentIngestionOrchestrator:
             command_digest="0" * 64, completed_at=self._now(),
         )
 
-    def _warning(self, item, *, code, stage):
+    async def _item_attempt(self, request: DocumentUploadCommand, item: IngestionRunSource) -> int:
+        context = self.context_factory(
+            PersistenceOperation("ingestion_run"), _id(request, "attempt-trace")
+        )
+        async with self.uow_factory(context) as uow:
+            head = await uow.ingestion.resolve_item_head(item.ingestion_run_source_id)
+            await uow.rollback()
+        return head.attempt if head is not None else 1
+
+    def _warning(self, item, *, code, stage, attempt=1):
         return IngestionWarning(
-            ingestion_warning_id=uuid5(NAMESPACE_URL, f"spine:ingestion-warning:v1:{item.ingestion_run_source_id}:{code}"),
+            ingestion_warning_id=uuid5(NAMESPACE_URL, f"spine:ingestion-warning:v1:{item.ingestion_run_source_id}:{code}:{attempt}"),
             workspace_id=item.workspace_id, environment_id=item.environment_id,
-            ingestion_run_source_id=item.ingestion_run_source_id, attempt=1, stage=stage,
+            ingestion_run_source_id=item.ingestion_run_source_id, attempt=attempt, stage=stage,
             code=code, safe_detail=SafeDiagnosticDetail(schema_version="ingestion-safe-detail:v1", item_count=1),
             occurred_at=self._now(),
         )
 
-    def _failure(self, item, *, code, stage, retryable):
+    def _failure(self, item, *, code, stage, retryable, attempt=1):
         return IngestionFailure(
-            ingestion_failure_id=uuid5(NAMESPACE_URL, f"spine:ingestion-failure:v1:{item.ingestion_run_source_id}:{code}"),
+            ingestion_failure_id=uuid5(NAMESPACE_URL, f"spine:ingestion-failure:v1:{item.ingestion_run_source_id}:{code}:{attempt}"),
             workspace_id=item.workspace_id, environment_id=item.environment_id,
-            ingestion_run_source_id=item.ingestion_run_source_id, attempt=1, stage=stage,
+            ingestion_run_source_id=item.ingestion_run_source_id, attempt=attempt, stage=stage,
             code=code, retryable=retryable,
             safe_detail=SafeDiagnosticDetail(schema_version="ingestion-safe-detail:v1", retryable=retryable),
             occurred_at=self._now(),

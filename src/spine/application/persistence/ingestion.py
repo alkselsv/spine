@@ -179,6 +179,10 @@ class IngestionRepository(Protocol):
 
     async def resolve_processing_receipt(self, item_id: UUID) -> ProcessingReceipt | None: ...
 
+    async def resolve_warnings(self, item_id: UUID) -> tuple[IngestionWarning, ...]: ...
+
+    async def resolve_failures(self, item_id: UUID) -> tuple[IngestionFailure, ...]: ...
+
     async def resolve_item(self, item_id: UUID) -> IngestionRunSource | None: ...
 
     async def resolve_binding(self, item_id: UUID) -> IngestionRunSourceBinding | None: ...
@@ -203,13 +207,13 @@ RUN_TRANSITIONS: dict[IngestionRunState, frozenset[IngestionRunState]] = {
 
 
 ITEM_TRANSITIONS: dict[IngestionItemState, frozenset[IngestionItemState]] = {
-    IngestionItemState.RECEIVED: frozenset({IngestionItemState.STORED, IngestionItemState.OBSERVED}),
-    IngestionItemState.STORED: frozenset({IngestionItemState.OBSERVED, IngestionItemState.ADMISSION_PENDING}),
-    IngestionItemState.OBSERVED: frozenset({IngestionItemState.ADMISSION_PENDING, IngestionItemState.QUARANTINED, IngestionItemState.REJECTED, IngestionItemState.ACCEPTED}),
-    IngestionItemState.ADMISSION_PENDING: frozenset({IngestionItemState.QUARANTINED, IngestionItemState.REJECTED, IngestionItemState.ACCEPTED}),
+    IngestionItemState.RECEIVED: frozenset({IngestionItemState.STORED, IngestionItemState.OBSERVED, IngestionItemState.PROCESSING_FAILED}),
+    IngestionItemState.STORED: frozenset({IngestionItemState.OBSERVED, IngestionItemState.ADMISSION_PENDING, IngestionItemState.PROCESSING_FAILED}),
+    IngestionItemState.OBSERVED: frozenset({IngestionItemState.ADMISSION_PENDING, IngestionItemState.QUARANTINED, IngestionItemState.REJECTED, IngestionItemState.ACCEPTED, IngestionItemState.PROCESSING_FAILED}),
+    IngestionItemState.ADMISSION_PENDING: frozenset({IngestionItemState.QUARANTINED, IngestionItemState.REJECTED, IngestionItemState.ACCEPTED, IngestionItemState.PROCESSING_FAILED}),
     IngestionItemState.QUARANTINED: frozenset({IngestionItemState.RECEIVED}),
     IngestionItemState.REJECTED: frozenset(),
-    IngestionItemState.ACCEPTED: frozenset({IngestionItemState.PROCESSING}),
+    IngestionItemState.ACCEPTED: frozenset({IngestionItemState.PROCESSING, IngestionItemState.PROCESSING_FAILED}),
     IngestionItemState.PROCESSING: frozenset({IngestionItemState.PROCESSED, IngestionItemState.PROCESSING_FAILED}),
     IngestionItemState.PROCESSED: frozenset({IngestionItemState.PROJECTION_REQUESTED}),
     IngestionItemState.PROCESSING_FAILED: frozenset({IngestionItemState.PROCESSING}),

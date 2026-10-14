@@ -1915,7 +1915,10 @@ class _InMemoryIngestionRepository:
     async def resolve_run_head(self, run_id: UUID) -> IngestionTransition | None:
         self._uow._guard_active()
         run = self._runs().get(run_id)
-        if run is None:
+        if run is None or not isinstance(self._uow.scope, EnvironmentScope) or (
+            run.workspace_id,
+            run.environment_id,
+        ) != (self._uow.scope.workspace_id, self._uow.scope.environment_id):
             return None
         head = self._head(run_id, IngestionTargetKind.RUN)
         return head.model_copy(deep=True) if head is not None else None
@@ -1923,7 +1926,10 @@ class _InMemoryIngestionRepository:
     async def resolve_item_head(self, item_id: UUID) -> IngestionTransition | None:
         self._uow._guard_active()
         item = self._items().get(item_id)
-        if item is None:
+        if item is None or not isinstance(self._uow.scope, EnvironmentScope) or (
+            item.workspace_id,
+            item.environment_id,
+        ) != (self._uow.scope.workspace_id, self._uow.scope.environment_id):
             return None
         head = self._head(item_id, IngestionTargetKind.ITEM)
         return head.model_copy(deep=True) if head is not None else None
@@ -1937,6 +1943,38 @@ class _InMemoryIngestionRepository:
         if not receipts:
             return None
         return max(receipts, key=lambda value: value.completed_at).model_copy(deep=True)
+
+    async def resolve_warnings(self, item_id: UUID) -> tuple[IngestionWarning, ...]:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return ()
+        return tuple(
+            value.model_copy(deep=True)
+            for value in sorted(
+                self._warnings().values(),
+                key=lambda value: (value.attempt, value.occurred_at, str(value.ingestion_warning_id)),
+            )
+            if value.ingestion_run_source_id == item_id
+            and value.workspace_id == scope.workspace_id
+            and value.environment_id == scope.environment_id
+        )
+
+    async def resolve_failures(self, item_id: UUID) -> tuple[IngestionFailure, ...]:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return ()
+        return tuple(
+            value.model_copy(deep=True)
+            for value in sorted(
+                self._failures().values(),
+                key=lambda value: (value.attempt, value.occurred_at, str(value.ingestion_failure_id)),
+            )
+            if value.ingestion_run_source_id == item_id
+            and value.workspace_id == scope.workspace_id
+            and value.environment_id == scope.environment_id
+        )
 
 
 class _IdempotencyRepository:
