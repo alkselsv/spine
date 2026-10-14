@@ -522,6 +522,23 @@ class _SourceObservationRepository:
             | self._uow._pending_source_receipt_associations
         )
 
+    async def resolve_source(self, source_object_id: UUID) -> SourceObject | None:
+        self._uow._guard_active()
+
+        def operation() -> SourceObject | None:
+            scope = self._uow.scope
+            if not isinstance(scope, EnvironmentScope):
+                return None
+            source = self._objects().get(source_object_id)
+            if source is None or (
+                source.workspace_id,
+                source.environment_id,
+            ) != (scope.workspace_id, scope.environment_id):
+                return None
+            return source.model_copy(deep=True)
+
+        return self._uow._repository_call(operation)
+
     async def resolve_or_create_source(self, source: SourceObject) -> SourceObject:
         self._uow._guard_active()
 
