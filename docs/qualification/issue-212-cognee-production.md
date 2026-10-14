@@ -15,6 +15,11 @@ the composition gap, but it does not turn offline evidence into a production
 qualification: every live observation remains `not_run` until one coherent
 PostgreSQL + Neo4j + PGVector execution records it.
 
+The machine-readable report uses schema `cognee-production-qualification:v2`.
+Its `canonical_lifecycle_separation` field is `not_verified` unless that exact
+gate passes; ownership by PostgreSQL is an architectural invariant, not proof
+that physical call timing was observed.
+
 This is the explicit failure outcome allowed by Issue #212. It is not a
 conditional approval, a local-profile approval or a deployment recommendation.
 

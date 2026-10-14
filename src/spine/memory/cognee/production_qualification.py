@@ -128,8 +128,8 @@ class ProductionQualificationResult(DefinitionModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["cognee-production-qualification:v1"] = (
-        "cognee-production-qualification:v1"
+    schema_version: Literal["cognee-production-qualification:v2"] = (
+        "cognee-production-qualification:v2"
     )
     profile: ProductionProfile
     mode: QualificationMode
@@ -172,7 +172,29 @@ class Issue212QualificationReport(ProductionQualificationResult):
     issue_211_fake_qualification: Literal["not_production_evidence"]
     postgres_demo: Literal["rejected"]
     canonical_lifecycle_owner: Literal["postgresql"]
-    physical_calls_inside_postgresql_unit_of_work: Literal[False]
+    canonical_lifecycle_separation: Literal[
+        "verified_outside_unit_of_work", "not_verified"
+    ]
+
+    @model_validator(mode="after")
+    def validate_lifecycle_claim(self) -> "Issue212QualificationReport":
+        observation = next(
+            (
+                item
+                for item in self.observations
+                if item.gate_id == "canonical_lifecycle_separation"
+            ),
+            None,
+        )
+        verified = observation is not None and observation.status is GateStatus.PASSED
+        expected = (
+            "verified_outside_unit_of_work" if verified else "not_verified"
+        )
+        if self.canonical_lifecycle_separation != expected:
+            raise ValueError(
+                "canonical lifecycle claim does not match gate evidence"
+            )
+        return self
 
 
 def required_gate_ids() -> tuple[GateId, ...]:
@@ -302,13 +324,26 @@ def build_issue212_report(
         mode=QualificationMode.LIVE_REAL_BACKENDS,
         observations=observations,
     )
+    lifecycle_observation = next(
+        (
+            item
+            for item in observations
+            if item.gate_id == "canonical_lifecycle_separation"
+        ),
+        None,
+    )
     return Issue212QualificationReport(
         **result.model_dump(),
         qualification_run_id=qualification_run_id,
         issue_211_fake_qualification="not_production_evidence",
         postgres_demo="rejected",
         canonical_lifecycle_owner="postgresql",
-        physical_calls_inside_postgresql_unit_of_work=False,
+        canonical_lifecycle_separation=(
+            "verified_outside_unit_of_work"
+            if lifecycle_observation is not None
+            and lifecycle_observation.status is GateStatus.PASSED
+            else "not_verified"
+        ),
     )
 
 

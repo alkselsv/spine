@@ -7,6 +7,9 @@ import re
 import subprocess
 import sys
 
+import pytest
+from pydantic import ValidationError
+
 from spine.memory.cognee.production_qualification import (
     GateObservation,
     GateStatus,
@@ -33,7 +36,7 @@ def _report() -> Issue212QualificationReport:
 def test_issue212_report_is_explicit_no_go_without_live_evidence() -> None:
     report = _report()
 
-    assert report.schema_version == "cognee-production-qualification:v1"
+    assert report.schema_version == "cognee-production-qualification:v2"
     assert report.ticket == 212
     assert report.qualification_run_id == "not-run"
     assert report.profile.model_dump() == {
@@ -58,7 +61,31 @@ def test_issue212_report_does_not_promote_issue211_fake_evidence() -> None:
     assert report.issue_211_fake_qualification == "not_production_evidence"
     assert report.postgres_demo == "rejected"
     assert report.canonical_lifecycle_owner == "postgresql"
-    assert report.physical_calls_inside_postgresql_unit_of_work is False
+    assert report.canonical_lifecycle_separation == "not_verified"
+
+
+def test_issue212_report_claims_lifecycle_separation_only_after_gate_passes() -> None:
+    report = build_issue212_report(
+        qualification_run_id="run-212",
+        observations=tuple(
+            GateObservation(gate_id=gate_id, status=GateStatus.PASSED)
+            for gate_id in required_gate_ids()
+        ),
+    )
+
+    assert report.canonical_lifecycle_separation == "verified_outside_unit_of_work"
+
+
+def test_issue212_report_rejects_unobserved_lifecycle_claim() -> None:
+    report = _report()
+
+    with pytest.raises(ValidationError, match="does not match gate evidence"):
+        Issue212QualificationReport.model_validate(
+            {
+                **report.model_dump(mode="python"),
+                "canonical_lifecycle_separation": "verified_outside_unit_of_work",
+            }
+        )
 
 
 def test_issue212_report_is_generated_from_one_run_observation_set(tmp_path: Path) -> None:

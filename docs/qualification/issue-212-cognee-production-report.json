@@ -1,5 +1,5 @@
 {
-  "schema_version": "cognee-production-qualification:v1",
+  "schema_version": "cognee-production-qualification:v2",
   "ticket": 212,
   "qualification_run_id": "not-run",
   "profile": {
@@ -40,5 +40,5 @@
   "issue_211_fake_qualification": "not_production_evidence",
   "postgres_demo": "rejected",
   "canonical_lifecycle_owner": "postgresql",
-  "physical_calls_inside_postgresql_unit_of_work": false
+  "canonical_lifecycle_separation": "not_verified"
 }

@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 import hashlib
 import json
 from datetime import datetime, timezone
-from contextlib import asynccontextmanager
+from contextlib import AbstractContextManager, asynccontextmanager
 from enum import Enum, auto
 from types import TracebackType
 from typing import Any, NoReturn
@@ -114,6 +114,9 @@ from spine.application.persistence.outbox import (
     OutboxEventRegistry,
     OutboxIntent,
     validate_outbox_intent_for_context,
+)
+from spine.application.persistence.unit_of_work_activity import (
+    track_unit_of_work_activity,
 )
 from spine.domain.audit import (
     AuditEvent,
@@ -4182,6 +4185,7 @@ class PostgreSQLTenantUnitOfWork:
         self._audit = _PostgreSQLAuditWriter(self)
         self._owned_claims: dict[UUID, OwnedIdempotencyClaim] = {}
         self._pending_audit_events: dict[UUID, AuditEvent] = {}
+        self._activity_scope: AbstractContextManager[None] | None = None
 
     @property
     def scope(self) -> PersistenceScope:
@@ -4412,6 +4416,8 @@ class PostgreSQLTenantUnitOfWork:
         except BaseException as error:
             await self._terminate(error)
         self._lifecycle = _Lifecycle.ACTIVE
+        self._activity_scope = track_unit_of_work_activity()
+        self._activity_scope.__enter__()
         return self
 
     async def __aexit__(
@@ -4420,12 +4426,15 @@ class PostgreSQLTenantUnitOfWork:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        if self._lifecycle is _Lifecycle.CLOSED:
-            return
-        self._guard_owner()
-        if self._lifecycle is _Lifecycle.ACTIVE:
-            await self.rollback()
-        await self._close()
+        try:
+            if self._lifecycle is _Lifecycle.CLOSED:
+                return
+            self._guard_owner()
+            if self._lifecycle is _Lifecycle.ACTIVE:
+                await self.rollback()
+            await self._close()
+        finally:
+            self._stop_tracking_activity()
 
     async def commit(self) -> None:
         self._guard_active()
@@ -4581,6 +4590,7 @@ class PostgreSQLTenantUnitOfWork:
             except BaseException:
                 pass
             self._session = None
+        self._stop_tracking_activity()
         if isinstance(error, asyncio.CancelledError):
             raise error
         if isinstance(error, PersistenceError):
@@ -4588,6 +4598,12 @@ class PostgreSQLTenantUnitOfWork:
         if isinstance(error, Exception):
             raise translate_persistence_error(error) from None
         raise error
+
+    def _stop_tracking_activity(self) -> None:
+        activity_scope = self._activity_scope
+        self._activity_scope = None
+        if activity_scope is not None:
+            activity_scope.__exit__(None, None, None)
 
     async def _close(self) -> None:
         session = self._session

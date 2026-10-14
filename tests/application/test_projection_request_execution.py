@@ -20,6 +20,9 @@ from spine.application.persistence.outbox import (
     OutboxEventRegistry,
     OutboxIntent,
 )
+from spine.application.persistence.unit_of_work_activity import (
+    track_unit_of_work_activity,
+)
 from spine.application.projection_request_execution import (
     CanonicalProjectionRequestContext,
     ProjectionRequestConsumer,
@@ -340,6 +343,45 @@ async def test_partial_physical_failure_resumes_same_command_before_handoff() ->
     assert projection.recorded_commands == (command,)
     replay = await gateway.replay_for(command)
     assert replay is not None
+
+
+@pytest.mark.asyncio
+async def test_open_canonical_unit_of_work_blocks_physical_projection() -> None:
+    command = _command()
+    projection = DeterministicContextProjection()
+
+    class LeakingResolver(_CanonicalResolver):
+        async def resolve(self, request: ProjectionRequestEnvelope):
+            context = track_unit_of_work_activity()
+            context.__enter__()
+            self.context = context
+            return await super().resolve(request)
+
+    resolver = LeakingResolver(command)
+    consumer = ProjectionRequestConsumer(
+        canonical_resolver=resolver,
+        projection=projection,
+        receipt_builder=_AdapterReceiptBuilder(),
+        result_bridge=ProjectionResultMappingBridge(
+            DeterministicCanonicalProjectionGateway((_context(command),)),
+            id_source=lambda: UUID(int=117),
+        ),
+    )
+    intent = _intent()
+    diagnostic_context = DiagnosticContext(
+        trace_id=intent.trace_id,
+        correlation_id=intent.correlation_id,
+        causation_id=intent.event_id,
+    )
+
+    try:
+        with pytest.raises(TerminalOutboxConsumerFailure) as captured:
+            await consumer.consume(intent, diagnostic_context)
+    finally:
+        resolver.context.__exit__(None, None, None)
+
+    assert captured.value.code == "projection.request.canonical_uow_open"
+    assert projection.recorded_commands == ()
 
 
 @pytest.mark.parametrize(
