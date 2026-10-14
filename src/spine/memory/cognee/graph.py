@@ -44,6 +44,7 @@ from spine.memory.namespace import (
     ProjectionNamespaceContext,
     ProjectionNamespaceRouter,
 )
+from spine.memory.cognee.validation import PhysicalArtifactLocator
 
 
 class GraphProjectionStatus(str, Enum):
@@ -57,7 +58,7 @@ class GraphProjectionStatus(str, Enum):
 class GraphArtifactMapping(DefinitionModel):
     """Content-free mapping for one physical entity or relation artifact."""
 
-    schema_version: Literal["graph-artifact-mapping:v1"] = "graph-artifact-mapping:v1"
+    schema_version: Literal["graph-artifact-mapping:v2"] = "graph-artifact-mapping:v2"
     workspace_id: UUID
     environment_id: UUID
     namespace_digest: str = Field(pattern=_DIGEST_PATTERN)
@@ -68,6 +69,10 @@ class GraphArtifactMapping(DefinitionModel):
     source_revision_id: UUID
     revision_digest: str = Field(pattern=_DIGEST_PATTERN)
     revision_number: int = Field(ge=1)
+    projection_config_id: UUID
+    projection_config_version: str
+    projection_config_digest: str = Field(pattern=_DIGEST_PATTERN)
+    locators: tuple[PhysicalArtifactLocator, ...] = Field(min_length=1)
     evidence_ids: tuple[str, ...] = ()
 
 
@@ -433,6 +438,7 @@ class CogneeGraphProjectionWriter:
             artifact_kind="entity",
             artifact_id=entity.entity_id,
             evidence_ids=tuple(reference.evidence_id for reference in entity.evidence),
+            locators=_evidence_locators(entity.evidence),
         )
 
     def _relation_mapping(
@@ -447,6 +453,7 @@ class CogneeGraphProjectionWriter:
             artifact_kind="relation",
             artifact_id=relation.relation_id,
             evidence_ids=tuple(reference.evidence_id for reference in relation.evidence),
+            locators=_evidence_locators(relation.evidence),
         )
 
     def _artifact_mapping(
@@ -457,6 +464,7 @@ class CogneeGraphProjectionWriter:
         artifact_kind: Literal["entity", "relation"],
         artifact_id: str,
         evidence_ids: tuple[str, ...],
+        locators: tuple[PhysicalArtifactLocator, ...],
     ) -> GraphArtifactMapping:
         return GraphArtifactMapping(
             workspace_id=request.workspace_id,
@@ -474,6 +482,10 @@ class CogneeGraphProjectionWriter:
             source_revision_id=source.source_revision_id,
             revision_digest=source.revision_digest,
             revision_number=source.revision_number,
+            projection_config_id=request.projection_config.config_id,
+            projection_config_version=request.projection_config.version,
+            projection_config_digest=request.projection_config.config_digest,
+            locators=locators,
             evidence_ids=evidence_ids,
         )
 
@@ -739,6 +751,16 @@ class _GraphFence(Exception):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+def _evidence_locators(evidence) -> tuple[PhysicalArtifactLocator, ...]:
+    return tuple(
+        PhysicalArtifactLocator.from_payload(
+            kind=reference.locator.kind,
+            payload=reference.locator,
+        )
+        for reference in evidence
+    )
 
 
 CogneeGraphProjectionStore = CogneeGraphProjectionWriter

@@ -43,6 +43,19 @@ from .rebuild import (
     ShadowRebuildResult,
     ShadowRebuildState,
 )
+from .validation import (
+    ArtifactKind,
+    PhysicalArtifact,
+    PhysicalArtifactCount,
+    PhysicalArtifactLocator,
+    PhysicalDiagnostic,
+    PhysicalProjectionExpectation,
+    PhysicalProjectionSource,
+    PhysicalRepairCandidate,
+    PhysicalValidationCode,
+    PhysicalValidationResult,
+    validate_physical_projection,
+)
 
 __all__ = [
     "AcceptedEntity",
@@ -80,4 +93,15 @@ __all__ = [
     "ShadowRebuildPlan",
     "ShadowRebuildResult",
     "ShadowRebuildState",
+    "ArtifactKind",
+    "PhysicalArtifact",
+    "PhysicalArtifactCount",
+    "PhysicalArtifactLocator",
+    "PhysicalDiagnostic",
+    "PhysicalProjectionExpectation",
+    "PhysicalProjectionSource",
+    "PhysicalRepairCandidate",
+    "PhysicalValidationCode",
+    "PhysicalValidationResult",
+    "validate_physical_projection",
 ]
