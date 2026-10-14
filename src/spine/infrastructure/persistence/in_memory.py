@@ -1898,6 +1898,20 @@ class _InMemoryIngestionRepository:
             return None
         return item.model_copy(deep=True)
 
+    async def resolve_binding(self, item_id: UUID) -> IngestionRunSourceBinding | None:
+        self._uow._guard_active()
+        binding = next(
+            (
+                value
+                for value in self._bindings().values()
+                if value.ingestion_run_source_id == item_id
+                and value.workspace_id == self._uow.scope.workspace_id
+                and value.environment_id == self._uow.scope.environment_id
+            ),
+            None,
+        )
+        return binding.model_copy(deep=True) if binding is not None else None
+
     async def resolve_run_head(self, run_id: UUID) -> IngestionTransition | None:
         self._uow._guard_active()
         run = self._runs().get(run_id)

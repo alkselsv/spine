@@ -16,6 +16,7 @@ from spine.api.diagnostics import (
     get_diagnostic_context,
     install_diagnostic_exception_handlers,
 )
+from spine.api.ingestion import install_ingestion_routes
 from spine.api.authorization import (
     ApiAuthorizationRuntime,
     ApiRouteClassificationRegistry,
@@ -29,6 +30,7 @@ from spine.application.diagnostics import (
     StructuredErrorRegistry,
     build_default_error_registry,
 )
+from spine.application.ingestion_api import DocumentIngestionService
 from spine.config import settings
 from spine.ingest.loaders import documents_to_remember_payloads, load_path
 from spine.infrastructure.diagnostics import JsonLoggingDiagnosticSink
@@ -135,6 +137,8 @@ def create_app(
     error_registry: StructuredErrorRegistry | None = None,
     clock: Callable[[], datetime] | None = None,
     authorization_runtime: ApiAuthorizationRuntime | None = None,
+    document_ingestion_service: DocumentIngestionService | None = None,
+    max_upload_bytes: int = 10_000_000,
 ) -> FastAPI:
     """Compose the HTTP API with injectable deterministic diagnostics."""
 
@@ -168,6 +172,7 @@ def create_app(
     application.state.diagnostic_sink = resolved_diagnostic_sink
     application.state.diagnostic_clock = resolved_clock
     application.state.authorization_runtime = authorization_runtime
+    application.state.document_ingestion_service = document_ingestion_service
     application.state.route_classifications = ApiRouteClassificationRegistry()
     install_authorization_openapi(application)
     resolved_error_registry = error_registry or build_default_error_registry()
@@ -210,6 +215,14 @@ def create_app(
         methods=["POST"],
         response_model=IngestResponse,
     )
+    if document_ingestion_service is not None:
+        if type(authorization_runtime) is not ApiAuthorizationRuntime:
+            raise RuntimeError("Document ingestion routes require an authorization runtime.")
+        install_ingestion_routes(
+            application,
+            service=document_ingestion_service,
+            max_upload_bytes=max_upload_bytes,
+        )
     return application
 
 

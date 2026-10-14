@@ -171,6 +171,13 @@ class OriginalUploadOrchestrator:
                     context, record, error, mark_interrupted=True
                 )
                 raise
+            except Exception:
+                # The caller owns the stream and may reject it mid-upload
+                # (for example, at an HTTP byte limit). Keep the durable
+                # command resumable/recoverable instead of leaving it in
+                # staging with an unknown physical state.
+                await self._mark_interrupted(context, record.result.upload_id)
+                raise
             try:
                 record = await self._store_observed_content(
                     context,
@@ -498,10 +505,14 @@ class OriginalUploadOrchestrator:
             raise ReconciliationRequired()
         observed = await self._object_store.write_chunks(record.result.upload_id, chunks)
         if observed != record.observed_content:
-            raise UploadConflict()
+            raise IdempotencyConflictError(
+                "Upload idempotency key conflicts with existing content."
+            )
         receipt = await self._object_store.finalize_upload(storage_state, observed)
         if receipt != record.state.provisional_receipt:
-            raise UploadConflict()
+            raise IdempotencyConflictError(
+                "Upload idempotency key conflicts with existing content."
+            )
         return OriginalUploadOutcome(
             result=record.result,
             write_receipt=receipt,
@@ -518,7 +529,9 @@ class OriginalUploadOrchestrator:
             current = await self._resolve_record(uow, upload_id)
             if current.observed_content is not None:
                 if current.observed_content != observed:
-                    raise UploadConflict()
+                    raise IdempotencyConflictError(
+                        "Upload idempotency key conflicts with existing content."
+                    )
                 await uow.commit()
                 return current
             updated = self._updated_record(current, observed_content=observed)
@@ -539,7 +552,9 @@ class OriginalUploadOrchestrator:
             current = await self._resolve_record(uow, upload_id)
             if current.state.state is UploadCommandStateName.FINALIZED:
                 if current.state.provisional_receipt != receipt:
-                    raise UploadConflict()
+                    raise IdempotencyConflictError(
+                        "Upload idempotency key conflicts with existing content."
+                    )
                 await uow.commit()
                 return current
             finalized_state = current.state.transitioned(
