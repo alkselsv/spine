@@ -60,6 +60,319 @@
         "title": "AskResponse",
         "type": "object"
       },
+      "BatchIngestionFailureResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt": {
+            "minimum": 1.0,
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "failure_id": {
+            "format": "uuid",
+            "title": "Failure Id",
+            "type": "string"
+          },
+          "retryable": {
+            "title": "Retryable",
+            "type": "boolean"
+          },
+          "stage": {
+            "title": "Stage",
+            "type": "string"
+          }
+        },
+        "required": [
+          "failure_id",
+          "attempt",
+          "stage",
+          "code",
+          "retryable"
+        ],
+        "title": "BatchIngestionFailureResponse",
+        "type": "object"
+      },
+      "BatchIngestionItemResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptance": {
+            "$ref": "#/components/schemas/PublicAcceptanceStatus"
+          },
+          "attempt": {
+            "minimum": 0.0,
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "binding_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Binding Id"
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage"
+          },
+          "failure_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Failure Ids",
+            "type": "array"
+          },
+          "failures": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/BatchIngestionFailureResponse"
+            },
+            "title": "Failures",
+            "type": "array"
+          },
+          "input_identity": {
+            "title": "Input Identity",
+            "type": "string"
+          },
+          "input_ordinal": {
+            "minimum": 1.0,
+            "title": "Input Ordinal",
+            "type": "integer"
+          },
+          "item_id": {
+            "format": "uuid",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "item_state": {
+            "title": "Item State",
+            "type": "string"
+          },
+          "processing": {
+            "$ref": "#/components/schemas/PublicProcessingStatus"
+          },
+          "processing_receipt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IngestionReceiptResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retryable": {
+            "title": "Retryable",
+            "type": "boolean"
+          },
+          "source_object_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Object Id"
+          },
+          "source_revision_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Revision Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PublicIngestionStatus"
+          },
+          "terminal": {
+            "title": "Terminal",
+            "type": "boolean"
+          },
+          "warning_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Warning Ids",
+            "type": "array"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/BatchIngestionWarningResponse"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "item_id",
+          "input_ordinal",
+          "input_identity",
+          "status",
+          "item_state",
+          "acceptance",
+          "processing",
+          "terminal",
+          "retryable",
+          "attempt"
+        ],
+        "title": "BatchIngestionItemResponse",
+        "type": "object"
+      },
+      "BatchIngestionStatusResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BatchIngestionItemResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "run_state": {
+            "title": "Run State",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PublicBatchStatus"
+          },
+          "terminal": {
+            "title": "Terminal",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "run_id",
+          "status",
+          "run_state",
+          "terminal",
+          "items"
+        ],
+        "title": "BatchIngestionStatusResponse",
+        "type": "object"
+      },
+      "BatchIngestionUploadResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BatchIngestionItemResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "replay": {
+            "title": "Replay",
+            "type": "boolean"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "run_state": {
+            "title": "Run State",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PublicBatchStatus"
+          },
+          "status_url": {
+            "title": "Status Url",
+            "type": "string"
+          },
+          "terminal": {
+            "title": "Terminal",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "run_id",
+          "status",
+          "run_state",
+          "terminal",
+          "items",
+          "status_url",
+          "replay"
+        ],
+        "title": "BatchIngestionUploadResponse",
+        "type": "object"
+      },
+      "BatchIngestionWarningResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt": {
+            "minimum": 1.0,
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "stage": {
+            "title": "Stage",
+            "type": "string"
+          },
+          "warning_id": {
+            "format": "uuid",
+            "title": "Warning Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "warning_id",
+          "attempt",
+          "stage",
+          "code"
+        ],
+        "title": "BatchIngestionWarningResponse",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -135,6 +448,108 @@
         "title": "IngestResponse",
         "type": "object"
       },
+      "IngestionReceiptResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_digest": {
+            "anyOf": [
+              {
+                "pattern": "[0-9a-f]{64}",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Digest"
+          },
+          "artifact_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Id"
+          },
+          "coverage": {
+            "enum": [
+              "complete",
+              "partial",
+              "failed"
+            ],
+            "title": "Coverage",
+            "type": "string"
+          },
+          "parser_name": {
+            "title": "Parser Name",
+            "type": "string"
+          },
+          "receipt_id": {
+            "format": "uuid",
+            "title": "Receipt Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "receipt_id",
+          "parser_name",
+          "coverage"
+        ],
+        "title": "IngestionReceiptResponse",
+        "type": "object"
+      },
+      "PublicAcceptanceStatus": {
+        "enum": [
+          "pending",
+          "accepted",
+          "rejected",
+          "quarantined"
+        ],
+        "title": "PublicAcceptanceStatus",
+        "type": "string"
+      },
+      "PublicBatchStatus": {
+        "enum": [
+          "processing",
+          "succeeded",
+          "partial",
+          "failed",
+          "cancelled"
+        ],
+        "title": "PublicBatchStatus",
+        "type": "string"
+      },
+      "PublicIngestionStatus": {
+        "enum": [
+          "non_terminal",
+          "succeeded",
+          "partial",
+          "failed",
+          "rejected",
+          "quarantined",
+          "unsupported",
+          "cancelled"
+        ],
+        "title": "PublicIngestionStatus",
+        "type": "string"
+      },
+      "PublicProcessingStatus": {
+        "enum": [
+          "not_started",
+          "processing",
+          "succeeded",
+          "partial",
+          "failed",
+          "unsupported",
+          "cancelled"
+        ],
+        "title": "PublicProcessingStatus",
+        "type": "string"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -175,6 +590,12 @@
         "title": "ValidationError",
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "BearerAuth": {
+        "scheme": "bearer",
+        "type": "http"
+      }
     }
   },
   "info": {
@@ -184,6 +605,75 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/documents/batches": {
+      "post": {
+        "operationId": "ingestion.batch_upload",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Environment-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "additionalProperties": {
+                  "format": "binary",
+                  "type": "string"
+                },
+                "description": "Each property name is the stable input identity. TXT and Markdown are the completed batch formats.",
+                "maxProperties": 20,
+                "minProperties": 1,
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchIngestionUploadResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Ingestion.Batch Upload"
+      }
+    },
     "/api/v1/health/live": {
       "get": {
         "operationId": "system_health_live_api_v1_health_live_get",
@@ -220,6 +710,69 @@
           }
         },
         "summary": "System.Health.Ready"
+      }
+    },
+    "/api/v1/ingestion/runs/{run_id}": {
+      "get": {
+        "operationId": "ingestion.batch_status",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Environment-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchIngestionStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Ingestion.Batch Status"
       }
     },
     "/ask": {

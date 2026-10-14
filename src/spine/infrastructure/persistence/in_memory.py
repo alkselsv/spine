@@ -1921,7 +1921,20 @@ class _InMemoryIngestionRepository:
         run_head = self._head(run_id, IngestionTargetKind.RUN)
         if run_head is None:
             self._uow._fail(ConstraintConflictError("Ingestion run transition head is unavailable."))
-        item_heads = tuple(self._head(item.ingestion_run_source_id, IngestionTargetKind.ITEM) for item in self._items().values() if item.ingestion_run_id == run_id)
+        items = tuple(
+            sorted(
+                (
+                    item
+                    for item in self._items().values()
+                    if item.ingestion_run_id == run_id
+                ),
+                key=lambda item: item.input_ordinal,
+            )
+        )
+        item_heads = tuple(
+            self._head(item.ingestion_run_source_id, IngestionTargetKind.ITEM)
+            for item in items
+        )
         item_states = tuple(head.state for head in item_heads if head is not None)
         state = run_head.state
         if state is IngestionRunState.PROCESSING and item_states and all(item_state in {IngestionItemState.PROCESSED, IngestionItemState.PROJECTION_REQUESTED} for item_state in item_states):
@@ -1930,7 +1943,12 @@ class _InMemoryIngestionRepository:
             state = IngestionRunState.PARTIALLY_SUCCEEDED
         elif state is IngestionRunState.PROCESSING and item_states and all(item_state in {IngestionItemState.QUARANTINED, IngestionItemState.REJECTED, IngestionItemState.PROCESSING_FAILED} for item_state in item_states):
             state = IngestionRunState.FAILED
-        return IngestionRunStateView(run=run.model_copy(deep=True), state=state, item_states=item_states)
+        return IngestionRunStateView(
+            run=run.model_copy(deep=True),
+            state=state,
+            items=tuple(item.model_copy(deep=True) for item in items),
+            item_states=item_states,
+        )
 
     async def resolve_item(self, item_id: UUID) -> IngestionRunSource | None:
         self._uow._guard_active()

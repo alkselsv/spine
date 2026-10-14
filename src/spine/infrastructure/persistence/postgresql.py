@@ -1957,7 +1957,18 @@ class _PostgreSQLIngestionRepository:
         if run_row is None:
             return None
         run = IngestionRun.model_validate(dict(run_row))
-        item_rows = (await self._uow._execute(select(_INGESTION_ITEMS).where(_INGESTION_ITEMS.c.ingestion_run_id == run_id, _INGESTION_ITEMS.c.workspace_id == scope.workspace_id, _INGESTION_ITEMS.c.environment_id == scope.environment_id))).mappings().all()
+        item_rows = (
+            await self._uow._execute(
+                select(_INGESTION_ITEMS)
+                .where(
+                    _INGESTION_ITEMS.c.ingestion_run_id == run_id,
+                    _INGESTION_ITEMS.c.workspace_id == scope.workspace_id,
+                    _INGESTION_ITEMS.c.environment_id == scope.environment_id,
+                )
+                .order_by(_INGESTION_ITEMS.c.input_ordinal)
+            )
+        ).mappings().all()
+        items = tuple(IngestionRunSource.model_validate(dict(row)) for row in item_rows)
         item_states: list[IngestionItemState] = []
         for row in item_rows:
             head = await self._head(run_id=run_id, item_id=row.ingestion_run_source_id)
@@ -1973,7 +1984,12 @@ class _PostgreSQLIngestionRepository:
             state = IngestionRunState.PARTIALLY_SUCCEEDED
         elif state is IngestionRunState.PROCESSING and item_states and all(item_state in {IngestionItemState.QUARANTINED, IngestionItemState.REJECTED, IngestionItemState.PROCESSING_FAILED} for item_state in item_states):
             state = IngestionRunState.FAILED
-        return IngestionRunStateView(run=run, state=state, item_states=tuple(item_states))
+        return IngestionRunStateView(
+            run=run,
+            state=state,
+            items=items,
+            item_states=tuple(item_states),
+        )
 
     async def resolve_item(self, item_id: UUID) -> IngestionRunSource | None:
         self._uow._guard_active()

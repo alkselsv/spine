@@ -4,6 +4,23 @@
  */
 
 export interface paths {
+    "/api/v1/documents/batches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ingestion.Batch Upload */
+        post: operations["ingestion.batch_upload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/health/live": {
         parameters: {
             query?: never;
@@ -30,6 +47,23 @@ export interface paths {
         };
         /** System.Health.Ready */
         get: operations["system_health_ready_api_v1_health_ready_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ingestion/runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Ingestion.Batch Status */
+        get: operations["ingestion.batch_status"];
         put?: never;
         post?: never;
         delete?: never;
@@ -111,6 +145,134 @@ export interface components {
             /** Raw Count */
             raw_count: number;
         };
+        /** BatchIngestionFailureResponse */
+        BatchIngestionFailureResponse: {
+            /** Attempt */
+            attempt: number;
+            /** Code */
+            code: string;
+            /**
+             * Failure Id
+             * Format: uuid
+             */
+            failure_id: string;
+            /** Retryable */
+            retryable: boolean;
+            /** Stage */
+            stage: string;
+        };
+        /** BatchIngestionItemResponse */
+        BatchIngestionItemResponse: {
+            acceptance: components["schemas"]["PublicAcceptanceStatus"];
+            /** Attempt */
+            attempt: number;
+            /** Binding Id */
+            binding_id?: string | null;
+            /** Coverage */
+            coverage?: string | null;
+            /**
+             * Failure Ids
+             * @default []
+             */
+            failure_ids: string[];
+            /**
+             * Failures
+             * @default []
+             */
+            failures: components["schemas"]["BatchIngestionFailureResponse"][];
+            /** Input Identity */
+            input_identity: string;
+            /** Input Ordinal */
+            input_ordinal: number;
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Item State */
+            item_state: string;
+            processing: components["schemas"]["PublicProcessingStatus"];
+            processing_receipt?: components["schemas"]["IngestionReceiptResponse"] | null;
+            /** Retryable */
+            retryable: boolean;
+            /** Source Object Id */
+            source_object_id?: string | null;
+            /** Source Revision Id */
+            source_revision_id?: string | null;
+            status: components["schemas"]["PublicIngestionStatus"];
+            /** Terminal */
+            terminal: boolean;
+            /**
+             * Warning Ids
+             * @default []
+             */
+            warning_ids: string[];
+            /**
+             * Warnings
+             * @default []
+             */
+            warnings: components["schemas"]["BatchIngestionWarningResponse"][];
+        };
+        /** BatchIngestionStatusResponse */
+        BatchIngestionStatusResponse: {
+            /** Items */
+            items: components["schemas"]["BatchIngestionItemResponse"][];
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Run State */
+            run_state: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            status: components["schemas"]["PublicBatchStatus"];
+            /** Terminal */
+            terminal: boolean;
+        };
+        /** BatchIngestionUploadResponse */
+        BatchIngestionUploadResponse: {
+            /** Items */
+            items: components["schemas"]["BatchIngestionItemResponse"][];
+            /** Replay */
+            replay: boolean;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Run State */
+            run_state: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            status: components["schemas"]["PublicBatchStatus"];
+            /** Status Url */
+            status_url: string;
+            /** Terminal */
+            terminal: boolean;
+        };
+        /** BatchIngestionWarningResponse */
+        BatchIngestionWarningResponse: {
+            /** Attempt */
+            attempt: number;
+            /** Code */
+            code: string;
+            /** Stage */
+            stage: string;
+            /**
+             * Warning Id
+             * Format: uuid
+             */
+            warning_id: string;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -137,6 +299,45 @@ export interface components {
             /** Status */
             status: string;
         };
+        /** IngestionReceiptResponse */
+        IngestionReceiptResponse: {
+            /** Artifact Digest */
+            artifact_digest?: string | null;
+            /** Artifact Id */
+            artifact_id?: string | null;
+            /**
+             * Coverage
+             * @enum {string}
+             */
+            coverage: "complete" | "partial" | "failed";
+            /** Parser Name */
+            parser_name: string;
+            /**
+             * Receipt Id
+             * Format: uuid
+             */
+            receipt_id: string;
+        };
+        /**
+         * PublicAcceptanceStatus
+         * @enum {string}
+         */
+        PublicAcceptanceStatus: "pending" | "accepted" | "rejected" | "quarantined";
+        /**
+         * PublicBatchStatus
+         * @enum {string}
+         */
+        PublicBatchStatus: "processing" | "succeeded" | "partial" | "failed" | "cancelled";
+        /**
+         * PublicIngestionStatus
+         * @enum {string}
+         */
+        PublicIngestionStatus: "non_terminal" | "succeeded" | "partial" | "failed" | "rejected" | "quarantined" | "unsupported" | "cancelled";
+        /**
+         * PublicProcessingStatus
+         * @enum {string}
+         */
+        PublicProcessingStatus: "not_started" | "processing" | "succeeded" | "partial" | "failed" | "unsupported" | "cancelled";
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -159,6 +360,36 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    "ingestion.batch_upload": {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    [key: string]: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchIngestionUploadResponse"];
+                };
+            };
+        };
+    };
     system_health_live_api_v1_health_live_get: {
         parameters: {
             query?: never;
@@ -197,6 +428,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    "ingestion.batch_status": {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchIngestionStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

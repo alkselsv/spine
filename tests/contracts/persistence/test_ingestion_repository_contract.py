@@ -85,6 +85,7 @@ async def exercise_ingestion_run_item_contract(adapter: PersistenceAdapter) -> N
     assert replay.result_reference == first.result_reference
     assert state is not None
     assert state.state is IngestionRunState.REQUESTED
+    assert state.items == (item,)
     assert state.item_states == (IngestionItemState.RECEIVED,)
 
 

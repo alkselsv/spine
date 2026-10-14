@@ -10,7 +10,7 @@ import sys
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 
-from spine.api.main import create_app  # noqa: E402
+from spine.api.openapi import create_openapi_app  # noqa: E402
 
 
 def main() -> None:
@@ -21,7 +21,7 @@ def main() -> None:
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     document = json.dumps(
-        create_app().openapi(),
+        create_openapi_app().openapi(),
         ensure_ascii=False,
         indent=2,
         sort_keys=True,
