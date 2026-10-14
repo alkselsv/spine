@@ -1713,12 +1713,21 @@ class _PostgreSQLIngestionRepository:
         self._uow._guard_active()
         self._check_scope(command.item.workspace_id, command.item.environment_id)
         if command.observation.revision.kind.value == "content":
-            await self._uow._fail(
-                ConstraintConflictError(
-                    "Original receipt verification is unavailable; content binding is fail-closed."
+            association = command.observation.receipt_association
+            binding = command.binding
+            if (
+                association is None
+                or binding.original_receipt_id != association.original_receipt_id
+                or binding.original_reference != association.original_reference
+                or binding.original_receipt_digest != association.original_sha256
+                or binding.original_receipt_kind != association.original_receipt_kind
+            ):
+                await self._uow._fail(
+                    ConstraintConflictError(
+                        "Original receipt verification is unavailable or incomplete."
+                    )
                 )
-            )
-        if command.binding.original_receipt_id is not None:
+        if command.observation.revision.kind.value != "content" and command.binding.original_receipt_id is not None:
             await self._uow._fail(
                 ConstraintConflictError(
                     "Contentless ingestion binding cannot include an original receipt."
@@ -1891,6 +1900,43 @@ class _PostgreSQLIngestionRepository:
         scope = self._uow.scope
         row = (await self._uow._execute(select(_INGESTION_ITEMS).where(_INGESTION_ITEMS.c.ingestion_run_source_id == item_id, _INGESTION_ITEMS.c.workspace_id == scope.workspace_id, _INGESTION_ITEMS.c.environment_id == scope.environment_id))).mappings().one_or_none()
         return IngestionRunSource.model_validate(dict(row)) if row is not None else None
+
+    async def resolve_run_head(self, run_id: UUID) -> IngestionTransition | None:
+        self._uow._guard_active()
+        return await self._head(run_id=run_id, item_id=None)
+
+    async def resolve_item_head(self, item_id: UUID) -> IngestionTransition | None:
+        self._uow._guard_active()
+        run_id = await self._run_id_for_item(item_id)
+        return None if run_id is None else await self._head(run_id=run_id, item_id=item_id)
+
+    async def _run_id_for_item(self, item_id: UUID) -> UUID | None:
+        row = (
+            await self._uow._execute(
+                select(_INGESTION_ITEMS.c.ingestion_run_id).where(
+                    _INGESTION_ITEMS.c.ingestion_run_source_id == item_id,
+                    _INGESTION_ITEMS.c.workspace_id == self._uow.scope.workspace_id,
+                    _INGESTION_ITEMS.c.environment_id == self._uow.scope.environment_id,
+                )
+            )
+        ).scalar_one_or_none()
+        return row
+
+    async def resolve_processing_receipt(self, item_id: UUID) -> ProcessingReceipt | None:
+        self._uow._guard_active()
+        row = (
+            await self._uow._execute(
+                select(_PROCESSING_RECEIPTS)
+                .where(
+                    _PROCESSING_RECEIPTS.c.ingestion_run_source_id == item_id,
+                    _PROCESSING_RECEIPTS.c.workspace_id == self._uow.scope.workspace_id,
+                    _PROCESSING_RECEIPTS.c.environment_id == self._uow.scope.environment_id,
+                )
+                .order_by(_PROCESSING_RECEIPTS.c.completed_at.desc())
+                .limit(1)
+            )
+        ).mappings().one_or_none()
+        return ProcessingReceipt.model_validate(dict(row)) if row is not None else None
 
 
 class _PostgreSQLAdmissionRepository:
