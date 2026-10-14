@@ -1433,6 +1433,10 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "projection_partitions",
         "projection_receipts",
         "source_projection_references",
+        "projection_validations",
+        "projection_snapshots",
+        "projection_snapshot_members",
+        "projection_reconciliation_results",
     }
     expected_final_constraints = {
         "alembic_version_pkc",
@@ -1675,6 +1679,49 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "fk_source_projection_references_revision",
         "fk_source_projection_references_processing_receipt",
         "fk_source_projection_references_config",
+        "pk_projection_validations",
+        "uq_projection_validations_scope_id",
+        "uq_projection_validations_gate",
+        "fk_projection_validations_run",
+        "ck_projection_validations_input_digest",
+        "ck_projection_validations_result_digest",
+        "ck_projection_validations_decision",
+        "pk_projection_snapshots",
+        "uq_projection_snapshots_scope_id",
+        "uq_projection_snapshots_candidate",
+        "uq_projection_snapshots_kind_manifest",
+        "uq_projection_snapshots_kind_evidence",
+        "fk_projection_snapshots_run",
+        "fk_projection_snapshots_config",
+        "fk_projection_snapshots_boundary",
+        "fk_projection_snapshots_predecessor",
+        "ck_projection_snapshots_state",
+        "ck_projection_snapshots_evidence_digest",
+        "ck_projection_snapshots_manifest_digest",
+        "ck_projection_snapshots_member_count",
+        "pk_projection_snapshot_members",
+        "uq_projection_snapshot_members_scope_id",
+        "uq_projection_snapshot_members_source",
+        "uq_projection_snapshot_members_boundary",
+        "fk_projection_snapshot_members_snapshot",
+        "fk_projection_snapshot_members_boundary_member",
+        "fk_projection_snapshot_members_revision",
+        "fk_projection_snapshot_members_partition",
+        "fk_projection_snapshot_members_receipt",
+        "ck_projection_snapshot_members_disposition",
+        "ck_projection_snapshot_members_shape",
+        "pk_projection_reconciliation_results",
+        "uq_projection_reconciliation_results_scope_id",
+        "uq_projection_reconciliation_results_attempt",
+        "uq_projection_reconciliation_results_target",
+        "fk_projection_reconciliation_results_snapshot",
+        "fk_projection_reconciliation_results_predecessor",
+        "fk_projection_reconciliation_results_idempotency",
+        "ck_projection_reconciliation_results_generation",
+        "ck_projection_reconciliation_results_outcome",
+        "ck_projection_reconciliation_results_attempt_digest",
+        "ck_projection_reconciliation_results_findings_digest",
+        "ck_projection_reconciliation_results_artifact_digest",
     }
     expected_final_constraints |= (
         AUTHORIZATION_DIRECTORY_CONSTRAINTS
@@ -1866,6 +1913,13 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "uq_source_projection_references_lineage",
         "uq_source_projection_references_projected_object",
         "ix_source_projection_references_source",
+        "uq_canonical_boundary_members_scope_member",
+        "ix_projection_validations_candidate",
+        "ix_projection_snapshots_scope_state",
+        "ix_projection_snapshot_members_snapshot",
+        "ix_projection_reconciliation_results_activation",
+        "uq_projection_reconciliation_results_root",
+        "uq_projection_reconciliation_results_successor",
     } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES | CANONICAL_ACCEPTANCE_INDEXES | CANONICAL_BOUNDARY_INDEXES
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
@@ -1918,6 +1972,10 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "projection_partitions": (True, True),
         "projection_receipts": (True, True),
         "source_projection_references": (True, True),
+        "projection_validations": (True, True),
+        "projection_snapshots": (True, True),
+        "projection_snapshot_members": (True, True),
+        "projection_reconciliation_results": (True, True),
     }
     assert rls == expected_rls
     tenant_rls_tables = {
@@ -2026,6 +2084,10 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "projection_partitions": (True, True, False, False),
         "projection_receipts": (True, True, False, False),
         "source_projection_references": (True, True, False, False),
+        "projection_validations": (True, True, False, False),
+        "projection_snapshots": (True, True, True, False),
+        "projection_snapshot_members": (True, True, False, False),
+        "projection_reconciliation_results": (True, True, False, False),
         "source_canonical_tables": (True, False, False, False),
         "source_canonical_unicode": (True, False, False, False),
         "source_canonical_compositions": (True, False, False, False),
@@ -4176,13 +4238,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261019_22_parsed_artifacts.py",
         "20261020_23_canonical_boundaries.py",
         "20261021_24_projection_candidate_ledgers.py",
+        "20261021_25_projection_snapshot_sealing.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261021_25_injected_failure.py").write_text(
+    (target / "versions" / "20261021_26_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261021_25'\n"
-        "down_revision = '20261021_24'\n"
+        "revision = '20261021_26'\n"
+        "down_revision = '20261021_25'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

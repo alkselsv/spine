@@ -173,6 +173,10 @@ class _StoreState:
     projection_partitions: dict[UUID, object]
     projection_receipts: dict[UUID, object]
     projection_references: dict[UUID, object]
+    projection_validations: dict[UUID, object]
+    projection_snapshots: dict[UUID, object]
+    projection_snapshot_members: dict[UUID, object]
+    projection_reconciliation_results: dict[UUID, object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +236,10 @@ class _Store:
             projection_partitions={},
             projection_receipts={},
             projection_references={},
+            projection_validations={},
+            projection_snapshots={},
+            projection_snapshot_members={},
+            projection_reconciliation_results={},
         )
         self.lock = transaction_lock or asyncio.Lock()
         self.observation_lock = asyncio.Lock()
@@ -360,6 +368,22 @@ class _Store:
     @property
     def projection_references(self) -> dict[UUID, object]:
         return self.state.projection_references
+
+    @property
+    def projection_validations(self) -> dict[UUID, object]:
+        return self.state.projection_validations
+
+    @property
+    def projection_snapshots(self) -> dict[UUID, object]:
+        return self.state.projection_snapshots
+
+    @property
+    def projection_snapshot_members(self) -> dict[UUID, object]:
+        return self.state.projection_snapshot_members
+
+    @property
+    def projection_reconciliation_results(self) -> dict[UUID, object]:
+        return self.state.projection_reconciliation_results
 
 
 def _workspace_copy(value: Workspace) -> Workspace:
@@ -2143,6 +2167,10 @@ class InMemoryUnitOfWork:
         self._base_projection_partitions: dict[UUID, object] = {}
         self._base_projection_receipts: dict[UUID, object] = {}
         self._base_projection_references: dict[UUID, object] = {}
+        self._base_projection_validations: dict[UUID, object] = {}
+        self._base_projection_snapshots: dict[UUID, object] = {}
+        self._base_projection_snapshot_members: dict[UUID, object] = {}
+        self._base_projection_reconciliation_results: dict[UUID, object] = {}
         self._pending_workspaces: dict[UUID, Workspace] = {}
         self._pending_environments: dict[UUID, Environment] = {}
         self._pending_receipts: dict[_ReceiptKey, _IdempotencyReceipt] = {}
@@ -2172,6 +2200,10 @@ class InMemoryUnitOfWork:
         self._pending_projection_partitions: dict[UUID, object] = {}
         self._pending_projection_receipts: dict[UUID, object] = {}
         self._pending_projection_references: dict[UUID, object] = {}
+        self._pending_projection_validations: dict[UUID, object] = {}
+        self._pending_projection_snapshots: dict[UUID, object] = {}
+        self._pending_projection_snapshot_members: dict[UUID, object] = {}
+        self._pending_projection_reconciliation_results: dict[UUID, object] = {}
         self._pending_projection_run_claims: dict[UUID, OwnedIdempotencyClaim] = {}
         self._source_observation_lock_held = False
         self._canonical_lock_held = False
@@ -2384,6 +2416,22 @@ class InMemoryUnitOfWork:
                 self._base_projection_references = {
                     key: value.model_copy(deep=True)
                     for key, value in self._store.projection_references.items()
+                }
+                self._base_projection_validations = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_validations.items()
+                }
+                self._base_projection_snapshots = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_snapshots.items()
+                }
+                self._base_projection_snapshot_members = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_snapshot_members.items()
+                }
+                self._base_projection_reconciliation_results = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_reconciliation_results.items()
                 }
                 self._initialized = self._store.initialized
                 if not self._initialized:
@@ -2622,6 +2670,46 @@ class InMemoryUnitOfWork:
                         for key, value in self._pending_projection_references.items()
                     }
                 )
+                prepared_projection_validations = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_validations.items()
+                }
+                prepared_projection_validations.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_projection_validations.items()
+                    }
+                )
+                prepared_projection_snapshots = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_snapshots.items()
+                }
+                prepared_projection_snapshots.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_projection_snapshots.items()
+                    }
+                )
+                prepared_projection_snapshot_members = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_snapshot_members.items()
+                }
+                prepared_projection_snapshot_members.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_projection_snapshot_members.items()
+                    }
+                )
+                prepared_projection_reconciliation_results = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_reconciliation_results.items()
+                }
+                prepared_projection_reconciliation_results.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_projection_reconciliation_results.items()
+                    }
+                )
                 self._store.state = _StoreState(
                     workspaces=prepared_workspaces,
                     environments=prepared_environments,
@@ -2652,6 +2740,10 @@ class InMemoryUnitOfWork:
                     projection_partitions=prepared_projection_partitions,
                     projection_receipts=prepared_projection_receipts,
                     projection_references=prepared_projection_references,
+                    projection_validations=prepared_projection_validations,
+                    projection_snapshots=prepared_projection_snapshots,
+                    projection_snapshot_members=prepared_projection_snapshot_members,
+                    projection_reconciliation_results=prepared_projection_reconciliation_results,
                 )
         except BaseException as error:
             self._raise_terminal(error)
@@ -2695,6 +2787,10 @@ class InMemoryUnitOfWork:
         self._pending_projection_partitions.clear()
         self._pending_projection_receipts.clear()
         self._pending_projection_references.clear()
+        self._pending_projection_validations.clear()
+        self._pending_projection_snapshots.clear()
+        self._pending_projection_snapshot_members.clear()
+        self._pending_projection_reconciliation_results.clear()
         self._pending_projection_run_claims.clear()
         self._lifecycle = _Lifecycle.ROLLED_BACK
         self._release_source_observation_lock()
@@ -2829,6 +2925,13 @@ class InMemoryUnitOfWork:
             (self._pending_projection_partitions, self._store.projection_partitions),
             (self._pending_projection_receipts, self._store.projection_receipts),
             (self._pending_projection_references, self._store.projection_references),
+            (self._pending_projection_validations, self._store.projection_validations),
+            (self._pending_projection_snapshots, self._store.projection_snapshots),
+            (self._pending_projection_snapshot_members, self._store.projection_snapshot_members),
+            (
+                self._pending_projection_reconciliation_results,
+                self._store.projection_reconciliation_results,
+            ),
         )
         if any(pending.keys() & stored.keys() for pending, stored in maps):
             raise ConstraintConflictError("Projection ledger identity already exists.")
@@ -3078,6 +3181,10 @@ class InMemoryUnitOfWork:
         self._base_projection_partitions.clear()
         self._base_projection_receipts.clear()
         self._base_projection_references.clear()
+        self._base_projection_validations.clear()
+        self._base_projection_snapshots.clear()
+        self._base_projection_snapshot_members.clear()
+        self._base_projection_reconciliation_results.clear()
         self._pending_workspaces.clear()
         self._pending_environments.clear()
         self._pending_receipts.clear()
@@ -3107,6 +3214,10 @@ class InMemoryUnitOfWork:
         self._pending_projection_partitions.clear()
         self._pending_projection_receipts.clear()
         self._pending_projection_references.clear()
+        self._pending_projection_validations.clear()
+        self._pending_projection_snapshots.clear()
+        self._pending_projection_snapshot_members.clear()
+        self._pending_projection_reconciliation_results.clear()
         self._pending_projection_run_claims.clear()
         self._scope = None
         self._operation = None
