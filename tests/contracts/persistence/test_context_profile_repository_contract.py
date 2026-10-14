@@ -87,7 +87,17 @@ async def test_context_profile_repository_replays_same_immutable_version(
             profile_digest=expected.profile_digest,
         )
 
+    async with persistence_adapter.uow_factory(context) as uow:
+        scoped_actual = await uow.context_profiles.resolve_for_scope(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            profile_id=expected.profile_id,
+            profile_version=expected.profile_version,
+            profile_digest=expected.profile_digest,
+        )
+
     assert actual == expected
+    assert scoped_actual == expected
 
 
 @pytest.mark.asyncio

@@ -21,5 +21,15 @@ class ContextProfileRepository(Protocol):
         profile_digest: str,
     ) -> ContextProfileVersion: ...
 
+    async def resolve_for_scope(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        profile_id: UUID,
+        profile_version: int,
+        profile_digest: str,
+    ) -> ContextProfileVersion: ...
+
 
 __all__ = ["ContextProfileRepository"]

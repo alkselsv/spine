@@ -41,9 +41,9 @@ class TrustedContextValidator(Protocol):
 
 
 class ContextProfileResolver(Protocol):
-    """Resolve only a server-approved profile, never caller-selected projection state."""
+    """Resolve only after trusted request context has been validated."""
 
-    async def resolve(self, profile_ref: ContextProfileRef) -> ContextProfile | None: ...
+    async def resolve_for_request(self, request: ContextRequest) -> ContextProfile | None: ...
 
 
 class ActivePublicationResolver(Protocol):
@@ -109,7 +109,7 @@ class ContextBrokerV1:
             )
 
         try:
-            profile = await self._profile_resolver.resolve(request.profile_ref)
+            profile = await self._profile_resolver.resolve_for_request(request)
         except Exception:
             profile = None
         if profile is None or profile.ref != request.profile_ref:
@@ -254,6 +254,9 @@ class FakeContextProfileResolver:
         if self.error is not None:
             raise self.error
         return self.profiles.get(profile_ref)
+
+    async def resolve_for_request(self, request: ContextRequest) -> ContextProfile | None:
+        return await self.resolve(request.profile_ref)
 
 
 class DeterministicFakePublicationResolver:

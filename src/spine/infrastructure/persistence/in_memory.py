@@ -666,6 +666,27 @@ class _ContextProfileRepository:
 
         return self._uow._repository_call(operation)
 
+    async def resolve_for_scope(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        profile_id: UUID,
+        profile_version: int,
+        profile_digest: str,
+    ) -> ContextProfileVersion:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope) or (
+            scope.workspace_id != workspace_id or scope.environment_id != environment_id
+        ):
+            self._uow._fail(InvalidPersistenceContextError("Persistence context is invalid."))
+        return await self.resolve(
+            profile_id=profile_id,
+            profile_version=profile_version,
+            profile_digest=profile_digest,
+        )
+
 
 class _ContextBundleRepository:
     def __init__(self, uow: "InMemoryUnitOfWork") -> None:
