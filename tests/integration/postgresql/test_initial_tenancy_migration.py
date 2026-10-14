@@ -1754,6 +1754,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
             )
         )
     }
+    if missing_final_constraints:
+        print("DEBUG projection constraints:", sorted(name for name in constraints if "projection_" in name))
     assert not missing_final_constraints, sorted(missing_final_constraints)
     outbox_fk = (
         (
@@ -2990,6 +2992,10 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "projection_partitions": (True, True),
             "projection_receipts": (True, True),
             "source_projection_references": (True, True),
+            "projection_validations": (True, True),
+            "projection_snapshots": (True, True),
+            "projection_snapshot_members": (True, True),
+            "projection_reconciliation_results": (True, True),
         }
     standard_tables = set(tables) - {"outbox_deliveries"}
     assert set(policies) == {
