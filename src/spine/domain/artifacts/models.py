@@ -97,22 +97,40 @@ class ParseCoverage(str, Enum):
     FAILED = "failed"
 
 
-class PhysicalLineLocator(DefinitionModel):
-    """A half-open raw Unicode code-point range on one physical line."""
-
-    kind: Literal["physical_line"] = "physical_line"
-    line_number: StrictInt = Field(gt=0)
+class _CodepointRange(DefinitionModel):
     start_codepoint: StrictInt = Field(ge=0)
     end_codepoint: StrictInt = Field(ge=0)
 
     @model_validator(mode="after")
-    def validate_range(self) -> "PhysicalLineLocator":
+    def validate_range(self) -> "_CodepointRange":
         if self.end_codepoint < self.start_codepoint:
             raise ValueError("locator end must not precede start")
         return self
 
 
-Locator = Annotated[PhysicalLineLocator, Field(discriminator="kind")]
+class PhysicalLineLocator(_CodepointRange):
+    """A half-open raw Unicode code-point range on one physical line."""
+
+    kind: Literal["physical_line"] = "physical_line"
+    line_number: StrictInt = Field(gt=0)
+
+
+class PageTextLocator(_CodepointRange):
+    """A half-open code-point range in text extracted from one PDF page."""
+
+    kind: Literal["page_text"] = "page_text"
+    page_number: StrictInt = Field(gt=0)
+
+
+class ExtractedPageText(DefinitionModel):
+    """Transient extracted text for one explicitly identified PDF page."""
+
+    schema_version: Literal["extracted-page-text:v1"] = "extracted-page-text:v1"
+    page_number: StrictInt = Field(gt=0)
+    text: str
+
+
+Locator = Annotated[PhysicalLineLocator | PageTextLocator, Field(discriminator="kind")]
 
 
 class ParseExclusion(DefinitionModel):
@@ -124,9 +142,13 @@ class ParseExclusion(DefinitionModel):
         "unsupported_structure",
         "malformed_structure",
         "bounded_input",
+        "blank_page",
+        "malformed_document",
+        "extraction_failed",
+        "unlocatable_content",
     ]
     count: StrictInt = Field(gt=0)
-    locator: PhysicalLineLocator | None = None
+    locator: Locator | None = None
 
 
 class ParsedSegment(DefinitionModel):
@@ -219,11 +241,15 @@ class ParsedDocument(DefinitionModel):
             raise ValueError("parsed document digest does not match its identity")
         return self
 
-    def resolve_locator(self, source_text: str, locator: PhysicalLineLocator) -> str:
+    def resolve_locator(
+        self,
+        source: str | ExtractedPageText,
+        locator: Locator,
+    ) -> str:
         segment = next((value for value in self.segments if value.locator == locator), None)
         if segment is None:
             raise ValueError("locator does not resolve")
-        return resolve_locator(source_text, locator, expected_text=segment.text)
+        return resolve_locator(source, locator, expected_text=segment.text)
 
     @classmethod
     def from_source(
@@ -300,7 +326,7 @@ class ParsedDocument(DefinitionModel):
 
 
 def segment_digest(
-    *, artifact_digest: str, locator: PhysicalLineLocator, text_digest: str, heading_path: tuple[str, ...]
+    *, artifact_digest: str, locator: Locator, text_digest: str, heading_path: tuple[str, ...]
 ) -> str:
     return hashlib.sha256(_canonical_json({
         "schema_version": "parsed-segment:v1",
@@ -339,7 +365,7 @@ def parsed_document_digest(
 
 
 def _build_segment(
-    *, artifact_digest: str, text: str, text_digest: str, locator: PhysicalLineLocator,
+    *, artifact_digest: str, text: str, text_digest: str, locator: Locator,
     heading_path: tuple[str, ...], segment_digest: str,
 ) -> ParsedSegment:
     return ParsedSegment(
@@ -354,13 +380,26 @@ def _build_segment(
 
 
 def resolve_locator(
-    source_text: str,
-    locator: PhysicalLineLocator,
+    source: str | ExtractedPageText,
+    locator: Locator,
     *,
     expected_text: str | None = None,
 ) -> str:
-    if not isinstance(source_text, str):
-        raise TypeError("source_text must be text")
+    if isinstance(locator, PageTextLocator):
+        if not isinstance(source, ExtractedPageText):
+            raise TypeError("page-text locator source must identify one extracted page")
+        if source.page_number != locator.page_number:
+            raise ValueError("locator does not resolve")
+        source_text = source.text
+        if locator.end_codepoint > len(source_text):
+            raise ValueError("locator does not resolve")
+        value = source_text[locator.start_codepoint:locator.end_codepoint]
+        if expected_text is not None and value != expected_text:
+            raise ValueError("locator does not resolve")
+        return value
+    if not isinstance(source, str):
+        raise TypeError("physical-line locator source must be text")
+    source_text = source
     starts: list[int] = []
     offset = 0
     for line in source_text.splitlines(keepends=True):

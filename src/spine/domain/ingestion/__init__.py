@@ -17,10 +17,19 @@ from .models import (
     WarningStage,
     FailureStage,
 )
-from spine.domain.artifacts import ParseCoverage, ParseExclusion, ParsedDocument, ParsedSegment, PhysicalLineLocator
+from spine.domain.artifacts import (
+    ExtractedPageText,
+    PageTextLocator,
+    ParseCoverage,
+    ParseExclusion,
+    ParsedDocument,
+    ParsedSegment,
+    PhysicalLineLocator,
+)
 
 __all__ = [
     "FailureStage",
+    "ExtractedPageText",
     "IngestionFailure",
     "IngestionItemState",
     "IngestionRun",
@@ -37,6 +46,7 @@ __all__ = [
     "WarningStage",
     "ParseCoverage",
     "ParseExclusion",
+    "PageTextLocator",
     "ParsedDocument",
     "ParsedSegment",
     "PhysicalLineLocator",

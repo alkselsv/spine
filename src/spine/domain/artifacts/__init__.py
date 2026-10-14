@@ -9,8 +9,11 @@ from spine.domain.artifacts.models import (
 
 __all__ = ["Artifact", "ArtifactRef", "ArtifactState", "validate_artifact_lineage"]
 from .models import (
+    ExtractedPageText,
+    Locator,
     ParseCoverage,
     ParseExclusion,
+    PageTextLocator,
     ParsedDocument,
     ParsedSegment,
     PhysicalLineLocator,
@@ -19,8 +22,11 @@ from .models import (
 )
 
 __all__ = [
+    "ExtractedPageText",
+    "Locator",
     "ParseCoverage",
     "ParseExclusion",
+    "PageTextLocator",
     "ParsedDocument",
     "ParsedSegment",
     "PhysicalLineLocator",

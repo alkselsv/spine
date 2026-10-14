@@ -9,7 +9,7 @@ import re
 from typing import Protocol
 from uuid import UUID
 
-from spine.domain.artifacts import ParsedDocument, ParsedSegment, PhysicalLineLocator
+from spine.domain.artifacts import Locator, ParsedDocument, ParsedSegment
 
 _COMMAND_ID = re.compile(r"^[a-z][a-z0-9_.:-]{0,63}$")
 
@@ -66,5 +66,5 @@ class ParsedArtifactRepository(Protocol):
         original_sha256: str,
         parser_version: str,
         locator_contract_version: str,
-        locator: PhysicalLineLocator,
+        locator: Locator,
     ) -> ParsedSegment | None: ...
