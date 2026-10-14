@@ -29,6 +29,20 @@ from .indexing import (
     CogneeVersionError,
     SUPPORTED_COGNEE_VERSION,
 )
+from .rebuild import (
+    InMemoryProjectionRebuildProgressStore,
+    ProjectionRebuildProgress,
+    ProjectionRebuildProgressStore,
+    ProjectionReplayItem,
+    ProjectionReplayLane,
+    ProjectionReplayRecord,
+    ProjectionReplayStatus,
+    ShadowRebuildFailureCode,
+    ShadowRebuildOrchestrator,
+    ShadowRebuildPlan,
+    ShadowRebuildResult,
+    ShadowRebuildState,
+)
 
 __all__ = [
     "AcceptedEntity",
@@ -54,4 +68,16 @@ __all__ = [
     "CogneeSdk",
     "CogneeVersionError",
     "SUPPORTED_COGNEE_VERSION",
+    "InMemoryProjectionRebuildProgressStore",
+    "ProjectionRebuildProgress",
+    "ProjectionRebuildProgressStore",
+    "ProjectionReplayItem",
+    "ProjectionReplayLane",
+    "ProjectionReplayRecord",
+    "ProjectionReplayStatus",
+    "ShadowRebuildFailureCode",
+    "ShadowRebuildOrchestrator",
+    "ShadowRebuildPlan",
+    "ShadowRebuildResult",
+    "ShadowRebuildState",
 ]
