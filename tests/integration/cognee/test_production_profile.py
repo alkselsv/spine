@@ -1,9 +1,9 @@
 """Opt-in, deliberately fail-closed Cognee production-profile gate.
 
 This target is not part of the offline suite.  It exercises the public Cognee
-SDK against operator-supplied PostgreSQL, Neo4j and PGVector services, then
-keeps the overall gate red until a complete physical ``ContextProjection``
-factory can run the unchanged shared contract suite.
+SDK against operator-supplied PostgreSQL, Neo4j and PGVector services and
+verifies that the complete physical ``ContextProjection`` composition loads
+against that exact profile.
 """
 
 from __future__ import annotations
@@ -14,6 +14,10 @@ import re
 import pytest
 
 from spine.memory.cognee.live_smoke import LiveSmokeConfig, run_local_smoke
+from spine.memory.cognee.context_projection import (
+    CogneeContextProjection,
+    create_cognee_context_projection,
+)
 from spine.memory.cognee.qualification import SearchLane, SmokeStatus
 
 
@@ -99,10 +103,10 @@ async def test_public_cognee_profile_exercises_structured_sdk_lifecycle() -> Non
     }.issubset(report.operation_names)
 
 
-def test_complete_context_projection_gate_fails_closed_until_composed() -> None:
-    pytest.fail(
-        "NO-GO: Spine has lower-level Cognee chunk, graph, retrieval, validation "
-        "and recovery adapters, but no complete physical ContextProjection factory "
-        "that can run tests/contracts/memory unchanged against the real profile. "
-        "Issue #211 fake evidence is not production evidence."
+def test_complete_context_projection_factory_uses_public_cognee_profile() -> None:
+    projection = create_cognee_context_projection(
+        artifacts={},
+        extraction_results={},
     )
+
+    assert isinstance(projection, CogneeContextProjection)

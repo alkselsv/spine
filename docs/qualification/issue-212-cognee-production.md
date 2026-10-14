@@ -8,12 +8,12 @@ store. The machine-readable decision is recorded in
 `docs/qualification/issue-212-cognee-production-report.json`.
 
 No live service endpoints or model resources were available in the execution
-environment. More importantly, the repository currently exposes lower-level
-Cognee chunk, graph, structured-retrieval, validation and recovery adapters,
-but does not expose a complete physical `ContextProjection` implementation that
-can run the unchanged shared suite in `tests/contracts/memory`. The opt-in gate
-therefore remains visibly red after the public SDK smoke instead of treating
-the fake-backed Issue #211 result as production evidence.
+environment. The repository now exposes a complete `CogneeContextProjection`
+composition over the chunk, graph and structured-retrieval adapters, and that
+composition runs the unchanged suite in `tests/contracts/memory`. This closes
+the composition gap, but it does not turn offline evidence into a production
+qualification: every live observation remains `not_run` until one coherent
+PostgreSQL + Neo4j + PGVector execution records it.
 
 This is the explicit failure outcome allowed by Issue #212. It is not a
 conditional approval, a local-profile approval or a deployment recommendation.
@@ -38,13 +38,13 @@ its own ticket and architecture review before it can become production code.
 | Criterion | Evidence | Result |
 | --- | --- | --- |
 | AC1 | `tests/integration/cognee/test_production_profile.py::test_public_cognee_profile_exercises_structured_sdk_lifecycle` | Not run on the real profile; public SDK smoke is present but cannot grant production approval. |
-| AC2 | `tests/contracts/memory/test_conformance.py::test_retrieval_round_trips_chunks_entities_relations_and_provenance` and the missing physical factory gate | No-go: no complete real-backend round trip exists. |
-| AC3 | `tests/contracts/memory/test_conformance.py::test_unsafe_evidence_never_leaks_projected_content` and the missing physical factory gate | Fake behavior passes in Issue #211; real missing/ambiguous/stale/incomplete/tombstoned evidence is not qualified. |
-| AC4 | `tests/contracts/memory/test_conformance.py::test_denied_workspace_or_environment_returns_safe_empty_result`, `tests/contracts/memory/test_conformance.py::test_shadow_namespace_is_not_visible_to_ordinary_retrieval` and the missing physical factory gate | Real two-workspace and active/shadow isolation are not qualified. |
+| AC2 | `tests/contracts/memory/test_conformance.py::test_retrieval_round_trips_chunks_entities_relations_and_provenance` runs for `cognee-composition`; the same real-backend round trip remains to be run | No-go until live evidence exists. |
+| AC3 | `tests/contracts/memory/test_conformance.py::test_unsafe_evidence_never_leaks_projected_content` runs for `cognee-composition` | Offline behavior passes; real missing/ambiguous/stale/incomplete/tombstoned evidence is not qualified. |
+| AC4 | The isolation contract runs for `cognee-composition` | Real two-workspace and active/shadow isolation are not qualified. |
 | AC5 | Existing adapter disclosure-safe tests plus `tests/memory/test_cognee_production_qualification.py::test_report_shape_contains_only_bounded_safe_codes` | The decision/report boundary is safe; real provider error and diagnostic paths are not qualified. |
 | AC6 | `src/spine/memory/cognee/qualification.py::build_backend_matrix` and `tests/memory/test_cognee_production_qualification.py::test_postgres_demo_is_rejected_even_when_observations_pass` | `postgres_demo` remains rejected. |
 | AC7 | ADR 0018/0027 plus the `canonical_lifecycle_separation` live gate | Ownership is preserved by contract; real call timing outside PostgreSQL UnitOfWork is not yet observed. |
-| AC8 | This report and the opt-in gate's explicit failure | No-go with owned fallback recommendation; no tests are weakened or marked passed. |
+| AC8 | This report and its `not_run` live observations | No-go with owned fallback recommendation; no unexecuted gate is marked passed. |
 | AC9 | Issue #211 report and `tests/memory/test_cognee_production_qualification.py::test_fake_backed_success_cannot_be_promoted_to_production_approval` | Issue #211 is explicitly not production evidence. |
 
 ## Executable gate
@@ -54,7 +54,7 @@ traceability and collection of the live target. The operator-controlled live
 command is documented in
 `docs/runbooks/cognee-production-qualification.md`.
 
-The live target deliberately fails its final test until a complete physical
-`ContextProjection` factory can execute `tests/contracts/memory` unchanged.
-Passing only the public SDK lifecycle test must not be used to edit the report
-to `go`.
+The live target verifies the public SDK lifecycle and loads the complete
+physical factory. Passing it alone must not be used to edit the report to `go`:
+the report changes only from the complete gate inventory captured by one live
+qualification run.

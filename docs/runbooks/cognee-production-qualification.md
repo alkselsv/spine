@@ -61,10 +61,10 @@ versions; do not retain raw provider errors in the report.
 
 ## Interpreting the result
 
-The current expected result is **no-go**. The public SDK lifecycle may pass,
-but the final gate remains red because no complete physical
-`ContextProjection` implementation can run the shared contract suite against
-PostgreSQL + Neo4j + PGVector.
+The current committed result is **no-go** because no coherent live run has been
+recorded. The complete `CogneeContextProjection` composition exists and runs
+the shared contract suite offline, but only the real PostgreSQL + Neo4j +
+PGVector profile can produce production evidence.
 
 Do not convert a partial pass, skipped test, local Cognee profile or Issue #211
 fake-backed result into production approval. A future `go` requires every gate

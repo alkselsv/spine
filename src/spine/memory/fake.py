@@ -1,4 +1,4 @@
-"""Deterministic provider-neutral ContextProjection fakes."""
+"""Provider-neutral projection coordination and deterministic test doubles."""
 
 from __future__ import annotations
 
@@ -104,8 +104,8 @@ class _Execution:
     terminal_result: ProjectionResult | None = None
 
 
-class DeterministicContextProjection(ContextProjection):
-    """In-memory implementation of the public projection port.
+class ProjectionCoordinator(ContextProjection):
+    """Coordinate the public projection port over an injected physical store.
 
     The fake models command identity/digest idempotency, source revision
     fencing, tombstones and recoverable physical partial failure. It never
@@ -588,7 +588,7 @@ class DeterministicContextProjection(ContextProjection):
     def _unsafe_source_status(command: ProjectionCommand) -> ProjectionFailureCode | None:
         for source in command.source_revisions:
             if source.status != "current":
-                return DeterministicContextProjection._failure_code_for_status(source.status)
+                return ProjectionCoordinator._failure_code_for_status(source.status)
         return None
 
     @staticmethod
@@ -633,4 +633,12 @@ class DeterministicContextProjection(ContextProjection):
         )
 
 
-__all__ = ["DeterministicContextProjection", "DeterministicPhysicalStore"]
+class DeterministicContextProjection(ProjectionCoordinator):
+    """Deterministic in-memory projection used by tests and local development."""
+
+
+__all__ = [
+    "DeterministicContextProjection",
+    "DeterministicPhysicalStore",
+    "ProjectionCoordinator",
+]

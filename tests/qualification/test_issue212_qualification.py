@@ -69,7 +69,7 @@ def test_issue212_live_target_is_collectable_and_skipped_by_default() -> None:
     assert collected.returncode == 0, output
     assert "test_production_profile_preflight_requires_exact_backends" in output
     assert "test_public_cognee_profile_exercises_structured_sdk_lifecycle" in output
-    assert "test_complete_context_projection_gate_fails_closed_until_composed" in output
+    assert "test_complete_context_projection_factory_uses_public_cognee_profile" in output
 
 
 def test_issue212_runbook_names_exact_prerequisites_and_command() -> None:
