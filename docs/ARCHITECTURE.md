@@ -760,6 +760,15 @@ expected physical artifacts, source-revision identity/integrity и configuration
 version. Missing, corrupt, incomplete или ambiguous backend state fenced и
 reported degraded.
 
+До sealing adapter-level `PhysicalValidationResult` проходит через accepted
+#208 receipt/reference handoff и переводится в canonical gate
+`physical_artifacts:r1`. Failed physical evidence сохраняется как failed
+`ProjectionValidation` и блокирует candidate; passed physical evidence является
+обязательной для каждой candidate partition частью sealing независимо от других
+quality gates. После activation
+та же evidence переводится в append-only reconciliation findings. Repair
+кандидаты остаются workflow input и не изменяют immutable snapshot.
+
 Physical projection namespaces are derived by a provider-neutral router from
 workspace, environment, projection kind, candidate/snapshot context, canonical
 boundary and pinned configuration. The identity digest excludes lifecycle
