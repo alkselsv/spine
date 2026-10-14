@@ -1,0 +1,37 @@
+{
+  "schema_version": "answer-question.contract-evaluation:v1",
+  "capability": "answer_question",
+  "terminal_outcomes": [
+    "answered",
+    "clarification_required",
+    "abstained",
+    "denied",
+    "failed",
+    "cancelled"
+  ],
+  "retrieval_outcomes": [
+    "evidence_available",
+    "insufficient_evidence",
+    "unavailable",
+    "failed"
+  ],
+  "accepted_answer_invariants": [
+    "answer",
+    "claim_citation_ids",
+    "citation_source_revision_id",
+    "citation_original_sha256",
+    "citation_locator_contract_version",
+    "context_bundle_lineage"
+  ],
+  "terminal_reason_invariants": [
+    "reason",
+    "no_answer_content"
+  ],
+  "retrieval_mapping": {
+    "evidence_available_without_acceptance": "abstained",
+    "evidence_available_after_acceptance": "answered",
+    "insufficient_evidence": "abstained",
+    "unavailable": "failed",
+    "failed": "failed"
+  }
+}
