@@ -71,7 +71,14 @@ from spine.application.persistence.errors import (
     ContextProfileMalformedError,
     ContextProfileNotFoundError,
     ContextProfileRevokedError,
+    ContextBundleConflictError,
+    ContextBundleDigestMismatchError,
+    ContextBundleError,
+    ContextBundleEvidenceUnavailableError,
+    ContextBundleMalformedError,
+    ContextBundleNotFoundError,
 )
+from spine.application.persistence.context_bundles import ContextBundleRepository
 from spine.application.persistence.context_profiles import ContextProfileRepository
 from spine.application.persistence.idempotency import (
     IdempotencyClaimResult,
@@ -151,6 +158,13 @@ __all__ = [
     "ContextProfileNotFoundError",
     "ContextProfileRepository",
     "ContextProfileRevokedError",
+    "ContextBundleConflictError",
+    "ContextBundleDigestMismatchError",
+    "ContextBundleError",
+    "ContextBundleEvidenceUnavailableError",
+    "ContextBundleMalformedError",
+    "ContextBundleNotFoundError",
+    "ContextBundleRepository",
     "COMMAND_DIGEST_ALGORITHM_VERSION",
     "CommandDigest",
     "ClaimedOutboxDelivery",

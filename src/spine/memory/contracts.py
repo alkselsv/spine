@@ -11,6 +11,10 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from pydantic import ConfigDict, Field, StrictBool, StrictInt, field_validator, model_validator
 
 from spine.domain.common import ActorRef, DefinitionModel, SpineModel
+from spine.domain.context_bundles import (
+    ContextBundleOutcome,
+    ContextBundleRef as DomainContextBundleRef,
+)
 from spine.domain.projections import (
     CanonicalAsOf,
     ProjectionActivation,
@@ -546,15 +550,15 @@ class ProjectionRetrievalResult(_ProjectionModel):
 class ContextOutcome(str, Enum):
     """The closed, disclosure-safe outcome set for Context Broker v1."""
 
-    ALLOWED = "allowed"
+    ALLOWED = ContextBundleOutcome.ALLOWED.value
     DENIED = "denied"
     UNAVAILABLE = "unavailable"
     STALE = "stale"
-    DEGRADED = "degraded"
-    PARTIAL = "partial"
-    CANCELLED = "cancelled"
-    INSUFFICIENT = "insufficient"
-    ABSTAINED = "abstained"
+    DEGRADED = ContextBundleOutcome.DEGRADED.value
+    PARTIAL = ContextBundleOutcome.PARTIAL.value
+    CANCELLED = ContextBundleOutcome.CANCELLED.value
+    INSUFFICIENT = ContextBundleOutcome.INSUFFICIENT.value
+    ABSTAINED = ContextBundleOutcome.ABSTAINED.value
 
 
 class ContextReasonCode(str, Enum):
@@ -594,32 +598,7 @@ class ContextProfileRef(DefinitionModel):
         return value
 
 
-class ContextBundleRef(DefinitionModel):
-    """Opaque identity of the exact bundle issued for one retrieval."""
-
-    model_config = ConfigDict(
-        extra="forbid",
-        frozen=True,
-        json_schema_extra={"$id": "spine/context-bundle-ref:v1"},
-    )
-
-    bundle_id: UUID
-    bundle_version: int = Field(ge=1)
-    bundle_digest: str = Field(pattern=_DIGEST)
-    publication_pin_id: UUID | None = None
-
-    @field_validator("bundle_id")
-    @classmethod
-    def validate_bundle_id(cls, value: UUID) -> UUID:
-        _require_non_zero(value, "bundle_id")
-        return value
-
-    @field_validator("publication_pin_id")
-    @classmethod
-    def validate_publication_pin_id(cls, value: UUID | None) -> UUID | None:
-        if value is not None:
-            _require_non_zero(value, "publication_pin_id")
-        return value
+ContextBundleRef = DomainContextBundleRef
 
 
 class ContextProfile(_ProjectionModel):

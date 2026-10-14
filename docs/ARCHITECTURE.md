@@ -355,8 +355,11 @@ Staging физически и логически отделён от ordinary kn
   набора `SourceRevision`.
 - `ProjectionReceipt` — результат adapter: source mappings, counts, warnings,
   failures и implementation metadata.
-- `ContextBundle` — сохранённый срез chunks, entities, relations и evidence,
-  фактически переданный agent run.
+- `ContextBundle` — неизменяемый, replayable handoff одного broker run/attempt:
+  точный profile/snapshot/activation/boundary/config lineage, safe outcome и
+  content-free evidence references с policy generations. Это canonical record,
+  а не mutable cache; Context Graph остаётся rebuildable projection. Правила
+  зафиксированы в [ADR-029](adr/0029-immutable-context-bundle-handoff.md).
 
 ### Каталог возможностей и агентов
 
@@ -2241,6 +2244,8 @@ detectors без специальных обходов в platform core.
 - [ADR-020](adr/0020-canonical-audit-and-diagnostic-separation.md): canonical
   append-only Audit Events, disclosure-safe Diagnostic Events и отдельное
   operational state для at-least-once outbox delivery.
+- [ADR-029](adr/0029-immutable-context-bundle-handoff.md): immutable,
+  evidence-bearing ContextBundle handoff and replay semantics.
 - [ADR-021](adr/0021-provider-neutral-oidc-and-canonical-request-authorization.md):
   provider-neutral OIDC JWT authentication, canonical human mapping и trusted
   Workspace/Environment request authorization.
