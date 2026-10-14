@@ -510,11 +510,10 @@ def has_complete_physical_validation(
     expected = {str(partition.projection_partition_id) for partition in partitions}
     covered: set[str] = set()
     for validation in validations:
-        if (
-            validation.gate_kind != PROJECTION_PHYSICAL_VALIDATION_GATE_KIND
-            or validation.decision.value != "passed"
-        ):
+        if validation.gate_kind != PROJECTION_PHYSICAL_VALIDATION_GATE_KIND:
             continue
+        if validation.decision.value != "passed":
+            return False
         lineage = validation.metrics_payload.get("projection_lineage")
         if isinstance(lineage, Mapping):
             partition_id = lineage.get("partition_id")

@@ -518,7 +518,10 @@ class InMemoryProjectionRepository(ProjectionRepository):
             )
             if not candidate_partitions or not candidate_receipts:
                 self._uow._fail(ConstraintConflictError("Projection candidate has incomplete evidence."))
-            if not has_complete_physical_validation(validations, candidate_partitions):
+            if (
+                any(item.decision.value != "passed" for item in validations)
+                or not has_complete_physical_validation(validations, candidate_partitions)
+            ):
                 self._uow._fail(
                     ConstraintConflictError(
                         "Projection candidate physical validation evidence is incomplete."

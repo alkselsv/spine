@@ -155,6 +155,14 @@ async def test_physical_gate_must_cover_every_candidate_partition() -> None:
     assert not has_complete_physical_validation(
         (validation.validation,), (partition, second_partition)
     )
+    failed = PhysicalProjectionEvidenceTranslator().to_validation_command(
+        evidence.model_copy(
+            update={"result": validate_physical_projection(evidence.expectation, ())}
+        )
+    )
+    assert not has_complete_physical_validation(
+        (validation.validation, failed.validation), (partition,)
+    )
 
 
 @pytest.mark.asyncio

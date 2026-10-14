@@ -4074,7 +4074,10 @@ class _PostgreSQLProjectionRepository(_PostgreSQLProjectionSnapshotMixin, Projec
         validations = await self.list_validations(run.projection_run_id)
         if not partitions or not receipts:
             await self._uow._fail(ConstraintConflictError("Projection candidate has incomplete evidence."))
-        if not has_complete_physical_validation(validations, partitions):
+        if (
+            any(item.decision.value != "passed" for item in validations)
+            or not has_complete_physical_validation(validations, partitions)
+        ):
             await self._uow._fail(
                 ConstraintConflictError(
                     "Projection candidate physical validation evidence is incomplete."
