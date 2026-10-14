@@ -43,7 +43,7 @@ its own ticket and architecture review before it can become production code.
 | AC4 | The live target executes foreign-workspace, explicit-context and active/shadow namespace gates | Harness implemented; no live observation is committed. |
 | AC5 | Bounded gate runner tests plus injected provider failure in the live target | Harness emits only typed safe codes; no live observation is committed. |
 | AC6 | `src/spine/memory/cognee/qualification.py::build_backend_matrix` and `tests/memory/test_cognee_production_qualification.py::test_postgres_demo_is_rejected_even_when_observations_pass` | `postgres_demo` remains rejected. |
-| AC7 | ADR 0018/0027 plus the `canonical_lifecycle_separation` live gate | Ownership is preserved by contract; real call timing outside PostgreSQL UnitOfWork is not yet observed. |
+| AC7 | ADR 0018/0027 plus the required `canonical_lifecycle_separation` gate | The repository has no PostgreSQL-backed projection-request resolver composition to observe yet, so the gate remains `not_run` and prevents a false production `go`. |
 | AC8 | This report and its `not_run` live observations | No-go with owned fallback recommendation; no unexecuted gate is marked passed. |
 | AC9 | Issue #211 report and `tests/memory/test_cognee_production_qualification.py::test_fake_backed_success_cannot_be_promoted_to_production_approval` | Issue #211 is explicitly not production evidence. |
 
@@ -54,9 +54,11 @@ traceability and collection of the live target. The operator-controlled live
 command is documented in
 `docs/runbooks/cognee-production-qualification.md`.
 
-The live target executes the complete gate inventory in one run: public SDK,
+The live target executes the available physical gate inventory in one run: public SDK,
 structured round trip, unsafe evidence, workspace/namespace isolation, explicit
 context, update/remove/tombstone, shadow rebuild/recovery/diagnostics,
-concurrency/failure injection/cleanup and canonical-lifecycle separation. It
-writes only bounded observations. The committed report changes only after that
+and concurrency/failure injection/cleanup. The required canonical-lifecycle
+gate remains explicitly `not_run` until a PostgreSQL-backed resolver composition
+can be observed; therefore the target cannot produce `go` prematurely. It writes
+only bounded observations. The committed report changes only after that
 operator-controlled output has been reviewed.

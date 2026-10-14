@@ -17,8 +17,11 @@ from uuid import NAMESPACE_URL, uuid5
 import pytest
 
 from spine.memory.cognee.context_projection import (
+    CogneeContextProjection,
+    CogneeGraphEffectStore,
     create_cognee_context_projection,
 )
+from spine.memory.cognee.graph import CogneeGraphProjectionWriter
 from spine.memory.cognee.indexing.store import (
     CogneeChunkProjectionStore,
     CogneePublicSdk,
@@ -33,6 +36,16 @@ from spine.memory.cognee.production_qualification import (
     GateStatus,
     run_qualification_gates,
     write_issue212_report,
+)
+from spine.memory.cognee.retrieval.adapter import CogneeStructuredRetrieval
+from spine.memory.validation import (
+    ArtifactKind,
+    PhysicalArtifact,
+    PhysicalArtifactLocator,
+    PhysicalProjectionExpectation,
+    PhysicalProjectionSource,
+    PhysicalValidationCode,
+    validate_physical_projection,
 )
 from spine.memory.contracts import (
     ProjectionCandidate,
@@ -55,8 +68,8 @@ from tests.contracts.memory.test_conformance import (
     command_context,
     source_revision,
 )
-from tests.memory.cognee.test_graph import extraction_result, request, tombstone_result
-from tests.memory.cognee.test_indexing import REVISION_ID, parsed_document
+from tests.memory.cognee.test_graph import extraction_result, request
+from tests.memory.cognee.test_indexing import NEXT_REVISION_ID, REVISION_ID, parsed_document
 
 
 pytestmark = [
@@ -184,6 +197,78 @@ async def _assert_update_remove_postconditions(report: LiveSmokeReport) -> None:
     assert "datasets.delete_data:repeat" in report.operation_names
 
 
+def _expected_physical_artifacts(
+    *,
+    document,
+    extraction,
+    source: ProjectionSourceRevision,
+    namespace,
+    projection_config,
+) -> tuple[PhysicalArtifact, ...]:
+    """Derive the canonical expectation without consulting adapter manifests."""
+
+    common = {
+        "workspace_id": document.workspace_id,
+        "environment_id": document.environment_id,
+        "namespace_digest": namespace.namespace_digest,
+        "source_object_id": source.source_object_id,
+        "source_revision_id": source.source_revision_id,
+        "revision_digest": source.revision_digest,
+        "revision_number": source.revision_number,
+        "projection_config_id": projection_config.config_id,
+        "projection_config_version": projection_config.version,
+        "projection_config_digest": projection_config.config_digest,
+    }
+    expected = [
+        PhysicalArtifact(
+            artifact_kind=ArtifactKind.CHUNK,
+            artifact_id=str(segment.segment_id),
+            data_id=segment.segment_id,
+            locators=(
+                PhysicalArtifactLocator.from_payload(
+                    kind=segment.locator.kind,
+                    payload=segment.locator,
+                ),
+            ),
+            **common,
+        )
+        for segment in document.segments
+    ]
+    graph_namespace = uuid5(
+        NAMESPACE_URL,
+        f"spine:{namespace.namespace_digest}",
+    )
+    for kind, artifacts in (
+        (ArtifactKind.ENTITY, extraction.entities),
+        (ArtifactKind.RELATION, extraction.relations),
+    ):
+        for artifact in artifacts:
+            artifact_id = (
+                artifact.entity_id
+                if kind is ArtifactKind.ENTITY
+                else artifact.relation_id
+            )
+            expected.append(
+                PhysicalArtifact(
+                    artifact_kind=kind,
+                    artifact_id=artifact_id,
+                    data_id=uuid5(
+                        graph_namespace,
+                        f"{source.source_object_id}:{kind.value}:{artifact_id}",
+                    ),
+                    locators=tuple(
+                        PhysicalArtifactLocator.from_payload(
+                            kind=reference.locator.kind,
+                            payload=reference.locator,
+                        )
+                        for reference in artifact.evidence
+                    ),
+                    **common,
+                )
+            )
+    return tuple(expected)
+
+
 async def _assert_complete_context_projection_round_trip(
     run_id: str,
     *,
@@ -191,6 +276,7 @@ async def _assert_complete_context_projection_round_trip(
     rebuild: bool = False,
     update_remove: bool = False,
     workspace_isolation: bool = False,
+    validate_physical: bool = False,
 ) -> None:
     from spine.memory.cognee_memory import configure_environment
 
@@ -241,6 +327,10 @@ async def _assert_complete_context_projection_round_trip(
         revision_digest=current.revision_digest,
         revision_number=current.revision_number,
         status="current",
+        processing_receipt_id=uuid5(
+            NAMESPACE_URL,
+            f"spine-issue-212:{run_id}:processing-receipt",
+        ),
         locator_contract_version="locator:v1",
     )
     common = {
@@ -255,10 +345,17 @@ async def _assert_complete_context_projection_round_trip(
     }
     artifacts = {current.source_revision_id: document}
     extraction_results = {current.source_revision_id: extraction}
-    projection = create_cognee_context_projection(
-        artifacts=artifacts,
+    sdk = _FailOnceCogneeSdk() if inject_cognify_failure else CogneePublicSdk()
+    chunks = CogneeChunkProjectionStore(sdk=sdk, artifacts=artifacts)
+    graph_writer = CogneeGraphProjectionWriter(sdk=sdk)
+    graph = CogneeGraphEffectStore(
+        writer=graph_writer,
         extraction_results=extraction_results,
-        sdk=_FailOnceCogneeSdk() if inject_cognify_failure else None,
+    )
+    projection = CogneeContextProjection(
+        effect_store=chunks,
+        graph_effect_store=graph,
+        retrieval=CogneeStructuredRetrieval(),
     )
     dataset_name = CogneeChunkProjectionStore.dataset_name(namespace)
     command_type = RebuildCommand if rebuild else ProjectCommand
@@ -284,38 +381,121 @@ async def _assert_complete_context_projection_round_trip(
         if update_remove:
             _, updated_base = parsed_document(
                 b"Synthetic Organization Alpha employs Synthetic Person Ada. Updated.",
-                REVISION_ID,
+                NEXT_REVISION_ID,
             )
-            artifacts[current.source_revision_id] = updated_base.model_copy(
+            updated_digest = updated_base.source_revision_digest
+            artifacts[NEXT_REVISION_ID] = updated_base.model_copy(
                 update={
                     "workspace_id": extraction.workspace_id,
                     "environment_id": extraction.environment_id,
                     "source_object_id": current.source_object_id,
-                    "source_revision_id": current.source_revision_id,
-                    "source_revision_digest": current.revision_digest,
+                    "source_revision_id": NEXT_REVISION_ID,
+                    "source_revision_digest": updated_digest,
                 }
             )
+            updated_extraction = extraction.model_copy(
+                update={
+                    "source_revisions": (
+                        current.model_copy(
+                            update={
+                                "source_revision_id": NEXT_REVISION_ID,
+                                "revision_digest": updated_digest,
+                                "revision_number": current.revision_number + 1,
+                            }
+                        ),
+                    ),
+                    "entities": tuple(
+                        entity.model_copy(
+                            update={
+                                "source_revision_id": NEXT_REVISION_ID,
+                                "evidence": tuple(
+                                    evidence.model_copy(
+                                        update={
+                                            "source_revision_id": NEXT_REVISION_ID,
+                                            "revision_digest": updated_digest,
+                                            "revision_number": current.revision_number + 1,
+                                        }
+                                    )
+                                    for evidence in entity.evidence
+                                ),
+                            }
+                        )
+                        for entity in extraction.entities
+                    ),
+                    "relations": tuple(
+                        relation.model_copy(
+                            update={
+                                "source_revision_id": NEXT_REVISION_ID,
+                                "evidence": tuple(
+                                    evidence.model_copy(
+                                        update={
+                                            "source_revision_id": NEXT_REVISION_ID,
+                                            "revision_digest": updated_digest,
+                                            "revision_number": current.revision_number + 1,
+                                        }
+                                    )
+                                    for evidence in relation.evidence
+                                ),
+                            }
+                        )
+                        for relation in extraction.relations
+                    ),
+                }
+            )
+            extraction_results[NEXT_REVISION_ID] = updated_extraction
+            updated_source = source.model_copy(
+                update={
+                    "source_revision_id": NEXT_REVISION_ID,
+                    "revision_digest": updated_digest,
+                    "revision_number": source.revision_number + 1,
+                }
+            )
+            updated_common = dict(common)
+            updated_common["source_revisions"] = (updated_source,)
             updated = await projection.update(
                 UpdateCommand(
-                    **common,
+                    **updated_common,
                     command_identity="issue-212-update",
                     command_digest="a" * 64,
                 )
             )
-            tombstone = tombstone_result()
-            deleted_source = next(
-                source
-                for source in tombstone.source_revisions
-                if source.status == "tombstoned"
+            after_update = await projection.retrieve(
+                RetrieveCommand(
+                    **updated_common,
+                    command_identity="issue-212-after-update",
+                    command_digest="9" * 64,
+                    query="Qualification marker Updated",
+                )
             )
-            extraction_results[deleted_source.source_revision_id] = tombstone
-            tombstoned = ProjectionSourceRevision(
-                source_object_id=deleted_source.source_object_id,
-                source_revision_id=deleted_source.source_revision_id,
-                revision_digest=deleted_source.revision_digest,
-                revision_number=deleted_source.revision_number,
-                status="tombstoned",
-                locator_contract_version="locator:v1",
+            tombstone_id = uuid5(
+                NAMESPACE_URL,
+                f"spine-issue-212:{run_id}:tombstone",
+            )
+            tombstone_digest = "f" * 64
+            tombstone_revision_number = updated_source.revision_number + 1
+            extraction_results[tombstone_id] = updated_extraction.model_copy(
+                update={
+                    "source_revisions": (
+                        current.model_copy(
+                            update={
+                                "source_revision_id": tombstone_id,
+                                "revision_digest": tombstone_digest,
+                                "revision_number": tombstone_revision_number,
+                                "status": "tombstoned",
+                            }
+                        ),
+                    ),
+                    "entities": (),
+                    "relations": (),
+                }
+            )
+            tombstoned = updated_source.model_copy(
+                update={
+                    "source_revision_id": tombstone_id,
+                    "revision_digest": tombstone_digest,
+                    "revision_number": tombstone_revision_number,
+                    "status": "tombstoned",
+                }
             )
             remove_common = dict(common)
             remove_common["source_revisions"] = (tombstoned,)
@@ -328,16 +508,20 @@ async def _assert_complete_context_projection_round_trip(
             )
             after_remove = await projection.retrieve(
                 RetrieveCommand(
-                    **remove_common,
+                    **updated_common,
                     command_identity="issue-212-after-remove",
                     command_digest="c" * 64,
-                    query="Synthetic Organization Alpha",
+                    query="Qualification marker Updated",
                 )
             )
             assert updated.outcome is ProjectionOutcome.SUCCEEDED
+            assert after_update.outcome is ProjectionOutcome.SUCCEEDED
+            assert any("Updated" in chunk.text for chunk in after_update.chunks)
             assert removed.outcome is ProjectionOutcome.SUCCEEDED
-            assert after_remove.outcome is ProjectionOutcome.TOMBSTONED
             assert after_remove.chunks == ()
+            assert after_remove.entities == ()
+            assert after_remove.relations == ()
+            assert "Updated" not in after_remove.model_dump_json()
             return
         if rebuild:
             replay = await projection.rebuild(command)
@@ -358,6 +542,66 @@ async def _assert_complete_context_projection_round_trip(
                 is ProjectionFailureCode.NAMESPACE_UNAVAILABLE
             )
             assert "Synthetic Organization Alpha" not in replay.model_dump_json()
+            if validate_physical:
+                physical_artifacts = (
+                    await chunks.physical_artifacts_for(
+                        workspace_id=extraction.workspace_id,
+                        environment_id=extraction.environment_id,
+                        namespace_digest=namespace.namespace_digest,
+                    )
+                ) + (
+                    await graph_writer.physical_artifacts_for(
+                        workspace_id=extraction.workspace_id,
+                        environment_id=extraction.environment_id,
+                        namespace_digest=namespace.namespace_digest,
+                    )
+                )
+                expected_artifacts = _expected_physical_artifacts(
+                    document=document,
+                    extraction=extraction,
+                    source=source,
+                    namespace=namespace,
+                    projection_config=template.projection_config,
+                )
+                expectation = PhysicalProjectionExpectation(
+                    workspace_id=extraction.workspace_id,
+                    environment_id=extraction.environment_id,
+                    namespace_digest=namespace.namespace_digest,
+                    projection_config_id=template.projection_config.config_id,
+                    projection_config_version=template.projection_config.version,
+                    projection_config_digest=template.projection_config.config_digest,
+                    sources=(
+                        PhysicalProjectionSource(
+                            source_object_id=source.source_object_id,
+                            source_revision_id=source.source_revision_id,
+                            revision_digest=source.revision_digest,
+                            revision_number=source.revision_number,
+                        ),
+                    ),
+                    expected_artifacts=expected_artifacts,
+                )
+                validation = validate_physical_projection(
+                    expectation,
+                    physical_artifacts,
+                )
+                assert validation.passed is True
+                assert {item.artifact_kind.value for item in validation.counts} == {
+                    "chunk",
+                    "entity",
+                    "relation",
+                }
+                corrupted = physical_artifacts[0].model_copy(
+                    update={"namespace_digest": "0" * 64}
+                )
+                diagnostic = validate_physical_projection(
+                    expectation,
+                    (corrupted, *physical_artifacts[1:]),
+                )
+                assert diagnostic.passed is False
+                assert PhysicalValidationCode.NAMESPACE_MISMATCH in {
+                    item.code for item in diagnostic.diagnostics
+                }
+                assert "Synthetic Organization Alpha" not in diagnostic.model_dump_json()
             return
         else:
             if workspace_isolation:
@@ -538,6 +782,7 @@ async def test_production_qualification_records_one_coherent_run() -> None:
                     run_id,
                     inject_cognify_failure=True,
                     rebuild=True,
+                    validate_physical=True,
                 )
             ),
             "concurrency_failure_cleanup": lambda: (
@@ -545,9 +790,6 @@ async def test_production_qualification_records_one_coherent_run() -> None:
                     run_id,
                     inject_cognify_failure=True,
                 )
-            ),
-            "canonical_lifecycle_separation": lambda: (
-                _assert_complete_context_projection_round_trip(run_id)
             ),
         }
     )

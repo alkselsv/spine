@@ -64,8 +64,11 @@ It contains no customer data. Retain content-free test results and backend
 versions; do not retain raw provider errors in the report.
 
 The orchestrated target continues through independent failures so the report
-contains one observation for every required gate. It fails at the end if any
-gate failed or was not run; provider exception text is never serialized.
+contains one observation for every required gate. The canonical-lifecycle gate
+is intentionally emitted as `not_run` until a PostgreSQL-backed projection
+request resolver composition exists and can be instrumented. The target fails
+at the end if any gate failed or was not run; provider exception text is never
+serialized.
 
 ## Interpreting the result
 
