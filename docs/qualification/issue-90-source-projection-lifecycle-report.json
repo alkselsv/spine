@@ -1,0 +1,99 @@
+{
+  "schema_version": "source-projection-lifecycle-qualification:v1",
+  "ticket": 90,
+  "mode": "deterministic_contract_matrix",
+  "release_gate": {
+    "status": "qualified",
+    "postgresql": "mandatory_in_full_repository_gate",
+    "provider_qualification": "not_approved"
+  },
+  "production_approval": false,
+  "criteria": [
+    {
+      "id": "AC1",
+      "status": "qualified",
+      "evidence": [
+        "tests/integration/postgresql/test_initial_tenancy_migration.py::test_every_retained_revision_upgrades_to_one_final_head",
+        "tests/integration/postgresql/test_initial_tenancy_migration.py::test_initial_schema_has_named_tenancy_constraints_and_postgresql_types",
+        "tests/contracts/persistence/test_source_observation_contract.py::test_source_observation_replay_is_stable",
+        "tests/contracts/persistence/test_projection_contract.py::test_projection_candidate_seal_freezes_evidence_and_replays"
+      ]
+    },
+    {
+      "id": "AC2",
+      "status": "qualified",
+      "evidence": [
+        "tests/contracts/persistence/test_unit_of_work_contract.py::test_explicit_commit_makes_workspace_visible",
+        "tests/contracts/persistence/test_canonical_acceptance_contract.py::test_canonical_happy_path_and_exact_replay",
+        "tests/contracts/persistence/test_outbox_writer_contract.py::test_canonical_mutation_and_intent_become_visible_only_after_commit",
+        "tests/contracts/persistence/test_audit_writer_contract.py::test_audit_failure_rolls_back_mutation_and_outbox_intent",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_adapter_satisfies_shared_contract",
+        "tests/integration/postgresql/test_postgresql_audit.py::test_mutation_audit_and_outbox_roll_back_together_at_every_boundary"
+      ]
+    },
+    {
+      "id": "AC3",
+      "status": "qualified",
+      "evidence": [
+        "tests/contracts/persistence/test_unit_of_work_contract.py::test_worker_and_interactive_contexts_have_same_workspace_isolation",
+        "tests/contracts/persistence/test_audit_writer_contract.py::test_audit_reader_does_not_reveal_event_to_another_workspace",
+        "tests/application/persistence/test_ingestion.py::test_ingestion_scope_mismatch_fails_without_disclosing_ledger_rows",
+        "tests/application/test_content_authorization.py::test_revoked_current_policy_is_denied_on_next_decision_without_cache",
+        "tests/application/test_content_authorization.py::test_changed_authority_generation_requires_reauthorization",
+        "tests/application/test_access_policy_activation.py::test_stale_baseline_has_no_activation_audit_or_outbox_effect",
+        "tests/memory/cognee/test_retrieval.py::test_retrieval_rejects_shadow_namespace_without_physical_call",
+        "tests/integration/postgresql/test_initial_tenancy_migration.py::test_workspace_rls_hides_and_rejects_another_workspace_rows",
+        "tests/integration/postgresql/test_initial_tenancy_migration.py::test_environment_rls_isolates_two_environments_in_one_workspace",
+        "tests/integration/postgresql/test_postgresql_audit.py::test_runtime_rls_denies_cross_workspace_audit_read_and_insert",
+        "tests/integration/postgresql/test_authorization_directory.py::test_revoked_generation_stops_next_composed_request_before_handler",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_policy_change_wins_before_acceptance_and_stale_evidence_fails_closed"
+      ]
+    },
+    {
+      "id": "AC4",
+      "status": "qualified",
+      "evidence": [
+        "tests/contracts/persistence/test_unit_of_work_contract.py::test_concurrent_duplicate_commit_has_one_logical_effect",
+        "tests/contracts/persistence/test_ingestion_repository_contract.py::test_ingestion_binding_race_contract",
+        "tests/contracts/persistence/test_outbox_delivery_repository_contract.py::test_concurrent_workers_cannot_claim_the_same_delivery",
+        "tests/application/persistence/test_transaction_retry.py::test_retry_restarts_complete_unit_of_work_and_commits_one_effect",
+        "tests/application/persistence/test_failure_paths.py::test_commit_copy_failure_is_atomic_and_terminal",
+        "tests/application/test_projection_result_mapping.py::test_partial_failure_retry_replays_stable_receipt_without_becoming_validation",
+        "tests/application/storage/test_reconciliation.py::test_reconciliation_reports_safe_orphan_and_preserves_restart_cursor",
+        "tests/domain/projection/test_publication_models.py::test_drift_requires_a_specific_canonical_acceptance_and_detection_source",
+        "tests/domain/projection/test_publication_models.py::test_unpublished_resolution_does_not_fabricate_freshness_or_health",
+        "tests/memory/cognee/test_rebuild.py::test_abandoned_shadow_rebuild_is_recoverable_without_becoming_readable",
+        "tests/memory/cognee/test_graph.py::test_graph_writer_failed_shadow_rebuild_does_not_change_active_namespace",
+        "tests/memory/cognee/test_recovery.py::test_repair_fences_stale_source_without_reintroducing_artifacts",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_concurrent_duplicate_claims_have_one_owner_and_stable_replay",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_lost_commit_response_replays_one_combined_effect",
+        "tests/integration/postgresql/test_postgresql_outbox_delivery.py::test_postgresql_concurrent_workers_do_not_overlap_claims",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_access_policy_activation_has_one_concurrent_cas_winner_and_stable_replay",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_boundary_capture_fences_acceptance_at_counter_lock",
+        "tests/integration/postgresql/test_initial_tenancy_migration.py::test_k0_deferred_validator_rollback_removes_child_and_retry_succeeds"
+      ]
+    },
+    {
+      "id": "AC5",
+      "status": "qualified",
+      "evidence": [
+        "tests/test_architecture_scaffold.py::ArchitectureScaffoldTests::test_domain_layer_has_no_framework_imports",
+        "tests/application/test_source_lifecycle.py::test_deletion_records_observation_and_delegates_canonical_transition_atomically",
+        "tests/application/test_source_lifecycle.py::test_reappearance_requires_existing_tombstone_and_fresh_canonical_evidence",
+        "tests/application/test_projection_result_persistence.py::test_duplicate_delivery_replays_without_second_effect",
+        "tests/application/test_access_policy_activation.py::test_concurrent_successors_have_one_cas_winner",
+        "tests/qualification/test_issue154_qualification.py::test_issue154_qualification_record_covers_the_five_r1_formats",
+        "tests/qualification/test_issue211_qualification.py::test_issue211_report_is_machine_readable_and_disclaims_production_approval",
+        "tests/contracts/diagnostics/test_sink_contract.py::test_sink_emits_the_same_validated_snapshot[recording]",
+        "tests/application/diagnostics/test_errors.py::test_unknown_error_is_generic_without_inspecting_or_leaking_exception",
+        "tests/qualification/test_issue90_qualification.py::test_issue90_migration_graph_has_one_dynamic_head",
+        "tests/qualification/test_issue90_qualification.py::test_issue90_repository_gates_are_documented"
+      ]
+    }
+  ],
+  "limitations": [
+    "The qualification artifact is a deterministic contract matrix; PostgreSQL evidence remains mandatory in the full repository gate.",
+    "Real Cognee, external connectors, OIDC providers and object-storage deployments are not approved by this artifact.",
+    "Production enablement still requires operator sign-off for external contracts and deployment configuration."
+  ]
+}
