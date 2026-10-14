@@ -54,6 +54,7 @@ asyncio_mode = "auto"
 pythonpath = ["src"]
 markers = [
     "cognee_live: opt-in qualification against the local Cognee 1.5.4 profile",
+    "cognee_production: opt-in qualification against PostgreSQL, Neo4j and PGVector",
     "live_oidc: opt-in qualification against a real RFC 9068 OIDC provider",
     "postgresql: mandatory tests against the pinned real PostgreSQL major",
 ]

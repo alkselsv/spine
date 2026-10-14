@@ -1,0 +1,43 @@
+{
+  "schema_version": "cognee-production-qualification:v1",
+  "ticket": 212,
+  "profile": {
+    "relational": "postgresql",
+    "graph": "neo4j",
+    "vector": "pgvector"
+  },
+  "mode": "live_real_backends",
+  "decision": "no_go",
+  "production_approval": false,
+  "safe_reason_code": "gate_failure_or_missing_evidence",
+  "observations": [
+    {"gate_id": "public_sdk", "status": "not_run", "safe_code": "live_prerequisite_unavailable"},
+    {"gate_id": "structured_round_trip", "status": "not_run", "safe_code": "live_prerequisite_unavailable"},
+    {"gate_id": "unsafe_evidence", "status": "not_run", "safe_code": "live_prerequisite_unavailable"},
+    {"gate_id": "workspace_isolation", "status": "not_run", "safe_code": "live_prerequisite_unavailable"},
+    {"gate_id": "namespace_isolation", "status": "not_run", "safe_code": "live_prerequisite_unavailable"},
+    {"gate_id": "explicit_retrieval_context", "status": "not_run", "safe_code": "live_prerequisite_unavailable"},
+    {"gate_id": "update_remove_tombstone", "status": "not_run", "safe_code": "live_prerequisite_unavailable"},
+    {"gate_id": "rebuild_recovery_validation_diagnostics", "status": "not_run", "safe_code": "live_prerequisite_unavailable"},
+    {"gate_id": "concurrency_failure_cleanup", "status": "not_run", "safe_code": "live_prerequisite_unavailable"},
+    {"gate_id": "canonical_lifecycle_separation", "status": "not_run", "safe_code": "live_prerequisite_unavailable"}
+  ],
+  "failed_gate_ids": [],
+  "not_run_gate_ids": [
+    "public_sdk",
+    "structured_round_trip",
+    "unsafe_evidence",
+    "workspace_isolation",
+    "namespace_isolation",
+    "explicit_retrieval_context",
+    "update_remove_tombstone",
+    "rebuild_recovery_validation_diagnostics",
+    "concurrency_failure_cleanup",
+    "canonical_lifecycle_separation"
+  ],
+  "fallback": "owned_postgresql_projection_mapping",
+  "issue_211_fake_qualification": "not_production_evidence",
+  "postgres_demo": "rejected",
+  "canonical_lifecycle_owner": "postgresql",
+  "physical_calls_inside_postgresql_unit_of_work": false
+}

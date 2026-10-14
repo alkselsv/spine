@@ -59,8 +59,10 @@ platform.
       `implemented: contracts, persistence, original storage and ingestion ledger`;
       `partially integrated`, `not qualified: end-to-end R1 ingestion`.
 - [ ] Context Broker с Cognee как заменяемой retrieval-проекцией.
-      `implemented: provider-neutral retrieval contract`; `not integrated`,
-      `not qualified`.
+      `implemented: provider-neutral retrieval contract`; `not integrated`;
+      `production qualification: no-go` для PostgreSQL + Neo4j + PGVector
+      (#212), owned PostgreSQL projection mapping рекомендован как отдельный
+      fallback.
 - [x] Единые trace ID, structured errors и audit events.
       `implemented`, `qualified: offline diagnostics/delivery foundation`,
       `not integrated: complete governed R1 flow`.
