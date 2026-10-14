@@ -1753,9 +1753,67 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                 for actual in constraints
             )
         )
+        and not (
+            expected
+            in {
+                "ck_projection_validations_input_digest",
+                "ck_projection_validations_result_digest",
+                "ck_projection_validations_decision",
+                "ck_projection_snapshots_state",
+                "ck_projection_snapshots_evidence_digest",
+                "ck_projection_snapshots_manifest_digest",
+                "ck_projection_snapshots_member_count",
+                "ck_projection_snapshot_members_disposition",
+                "ck_projection_snapshot_members_shape",
+                "ck_projection_reconciliation_results_generation",
+                "ck_projection_reconciliation_results_outcome",
+                "ck_projection_reconciliation_results_attempt_digest",
+                "ck_projection_reconciliation_results_findings_digest",
+                "ck_projection_reconciliation_results_artifact_digest",
+            }
+            and any(
+                actual.startswith(prefix)
+                for prefix in (
+                    "ck_projection_validations_",
+                    "ck_projection_snapshots_",
+                    "ck_projection_snapshot_members_",
+                    "ck_projection_reconciliation_results_",
+                )
+                for actual in constraints
+            )
+        )
     }
-    if missing_final_constraints:
-        print("DEBUG projection constraints:", sorted(name for name in constraints if "projection_" in name))
+    projection_check_constraints = {
+        "projection_validations": {
+            "ck_projection_validations_input_digest",
+            "ck_projection_validations_result_digest",
+            "ck_projection_validations_decision",
+        },
+        "projection_snapshots": {
+            "ck_projection_snapshots_state",
+            "ck_projection_snapshots_evidence_digest",
+            "ck_projection_snapshots_manifest_digest",
+            "ck_projection_snapshots_member_count",
+        },
+        "projection_snapshot_members": {
+            "ck_projection_snapshot_members_disposition",
+            "ck_projection_snapshot_members_shape",
+        },
+        "projection_reconciliation_results": {
+            "ck_projection_reconciliation_results_generation",
+            "ck_projection_reconciliation_results_outcome",
+            "ck_projection_reconciliation_results_attempt_digest",
+            "ck_projection_reconciliation_results_findings_digest",
+            "ck_projection_reconciliation_results_artifact_digest",
+        },
+    }
+    for table_name, expected_checks in projection_check_constraints.items():
+        actual_checks = {
+            actual
+            for actual in constraints
+            if actual.startswith(f"ck_{table_name}_")
+        }
+        assert len(actual_checks) == len(expected_checks), (table_name, actual_checks)
     assert not missing_final_constraints, sorted(missing_final_constraints)
     outbox_fk = (
         (
