@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping
 from typing import Literal, Protocol
 from uuid import UUID
 
@@ -43,6 +44,7 @@ PROJECTION_RECEIPT_SCHEMA_VERSION = 1
 PROJECTION_SEAL_SCHEMA_VERSION = 1
 PROJECTION_RESULT_SCHEMA_VERSION = 1
 PROJECTION_VALIDATION_SCHEMA_VERSION = 1
+PROJECTION_PHYSICAL_VALIDATION_GATE_KIND = "physical_artifacts"
 PROJECTION_SNAPSHOT_SCHEMA_VERSION = 1
 PROJECTION_RECONCILIATION_SCHEMA_VERSION = 1
 PROJECTION_ACTIVATION_SCHEMA_VERSION = 1
@@ -499,6 +501,28 @@ def require_expected_candidate(run: ProjectionRun, candidate_id: UUID) -> None:
         raise OptimisticConflictError("Projection candidate does not belong to the run.")
 
 
+def has_complete_physical_validation(
+    validations: tuple[ProjectionValidation, ...],
+    partitions: tuple[ProjectionPartition, ...],
+) -> bool:
+    """Require one passed physical gate for every candidate partition."""
+
+    expected = {str(partition.projection_partition_id) for partition in partitions}
+    covered: set[str] = set()
+    for validation in validations:
+        if (
+            validation.gate_kind != PROJECTION_PHYSICAL_VALIDATION_GATE_KIND
+            or validation.decision.value != "passed"
+        ):
+            continue
+        lineage = validation.metrics_payload.get("projection_lineage")
+        if isinstance(lineage, Mapping):
+            partition_id = lineage.get("partition_id")
+            if isinstance(partition_id, str):
+                covered.add(partition_id)
+    return bool(expected) and covered == expected
+
+
 __all__ = [
     "PROJECTION_RECEIPT_SCHEMA_VERSION",
     "PROJECTION_RESULT_SCHEMA_VERSION",
@@ -507,6 +531,7 @@ __all__ = [
     "PROJECTION_RECONCILIATION_SCHEMA_VERSION",
     "PROJECTION_SNAPSHOT_SCHEMA_VERSION",
     "PROJECTION_VALIDATION_SCHEMA_VERSION",
+    "PROJECTION_PHYSICAL_VALIDATION_GATE_KIND",
     "PROJECTION_ACTIVATION_SCHEMA_VERSION",
     "ProjectionCandidateSealCommand",
     "ProjectionActivationCommand",
@@ -525,5 +550,6 @@ __all__ = [
     "ProjectionValidationCommand",
     "ProjectionPublicationResolution",
     "require_expected_candidate",
+    "has_complete_physical_validation",
     "transition_allowed",
 ]

@@ -98,6 +98,7 @@ from spine.application.persistence.projection import (
     ProjectionSnapshotCommand,
     ProjectionValidationCommand,
     register_projection_outbox_events,
+    has_complete_physical_validation,
     transition_allowed,
 )
 from spine.application.persistence.idempotency import (
@@ -3051,7 +3052,12 @@ class _PostgreSQLProjectionSnapshotMixin:
                 if artifact is None or artifact.receipt_command_identity != artifact.expected_command_identity or artifact.receipt_command_digest != artifact.expected_command_digest:
                     await self._uow._fail(ConstraintConflictError("Projection snapshot artifact evidence is invalid."))
         validations = await self.list_validations(snapshot.projection_run_id)
-        if not validations or any(item.decision.value != "passed" for item in validations):
+        partitions = await self.list_partitions(snapshot.projection_run_id)
+        if (
+            not validations
+            or any(item.decision.value != "passed" for item in validations)
+            or not has_complete_physical_validation(validations, partitions)
+        ):
             await self._uow._fail(ConstraintConflictError("Projection snapshot validation evidence is incomplete."))
         if snapshot.member_count != len(members) or snapshot.manifest_digest != projection_snapshot_manifest_digest(snapshot, members):
             await self._uow._fail(ConstraintConflictError("Projection snapshot manifest is invalid."))
@@ -4068,6 +4074,12 @@ class _PostgreSQLProjectionRepository(_PostgreSQLProjectionSnapshotMixin, Projec
         validations = await self.list_validations(run.projection_run_id)
         if not partitions or not receipts:
             await self._uow._fail(ConstraintConflictError("Projection candidate has incomplete evidence."))
+        if not has_complete_physical_validation(validations, partitions):
+            await self._uow._fail(
+                ConstraintConflictError(
+                    "Projection candidate physical validation evidence is incomplete."
+                )
+            )
         evidence_digest = projection_evidence_digest(
             partitions=partitions,
             receipts=receipts,

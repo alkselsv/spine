@@ -67,3 +67,26 @@ canonical evidence on replay, resolving an unpublished ontology, or supplying
 missing, stale, cross-scope or incomplete locator evidence fails closed. The
 gateway still has no operation for validation, candidate sealing, snapshot
 assembly, activation or publication.
+
+## Physical validation and the #88 boundary
+
+`PhysicalProjectionEvidenceTranslator` consumes an accepted mapping result and
+the content-free `PhysicalValidationResult` from the adapter validator. It
+checks workspace/environment, namespace, pinned configuration, exact candidate
+and SourceRevision lineage before producing the `physical_artifacts:r1`
+`ProjectionValidationCommand`. Metrics retain safe counts, stale/tombstone/
+missing/duplicate diagnostics, repair candidates and the canonical adapter
+artifact reference plus integrity digest.
+
+`PhysicalProjectionEvidenceCoordinator.validate_and_seal` records failed
+physical evidence before rejecting sealing and seals only after a passed
+physical gate for every candidate partition. The projection repository enforces
+the same requirement, so a caller cannot bypass it by invoking the low-level
+seal port directly.
+
+After activation, `to_reconciliation_command` creates an append-only
+`ProjectionReconciliationCommand` with healthy or degraded physical findings.
+It preserves artifact evidence and repair suggestions without changing the
+immutable snapshot or executing a repair. Deterministic validation and
+reconciliation identities make redelivery idempotent; a changed digest for the
+same reconciliation attempt is rejected.

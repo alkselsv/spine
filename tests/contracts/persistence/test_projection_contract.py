@@ -241,6 +241,31 @@ async def test_projection_candidate_seal_freezes_evidence_and_replays(
                 idempotency_key=IdempotencyKey("projection-validation-24000"),
             )
         )
+        await uow.projections.record_validation(
+            ProjectionValidationCommand.create(
+                validation=ProjectionValidation(
+                    projection_validation_id=UUID(int=case.source.workspace_id.int + 53),
+                    projection_run_id=run.projection_run_id,
+                    projection_candidate_id=run.projection_candidate_id,
+                    workspace_id=run.workspace_id,
+                    environment_id=run.environment_id,
+                    gate_kind="physical_artifacts",
+                    gate_version="r1",
+                    input_digest="a" * 64,
+                    result_digest="b" * 64,
+                    decision="passed",
+                    metrics_schema_version="physical-projection-validation-metrics:v1",
+                    metrics_payload={
+                        "projection_lineage": {
+                            "partition_id": str(partition.projection_partition_id)
+                        }
+                    },
+                    evaluator_reference="physical-projection-validator:r1",
+                    evaluated_at=NOW,
+                ),
+                idempotency_key=IdempotencyKey("projection-physical-validation-24000"),
+            )
+        )
         await uow.commit()
 
     seal_context = persistence_adapter.ingestion_context(

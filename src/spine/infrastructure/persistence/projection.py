@@ -35,6 +35,7 @@ from spine.application.persistence.projection import (
     ProjectionValidationCommand,
     ProjectionRepository,
     ProjectionPublicationResolution,
+    has_complete_physical_validation,
     transition_allowed,
 )
 from spine.application.persistence.outbox import OpaqueObjectReference
@@ -517,6 +518,12 @@ class InMemoryProjectionRepository(ProjectionRepository):
             )
             if not candidate_partitions or not candidate_receipts:
                 self._uow._fail(ConstraintConflictError("Projection candidate has incomplete evidence."))
+            if not has_complete_physical_validation(validations, candidate_partitions):
+                self._uow._fail(
+                    ConstraintConflictError(
+                        "Projection candidate physical validation evidence is incomplete."
+                    )
+                )
             evidence_digest = projection_evidence_digest(
                 partitions=tuple(sorted(candidate_partitions, key=lambda item: item.projection_partition_id.hex)),
                 receipts=tuple(sorted(candidate_receipts, key=lambda item: item.projection_receipt_id.hex)),
@@ -664,6 +671,14 @@ class InMemoryProjectionRepository(ProjectionRepository):
                 ).values()
                 if value.boundary_id == requested.canonical_boundary_id and self._in_scope(value)
             )
+            candidate_partitions = tuple(
+                value
+                for value in self._all(
+                    "_base_projection_partitions", "_pending_projection_partitions"
+                ).values()
+                if value.projection_run_id == run.projection_run_id
+                and self._in_scope(value)
+            )
             members = tuple(command.members)
             if len(members) != len(boundary_members) or {
                 item.source_object_id for item in members
@@ -709,7 +724,11 @@ class InMemoryProjectionRepository(ProjectionRepository):
                 ).values()
                 if value.projection_run_id == run.projection_run_id and self._in_scope(value)
             )
-            if not validations or any(item.decision.value != "passed" for item in validations):
+            if (
+                not validations
+                or any(item.decision.value != "passed" for item in validations)
+                or not has_complete_physical_validation(validations, candidate_partitions)
+            ):
                 self._uow._fail(ConstraintConflictError("Projection snapshot validation evidence is incomplete."))
             if requested.member_count != len(members):
                 self._uow._fail(ConstraintConflictError("Projection snapshot member count is invalid."))
