@@ -38,5 +38,32 @@ offline conformance fake only:
 same scoped command identity and digest returns the stored handoff, while a
 different digest raises an explicit integrity conflict even if a caller changes
 the physical namespace. Adapter implementation metadata has a closed,
-content-free allowlist. PostgreSQL persistence
-and production gateway composition remain Issue #7 responsibilities.
+content-free allowlist.
+
+Issue #208 adds `PersistenceCanonicalProjectionGateway`, the production
+adapter for the Issue #7 seam. It resolves the run-owned candidate, partition,
+configuration, publication-eligible ontology and Canonical Boundary from the
+canonical repositories. Exact locator evidence comes from an injected
+`CanonicalProjectionLocatorResolver`; this resolver completes before the write
+Unit of Work opens, so physical ContextProjection or Cognee work cannot be
+hidden inside the PostgreSQL transaction.
+
+`build_projection_result_persistence` is the application composition entry
+point. It binds and returns the Issue #207 mapping bridge backed by the Issue
+#87 repositories; its `map` operation accepts the original `ProjectionCommand`
+and the non-authoritative adapter receipt. The injected locator resolver must
+resolve stable locators from
+canonical parsed-source/evidence records; physical adapter metadata is not an
+authority for those identities.
+
+The write Unit of Work records the `ProjectionReceipt` and all
+`SourceProjectionReference` values atomically. Duplicate delivery with the same
+identity and digest reuses the canonical receipt and references without a
+second logical effect, including redelivery under a different adapter
+idempotency key. A failed reference write rolls back the complete Unit of Work,
+so retry produces one complete logical effect. Reusing an identity with another
+digest, changing the
+canonical evidence on replay, resolving an unpublished ontology, or supplying
+missing, stale, cross-scope or incomplete locator evidence fails closed. The
+gateway still has no operation for validation, candidate sealing, snapshot
+assembly, activation or publication.
