@@ -256,9 +256,42 @@ async def test_projection_candidate_seal_freezes_evidence_and_replays(
                     decision="passed",
                     metrics_schema_version="physical-projection-validation-metrics:v1",
                     metrics_payload={
+                        "schema_version": "physical-projection-validation-metrics:v1",
                         "projection_lineage": {
-                            "partition_id": str(partition.projection_partition_id)
-                        }
+                            "run_id": str(run.projection_run_id),
+                            "candidate_id": str(run.projection_candidate_id),
+                            "partition_id": str(partition.projection_partition_id),
+                            "command_identity": partition.expected_command_identity,
+                            "command_digest": partition.expected_command_digest,
+                            "projection_config_id": str(config.projection_config_version_id),
+                            "projection_config_version": "1",
+                            "projection_config_digest": config.config_digest,
+                            "namespace_digest": "c" * 64,
+                        },
+                        "artifact_evidence": {
+                            "reference": receipt.artifact_reference,
+                            "digest": receipt.artifact_integrity_digest,
+                        },
+                        "source_lineage": [
+                            {
+                                "source_object_id": str(case.source.source_object_id),
+                                "source_revision_id": str(case.revision.revision_id),
+                                "revision_digest": case.revision.revision_digest,
+                                "revision_number": 1,
+                                "status": "current",
+                            }
+                        ],
+                        "source_projection_references": [
+                            {
+                                "reference_id": str(reference.source_projection_reference_id),
+                                "source_object_id": str(reference.source_object_id),
+                                "source_revision_id": str(reference.source_revision_id),
+                                "segment_id": reference.segment_id,
+                                "locator_digest": reference.locator_digest,
+                                "projected_kind": reference.projected_kind,
+                                "projected_object_id": reference.projected_object_id,
+                            }
+                        ],
                     },
                     evaluator_reference="physical-projection-validator:r1",
                     evaluated_at=NOW,

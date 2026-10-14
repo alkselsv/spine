@@ -497,6 +497,11 @@ class InMemoryProjectionRepository(ProjectionRepository):
             run = self._run(command.projection_run_id)
             if run is None or run.projection_candidate_id != command.projection_candidate_id:
                 self._uow._fail(ConstraintConflictError("Projection candidate does not exist."))
+            config = self._all("_base_projection_configs", "_pending_projection_configs").get(
+                run.projection_config_version_id
+            )
+            if config is None or not self._in_scope(config):
+                self._uow._fail(ConstraintConflictError("Projection config version is unavailable."))
             if run.candidate_state is ProjectionCandidateState.SEALED:
                 self._uow._fail(OptimisticConflictError("Projection candidate is already sealed."))
             partitions = tuple(
@@ -520,7 +525,14 @@ class InMemoryProjectionRepository(ProjectionRepository):
                 self._uow._fail(ConstraintConflictError("Projection candidate has incomplete evidence."))
             if (
                 any(item.decision.value != "passed" for item in validations)
-                or not has_complete_physical_validation(validations, candidate_partitions)
+                or not has_complete_physical_validation(
+                    validations,
+                    candidate_partitions,
+                    candidate_receipts,
+                    candidate_references,
+                    run,
+                    config,
+                )
             ):
                 self._uow._fail(
                     ConstraintConflictError(
@@ -638,6 +650,11 @@ class InMemoryProjectionRepository(ProjectionRepository):
                 or run.canonical_boundary_id != requested.canonical_boundary_id
             ):
                 self._uow._fail(ConstraintConflictError("Projection snapshot candidate lineage is invalid."))
+            config = self._all("_base_projection_configs", "_pending_projection_configs").get(
+                run.projection_config_version_id
+            )
+            if config is None or not self._in_scope(config):
+                self._uow._fail(ConstraintConflictError("Projection config version is unavailable."))
             snapshots = self._all("_base_projection_snapshots", "_pending_projection_snapshots")
             existing = next(
                 (item for item in snapshots.values() if item.projection_candidate_id == requested.projection_candidate_id),
@@ -678,6 +695,22 @@ class InMemoryProjectionRepository(ProjectionRepository):
                 value
                 for value in self._all(
                     "_base_projection_partitions", "_pending_projection_partitions"
+                ).values()
+                if value.projection_run_id == run.projection_run_id
+                and self._in_scope(value)
+            )
+            candidate_receipts = tuple(
+                value
+                for value in self._all(
+                    "_base_projection_receipts", "_pending_projection_receipts"
+                ).values()
+                if value.projection_run_id == run.projection_run_id
+                and self._in_scope(value)
+            )
+            candidate_references = tuple(
+                value
+                for value in self._all(
+                    "_base_projection_references", "_pending_projection_references"
                 ).values()
                 if value.projection_run_id == run.projection_run_id
                 and self._in_scope(value)
@@ -730,7 +763,14 @@ class InMemoryProjectionRepository(ProjectionRepository):
             if (
                 not validations
                 or any(item.decision.value != "passed" for item in validations)
-                or not has_complete_physical_validation(validations, candidate_partitions)
+                or not has_complete_physical_validation(
+                    validations,
+                    candidate_partitions,
+                    candidate_receipts,
+                    tuple(candidate_references),
+                    run,
+                    config,
+                )
             ):
                 self._uow._fail(ConstraintConflictError("Projection snapshot validation evidence is incomplete."))
             if requested.member_count != len(members):

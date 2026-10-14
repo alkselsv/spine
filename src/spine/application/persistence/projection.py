@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Literal, Protocol
 from uuid import UUID
 
@@ -45,6 +45,10 @@ PROJECTION_SEAL_SCHEMA_VERSION = 1
 PROJECTION_RESULT_SCHEMA_VERSION = 1
 PROJECTION_VALIDATION_SCHEMA_VERSION = 1
 PROJECTION_PHYSICAL_VALIDATION_GATE_KIND = "physical_artifacts"
+PROJECTION_PHYSICAL_VALIDATION_METRICS_SCHEMA_VERSION = (
+    "physical-projection-validation-metrics:v1"
+)
+PROJECTION_PHYSICAL_VALIDATION_GATE_VERSION = "r1"
 PROJECTION_SNAPSHOT_SCHEMA_VERSION = 1
 PROJECTION_RECONCILIATION_SCHEMA_VERSION = 1
 PROJECTION_ACTIVATION_SCHEMA_VERSION = 1
@@ -504,21 +508,128 @@ def require_expected_candidate(run: ProjectionRun, candidate_id: UUID) -> None:
 def has_complete_physical_validation(
     validations: tuple[ProjectionValidation, ...],
     partitions: tuple[ProjectionPartition, ...],
+    receipts: tuple[ProjectionReceipt, ...],
+    references: tuple[SourceProjectionReference, ...],
+    run: ProjectionRun,
+    config: ProjectionConfigVersion,
 ) -> bool:
-    """Require one passed physical gate for every candidate partition."""
+    """Require complete, passed physical evidence for every candidate partition."""
 
     expected = {str(partition.projection_partition_id) for partition in partitions}
+    partitions_by_id = {str(partition.projection_partition_id): partition for partition in partitions}
+    receipts_by_partition = {
+        str(receipt.projection_partition_id): receipt for receipt in receipts
+    }
+    reference_keys = {
+        (
+            str(reference.source_projection_reference_id),
+            str(reference.source_object_id),
+            str(reference.source_revision_id),
+            reference.segment_id,
+            reference.locator_digest,
+            reference.projected_kind,
+            reference.projected_object_id,
+        )
+        for reference in references
+    }
     covered: set[str] = set()
     for validation in validations:
         if validation.gate_kind != PROJECTION_PHYSICAL_VALIDATION_GATE_KIND:
             continue
-        if validation.decision.value != "passed":
+        if (
+            validation.decision.value != "passed"
+            or validation.gate_version != PROJECTION_PHYSICAL_VALIDATION_GATE_VERSION
+            or validation.metrics_schema_version
+            != PROJECTION_PHYSICAL_VALIDATION_METRICS_SCHEMA_VERSION
+            or validation.workspace_id != run.workspace_id
+            or validation.environment_id != run.environment_id
+            or config.projection_config_version_id != run.projection_config_version_id
+            or config.workspace_id != run.workspace_id
+            or config.environment_id != run.environment_id
+        ):
+            return False
+        if (
+            validation.projection_run_id != run.projection_run_id
+            or validation.projection_candidate_id != run.projection_candidate_id
+        ):
             return False
         lineage = validation.metrics_payload.get("projection_lineage")
-        if isinstance(lineage, Mapping):
-            partition_id = lineage.get("partition_id")
-            if isinstance(partition_id, str):
-                covered.add(partition_id)
+        artifact = validation.metrics_payload.get("artifact_evidence")
+        source_lineage = validation.metrics_payload.get("source_lineage")
+        source_references = validation.metrics_payload.get("source_projection_references")
+        if (
+            validation.metrics_payload.get("schema_version")
+            != PROJECTION_PHYSICAL_VALIDATION_METRICS_SCHEMA_VERSION
+            or not isinstance(lineage, Mapping)
+            or not isinstance(artifact, Mapping)
+            or not isinstance(source_lineage, (list, tuple))
+            or not isinstance(source_references, (list, tuple))
+            or not source_lineage
+        ):
+            return False
+        partition_id = lineage.get("partition_id")
+        receipt = receipts_by_partition.get(partition_id) if isinstance(partition_id, str) else None
+        partition = partitions_by_id.get(partition_id) if isinstance(partition_id, str) else None
+        lineage_command_identity = lineage.get("command_identity")
+        lineage_command_digest = lineage.get("command_digest")
+        lineage_config_digest = lineage.get("projection_config_digest")
+        lineage_config_version = lineage.get("projection_config_version")
+        lineage_namespace_digest = lineage.get("namespace_digest")
+        lineage_sources = {
+            (
+                source.get("source_object_id"),
+                source.get("source_revision_id"),
+                source.get("revision_digest"),
+                source.get("revision_number"),
+                source.get("status"),
+            )
+            for source in source_lineage
+            if isinstance(source, Mapping)
+        }
+        lineage_references = {
+            (
+                reference.get("reference_id"),
+                reference.get("source_object_id"),
+                reference.get("source_revision_id"),
+                reference.get("segment_id"),
+                reference.get("locator_digest"),
+                reference.get("projected_kind"),
+                reference.get("projected_object_id"),
+            )
+            for reference in source_references
+            if isinstance(reference, Mapping)
+        }
+        if (
+            not isinstance(partition_id, str)
+            or partition_id not in expected
+            or lineage.get("run_id") != str(run.projection_run_id)
+            or lineage.get("candidate_id") != str(run.projection_candidate_id)
+            or lineage.get("projection_config_id") != str(run.projection_config_version_id)
+            or lineage_config_version != str(config.version)
+            or lineage_config_digest != config.config_digest
+            or receipt is None
+            or partition is None
+            or lineage_command_identity != partition.expected_command_identity
+            or lineage_command_digest != partition.expected_command_digest
+            or receipt.command_identity != partition.expected_command_identity
+            or receipt.command_digest != partition.expected_command_digest
+            or not isinstance(lineage_config_version, str)
+            or not lineage_config_version
+            or not isinstance(lineage_config_digest, str)
+            or len(lineage_config_digest) != 64
+            or not isinstance(lineage_namespace_digest, str)
+            or len(lineage_namespace_digest) != 64
+            or any(not isinstance(value, str) for value in lineage_sources for value in value[:3])
+            or any(not isinstance(value, int) or value < 1 for value in lineage_sources for value in value[3:4])
+            or not lineage_sources
+            or lineage_references != reference_keys
+            or artifact.get("reference") != receipt.artifact_reference
+            or artifact.get("digest") != receipt.artifact_integrity_digest
+        ):
+            return False
+        if partition_id in covered:
+            return False
+        covered.add(partition_id)
     return bool(expected) and covered == expected
 
 
@@ -531,6 +642,7 @@ __all__ = [
     "PROJECTION_SNAPSHOT_SCHEMA_VERSION",
     "PROJECTION_VALIDATION_SCHEMA_VERSION",
     "PROJECTION_PHYSICAL_VALIDATION_GATE_KIND",
+    "PROJECTION_PHYSICAL_VALIDATION_METRICS_SCHEMA_VERSION",
     "PROJECTION_ACTIVATION_SCHEMA_VERSION",
     "ProjectionCandidateSealCommand",
     "ProjectionActivationCommand",

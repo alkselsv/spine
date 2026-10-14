@@ -17,11 +17,12 @@ from spine.application.physical_projection_validation import (
 )
 from spine.application.persistence.projection import (
     ProjectionCandidateSealCommand,
+    ProjectionValidationCommand,
     has_complete_physical_validation,
 )
 from spine.application.projection_result_mapping import ProjectionResultMappingBridge
 from spine.application.testing import DeterministicCanonicalProjectionGateway
-from spine.memory.cognee.validation import (
+from spine.memory.validation import (
     ArtifactKind,
     PhysicalArtifact,
     PhysicalArtifactLocator,
@@ -150,10 +151,20 @@ async def test_physical_gate_must_cover_every_candidate_partition() -> None:
     )
 
     assert has_complete_physical_validation(
-        (validation.validation,), (partition,)
+        (validation.validation,),
+        (partition,),
+        (mapped.handoff.receipt_command.receipt,),
+        mapped.handoff.source_references,
+        _context(command).run,
+        _context(command).projection_config,
     )
     assert not has_complete_physical_validation(
-        (validation.validation,), (partition, second_partition)
+        (validation.validation,),
+        (partition, second_partition),
+        (mapped.handoff.receipt_command.receipt,),
+        mapped.handoff.source_references,
+        _context(command).run,
+        _context(command).projection_config,
     )
     failed = PhysicalProjectionEvidenceTranslator().to_validation_command(
         evidence.model_copy(
@@ -161,7 +172,31 @@ async def test_physical_gate_must_cover_every_candidate_partition() -> None:
         )
     )
     assert not has_complete_physical_validation(
-        (validation.validation, failed.validation), (partition,)
+        (validation.validation, failed.validation),
+        (partition,),
+        (mapped.handoff.receipt_command.receipt,),
+        mapped.handoff.source_references,
+        _context(command).run,
+        _context(command).projection_config,
+    )
+    assert not has_complete_physical_validation(
+        (validation.validation, validation.validation),
+        (partition,),
+        (mapped.handoff.receipt_command.receipt,),
+        mapped.handoff.source_references,
+        _context(command).run,
+        _context(command).projection_config,
+    )
+    incomplete = validation.validation.model_copy(
+        update={"metrics_payload": {"projection_lineage": {"partition_id": str(partition.projection_partition_id)}}}
+    )
+    assert not has_complete_physical_validation(
+        (incomplete,),
+        (partition,),
+        (mapped.handoff.receipt_command.receipt,),
+        mapped.handoff.source_references,
+        _context(command).run,
+        _context(command).projection_config,
     )
 
 
@@ -301,10 +336,11 @@ async def test_validate_and_seal_records_failed_evidence_without_sealing_and_rep
     evidence = _evidence(command, mapped)
     repository = _Repository()
     unit = _UnitOfWork(repository)
+    contexts = []
 
     coordinator = PhysicalProjectionEvidenceCoordinator(
         uow_factory=lambda context: unit,
-        context_factory=lambda command: None,  # type: ignore[return-value]
+        context_factory=lambda command: contexts.append(command) or None,  # type: ignore[return-value]
     )
     seal = ProjectionCandidateSealCommand.create(
         projection_run_id=RUN,
@@ -319,6 +355,8 @@ async def test_validate_and_seal_records_failed_evidence_without_sealing_and_rep
     assert replay.replay is True
     assert len(repository.validations) == 1
     assert repository.seals == 1
+    assert isinstance(contexts[0], ProjectionValidationCommand)
+    assert contexts[1] is seal
 
     failed_evidence = evidence.model_copy(
         update={"result": validate_physical_projection(evidence.expectation, ())}

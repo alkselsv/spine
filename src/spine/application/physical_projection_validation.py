@@ -24,6 +24,7 @@ from spine.application.persistence.projection import (
     ProjectionCandidateSealCommand,
     ProjectionMutationResult,
     PROJECTION_PHYSICAL_VALIDATION_GATE_KIND,
+    PROJECTION_PHYSICAL_VALIDATION_GATE_VERSION,
     ProjectionReconciliationCommand,
     ProjectionRepository,
     ProjectionValidationCommand,
@@ -44,7 +45,7 @@ from spine.domain.projections import (
     projection_reconciliation_findings_digest,
 )
 from spine.memory.contracts import ProjectionLifecycle
-from spine.memory.cognee.validation import (
+from spine.memory.validation import (
     ArtifactKind,
     PhysicalProjectionExpectation,
     PhysicalValidationResult,
@@ -52,7 +53,7 @@ from spine.memory.cognee.validation import (
 
 
 PHYSICAL_VALIDATION_GATE_KIND = PROJECTION_PHYSICAL_VALIDATION_GATE_KIND
-PHYSICAL_VALIDATION_GATE_VERSION = "r1"
+PHYSICAL_VALIDATION_GATE_VERSION = PROJECTION_PHYSICAL_VALIDATION_GATE_VERSION
 PHYSICAL_VALIDATION_METRICS_SCHEMA_VERSION = "physical-projection-validation-metrics:v1"
 PHYSICAL_RECONCILIATION_FINDINGS_SCHEMA_VERSION = (
     "physical-projection-reconciliation-findings:v1"
@@ -352,15 +353,18 @@ class PhysicalProjectionEvidenceCoordinator:
         evidence: PhysicalProjectionEvidence,
         seal_command: ProjectionCandidateSealCommand,
     ) -> ProjectionMutationResult:
-        validation_command = self._translator.to_validation_command(evidence)
+        validation_result = await self.record_validation(evidence)
+        validation = validation_result.value
+        if not isinstance(validation, ProjectionValidation):
+            raise ProjectionMappingError(
+                "physical validation persistence returned an invalid record"
+            )
+        if validation.decision is not ProjectionValidationDecision.PASSED:
+            raise PhysicalProjectionValidationRejected(validation)
+        # Validation and sealing use their own operation-owned UoWs. The seal
+        # repository rechecks all immutable validation evidence before mutating
+        # the candidate, so a concurrent failed gate cannot be bypassed.
         async with self._uow_factory(self._context_factory(seal_command)) as uow:
-            validation_result = await uow.projections.record_validation(validation_command)
-            validation = validation_result.value
-            if not isinstance(validation, ProjectionValidation):
-                raise ProjectionMappingError("physical validation persistence returned an invalid record")
-            if validation.decision is not ProjectionValidationDecision.PASSED:
-                await uow.commit()
-                raise PhysicalProjectionValidationRejected(validation)
             sealed = await uow.projections.seal_candidate(seal_command)
             await uow.commit()
             return sealed
@@ -405,6 +409,7 @@ def _validation_metrics(evidence: PhysicalProjectionEvidence) -> dict[str, Any]:
             "projection_config_id": str(expectation.projection_config_id),
             "projection_config_version": expectation.projection_config_version,
             "projection_config_digest": expectation.projection_config_digest,
+            "namespace_digest": command.physical_namespace.namespace_digest,
         },
         "artifact_evidence": {
             "reference": receipt.artifact_reference,
