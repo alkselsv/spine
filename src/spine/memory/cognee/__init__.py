@@ -64,6 +64,7 @@ from .recovery import (
     ProjectionRepairPlan,
     ProjectionRepairResult,
     ProjectionRepairStatus,
+    recovery_evidence_for_repair,
 )
 from .validation import (
     ArtifactKind,
@@ -133,6 +134,7 @@ __all__ = [
     "ProjectionRepairPlan",
     "ProjectionRepairResult",
     "ProjectionRepairStatus",
+    "recovery_evidence_for_repair",
     "ArtifactKind",
     "PhysicalArtifact",
     "PhysicalArtifactCount",

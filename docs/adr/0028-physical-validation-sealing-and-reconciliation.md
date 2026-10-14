@@ -26,6 +26,12 @@ degraded outcomes retain the same evidence digest and safe findings, while the
 only; this seam never executes physical repair, mutates canonical source or
 selects an active pointer.
 
+Completed repair outcomes cross this seam only as content-free
+`ProjectionRecoveryEvidence`, which preserves candidate/run/namespace and
+`SourceRevision` lineage. The publication handoff may submit a successful or
+replayed repair after validation, but PostgreSQL remains the sole owner of
+activation generation, active-pointer CAS, publication and successor rollback.
+
 Validation and reconciliation identities are deterministic from their canonical
 lineage and attempt identity. Redelivery with the same evidence replays the
 same persistence command; reusing an attempt identity with changed evidence is

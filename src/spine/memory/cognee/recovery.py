@@ -26,6 +26,10 @@ from spine.memory.contracts import (
     ProjectionConfigVersion,
     ProjectionNamespace,
     ProjectionNamespaceState,
+    ProjectionRecoveryEvidence,
+    ProjectionRecoveryFailureCode,
+    ProjectionRecoveryOperation,
+    ProjectionRecoveryStatus,
     ProjectionSourceRevision,
 )
 from spine.memory.namespace import ProjectionNamespaceContext, ProjectionNamespaceRouter
@@ -614,6 +618,36 @@ class ProjectionRepairResult(DefinitionModel):
     failure_code: ProjectionRepairFailureCode | None = None
 
 
+def recovery_evidence_for_repair(
+    plan: ProjectionRepairPlan,
+    result: ProjectionRepairResult,
+) -> ProjectionRecoveryEvidence:
+    """Expose a repair result as safe evidence for the publication seam."""
+
+    rebuild_plan = plan.rebuild_plan
+    if (
+        result.projection_run_id != rebuild_plan.projection_run_id
+        or result.projection_candidate_id != rebuild_plan.projection_candidate.candidate_id
+        or result.namespace_digest != rebuild_plan.physical_namespace.namespace_digest
+    ):
+        raise ValueError("repair result is outside its immutable plan lineage")
+    return ProjectionRecoveryEvidence(
+        operation=ProjectionRecoveryOperation.REPAIR,
+        workspace_id=rebuild_plan.workspace_id,
+        environment_id=rebuild_plan.environment_id,
+        projection_run_id=result.projection_run_id,
+        projection_candidate_id=result.projection_candidate_id,
+        namespace_digest=result.namespace_digest,
+        status=ProjectionRecoveryStatus(result.status.value),
+        source_revisions=plan.source_revisions,
+        failure_code=(
+            ProjectionRecoveryFailureCode(result.failure_code.value)
+            if result.failure_code is not None
+            else None
+        ),
+    )
+
+
 def _repair_fence(plan: ProjectionRepairPlan) -> ProjectionRepairFailureCode | None:
     for source in plan.source_revisions:
         if source.status == "tombstoned":
@@ -687,4 +721,5 @@ __all__ = [
     "ProjectionRepairPlan",
     "ProjectionRepairResult",
     "ProjectionRepairStatus",
+    "recovery_evidence_for_repair",
 ]

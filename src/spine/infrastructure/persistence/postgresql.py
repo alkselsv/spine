@@ -3528,6 +3528,7 @@ class _PostgreSQLProjectionSnapshotMixin:
             projection_snapshot=snapshot,
             projection_activation=activation,
             activation_generation=pointer.activation_generation,
+            active_pointer_cas_version=pointer.cas_version,
             canonical_boundary_id=boundary.boundary_id,
             canonical_boundary_manifest_digest=boundary.manifest_digest,
             accepted_through_generation=boundary.accepted_through_generation,

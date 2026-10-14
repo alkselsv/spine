@@ -318,6 +318,65 @@ class ProjectionRecovery(_ProjectionModel):
     pending_effect_ids: tuple[str, ...] = Field(min_length=1)
 
 
+class ProjectionRecoveryOperation(str, Enum):
+    """Physical recovery operation reported to the publication seam."""
+
+    CLEANUP = "cleanup"
+    REPAIR = "repair"
+
+
+class ProjectionRecoveryStatus(str, Enum):
+    """Safe terminal or retryable state of a physical recovery attempt."""
+
+    SUCCEEDED = "succeeded"
+    REPLAYED = "replayed"
+    RECOVERABLE = "recoverable"
+    FAILED = "failed"
+    FENCED = "fenced"
+
+
+class ProjectionRecoveryFailureCode(str, Enum):
+    """Failure vocabulary shared by cleanup and repair evidence."""
+
+    INTEGRITY_CONFLICT = "integrity_conflict"
+    CROSS_WORKSPACE = "cross_workspace"
+    NAMESPACE_UNAVAILABLE = "namespace_unavailable"
+    PHYSICAL_FAILURE = "physical_failure"
+    REVISION_FENCED = "revision_fenced"
+    TOMBSTONED_SOURCE = "tombstoned_source"
+
+
+class ProjectionRecoveryEvidence(_ProjectionModel):
+    """Content-free physical recovery evidence with candidate/source lineage."""
+
+    schema_version: Literal["projection-recovery-evidence:v1"] = (
+        "projection-recovery-evidence:v1"
+    )
+    operation: ProjectionRecoveryOperation
+    workspace_id: UUID
+    environment_id: UUID
+    projection_run_id: UUID
+    projection_candidate_id: UUID
+    namespace_digest: str = Field(pattern=_DIGEST)
+    status: ProjectionRecoveryStatus
+    source_revisions: tuple[ProjectionSourceRevision, ...] = ()
+    artifact_ids: tuple[str, ...] = ()
+    failure_code: ProjectionRecoveryFailureCode | None = None
+
+    @model_validator(mode="after")
+    def validate_lineage(self) -> "ProjectionRecoveryEvidence":
+        _require_non_zero(self.workspace_id, "workspace_id")
+        _require_non_zero(self.environment_id, "environment_id")
+        _require_non_zero(self.projection_run_id, "projection_run_id")
+        _require_non_zero(self.projection_candidate_id, "projection_candidate_id")
+        source_ids = [source.source_object_id for source in self.source_revisions]
+        if len(source_ids) != len(set(source_ids)):
+            raise ValueError("recovery source revisions must be unique")
+        if len(self.artifact_ids) != len(set(self.artifact_ids)):
+            raise ValueError("recovery artifact IDs must be unique")
+        return self
+
+
 class ProjectionEffectStore(Protocol):
     """Provider-neutral physical mutation port."""
 
