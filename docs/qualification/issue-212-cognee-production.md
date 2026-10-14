@@ -45,7 +45,7 @@ its own ticket and architecture review before it can become production code.
 | AC1 | `tests/integration/cognee/test_production_profile.py::test_production_qualification_records_one_coherent_run` | Not run on the real profile; public SDK smoke is present but cannot grant production approval. |
 | AC2 | The shared contract runs for `cognee-composition`; the live target performs a physical chunk/entity/relation round trip and verifies provenance | Harness implemented; no live observation is committed. |
 | AC3 | The live target executes missing/ambiguous/stale/incomplete/tombstoned fail-closed cases and checks disclosure-safe results | Harness implemented; no live observation is committed. |
-| AC4 | The live target executes foreign-workspace, explicit-context and active/shadow namespace gates | Harness implemented; no live observation is committed. |
+| AC4 | The live target executes foreign-workspace isolation, rejects mismatched snapshot/boundary/namespace context before retrieval and keeps distinct active/shadow datasets from leaking into each other | Harness implemented; no live observation is committed. |
 | AC5 | Bounded gate runner tests plus injected provider failure in the live target | Harness emits only typed safe codes; no live observation is committed. |
 | AC6 | `src/spine/memory/cognee/qualification.py::build_backend_matrix` and `tests/memory/test_cognee_production_qualification.py::test_postgres_demo_is_rejected_even_when_observations_pass` | `postgres_demo` remains rejected. |
 | AC7 | ADR 0018/0027 plus the required `canonical_lifecycle_separation` gate | The repository has no PostgreSQL-backed projection-request resolver composition to observe yet, so the gate remains `not_run` and prevents a false production `go`. |
@@ -60,8 +60,9 @@ command is documented in
 `docs/runbooks/cognee-production-qualification.md`.
 
 The live target executes the available physical gate inventory in one run: public SDK,
-structured round trip, unsafe evidence, workspace/namespace isolation, explicit
-context, update/remove/tombstone, shadow rebuild/recovery/diagnostics,
+structured round trip, unsafe evidence, workspace isolation, simultaneous active/shadow
+isolation, explicit snapshot/boundary/namespace context, update/remove/tombstone,
+shadow rebuild/recovery/diagnostics,
 and concurrency/failure injection/cleanup. The required canonical-lifecycle
 gate remains explicitly `not_run` until a PostgreSQL-backed resolver composition
 can be observed; therefore the target cannot produce `go` prematurely. It writes

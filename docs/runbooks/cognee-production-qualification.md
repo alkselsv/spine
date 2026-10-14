@@ -80,9 +80,9 @@ PGVector profile can produce production evidence.
 Do not convert a partial pass, skipped test, local Cognee profile or Issue #211
 fake-backed result into production approval. A future `go` requires every gate
 in `required_gate_ids()` to have a real-backend `passed` observation in one
-coherent run, including isolation, provenance, explicit namespace context,
-tombstones, rebuild/recovery, diagnostics, concurrency, failure injection and
-cleanup.
+coherent run, including two simultaneously present active/shadow datasets,
+provenance, explicit snapshot/boundary/namespace context, tombstones,
+rebuild/recovery, diagnostics, concurrency, failure injection and cleanup.
 
 If the complete profile fails those gates, retain the no-go decision and open a
 separately approved implementation ticket for the owned PostgreSQL projection

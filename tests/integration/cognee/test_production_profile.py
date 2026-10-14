@@ -277,6 +277,8 @@ async def _assert_complete_context_projection_round_trip(
     update_remove: bool = False,
     workspace_isolation: bool = False,
     validate_physical: bool = False,
+    explicit_context: bool = False,
+    active_shadow_isolation: bool = False,
 ) -> None:
     from spine.memory.cognee_memory import configure_environment
 
@@ -293,6 +295,7 @@ async def _assert_complete_context_projection_round_trip(
         candidate_id=uuid5(NAMESPACE_URL, f"spine-issue-212:{run_id}:candidate"),
         run_id=projection_run_id,
         partition_id=uuid5(NAMESPACE_URL, f"spine-issue-212:{run_id}:partition"),
+        snapshot_id=uuid5(NAMESPACE_URL, f"spine-issue-212:{run_id}:snapshot"),
     )
     namespace = ProjectionNamespaceRouter().route(
         ProjectionNamespaceContext(
@@ -309,7 +312,12 @@ async def _assert_complete_context_projection_round_trip(
         )
     )
     _, base_document = parsed_document(
-        b"Synthetic Organization Alpha employs Synthetic Person Ada.",
+        (
+            b"Synthetic Organization Alpha employs Synthetic Person Ada. "
+            b"Active namespace marker."
+            if active_shadow_isolation
+            else b"Synthetic Organization Alpha employs Synthetic Person Ada."
+        ),
         REVISION_ID,
     )
     document = base_document.model_copy(
@@ -358,6 +366,7 @@ async def _assert_complete_context_projection_round_trip(
         retrieval=CogneeStructuredRetrieval(),
     )
     dataset_name = CogneeChunkProjectionStore.dataset_name(namespace)
+    cleanup_dataset_names = [dataset_name]
     command_type = RebuildCommand if rebuild else ProjectCommand
     command = command_type(
         **common,
@@ -367,6 +376,60 @@ async def _assert_complete_context_projection_round_trip(
     execute = projection.rebuild if rebuild else projection.project
 
     try:
+        active_common: dict[str, object] | None = None
+        if active_shadow_isolation:
+            active_candidate = candidate.model_copy(
+                update={
+                    "candidate_id": uuid5(
+                        NAMESPACE_URL,
+                        f"spine-issue-212:{run_id}:active-candidate",
+                    ),
+                    "snapshot_id": uuid5(
+                        NAMESPACE_URL,
+                        f"spine-issue-212:{run_id}:active-snapshot",
+                    ),
+                }
+            )
+            active_namespace = ProjectionNamespaceRouter().route(
+                ProjectionNamespaceContext(
+                    workspace_id=extraction.workspace_id,
+                    environment_id=extraction.environment_id,
+                    projection_candidate=active_candidate,
+                    projection_config=template.projection_config,
+                    canonical_boundary=template.canonical_boundary,
+                    state=ProjectionNamespaceState.ACTIVE,
+                )
+            )
+            active_common = {
+                **common,
+                "projection_candidate": active_candidate,
+                "physical_namespace": active_namespace,
+            }
+            cleanup_dataset_names.append(
+                CogneeChunkProjectionStore.dataset_name(active_namespace)
+            )
+            active_projected = await projection.project(
+                ProjectCommand(
+                    **active_common,
+                    command_identity="issue-212-active-project",
+                    command_digest="7" * 64,
+                )
+            )
+            assert active_projected.outcome is ProjectionOutcome.SUCCEEDED
+            _, shadow_base = parsed_document(
+                b"Synthetic Organization Alpha employs Synthetic Person Ada. "
+                b"Shadow namespace marker.",
+                REVISION_ID,
+            )
+            artifacts[current.source_revision_id] = shadow_base.model_copy(
+                update={
+                    "workspace_id": extraction.workspace_id,
+                    "environment_id": extraction.environment_id,
+                    "source_object_id": current.source_object_id,
+                    "source_revision_id": current.source_revision_id,
+                    "source_revision_digest": current.revision_digest,
+                }
+            )
         if inject_cognify_failure:
             first, projected = await asyncio.gather(
                 execute(command),
@@ -533,6 +596,22 @@ async def _assert_complete_context_projection_round_trip(
                     query="Synthetic Organization Alpha",
                 )
             )
+            if active_shadow_isolation:
+                assert active_common is not None
+                active_read = await projection.retrieve(
+                    RetrieveCommand(
+                        **active_common,
+                        command_identity="issue-212-active-read",
+                        command_digest="6" * 64,
+                        query="Active namespace marker",
+                    )
+                )
+                assert active_read.outcome is ProjectionOutcome.SUCCEEDED
+                assert any(
+                    "Active namespace marker" in chunk.text
+                    for chunk in active_read.chunks
+                )
+                assert "Shadow namespace marker" not in active_read.model_dump_json()
             assert projected.outcome is ProjectionOutcome.SUCCEEDED
             assert replay.outcome is ProjectionOutcome.REPLAYED
             assert replay.artifact_reference == projected.artifact_reference
@@ -642,8 +721,80 @@ async def _assert_complete_context_projection_round_trip(
                     query="Who works for Synthetic Organization Alpha?",
                 )
             )
+            if explicit_context:
+                wrong_snapshot = candidate.model_copy(
+                    update={
+                        "snapshot_id": uuid5(
+                            NAMESPACE_URL,
+                            f"spine-issue-212:{run_id}:wrong-snapshot",
+                        )
+                    }
+                )
+                wrong_boundary = template.canonical_boundary.model_copy(
+                    update={
+                        "boundary_id": uuid5(
+                            NAMESPACE_URL,
+                            f"spine-issue-212:{run_id}:wrong-boundary",
+                        ),
+                        "boundary_digest": "8" * 64,
+                    }
+                )
+                wrong_namespace = ProjectionNamespaceRouter().route(
+                    ProjectionNamespaceContext(
+                        workspace_id=extraction.workspace_id,
+                        environment_id=extraction.environment_id,
+                        projection_candidate=wrong_snapshot,
+                        projection_config=template.projection_config,
+                        canonical_boundary=template.canonical_boundary,
+                        state=ProjectionNamespaceState.ACTIVE,
+                    )
+                )
+                mismatched_commands = (
+                    RetrieveCommand(
+                        **{
+                            **common,
+                            "projection_candidate": wrong_snapshot,
+                        },
+                        command_identity="issue-212-wrong-snapshot",
+                        command_digest="3" * 64,
+                        query="Synthetic Organization Alpha",
+                    ),
+                    RetrieveCommand(
+                        **{
+                            **common,
+                            "canonical_boundary": wrong_boundary,
+                        },
+                        command_identity="issue-212-wrong-boundary",
+                        command_digest="4" * 64,
+                        query="Synthetic Organization Alpha",
+                    ),
+                    RetrieveCommand(
+                        **{
+                            **common,
+                            "physical_namespace": wrong_namespace,
+                        },
+                        command_identity="issue-212-wrong-namespace",
+                        command_digest="5" * 64,
+                        query="Synthetic Organization Alpha",
+                    ),
+                )
+                mismatched_results = [
+                    await projection.retrieve(item) for item in mismatched_commands
+                ]
+                assert all(
+                    result.failure is not None
+                    and result.failure.code
+                    is ProjectionFailureCode.NAMESPACE_UNAVAILABLE
+                    for result in mismatched_results
+                )
+                assert all(result.chunks == () for result in mismatched_results)
+                assert all(
+                    "Synthetic Organization Alpha" not in result.model_dump_json()
+                    for result in mismatched_results
+                )
     finally:
-        await cognee.forget(dataset=dataset_name)
+        for cleanup_dataset_name in cleanup_dataset_names:
+            await cognee.forget(dataset=cleanup_dataset_name)
         remaining = await cognee.datasets.list_datasets()
         assert all(
             (
@@ -651,7 +802,7 @@ async def _assert_complete_context_projection_round_trip(
                 if isinstance(dataset, dict)
                 else getattr(dataset, "name", None)
             )
-            != dataset_name
+            not in cleanup_dataset_names
             for dataset in remaining
         )
 
@@ -764,7 +915,10 @@ async def test_production_qualification_records_one_coherent_run() -> None:
                 _assert_complete_context_projection_round_trip(run_id)
             ),
             "explicit_retrieval_context": lambda: (
-                _assert_complete_context_projection_round_trip(run_id)
+                _assert_complete_context_projection_round_trip(
+                    run_id,
+                    explicit_context=True,
+                )
             ),
             "unsafe_evidence": lambda: _assert_unsafe_evidence_is_fail_closed(run_id),
             "workspace_isolation": lambda: (
@@ -774,7 +928,11 @@ async def test_production_qualification_records_one_coherent_run() -> None:
                 )
             ),
             "namespace_isolation": lambda: (
-                _assert_complete_context_projection_round_trip(run_id, rebuild=True)
+                _assert_complete_context_projection_round_trip(
+                    run_id,
+                    rebuild=True,
+                    active_shadow_isolation=True,
+                )
             ),
             "update_remove_tombstone": update_remove_gate,
             "rebuild_recovery_validation_diagnostics": lambda: (

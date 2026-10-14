@@ -34,6 +34,7 @@ CANDIDATE_ID = UUID("60000000-0000-4000-8000-000000000001")
 PARTITION_ID = UUID("70000000-0000-4000-8000-000000000001")
 CONFIG_ID = UUID("80000000-0000-4000-8000-000000000001")
 BOUNDARY_ID = UUID("90000000-0000-4000-8000-000000000001")
+SNAPSHOT_ID = UUID("91000000-0000-4000-8000-000000000001")
 
 
 @dataclass
@@ -77,6 +78,7 @@ def command(
         candidate_id=CANDIDATE_ID,
         run_id=RUN_ID,
         partition_id=PARTITION_ID,
+        snapshot_id=SNAPSHOT_ID,
     )
     config = ProjectionConfigVersion(
         config_id=CONFIG_ID,
@@ -207,6 +209,72 @@ async def test_retrieval_rejects_shadow_namespace_without_physical_call() -> Non
     assert result.outcome is ProjectionOutcome.FAILED
     assert result.failure is not None
     assert result.failure.code is ProjectionFailureCode.NAMESPACE_UNAVAILABLE
+    assert sdk.calls == []
+
+
+@pytest.mark.asyncio
+async def test_retrieval_rejects_mismatched_explicit_context_without_physical_call() -> None:
+    chunks, hybrid = search_responses()
+    sdk = FakeSearchSdk(chunks_response=chunks, hybrid_response=hybrid)
+    base = command()
+    wrong_snapshot = base.projection_candidate.model_copy(
+        update={"snapshot_id": UUID("91000000-0000-4000-8000-000000000002")}
+    )
+    wrong_boundary = base.canonical_boundary.model_copy(
+        update={
+            "boundary_id": UUID("90000000-0000-4000-8000-000000000002"),
+            "boundary_digest": "e" * 64,
+        }
+    )
+    wrong_namespace = ProjectionNamespaceRouter().route(
+        ProjectionNamespaceContext(
+            workspace_id=base.workspace_id,
+            environment_id=base.environment_id,
+            projection_candidate=wrong_snapshot,
+            projection_config=base.projection_config,
+            canonical_boundary=base.canonical_boundary,
+            state=ProjectionNamespaceState.ACTIVE,
+        )
+    )
+    mismatched = (
+        base.model_copy(
+            update={
+                "projection_candidate": wrong_snapshot,
+                "command_identity": "wrong-snapshot",
+                "command_digest": "1" * 64,
+            }
+        ),
+        base.model_copy(
+            update={
+                "canonical_boundary": wrong_boundary,
+                "command_identity": "wrong-boundary",
+                "command_digest": "2" * 64,
+            }
+        ),
+        base.model_copy(
+            update={
+                "physical_namespace": wrong_namespace,
+                "command_identity": "wrong-namespace",
+                "command_digest": "3" * 64,
+            }
+        ),
+    )
+
+    results = [
+        await CogneeStructuredRetrieval(sdk=sdk).retrieve(item)
+        for item in mismatched
+    ]
+
+    assert all(result.outcome is ProjectionOutcome.FAILED for result in results)
+    assert all(
+        result.failure is not None
+        and result.failure.code is ProjectionFailureCode.NAMESPACE_UNAVAILABLE
+        for result in results
+    )
+    assert all(result.chunks == () for result in results)
+    assert all(result.entities == () for result in results)
+    assert all(result.relations == () for result in results)
+    assert all("Acme" not in result.model_dump_json() for result in results)
     assert sdk.calls == []
 
 
