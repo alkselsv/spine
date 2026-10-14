@@ -169,7 +169,7 @@ class CogneePublicSdk:
 class ChunkProjectionMapping(DefinitionModel):
     """Content-free mapping from a parsed segment to its physical data ID."""
 
-    schema_version: Literal["chunk-projection-mapping:v1"] = "chunk-projection-mapping:v1"
+    schema_version: Literal["chunk-projection-mapping:v2"] = "chunk-projection-mapping:v2"
     workspace_id: UUID
     environment_id: UUID
     namespace_digest: str = Field(pattern=r"[0-9a-f]{64}")
@@ -177,6 +177,9 @@ class ChunkProjectionMapping(DefinitionModel):
     source_revision_id: UUID
     revision_digest: str = Field(pattern=r"[0-9a-f]{64}")
     revision_number: int = Field(ge=1)
+    projection_config_id: UUID
+    projection_config_version: str
+    projection_config_digest: str = Field(pattern=r"[0-9a-f]{64}")
     segment_id: UUID
     segment_digest: str = Field(pattern=r"[0-9a-f]{64}")
     data_id: UUID
@@ -560,6 +563,9 @@ class CogneeChunkProjectionStore:
             source_revision_id=effect.source_revision_id,
             revision_digest=effect.revision_digest,
             revision_number=effect.revision_number,
+            projection_config_id=effect.projection_config.config_id,
+            projection_config_version=effect.projection_config.version,
+            projection_config_digest=effect.projection_config.config_digest,
             segment_id=segment.segment_id,
             segment_digest=segment.segment_digest,
             data_id=data_id,

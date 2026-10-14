@@ -26,6 +26,7 @@ from spine.memory.contracts import (
 from spine.memory.namespace import ProjectionNamespaceContext, ProjectionNamespaceRouter
 
 from spine.memory.cognee.indexing import CogneeChunkProjectionStore, CogneeVersionError
+from spine.memory.cognee.validation import PhysicalArtifact
 
 
 WORKSPACE_ID = UUID("10000000-0000-4000-8000-000000000001")
@@ -215,6 +216,14 @@ async def test_indexing_preserves_revision_locator_and_namespace_provenance() ->
     assert metadata["revision_digest"] == source_revision.revision_digest
     assert metadata["namespace_digest"] == command_effect.physical_namespace.namespace_digest
     assert metadata["locator"] == document.segments[0].locator.model_dump(mode="json")
+    mappings = await store.mappings_for(
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        source_object_id=SOURCE_OBJECT_ID,
+    )
+    physical = PhysicalArtifact.from_chunk_mapping(mappings[0])
+    assert physical.projection_config_digest == command_effect.projection_config.config_digest
+    assert physical.locators[0].digest
 
 
 @pytest.mark.asyncio
