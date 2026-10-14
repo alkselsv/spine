@@ -2435,6 +2435,20 @@ class _InMemoryIngestionRepository:
             return None
         return max(receipts, key=lambda value: value.completed_at).model_copy(deep=True)
 
+    async def resolve_processing_receipt_by_id(
+        self, processing_receipt_id: UUID
+    ) -> ProcessingReceipt | None:
+        self._uow._guard_active()
+        receipt = self._processing_receipts().get(processing_receipt_id)
+        if receipt is None or not isinstance(self._uow.scope, EnvironmentScope):
+            return None
+        if (receipt.workspace_id, receipt.environment_id) != (
+            self._uow.scope.workspace_id,
+            self._uow.scope.environment_id,
+        ):
+            return None
+        return receipt.model_copy(deep=True)
+
     async def resolve_warnings(self, item_id: UUID) -> tuple[IngestionWarning, ...]:
         self._uow._guard_active()
         scope = self._uow.scope

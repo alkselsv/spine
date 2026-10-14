@@ -12,6 +12,11 @@ from spine.infrastructure.persistence.parsed_artifacts import (
     InMemoryParsedArtifactRepository,
     PostgreSQLParsedArtifactRepository,
 )
+from spine.infrastructure.persistence.projection_composition import (
+    build_production_projection_request_binding,
+    build_production_projection_request_consumer,
+    create_production_outbox_worker,
+)
 
 __all__ = [
     "InMemoryPersistence",
@@ -20,4 +25,7 @@ __all__ = [
     "InMemoryRecoveryRepository",
     "InMemoryParsedArtifactRepository",
     "PostgreSQLParsedArtifactRepository",
+    "build_production_projection_request_binding",
+    "build_production_projection_request_consumer",
+    "create_production_outbox_worker",
 ]

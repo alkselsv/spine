@@ -2635,6 +2635,23 @@ class _PostgreSQLIngestionRepository:
         ).mappings().one_or_none()
         return ProcessingReceipt.model_validate(dict(row)) if row is not None else None
 
+    async def resolve_processing_receipt_by_id(
+        self, processing_receipt_id: UUID
+    ) -> ProcessingReceipt | None:
+        self._uow._guard_active()
+        row = (
+            await self._uow._execute(
+                select(_PROCESSING_RECEIPTS).where(
+                    _PROCESSING_RECEIPTS.c.processing_receipt_id
+                    == processing_receipt_id,
+                    _PROCESSING_RECEIPTS.c.workspace_id == self._uow.scope.workspace_id,
+                    _PROCESSING_RECEIPTS.c.environment_id
+                    == self._uow.scope.environment_id,
+                )
+            )
+        ).mappings().one_or_none()
+        return ProcessingReceipt.model_validate(dict(row)) if row is not None else None
+
     async def resolve_warnings(self, item_id: UUID) -> tuple[IngestionWarning, ...]:
         self._uow._guard_active()
         rows = (
@@ -4455,6 +4472,40 @@ class _PostgreSQLProjectionRepository(_PostgreSQLProjectionSnapshotMixin, Projec
     async def resolve_run(self, projection_run_id: UUID) -> ProjectionRun | None:
         self._uow._guard_active()
         return await self._resolve_run(projection_run_id)
+
+    async def list_runs_for_source_revision(
+        self, source_object_id: UUID, source_revision_id: UUID
+    ) -> tuple[ProjectionRun, ...]:
+        self._uow._guard_active()
+        scope = self._scope()
+        rows = (
+            await self._uow._execute(
+                select(_PROJECTION_RUNS)
+                .select_from(
+                    _PROJECTION_RUNS.join(
+                        _CANONICAL_BOUNDARY_MEMBERS,
+                        _PROJECTION_RUNS.c.canonical_boundary_id
+                        == _CANONICAL_BOUNDARY_MEMBERS.c.boundary_id,
+                    )
+                )
+                .where(
+                    _PROJECTION_RUNS.c.workspace_id == scope.workspace_id,
+                    _PROJECTION_RUNS.c.environment_id == scope.environment_id,
+                    _CANONICAL_BOUNDARY_MEMBERS.c.workspace_id == scope.workspace_id,
+                    _CANONICAL_BOUNDARY_MEMBERS.c.environment_id
+                    == scope.environment_id,
+                    _CANONICAL_BOUNDARY_MEMBERS.c.source_object_id
+                    == source_object_id,
+                    _CANONICAL_BOUNDARY_MEMBERS.c.source_revision_id
+                    == source_revision_id,
+                )
+                .order_by(
+                    _PROJECTION_RUNS.c.started_at,
+                    _PROJECTION_RUNS.c.projection_run_id,
+                )
+            )
+        ).mappings().all()
+        return tuple(self._run(row) for row in rows)
 
     async def _open_run(self, run_id: UUID, candidate_id: UUID, *, for_update: bool = False) -> ProjectionRun:
         run = await self._resolve_run(run_id, for_update=for_update)

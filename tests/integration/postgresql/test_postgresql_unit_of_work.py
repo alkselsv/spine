@@ -5,6 +5,8 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from dataclasses import dataclass, replace
+import hashlib
+import json
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 import pytest
@@ -44,6 +46,7 @@ from spine.application.persistence.idempotency import (
     OwnedIdempotencyClaim,
 )
 from spine.application.persistence.boundary import CanonicalBoundaryCaptureCommand
+from spine.application.persistence.projection import ProjectionRunCommand
 from spine.application.persistence.outbox import OpaqueObjectReference
 from spine.application.persistence.unit_of_work_activity import (
     unit_of_work_is_active,
@@ -71,6 +74,13 @@ from spine.domain.ingestion import (
     IngestionTargetKind,
     IngestionTransition,
     SafeDiagnosticDetail,
+)
+from spine.domain.projections import (
+    OntologyVersion,
+    ProjectionConfigVersion,
+    ProjectionOperation,
+    ProjectionPartition,
+    ProjectionRun,
 )
 from spine.domain.sources import AdmissionDecision, AdmissionDisposition
 from spine.domain.sources.access_policy import (
@@ -2564,3 +2574,135 @@ async def test_postgresql_context_bundle_replays_isolates_and_safe_reads(
                 attempt_id=bundle.attempt_id,
                 idempotency_key=bundle.idempotency_key,
             )
+
+
+@pytest.mark.postgresql
+@pytest.mark.asyncio
+async def test_postgresql_projection_runs_resolve_by_canonical_source_revision(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    case = await prepare_canonical_case(postgresql_adapter, 48000)
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        await uow.canonical.accept(case.command)
+        await uow.commit()
+
+    boundary_context = postgresql_adapter.ingestion_context(
+        case.source.workspace_id, case.source.environment_id, "canonical_boundary_capture"
+    )
+    async with postgresql_adapter.uow_factory(boundary_context) as uow:
+        captured = await uow.boundaries.capture(
+            CanonicalBoundaryCaptureCommand.create(
+                projection_kind="context",
+                scope_version="r1",
+                idempotency_key=IdempotencyKey("projection-boundary-48000"),
+            )
+        )
+        await uow.commit()
+
+    now = datetime(2026, 10, 14, 12, tzinfo=timezone.utc)
+    ontology_payload = {
+        "schema_version": "ontology-definition:r1",
+        "entity_types": [{"name": "document"}],
+        "relation_types": [],
+    }
+    ontology_digest = hashlib.sha256(
+        json.dumps(
+            {"schema": "ontology-definition:r1", "payload": ontology_payload},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    ontology = OntologyVersion(
+        ontology_version_id=synthetic_uuid(48040),
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        ontology_name="qualification",
+        version=1,
+        definition_payload=ontology_payload,
+        definition_digest=ontology_digest,
+        publication_eligible=True,
+        publication_decision_reference="decision-48000",
+        publisher_authority_reference="authority-48000",
+        audit_event_reference="audit-48000",
+        published_at=now,
+    )
+    config_payload = {"adapter": "context-projection:v1"}
+    config_digest = hashlib.sha256(
+        json.dumps(
+            {"schema": "projection-config:r1", "payload": config_payload},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    config = ProjectionConfigVersion(
+        projection_config_version_id=synthetic_uuid(48041),
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        projection_kind="context",
+        version=1,
+        ontology_version_id=ontology.ontology_version_id,
+        parser_contract_version="parser:v1",
+        locator_contract_version="locator:v1",
+        extraction_contract_version="extractor:v1",
+        embedding_profile_version="embedding:v1",
+        adapter_contract_version="context-projection:v1",
+        config_payload=config_payload,
+        config_digest=config_digest,
+        created_at=now,
+    )
+    run = ProjectionRun(
+        projection_run_id=synthetic_uuid(48042),
+        projection_candidate_id=synthetic_uuid(48043),
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        projection_kind="context",
+        operation=ProjectionOperation.BUILD,
+        projection_config_version_id=config.projection_config_version_id,
+        canonical_boundary_id=captured.boundary.boundary_id,
+        command_identity="projection-run-48000",
+        command_digest="4" * 64,
+        idempotency_receipt_id=synthetic_uuid(48044),
+        started_at=now,
+    )
+    projection_context = postgresql_adapter.ingestion_context(
+        case.source.workspace_id, case.source.environment_id, "projection_run"
+    )
+    async with postgresql_adapter.uow_factory(projection_context) as uow:
+        await uow.projections.add_ontology_version(ontology)
+        await uow.projections.add_config_version(config)
+        await uow.projections.create_run(
+            ProjectionRunCommand.create(
+                run=run,
+                idempotency_key=IdempotencyKey("projection-run-48000"),
+            )
+        )
+        await uow.projections.add_partition(
+            ProjectionPartition(
+                projection_partition_id=synthetic_uuid(48045),
+                projection_run_id=run.projection_run_id,
+                projection_candidate_id=run.projection_candidate_id,
+                workspace_id=run.workspace_id,
+                environment_id=run.environment_id,
+                security_domain_reference="security-domain:qualification",
+                security_domain_version="r1",
+                partition_identity="default",
+                expected_command_identity="partition-command-48000",
+                expected_command_digest="5" * 64,
+                created_at=now,
+            )
+        )
+        await uow.commit()
+
+    async with postgresql_adapter.uow_factory(projection_context) as uow:
+        runs = await uow.projections.list_runs_for_source_revision(
+            case.source.source_object_id, case.revision.revision_id
+        )
+        assert len(runs) == 1
+        assert runs[0].projection_run_id == run.projection_run_id
+        assert runs[0].projection_candidate_id == run.projection_candidate_id
+        assert runs[0].canonical_boundary_id == run.canonical_boundary_id
+        assert runs[0].command_identity == run.command_identity
+        assert runs[0].command_digest == run.command_digest
+        partitions = await uow.projections.list_partitions(run.projection_run_id)
+        assert len(partitions) == 1
+        await uow.rollback()

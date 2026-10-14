@@ -276,6 +276,35 @@ class InMemoryProjectionRepository(ProjectionRepository):
         self._uow._guard_active()
         return self._run(projection_run_id)
 
+    async def list_runs_for_source_revision(
+        self, source_object_id: UUID, source_revision_id: UUID
+    ) -> tuple[ProjectionRun, ...]:
+        self._uow._guard_active()
+        boundaries = self._all(
+            "_base_canonical_boundary_members", "_pending_canonical_boundary_members"
+        )
+        boundary_ids = {
+            boundary_id
+            for (boundary_id, member_source_id), member in boundaries.items()
+            if member_source_id == source_object_id
+            and member.source_revision_id == source_revision_id
+            and self._in_scope(member)
+        }
+        runs = (
+            run
+            for run in self._all(
+                "_base_projection_runs", "_pending_projection_runs"
+            ).values()
+            if run.canonical_boundary_id in boundary_ids and self._in_scope(run)
+        )
+        return tuple(
+            self._copy(run)
+            for run in sorted(
+                runs,
+                key=lambda value: (value.started_at, value.projection_run_id.hex),
+            )
+        )
+
     async def append_transition(self, transition: ProjectionRunTransition) -> ProjectionRunTransition:
         self._uow._guard_active()
         def operation() -> ProjectionRunTransition:
