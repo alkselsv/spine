@@ -782,6 +782,16 @@ serve ordinary retrieval. Namespace lifecycle and candidate eligibility remain
 adapter concerns; PostgreSQL remains the publication and active-pointer
 authority.
 
+The broker-owned `PhysicalReadContext:v1` / `PhysicalReadPlan:v1` seam maps one
+trusted active-publication pin and authorized source scope through canonical
+projection lineage before any physical provider call. A snapshot may fan out
+to several partitions; a snapshot is never itself a physical namespace. The
+plan requires registered active namespace lineage and explicit provider-side
+source-revision isolation. Cognee datasets and `node_set` values are routing
+details, not ACL authority, and post-search filtering is not an acceptable
+pre-retrieval authorization mechanism. See
+[`docs/physical-read-plan-contract.md`](physical-read-plan-contract.md).
+
 Artifact существующего immutable snapshot можно reconstruct только при
 доказуемой artifact identity и integrity. Byte equality не предполагается для
 nondeterministic ML/LLM processing. Если требуемая эквивалентность не доказана,

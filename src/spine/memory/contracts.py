@@ -617,6 +617,7 @@ class PublicationPin(_ProjectionModel):
     activation_generation: int = Field(ge=1)
     active_pointer_cas_version: int = Field(ge=1)
     canonical_boundary: CanonicalBoundary
+    canonical_boundary_membership_ref: str | None = Field(default=None, min_length=1, max_length=512)
     as_of: CanonicalAsOf
     projection_config_version: DomainProjectionConfigVersion
     freshness: ProjectionFreshness
@@ -659,6 +660,7 @@ class PublicationPin(_ProjectionModel):
             activation_generation=publication.activation_generation,
             active_pointer_cas_version=publication.active_pointer_cas_version,
             canonical_boundary=canonical_boundary,
+            canonical_boundary_membership_ref=publication.canonical_boundary_membership_ref,
             as_of=publication.as_of,
             projection_config_version=publication.projection_config_version,
             freshness=publication.freshness,
@@ -708,6 +710,48 @@ class PublicationPin(_ProjectionModel):
         ):
             raise ValueError("publication pin reconciliation lineage is inconsistent")
         return self
+
+    def has_valid_digest(self) -> bool:
+        """Verify the immutable digest when the pin carries full publication lineage."""
+
+        if self.canonical_boundary_membership_ref is None:
+            return False
+        identity = (
+            f"spine:publication-pin:v1:{self.workspace_id}:"
+            f"{self.environment_id}:{self.projection_kind}:"
+            f"{self.projection_activation.projection_activation_id}:"
+            f"{self.activation_generation}"
+        )
+        if self.pin_id != uuid5(NAMESPACE_URL, identity):
+            return False
+        publication = PublishedActivePublication(
+            workspace_id=self.workspace_id,
+            environment_id=self.environment_id,
+            projection_kind=self.projection_kind,
+            projection_snapshot=self.projection_snapshot,
+            projection_activation=self.projection_activation,
+            activation_generation=self.activation_generation,
+            active_pointer_cas_version=self.active_pointer_cas_version,
+            canonical_boundary_id=self.canonical_boundary.boundary_id,
+            canonical_boundary_manifest_digest=self.canonical_boundary.boundary_digest,
+            accepted_through_generation=self.canonical_boundary.accepted_through_generation,
+            canonical_boundary_membership_ref=self.canonical_boundary_membership_ref,
+            as_of=self.as_of,
+            projection_config_version=self.projection_config_version,
+            freshness=self.freshness,
+            health=self.health,
+            effective_reconciliation=self.effective_reconciliation,
+        )
+        payload = {
+            "schema": "publication-pin:v1",
+            "pin_id": str(self.pin_id),
+            "publication": publication.model_dump(mode="json"),
+            "canonical_boundary": self.canonical_boundary.model_dump(mode="json"),
+        }
+        expected = sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        return self.pin_digest == expected
 
     @property
     def publication_pin_id(self) -> UUID:
