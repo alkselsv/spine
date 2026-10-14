@@ -465,6 +465,22 @@ class _PostgreSQLSourceObservationRepository:
             json.dumps(dict(row), default=str)
         )
 
+    async def resolve_source(self, source_object_id: UUID) -> SourceObject | None:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return None
+        row = (
+            await self._uow._execute(
+                select(_SOURCE_OBJECTS).where(
+                    _SOURCE_OBJECTS.c.source_object_id == source_object_id,
+                    _SOURCE_OBJECTS.c.workspace_id == scope.workspace_id,
+                    _SOURCE_OBJECTS.c.environment_id == scope.environment_id,
+                )
+            )
+        ).mappings().one_or_none()
+        return SourceObject.model_validate(dict(row)) if row is not None else None
+
     async def resolve_or_create_source(self, source: SourceObject) -> SourceObject:
         self._uow._guard_active()
         self._check_scope(source.workspace_id, source.environment_id)
