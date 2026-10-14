@@ -1,5 +1,49 @@
 """Stable capability contracts shared by workflows and agent implementations."""
 
+from spine.domain.capabilities.answer_question import (
+    ANSWER_QUESTION_INPUT_SCHEMA,
+    ANSWER_QUESTION_OUTPUT_SCHEMA,
+    AnswerClaim,
+    AnswerContent,
+    AnswerQuestionContractError,
+    AnswerQuestionInput,
+    AnswerQuestionOutcome,
+    AnswerQuestionOutput,
+    AnswerQuestionSafeReason,
+    AnswerQuestionSafeReasonCode,
+    AnswerQuestionScope,
+    CitationReference,
+    ClarificationRequest,
+    LineageReference,
+    QuestionSubject,
+    RetrievalOutcome,
+    RunAttemptCorrelation,
+    map_retrieval_outcome,
+    parse_answer_question_input,
+    parse_answer_question_output,
+)
 from spine.domain.capabilities.models import CapabilityDefinition
 
-__all__ = ["CapabilityDefinition"]
+__all__ = [
+    "ANSWER_QUESTION_INPUT_SCHEMA",
+    "ANSWER_QUESTION_OUTPUT_SCHEMA",
+    "AnswerClaim",
+    "AnswerContent",
+    "AnswerQuestionContractError",
+    "AnswerQuestionInput",
+    "AnswerQuestionOutcome",
+    "AnswerQuestionOutput",
+    "AnswerQuestionSafeReason",
+    "AnswerQuestionSafeReasonCode",
+    "AnswerQuestionScope",
+    "CapabilityDefinition",
+    "CitationReference",
+    "ClarificationRequest",
+    "LineageReference",
+    "QuestionSubject",
+    "RetrievalOutcome",
+    "RunAttemptCorrelation",
+    "map_retrieval_outcome",
+    "parse_answer_question_input",
+    "parse_answer_question_output",
+]
