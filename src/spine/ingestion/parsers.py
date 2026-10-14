@@ -22,6 +22,7 @@ from spine.domain.artifacts import (
     ParsedDocument,
     ParsedSegment,
     PhysicalLineLocator,
+    XlsxCellLocator,
 )
 from spine.domain.sources import RevisionKind, SourceRevision, assert_revision_digest
 
@@ -31,6 +32,10 @@ PARSER_CONFIG_REFERENCE: Final[str] = "text-markdown-default:v1"
 PDF_LOCATOR_CONTRACT_VERSION: Final[str] = "pdf-page-extracted-codepoint:v1"
 PDF_PARSER_VERSION: Final[str] = f"pdf:v1+pypdf-{version('pypdf')}"
 PDF_EXTRACTION_MODE: Final[str] = "plain"
+XLSX_LOCATOR_CONTRACT_VERSION: Final[str] = "xlsx-cell:v1"
+XLSX_PARSER_VERSION: Final[str] = "xlsx-openpyxl:v1"
+XLSX_PARSER_CONFIG_REFERENCE: Final[str] = "xlsx-openpyxl-default:v1"
+XLSX_MEDIA_TYPE: Final[str] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 DOCX_MEDIA_TYPE: Final[str] = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 DOCX_LOCATOR_CONTRACT_VERSION: Final[str] = "docx-ooxml-block-codepoint:v1"
 DOCX_PARSER_VERSION: Final[str] = f"docx:v1+python-docx-{version('python-docx')}"
@@ -480,6 +485,33 @@ class DocxParser:
             raise ValueError("locator does not resolve") from None
 
 
+@dataclass(frozen=True, slots=True)
+class XlsxParser:
+    """Parse only safe, citation-grade values from an authorized XLSX original."""
+
+    max_bytes: int = 50_000_000
+    max_cells: int = 1_000_000
+    max_worksheets: int = 256
+
+    def __post_init__(self) -> None:
+        if self.max_bytes <= 0 or self.max_cells <= 0 or self.max_worksheets <= 0:
+            raise ValueError("parser bounds must be positive")
+
+    def parse(
+        self,
+        source_revision: SourceRevision,
+        content: bytes,
+        *,
+        media_type: str = XLSX_MEDIA_TYPE,
+    ) -> ParsedDocument:
+        return _parse_xlsx(source_revision, content, media_type=media_type, limits=self)
+
+    def resolve_locator(
+        self, document: ParsedDocument, content: bytes, locator: XlsxCellLocator
+    ) -> str:
+        return resolve_xlsx_locator(document, content, locator)
+
+
 def parse_document(
     source_revision: SourceRevision,
     content: bytes,
@@ -487,6 +519,8 @@ def parse_document(
     media_type: str | None = None,
     max_bytes: int = 10_000_000,
     max_lines: int = 1_000_000,
+    max_cells: int = 1_000_000,
+    max_worksheets: int = 256,
 ) -> ParsedDocument:
     """Parse an immutable original with the selected production adapter."""
 
@@ -494,6 +528,10 @@ def parse_document(
         raise ValueError("only content revisions can be parsed")
     assert_revision_digest(source_revision)
     selected_media_type = (media_type or source_revision.media_type or "").lower()
+    if selected_media_type == XLSX_MEDIA_TYPE:
+        return XlsxParser(
+            max_bytes=max_bytes, max_cells=max_cells, max_worksheets=max_worksheets
+        ).parse(source_revision, content, media_type=XLSX_MEDIA_TYPE)
     if selected_media_type in {"text/markdown", "text/x-markdown"}:
         return MarkdownParser(max_bytes=max_bytes, max_lines=max_lines).parse(
             source_revision, content, media_type="text/markdown"
@@ -916,3 +954,242 @@ def _has_exact_unicode_text(value: str) -> bool:
     except UnicodeEncodeError:
         return False
     return True
+
+
+def _parse_xlsx(
+    source_revision: SourceRevision,
+    content: bytes,
+    *,
+    media_type: str,
+    limits: XlsxParser,
+) -> ParsedDocument:
+    if source_revision.kind is not RevisionKind.CONTENT:
+        raise ValueError("only content revisions can be parsed")
+    assert_revision_digest(source_revision)
+    if (
+        len(content) != source_revision.byte_length
+        or hashlib.sha256(content).hexdigest() != source_revision.original_sha256
+    ):
+        raise ValueError("original content does not match source revision")
+    if len(content) > limits.max_bytes:
+        return _failed_xlsx_document(source_revision, content, media_type=media_type, code="bounded_input")
+
+    try:
+        from openpyxl import load_workbook
+
+        values_workbook = load_workbook(
+            BytesIO(content), read_only=False, data_only=True, keep_links=True
+        )
+        formulas_workbook = load_workbook(
+            BytesIO(content), read_only=False, data_only=False, keep_links=True
+        )
+    except Exception:
+        # The parser boundary is deliberately fail-closed for malformed ZIP/XML
+        # and unsupported workbook structures without returning provider errors.
+        return _failed_xlsx_document(source_revision, content, media_type=media_type, code="malformed_structure")
+
+    try:
+        exclusions: list[ParseExclusion] = []
+        segments: list[ParsedSegment] = []
+        if len(values_workbook.worksheets) > limits.max_worksheets:
+            exclusions.append(
+                ParseExclusion(
+                    code="bounded_input", count=len(values_workbook.worksheets) - limits.max_worksheets
+                )
+            )
+        worksheets = values_workbook.worksheets[: limits.max_worksheets]
+        formula_sheets = {sheet.title: sheet for sheet in formulas_workbook.worksheets}
+        external_links = len(getattr(formulas_workbook, "_external_links", ()))
+        formula_without_cache = 0
+        hidden_content = 0
+        unsupported_structure = 0
+        external_formula_count = external_links
+        scanned_cells = 0
+        bounded = False
+
+        for sheet in worksheets:
+            formula_sheet = formula_sheets.get(sheet.title)
+            if formula_sheet is None:
+                unsupported_structure += 1
+                continue
+            if sheet.sheet_state != "visible":
+                hidden_content += 1
+                continue
+            unsupported_structure += len(getattr(sheet, "_charts", ()))
+            unsupported_structure += len(getattr(sheet, "_images", ()))
+            for row in sheet.iter_rows():
+                for cell in row:
+                    if scanned_cells >= limits.max_cells:
+                        bounded = True
+                        break
+                    scanned_cells += 1
+                    formula_cell = formula_sheet[cell.coordinate]
+                    if _xlsx_cell_hidden(sheet, cell.row, cell.column):
+                        if cell.value is not None:
+                            hidden_content += 1
+                        continue
+                    value = cell.value
+                    formula = formula_cell.value
+                    locator = XlsxCellLocator(
+                        sheet=sheet.title,
+                        row=cell.row,
+                        cell_range=_merged_cell_range(sheet, cell.coordinate),
+                    )
+                    if formula_cell.data_type == "f" and _is_external_formula(formula):
+                        external_formula_count += 1
+                        continue
+                    if formula_cell.data_type == "f" and value is None:
+                        formula_without_cache += 1
+                        continue
+                    if formula_cell.data_type == "e" or isinstance(
+                        value, (bytes, bytearray, dict, list, tuple, set)
+                    ):
+                        unsupported_structure += 1
+                        continue
+                    if value is None:
+                        continue
+                    text = _xlsx_cell_text(value)
+                    if not text.strip():
+                        continue
+                    segments.append(_placeholder_segment(text=text, locator=locator))
+                if bounded:
+                    break
+            if bounded:
+                break
+
+        if bounded:
+            exclusions.append(ParseExclusion(code="bounded_input", count=1))
+        if formula_without_cache:
+            exclusions.append(
+                ParseExclusion(code="formula_without_cached_value", count=formula_without_cache)
+            )
+        if hidden_content:
+            exclusions.append(ParseExclusion(code="hidden_content", count=hidden_content))
+        if external_formula_count:
+            exclusions.append(ParseExclusion(code="external_link", count=external_formula_count))
+        if unsupported_structure:
+            exclusions.append(ParseExclusion(code="unsupported_structure", count=unsupported_structure))
+        if not segments and not exclusions:
+            exclusions.append(ParseExclusion(code="unsupported_structure", count=1))
+        coverage = ParseCoverage.COMPLETE if not exclusions else ParseCoverage.PARTIAL
+        return ParsedDocument.from_source(
+            source_revision,
+            parser_name="xlsx",
+            parser_version=XLSX_PARSER_VERSION,
+            parser_config_reference=XLSX_PARSER_CONFIG_REFERENCE,
+            locator_contract_version=XLSX_LOCATOR_CONTRACT_VERSION,
+            media_type=media_type,
+            coverage=coverage,
+            segments=tuple(segments),
+            exclusions=tuple(exclusions),
+            source_byte_length=len(content),
+            source_codepoint_length=0,
+        )
+    finally:
+        values_workbook.close()
+        formulas_workbook.close()
+
+
+def resolve_xlsx_locator(
+    document: ParsedDocument, content: bytes, locator: XlsxCellLocator
+) -> str:
+    """Reopen one exact XLSX revision and resolve a persisted cell locator."""
+
+    if document.parser_name != "xlsx" or document.parser_version != XLSX_PARSER_VERSION:
+        raise ValueError("locator parser identity does not match")
+    if document.locator_contract_version != XLSX_LOCATOR_CONTRACT_VERSION:
+        raise ValueError("locator contract identity does not match")
+    if (
+        len(content) != document.source_byte_length
+        or hashlib.sha256(content).hexdigest() != document.original_sha256
+    ):
+        raise ValueError("original content does not match source revision")
+    segment = next((item for item in document.segments if item.locator == locator), None)
+    if segment is None:
+        raise ValueError("locator does not resolve")
+    workbook = None
+    try:
+        from openpyxl import load_workbook
+
+        workbook = load_workbook(BytesIO(content), read_only=False, data_only=True, keep_links=True)
+        sheet = workbook[locator.sheet]
+        start_coordinate = locator.cell_range.split(":", 1)[0]
+        cell = sheet[start_coordinate]
+        if cell.row != locator.row or cell.coordinate != start_coordinate:
+            raise ValueError("locator does not resolve")
+        if locator.cell_range not in {str(value) for value in sheet.merged_cells.ranges} and ":" in locator.cell_range:
+            raise ValueError("locator does not resolve")
+        value = cell.value
+    except Exception:
+        raise ValueError("locator does not resolve") from None
+    finally:
+        if workbook is not None:
+            workbook.close()
+    if value is None or _xlsx_cell_text(value) != segment.text:
+        raise ValueError("locator does not resolve")
+    return segment.text
+
+
+def _placeholder_segment(*, text: str, locator: XlsxCellLocator) -> ParsedSegment:
+    text_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return ParsedSegment.model_construct(
+        segment_id=UUID(int=1),
+        segment_digest="0" * 64,
+        artifact_digest="0" * 64,
+        text=text,
+        text_digest=text_digest,
+        locator=locator,
+        heading_path=(),
+    )
+
+
+def _failed_xlsx_document(
+    source_revision: SourceRevision,
+    content: bytes,
+    *,
+    media_type: str,
+    code: Literal["bounded_input", "malformed_structure"],
+) -> ParsedDocument:
+    return ParsedDocument.from_source(
+        source_revision,
+        parser_name="xlsx",
+        parser_version=XLSX_PARSER_VERSION,
+        parser_config_reference=XLSX_PARSER_CONFIG_REFERENCE,
+        locator_contract_version=XLSX_LOCATOR_CONTRACT_VERSION,
+        media_type=media_type,
+        coverage=ParseCoverage.FAILED,
+        segments=(),
+        exclusions=(ParseExclusion(code=code, count=1),),
+        source_byte_length=len(content),
+        source_codepoint_length=0,
+    )
+
+
+def _merged_cell_range(sheet: object, coordinate: str) -> str:
+    for merged_range in getattr(sheet, "merged_cells").ranges:
+        if coordinate in merged_range:
+            return str(merged_range)
+    return coordinate
+
+
+def _xlsx_cell_hidden(sheet: object, row: int, column: int) -> bool:
+    row_dimension = getattr(sheet, "row_dimensions").get(row)
+    if row_dimension is not None and row_dimension.hidden:
+        return True
+    column_dimensions = getattr(sheet, "column_dimensions")
+    for dimension in column_dimensions.values():
+        if not dimension.hidden:
+            continue
+        minimum = dimension.min or column
+        maximum = dimension.max or column
+        if minimum <= column <= maximum:
+            return True
+    return False
+
+
+def _is_external_formula(value: object) -> bool:
+    return isinstance(value, str) and "[" in value and "]" in value
+
+
+def _xlsx_cell_text(value: object) -> str:
+    return str(value)
