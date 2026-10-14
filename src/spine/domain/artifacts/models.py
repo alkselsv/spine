@@ -122,6 +122,42 @@ class PageTextLocator(_CodepointRange):
     page_number: StrictInt = Field(gt=0)
 
 
+class OoxmlBlockPathStep(DefinitionModel):
+    """One ordered step through a WordprocessingML body or table hierarchy."""
+
+    kind: Literal["paragraph", "table", "row", "cell"]
+    index: StrictInt = Field(ge=0)
+
+
+class OoxmlTextLocator(_CodepointRange):
+    """A half-open code-point range in one structurally addressed DOCX paragraph."""
+
+    kind: Literal["ooxml_text"] = "ooxml_text"
+    block_path: tuple[OoxmlBlockPathStep, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_block_path(self) -> "OoxmlTextLocator":
+        kinds = tuple(step.kind for step in self.block_path)
+        position = 0
+        while position < len(kinds):
+            if kinds[position] == "paragraph":
+                if position != len(kinds) - 1:
+                    raise ValueError("paragraph must terminate an OOXML block path")
+                return self
+            if kinds[position : position + 3] != ("table", "row", "cell"):
+                raise ValueError("invalid OOXML block path")
+            position += 3
+        raise ValueError("OOXML block path must terminate at a paragraph")
+
+
+class ExtractedOoxmlText(DefinitionModel):
+    """Transient text for one explicitly identified OOXML paragraph path."""
+
+    schema_version: Literal["extracted-ooxml-text:v1"] = "extracted-ooxml-text:v1"
+    block_path: tuple[OoxmlBlockPathStep, ...] = Field(min_length=1)
+    text: str
+
+
 class ExtractedPageText(DefinitionModel):
     """Transient extracted text for one explicitly identified PDF page."""
 
@@ -130,7 +166,10 @@ class ExtractedPageText(DefinitionModel):
     text: str
 
 
-Locator = Annotated[PhysicalLineLocator | PageTextLocator, Field(discriminator="kind")]
+Locator = Annotated[
+    PhysicalLineLocator | PageTextLocator | OoxmlTextLocator,
+    Field(discriminator="kind"),
+]
 
 
 class ParseExclusion(DefinitionModel):
@@ -146,6 +185,9 @@ class ParseExclusion(DefinitionModel):
         "malformed_document",
         "extraction_failed",
         "unlocatable_content",
+        "unsupported_story",
+        "unsupported_drawing",
+        "ambiguous_merged_cell",
     ]
     count: StrictInt = Field(gt=0)
     locator: Locator | None = None
@@ -243,7 +285,7 @@ class ParsedDocument(DefinitionModel):
 
     def resolve_locator(
         self,
-        source: str | ExtractedPageText,
+        source: str | ExtractedPageText | ExtractedOoxmlText,
         locator: Locator,
     ) -> str:
         segment = next((value for value in self.segments if value.locator == locator), None)
@@ -380,11 +422,22 @@ def _build_segment(
 
 
 def resolve_locator(
-    source: str | ExtractedPageText,
+    source: str | ExtractedPageText | ExtractedOoxmlText,
     locator: Locator,
     *,
     expected_text: str | None = None,
 ) -> str:
+    if isinstance(locator, OoxmlTextLocator):
+        if not isinstance(source, ExtractedOoxmlText):
+            raise TypeError("OOXML locator source must identify one paragraph path")
+        if source.block_path != locator.block_path:
+            raise ValueError("locator does not resolve")
+        if locator.end_codepoint > len(source.text):
+            raise ValueError("locator does not resolve")
+        value = source.text[locator.start_codepoint:locator.end_codepoint]
+        if expected_text is not None and value != expected_text:
+            raise ValueError("locator does not resolve")
+        return value
     if isinstance(locator, PageTextLocator):
         if not isinstance(source, ExtractedPageText):
             raise TypeError("page-text locator source must identify one extracted page")

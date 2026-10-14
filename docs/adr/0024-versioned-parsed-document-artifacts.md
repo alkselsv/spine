@@ -7,7 +7,7 @@ Accepted
 ## Context
 
 R1 parsing must preserve the immutable `SourceRevision` boundary while making
-TXT, Markdown and PDF output reproducible, tenant-scoped and inspectable by
+TXT, Markdown, PDF and DOCX output reproducible, tenant-scoped and inspectable by
 exact locators. Parser output is a projection of source evidence, not a
 replacement for the source ledger.
 
@@ -28,6 +28,14 @@ half-open Unicode-code-point range in that page's extracted text. The locator
 therefore distinguishes repeated text without approximate search but remains
 valid only with the pinned parser and extraction configuration.
 
+DOCX parsing uses a lazy `python-docx` adapter over the immutable OOXML package.
+Each text segment identifies one paragraph by an ordered path of paragraph,
+table, row and cell steps, including nested tables, plus a half-open Unicode
+code-point range within the paragraph. The parser identity pins the installed
+`python-docx` version; the configuration identity pins compressed input,
+archive-entry, uncompressed-size, structural-block, paragraph-text,
+total-extracted-text and nesting-depth limits.
+
 TXT/Markdown parsing is strict UTF-8 and bounded. Unsupported Markdown fenced
 structures and malformed input produce typed exclusions; partial or failed
 coverage can never be reported without an exclusion. Parsed documents and
@@ -44,6 +52,14 @@ version and locator already enforced by the shared artifact repository.
 The parsed-document and parsed-segment envelopes remain at v1: PDF adds a new
 format-specific locator contract rather than changing either envelope's
 identity or lifecycle semantics.
+
+DOCX header, footer, note and comment stories remain excluded until they have
+their own locator strategy. Drawings, ambiguous merged cells, unknown body or
+cell blocks, malformed OOXML packages and bounded subtrees produce content-free
+typed exclusions. Text inside an excluded drawing or bounded nested table is not
+promoted into a segment. Exact DOCX resolution reopens the authorized original,
+walks the structural path and validates the stored paragraph range; it never
+searches for duplicate text approximately.
 
 ## Consequences
 

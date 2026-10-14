@@ -19,6 +19,9 @@ from .models import (
 )
 from spine.domain.artifacts import (
     ExtractedPageText,
+    ExtractedOoxmlText,
+    OoxmlBlockPathStep,
+    OoxmlTextLocator,
     PageTextLocator,
     ParseCoverage,
     ParseExclusion,
@@ -30,6 +33,9 @@ from spine.domain.artifacts import (
 __all__ = [
     "FailureStage",
     "ExtractedPageText",
+    "ExtractedOoxmlText",
+    "OoxmlBlockPathStep",
+    "OoxmlTextLocator",
     "IngestionFailure",
     "IngestionItemState",
     "IngestionRun",
