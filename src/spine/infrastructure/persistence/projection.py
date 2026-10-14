@@ -19,8 +19,11 @@ from spine.application.persistence.idempotency import (
 from spine.application.persistence.projection import (
     ProjectionCandidateSealCommand,
     ProjectionMutationResult,
+    ProjectionReconciliationCommand,
     ProjectionReceiptCommand,
     ProjectionRunCommand,
+    ProjectionSnapshotCommand,
+    ProjectionValidationCommand,
     ProjectionRepository,
     transition_allowed,
 )
@@ -30,10 +33,16 @@ from spine.domain.projections import (
     ProjectionConfigVersion,
     ProjectionPartition,
     ProjectionReceipt,
+    ProjectionReconciliationResult,
     ProjectionRun,
     ProjectionRunTransition,
+    ProjectionSnapshot,
+    ProjectionSnapshotMember,
+    ProjectionSnapshotState,
+    ProjectionValidation,
     SourceProjectionReference,
     projection_evidence_digest,
+    projection_snapshot_manifest_digest,
 )
 
 if TYPE_CHECKING:
@@ -465,6 +474,13 @@ class InMemoryProjectionRepository(ProjectionRepository):
             candidate_receipts = tuple(item for item in receipts if item.projection_run_id == run.projection_run_id)
             candidate_references = tuple(item for item in references if item.projection_run_id == run.projection_run_id)
             candidate_transitions = tuple(item for item in transitions if item.projection_run_id == run.projection_run_id)
+            validations = tuple(
+                item
+                for item in self._all(
+                    "_base_projection_validations", "_pending_projection_validations"
+                ).values()
+                if item.projection_run_id == run.projection_run_id
+            )
             if not candidate_partitions or not candidate_receipts:
                 self._uow._fail(ConstraintConflictError("Projection candidate has incomplete evidence."))
             evidence_digest = projection_evidence_digest(
@@ -472,6 +488,7 @@ class InMemoryProjectionRepository(ProjectionRepository):
                 receipts=tuple(sorted(candidate_receipts, key=lambda item: item.projection_receipt_id.hex)),
                 references=tuple(sorted(candidate_references, key=lambda item: item.source_projection_reference_id.hex)),
                 transitions=tuple(sorted(candidate_transitions, key=lambda item: item.projection_run_transition_id.hex)),
+                validations=tuple(sorted(validations, key=lambda item: item.projection_validation_id.hex)),
             )
             values = run.model_dump(mode="python")
             values.update(
@@ -486,6 +503,289 @@ class InMemoryProjectionRepository(ProjectionRepository):
         result = self._uow._repository_call(operation)
         await self._uow.idempotency.complete(claim, result.result_reference)
         return result
+
+    async def record_validation(self, command: ProjectionValidationCommand) -> ProjectionMutationResult:
+        self._uow._guard_active()
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=command.digest.operation_schema_version,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        if isinstance(claim, IdempotencyReplay):
+            value = self._all("_base_projection_validations", "_pending_projection_validations").get(
+                claim.result.result_id
+            )
+            if value is None:
+                self._uow._fail(ConstraintConflictError("Projection validation replay is unavailable."))
+            return ProjectionMutationResult(self._copy(value), True, claim, claim.result)
+
+        def operation() -> ProjectionMutationResult:
+            validation = command.validation.model_copy(
+                update={"projection_validation_id": command.validation.projection_validation_id}
+            )
+            self._check_scope(validation)
+            run = self._run(validation.projection_run_id)
+            if run is None or run.projection_candidate_id != validation.projection_candidate_id:
+                self._uow._fail(ConstraintConflictError("Projection validation lineage is invalid."))
+            if run.candidate_state is ProjectionCandidateState.SEALED:
+                self._uow._fail(OptimisticConflictError("Projection candidate is sealed."))
+            validations = self._all("_base_projection_validations", "_pending_projection_validations")
+            existing = validations.get(validation.projection_validation_id)
+            if existing is not None:
+                if existing != validation:
+                    self._uow._fail(ConstraintConflictError("Projection validation identity conflicts."))
+                return ProjectionMutationResult(
+                    self._copy(existing), False, claim,
+                    OpaqueResultReference("projection_validation", validation.projection_validation_id, 1),
+                )
+            if any(
+                item.projection_candidate_id == validation.projection_candidate_id
+                and item.gate_kind == validation.gate_kind
+                and item.gate_version == validation.gate_version
+                and item.input_digest == validation.input_digest
+                for item in validations.values()
+            ):
+                self._uow._fail(ConstraintConflictError("Projection validation gate already exists."))
+            self._uow._pending_projection_validations[validation.projection_validation_id] = self._copy(validation)
+            return ProjectionMutationResult(
+                self._copy(validation), False, claim,
+                OpaqueResultReference("projection_validation", validation.projection_validation_id, 1),
+            )
+
+        result = self._uow._repository_call(operation)
+        await self._uow.idempotency.complete(claim, result.result_reference)
+        return result
+
+    async def list_validations(self, projection_run_id: UUID) -> tuple[ProjectionValidation, ...]:
+        self._uow._guard_active()
+        values = self._all("_base_projection_validations", "_pending_projection_validations").values()
+        return tuple(
+            self._copy(value)
+            for value in sorted(values, key=lambda item: item.projection_validation_id.hex)
+            if value.projection_run_id == projection_run_id and self._in_scope(value)
+        )
+
+    async def assemble_snapshot(self, command: ProjectionSnapshotCommand) -> ProjectionMutationResult:
+        self._uow._guard_active()
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=command.digest.operation_schema_version,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        if isinstance(claim, IdempotencyReplay):
+            value = self._all("_base_projection_snapshots", "_pending_projection_snapshots").get(
+                claim.result.result_id
+            )
+            if value is None:
+                self._uow._fail(ConstraintConflictError("Projection snapshot replay is unavailable."))
+            return ProjectionMutationResult(self._copy(value), True, claim, claim.result)
+
+        def operation() -> ProjectionMutationResult:
+            requested = command.snapshot
+            self._check_scope(requested)
+            run = self._run(requested.projection_run_id)
+            if (
+                run is None
+                or run.projection_candidate_id != requested.projection_candidate_id
+                or run.candidate_state is not ProjectionCandidateState.SEALED
+                or run.candidate_evidence_digest != requested.candidate_evidence_digest
+                or run.projection_kind != requested.projection_kind
+                or run.projection_config_version_id != requested.projection_config_version_id
+                or run.canonical_boundary_id != requested.canonical_boundary_id
+            ):
+                self._uow._fail(ConstraintConflictError("Projection snapshot candidate lineage is invalid."))
+            snapshots = self._all("_base_projection_snapshots", "_pending_projection_snapshots")
+            existing = next(
+                (item for item in snapshots.values() if item.projection_candidate_id == requested.projection_candidate_id),
+                None,
+            )
+            if existing is not None:
+                if existing.manifest_digest != requested.manifest_digest:
+                    self._uow._fail(ConstraintConflictError("Projection snapshot identity conflicts."))
+                return ProjectionMutationResult(
+                    self._copy(existing), False, claim,
+                    OpaqueResultReference("projection_snapshot", existing.projection_snapshot_id, 1),
+                )
+            if requested.snapshot_state is not ProjectionSnapshotState.ASSEMBLING:
+                self._uow._fail(ConstraintConflictError("Projection snapshot must begin assembling."))
+            if requested.predecessor_snapshot_id is not None:
+                predecessor = snapshots.get(requested.predecessor_snapshot_id)
+                if (
+                    predecessor is None
+                    or predecessor.projection_kind != requested.projection_kind
+                    or predecessor.workspace_id != requested.workspace_id
+                    or predecessor.environment_id != requested.environment_id
+                    or predecessor.snapshot_state is not ProjectionSnapshotState.FINALIZED
+                ):
+                    self._uow._fail(ConstraintConflictError("Projection snapshot predecessor is invalid."))
+            boundary = self._all("_base_canonical_boundaries", "_pending_canonical_boundaries").get(
+                requested.canonical_boundary_id
+            )
+            if boundary is None or not self._in_scope(boundary) or boundary.projection_kind != requested.projection_kind:
+                self._uow._fail(ConstraintConflictError("Projection snapshot boundary is invalid."))
+            boundary_members = tuple(
+                value
+                for value in self._all(
+                    "_base_canonical_boundary_members", "_pending_canonical_boundary_members"
+                ).values()
+                if value.boundary_id == requested.canonical_boundary_id and self._in_scope(value)
+            )
+            members = tuple(command.members)
+            if len(members) != len(boundary_members) or {
+                item.source_object_id for item in members
+            } != {item.source_object_id for item in boundary_members}:
+                self._uow._fail(ConstraintConflictError("Projection snapshot membership is incomplete."))
+            by_source = {item.source_object_id: item for item in boundary_members}
+            for member in members:
+                self._check_scope(member)
+                boundary_member = by_source.get(member.source_object_id)
+                if (
+                    boundary_member is None
+                    or member.projection_snapshot_id != requested.projection_snapshot_id
+                    or member.canonical_boundary_id != requested.canonical_boundary_id
+                    or member.canonical_boundary_member_id != boundary_member.source_object_id
+                    or member.source_revision_id != boundary_member.source_revision_id
+                ):
+                    self._uow._fail(ConstraintConflictError("Projection snapshot member lineage is invalid."))
+                boundary_kind = boundary_member.revision_kind.value
+                if (
+                    (boundary_kind == "tombstone" and member.disposition.value != "tombstoned")
+                    or (boundary_kind == "content" and member.disposition.value == "tombstoned")
+                ):
+                    self._uow._fail(ConstraintConflictError("Projection snapshot disposition does not match the boundary revision."))
+                if member.disposition.value == "included":
+                    receipts = self._all("_base_projection_receipts", "_pending_projection_receipts")
+                    partitions = self._all("_base_projection_partitions", "_pending_projection_partitions")
+                    receipt = receipts.get(member.projection_receipt_id)
+                    partition = partitions.get(member.projection_partition_id)
+                    if (
+                        receipt is None
+                        or partition is None
+                        or receipt.projection_run_id != run.projection_run_id
+                        or receipt.projection_candidate_id != run.projection_candidate_id
+                        or receipt.projection_partition_id != partition.projection_partition_id
+                        or receipt.command_identity != partition.expected_command_identity
+                        or receipt.command_digest != partition.expected_command_digest
+                    ):
+                        self._uow._fail(ConstraintConflictError("Projection snapshot artifact evidence is invalid."))
+            validations = tuple(
+                value
+                for value in self._all(
+                    "_base_projection_validations", "_pending_projection_validations"
+                ).values()
+                if value.projection_run_id == run.projection_run_id and self._in_scope(value)
+            )
+            if not validations or any(item.decision.value != "passed" for item in validations):
+                self._uow._fail(ConstraintConflictError("Projection snapshot validation evidence is incomplete."))
+            if requested.member_count != len(members):
+                self._uow._fail(ConstraintConflictError("Projection snapshot member count is invalid."))
+            expected_manifest = projection_snapshot_manifest_digest(requested, members)
+            if requested.manifest_digest != expected_manifest:
+                self._uow._fail(ConstraintConflictError("Projection snapshot manifest digest is invalid."))
+            finalized = requested.model_copy(update={"snapshot_state": ProjectionSnapshotState.FINALIZED})
+            self._uow._pending_projection_snapshots[finalized.projection_snapshot_id] = self._copy(finalized)
+            for member in members:
+                self._uow._pending_projection_snapshot_members[member.projection_snapshot_member_id] = self._copy(member)
+            return ProjectionMutationResult(
+                self._copy(finalized), False, claim,
+                OpaqueResultReference("projection_snapshot", finalized.projection_snapshot_id, 1),
+            )
+
+        result = self._uow._repository_call(operation)
+        await self._uow.idempotency.complete(claim, result.result_reference)
+        return result
+
+    async def resolve_snapshot(self, projection_snapshot_id: UUID) -> ProjectionSnapshot | None:
+        self._uow._guard_active()
+        value = self._all("_base_projection_snapshots", "_pending_projection_snapshots").get(projection_snapshot_id)
+        return self._copy(value) if value is not None and self._in_scope(value) else None
+
+    async def list_snapshot_members(self, projection_snapshot_id: UUID) -> tuple[ProjectionSnapshotMember, ...]:
+        self._uow._guard_active()
+        values = self._all("_base_projection_snapshot_members", "_pending_projection_snapshot_members").values()
+        return tuple(
+            self._copy(value)
+            for value in sorted(values, key=lambda item: item.canonical_boundary_member_id.hex)
+            if value.projection_snapshot_id == projection_snapshot_id and self._in_scope(value)
+        )
+
+    async def record_reconciliation(
+        self, command: ProjectionReconciliationCommand
+    ) -> ProjectionMutationResult:
+        self._uow._guard_active()
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=command.digest.operation_schema_version,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        if isinstance(claim, IdempotencyReplay):
+            value = self._all(
+                "_base_projection_reconciliation_results", "_pending_projection_reconciliation_results"
+            ).get(claim.result.result_id)
+            if value is None:
+                self._uow._fail(ConstraintConflictError("Projection reconciliation replay is unavailable."))
+            return ProjectionMutationResult(self._copy(value), True, claim, claim.result)
+
+        def operation() -> ProjectionMutationResult:
+            result = command.result
+            self._check_scope(result)
+            snapshot = self._all(
+                "_base_projection_snapshots", "_pending_projection_snapshots"
+            ).get(result.projection_snapshot_id)
+            if snapshot is None or snapshot.snapshot_state is not ProjectionSnapshotState.FINALIZED:
+                self._uow._fail(ConstraintConflictError("Reconciliation requires a finalized snapshot."))
+            results = self._all(
+                "_base_projection_reconciliation_results", "_pending_projection_reconciliation_results"
+            )
+            if result.reconciliation_result_id in results:
+                self._uow._fail(ConstraintConflictError("Reconciliation result identity conflicts."))
+            if any(
+                item.attempt_identity == result.attempt_identity
+                and item.attempt_digest != result.attempt_digest
+                for item in results.values()
+            ):
+                self._uow._fail(IdempotencyConflictError("Reconciliation attempt identity conflicts."))
+            if any(
+                item.projection_kind == result.projection_kind
+                and item.activation_generation == result.activation_generation
+                and item.projection_snapshot_id == result.projection_snapshot_id
+                and item.projection_activation_id == result.projection_activation_id
+                and item.predecessor_result_id == result.predecessor_result_id
+                for item in results.values()
+            ):
+                self._uow._fail(ConstraintConflictError("Reconciliation root or successor already exists."))
+            if result.predecessor_result_id is not None:
+                predecessor = results.get(result.predecessor_result_id)
+                if (
+                    predecessor is None
+                    or predecessor.projection_kind != result.projection_kind
+                    or predecessor.activation_generation != result.activation_generation
+                    or predecessor.projection_snapshot_id != result.projection_snapshot_id
+                    or predecessor.projection_activation_id != result.projection_activation_id
+                ):
+                    self._uow._fail(ConstraintConflictError("Reconciliation predecessor lineage is invalid."))
+            self._uow._pending_projection_reconciliation_results[result.reconciliation_result_id] = self._copy(result)
+            return ProjectionMutationResult(
+                self._copy(result), False, claim,
+                OpaqueResultReference("projection_reconciliation", result.reconciliation_result_id, 1),
+            )
+
+        result = self._uow._repository_call(operation)
+        await self._uow.idempotency.complete(claim, result.result_reference)
+        return result
+
+    async def list_reconciliation_results(
+        self, projection_snapshot_id: UUID
+    ) -> tuple[ProjectionReconciliationResult, ...]:
+        self._uow._guard_active()
+        values = self._all(
+            "_base_projection_reconciliation_results", "_pending_projection_reconciliation_results"
+        ).values()
+        return tuple(
+            self._copy(value)
+            for value in sorted(values, key=lambda item: item.checked_at)
+            if value.projection_snapshot_id == projection_snapshot_id and self._in_scope(value)
+        )
 
 
 __all__ = ["InMemoryProjectionRepository"]

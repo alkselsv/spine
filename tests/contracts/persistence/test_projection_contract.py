@@ -13,6 +13,8 @@ from spine.application.persistence.projection import (
     ProjectionCandidateSealCommand,
     ProjectionReceiptCommand,
     ProjectionRunCommand,
+    ProjectionSnapshotCommand,
+    ProjectionValidationCommand,
 )
 from spine.domain.projections import (
     OntologyVersion,
@@ -20,10 +22,15 @@ from spine.domain.projections import (
     ProjectionOperation,
     ProjectionPartition,
     ProjectionReceipt,
+    ProjectionSnapshot,
+    ProjectionSnapshotMember,
+    ProjectionSnapshotMemberDisposition,
     ProjectionRun,
     ProjectionRunState,
     ProjectionRunTransition,
+    ProjectionValidation,
     SourceProjectionReference,
+    projection_snapshot_manifest_digest,
 )
 from tests.contracts.persistence.test_canonical_acceptance_contract import prepare_case
 
@@ -207,6 +214,33 @@ async def test_projection_candidate_seal_freezes_evidence_and_replays(
         await uow.projections.add_source_reference(reference)
         await uow.commit()
 
+    async with persistence_adapter.uow_factory(
+        persistence_adapter.ingestion_context(
+            case.source.workspace_id, case.source.environment_id, "projection_validation"
+        )
+    ) as uow:
+        await uow.projections.record_validation(
+            ProjectionValidationCommand.create(
+                validation=ProjectionValidation(
+                    projection_validation_id=UUID(int=case.source.workspace_id.int + 50),
+                    projection_run_id=run.projection_run_id,
+                    projection_candidate_id=run.projection_candidate_id,
+                    workspace_id=run.workspace_id,
+                    environment_id=run.environment_id,
+                    gate_kind="manifest",
+                    gate_version="r1",
+                    input_digest="8" * 64,
+                    result_digest="9" * 64,
+                    decision="passed",
+                    metrics_schema_version="metrics:v1",
+                    evaluator_reference="evaluator-24000",
+                    evaluated_at=NOW,
+                ),
+                idempotency_key=IdempotencyKey("projection-validation-24000"),
+            )
+        )
+        await uow.commit()
+
     seal_context = persistence_adapter.ingestion_context(
         case.source.workspace_id, case.source.environment_id, "projection_candidate_seal"
     )
@@ -215,11 +249,63 @@ async def test_projection_candidate_seal_freezes_evidence_and_replays(
         projection_candidate_id=run.projection_candidate_id,
         idempotency_key=IdempotencyKey("projection-seal-24000"),
     )
+    snapshot_context = persistence_adapter.ingestion_context(
+        case.source.workspace_id, case.source.environment_id, "projection_snapshot"
+    )
     async with persistence_adapter.uow_factory(seal_context) as uow:
         sealed = await uow.projections.seal_candidate(seal)
         await uow.commit()
     assert sealed.value.candidate_evidence_digest is not None
     assert sealed.value.candidate_state.value == "sealed"
+
+    snapshot = ProjectionSnapshot(
+        projection_snapshot_id=UUID(int=case.source.workspace_id.int + 51),
+        projection_run_id=run.projection_run_id,
+        projection_candidate_id=run.projection_candidate_id,
+        workspace_id=run.workspace_id,
+        environment_id=run.environment_id,
+        projection_kind=run.projection_kind,
+        projection_config_version_id=config.projection_config_version_id,
+        canonical_boundary_id=boundary.boundary.boundary_id,
+        candidate_evidence_digest=sealed.value.candidate_evidence_digest,
+        manifest_digest="0" * 64,
+        member_count=1,
+        created_at=NOW,
+    )
+    snapshot_member = ProjectionSnapshotMember(
+        projection_snapshot_member_id=UUID(int=case.source.workspace_id.int + 52),
+        projection_snapshot_id=snapshot.projection_snapshot_id,
+        canonical_boundary_id=boundary.boundary.boundary_id,
+        canonical_boundary_member_id=case.source.source_object_id,
+        workspace_id=run.workspace_id,
+        environment_id=run.environment_id,
+        source_object_id=case.source.source_object_id,
+        source_revision_id=case.revision.revision_id,
+        disposition=ProjectionSnapshotMemberDisposition.INCLUDED,
+        projection_partition_id=partition.projection_partition_id,
+        projection_receipt_id=receipt.projection_receipt_id,
+    )
+    snapshot = snapshot.model_copy(
+        update={
+            "manifest_digest": projection_snapshot_manifest_digest(snapshot, (snapshot_member,)),
+        }
+    )
+    async with persistence_adapter.uow_factory(snapshot_context) as uow:
+        assembled = await uow.projections.assemble_snapshot(
+            ProjectionSnapshotCommand.create(
+                snapshot=snapshot,
+                members=(snapshot_member,),
+                idempotency_key=IdempotencyKey("projection-snapshot-24000"),
+            )
+        )
+        await uow.commit()
+    assert assembled.value.snapshot_state.value == "finalized"
+    async with persistence_adapter.uow_factory(snapshot_context) as uow:
+        persisted_snapshot = await uow.projections.resolve_snapshot(
+            assembled.value.projection_snapshot_id
+        )
+        await uow.rollback()
+    assert persisted_snapshot == assembled.value
 
     async with persistence_adapter.uow_factory(seal_context) as uow:
         replay = await uow.projections.seal_candidate(seal)

@@ -81,9 +81,12 @@ from spine.application.persistence.ingestion import (
 from spine.application.persistence.projection import (
     ProjectionCandidateSealCommand,
     ProjectionMutationResult,
+    ProjectionReconciliationCommand,
     ProjectionReceiptCommand,
     ProjectionRepository,
     ProjectionRunCommand,
+    ProjectionSnapshotCommand,
+    ProjectionValidationCommand,
     transition_allowed,
 )
 from spine.application.persistence.idempotency import (
@@ -142,11 +145,18 @@ from spine.domain.projections import (
     ProjectionConfigVersion,
     ProjectionPartition,
     ProjectionReceipt,
+    ProjectionReconciliationResult,
     ProjectionRun,
     ProjectionRunState,
     ProjectionRunTransition,
+    ProjectionSnapshot,
+    ProjectionSnapshotMember,
+    ProjectionSnapshotMemberDisposition,
+    ProjectionSnapshotState,
+    ProjectionValidation,
     SourceProjectionReference,
     projection_evidence_digest,
+    projection_snapshot_manifest_digest,
 )
 from spine.infrastructure.db.engine import SessionFactory
 from spine.infrastructure.persistence.backup_recovery import (
@@ -191,6 +201,10 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     projection_partitions as _PROJECTION_PARTITIONS,
     projection_receipts as _PROJECTION_RECEIPTS,
     source_projection_references as _SOURCE_PROJECTION_REFERENCES,
+    projection_validations as _PROJECTION_VALIDATIONS,
+    projection_snapshots as _PROJECTION_SNAPSHOTS,
+    projection_snapshot_members as _PROJECTION_SNAPSHOT_MEMBERS,
+    projection_reconciliation_results as _PROJECTION_RECONCILIATION_RESULTS,
 )
 
 _BIND_CONTEXT = text(
@@ -2785,7 +2799,187 @@ class _PostgreSQLAuditWriter:
         return audit_event_id
 
 
-class _PostgreSQLProjectionRepository(ProjectionRepository):
+class _PostgreSQLProjectionSnapshotMixin:
+    """5B persistence operations shared by the PostgreSQL projection adapter."""
+
+    async def record_validation(self, command: ProjectionValidationCommand) -> ProjectionMutationResult:
+        self._uow._guard_active()
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=command.digest.operation_schema_version,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        if isinstance(claim, IdempotencyReplay):
+            row = (await self._uow._execute(select(_PROJECTION_VALIDATIONS).where(
+                _PROJECTION_VALIDATIONS.c.projection_validation_id == claim.result.result_id,
+            ))).mappings().one_or_none()
+            if row is None:
+                await self._uow._fail(ConstraintConflictError("Projection validation replay is unavailable."))
+            return ProjectionMutationResult(self._validation(row), True, claim, claim.result)
+        validation = command.validation
+        self._scoped(validation)
+        await self._open_run(validation.projection_run_id, validation.projection_candidate_id)
+        values = validation.model_dump(mode="python")
+        values["decision"] = validation.decision.value
+        values["metrics_payload"] = validation.model_dump(mode="json")["metrics_payload"]
+        await self._uow._execute(postgresql_insert(_PROJECTION_VALIDATIONS).values(**values))
+        reference = OpaqueResultReference("projection_validation", validation.projection_validation_id, 1)
+        await self._uow.idempotency.complete(claim, reference)
+        return ProjectionMutationResult(validation, False, claim, reference)
+
+    async def list_validations(self, projection_run_id: UUID) -> tuple[ProjectionValidation, ...]:
+        self._uow._guard_active()
+        scope = self._scope()
+        rows = (await self._uow._execute(select(_PROJECTION_VALIDATIONS).where(
+            _PROJECTION_VALIDATIONS.c.projection_run_id == projection_run_id,
+            _PROJECTION_VALIDATIONS.c.workspace_id == scope.workspace_id,
+            _PROJECTION_VALIDATIONS.c.environment_id == scope.environment_id,
+        ).order_by(_PROJECTION_VALIDATIONS.c.projection_validation_id))).mappings().all()
+        return tuple(self._validation(row) for row in rows)
+
+    async def assemble_snapshot(self, command: ProjectionSnapshotCommand) -> ProjectionMutationResult:
+        self._uow._guard_active()
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=command.digest.operation_schema_version,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        if isinstance(claim, IdempotencyReplay):
+            row = (await self._uow._execute(select(_PROJECTION_SNAPSHOTS).where(
+                _PROJECTION_SNAPSHOTS.c.projection_snapshot_id == claim.result.result_id,
+            ))).mappings().one_or_none()
+            if row is None:
+                await self._uow._fail(ConstraintConflictError("Projection snapshot replay is unavailable."))
+            return ProjectionMutationResult(self._snapshot(row), True, claim, claim.result)
+        snapshot = command.snapshot
+        self._scoped(snapshot)
+        run = await self._resolve_run(snapshot.projection_run_id, for_update=True)
+        if (
+            run is None
+            or run.projection_candidate_id != snapshot.projection_candidate_id
+            or run.candidate_state is not ProjectionCandidateState.SEALED
+            or run.candidate_evidence_digest != snapshot.candidate_evidence_digest
+            or run.projection_kind != snapshot.projection_kind
+            or run.projection_config_version_id != snapshot.projection_config_version_id
+            or run.canonical_boundary_id != snapshot.canonical_boundary_id
+            or snapshot.snapshot_state is not ProjectionSnapshotState.ASSEMBLING
+        ):
+            await self._uow._fail(ConstraintConflictError("Projection snapshot candidate lineage is invalid."))
+        if snapshot.predecessor_snapshot_id is not None:
+            predecessor = await self.resolve_snapshot(snapshot.predecessor_snapshot_id)
+            if predecessor is None or predecessor.projection_kind != snapshot.projection_kind or predecessor.snapshot_state is not ProjectionSnapshotState.FINALIZED:
+                await self._uow._fail(ConstraintConflictError("Projection snapshot predecessor is invalid."))
+        boundary_rows = (await self._uow._execute(select(_CANONICAL_BOUNDARY_MEMBERS).where(
+            _CANONICAL_BOUNDARY_MEMBERS.c.boundary_id == snapshot.canonical_boundary_id,
+            _CANONICAL_BOUNDARY_MEMBERS.c.workspace_id == snapshot.workspace_id,
+            _CANONICAL_BOUNDARY_MEMBERS.c.environment_id == snapshot.environment_id,
+        ))).mappings().all()
+        members = tuple(command.members)
+        by_source = {row["source_object_id"]: row for row in boundary_rows}
+        if len(members) != len(boundary_rows) or {item.source_object_id for item in members} != set(by_source):
+            await self._uow._fail(ConstraintConflictError("Projection snapshot membership is incomplete."))
+        for member in members:
+            self._scoped(member)
+            boundary_member = by_source.get(member.source_object_id)
+            if boundary_member is None or member.canonical_boundary_member_id != boundary_member["source_object_id"] or member.source_revision_id != boundary_member["source_revision_id"]:
+                await self._uow._fail(ConstraintConflictError("Projection snapshot member lineage is invalid."))
+            if ((boundary_member["revision_kind"] == "tombstone" and member.disposition is not ProjectionSnapshotMemberDisposition.TOMBSTONED) or (boundary_member["revision_kind"] == "content" and member.disposition is ProjectionSnapshotMemberDisposition.TOMBSTONED)):
+                await self._uow._fail(ConstraintConflictError("Projection snapshot disposition does not match the boundary revision."))
+            if member.disposition is ProjectionSnapshotMemberDisposition.INCLUDED:
+                artifact = (await self._uow._execute(select(
+                    _PROJECTION_RECEIPTS.c.command_identity.label("receipt_command_identity"),
+                    _PROJECTION_RECEIPTS.c.command_digest.label("receipt_command_digest"),
+                    _PROJECTION_PARTITIONS.c.expected_command_identity.label("expected_command_identity"),
+                    _PROJECTION_PARTITIONS.c.expected_command_digest.label("expected_command_digest"),
+                ).select_from(
+                    _PROJECTION_RECEIPTS.join(_PROJECTION_PARTITIONS, _PROJECTION_PARTITIONS.c.projection_partition_id == _PROJECTION_RECEIPTS.c.projection_partition_id)
+                ).where(
+                    _PROJECTION_RECEIPTS.c.projection_receipt_id == member.projection_receipt_id,
+                    _PROJECTION_PARTITIONS.c.projection_partition_id == member.projection_partition_id,
+                    _PROJECTION_RECEIPTS.c.workspace_id == member.workspace_id,
+                    _PROJECTION_RECEIPTS.c.environment_id == member.environment_id,
+                    _PROJECTION_RECEIPTS.c.projection_run_id == run.projection_run_id,
+                    _PROJECTION_RECEIPTS.c.projection_candidate_id == run.projection_candidate_id,
+                ))).mappings().one_or_none()
+                if artifact is None or artifact.receipt_command_identity != artifact.expected_command_identity or artifact.receipt_command_digest != artifact.expected_command_digest:
+                    await self._uow._fail(ConstraintConflictError("Projection snapshot artifact evidence is invalid."))
+        validations = await self.list_validations(snapshot.projection_run_id)
+        if not validations or any(item.decision.value != "passed" for item in validations):
+            await self._uow._fail(ConstraintConflictError("Projection snapshot validation evidence is incomplete."))
+        if snapshot.member_count != len(members) or snapshot.manifest_digest != projection_snapshot_manifest_digest(snapshot, members):
+            await self._uow._fail(ConstraintConflictError("Projection snapshot manifest is invalid."))
+        values = snapshot.model_dump(mode="python")
+        values["snapshot_state"] = ProjectionSnapshotState.ASSEMBLING.value
+        await self._uow._execute(postgresql_insert(_PROJECTION_SNAPSHOTS).values(**values))
+        for member in members:
+            await self._uow._execute(postgresql_insert(_PROJECTION_SNAPSHOT_MEMBERS).values(**member.model_dump(mode="python")))
+        await self._uow._execute(update(_PROJECTION_SNAPSHOTS).where(
+            _PROJECTION_SNAPSHOTS.c.projection_snapshot_id == snapshot.projection_snapshot_id,
+        ).values(snapshot_state=ProjectionSnapshotState.FINALIZED.value))
+        value = snapshot.model_copy(update={"snapshot_state": ProjectionSnapshotState.FINALIZED})
+        reference = OpaqueResultReference("projection_snapshot", value.projection_snapshot_id, 1)
+        await self._uow.idempotency.complete(claim, reference)
+        return ProjectionMutationResult(value, False, claim, reference)
+
+    async def resolve_snapshot(self, projection_snapshot_id: UUID) -> ProjectionSnapshot | None:
+        self._uow._guard_active()
+        scope = self._scope()
+        row = (await self._uow._execute(select(_PROJECTION_SNAPSHOTS).where(
+            _PROJECTION_SNAPSHOTS.c.projection_snapshot_id == projection_snapshot_id,
+            _PROJECTION_SNAPSHOTS.c.workspace_id == scope.workspace_id,
+            _PROJECTION_SNAPSHOTS.c.environment_id == scope.environment_id,
+        ))).mappings().one_or_none()
+        return self._snapshot(row) if row is not None else None
+
+    async def list_snapshot_members(self, projection_snapshot_id: UUID) -> tuple[ProjectionSnapshotMember, ...]:
+        self._uow._guard_active()
+        scope = self._scope()
+        rows = (await self._uow._execute(select(_PROJECTION_SNAPSHOT_MEMBERS).where(
+            _PROJECTION_SNAPSHOT_MEMBERS.c.projection_snapshot_id == projection_snapshot_id,
+            _PROJECTION_SNAPSHOT_MEMBERS.c.workspace_id == scope.workspace_id,
+            _PROJECTION_SNAPSHOT_MEMBERS.c.environment_id == scope.environment_id,
+        ).order_by(_PROJECTION_SNAPSHOT_MEMBERS.c.canonical_boundary_member_id))).mappings().all()
+        return tuple(self._snapshot_member(row) for row in rows)
+
+    async def record_reconciliation(self, command: ProjectionReconciliationCommand) -> ProjectionMutationResult:
+        self._uow._guard_active()
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=command.digest.operation_schema_version,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        if isinstance(claim, IdempotencyReplay):
+            row = (await self._uow._execute(select(_PROJECTION_RECONCILIATION_RESULTS).where(
+                _PROJECTION_RECONCILIATION_RESULTS.c.reconciliation_result_id == claim.result.result_id,
+            ))).mappings().one_or_none()
+            if row is None:
+                await self._uow._fail(ConstraintConflictError("Reconciliation replay is unavailable."))
+            return ProjectionMutationResult(self._reconciliation(row), True, claim, claim.result)
+        value = command.result
+        self._scoped(value)
+        snapshot = await self.resolve_snapshot(value.projection_snapshot_id)
+        if snapshot is None or snapshot.snapshot_state is not ProjectionSnapshotState.FINALIZED:
+            await self._uow._fail(ConstraintConflictError("Reconciliation requires a finalized snapshot."))
+        values = value.model_dump(mode="python")
+        values["outcome"] = value.outcome.value
+        values["findings_payload"] = value.model_dump(mode="json")["findings_payload"]
+        await self._uow._execute(postgresql_insert(_PROJECTION_RECONCILIATION_RESULTS).values(**values))
+        reference = OpaqueResultReference("projection_reconciliation", value.reconciliation_result_id, 1)
+        await self._uow.idempotency.complete(claim, reference)
+        return ProjectionMutationResult(value, False, claim, reference)
+
+    async def list_reconciliation_results(self, projection_snapshot_id: UUID) -> tuple[ProjectionReconciliationResult, ...]:
+        self._uow._guard_active()
+        scope = self._scope()
+        rows = (await self._uow._execute(select(_PROJECTION_RECONCILIATION_RESULTS).where(
+            _PROJECTION_RECONCILIATION_RESULTS.c.projection_snapshot_id == projection_snapshot_id,
+            _PROJECTION_RECONCILIATION_RESULTS.c.workspace_id == scope.workspace_id,
+            _PROJECTION_RECONCILIATION_RESULTS.c.environment_id == scope.environment_id,
+        ).order_by(_PROJECTION_RECONCILIATION_RESULTS.c.checked_at))).mappings().all()
+        return tuple(self._reconciliation(row) for row in rows)
+
+
+class _PostgreSQLProjectionRepository(_PostgreSQLProjectionSnapshotMixin, ProjectionRepository):
     """PostgreSQL-owned ontology/configuration and candidate evidence ledger."""
 
     def __init__(self, uow: "PostgreSQLTenantUnitOfWork") -> None:
@@ -2832,6 +3026,22 @@ class _PostgreSQLProjectionRepository(ProjectionRepository):
     @staticmethod
     def _reference(row: Mapping[str, Any]) -> SourceProjectionReference:
         return SourceProjectionReference.model_validate(dict(row))
+
+    @staticmethod
+    def _validation(row: Mapping[str, Any]) -> ProjectionValidation:
+        return ProjectionValidation.model_validate(dict(row))
+
+    @staticmethod
+    def _snapshot(row: Mapping[str, Any]) -> ProjectionSnapshot:
+        return ProjectionSnapshot.model_validate(dict(row))
+
+    @staticmethod
+    def _snapshot_member(row: Mapping[str, Any]) -> ProjectionSnapshotMember:
+        return ProjectionSnapshotMember.model_validate(dict(row))
+
+    @staticmethod
+    def _reconciliation(row: Mapping[str, Any]) -> ProjectionReconciliationResult:
+        return ProjectionReconciliationResult.model_validate(dict(row))
 
     async def add_ontology_version(self, ontology: OntologyVersion) -> OntologyVersion:
         self._uow._guard_active()
@@ -3249,6 +3459,7 @@ class _PostgreSQLProjectionRepository(ProjectionRepository):
         transitions = await self.list_transitions(run.projection_run_id)
         receipts = await self.list_receipts(run.projection_run_id)
         references = await self.list_source_references(run.projection_run_id)
+        validations = await self.list_validations(run.projection_run_id)
         if not partitions or not receipts:
             await self._uow._fail(ConstraintConflictError("Projection candidate has incomplete evidence."))
         evidence_digest = projection_evidence_digest(
@@ -3256,6 +3467,7 @@ class _PostgreSQLProjectionRepository(ProjectionRepository):
             receipts=receipts,
             references=references,
             transitions=transitions,
+            validations=validations,
         )
         sealed_at = datetime.now(timezone.utc)
         await self._uow._execute(

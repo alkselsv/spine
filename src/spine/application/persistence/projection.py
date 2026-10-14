@@ -19,9 +19,13 @@ from spine.domain.projections import (
     ProjectionConfigVersion,
     ProjectionPartition,
     ProjectionReceipt,
+    ProjectionReconciliationResult,
     ProjectionRun,
     ProjectionRunState,
     ProjectionRunTransition,
+    ProjectionSnapshot,
+    ProjectionSnapshotMember,
+    ProjectionValidation,
     SourceProjectionReference,
 )
 
@@ -30,6 +34,9 @@ PROJECTION_RUN_SCHEMA_VERSION = 1
 PROJECTION_RECEIPT_SCHEMA_VERSION = 1
 PROJECTION_SEAL_SCHEMA_VERSION = 1
 PROJECTION_RESULT_SCHEMA_VERSION = 1
+PROJECTION_VALIDATION_SCHEMA_VERSION = 1
+PROJECTION_SNAPSHOT_SCHEMA_VERSION = 1
+PROJECTION_RECONCILIATION_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +132,96 @@ class ProjectionCandidateSealCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class ProjectionValidationCommand:
+    validation: ProjectionValidation
+    idempotency_key: IdempotencyKey
+    digest: CommandDigest
+
+    @classmethod
+    def create(
+        cls, *, validation: ProjectionValidation, idempotency_key: IdempotencyKey
+    ) -> "ProjectionValidationCommand":
+        digest = digest_command(
+            operation=PersistenceOperation("projection_validation"),
+            operation_schema_version=PROJECTION_VALIDATION_SCHEMA_VERSION,
+            payload={
+                "validation_id": validation.projection_validation_id,
+                "run_id": validation.projection_run_id,
+                "candidate_id": validation.projection_candidate_id,
+                "gate_kind": validation.gate_kind,
+                "gate_version": validation.gate_version,
+                "input_digest": validation.input_digest,
+                "result_digest": validation.result_digest,
+                "decision": validation.decision,
+                "idempotency_key": idempotency_key.value,
+            },
+        )
+        return cls(validation=validation, idempotency_key=idempotency_key, digest=digest)
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectionSnapshotCommand:
+    snapshot: ProjectionSnapshot
+    members: tuple[ProjectionSnapshotMember, ...]
+    idempotency_key: IdempotencyKey
+    digest: CommandDigest
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        snapshot: ProjectionSnapshot,
+        members: tuple[ProjectionSnapshotMember, ...],
+        idempotency_key: IdempotencyKey,
+    ) -> "ProjectionSnapshotCommand":
+        digest = digest_command(
+            operation=PersistenceOperation("projection_snapshot"),
+            operation_schema_version=PROJECTION_SNAPSHOT_SCHEMA_VERSION,
+            payload={
+                "snapshot_id": snapshot.projection_snapshot_id,
+                "run_id": snapshot.projection_run_id,
+                "candidate_id": snapshot.projection_candidate_id,
+                "candidate_evidence_digest": snapshot.candidate_evidence_digest,
+                "manifest_digest": snapshot.manifest_digest,
+                "member_ids": tuple(member.projection_snapshot_member_id for member in members),
+                "idempotency_key": idempotency_key.value,
+            },
+        )
+        return cls(snapshot=snapshot, members=members, idempotency_key=idempotency_key, digest=digest)
+
+
+ProjectionSnapshotAssemblyCommand = ProjectionSnapshotCommand
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectionReconciliationCommand:
+    result: ProjectionReconciliationResult
+    idempotency_key: IdempotencyKey
+    digest: CommandDigest
+
+    @classmethod
+    def create(
+        cls, *, result: ProjectionReconciliationResult, idempotency_key: IdempotencyKey
+    ) -> "ProjectionReconciliationCommand":
+        digest = digest_command(
+            operation=PersistenceOperation("projection_reconciliation"),
+            operation_schema_version=PROJECTION_RECONCILIATION_SCHEMA_VERSION,
+            payload={
+                "result_id": result.reconciliation_result_id,
+                "snapshot_id": result.projection_snapshot_id,
+                "activation_id": result.projection_activation_id,
+                "activation_generation": result.activation_generation,
+                "attempt_identity": result.attempt_identity,
+                "attempt_digest": result.attempt_digest,
+                "predecessor_result_id": result.predecessor_result_id,
+                "outcome": result.outcome,
+                "idempotency_key": idempotency_key.value,
+            },
+        )
+        return cls(result=result, idempotency_key=idempotency_key, digest=digest)
+
+
+@dataclass(frozen=True, slots=True)
 class ProjectionMutationResult:
     value: object
     replay: bool
@@ -163,6 +260,26 @@ class ProjectionRepository(Protocol):
 
     async def seal_candidate(self, command: ProjectionCandidateSealCommand) -> ProjectionMutationResult: ...
 
+    async def record_validation(self, command: ProjectionValidationCommand) -> ProjectionMutationResult: ...
+
+    async def list_validations(self, projection_run_id: UUID) -> tuple[ProjectionValidation, ...]: ...
+
+    async def assemble_snapshot(self, command: ProjectionSnapshotCommand) -> ProjectionMutationResult: ...
+
+    async def resolve_snapshot(self, projection_snapshot_id: UUID) -> ProjectionSnapshot | None: ...
+
+    async def list_snapshot_members(
+        self, projection_snapshot_id: UUID
+    ) -> tuple[ProjectionSnapshotMember, ...]: ...
+
+    async def record_reconciliation(
+        self, command: ProjectionReconciliationCommand
+    ) -> ProjectionMutationResult: ...
+
+    async def list_reconciliation_results(
+        self, projection_snapshot_id: UUID
+    ) -> tuple[ProjectionReconciliationResult, ...]: ...
+
 
 def transition_allowed(previous: ProjectionRunState | None, current: ProjectionRunState) -> bool:
     transitions = {
@@ -187,11 +304,18 @@ __all__ = [
     "PROJECTION_RESULT_SCHEMA_VERSION",
     "PROJECTION_RUN_SCHEMA_VERSION",
     "PROJECTION_SEAL_SCHEMA_VERSION",
+    "PROJECTION_RECONCILIATION_SCHEMA_VERSION",
+    "PROJECTION_SNAPSHOT_SCHEMA_VERSION",
+    "PROJECTION_VALIDATION_SCHEMA_VERSION",
     "ProjectionCandidateSealCommand",
     "ProjectionMutationResult",
+    "ProjectionReconciliationCommand",
     "ProjectionReceiptCommand",
     "ProjectionRepository",
     "ProjectionRunCommand",
+    "ProjectionSnapshotAssemblyCommand",
+    "ProjectionSnapshotCommand",
+    "ProjectionValidationCommand",
     "require_expected_candidate",
     "transition_allowed",
 ]

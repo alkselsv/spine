@@ -18,7 +18,7 @@ from uuid import UUID
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
-from spine.domain.common import DefinitionModel, FrozenDict
+from spine.domain.common import DefinitionModel, FrozenDict, ValidatedDefinitionModel
 
 
 _DIGEST = r"^[0-9a-f]{64}$"
@@ -406,12 +406,252 @@ class SourceProjectionReference(DefinitionModel):
         return self
 
 
+class ProjectionValidationDecision(str, Enum):
+    PASSED = "passed"
+    FAILED = "failed"
+
+
+class ProjectionValidation(ValidatedDefinitionModel):
+    """Immutable evidence for one publication gate."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    projection_validation_id: UUID
+    projection_run_id: UUID
+    projection_candidate_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    gate_kind: str = Field(pattern=_IDENTIFIER)
+    gate_version: str = Field(pattern=_VERSION)
+    input_digest: str = Field(pattern=_DIGEST)
+    result_digest: str = Field(pattern=_DIGEST)
+    decision: ProjectionValidationDecision
+    metrics_schema_version: str = Field(pattern=_VERSION)
+    metrics_payload: Mapping[str, Any] = Field(default_factory=dict)
+    evaluator_reference: str = Field(min_length=1, max_length=256)
+    evaluated_at: datetime
+
+    _freeze_metrics = field_validator("metrics_payload", mode="before")(_freeze_payload)
+
+    @model_validator(mode="after")
+    def validate_validation(self) -> "ProjectionValidation":
+        _require_ids(
+            self,
+            "projection_validation_id",
+            "projection_run_id",
+            "projection_candidate_id",
+            "workspace_id",
+            "environment_id",
+        )
+        _require_time(self.evaluated_at, "evaluated_at")
+        return self
+
+
+class ProjectionSnapshotState(str, Enum):
+    ASSEMBLING = "assembling"
+    FINALIZED = "finalized"
+
+
+class ProjectionSnapshot(ValidatedDefinitionModel):
+    """Immutable logical manifest of a sealed projection candidate."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    projection_snapshot_id: UUID
+    projection_run_id: UUID
+    projection_candidate_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    snapshot_state: ProjectionSnapshotState = ProjectionSnapshotState.ASSEMBLING
+    projection_kind: str = Field(pattern=_IDENTIFIER)
+    projection_config_version_id: UUID
+    canonical_boundary_id: UUID
+    predecessor_snapshot_id: UUID | None = None
+    candidate_evidence_digest: str = Field(pattern=_DIGEST)
+    manifest_digest: str = Field(pattern=_DIGEST)
+    member_count: int = Field(ge=0)
+    created_at: datetime
+
+    @model_validator(mode="after")
+    def validate_snapshot(self) -> "ProjectionSnapshot":
+        _require_ids(
+            self,
+            "projection_snapshot_id",
+            "projection_run_id",
+            "projection_candidate_id",
+            "workspace_id",
+            "environment_id",
+            "projection_config_version_id",
+            "canonical_boundary_id",
+        )
+        if self.predecessor_snapshot_id is not None:
+            _require_ids(self, "predecessor_snapshot_id")
+        _require_time(self.created_at, "created_at")
+        if self.snapshot_state is ProjectionSnapshotState.FINALIZED and self.member_count < 0:
+            raise ValueError("finalized snapshot member count is invalid")
+        return self
+
+
+class ProjectionSnapshotMemberDisposition(str, Enum):
+    INCLUDED = "included"
+    TOMBSTONED = "tombstoned"
+    EXCLUDED = "excluded"
+
+
+class ProjectionSnapshotMember(ValidatedDefinitionModel):
+    """One exhaustive, immutable accounting entry for a boundary member."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    projection_snapshot_member_id: UUID
+    projection_snapshot_id: UUID
+    canonical_boundary_id: UUID
+    canonical_boundary_member_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    source_object_id: UUID
+    source_revision_id: UUID
+    disposition: ProjectionSnapshotMemberDisposition
+    exclusion_code: str | None = Field(default=None, pattern=_IDENTIFIER)
+    projection_partition_id: UUID | None = None
+    projection_receipt_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_member(self) -> "ProjectionSnapshotMember":
+        _require_ids(
+            self,
+            "projection_snapshot_member_id",
+            "projection_snapshot_id",
+            "canonical_boundary_id",
+            "canonical_boundary_member_id",
+            "workspace_id",
+            "environment_id",
+            "source_object_id",
+            "source_revision_id",
+        )
+        for field_name in ("projection_partition_id", "projection_receipt_id"):
+            value = getattr(self, field_name)
+            if value is not None:
+                _require_ids(self, field_name)
+        if self.disposition is ProjectionSnapshotMemberDisposition.INCLUDED:
+            if self.exclusion_code is not None or self.projection_partition_id is None or self.projection_receipt_id is None:
+                raise ValueError("included snapshot members require a partition and receipt")
+        elif self.disposition is ProjectionSnapshotMemberDisposition.TOMBSTONED:
+            if self.exclusion_code is not None or self.projection_partition_id is not None or self.projection_receipt_id is not None:
+                raise ValueError("tombstoned snapshot members cannot reference content artifacts")
+        elif self.exclusion_code is None or self.projection_partition_id is not None or self.projection_receipt_id is not None:
+            raise ValueError("excluded snapshot members require an exclusion code only")
+        return self
+
+
+class ProjectionReconciliationOutcome(str, Enum):
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    FAILED = "failed"
+    INTERRUPTED = "interrupted"
+
+
+class ProjectionReconciliationResult(ValidatedDefinitionModel):
+    """Append-only runtime health evidence for one activated snapshot."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    reconciliation_result_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    projection_kind: str = Field(pattern=_IDENTIFIER)
+    projection_snapshot_id: UUID
+    projection_activation_id: UUID
+    activation_generation: int = Field(ge=1)
+    attempt_identity: str = Field(pattern=_IDENTIFIER)
+    attempt_digest: str = Field(pattern=_DIGEST)
+    predecessor_result_id: UUID | None = None
+    outcome: ProjectionReconciliationOutcome
+    findings_schema_version: str = Field(pattern=_VERSION)
+    findings_payload: Mapping[str, Any] = Field(default_factory=dict)
+    findings_digest: str = Field(pattern=_DIGEST)
+    artifact_evidence_reference: str = Field(min_length=1, max_length=512)
+    artifact_evidence_digest: str = Field(pattern=_DIGEST)
+    idempotency_receipt_id: UUID
+    audit_event_reference: str = Field(min_length=1, max_length=256)
+    checked_at: datetime
+
+    _freeze_findings = field_validator("findings_payload", mode="before")(_freeze_payload)
+
+    @model_validator(mode="after")
+    def validate_reconciliation(self) -> "ProjectionReconciliationResult":
+        _require_ids(
+            self,
+            "reconciliation_result_id",
+            "workspace_id",
+            "environment_id",
+            "projection_snapshot_id",
+            "projection_activation_id",
+            "idempotency_receipt_id",
+        )
+        if self.predecessor_result_id is not None:
+            _require_ids(self, "predecessor_result_id")
+        _require_time(self.checked_at, "checked_at")
+        if self.findings_digest != projection_reconciliation_findings_digest(
+            findings_schema_version=self.findings_schema_version,
+            findings_payload=self.findings_payload,
+        ):
+            raise ValueError("reconciliation findings digest does not match payload")
+        return self
+
+
+def projection_snapshot_manifest_digest(
+    snapshot: ProjectionSnapshot,
+    members: tuple[ProjectionSnapshotMember, ...],
+) -> str:
+    """Hash the frozen candidate evidence and canonical ordered membership."""
+
+    ordered = tuple(sorted(members, key=lambda member: member.canonical_boundary_member_id.hex))
+    if len({member.canonical_boundary_member_id for member in ordered}) != len(ordered):
+        raise ValueError("snapshot members must have unique boundary member IDs")
+    payload = {
+        "schema": "projection-snapshot-manifest:r1",
+        "snapshot_id": str(snapshot.projection_snapshot_id),
+        "run_id": str(snapshot.projection_run_id),
+        "candidate_id": str(snapshot.projection_candidate_id),
+        "workspace_id": str(snapshot.workspace_id),
+        "environment_id": str(snapshot.environment_id),
+        "projection_kind": snapshot.projection_kind,
+        "config_id": str(snapshot.projection_config_version_id),
+        "boundary_id": str(snapshot.canonical_boundary_id),
+        "candidate_evidence_digest": snapshot.candidate_evidence_digest,
+        "members": [
+            {
+                "boundary_member_id": str(member.canonical_boundary_member_id),
+                "source_object_id": str(member.source_object_id),
+                "source_revision_id": str(member.source_revision_id),
+                "disposition": member.disposition.value,
+                "exclusion_code": member.exclusion_code,
+                "partition_id": str(member.projection_partition_id) if member.projection_partition_id else None,
+                "receipt_id": str(member.projection_receipt_id) if member.projection_receipt_id else None,
+            }
+            for member in ordered
+        ],
+    }
+    return _digest_payload("projection-snapshot-manifest:r1", payload)
+
+
+def projection_reconciliation_findings_digest(
+    *, findings_schema_version: str, findings_payload: Mapping[str, Any]
+) -> str:
+    return _digest_payload(
+        "projection-reconciliation-findings:r1",
+        {"schema_version": findings_schema_version, "payload": findings_payload},
+    )
+
+
 def projection_evidence_digest(
     *,
     partitions: tuple[ProjectionPartition, ...],
     receipts: tuple[ProjectionReceipt, ...],
     references: tuple[SourceProjectionReference, ...],
     transitions: tuple[ProjectionRunTransition, ...] = (),
+    validations: tuple[ProjectionValidation, ...] = (),
 ) -> str:
     """Hash the ordered, content-free evidence set for a candidate."""
 
@@ -421,6 +661,7 @@ def projection_evidence_digest(
         ("receipt", receipts),
         ("reference", references),
         ("transition", transitions),
+        ("validation", validations),
     ):
         for record in records:
             identifier = next(
@@ -454,6 +695,16 @@ __all__ = [
     "ProjectionRun",
     "ProjectionRunState",
     "ProjectionRunTransition",
+    "ProjectionReconciliationOutcome",
+    "ProjectionReconciliationResult",
+    "ProjectionSnapshot",
+    "ProjectionSnapshotMember",
+    "ProjectionSnapshotMemberDisposition",
+    "ProjectionSnapshotState",
+    "ProjectionValidation",
+    "ProjectionValidationDecision",
     "SourceProjectionReference",
     "projection_evidence_digest",
+    "projection_reconciliation_findings_digest",
+    "projection_snapshot_manifest_digest",
 ]
