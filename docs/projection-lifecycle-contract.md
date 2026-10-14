@@ -120,3 +120,28 @@ older revisions; a newer current revision is the only permitted reappearance.
 Provider failures return a recoverable, content-free result and leave pending
 artifact mappings for retry. Namespace validation happens before any Cognee
 call, and provider exceptions never cross the graph result boundary.
+
+## Cognee structured read-side adapter
+
+`spine.memory.cognee.retrieval.CogneeStructuredRetrieval` is the physical
+read-side adapter for `RetrieveCommand`. It accepts an already resolved
+workspace, environment, candidate/configuration/boundary and routed physical
+namespace; it never chooses an active snapshot, candidate or access policy. An
+ordinary retrieval is permitted only for an `active` namespace, so shadow,
+rebuilding, failed and retired candidates cannot be read through this seam.
+
+The adapter derives the Cognee dataset name from the trusted namespace and calls
+only public Cognee 1.5.4 `search` with explicit `CHUNKS` and
+`HYBRID_COMPLETION` strategies, verbose structured objects and references. It
+maps chunks, entities and relations into provider-neutral contracts and
+revalidates every returned reference against the command's SourceRevision,
+workspace/environment, revision digest, processing receipt and stable locator.
+Completion strings are never used as retrieval answers.
+
+Missing, ambiguous, stale, tombstoned, cross-scope or incomplete physical
+evidence returns an empty typed degraded result. Provider exceptions are reduced
+to a safe physical failure; neither exception text nor protected content enters
+diagnostics. Command identity/digest replay is serialized per tenant and
+namespace, and digest conflicts do not issue another physical search. ACL,
+active-pointer selection, ContextBundle construction and PostgreSQL UnitOfWork
+remain outside this adapter.
