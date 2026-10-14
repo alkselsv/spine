@@ -8,6 +8,7 @@ content into the qualification report.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Mapping
 from enum import Enum
 from pathlib import Path
 from typing import Literal
@@ -75,6 +76,19 @@ _REQUIRED_GATES: tuple[GateId, ...] = (
     "concurrency_failure_cleanup",
     "canonical_lifecycle_separation",
 )
+
+_FAILURE_CODES: dict[GateId, SafeCode] = {
+    "public_sdk": "configuration_mismatch",
+    "structured_round_trip": "physical_failure",
+    "unsafe_evidence": "incomplete_evidence",
+    "workspace_isolation": "isolation_failure",
+    "namespace_isolation": "isolation_failure",
+    "explicit_retrieval_context": "isolation_failure",
+    "update_remove_tombstone": "physical_failure",
+    "rebuild_recovery_validation_diagnostics": "physical_failure",
+    "concurrency_failure_cleanup": "concurrency_failure",
+    "canonical_lifecycle_separation": "configuration_mismatch",
+}
 
 
 class ProductionProfile(DefinitionModel):
@@ -165,6 +179,47 @@ def required_gate_ids() -> tuple[GateId, ...]:
     """Return the fixed gate inventory for report and harness traceability."""
 
     return _REQUIRED_GATES
+
+
+QualificationGate = Callable[[], Awaitable[None]]
+
+
+async def run_qualification_gates(
+    gates: Mapping[str, QualificationGate],
+) -> tuple[GateObservation, ...]:
+    """Run every required gate and retain only bounded observations.
+
+    A failed gate does not prevent later independent gates from running.  Raw
+    provider exceptions are deliberately discarded at this boundary.
+    """
+
+    observations: list[GateObservation] = []
+    for gate_id in _REQUIRED_GATES:
+        gate = gates.get(gate_id)
+        if gate is None:
+            observations.append(
+                GateObservation(
+                    gate_id=gate_id,
+                    status=GateStatus.NOT_RUN,
+                    safe_code="live_prerequisite_unavailable",
+                )
+            )
+            continue
+        try:
+            await gate()
+        except Exception:
+            observations.append(
+                GateObservation(
+                    gate_id=gate_id,
+                    status=GateStatus.FAILED,
+                    safe_code=_FAILURE_CODES[gate_id],
+                )
+            )
+        else:
+            observations.append(
+                GateObservation(gate_id=gate_id, status=GateStatus.PASSED)
+            )
+    return tuple(observations)
 
 
 def _derive_decision(
@@ -284,5 +339,6 @@ __all__ = [
     "QualificationMode",
     "evaluate_production_profile",
     "required_gate_ids",
+    "run_qualification_gates",
     "write_issue212_report",
 ]

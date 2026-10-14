@@ -12,6 +12,7 @@ from spine.memory.cognee.production_qualification import (
     QualificationMode,
     evaluate_production_profile,
     required_gate_ids,
+    run_qualification_gates,
 )
 
 
@@ -153,3 +154,28 @@ def test_report_shape_contains_only_bounded_safe_codes() -> None:
             observations=_passing_observations(),
             fallback="owned_postgresql_projection_mapping",
         )
+
+
+async def test_gate_runner_executes_complete_inventory_after_a_safe_failure() -> None:
+    executed: list[str] = []
+
+    async def passing() -> None:
+        executed.append("passed")
+
+    async def failing() -> None:
+        executed.append("failed")
+        raise RuntimeError("provider failure containing protected customer text")
+
+    gates = {
+        gate_id: (failing if gate_id == "unsafe_evidence" else passing)
+        for gate_id in required_gate_ids()
+    }
+
+    observations = await run_qualification_gates(gates)
+
+    assert len(executed) == len(required_gate_ids())
+    assert [item.gate_id for item in observations] == list(required_gate_ids())
+    failed = next(item for item in observations if item.gate_id == "unsafe_evidence")
+    assert failed.status is GateStatus.FAILED
+    assert failed.safe_code == "incomplete_evidence"
+    assert "protected customer text" not in repr(observations)

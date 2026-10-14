@@ -7,6 +7,7 @@ private Cognee module.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -36,6 +37,23 @@ class LiveSmokeReport:
     node_set: tuple[str, ...]
     searches: tuple[SearchObservation, ...]
     operation_names: tuple[str, ...]
+    updated_content_observed: bool
+    deleted_content_absent: bool
+
+
+def payload_contains_text(payload: object, expected: str) -> bool:
+    """Inspect public JSON-like values without retaining provider content."""
+
+    if isinstance(payload, str):
+        return expected in payload
+    if isinstance(payload, Mapping):
+        return any(payload_contains_text(value, expected) for value in payload.values())
+    if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes, bytearray)):
+        return any(payload_contains_text(value, expected) for value in payload)
+    attributes = getattr(payload, "__dict__", None)
+    if isinstance(attributes, Mapping):
+        return any(payload_contains_text(value, expected) for value in attributes.values())
+    return False
 
 
 def _dataset_name(dataset: object) -> str | None:
@@ -74,6 +92,8 @@ async def run_local_smoke(config: LiveSmokeConfig) -> LiveSmokeReport:
             node_set=config.node_set,
             searches=(),
             operation_names=(),
+            updated_content_observed=False,
+            deleted_content_absent=False,
         )
 
     operations: list[str] = []
@@ -149,8 +169,23 @@ async def run_local_smoke(config: LiveSmokeConfig) -> LiveSmokeReport:
         await cognee.cognify(datasets=[config.dataset_name], run_in_background=False)
         operations.append("cognify:updated")
 
+        updated = await cognee.search(
+            config.updated_text,
+            query_type=cognee.SearchType.CHUNKS,
+            **common,
+        )
+        updated_content_observed = payload_contains_text(updated, config.updated_text)
+        operations.append("search:updated")
+
         await cognee.datasets.delete_data(dataset_id=dataset_id, data_id=data_id)
         operations.append("datasets.delete_data")
+        deleted = await cognee.search(
+            config.updated_text,
+            query_type=cognee.SearchType.CHUNKS,
+            **common,
+        )
+        deleted_content_absent = not payload_contains_text(deleted, config.updated_text)
+        operations.append("search:deleted")
         await cognee.datasets.delete_data(dataset_id=dataset_id, data_id=data_id)
         operations.append("datasets.delete_data:repeat")
         await cognee.forget(dataset=config.dataset_name, memory_only=True)
@@ -168,7 +203,14 @@ async def run_local_smoke(config: LiveSmokeConfig) -> LiveSmokeReport:
         node_set=config.node_set,
         searches=tuple(searches),
         operation_names=tuple(operations),
+        updated_content_observed=updated_content_observed,
+        deleted_content_absent=deleted_content_absent,
     )
 
 
-__all__ = ["LiveSmokeConfig", "LiveSmokeReport", "run_local_smoke"]
+__all__ = [
+    "LiveSmokeConfig",
+    "LiveSmokeReport",
+    "payload_contains_text",
+    "run_local_smoke",
+]

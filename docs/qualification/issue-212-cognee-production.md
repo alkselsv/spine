@@ -38,10 +38,10 @@ its own ticket and architecture review before it can become production code.
 | Criterion | Evidence | Result |
 | --- | --- | --- |
 | AC1 | `tests/integration/cognee/test_production_profile.py::test_production_qualification_records_one_coherent_run` | Not run on the real profile; public SDK smoke is present but cannot grant production approval. |
-| AC2 | `tests/contracts/memory/test_conformance.py::test_retrieval_round_trips_chunks_entities_relations_and_provenance` runs for `cognee-composition`; the same real-backend round trip remains to be run | No-go until live evidence exists. |
-| AC3 | `tests/contracts/memory/test_conformance.py::test_unsafe_evidence_never_leaks_projected_content` runs for `cognee-composition` | Offline behavior passes; real missing/ambiguous/stale/incomplete/tombstoned evidence is not qualified. |
-| AC4 | The isolation contract runs for `cognee-composition` | Real two-workspace and active/shadow isolation are not qualified. |
-| AC5 | Existing adapter disclosure-safe tests plus `tests/memory/test_cognee_production_qualification.py::test_report_shape_contains_only_bounded_safe_codes` | The decision/report boundary is safe; real provider error and diagnostic paths are not qualified. |
+| AC2 | The shared contract runs for `cognee-composition`; the live target performs a physical chunk/entity/relation round trip and verifies provenance | Harness implemented; no live observation is committed. |
+| AC3 | The live target executes missing/ambiguous/stale/incomplete/tombstoned fail-closed cases and checks disclosure-safe results | Harness implemented; no live observation is committed. |
+| AC4 | The live target executes foreign-workspace, explicit-context and active/shadow namespace gates | Harness implemented; no live observation is committed. |
+| AC5 | Bounded gate runner tests plus injected provider failure in the live target | Harness emits only typed safe codes; no live observation is committed. |
 | AC6 | `src/spine/memory/cognee/qualification.py::build_backend_matrix` and `tests/memory/test_cognee_production_qualification.py::test_postgres_demo_is_rejected_even_when_observations_pass` | `postgres_demo` remains rejected. |
 | AC7 | ADR 0018/0027 plus the `canonical_lifecycle_separation` live gate | Ownership is preserved by contract; real call timing outside PostgreSQL UnitOfWork is not yet observed. |
 | AC8 | This report and its `not_run` live observations | No-go with owned fallback recommendation; no unexecuted gate is marked passed. |
@@ -54,7 +54,9 @@ traceability and collection of the live target. The operator-controlled live
 command is documented in
 `docs/runbooks/cognee-production-qualification.md`.
 
-The live target verifies the public SDK lifecycle and a complete physical
-project/retrieve round trip. Passing it alone must not be used to edit the report to `go`:
-the report changes only from the complete gate inventory captured by one live
-qualification run.
+The live target executes the complete gate inventory in one run: public SDK,
+structured round trip, unsafe evidence, workspace/namespace isolation, explicit
+context, update/remove/tombstone, shadow rebuild/recovery/diagnostics,
+concurrency/failure injection/cleanup and canonical-lifecycle separation. It
+writes only bounded observations. The committed report changes only after that
+operator-controlled output has been reviewed.

@@ -63,6 +63,10 @@ The target uses unique synthetic dataset names and public Cognee cleanup calls.
 It contains no customer data. Retain content-free test results and backend
 versions; do not retain raw provider errors in the report.
 
+The orchestrated target continues through independent failures so the report
+contains one observation for every required gate. It fails at the end if any
+gate failed or was not run; provider exception text is never serialized.
+
 ## Interpreting the result
 
 The current committed result is **no-go** because no coherent live run has been
