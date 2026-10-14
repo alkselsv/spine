@@ -2228,7 +2228,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'storage_recovery_manifests', 'recovery_evidence_invalidations', "
                             "'parsed_documents', 'parsed_document_segments', 'ontology_versions', "
                             "'projection_config_versions', 'projection_runs', 'projection_run_transitions', "
-                            "'projection_partitions', 'projection_receipts', 'source_projection_references'))"
+                            "'projection_partitions', 'projection_receipts', 'source_projection_references', "
+                            "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
+                            "'projection_reconciliation_results'))"
                     )
                 )
             ).scalars()
@@ -2258,7 +2260,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'recovery_evidence_invalidations', 'parsed_documents', "
                             "'parsed_document_segments', 'ontology_versions', 'projection_config_versions', "
                             "'projection_runs', 'projection_run_transitions', 'projection_partitions', "
-                            "'projection_receipts', 'source_projection_references')"
+                            "'projection_receipts', 'source_projection_references', "
+                            "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
+                            "'projection_reconciliation_results')"
                     )
                 )
             ).mappings()
@@ -2282,7 +2286,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'recovery_evidence_invalidations', 'parsed_documents', "
                             "'parsed_document_segments', 'ontology_versions', 'projection_config_versions', "
                             "'projection_runs', 'projection_run_transitions', 'projection_partitions', "
-                            "'projection_receipts', 'source_projection_references')"
+                            "'projection_receipts', 'source_projection_references', "
+                            "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
+                            "'projection_reconciliation_results')"
                     )
                 )
             ).scalars()
@@ -2305,7 +2311,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'recovery_evidence_invalidations', 'parsed_documents', "
                             "'parsed_document_segments', 'ontology_versions', 'projection_config_versions', "
                             "'projection_runs', 'projection_run_transitions', 'projection_partitions', "
-                            "'projection_receipts', 'source_projection_references')"
+                            "'projection_receipts', 'source_projection_references', "
+                            "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
+                            "'projection_reconciliation_results')"
                     )
                 )
             ).scalars()
@@ -2328,7 +2336,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'recovery_evidence_invalidations', 'parsed_documents', "
                             "'parsed_document_segments', 'ontology_versions', 'projection_config_versions', "
                             "'projection_runs', 'projection_run_transitions', 'projection_partitions', "
-                            "'projection_receipts', 'source_projection_references')"
+                            "'projection_receipts', 'source_projection_references', "
+                            "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
+                            "'projection_reconciliation_results')"
                     )
                 )
             ).scalars()
@@ -2899,7 +2909,9 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'canonical_boundaries', 'canonical_boundary_members', "
                         "'parsed_documents', 'parsed_document_segments', 'ontology_versions', "
                         "'projection_config_versions', 'projection_runs', 'projection_run_transitions', "
-                        "'projection_partitions', 'projection_receipts', 'source_projection_references')"
+                        "'projection_partitions', 'projection_receipts', 'source_projection_references', "
+                        "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
+                        "'projection_reconciliation_results')"
                     )
                 )
             )
