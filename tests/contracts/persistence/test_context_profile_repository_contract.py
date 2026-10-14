@@ -113,6 +113,34 @@ async def test_context_profile_repository_create_is_idempotent_for_same_version(
 
 
 @pytest.mark.asyncio
+async def test_context_profile_repository_preserves_allowed_partial_fallback(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(3216)
+    environment_id = synthetic_uuid(3217)
+    expected = profile(
+        workspace_id,
+        environment_id,
+        partial_answer_fallback=PartialAnswerFallback.ALLOWED,
+    )
+    await persist_scope(persistence_adapter, workspace_id, environment_id)
+    context = persistence_adapter.environment_context(workspace_id, environment_id)
+
+    async with persistence_adapter.uow_factory(context) as uow:
+        await uow.context_profiles.create(expected)
+        await uow.commit()
+
+    async with persistence_adapter.uow_factory(context) as uow:
+        actual = await uow.context_profiles.resolve(
+            profile_id=expected.profile_id,
+            profile_version=expected.profile_version,
+            profile_digest=expected.profile_digest,
+        )
+
+    assert actual.partial_answer_fallback is PartialAnswerFallback.ALLOWED
+
+
+@pytest.mark.asyncio
 async def test_context_profile_repository_rejects_duplicate_immutable_version(
     persistence_adapter: PersistenceAdapter,
 ) -> None:

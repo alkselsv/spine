@@ -2543,10 +2543,6 @@ class InMemoryUnitOfWork:
         return self._context_profiles
 
     @property
-    def profiles(self) -> _ContextProfileRepository:
-        return self.context_profiles
-
-    @property
     def idempotency(self) -> _IdempotencyRepository:
         self._guard_active()
         return self._idempotency

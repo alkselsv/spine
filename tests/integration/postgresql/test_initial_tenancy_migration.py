@@ -4401,6 +4401,7 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261021_24_projection_candidate_ledgers.py",
         "20261021_25_projection_snapshot_sealing.py",
         "20261022_26_projection_publication.py",
+        "20261023_27_context_profiles.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "20261021_26_injected_failure.py").write_text(
