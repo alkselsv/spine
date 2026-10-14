@@ -58,7 +58,11 @@ def _json_value(value: Any) -> Any:
 class ContextProfileRef(ValidatedDefinitionModel):
     """The public ContextProfileRef:v1 identity owned by CB-01."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={"$id": "spine/context-profile-ref:v1"},
+    )
 
     profile_id: UUID
     profile_version: int = Field(ge=1)

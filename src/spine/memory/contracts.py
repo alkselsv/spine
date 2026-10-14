@@ -15,6 +15,7 @@ from spine.domain.context_bundles import (
     ContextBundleOutcome,
     ContextBundleRef as DomainContextBundleRef,
 )
+from spine.domain.context_profiles import ContextProfileRef
 from spine.domain.projections import (
     CanonicalAsOf,
     ProjectionActivation,
@@ -582,26 +583,6 @@ class ContextReasonCode(str, Enum):
     PUBLICATION_UNAVAILABLE = "publication_unavailable"
 
 
-class ContextProfileRef(DefinitionModel):
-    """The only public identity needed to pin a Context Profile."""
-
-    model_config = ConfigDict(
-        extra="forbid",
-        frozen=True,
-        json_schema_extra={"$id": "spine/context-profile-ref:v1"},
-    )
-
-    profile_id: UUID
-    profile_version: int = Field(ge=1)
-    profile_digest: str = Field(pattern=_DIGEST)
-
-    @field_validator("profile_id")
-    @classmethod
-    def validate_profile_id(cls, value: UUID) -> UUID:
-        _require_non_zero(value, "profile_id")
-        return value
-
-
 ContextBundleRef = DomainContextBundleRef
 
 
@@ -611,7 +592,12 @@ class ContextProfile(_ProjectionModel):
     schema_version: Literal["context-profile:v1"] = "context-profile:v1"
     ref: ContextProfileRef
     retrieval_strategy: str = Field(min_length=1, max_length=64, pattern=_IDENTIFIER)
-    max_items: int = Field(default=15, ge=1, le=100)
+    max_items: int = Field(default=15, ge=1, le=1000)
+    max_tokens: int = Field(default=65536, ge=1, le=65536)
+    max_relation_hops: int = Field(default=8, ge=0, le=8)
+    freshness_max_age_seconds: int = Field(default=31_536_000, ge=0, le=31_536_000)
+    completeness_requirement: str = Field(default="best_effort", min_length=1, max_length=32)
+    partial_answer_fallback: str = Field(default="disallowed", min_length=1, max_length=32)
     projection_kind: str = Field(default="qa", pattern=_IDENTIFIER)
     require_current_publication: bool = False
     require_healthy_publication: bool = False
