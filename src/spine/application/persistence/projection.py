@@ -89,8 +89,12 @@ class ProjectionReceiptCommand:
                 "artifact_reference": receipt.artifact_reference,
                 "artifact_integrity_digest": receipt.artifact_integrity_digest,
                 "counts": receipt.counts,
-                "warnings": receipt.warnings,
-                "failures": receipt.failures,
+                "warnings": tuple(
+                    warning.model_dump(mode="python") for warning in receipt.warnings
+                ),
+                "failures": tuple(
+                    failure.model_dump(mode="python") for failure in receipt.failures
+                ),
                 "implementation_schema_version": receipt.implementation_schema_version,
                 "implementation_metadata": receipt.implementation_metadata,
                 "idempotency_key": idempotency_key.value,
