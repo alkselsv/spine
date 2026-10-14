@@ -65,7 +65,14 @@ from spine.application.persistence.errors import (
     TransactionSerializationError,
     UnexpectedPersistenceError,
     UnitOfWorkLifecycleError,
+    ContextProfileApprovalError,
+    ContextProfileDigestMismatchError,
+    ContextProfileError,
+    ContextProfileMalformedError,
+    ContextProfileNotFoundError,
+    ContextProfileRevokedError,
 )
+from spine.application.persistence.context_profiles import ContextProfileRepository
 from spine.application.persistence.idempotency import (
     IdempotencyClaimResult,
     IdempotencyKey,
@@ -137,6 +144,13 @@ __all__ = [
     "CANONICAL_BOUNDARY_RESULT_TYPE",
     "CANONICAL_BOUNDARY_SCHEMA_VERSION",
     "ContextOrigin",
+    "ContextProfileApprovalError",
+    "ContextProfileDigestMismatchError",
+    "ContextProfileError",
+    "ContextProfileMalformedError",
+    "ContextProfileNotFoundError",
+    "ContextProfileRepository",
+    "ContextProfileRevokedError",
     "COMMAND_DIGEST_ALGORITHM_VERSION",
     "CommandDigest",
     "ClaimedOutboxDelivery",

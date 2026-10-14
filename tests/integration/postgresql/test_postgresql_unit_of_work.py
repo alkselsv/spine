@@ -156,6 +156,17 @@ from tests.contracts.persistence.test_environment_repository_contract import (
     test_foreign_environment_is_not_disclosed as contract_foreign_environment,
     test_mismatched_environment_scope_fails_before_repository_access as contract_mismatched_environment,
 )
+from tests.contracts.persistence.test_context_profile_repository_contract import (
+    test_context_profile_repository_create_is_idempotent_for_same_version as contract_context_profile_create_replay,
+    test_context_profile_repository_does_not_disclose_cross_workspace_profile as contract_context_profile_isolation,
+    test_context_profile_repository_fails_closed_for_digest_mismatch as contract_context_profile_digest_mismatch,
+    test_context_profile_repository_fails_closed_for_unknown_version as contract_context_profile_unknown_version,
+    test_context_profile_repository_preserves_allowed_partial_fallback as contract_context_profile_partial_fallback,
+    test_context_profile_repository_rejects_duplicate_immutable_version as contract_context_profile_duplicate,
+    test_context_profile_repository_rejects_revoked_profile as contract_context_profile_revoked,
+    test_context_profile_repository_replays_same_immutable_version as contract_context_profile_replay,
+    test_context_profile_repository_retries_after_uncommitted_create_failure as contract_context_profile_retry,
+)
 from tests.contracts.persistence.test_unit_of_work_contract import (
     test_concurrent_duplicate_commit_has_one_logical_effect as contract_concurrent_duplicate,
     test_duplicate_workspace_identity_raises_typed_conflict as contract_duplicate_workspace,
@@ -628,6 +639,15 @@ ContractTest = Callable[[PersistenceAdapter], Awaitable[None]]
         contract_foreign_environment,
         contract_duplicate_environment,
         contract_mismatched_environment,
+        contract_context_profile_replay,
+        contract_context_profile_create_replay,
+        contract_context_profile_retry,
+        contract_context_profile_partial_fallback,
+        contract_context_profile_duplicate,
+        contract_context_profile_digest_mismatch,
+        contract_context_profile_unknown_version,
+        contract_context_profile_isolation,
+        contract_context_profile_revoked,
     ),
     ids=lambda contract: contract.__name__.removeprefix("test_"),
 )

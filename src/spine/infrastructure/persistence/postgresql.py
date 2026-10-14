@@ -56,6 +56,11 @@ from spine.application.persistence.errors import (
     CanonicalAuthorityConflictError,
     CanonicalEligibilityError,
     ConstraintConflictError,
+    ContextProfileApprovalError,
+    ContextProfileDigestMismatchError,
+    ContextProfileMalformedError,
+    ContextProfileNotFoundError,
+    ContextProfileRevokedError,
     IdempotencyConflictError,
     InvalidPersistenceContextError,
     OptimisticConflictError,
@@ -187,6 +192,7 @@ from spine.domain.projections import (
     projection_evidence_digest,
     projection_snapshot_manifest_digest,
 )
+from spine.domain.context_profiles import ContextProfileVersion
 from spine.infrastructure.db.engine import SessionFactory
 from spine.infrastructure.persistence.backup_recovery import (
     PostgreSQLBackupRecoveryRepository,
@@ -200,6 +206,7 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     admission_decisions as _ADMISSION_DECISIONS,
     audit_events as _AUDIT_EVENTS,
     environments as _ENVIRONMENTS,
+    context_profiles as _CONTEXT_PROFILES,
     idempotency_receipts as _IDEMPOTENCY_RECEIPTS,
     outbox_intents as _OUTBOX_INTENTS,
     source_objects as _SOURCE_OBJECTS,
@@ -480,6 +487,174 @@ class _PostgreSQLEnvironmentRepository:
             kind=EnvironmentKind(row.kind),
             display_name=row.display_name,
         )
+
+
+class _PostgreSQLContextProfileRepository:
+    def __init__(self, uow: "PostgreSQLTenantUnitOfWork") -> None:
+        self._uow = uow
+
+    @staticmethod
+    def _values(profile: ContextProfileVersion) -> dict[str, object]:
+        return {
+            "profile_id": profile.profile_id,
+            "workspace_id": profile.workspace_id,
+            "environment_id": profile.environment_id,
+            "profile_version": profile.profile_version,
+            "profile_digest": profile.profile_digest,
+            "schema_version": profile.schema_version,
+            "retrieval_strategy": profile.retrieval_strategy.value,
+            "max_results": profile.max_results,
+            "max_tokens": profile.max_tokens,
+            "max_relation_hops": profile.max_relation_hops,
+            "freshness_max_age_seconds": profile.freshness_max_age_seconds,
+            "completeness_requirement": profile.completeness_requirement.value,
+            "partial_answer_fallback": profile.partial_answer_fallback.value,
+            "server_approved": profile.server_approved,
+            "revoked": profile.revoked,
+            "predecessor_profile_id": profile.predecessor_profile_id,
+            "created_at": profile.created_at,
+        }
+
+    @staticmethod
+    def _restore(row: Mapping[str, object]) -> ContextProfileVersion:
+        try:
+            return ContextProfileVersion.model_validate(dict(row))
+        except (TypeError, ValueError):
+            raise ContextProfileMalformedError(
+                "Context profile is unavailable."
+            ) from None
+
+    async def add(self, profile: ContextProfileVersion) -> None:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if (
+            type(profile) is not ContextProfileVersion
+            or not isinstance(scope, EnvironmentScope)
+            or profile.workspace_id != scope.workspace_id
+            or profile.environment_id != scope.environment_id
+        ):
+            await self._uow._fail(
+                InvalidPersistenceContextError("Persistence context is invalid.")
+            )
+        if not profile.server_approved:
+            await self._uow._fail(
+                ContextProfileApprovalError("Context profile is not server-approved.")
+            )
+        await self._uow._execute(
+            insert(_CONTEXT_PROFILES).values(self._values(profile))
+        )
+
+    async def create(self, profile: ContextProfileVersion) -> ContextProfileVersion:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if (
+            type(profile) is not ContextProfileVersion
+            or not isinstance(scope, EnvironmentScope)
+            or profile.workspace_id != scope.workspace_id
+            or profile.environment_id != scope.environment_id
+        ):
+            await self._uow._fail(
+                InvalidPersistenceContextError("Persistence context is invalid.")
+            )
+        if not profile.server_approved:
+            await self._uow._fail(
+                ContextProfileApprovalError("Context profile is not server-approved.")
+            )
+        inserted = await self._uow._execute(
+            postgresql_insert(_CONTEXT_PROFILES)
+            .values(self._values(profile))
+            .on_conflict_do_nothing(
+                index_elements=[
+                    _CONTEXT_PROFILES.c.workspace_id,
+                    _CONTEXT_PROFILES.c.environment_id,
+                    _CONTEXT_PROFILES.c.profile_id,
+                    _CONTEXT_PROFILES.c.profile_version,
+                ]
+            )
+            .returning(*_CONTEXT_PROFILES.c)
+        )
+        inserted_row = inserted.mappings().one_or_none()
+        if inserted_row is not None:
+            try:
+                return self._restore(inserted_row)
+            except ContextProfileMalformedError:
+                await self._uow._fail(
+                    ContextProfileMalformedError("Context profile is unavailable.")
+                )
+        existing_result = await self._uow._execute(
+            select(_CONTEXT_PROFILES).where(
+                _CONTEXT_PROFILES.c.profile_id == profile.profile_id,
+                _CONTEXT_PROFILES.c.profile_version == profile.profile_version,
+                _CONTEXT_PROFILES.c.workspace_id == scope.workspace_id,
+                _CONTEXT_PROFILES.c.environment_id == scope.environment_id,
+            )
+        )
+        existing_row = existing_result.mappings().one_or_none()
+        if existing_row is None:
+            await self._uow._fail(
+                ConstraintConflictError(
+                    "Context profile immutable version conflicts with history."
+                )
+            )
+        try:
+            existing = self._restore(existing_row)
+        except ContextProfileMalformedError:
+            await self._uow._fail(
+                ContextProfileMalformedError("Context profile is unavailable.")
+            )
+        if existing != profile:
+            await self._uow._fail(
+                ConstraintConflictError(
+                    "Context profile immutable version conflicts with history."
+                )
+            )
+        return existing
+
+    async def resolve(
+        self,
+        *,
+        profile_id: UUID,
+        profile_version: int,
+        profile_digest: str,
+    ) -> ContextProfileVersion:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            await self._uow._fail(
+                InvalidPersistenceContextError("Persistence context is invalid.")
+            )
+        result = await self._uow._execute(
+            select(_CONTEXT_PROFILES).where(
+                _CONTEXT_PROFILES.c.profile_id == profile_id,
+                _CONTEXT_PROFILES.c.profile_version == profile_version,
+                _CONTEXT_PROFILES.c.workspace_id == scope.workspace_id,
+                _CONTEXT_PROFILES.c.environment_id == scope.environment_id,
+            )
+        )
+        row = result.mappings().one_or_none()
+        if row is None:
+            await self._uow._fail(
+                ContextProfileNotFoundError("Context profile is unavailable.")
+            )
+        if row["profile_digest"] != profile_digest:
+            await self._uow._fail(
+                ContextProfileDigestMismatchError("Context profile identity is invalid.")
+            )
+        try:
+            profile = self._restore(row)
+        except ContextProfileMalformedError:
+            await self._uow._fail(
+                ContextProfileMalformedError("Context profile is unavailable.")
+            )
+        if profile.revoked:
+            await self._uow._fail(
+                ContextProfileRevokedError("Context profile is unavailable.")
+            )
+        if not profile.server_approved:
+            await self._uow._fail(
+                ContextProfileApprovalError("Context profile is unavailable.")
+            )
+        return profile
 
 
 class _PostgreSQLSourceObservationRepository:
@@ -4320,6 +4495,7 @@ class PostgreSQLTenantUnitOfWork:
         self._owner: asyncio.Task[object] | None = None
         self._workspaces = _PostgreSQLWorkspaceRepository(self)
         self._environments = _PostgreSQLEnvironmentRepository(self)
+        self._context_profiles = _PostgreSQLContextProfileRepository(self)
         self._sources = _PostgreSQLSourceObservationRepository(self)
         self._canonical = _PostgreSQLCanonicalAcceptanceRepository(self)
         self._boundaries = _PostgreSQLCanonicalBoundaryRepository(self)
@@ -4349,6 +4525,11 @@ class PostgreSQLTenantUnitOfWork:
     def environments(self) -> _PostgreSQLEnvironmentRepository:
         self._guard_active()
         return self._environments
+
+    @property
+    def context_profiles(self) -> _PostgreSQLContextProfileRepository:
+        self._guard_active()
+        return self._context_profiles
 
     @property
     def sources(self) -> _PostgreSQLSourceObservationRepository:

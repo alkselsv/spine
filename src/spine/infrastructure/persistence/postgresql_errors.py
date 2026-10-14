@@ -66,6 +66,22 @@ _CONSTRAINT_MESSAGES = {
     "uq_ingestion_run_source_bindings_command": (
         "Ingestion binding command identity conflicts."
     ),
+    "pk_context_profiles": "Context profile immutable version already exists.",
+    "uq_context_profiles_identity_digest": (
+        "Context profile immutable version already exists."
+    ),
+    "ck_context_profiles_bounds": "Context profile violates persistence constraints.",
+    "ck_context_profiles_schema": "Context profile schema is incompatible.",
+    "ck_context_profiles_digest": "Context profile digest is invalid.",
+    "ck_context_profiles_strategy": "Context profile strategy is invalid.",
+    "ck_context_profiles_completeness": "Context profile completeness is invalid.",
+    "ck_context_profiles_partial_fallback": (
+        "Context profile partial fallback is invalid."
+    ),
+    "ck_context_profiles_server_approved": (
+        "Context profile must be server-approved."
+    ),
+    "fk_context_profiles_environment": "Environment does not belong to Workspace.",
 }
 
 _IDEMPOTENCY_CONSTRAINTS = {
