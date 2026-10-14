@@ -15,7 +15,7 @@ from spine.application.persistence.parsed_artifacts import (
     ParsedArtifactCommand,
     ParsedArtifactPersistenceResult,
 )
-from spine.domain.artifacts import ParseExclusion, ParsedDocument, ParsedSegment, PhysicalLineLocator
+from spine.domain.artifacts import Locator, ParseExclusion, ParsedDocument, ParsedSegment
 from spine.infrastructure.persistence.postgresql_mappings import (
     parsed_document_segments,
     parsed_documents,
@@ -63,7 +63,7 @@ class InMemoryParsedArtifactRepository:
     async def resolve_segment(
         self, *, workspace_id: UUID, environment_id: UUID, source_revision_id: UUID,
         source_revision_digest: str, original_sha256: str, parser_version: str,
-        locator_contract_version: str, locator: PhysicalLineLocator,
+        locator_contract_version: str, locator: Locator,
     ) -> ParsedSegment | None:
         async with self._lock:
             documents = tuple(
@@ -203,7 +203,7 @@ class PostgreSQLParsedArtifactRepository:
     async def resolve_segment(
         self, *, workspace_id: UUID, environment_id: UUID, source_revision_id: UUID,
         source_revision_digest: str, original_sha256: str, parser_version: str,
-        locator_contract_version: str, locator: PhysicalLineLocator,
+        locator_contract_version: str, locator: Locator,
     ) -> ParsedSegment | None:
         async with self._session_factory() as session:
             result = await session.execute(select(parsed_documents).where(

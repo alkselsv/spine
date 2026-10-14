@@ -7,6 +7,7 @@ from uuid import UUID
 import pytest
 
 from spine.domain.artifacts import (
+    PageTextLocator,
     ParseCoverage,
     ParseExclusion,
     ParsedDocument,
@@ -128,3 +129,8 @@ def test_locator_round_trip_uses_raw_codepoint_offsets() -> None:
     )
 
     assert resolve_locator("ж\r\néx\n", locator) == "éx"
+
+
+def test_page_text_locator_rejects_an_inverted_range() -> None:
+    with pytest.raises(ValueError, match="locator end must not precede start"):
+        PageTextLocator(page_number=1, start_codepoint=2, end_codepoint=1)
