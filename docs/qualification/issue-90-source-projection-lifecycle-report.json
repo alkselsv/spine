@@ -3,7 +3,7 @@
   "ticket": 90,
   "mode": "deterministic_contract_matrix",
   "release_gate": {
-    "status": "pending_ci",
+    "status": "qualified",
     "postgresql": "mandatory_in_full_repository_gate",
     "provider_qualification": "not_approved"
   },
@@ -11,7 +11,7 @@
   "criteria": [
     {
       "id": "AC1",
-      "status": "mapped",
+      "status": "qualified",
       "evidence": [
         "tests/integration/postgresql/test_initial_tenancy_migration.py::test_every_retained_revision_upgrades_to_one_final_head",
         "tests/integration/postgresql/test_initial_tenancy_migration.py::test_initial_schema_has_named_tenancy_constraints_and_postgresql_types",
@@ -21,7 +21,7 @@
     },
     {
       "id": "AC2",
-      "status": "mapped",
+      "status": "qualified",
       "evidence": [
         "tests/contracts/persistence/test_unit_of_work_contract.py::test_explicit_commit_makes_workspace_visible",
         "tests/contracts/persistence/test_canonical_acceptance_contract.py::test_canonical_happy_path_and_exact_replay",
@@ -33,7 +33,7 @@
     },
     {
       "id": "AC3",
-      "status": "mapped",
+      "status": "qualified",
       "evidence": [
         "tests/contracts/persistence/test_unit_of_work_contract.py::test_worker_and_interactive_contexts_have_same_workspace_isolation",
         "tests/contracts/persistence/test_audit_writer_contract.py::test_audit_reader_does_not_reveal_event_to_another_workspace",
@@ -51,7 +51,7 @@
     },
     {
       "id": "AC4",
-      "status": "mapped",
+      "status": "qualified",
       "evidence": [
         "tests/contracts/persistence/test_unit_of_work_contract.py::test_concurrent_duplicate_commit_has_one_logical_effect",
         "tests/contracts/persistence/test_ingestion_repository_contract.py::test_ingestion_binding_race_contract",
@@ -75,7 +75,7 @@
     },
     {
       "id": "AC5",
-      "status": "mapped",
+      "status": "qualified",
       "evidence": [
         "tests/test_architecture_scaffold.py::ArchitectureScaffoldTests::test_domain_layer_has_no_framework_imports",
         "tests/application/test_source_lifecycle.py::test_deletion_records_observation_and_delegates_canonical_transition_atomically",

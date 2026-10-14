@@ -232,7 +232,7 @@ def test_issue90_report_is_machine_readable_and_keeps_provider_boundary_explicit
     assert report["criteria"] == [
         {
             "id": f"AC{row.acceptance_criterion}",
-            "status": "mapped",
+            "status": "qualified",
             "evidence": list(row.evidence),
         }
         for row in TRACEABILITY_MATRIX

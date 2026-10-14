@@ -1,6 +1,6 @@
 # Issue #90 canonical source and projection lifecycle qualification
 
-Status: **matrix complete; pending the full CI repository gate**.
+Status: **qualified by the deterministic matrix and full CI repository gate**.
 
 Issue #90 is the cross-slice qualification for the canonical source and
 projection lifecycle described by Issue #7. It composes the typed domain
@@ -62,7 +62,7 @@ uv run pytest -q
 uv run python -m compileall -q src tests
 ```
 
-The report intentionally records `release_gate.status: pending_ci` and
-`production_approval: false` until the repository's full CI gate completes.
-Operator-owned PostgreSQL, external provider and deployment qualification
-remains outside this deterministic qualification artifact.
+The report records `release_gate.status: qualified` after the full CI gate;
+`production_approval: false` still separates repository qualification from
+operator-owned production approval. External provider and deployment
+qualification remains outside this deterministic artifact.
