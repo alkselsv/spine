@@ -24,6 +24,8 @@ evidence are not returned as graph facts. They produce content-free typed
 candidates is `degraded`; a result without an accepted fact is `rejected`.
 
 `ExtractionConclusion` values remain in the result as model conclusions and are
-never promoted into accepted entities or relations. A future Cognee adapter can
-implement `ProjectionGraphWriter.write(result)` without changing this policy
-module or importing Cognee into it.
+never promoted into accepted entities or relations. The physical adapter
+consumes a `GraphProjectionRequest` that wraps this result with the server-issued
+candidate, configuration, canonical boundary and namespace. This keeps graph
+lifecycle decisions outside extraction policy and does not import Cognee into
+the policy module.

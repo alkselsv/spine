@@ -79,3 +79,21 @@ activation.
 `ProjectionNamespaceRegistry` is an offline lifecycle catalog for deterministic
 qualification. Its active-candidate view excludes failed and retired records;
 it does not own PostgreSQL publication or active-pointer authority.
+
+## Cognee graph write-side adapter
+
+`spine.memory.cognee.graph.CogneeGraphProjectionWriter` consumes only an
+extraction result containing ontology-approved entities and relations plus
+content-free source-revision snapshots. It writes one deterministic Cognee
+`DataItem` per entity or relation, retaining the stable artifact ID, source
+revision, ontology/extraction configuration and evidence locators in external
+metadata. Entity and relation data IDs are deterministic within the routed
+candidate namespace, so update, remove and retry operations do not create
+duplicates.
+
+The writer applies the same command digest and revision fences as the generic
+projection lifecycle. Tombstones soft-delete all source artifacts and fence
+older revisions; a newer current revision is the only permitted reappearance.
+Provider failures return a recoverable, content-free result and leave pending
+artifact mappings for retry. Namespace validation happens before any Cognee
+call, and provider exceptions never cross the graph result boundary.
