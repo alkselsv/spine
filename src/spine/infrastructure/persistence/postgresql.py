@@ -78,6 +78,14 @@ from spine.application.persistence.ingestion import (
     ProcessingReceiptCommand,
     validate_transition,
 )
+from spine.application.persistence.projection import (
+    ProjectionCandidateSealCommand,
+    ProjectionMutationResult,
+    ProjectionReceiptCommand,
+    ProjectionRepository,
+    ProjectionRunCommand,
+    transition_allowed,
+)
 from spine.application.persistence.idempotency import (
     IdempotencyClaimResult,
     IdempotencyKey,
@@ -128,6 +136,18 @@ from spine.domain.ingestion import (
     IngestionWarning,
     ProcessingReceipt,
 )
+from spine.domain.projections import (
+    OntologyVersion,
+    ProjectionCandidateState,
+    ProjectionConfigVersion,
+    ProjectionPartition,
+    ProjectionReceipt,
+    ProjectionRun,
+    ProjectionRunState,
+    ProjectionRunTransition,
+    SourceProjectionReference,
+    projection_evidence_digest,
+)
 from spine.infrastructure.db.engine import SessionFactory
 from spine.infrastructure.persistence.backup_recovery import (
     PostgreSQLBackupRecoveryRepository,
@@ -164,6 +184,13 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     current_source_heads as _CURRENT_SOURCE_HEADS,
     canonical_boundaries as _CANONICAL_BOUNDARIES,
     canonical_boundary_members as _CANONICAL_BOUNDARY_MEMBERS,
+    ontology_versions as _ONTOLOGY_VERSIONS,
+    projection_config_versions as _PROJECTION_CONFIGS,
+    projection_runs as _PROJECTION_RUNS,
+    projection_run_transitions as _PROJECTION_TRANSITIONS,
+    projection_partitions as _PROJECTION_PARTITIONS,
+    projection_receipts as _PROJECTION_RECEIPTS,
+    source_projection_references as _SOURCE_PROJECTION_REFERENCES,
 )
 
 _BIND_CONTEXT = text(
@@ -2643,6 +2670,509 @@ class _PostgreSQLAuditWriter:
         return audit_event_id
 
 
+class _PostgreSQLProjectionRepository(ProjectionRepository):
+    """PostgreSQL-owned ontology/configuration and candidate evidence ledger."""
+
+    def __init__(self, uow: "PostgreSQLTenantUnitOfWork") -> None:
+        self._uow = uow
+
+    def _scope(self) -> EnvironmentScope:
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            raise ConstraintConflictError("Projection persistence requires an environment scope.")
+        return scope
+
+    def _scoped(self, value: object) -> None:
+        scope = self._scope()
+        if (
+            getattr(value, "workspace_id") != scope.workspace_id
+            or getattr(value, "environment_id") != scope.environment_id
+        ):
+            raise ConstraintConflictError("Projection record is outside the tenant scope.")
+
+    @staticmethod
+    def _ontology(row: Mapping[str, Any]) -> OntologyVersion:
+        return OntologyVersion.model_validate(dict(row))
+
+    @staticmethod
+    def _config(row: Mapping[str, Any]) -> ProjectionConfigVersion:
+        return ProjectionConfigVersion.model_validate(dict(row))
+
+    @staticmethod
+    def _run(row: Mapping[str, Any]) -> ProjectionRun:
+        return ProjectionRun.model_validate(dict(row))
+
+    @staticmethod
+    def _transition(row: Mapping[str, Any]) -> ProjectionRunTransition:
+        return ProjectionRunTransition.model_validate(dict(row))
+
+    @staticmethod
+    def _partition(row: Mapping[str, Any]) -> ProjectionPartition:
+        return ProjectionPartition.model_validate(dict(row))
+
+    @staticmethod
+    def _receipt(row: Mapping[str, Any]) -> ProjectionReceipt:
+        return ProjectionReceipt.model_validate(dict(row))
+
+    @staticmethod
+    def _reference(row: Mapping[str, Any]) -> SourceProjectionReference:
+        return SourceProjectionReference.model_validate(dict(row))
+
+    async def add_ontology_version(self, ontology: OntologyVersion) -> OntologyVersion:
+        self._uow._guard_active()
+        self._scoped(ontology)
+        row = (
+            await self._uow._execute(
+                select(_ONTOLOGY_VERSIONS).where(
+                    _ONTOLOGY_VERSIONS.c.ontology_version_id == ontology.ontology_version_id,
+                    _ONTOLOGY_VERSIONS.c.workspace_id == ontology.workspace_id,
+                    _ONTOLOGY_VERSIONS.c.environment_id == ontology.environment_id,
+                )
+            )
+        ).mappings().one_or_none()
+        if row is not None:
+            existing = self._ontology(row)
+            if existing != ontology:
+                await self._uow._fail(ConstraintConflictError("Ontology version identity conflicts."))
+            return existing
+        if ontology.predecessor_ontology_version_id is not None:
+            predecessor = await self.resolve_ontology_version(ontology.predecessor_ontology_version_id)
+            if (
+                predecessor is None
+                or predecessor.ontology_name != ontology.ontology_name
+                or predecessor.version >= ontology.version
+            ):
+                await self._uow._fail(ConstraintConflictError("Ontology predecessor is invalid."))
+        duplicate = (
+            await self._uow._execute(
+                select(_ONTOLOGY_VERSIONS.c.ontology_version_id).where(
+                    _ONTOLOGY_VERSIONS.c.workspace_id == ontology.workspace_id,
+                    _ONTOLOGY_VERSIONS.c.environment_id == ontology.environment_id,
+                    _ONTOLOGY_VERSIONS.c.ontology_name == ontology.ontology_name,
+                    _ONTOLOGY_VERSIONS.c.version == ontology.version,
+                )
+            )
+        ).first()
+        if duplicate is not None:
+            await self._uow._fail(ConstraintConflictError("Ontology version is already registered."))
+        values = ontology.model_dump(mode="python")
+        values["definition_payload"] = ontology.model_dump(mode="json")["definition_payload"]
+        await self._uow._execute(postgresql_insert(_ONTOLOGY_VERSIONS).values(**values))
+        return ontology
+
+    async def resolve_ontology_version(self, ontology_version_id: UUID) -> OntologyVersion | None:
+        self._uow._guard_active()
+        scope = self._scope()
+        row = (
+            await self._uow._execute(
+                select(_ONTOLOGY_VERSIONS).where(
+                    _ONTOLOGY_VERSIONS.c.ontology_version_id == ontology_version_id,
+                    _ONTOLOGY_VERSIONS.c.workspace_id == scope.workspace_id,
+                    _ONTOLOGY_VERSIONS.c.environment_id == scope.environment_id,
+                )
+            )
+        ).mappings().one_or_none()
+        return self._ontology(row) if row is not None else None
+
+    async def add_config_version(self, config: ProjectionConfigVersion) -> ProjectionConfigVersion:
+        self._uow._guard_active()
+        self._scoped(config)
+        ontology = await self.resolve_ontology_version(config.ontology_version_id)
+        if ontology is None or not ontology.publication_eligible:
+            await self._uow._fail(ConstraintConflictError("Projection config requires a published ontology."))
+        row = (
+            await self._uow._execute(
+                select(_PROJECTION_CONFIGS).where(
+                    _PROJECTION_CONFIGS.c.projection_config_version_id
+                    == config.projection_config_version_id,
+                    _PROJECTION_CONFIGS.c.workspace_id == config.workspace_id,
+                    _PROJECTION_CONFIGS.c.environment_id == config.environment_id,
+                )
+            )
+        ).mappings().one_or_none()
+        if row is not None:
+            existing = self._config(row)
+            if existing != config:
+                await self._uow._fail(ConstraintConflictError("Projection config identity conflicts."))
+            return existing
+        if config.predecessor_projection_config_version_id is not None:
+            predecessor = await self.resolve_config_version(config.predecessor_projection_config_version_id)
+            if (
+                predecessor is None
+                or predecessor.projection_kind != config.projection_kind
+                or predecessor.version >= config.version
+            ):
+                await self._uow._fail(ConstraintConflictError("Projection config predecessor is invalid."))
+        duplicate = (
+            await self._uow._execute(
+                select(_PROJECTION_CONFIGS.c.projection_config_version_id).where(
+                    _PROJECTION_CONFIGS.c.workspace_id == config.workspace_id,
+                    _PROJECTION_CONFIGS.c.environment_id == config.environment_id,
+                    _PROJECTION_CONFIGS.c.projection_kind == config.projection_kind,
+                    _PROJECTION_CONFIGS.c.version == config.version,
+                )
+            )
+        ).first()
+        if duplicate is not None:
+            await self._uow._fail(ConstraintConflictError("Projection config version is already registered."))
+        values = config.model_dump(mode="python")
+        values["config_payload"] = config.model_dump(mode="json")["config_payload"]
+        await self._uow._execute(postgresql_insert(_PROJECTION_CONFIGS).values(**values))
+        return config
+
+    async def resolve_config_version(self, config_id: UUID) -> ProjectionConfigVersion | None:
+        self._uow._guard_active()
+        scope = self._scope()
+        row = (
+            await self._uow._execute(
+                select(_PROJECTION_CONFIGS).where(
+                    _PROJECTION_CONFIGS.c.projection_config_version_id == config_id,
+                    _PROJECTION_CONFIGS.c.workspace_id == scope.workspace_id,
+                    _PROJECTION_CONFIGS.c.environment_id == scope.environment_id,
+                )
+            )
+        ).mappings().one_or_none()
+        return self._config(row) if row is not None else None
+
+    async def _resolve_run(self, run_id: UUID, *, for_update: bool = False) -> ProjectionRun | None:
+        scope = self._scope()
+        query = select(_PROJECTION_RUNS).where(
+            _PROJECTION_RUNS.c.projection_run_id == run_id,
+            _PROJECTION_RUNS.c.workspace_id == scope.workspace_id,
+            _PROJECTION_RUNS.c.environment_id == scope.environment_id,
+        )
+        if for_update:
+            query = query.with_for_update()
+        row = (await self._uow._execute(query)).mappings().one_or_none()
+        return self._run(row) if row is not None else None
+
+    async def create_run(self, command: ProjectionRunCommand) -> ProjectionMutationResult:
+        self._uow._guard_active()
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=command.digest.operation_schema_version,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        if isinstance(claim, IdempotencyReplay):
+            run = await self._resolve_run(claim.result.result_id)
+            if run is None:
+                await self._uow._fail(ConstraintConflictError("Projection run replay is unavailable."))
+            return ProjectionMutationResult(run, True, claim, claim.result)
+        run = command.run.model_copy(update={"idempotency_receipt_id": claim.receipt_id})
+        self._scoped(run)
+        config = await self.resolve_config_version(run.projection_config_version_id)
+        boundary_row = (
+            await self._uow._execute(
+                select(_CANONICAL_BOUNDARIES).where(
+                    _CANONICAL_BOUNDARIES.c.boundary_id == run.canonical_boundary_id,
+                    _CANONICAL_BOUNDARIES.c.workspace_id == run.workspace_id,
+                    _CANONICAL_BOUNDARIES.c.environment_id == run.environment_id,
+                )
+            )
+        ).mappings().one_or_none()
+        if (
+            config is None
+            or config.projection_kind != run.projection_kind
+            or boundary_row is None
+            or boundary_row["projection_kind"] != run.projection_kind
+        ):
+            await self._uow._fail(ConstraintConflictError("Projection run configuration is invalid."))
+        existing_command = (
+            await self._uow._execute(
+                select(_PROJECTION_RUNS).where(
+                    _PROJECTION_RUNS.c.workspace_id == run.workspace_id,
+                    _PROJECTION_RUNS.c.environment_id == run.environment_id,
+                    _PROJECTION_RUNS.c.command_identity == run.command_identity,
+                )
+            )
+        ).mappings().one_or_none()
+        if existing_command is not None:
+            if existing_command["command_digest"] != run.command_digest:
+                await self._uow._fail(IdempotencyConflictError("Projection command identity conflicts."))
+            await self._uow._fail(ConstraintConflictError("Projection command identity is already registered."))
+        if await self._resolve_run(run.projection_run_id) is not None:
+            await self._uow._fail(ConstraintConflictError("Projection run identity conflicts."))
+        values = run.model_dump(mode="python")
+        values["operation"] = run.operation.value
+        values["candidate_state"] = run.candidate_state.value
+        await self._uow._execute(postgresql_insert(_PROJECTION_RUNS).values(**values))
+        result = ProjectionMutationResult(
+            run,
+            False,
+            claim,
+            OpaqueResultReference("projection_run", run.projection_run_id, 1),
+        )
+        await self._uow.idempotency.complete(claim, result.result_reference)
+        return result
+
+    async def resolve_run(self, projection_run_id: UUID) -> ProjectionRun | None:
+        self._uow._guard_active()
+        return await self._resolve_run(projection_run_id)
+
+    async def _open_run(self, run_id: UUID, candidate_id: UUID, *, for_update: bool = False) -> ProjectionRun:
+        run = await self._resolve_run(run_id, for_update=for_update)
+        if run is None or run.projection_candidate_id != candidate_id:
+            await self._uow._fail(ConstraintConflictError("Projection candidate lineage is invalid."))
+        if run.candidate_state is ProjectionCandidateState.SEALED:
+            await self._uow._fail(OptimisticConflictError("Projection candidate is sealed."))
+        return run
+
+    async def append_transition(self, transition: ProjectionRunTransition) -> ProjectionRunTransition:
+        self._uow._guard_active()
+        self._scoped(transition)
+        await self._open_run(transition.projection_run_id, transition.projection_candidate_id)
+        predecessor = None
+        if transition.predecessor_transition_id is not None:
+            predecessor_row = (
+                await self._uow._execute(
+                    select(_PROJECTION_TRANSITIONS).where(
+                        _PROJECTION_TRANSITIONS.c.projection_run_transition_id
+                        == transition.predecessor_transition_id,
+                        _PROJECTION_TRANSITIONS.c.workspace_id == transition.workspace_id,
+                        _PROJECTION_TRANSITIONS.c.environment_id == transition.environment_id,
+                    )
+                )
+            ).mappings().one_or_none()
+            if predecessor_row is None:
+                await self._uow._fail(ConstraintConflictError("Projection transition predecessor is invalid."))
+            predecessor = self._transition(predecessor_row)
+            if (
+                predecessor.projection_run_id != transition.projection_run_id
+                or predecessor.projection_candidate_id != transition.projection_candidate_id
+            ):
+                await self._uow._fail(ConstraintConflictError("Projection transition predecessor is invalid."))
+        if not transition_allowed(predecessor.state if predecessor else None, transition.state):
+            await self._uow._fail(OptimisticConflictError("Projection run transition is not legal."))
+        values = transition.model_dump(mode="python")
+        values["state"] = transition.state.value
+        await self._uow._execute(postgresql_insert(_PROJECTION_TRANSITIONS).values(**values))
+        return transition
+
+    async def add_partition(self, partition: ProjectionPartition) -> ProjectionPartition:
+        self._uow._guard_active()
+        self._scoped(partition)
+        await self._open_run(partition.projection_run_id, partition.projection_candidate_id)
+        await self._uow._execute(postgresql_insert(_PROJECTION_PARTITIONS).values(**partition.model_dump(mode="python")))
+        return partition
+
+    async def list_transitions(self, projection_run_id: UUID) -> tuple[ProjectionRunTransition, ...]:
+        self._uow._guard_active()
+        scope = self._scope()
+        rows = (
+            await self._uow._execute(
+                select(_PROJECTION_TRANSITIONS)
+                .where(
+                    _PROJECTION_TRANSITIONS.c.projection_run_id == projection_run_id,
+                    _PROJECTION_TRANSITIONS.c.workspace_id == scope.workspace_id,
+                    _PROJECTION_TRANSITIONS.c.environment_id == scope.environment_id,
+                )
+                .order_by(_PROJECTION_TRANSITIONS.c.projection_run_transition_id)
+            )
+        ).mappings().all()
+        return tuple(self._transition(row) for row in rows)
+
+    async def record_receipt(self, command: ProjectionReceiptCommand) -> ProjectionMutationResult:
+        self._uow._guard_active()
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=command.digest.operation_schema_version,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        if isinstance(claim, IdempotencyReplay):
+            row = (
+                await self._uow._execute(
+                    select(_PROJECTION_RECEIPTS).where(
+                        _PROJECTION_RECEIPTS.c.projection_receipt_id == claim.result.result_id
+                    )
+                )
+            ).mappings().one_or_none()
+            if row is None:
+                await self._uow._fail(ConstraintConflictError("Projection receipt replay is unavailable."))
+            return ProjectionMutationResult(self._receipt(row), True, claim, claim.result)
+        receipt = command.receipt.model_copy(update={"idempotency_receipt_id": claim.receipt_id})
+        self._scoped(receipt)
+        await self._open_run(receipt.projection_run_id, receipt.projection_candidate_id)
+        partition = (
+            await self._uow._execute(
+                select(_PROJECTION_PARTITIONS).where(
+                    _PROJECTION_PARTITIONS.c.projection_partition_id == receipt.projection_partition_id,
+                    _PROJECTION_PARTITIONS.c.workspace_id == receipt.workspace_id,
+                    _PROJECTION_PARTITIONS.c.environment_id == receipt.environment_id,
+                )
+            )
+        ).mappings().one_or_none()
+        if (
+            partition is None
+            or partition.projection_run_id != receipt.projection_run_id
+            or partition.projection_candidate_id != receipt.projection_candidate_id
+            or partition.expected_command_identity != receipt.command_identity
+            or partition.expected_command_digest != receipt.command_digest
+        ):
+            await self._uow._fail(ConstraintConflictError("Projection receipt lineage is invalid."))
+        existing_command = (
+            await self._uow._execute(
+                select(_PROJECTION_RECEIPTS).where(
+                    _PROJECTION_RECEIPTS.c.workspace_id == receipt.workspace_id,
+                    _PROJECTION_RECEIPTS.c.environment_id == receipt.environment_id,
+                    _PROJECTION_RECEIPTS.c.command_identity == receipt.command_identity,
+                )
+            )
+        ).mappings().one_or_none()
+        if existing_command is not None:
+            if existing_command["command_digest"] != receipt.command_digest:
+                await self._uow._fail(IdempotencyConflictError("Projection command identity conflicts."))
+            await self._uow._fail(ConstraintConflictError("Projection command identity is already registered."))
+        values = receipt.model_dump(mode="python")
+        json_values = receipt.model_dump(mode="json")
+        for field in ("counts", "warnings", "failures", "implementation_metadata"):
+            values[field] = json_values[field]
+        await self._uow._execute(postgresql_insert(_PROJECTION_RECEIPTS).values(**values))
+        result = ProjectionMutationResult(
+            receipt,
+            False,
+            claim,
+            OpaqueResultReference("projection_receipt", receipt.projection_receipt_id, 1),
+        )
+        await self._uow.idempotency.complete(claim, result.result_reference)
+        return result
+
+    async def add_source_reference(self, reference: SourceProjectionReference) -> SourceProjectionReference:
+        self._uow._guard_active()
+        self._scoped(reference)
+        run = await self._open_run(reference.projection_run_id, reference.projection_candidate_id)
+        receipt = (
+            await self._uow._execute(
+                select(_PROJECTION_RECEIPTS).where(
+                    _PROJECTION_RECEIPTS.c.projection_receipt_id == reference.projection_receipt_id,
+                    _PROJECTION_RECEIPTS.c.workspace_id == reference.workspace_id,
+                    _PROJECTION_RECEIPTS.c.environment_id == reference.environment_id,
+                )
+            )
+        ).mappings().one_or_none()
+        if (
+            receipt is None
+            or receipt.projection_run_id != run.projection_run_id
+            or receipt.projection_candidate_id != run.projection_candidate_id
+        ):
+            await self._uow._fail(ConstraintConflictError("Source projection reference lineage is invalid."))
+        partition_row = (
+            await self._uow._execute(
+                select(_PROJECTION_PARTITIONS).where(
+                    _PROJECTION_PARTITIONS.c.projection_partition_id
+                    == receipt["projection_partition_id"],
+                    _PROJECTION_PARTITIONS.c.workspace_id == reference.workspace_id,
+                    _PROJECTION_PARTITIONS.c.environment_id == reference.environment_id,
+                )
+            )
+        ).mappings().one_or_none()
+        config = await self.resolve_config_version(reference.projection_config_version_id)
+        source_revision = (
+            await self._uow._execute(
+                select(_SOURCE_REVISIONS.c.source_object_id).where(
+                    _SOURCE_REVISIONS.c.revision_id == reference.source_revision_id,
+                    _SOURCE_REVISIONS.c.source_object_id == reference.source_object_id,
+                    _SOURCE_REVISIONS.c.workspace_id == reference.workspace_id,
+                    _SOURCE_REVISIONS.c.environment_id == reference.environment_id,
+                )
+            )
+        ).first()
+        if (
+            partition_row is None
+            or partition_row["security_domain_reference"] != reference.security_domain_reference
+            or config is None
+            or config.projection_config_version_id != run.projection_config_version_id
+            or source_revision is None
+        ):
+            await self._uow._fail(ConstraintConflictError("Source projection reference lineage is invalid."))
+        if reference.processing_receipt_id is not None:
+            processing_receipt = (
+                await self._uow._execute(
+                    select(_PROCESSING_RECEIPTS.c.processing_receipt_id).where(
+                        _PROCESSING_RECEIPTS.c.processing_receipt_id == reference.processing_receipt_id,
+                        _PROCESSING_RECEIPTS.c.workspace_id == reference.workspace_id,
+                        _PROCESSING_RECEIPTS.c.environment_id == reference.environment_id,
+                    )
+                )
+            ).first()
+            if processing_receipt is None:
+                await self._uow._fail(ConstraintConflictError("Processing receipt lineage is invalid."))
+        await self._uow._execute(postgresql_insert(_SOURCE_PROJECTION_REFERENCES).values(**reference.model_dump(mode="python")))
+        return reference
+
+    async def list_partitions(self, projection_run_id: UUID) -> tuple[ProjectionPartition, ...]:
+        self._uow._guard_active()
+        scope = self._scope()
+        rows = (await self._uow._execute(select(_PROJECTION_PARTITIONS).where(_PROJECTION_PARTITIONS.c.projection_run_id == projection_run_id, _PROJECTION_PARTITIONS.c.workspace_id == scope.workspace_id, _PROJECTION_PARTITIONS.c.environment_id == scope.environment_id).order_by(_PROJECTION_PARTITIONS.c.projection_partition_id))).mappings().all()
+        return tuple(self._partition(row) for row in rows)
+
+    async def list_receipts(self, projection_run_id: UUID) -> tuple[ProjectionReceipt, ...]:
+        self._uow._guard_active()
+        scope = self._scope()
+        rows = (await self._uow._execute(select(_PROJECTION_RECEIPTS).where(_PROJECTION_RECEIPTS.c.projection_run_id == projection_run_id, _PROJECTION_RECEIPTS.c.workspace_id == scope.workspace_id, _PROJECTION_RECEIPTS.c.environment_id == scope.environment_id).order_by(_PROJECTION_RECEIPTS.c.projection_receipt_id))).mappings().all()
+        return tuple(self._receipt(row) for row in rows)
+
+    async def list_source_references(self, projection_run_id: UUID) -> tuple[SourceProjectionReference, ...]:
+        self._uow._guard_active()
+        scope = self._scope()
+        rows = (await self._uow._execute(select(_SOURCE_PROJECTION_REFERENCES).where(_SOURCE_PROJECTION_REFERENCES.c.projection_run_id == projection_run_id, _SOURCE_PROJECTION_REFERENCES.c.workspace_id == scope.workspace_id, _SOURCE_PROJECTION_REFERENCES.c.environment_id == scope.environment_id).order_by(_SOURCE_PROJECTION_REFERENCES.c.source_projection_reference_id))).mappings().all()
+        return tuple(self._reference(row) for row in rows)
+
+    async def seal_candidate(self, command: ProjectionCandidateSealCommand) -> ProjectionMutationResult:
+        self._uow._guard_active()
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=command.digest.operation_schema_version,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        if isinstance(claim, IdempotencyReplay):
+            run = await self._resolve_run(claim.result.result_id)
+            if run is None:
+                await self._uow._fail(ConstraintConflictError("Projection candidate replay is unavailable."))
+            return ProjectionMutationResult(run, True, claim, claim.result)
+        run = await self._open_run(command.projection_run_id, command.projection_candidate_id, for_update=True)
+        partitions = await self.list_partitions(run.projection_run_id)
+        transitions = await self.list_transitions(run.projection_run_id)
+        receipts = await self.list_receipts(run.projection_run_id)
+        references = await self.list_source_references(run.projection_run_id)
+        if not partitions or not receipts:
+            await self._uow._fail(ConstraintConflictError("Projection candidate has incomplete evidence."))
+        evidence_digest = projection_evidence_digest(
+            partitions=partitions,
+            receipts=receipts,
+            references=references,
+            transitions=transitions,
+        )
+        sealed_at = datetime.now(timezone.utc)
+        await self._uow._execute(
+            update(_PROJECTION_RUNS)
+            .where(
+                _PROJECTION_RUNS.c.projection_run_id == run.projection_run_id,
+                _PROJECTION_RUNS.c.candidate_state == "open",
+            )
+            .values(
+                candidate_state="sealed",
+                candidate_evidence_digest=evidence_digest,
+                candidate_sealed_at=sealed_at,
+            )
+        )
+        sealed = ProjectionRun(
+            **{
+                **run.model_dump(mode="python"),
+                "candidate_state": ProjectionCandidateState.SEALED,
+                "candidate_evidence_digest": evidence_digest,
+                "candidate_sealed_at": sealed_at,
+            }
+        )
+        result = ProjectionMutationResult(
+            sealed,
+            False,
+            claim,
+            OpaqueResultReference("projection_run", run.projection_run_id, 1),
+        )
+        await self._uow.idempotency.complete(claim, result.result_reference)
+        return result
+
+
 class PostgreSQLTenantUnitOfWork:
     """Own one PostgreSQL session and transaction for one trusted operation."""
 
@@ -2682,6 +3212,7 @@ class PostgreSQLTenantUnitOfWork:
         self._sources = _PostgreSQLSourceObservationRepository(self)
         self._canonical = _PostgreSQLCanonicalAcceptanceRepository(self)
         self._boundaries = _PostgreSQLCanonicalBoundaryRepository(self)
+        self._projections = _PostgreSQLProjectionRepository(self)
         self._ingestion = _PostgreSQLIngestionRepository(self)
         self._admissions = _PostgreSQLAdmissionRepository(self)
         self._access_policies = _PostgreSQLAccessPolicyRepository(self)
@@ -2727,6 +3258,16 @@ class PostgreSQLTenantUnitOfWork:
     def canonical_boundaries(self) -> _PostgreSQLCanonicalBoundaryRepository:
         self._guard_active()
         return self._boundaries
+
+    @property
+    def projections(self) -> _PostgreSQLProjectionRepository:
+        self._guard_active()
+        return self._projections
+
+    @property
+    def projection(self) -> _PostgreSQLProjectionRepository:
+        self._guard_active()
+        return self._projections
 
     @property
     def ingestion(self) -> IngestionRepository:

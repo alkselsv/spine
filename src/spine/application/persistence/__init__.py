@@ -80,6 +80,13 @@ from spine.application.persistence.outbox import (
     OutboxWriter,
     UnsupportedOutboxEventError,
 )
+from spine.application.persistence.projection import (
+    ProjectionCandidateSealCommand,
+    ProjectionMutationResult,
+    ProjectionReceiptCommand,
+    ProjectionRepository,
+    ProjectionRunCommand,
+)
 from spine.application.persistence.repositories import (
     EnvironmentRepository,
     IdempotencyRepository,
@@ -153,6 +160,11 @@ __all__ = [
     "OutboxConflictError",
     "OutboxIntent",
     "OutboxWriter",
+    "ProjectionCandidateSealCommand",
+    "ProjectionMutationResult",
+    "ProjectionReceiptCommand",
+    "ProjectionRepository",
+    "ProjectionRunCommand",
     "OwnedIdempotencyClaim",
     "RetryEligibility",
     "TransactionRetryPolicy",
