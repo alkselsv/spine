@@ -1974,6 +1974,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "uq_source_projection_references_projected_object",
         "ix_source_projection_references_source",
         "uq_canonical_boundary_members_scope_member",
+        "uq_projection_snapshot_members_scope_id",
         "ix_projection_validations_candidate",
         "ix_projection_snapshots_scope_state",
         "ix_projection_snapshot_members_snapshot",
