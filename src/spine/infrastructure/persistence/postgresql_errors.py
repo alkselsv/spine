@@ -12,6 +12,7 @@ from sqlalchemy.exc import (
 from spine.application.persistence.errors import (
     AuditConflictError,
     ConstraintConflictError,
+    ContextBundleConflictError,
     IncompatibleSchemaError,
     IdempotencyConflictError,
     OptimisticConflictError,
@@ -82,6 +83,8 @@ _CONSTRAINT_MESSAGES = {
         "Context profile must be server-approved."
     ),
     "fk_context_profiles_environment": "Environment does not belong to Workspace.",
+    "pk_context_bundles": "Context bundle immutable identity already exists.",
+    "uq_context_bundles_attempt": "Context bundle attempt identity already exists.",
 }
 
 _IDEMPOTENCY_CONSTRAINTS = {
@@ -142,6 +145,8 @@ def translate_persistence_error(error: BaseException) -> PersistenceError:
             constraint_name,
             "Persistence constraint rejected the operation.",
         )
+        if constraint_name in {"pk_context_bundles", "uq_context_bundles_attempt"}:
+            return ContextBundleConflictError(message)
         return ConstraintConflictError(message)
 
     if isinstance(error, (SQLAlchemyTimeoutError, OperationalError)) or (

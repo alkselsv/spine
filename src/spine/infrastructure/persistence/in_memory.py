@@ -38,6 +38,11 @@ from spine.application.persistence.errors import (
     ContextProfileMalformedError,
     ContextProfileNotFoundError,
     ContextProfileRevokedError,
+    ContextBundleConflictError,
+    ContextBundleDigestMismatchError,
+    ContextBundleEvidenceUnavailableError,
+    ContextBundleMalformedError,
+    ContextBundleNotFoundError,
     IdempotencyConflictError,
     InvalidBootstrapAuthorityError,
     InvalidPersistenceContextError,
@@ -169,6 +174,7 @@ from spine.domain.projections import (
     UnpublishedActivePublication,
 )
 from spine.domain.context_profiles import ContextProfileVersion
+from spine.domain.context_bundles import ContextBundle
 from spine.infrastructure.persistence.projection import InMemoryProjectionRepository
 
 
@@ -181,6 +187,7 @@ class _StoreState:
     workspaces: dict[UUID, Workspace]
     environments: dict[UUID, Environment]
     context_profiles: dict[tuple[UUID, UUID, UUID, int], ContextProfileVersion]
+    context_bundles: dict[tuple[UUID, UUID, UUID, int], ContextBundle]
     idempotency_receipts: dict["_ReceiptKey", "_IdempotencyReceipt"]
     outbox_intents: dict[UUID, OutboxIntent]
     source_objects: dict[UUID, SourceObject]
@@ -248,6 +255,7 @@ class _Store:
             workspaces={},
             environments={},
             context_profiles={},
+            context_bundles={},
             idempotency_receipts={},
             outbox_intents={},
             source_objects={},
@@ -306,6 +314,10 @@ class _Store:
     @property
     def context_profiles(self) -> dict[tuple[UUID, UUID, UUID, int], ContextProfileVersion]:
         return self.state.context_profiles
+
+    @property
+    def context_bundles(self) -> dict[tuple[UUID, UUID, UUID, int], ContextBundle]:
+        return self.state.context_bundles
 
     @property
     def idempotency_receipts(self) -> dict[_ReceiptKey, _IdempotencyReceipt]:
@@ -651,6 +663,179 @@ class _ContextProfileRepository:
             if restored.revoked:
                 self._uow._fail(ContextProfileRevokedError("Context profile is unavailable."))
             return restored
+
+        return self._uow._repository_call(operation)
+
+
+class _ContextBundleRepository:
+    def __init__(self, uow: "InMemoryUnitOfWork") -> None:
+        self._uow = uow
+
+    @staticmethod
+    def _key(bundle: ContextBundle) -> tuple[UUID, UUID, UUID, int]:
+        return (
+            bundle.workspace_id,
+            bundle.environment_id,
+            bundle.bundle_id,
+            bundle.bundle_version,
+        )
+
+    def _bundles(self) -> dict[tuple[UUID, UUID, UUID, int], ContextBundle]:
+        return self._uow._base_context_bundles | self._uow._pending_context_bundles
+
+    def _validate_scope(self, bundle: ContextBundle) -> None:
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope) or (
+            scope.workspace_id != bundle.workspace_id
+            or scope.environment_id != bundle.environment_id
+        ):
+            self._uow._fail(InvalidPersistenceContextError("Persistence context is invalid."))
+
+    def _validate_bundle(self, bundle: ContextBundle) -> None:
+        self._validate_scope(bundle)
+        if self._uow._resolve_environment(bundle.environment_id) is None:
+            self._uow._fail(ConstraintConflictError("Owning Environment does not exist."))
+
+    async def add(self, bundle: ContextBundle) -> None:
+        self._uow._guard_active()
+
+        def operation() -> None:
+            self._validate_bundle(bundle)
+            existing = self._bundles().get(self._key(bundle))
+            if existing is not None:
+                self._uow._fail(
+                    ContextBundleConflictError(
+                        "Context bundle immutable identity already exists."
+                    )
+                )
+            attempt = next(
+                (
+                    item
+                    for item in self._bundles().values()
+                    if item.workspace_id == bundle.workspace_id
+                    and item.environment_id == bundle.environment_id
+                    and item.run_id == bundle.run_id
+                    and item.attempt_id == bundle.attempt_id
+                    and item.idempotency_key == bundle.idempotency_key
+                ),
+                None,
+            )
+            if attempt is not None:
+                self._uow._fail(
+                    ContextBundleConflictError(
+                        "Context bundle attempt identity conflicts with history."
+                    )
+                )
+            self._uow._pending_context_bundles[self._key(bundle)] = bundle.model_copy(deep=True)
+
+        self._uow._repository_call(operation)
+
+    async def create(self, bundle: ContextBundle) -> ContextBundle:
+        self._uow._guard_active()
+
+        def operation() -> ContextBundle:
+            self._validate_bundle(bundle)
+            existing = self._bundles().get(self._key(bundle))
+            if existing is not None:
+                if existing != bundle:
+                    self._uow._fail(
+                        ContextBundleConflictError(
+                            "Context bundle immutable identity conflicts with history."
+                        )
+                    )
+                return existing.model_copy(deep=True)
+            attempt = next(
+                (
+                    item
+                    for item in self._bundles().values()
+                    if item.workspace_id == bundle.workspace_id
+                    and item.environment_id == bundle.environment_id
+                    and item.run_id == bundle.run_id
+                    and item.attempt_id == bundle.attempt_id
+                    and item.idempotency_key == bundle.idempotency_key
+                ),
+                None,
+            )
+            if attempt is not None:
+                if attempt == bundle:
+                    return attempt.model_copy(deep=True)
+                self._uow._fail(
+                    ContextBundleConflictError(
+                        "Context bundle attempt identity conflicts with history."
+                    )
+                )
+            self._uow._pending_context_bundles[self._key(bundle)] = bundle.model_copy(deep=True)
+            return bundle.model_copy(deep=True)
+
+        return self._uow._repository_call(operation)
+
+    def _restore(self, stored: ContextBundle) -> ContextBundle:
+        try:
+            return ContextBundle.model_validate(stored.model_dump(mode="python"))
+        except (TypeError, ValueError):
+            self._uow._fail(ContextBundleMalformedError("Context bundle is unavailable."))
+
+    def _safe_read(self, stored: ContextBundle) -> ContextBundle:
+        bundle = self._restore(stored)
+        if bundle.outcome.value in {"allowed", "degraded"} and any(
+            evidence.status.value != "valid" for evidence in bundle.evidence_references
+        ):
+            self._uow._fail(
+                ContextBundleEvidenceUnavailableError(
+                    "Context bundle evidence is unavailable."
+                )
+            )
+        return bundle
+
+    async def resolve(
+        self,
+        *,
+        bundle_id: UUID,
+        bundle_version: int,
+        bundle_digest: str,
+    ) -> ContextBundle:
+        self._uow._guard_active()
+
+        def operation() -> ContextBundle:
+            scope = self._uow.scope
+            if not isinstance(scope, EnvironmentScope):
+                self._uow._fail(InvalidPersistenceContextError("Persistence context is invalid."))
+            stored = self._bundles().get(
+                (scope.workspace_id, scope.environment_id, bundle_id, bundle_version)
+            )
+            if stored is None:
+                self._uow._fail(ContextBundleNotFoundError("Context bundle is unavailable."))
+            if stored.bundle_digest != bundle_digest:
+                self._uow._fail(ContextBundleDigestMismatchError("Context bundle identity is invalid."))
+            return self._safe_read(stored)
+
+        return self._uow._repository_call(operation)
+
+    async def resolve_attempt(
+        self,
+        *,
+        run_id: UUID,
+        attempt_id: UUID,
+        idempotency_key: str,
+    ) -> ContextBundle:
+        self._uow._guard_active()
+
+        def operation() -> ContextBundle:
+            scope = self._uow.scope
+            if not isinstance(scope, EnvironmentScope):
+                self._uow._fail(InvalidPersistenceContextError("Persistence context is invalid."))
+            matches = tuple(
+                item
+                for item in self._bundles().values()
+                if item.workspace_id == scope.workspace_id
+                and item.environment_id == scope.environment_id
+                and item.run_id == run_id
+                and item.attempt_id == attempt_id
+                and item.idempotency_key == idempotency_key
+            )
+            if not matches:
+                self._uow._fail(ContextBundleNotFoundError("Context bundle is unavailable."))
+            return self._safe_read(matches[0])
 
         return self._uow._repository_call(operation)
 
@@ -2440,6 +2625,7 @@ class InMemoryUnitOfWork:
         self._base_workspaces: dict[UUID, Workspace] = {}
         self._base_environments: dict[UUID, Environment] = {}
         self._base_context_profiles: dict[tuple[UUID, UUID, UUID, int], ContextProfileVersion] = {}
+        self._base_context_bundles: dict[tuple[UUID, UUID, UUID, int], ContextBundle] = {}
         self._base_receipts: dict[_ReceiptKey, _IdempotencyReceipt] = {}
         self._base_outbox_intents: dict[UUID, OutboxIntent] = {}
         self._base_source_objects: dict[UUID, SourceObject] = {}
@@ -2477,6 +2663,7 @@ class InMemoryUnitOfWork:
         self._pending_workspaces: dict[UUID, Workspace] = {}
         self._pending_environments: dict[UUID, Environment] = {}
         self._pending_context_profiles: dict[tuple[UUID, UUID, UUID, int], ContextProfileVersion] = {}
+        self._pending_context_bundles: dict[tuple[UUID, UUID, UUID, int], ContextBundle] = {}
         self._pending_receipts: dict[_ReceiptKey, _IdempotencyReceipt] = {}
         self._pending_outbox_intents: dict[UUID, OutboxIntent] = {}
         self._pending_source_objects: dict[UUID, SourceObject] = {}
@@ -2517,6 +2704,7 @@ class InMemoryUnitOfWork:
         self._workspaces = _WorkspaceRepository(self)
         self._environments = _EnvironmentRepository(self)
         self._context_profiles = _ContextProfileRepository(self)
+        self._context_bundles = _ContextBundleRepository(self)
         self._idempotency = _IdempotencyRepository(self)
         self._outbox = _OutboxWriter(self)
         self._sources = _SourceObservationRepository(self)
@@ -2541,6 +2729,11 @@ class InMemoryUnitOfWork:
     def context_profiles(self) -> _ContextProfileRepository:
         self._guard_active()
         return self._context_profiles
+
+    @property
+    def context_bundles(self) -> _ContextBundleRepository:
+        self._guard_active()
+        return self._context_bundles
 
     @property
     def idempotency(self) -> _IdempotencyRepository:
@@ -2654,6 +2847,10 @@ class InMemoryUnitOfWork:
                 self._base_context_profiles = {
                     key: value.model_copy(deep=True)
                     for key, value in self._store.context_profiles.items()
+                }
+                self._base_context_bundles = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.context_bundles.items()
                 }
                 self._base_receipts = {
                     key: _receipt_copy(value)
@@ -2821,6 +3018,16 @@ class InMemoryUnitOfWork:
                     {
                         key: value.model_copy(deep=True)
                         for key, value in self._pending_context_profiles.items()
+                    }
+                )
+                prepared_context_bundles = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.context_bundles.items()
+                }
+                prepared_context_bundles.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_context_bundles.items()
                     }
                 )
                 prepared_receipts = {
@@ -3083,6 +3290,7 @@ class InMemoryUnitOfWork:
                     workspaces=prepared_workspaces,
                     environments=prepared_environments,
                     context_profiles=prepared_context_profiles,
+                    context_bundles=prepared_context_bundles,
                     idempotency_receipts=prepared_receipts,
                     outbox_intents=prepared_outbox_intents,
                     source_objects=prepared_source_objects,
@@ -3134,6 +3342,7 @@ class InMemoryUnitOfWork:
         self._pending_workspaces.clear()
         self._pending_environments.clear()
         self._pending_context_profiles.clear()
+        self._pending_context_bundles.clear()
         self._pending_receipts.clear()
         self._pending_outbox_intents.clear()
         self._pending_source_objects.clear()
@@ -3229,6 +3438,32 @@ class InMemoryUnitOfWork:
             raise ConstraintConflictError("Environment identity already exists.")
         if self._pending_context_profiles.keys() & self._store.context_profiles.keys():
             raise ConstraintConflictError("Context profile immutable version already exists.")
+        if self._pending_context_bundles.keys() & self._store.context_bundles.keys():
+            raise ContextBundleConflictError("Context bundle immutable identity already exists.")
+        committed_attempts = {
+            (
+                bundle.workspace_id,
+                bundle.environment_id,
+                bundle.run_id,
+                bundle.attempt_id,
+                bundle.idempotency_key,
+            )
+            for bundle in self._store.context_bundles.values()
+        }
+        pending_attempts: set[tuple[UUID, UUID, UUID, UUID, str]] = set()
+        for bundle in self._pending_context_bundles.values():
+            attempt = (
+                bundle.workspace_id,
+                bundle.environment_id,
+                bundle.run_id,
+                bundle.attempt_id,
+                bundle.idempotency_key,
+            )
+            if attempt in committed_attempts or attempt in pending_attempts:
+                raise ContextBundleConflictError(
+                    "Context bundle attempt identity conflicts with history."
+                )
+            pending_attempts.add(attempt)
         if self._pending_receipts.keys() & self._store.idempotency_receipts.keys():
             raise IdempotencyConflictError("Idempotency key conflicts with existing command.")
         if self._pending_outbox_intents.keys() & self._store.outbox_intents.keys():
@@ -3461,6 +3696,11 @@ class InMemoryUnitOfWork:
     ) -> ContextProfileVersion | None:
         return self._pending_context_profiles.get(key) or self._base_context_profiles.get(key)
 
+    def _resolve_context_bundle(
+        self, key: tuple[UUID, UUID, UUID, int]
+    ) -> ContextBundle | None:
+        return self._pending_context_bundles.get(key) or self._base_context_bundles.get(key)
+
     def _resolve_receipt(self, key: _ReceiptKey) -> _IdempotencyReceipt | None:
         return self._pending_receipts.get(key) or self._base_receipts.get(key)
 
@@ -3546,6 +3786,7 @@ class InMemoryUnitOfWork:
         self._base_workspaces.clear()
         self._base_environments.clear()
         self._base_context_profiles.clear()
+        self._base_context_bundles.clear()
         self._base_receipts.clear()
         self._base_outbox_intents.clear()
         self._base_source_objects.clear()
@@ -3583,6 +3824,7 @@ class InMemoryUnitOfWork:
         self._pending_workspaces.clear()
         self._pending_environments.clear()
         self._pending_context_profiles.clear()
+        self._pending_context_bundles.clear()
         self._pending_receipts.clear()
         self._pending_outbox_intents.clear()
         self._pending_source_objects.clear()

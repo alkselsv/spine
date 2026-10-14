@@ -61,6 +61,11 @@ from spine.application.persistence.errors import (
     ContextProfileMalformedError,
     ContextProfileNotFoundError,
     ContextProfileRevokedError,
+    ContextBundleConflictError,
+    ContextBundleDigestMismatchError,
+    ContextBundleEvidenceUnavailableError,
+    ContextBundleMalformedError,
+    ContextBundleNotFoundError,
     IdempotencyConflictError,
     InvalidPersistenceContextError,
     OptimisticConflictError,
@@ -196,6 +201,7 @@ from spine.domain.projections import (
     projection_snapshot_manifest_digest,
 )
 from spine.domain.context_profiles import ContextProfileVersion
+from spine.domain.context_bundles import ContextBundle
 from spine.infrastructure.db.engine import SessionFactory
 from spine.infrastructure.persistence.backup_recovery import (
     PostgreSQLBackupRecoveryRepository,
@@ -210,6 +216,7 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     audit_events as _AUDIT_EVENTS,
     environments as _ENVIRONMENTS,
     context_profiles as _CONTEXT_PROFILES,
+    context_bundles as _CONTEXT_BUNDLES,
     idempotency_receipts as _IDEMPOTENCY_RECEIPTS,
     outbox_intents as _OUTBOX_INTENTS,
     source_objects as _SOURCE_OBJECTS,
@@ -658,6 +665,250 @@ class _PostgreSQLContextProfileRepository:
                 ContextProfileApprovalError("Context profile is unavailable.")
             )
         return profile
+
+
+class _PostgreSQLContextBundleRepository:
+    def __init__(self, uow: "PostgreSQLTenantUnitOfWork") -> None:
+        self._uow = uow
+
+    @staticmethod
+    def _values(bundle: ContextBundle) -> dict[str, object]:
+        return {
+            "bundle_id": bundle.bundle_id,
+            "workspace_id": bundle.workspace_id,
+            "environment_id": bundle.environment_id,
+            "bundle_version": bundle.bundle_version,
+            "bundle_digest": bundle.bundle_digest,
+            "schema_version": bundle.schema_version,
+            "idempotency_key": bundle.idempotency_key,
+            "profile_id": bundle.profile_ref.profile_id,
+            "profile_version": bundle.profile_ref.profile_version,
+            "profile_digest": bundle.profile_ref.profile_digest,
+            "trusted_request_context_ref": bundle.trusted_request_context_ref,
+            "authorization_context_ref": bundle.authorization_context_ref,
+            "request_id": bundle.request_id,
+            "run_id": bundle.run_id,
+            "attempt_id": bundle.attempt_id,
+            "publication_pin_id": bundle.publication_pin_id,
+            "projection_snapshot_id": bundle.projection_snapshot.projection_snapshot_id,
+            "projection_activation_id": bundle.projection_activation.projection_activation_id,
+            "activation_generation": bundle.activation_generation,
+            "canonical_boundary_id": bundle.canonical_boundary.boundary_id,
+            "projection_config_version_id": bundle.projection_config_version.projection_config_version_id,
+            "freshness": bundle.freshness.value,
+            "health": bundle.health.value,
+            "retrieval_strategy": bundle.retrieval_strategy,
+            "outcome": bundle.outcome.value,
+            "reason_code": bundle.reason_code,
+            "state": bundle.state.value,
+            "reconciliation_evidence": (
+                bundle.reconciliation_evidence.model_dump(mode="json")
+                if bundle.reconciliation_evidence is not None
+                else None
+            ),
+            "evidence_references": [
+                item.model_dump(mode="json") for item in bundle.evidence_references
+            ],
+            "policy_decision_generations": [
+                item.model_dump(mode="json")
+                for item in bundle.policy_decision_generations
+            ],
+            "canonical_boundary": bundle.canonical_boundary.model_dump(mode="json"),
+            "canonical_as_of": bundle.canonical_as_of.model_dump(mode="json"),
+            "projection_snapshot": bundle.projection_snapshot.model_dump(mode="json"),
+            "projection_activation": bundle.projection_activation.model_dump(mode="json"),
+            "projection_config_version": bundle.projection_config_version.model_dump(mode="json"),
+            "created_at": bundle.created_at,
+        }
+
+    @staticmethod
+    def _restore(row: Mapping[str, object]) -> ContextBundle:
+        try:
+            values = dict(row)
+            values["profile_ref"] = {
+                "profile_id": values.pop("profile_id"),
+                "profile_version": values.pop("profile_version"),
+                "profile_digest": values.pop("profile_digest"),
+            }
+            for field_name in (
+                "projection_snapshot_id",
+                "projection_activation_id",
+                "canonical_boundary_id",
+                "projection_config_version_id",
+            ):
+                values.pop(field_name, None)
+            values["effective_reconciliation"] = values.pop(
+                "reconciliation_evidence", None
+            )
+            for field_name in (
+                "canonical_boundary",
+                "canonical_as_of",
+                "projection_snapshot",
+                "projection_activation",
+                "projection_config_version",
+            ):
+                if not isinstance(values.get(field_name), Mapping):
+                    raise ValueError("nested ContextBundle record is not an object")
+            return ContextBundle.model_validate(values)
+        except (TypeError, ValueError, KeyError):
+            raise ContextBundleMalformedError("Context bundle is unavailable.") from None
+
+    async def _find(
+        self,
+        *,
+        bundle_id: UUID | None = None,
+        bundle_version: int | None = None,
+        run_id: UUID | None = None,
+        attempt_id: UUID | None = None,
+        idempotency_key: str | None = None,
+    ) -> Mapping[str, object] | None:
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            await self._uow._fail(InvalidPersistenceContextError("Persistence context is invalid."))
+        conditions = [
+            _CONTEXT_BUNDLES.c.workspace_id == scope.workspace_id,
+            _CONTEXT_BUNDLES.c.environment_id == scope.environment_id,
+        ]
+        if bundle_id is not None:
+            conditions.append(_CONTEXT_BUNDLES.c.bundle_id == bundle_id)
+        if bundle_version is not None:
+            conditions.append(_CONTEXT_BUNDLES.c.bundle_version == bundle_version)
+        if run_id is not None:
+            conditions.append(_CONTEXT_BUNDLES.c.run_id == run_id)
+        if attempt_id is not None:
+            conditions.append(_CONTEXT_BUNDLES.c.attempt_id == attempt_id)
+        if idempotency_key is not None:
+            conditions.append(_CONTEXT_BUNDLES.c.idempotency_key == idempotency_key)
+        result = await self._uow._execute(select(_CONTEXT_BUNDLES).where(*conditions))
+        return result.mappings().one_or_none()
+
+    def _validate_scope(self, bundle: ContextBundle) -> None:
+        scope = self._uow.scope
+        if (
+            not isinstance(scope, EnvironmentScope)
+            or bundle.workspace_id != scope.workspace_id
+            or bundle.environment_id != scope.environment_id
+        ):
+            raise InvalidPersistenceContextError("Persistence context is invalid.")
+
+    async def _safe_read(self, row: Mapping[str, object]) -> ContextBundle:
+        bundle = self._restore(row)
+        if bundle.outcome.value in {"allowed", "degraded"} and any(
+            evidence.status.value != "valid" for evidence in bundle.evidence_references
+        ):
+            await self._uow._fail(
+                ContextBundleEvidenceUnavailableError(
+                    "Context bundle evidence is unavailable."
+                )
+            )
+        return bundle
+
+    async def add(self, bundle: ContextBundle) -> None:
+        self._uow._guard_active()
+        self._validate_scope(bundle)
+        if await self._find(
+            bundle_id=bundle.bundle_id,
+            bundle_version=bundle.bundle_version,
+        ) is not None:
+            await self._uow._fail(
+                ContextBundleConflictError(
+                    "Context bundle immutable identity already exists."
+                )
+            )
+        if await self._find(
+            run_id=bundle.run_id,
+            attempt_id=bundle.attempt_id,
+            idempotency_key=bundle.idempotency_key,
+        ) is not None:
+            await self._uow._fail(
+                ContextBundleConflictError(
+                    "Context bundle attempt identity conflicts with history."
+                )
+            )
+        await self._uow._execute(insert(_CONTEXT_BUNDLES).values(self._values(bundle)))
+
+    async def create(self, bundle: ContextBundle) -> ContextBundle:
+        self._uow._guard_active()
+        self._validate_scope(bundle)
+        existing = await self._find(
+            bundle_id=bundle.bundle_id,
+            bundle_version=bundle.bundle_version,
+        )
+        if existing is not None:
+            restored = self._restore(existing)
+            if restored != bundle:
+                await self._uow._fail(
+                    ContextBundleConflictError(
+                        "Context bundle immutable identity conflicts with history."
+                    )
+                )
+            return restored
+        inserted = await self._uow._execute(
+            postgresql_insert(_CONTEXT_BUNDLES)
+            .values(self._values(bundle))
+            .on_conflict_do_nothing(
+                index_elements=[
+                    _CONTEXT_BUNDLES.c.workspace_id,
+                    _CONTEXT_BUNDLES.c.environment_id,
+                    _CONTEXT_BUNDLES.c.run_id,
+                    _CONTEXT_BUNDLES.c.attempt_id,
+                    _CONTEXT_BUNDLES.c.idempotency_key,
+                ]
+            )
+            .returning(*_CONTEXT_BUNDLES.c)
+        )
+        inserted_row = inserted.mappings().one_or_none()
+        if inserted_row is not None:
+            return self._restore(inserted_row)
+        existing = await self._find(
+            run_id=bundle.run_id,
+            attempt_id=bundle.attempt_id,
+            idempotency_key=bundle.idempotency_key,
+        )
+        if existing is None:
+            await self._uow._fail(
+                ContextBundleConflictError("Context bundle immutable identity conflicts with history.")
+            )
+        restored = self._restore(existing)
+        if restored != bundle:
+            await self._uow._fail(
+                ContextBundleConflictError(
+                    "Context bundle attempt identity conflicts with history."
+                )
+            )
+        return restored
+
+    async def resolve(
+        self,
+        *,
+        bundle_id: UUID,
+        bundle_version: int,
+        bundle_digest: str,
+    ) -> ContextBundle:
+        self._uow._guard_active()
+        row = await self._find(bundle_id=bundle_id, bundle_version=bundle_version)
+        if row is None:
+            await self._uow._fail(ContextBundleNotFoundError("Context bundle is unavailable."))
+        if row["bundle_digest"] != bundle_digest:
+            await self._uow._fail(ContextBundleDigestMismatchError("Context bundle identity is invalid."))
+        return await self._safe_read(row)
+
+    async def resolve_attempt(
+        self,
+        *,
+        run_id: UUID,
+        attempt_id: UUID,
+        idempotency_key: str,
+    ) -> ContextBundle:
+        self._uow._guard_active()
+        row = await self._find(
+            run_id=run_id,
+            attempt_id=attempt_id,
+            idempotency_key=idempotency_key,
+        )
+        if row is None:
+            await self._uow._fail(ContextBundleNotFoundError("Context bundle is unavailable."))
+        return await self._safe_read(row)
 
 
 class _PostgreSQLSourceObservationRepository:
@@ -4499,6 +4750,7 @@ class PostgreSQLTenantUnitOfWork:
         self._workspaces = _PostgreSQLWorkspaceRepository(self)
         self._environments = _PostgreSQLEnvironmentRepository(self)
         self._context_profiles = _PostgreSQLContextProfileRepository(self)
+        self._context_bundles = _PostgreSQLContextBundleRepository(self)
         self._sources = _PostgreSQLSourceObservationRepository(self)
         self._canonical = _PostgreSQLCanonicalAcceptanceRepository(self)
         self._boundaries = _PostgreSQLCanonicalBoundaryRepository(self)
@@ -4534,6 +4786,11 @@ class PostgreSQLTenantUnitOfWork:
     def context_profiles(self) -> _PostgreSQLContextProfileRepository:
         self._guard_active()
         return self._context_profiles
+
+    @property
+    def context_bundles(self) -> _PostgreSQLContextBundleRepository:
+        self._guard_active()
+        return self._context_bundles
 
     @property
     def sources(self) -> _PostgreSQLSourceObservationRepository:

@@ -123,3 +123,27 @@ class ContextProfileApprovalError(ContextProfileError):
 
 class ContextProfileMalformedError(ContextProfileError):
     """Persisted profile data is malformed or uses an unsupported schema."""
+
+
+class ContextBundleError(PersistenceError):
+    """Base class for safe, typed ContextBundle persistence failures."""
+
+
+class ContextBundleNotFoundError(ContextBundleError):
+    """No bundle exists in the trusted workspace/environment scope."""
+
+
+class ContextBundleDigestMismatchError(ContextBundleError):
+    """The requested bundle identity has a different content digest."""
+
+
+class ContextBundleMalformedError(ContextBundleError):
+    """Persisted bundle data cannot be restored as the supported schema."""
+
+
+class ContextBundleEvidenceUnavailableError(ContextBundleError):
+    """A bundle contains evidence that cannot be safely revalidated."""
+
+
+class ContextBundleConflictError(ConstraintConflictError, ContextBundleError):
+    """An immutable bundle identity conflicts with already committed content."""

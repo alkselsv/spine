@@ -19,6 +19,7 @@ from spine.application.persistence.canonical import CanonicalAcceptanceRepositor
 from spine.application.persistence.boundary import CanonicalBoundaryRepository
 from spine.application.persistence.projection import ProjectionRepository
 from spine.application.persistence.context_profiles import ContextProfileRepository
+from spine.application.persistence.context_bundles import ContextBundleRepository
 
 if TYPE_CHECKING:
     from spine.application.diagnostics.audit import AuditWriter
@@ -33,6 +34,9 @@ class TenantUnitOfWork(Protocol):
 
     @property
     def context_profiles(self) -> ContextProfileRepository: ...
+
+    @property
+    def context_bundles(self) -> ContextBundleRepository: ...
 
     async def __aenter__(self) -> "TenantUnitOfWork": ...
 

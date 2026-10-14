@@ -30,6 +30,9 @@ from spine.application.persistence.context import (
 from spine.application.persistence.errors import (
     CanonicalEligibilityError,
     ConstraintConflictError,
+    ContextBundleConflictError,
+    ContextBundleEvidenceUnavailableError,
+    ContextBundleNotFoundError,
     IdempotencyConflictError,
     PersistenceUnavailableError,
     UnexpectedPersistenceError,
@@ -55,6 +58,13 @@ from spine.application.access_policies import (
 from spine.application.diagnostics.audit import AuditEventRegistry
 from spine.domain.audit import AuditOutcome, CommandAuditPayload
 from spine.domain.common import EnvironmentKind
+from spine.domain.context_bundles import (
+    ContextBundle,
+    ContextBundleEvidenceReference,
+    ContextBundleOutcome,
+    ContextBundleState,
+)
+from spine.domain.context_profiles import ContextProfileRef
 from spine.domain.ingestion import (
     IngestionRun,
     IngestionRunState,
@@ -160,6 +170,8 @@ from tests.contracts.persistence.test_environment_repository_contract import (
     test_mismatched_environment_scope_fails_before_repository_access as contract_mismatched_environment,
 )
 from tests.contracts.persistence.test_context_profile_repository_contract import (
+    persist_scope as persist_context_profile_scope,
+    profile as context_profile,
     test_context_profile_repository_create_is_idempotent_for_same_version as contract_context_profile_create_replay,
     test_context_profile_repository_does_not_disclose_cross_workspace_profile as contract_context_profile_isolation,
     test_context_profile_repository_fails_closed_for_digest_mismatch as contract_context_profile_digest_mismatch,
@@ -187,6 +199,7 @@ from tests.contracts.persistence.test_unit_of_work_contract import (
     test_uow_reentry_fails_deterministically as contract_reentry,
     test_worker_and_interactive_contexts_have_same_workspace_isolation as contract_worker_parity,
 )
+from tests.domain.context_bundle.test_context_bundle_models import context_bundle
 
 
 pytestmark = [
@@ -2365,3 +2378,189 @@ async def test_cancelled_statement_releases_single_connection_without_scope_leak
     )
     async with adapter.uow_factory(adapter.workspace_context(workspace_id)) as uow:
         assert await uow.workspaces.resolve(workspace_id) is None
+
+
+def _scoped_context_bundle(
+    workspace_id: UUID,
+    environment_id: UUID,
+    profile_ref: ContextProfileRef,
+    **overrides: object,
+) -> ContextBundle:
+    base = context_bundle(profile_ref=profile_ref)
+    values = base.model_dump(mode="python", exclude={"bundle_digest"})
+    values.update(
+        {
+            "workspace_id": workspace_id,
+            "environment_id": environment_id,
+            "projection_snapshot": base.projection_snapshot.model_copy(
+                update={
+                    "workspace_id": workspace_id,
+                    "environment_id": environment_id,
+                }
+            ),
+            "projection_activation": base.projection_activation.model_copy(
+                update={
+                    "workspace_id": workspace_id,
+                    "environment_id": environment_id,
+                }
+            ),
+            "canonical_boundary": base.canonical_boundary.model_copy(
+                update={
+                    "workspace_id": workspace_id,
+                    "environment_id": environment_id,
+                }
+            ),
+            "projection_config_version": base.projection_config_version.model_copy(
+                update={
+                    "workspace_id": workspace_id,
+                    "environment_id": environment_id,
+                }
+            ),
+        }
+    )
+    if "evidence_references" not in overrides:
+        values["evidence_references"] = tuple(
+            evidence.model_copy(
+                update={
+                    "workspace_id": workspace_id,
+                    "environment_id": environment_id,
+                    "projection_snapshot_id": base.projection_snapshot.projection_snapshot_id,
+                    "activation_generation": base.activation_generation,
+                }
+            )
+            for evidence in base.evidence_references
+        )
+    values.update(overrides)
+    return ContextBundle.create(**values)
+
+
+@pytest.mark.asyncio
+async def test_postgresql_context_bundle_replays_isolates_and_safe_reads(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(9901)
+    environment_id = synthetic_uuid(9902)
+    await persist_context_profile_scope(
+        postgresql_adapter, workspace_id, environment_id
+    )
+    stored_profile = context_profile(
+        workspace_id,
+        environment_id,
+        profile_id=UUID(int=3),
+    )
+    context = postgresql_adapter.environment_context(workspace_id, environment_id)
+
+    async with postgresql_adapter.uow_factory(context) as uow:
+        await uow.context_profiles.create(stored_profile)
+        bundle = _scoped_context_bundle(
+            workspace_id,
+            environment_id,
+            ContextProfileRef(
+                profile_id=stored_profile.profile_id,
+                profile_version=stored_profile.profile_version,
+                profile_digest=stored_profile.profile_digest,
+            ),
+        )
+        assert await uow.context_bundles.create(bundle) == bundle
+        assert await uow.context_bundles.create(bundle) == bundle
+        await uow.commit()
+
+    with pytest.raises(ContextBundleConflictError):
+        async with postgresql_adapter.uow_factory(context) as uow:
+            await uow.context_bundles.create(
+                _scoped_context_bundle(
+                    workspace_id,
+                    environment_id,
+                    bundle_id=UUID(int=99),
+                    profile_ref=bundle.profile_ref,
+                    evidence_references=(),
+                    policy_decision_generations=(),
+                    outcome=ContextBundleOutcome.INSUFFICIENT,
+                    reason_code="insufficient_evidence",
+                )
+            )
+
+    async with postgresql_adapter.uow_factory(context) as uow:
+        assert (
+            await uow.context_bundles.resolve_attempt(
+                run_id=bundle.run_id,
+                attempt_id=bundle.attempt_id,
+                idempotency_key=bundle.idempotency_key,
+            )
+        ) == bundle
+
+    cancelled = _scoped_context_bundle(
+        workspace_id,
+        environment_id,
+        bundle_id=UUID(int=98),
+        profile_ref=bundle.profile_ref,
+        run_id=UUID(int=97),
+        attempt_id=UUID(int=96),
+        idempotency_key="cancelled-attempt",
+        evidence_references=(),
+        policy_decision_generations=(),
+        outcome=ContextBundleOutcome.CANCELLED,
+        state=ContextBundleState.CANCELLED,
+        reason_code="cancelled",
+    )
+    async with postgresql_adapter.uow_factory(context) as uow:
+        await uow.context_bundles.create(cancelled)
+        await uow.commit()
+    async with postgresql_adapter.uow_factory(context) as uow:
+        assert (
+            await uow.context_bundles.resolve_attempt(
+                run_id=cancelled.run_id,
+                attempt_id=cancelled.attempt_id,
+                idempotency_key=cancelled.idempotency_key,
+            )
+        ) == cancelled
+
+    degraded = _scoped_context_bundle(
+        workspace_id,
+        environment_id,
+        bundle_id=UUID(int=95),
+        profile_ref=bundle.profile_ref,
+        run_id=UUID(int=94),
+        attempt_id=UUID(int=93),
+        idempotency_key="degraded-attempt",
+        outcome=ContextBundleOutcome.DEGRADED,
+        reason_code="stale_evidence",
+        evidence_references=(
+            ContextBundleEvidenceReference(
+                evidence_id="stale-evidence",
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                projection_snapshot_id=bundle.projection_snapshot.projection_snapshot_id,
+                activation_generation=bundle.activation_generation,
+                source_object_id=UUID(int=20),
+                source_revision_id=UUID(int=21),
+                locator={"kind": "page", "value": "1"},
+                evidence_digest="7" * 64,
+                status="stale",
+            ),
+        ),
+    )
+    async with postgresql_adapter.uow_factory(context) as uow:
+        await uow.context_bundles.create(degraded)
+        await uow.commit()
+    with pytest.raises(ContextBundleEvidenceUnavailableError):
+        async with postgresql_adapter.uow_factory(context) as uow:
+            await uow.context_bundles.resolve_attempt(
+                run_id=degraded.run_id,
+                attempt_id=degraded.attempt_id,
+                idempotency_key=degraded.idempotency_key,
+            )
+
+    foreign_context = postgresql_adapter.environment_context(
+        synthetic_uuid(9903), synthetic_uuid(9904)
+    )
+    await persist_context_profile_scope(
+        postgresql_adapter, synthetic_uuid(9903), synthetic_uuid(9904)
+    )
+    with pytest.raises(ContextBundleNotFoundError):
+        async with postgresql_adapter.uow_factory(foreign_context) as uow:
+            await uow.context_bundles.resolve_attempt(
+                run_id=bundle.run_id,
+                attempt_id=bundle.attempt_id,
+                idempotency_key=bundle.idempotency_key,
+            )
