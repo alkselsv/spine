@@ -160,6 +160,8 @@ class CurrentContentAuthorizationSnapshot(DefinitionModel):
     source_object_id: UUID
     current_revision_id: UUID | None = None
     current_revision_kind: RevisionKind | None = None
+    current_revision_observed_at: datetime | None = None
+    retention_eligible: bool | None = None
     provenance_complete: bool = False
     current_policy: CurrentAccessPolicy | None = None
     policy: AccessPolicyVersion | None = None
@@ -173,6 +175,8 @@ class CurrentContentAuthorizationSnapshot(DefinitionModel):
 
     @model_validator(mode="after")
     def validate_policy_scope(self) -> "CurrentContentAuthorizationSnapshot":
+        if self.current_revision_observed_at is not None:
+            _aware(self.current_revision_observed_at, "current_revision_observed_at")
         if self.current_policy is not None:
             if (
                 self.current_policy.workspace_id != self.workspace_id
@@ -197,13 +201,23 @@ class AuthorizationEvidence(DefinitionModel):
     """Opaque evidence retained on an allowed decision, never content."""
 
     source_object_id: UUID
+    source_revision_id: UUID
     policy_version_id: UUID
+    source_revision_observed_at: datetime | None = None
+    retention_eligible: bool | None = None
     policy_generation: int = Field(ge=1)
 
-    @field_validator("source_object_id", "policy_version_id")
+    @field_validator("source_object_id", "source_revision_id", "policy_version_id")
     @classmethod
     def validate_evidence_ids(cls, value: UUID, info: object) -> UUID:
         return _nonzero(value, getattr(info, "field_name", "identifier"))
+
+    @field_validator("source_revision_observed_at")
+    @classmethod
+    def validate_observed_at(cls, value: datetime | None) -> datetime | None:
+        if value is not None:
+            return _aware(value, "source_revision_observed_at")
+        return value
 
 
 class ContentAuthorizationDecision(DefinitionModel):
@@ -401,6 +415,14 @@ class ContentAuthorizationDecisionService:
                         reason=AuthorizationReasonCode.SOURCE_UNAVAILABLE,
                         evaluated_at=now,
                     )
+                if snapshot.current_revision_id is None:
+                    return await self._deny(
+                        context=current_context,
+                        source_ids=normalized_source_ids,
+                        kind=kind,
+                        reason=AuthorizationReasonCode.SOURCE_UNAVAILABLE,
+                        evaluated_at=now,
+                    )
                 assert snapshot.policy is not None
                 assert snapshot.current_policy is not None
                 if kind is AuthorizationDecisionKind.HUMAN_DISCLOSURE:
@@ -434,6 +456,9 @@ class ContentAuthorizationDecisionService:
                 evidence.append(
                     AuthorizationEvidence(
                         source_object_id=source_id,
+                        source_revision_id=snapshot.current_revision_id,
+                        source_revision_observed_at=snapshot.current_revision_observed_at,
+                        retention_eligible=snapshot.retention_eligible,
                         policy_version_id=snapshot.current_policy.access_policy_version_id,
                         policy_generation=snapshot.current_policy.policy_generation,
                     )
