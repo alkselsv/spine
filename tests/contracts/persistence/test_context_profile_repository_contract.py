@@ -113,6 +113,28 @@ async def test_context_profile_repository_create_is_idempotent_for_same_version(
 
 
 @pytest.mark.asyncio
+async def test_context_profile_repository_retries_after_uncommitted_create_failure(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(3218)
+    environment_id = synthetic_uuid(3219)
+    expected = profile(workspace_id, environment_id)
+    await persist_scope(persistence_adapter, workspace_id, environment_id)
+    context = persistence_adapter.environment_context(workspace_id, environment_id)
+
+    with pytest.raises(RuntimeError, match="synthetic profile failure"):
+        async with persistence_adapter.uow_factory(context) as uow:
+            await uow.context_profiles.create(expected)
+            raise RuntimeError("synthetic profile failure")
+
+    async with persistence_adapter.uow_factory(context) as uow:
+        actual = await uow.context_profiles.create(expected)
+        await uow.commit()
+
+    assert actual == expected
+
+
+@pytest.mark.asyncio
 async def test_context_profile_repository_preserves_allowed_partial_fallback(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
@@ -160,7 +182,7 @@ async def test_context_profile_repository_rejects_duplicate_immutable_version(
 
 
 @pytest.mark.asyncio
-async def test_context_profile_repository_fails_closed_for_digest_and_missing_profile(
+async def test_context_profile_repository_fails_closed_for_digest_mismatch(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
     workspace_id = synthetic_uuid(3206)
@@ -180,6 +202,21 @@ async def test_context_profile_repository_fails_closed_for_digest_and_missing_pr
                 profile_version=expected.profile_version,
                 profile_digest="0" * 64,
             )
+
+
+@pytest.mark.asyncio
+async def test_context_profile_repository_fails_closed_for_unknown_version(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(3220)
+    environment_id = synthetic_uuid(3221)
+    expected = profile(workspace_id, environment_id)
+    await persist_scope(persistence_adapter, workspace_id, environment_id)
+    context = persistence_adapter.environment_context(workspace_id, environment_id)
+
+    async with persistence_adapter.uow_factory(context) as uow:
+        await uow.context_profiles.add(expected)
+        await uow.commit()
 
     with pytest.raises(ContextProfileNotFoundError):
         async with persistence_adapter.uow_factory(context) as uow:
