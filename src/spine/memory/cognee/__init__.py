@@ -43,6 +43,11 @@ from .rebuild import (
     ShadowRebuildResult,
     ShadowRebuildState,
 )
+from .retrieval import (
+    CogneePublicStructuredRetrievalSdk,
+    CogneeStructuredRetrieval,
+    CogneeStructuredRetrievalSdk,
+)
 from .validation import (
     ArtifactKind,
     PhysicalArtifact,
@@ -93,6 +98,9 @@ __all__ = [
     "ShadowRebuildPlan",
     "ShadowRebuildResult",
     "ShadowRebuildState",
+    "CogneePublicStructuredRetrievalSdk",
+    "CogneeStructuredRetrieval",
+    "CogneeStructuredRetrievalSdk",
     "ArtifactKind",
     "PhysicalArtifact",
     "PhysicalArtifactCount",
