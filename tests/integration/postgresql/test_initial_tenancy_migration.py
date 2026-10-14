@@ -1426,6 +1426,13 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "parsed_document_segments",
         "canonical_boundaries",
         "canonical_boundary_members",
+        "ontology_versions",
+        "projection_config_versions",
+        "projection_runs",
+        "projection_run_transitions",
+        "projection_partitions",
+        "projection_receipts",
+        "source_projection_references",
     }
     expected_final_constraints = {
         "alembic_version_pkc",
@@ -1614,6 +1621,60 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ck_parsed_segments_schema",
         "ck_parsed_segments_identity",
         "ck_parsed_segments_metadata",
+        "pk_ontology_versions",
+        "uq_ontology_versions_scope_id",
+        "uq_ontology_versions_name_version",
+        "uq_ontology_versions_name_digest",
+        "fk_ontology_versions_predecessor",
+        "ck_ontology_versions_version",
+        "ck_ontology_versions_schema",
+        "ck_ontology_versions_digest",
+        "pk_projection_config_versions",
+        "uq_projection_configs_scope_id",
+        "uq_projection_configs_kind_version",
+        "uq_projection_configs_kind_digest",
+        "fk_projection_configs_ontology",
+        "fk_projection_configs_predecessor",
+        "ck_projection_configs_version",
+        "ck_projection_configs_schema",
+        "ck_projection_configs_digest",
+        "pk_projection_runs",
+        "uq_projection_runs_candidate_target",
+        "uq_projection_runs_candidate",
+        "uq_projection_runs_command",
+        "fk_projection_runs_config",
+        "fk_projection_runs_boundary",
+        "fk_projection_runs_idempotency",
+        "ck_projection_runs_operation",
+        "ck_projection_runs_candidate_state",
+        "ck_projection_runs_open_or_sealed",
+        "pk_projection_run_transitions",
+        "uq_projection_transitions_predecessor",
+        "fk_projection_transitions_run",
+        "ck_projection_transitions_state",
+        "ck_projection_transitions_attempt",
+        "pk_projection_partitions",
+        "uq_projection_partitions_scope_id",
+        "uq_projection_partitions_identity",
+        "uq_projection_partitions_candidate_domain",
+        "fk_projection_partitions_run",
+        "pk_projection_receipts",
+        "uq_projection_receipts_scope_id",
+        "uq_projection_receipts_command",
+        "uq_projection_receipts_partition_command",
+        "fk_projection_receipts_run",
+        "fk_projection_receipts_partition",
+        "fk_projection_receipts_idempotency",
+        "ck_projection_receipts_command_digest",
+        "pk_source_projection_references",
+        "uq_source_projection_references_lineage",
+        "uq_source_projection_references_projected_object",
+        "fk_source_projection_references_run",
+        "fk_source_projection_references_receipt",
+        "fk_source_projection_references_source",
+        "fk_source_projection_references_revision",
+        "fk_source_projection_references_processing_receipt",
+        "fk_source_projection_references_config",
     }
     expected_final_constraints |= (
         AUTHORIZATION_DIRECTORY_CONSTRAINTS
@@ -1774,6 +1835,37 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "uq_parsed_segments_digest",
         "uq_parsed_segments_ordinal",
         "ix_parsed_segments_artifact",
+        "pk_ontology_versions",
+        "uq_ontology_versions_scope_id",
+        "uq_ontology_versions_name_version",
+        "uq_ontology_versions_name_digest",
+        "pk_projection_config_versions",
+        "uq_projection_configs_scope_id",
+        "uq_projection_configs_kind_version",
+        "uq_projection_configs_kind_digest",
+        "pk_projection_runs",
+        "uq_projection_runs_candidate_target",
+        "uq_projection_runs_candidate",
+        "uq_projection_runs_command",
+        "ix_projection_runs_scope_state",
+        "pk_projection_run_transitions",
+        "uq_projection_transitions_predecessor",
+        "uq_projection_transitions_root",
+        "uq_projection_transitions_successor",
+        "pk_projection_partitions",
+        "uq_projection_partitions_scope_id",
+        "uq_projection_partitions_identity",
+        "uq_projection_partitions_candidate_domain",
+        "ix_projection_partitions_candidate",
+        "pk_projection_receipts",
+        "uq_projection_receipts_scope_id",
+        "uq_projection_receipts_command",
+        "uq_projection_receipts_partition_command",
+        "ix_projection_receipts_candidate",
+        "pk_source_projection_references",
+        "uq_source_projection_references_lineage",
+        "uq_source_projection_references_projected_object",
+        "ix_source_projection_references_source",
     } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES | CANONICAL_ACCEPTANCE_INDEXES | CANONICAL_BOUNDARY_INDEXES
     assert owners == {MIGRATION_ROLE}
     expected_rls = {
@@ -1819,6 +1911,13 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "parsed_document_segments": (True, True),
         "canonical_boundaries": (True, True),
         "canonical_boundary_members": (True, True),
+        "ontology_versions": (True, True),
+        "projection_config_versions": (True, True),
+        "projection_runs": (True, True),
+        "projection_run_transitions": (True, True),
+        "projection_partitions": (True, True),
+        "projection_receipts": (True, True),
+        "source_projection_references": (True, True),
     }
     assert rls == expected_rls
     tenant_rls_tables = {
@@ -1920,6 +2019,13 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "current_source_heads": (True, True, True, False),
             "canonical_boundaries": (True, True, False, False),
             "canonical_boundary_members": (True, True, False, False),
+        "ontology_versions": (True, True, False, False),
+        "projection_config_versions": (True, True, False, False),
+        "projection_runs": (True, True, True, False),
+        "projection_run_transitions": (True, True, False, False),
+        "projection_partitions": (True, True, False, False),
+        "projection_receipts": (True, True, False, False),
+        "source_projection_references": (True, True, False, False),
         "source_canonical_tables": (True, False, False, False),
         "source_canonical_unicode": (True, False, False, False),
         "source_canonical_compositions": (True, False, False, False),
@@ -2058,7 +2164,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', 'backup_fence_leases', "
                             "'fence_operation_tickets', 'recovery_quiescence_evidence', "
                             "'storage_recovery_manifests', 'recovery_evidence_invalidations', "
-                            "'parsed_documents', 'parsed_document_segments'))"
+                            "'parsed_documents', 'parsed_document_segments', 'ontology_versions', "
+                            "'projection_config_versions', 'projection_runs', 'projection_run_transitions', "
+                            "'projection_partitions', 'projection_receipts', 'source_projection_references'))"
                     )
                 )
             ).scalars()
@@ -2086,7 +2194,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations', 'parsed_documents', "
-                            "'parsed_document_segments')"
+                            "'parsed_document_segments', 'ontology_versions', 'projection_config_versions', "
+                            "'projection_runs', 'projection_run_transitions', 'projection_partitions', "
+                            "'projection_receipts', 'source_projection_references')"
                     )
                 )
             ).mappings()
@@ -2108,7 +2218,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations', 'parsed_documents', "
-                            "'parsed_document_segments')"
+                            "'parsed_document_segments', 'ontology_versions', 'projection_config_versions', "
+                            "'projection_runs', 'projection_run_transitions', 'projection_partitions', "
+                            "'projection_receipts', 'source_projection_references')"
                     )
                 )
             ).scalars()
@@ -2129,7 +2241,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations', 'parsed_documents', "
-                            "'parsed_document_segments')"
+                            "'parsed_document_segments', 'ontology_versions', 'projection_config_versions', "
+                            "'projection_runs', 'projection_run_transitions', 'projection_partitions', "
+                            "'projection_receipts', 'source_projection_references')"
                     )
                 )
             ).scalars()
@@ -2150,7 +2264,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'current_source_heads', 'canonical_boundaries', 'canonical_boundary_members', 'backup_fence_leases', 'fence_operation_tickets', "
                             "'recovery_quiescence_evidence', 'storage_recovery_manifests', "
                             "'recovery_evidence_invalidations', 'parsed_documents', "
-                            "'parsed_document_segments')"
+                            "'parsed_document_segments', 'ontology_versions', 'projection_config_versions', "
+                            "'projection_runs', 'projection_run_transitions', 'projection_partitions', "
+                            "'projection_receipts', 'source_projection_references')"
                     )
                 )
             ).scalars()
@@ -2719,7 +2835,9 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'recovery_evidence_invalidations', "
                         "'canonical_generation_counters', 'canonical_acceptances', 'current_source_heads', "
                         "'canonical_boundaries', 'canonical_boundary_members', "
-                        "'parsed_documents', 'parsed_document_segments')"
+                        "'parsed_documents', 'parsed_document_segments', 'ontology_versions', "
+                        "'projection_config_versions', 'projection_runs', 'projection_run_transitions', "
+                        "'projection_partitions', 'projection_receipts', 'source_projection_references')"
                     )
                 )
             )
@@ -2791,6 +2909,13 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "parsed_document_segments": (True, True),
             "canonical_boundaries": (True, True),
             "canonical_boundary_members": (True, True),
+            "ontology_versions": (True, True),
+            "projection_config_versions": (True, True),
+            "projection_runs": (True, True),
+            "projection_run_transitions": (True, True),
+            "projection_partitions": (True, True),
+            "projection_receipts": (True, True),
+            "source_projection_references": (True, True),
         }
     standard_tables = set(tables) - {"outbox_deliveries"}
     assert set(policies) == {
@@ -4050,13 +4175,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261018_21_canonical_acceptance.py",
         "20261019_22_parsed_artifacts.py",
         "20261020_23_canonical_boundaries.py",
+        "20261021_24_projection_candidate_ledgers.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261021_24_injected_failure.py").write_text(
+    (target / "versions" / "20261021_25_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261021_24'\n"
-        "down_revision = '20261020_23'\n"
+        "revision = '20261021_25'\n"
+        "down_revision = '20261021_24'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

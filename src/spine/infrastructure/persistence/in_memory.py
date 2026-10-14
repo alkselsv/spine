@@ -135,6 +135,7 @@ from spine.domain.ingestion import (
     IngestionWarning,
     ProcessingReceipt,
 )
+from spine.infrastructure.persistence.projection import InMemoryProjectionRepository
 
 
 _ResultT = TypeVar("_ResultT")
@@ -165,6 +166,13 @@ class _StoreState:
     canonical_generations: dict[tuple[UUID, UUID], int]
     canonical_boundaries: dict[UUID, CanonicalBoundary]
     canonical_boundary_members: dict[tuple[UUID, UUID], CanonicalBoundaryMember]
+    ontology_versions: dict[UUID, object]
+    projection_configs: dict[UUID, object]
+    projection_runs: dict[UUID, object]
+    projection_transitions: dict[UUID, object]
+    projection_partitions: dict[UUID, object]
+    projection_receipts: dict[UUID, object]
+    projection_references: dict[UUID, object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +225,13 @@ class _Store:
             canonical_generations={},
             canonical_boundaries={},
             canonical_boundary_members={},
+            ontology_versions={},
+            projection_configs={},
+            projection_runs={},
+            projection_transitions={},
+            projection_partitions={},
+            projection_receipts={},
+            projection_references={},
         )
         self.lock = transaction_lock or asyncio.Lock()
         self.observation_lock = asyncio.Lock()
@@ -317,6 +332,34 @@ class _Store:
     @property
     def canonical_boundary_members(self) -> dict[tuple[UUID, UUID], CanonicalBoundaryMember]:
         return self.state.canonical_boundary_members
+
+    @property
+    def ontology_versions(self) -> dict[UUID, object]:
+        return self.state.ontology_versions
+
+    @property
+    def projection_configs(self) -> dict[UUID, object]:
+        return self.state.projection_configs
+
+    @property
+    def projection_runs(self) -> dict[UUID, object]:
+        return self.state.projection_runs
+
+    @property
+    def projection_transitions(self) -> dict[UUID, object]:
+        return self.state.projection_transitions
+
+    @property
+    def projection_partitions(self) -> dict[UUID, object]:
+        return self.state.projection_partitions
+
+    @property
+    def projection_receipts(self) -> dict[UUID, object]:
+        return self.state.projection_receipts
+
+    @property
+    def projection_references(self) -> dict[UUID, object]:
+        return self.state.projection_references
 
 
 def _workspace_copy(value: Workspace) -> Workspace:
@@ -2079,6 +2122,13 @@ class InMemoryUnitOfWork:
         self._base_canonical_generations: dict[tuple[UUID, UUID], int] = {}
         self._base_canonical_boundaries: dict[UUID, CanonicalBoundary] = {}
         self._base_canonical_boundary_members: dict[tuple[UUID, UUID], CanonicalBoundaryMember] = {}
+        self._base_ontology_versions: dict[UUID, object] = {}
+        self._base_projection_configs: dict[UUID, object] = {}
+        self._base_projection_runs: dict[UUID, object] = {}
+        self._base_projection_transitions: dict[UUID, object] = {}
+        self._base_projection_partitions: dict[UUID, object] = {}
+        self._base_projection_receipts: dict[UUID, object] = {}
+        self._base_projection_references: dict[UUID, object] = {}
         self._pending_workspaces: dict[UUID, Workspace] = {}
         self._pending_environments: dict[UUID, Environment] = {}
         self._pending_receipts: dict[_ReceiptKey, _IdempotencyReceipt] = {}
@@ -2101,6 +2151,14 @@ class InMemoryUnitOfWork:
         self._pending_canonical_generations: dict[tuple[UUID, UUID], int] = {}
         self._pending_canonical_boundaries: dict[UUID, CanonicalBoundary] = {}
         self._pending_canonical_boundary_members: dict[tuple[UUID, UUID], CanonicalBoundaryMember] = {}
+        self._pending_ontology_versions: dict[UUID, object] = {}
+        self._pending_projection_configs: dict[UUID, object] = {}
+        self._pending_projection_runs: dict[UUID, object] = {}
+        self._pending_projection_transitions: dict[UUID, object] = {}
+        self._pending_projection_partitions: dict[UUID, object] = {}
+        self._pending_projection_receipts: dict[UUID, object] = {}
+        self._pending_projection_references: dict[UUID, object] = {}
+        self._pending_projection_run_claims: dict[UUID, OwnedIdempotencyClaim] = {}
         self._source_observation_lock_held = False
         self._canonical_lock_held = False
         self._workspaces = _WorkspaceRepository(self)
@@ -2112,6 +2170,7 @@ class InMemoryUnitOfWork:
         self._admissions = _AdmissionRepository(self)
         self._canonical = _CanonicalAcceptanceRepository(self)
         self._boundaries = _CanonicalBoundaryRepository(self)
+        self._projections = InMemoryProjectionRepository(self)
         self._audit = _AuditWriter(self)
 
     @property
@@ -2163,6 +2222,16 @@ class InMemoryUnitOfWork:
     def canonical_boundaries(self) -> _CanonicalBoundaryRepository:
         self._guard_active()
         return self._boundaries
+
+    @property
+    def projections(self) -> InMemoryProjectionRepository:
+        self._guard_active()
+        return self._projections
+
+    @property
+    def projection(self) -> InMemoryProjectionRepository:
+        self._guard_active()
+        return self._projections
 
     @property
     def access_policies(self) -> InMemoryAccessPolicyRepository:
@@ -2273,6 +2342,34 @@ class InMemoryUnitOfWork:
                 self._base_canonical_boundary_members = {
                     key: value.model_copy(deep=True)
                     for key, value in self._store.canonical_boundary_members.items()
+                }
+                self._base_ontology_versions = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.ontology_versions.items()
+                }
+                self._base_projection_configs = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_configs.items()
+                }
+                self._base_projection_runs = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_runs.items()
+                }
+                self._base_projection_transitions = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_transitions.items()
+                }
+                self._base_projection_partitions = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_partitions.items()
+                }
+                self._base_projection_receipts = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_receipts.items()
+                }
+                self._base_projection_references = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_references.items()
                 }
                 self._initialized = self._store.initialized
                 if not self._initialized:
@@ -2441,6 +2538,76 @@ class InMemoryUnitOfWork:
                         for key, value in self._pending_canonical_boundary_members.items()
                     }
                 )
+                prepared_ontology_versions = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.ontology_versions.items()
+                }
+                prepared_ontology_versions.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_ontology_versions.items()
+                    }
+                )
+                prepared_projection_configs = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_configs.items()
+                }
+                prepared_projection_configs.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_projection_configs.items()
+                    }
+                )
+                prepared_projection_runs = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_runs.items()
+                }
+                prepared_projection_runs.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_projection_runs.items()
+                    }
+                )
+                prepared_projection_transitions = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_transitions.items()
+                }
+                prepared_projection_transitions.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_projection_transitions.items()
+                    }
+                )
+                prepared_projection_partitions = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_partitions.items()
+                }
+                prepared_projection_partitions.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_projection_partitions.items()
+                    }
+                )
+                prepared_projection_receipts = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_receipts.items()
+                }
+                prepared_projection_receipts.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_projection_receipts.items()
+                    }
+                )
+                prepared_projection_references = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.projection_references.items()
+                }
+                prepared_projection_references.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_projection_references.items()
+                    }
+                )
                 self._store.state = _StoreState(
                     workspaces=prepared_workspaces,
                     environments=prepared_environments,
@@ -2464,6 +2631,13 @@ class InMemoryUnitOfWork:
                     canonical_generations=prepared_canonical_generations,
                     canonical_boundaries=prepared_canonical_boundaries,
                     canonical_boundary_members=prepared_canonical_boundary_members,
+                    ontology_versions=prepared_ontology_versions,
+                    projection_configs=prepared_projection_configs,
+                    projection_runs=prepared_projection_runs,
+                    projection_transitions=prepared_projection_transitions,
+                    projection_partitions=prepared_projection_partitions,
+                    projection_receipts=prepared_projection_receipts,
+                    projection_references=prepared_projection_references,
                 )
         except BaseException as error:
             self._raise_terminal(error)
@@ -2500,6 +2674,14 @@ class InMemoryUnitOfWork:
         self._pending_canonical_generations.clear()
         self._pending_canonical_boundaries.clear()
         self._pending_canonical_boundary_members.clear()
+        self._pending_ontology_versions.clear()
+        self._pending_projection_configs.clear()
+        self._pending_projection_runs.clear()
+        self._pending_projection_transitions.clear()
+        self._pending_projection_partitions.clear()
+        self._pending_projection_receipts.clear()
+        self._pending_projection_references.clear()
+        self._pending_projection_run_claims.clear()
         self._lifecycle = _Lifecycle.ROLLED_BACK
         self._release_source_observation_lock()
         self._release_canonical_lock()
@@ -2592,6 +2774,7 @@ class InMemoryUnitOfWork:
         if self._pending_audit_events.keys() & self._store.audit_events.keys():
             raise AuditConflictError("Audit Event identity already exists.")
         self._validate_ingestion_commit()
+        self._validate_projection_commit()
         for intent in self._pending_outbox_intents.values():
             if self._store_has_producer_identity(intent):
                 raise OutboxConflictError("Outbox producer identity already exists.")
@@ -2624,6 +2807,60 @@ class InMemoryUnitOfWork:
         ):
             raise ConstraintConflictError("Owning Workspace does not exist.")
 
+    def _validate_projection_commit(self) -> None:
+        maps = (
+            (self._pending_ontology_versions, self._store.ontology_versions),
+            (self._pending_projection_configs, self._store.projection_configs),
+            (self._pending_projection_transitions, self._store.projection_transitions),
+            (self._pending_projection_partitions, self._store.projection_partitions),
+            (self._pending_projection_receipts, self._store.projection_receipts),
+            (self._pending_projection_references, self._store.projection_references),
+        )
+        if any(pending.keys() & stored.keys() for pending, stored in maps):
+            raise ConstraintConflictError("Projection ledger identity already exists.")
+        for run_id, pending_run in self._pending_projection_runs.items():
+            stored_run = self._store.projection_runs.get(run_id)
+            if stored_run is not None:
+                if not (
+                    stored_run.candidate_state.value == "open"
+                    and pending_run.candidate_state.value == "sealed"
+                    and stored_run.projection_candidate_id == pending_run.projection_candidate_id
+                ):
+                    raise ConstraintConflictError("Projection run identity already exists.")
+        stored_runs = tuple(self._store.projection_runs.values())
+        for run in self._pending_projection_runs.values():
+            if any(
+                existing.projection_run_id != run.projection_run_id
+                and
+                existing.workspace_id == run.workspace_id
+                and existing.environment_id == run.environment_id
+                and (
+                    existing.projection_candidate_id == run.projection_candidate_id
+                    or existing.command_identity == run.command_identity
+                )
+                for existing in stored_runs
+            ):
+                raise ConstraintConflictError("Projection candidate or command identity already exists.")
+        stored_receipts = tuple(self._store.projection_receipts.values())
+        for receipt in self._pending_projection_receipts.values():
+            if any(
+                existing.workspace_id == receipt.workspace_id
+                and existing.environment_id == receipt.environment_id
+                and existing.command_identity == receipt.command_identity
+                and existing.command_digest != receipt.command_digest
+                for existing in stored_receipts
+            ):
+                raise IdempotencyConflictError("Projection command identity conflicts.")
+        stored_transitions = tuple(self._store.projection_transitions.values())
+        for transition in self._pending_projection_transitions.values():
+            if any(
+                existing.workspace_id == transition.workspace_id
+                and existing.environment_id == transition.environment_id
+                and existing.projection_run_id == transition.projection_run_id
+                and existing.predecessor_transition_id == transition.predecessor_transition_id
+                for existing in stored_transitions
+            ):
+                raise ConstraintConflictError("Projection transition predecessor already has a successor.")
     def _validate_ingestion_commit(self) -> None:
         """Apply the database uniqueness/append-only checks at commit time.
 
@@ -2820,6 +3057,13 @@ class InMemoryUnitOfWork:
         self._base_canonical_generations.clear()
         self._base_canonical_boundaries.clear()
         self._base_canonical_boundary_members.clear()
+        self._base_ontology_versions.clear()
+        self._base_projection_configs.clear()
+        self._base_projection_runs.clear()
+        self._base_projection_transitions.clear()
+        self._base_projection_partitions.clear()
+        self._base_projection_receipts.clear()
+        self._base_projection_references.clear()
         self._pending_workspaces.clear()
         self._pending_environments.clear()
         self._pending_receipts.clear()
@@ -2842,6 +3086,14 @@ class InMemoryUnitOfWork:
         self._pending_canonical_generations.clear()
         self._pending_canonical_boundaries.clear()
         self._pending_canonical_boundary_members.clear()
+        self._pending_ontology_versions.clear()
+        self._pending_projection_configs.clear()
+        self._pending_projection_runs.clear()
+        self._pending_projection_transitions.clear()
+        self._pending_projection_partitions.clear()
+        self._pending_projection_receipts.clear()
+        self._pending_projection_references.clear()
+        self._pending_projection_run_claims.clear()
         self._scope = None
         self._operation = None
         self._trace_id = None
