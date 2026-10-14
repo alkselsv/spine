@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import hashlib
+import json
 from types import TracebackType
 from typing import Protocol
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -19,6 +21,8 @@ from spine.application.persistence.projection import (
     ProjectionReceiptCommand,
     ProjectionRepository,
 )
+from spine.application.persistence.ingestion import IngestionRepository
+from spine.application.persistence.parsed_artifacts import ParsedArtifactRepository
 from spine.application.projection_result_mapping import (
     CanonicalProjectionLocator,
     CanonicalProjectionMappingContext,
@@ -36,8 +40,16 @@ from spine.domain.projections import (
     ProjectionRun,
     SourceProjectionReference,
 )
+from spine.domain.artifacts import (
+    Locator,
+    OoxmlTextLocator,
+    PageTextLocator,
+    PhysicalLineLocator,
+    XlsxCellLocator,
+)
+from spine.domain.ingestion import ProcessingReceipt
 from spine.domain.sources import CanonicalBoundary, CanonicalBoundaryMember
-from spine.memory.contracts import ProjectionCommand
+from spine.memory.contracts import ProjectionCommand, StableLocator
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +71,161 @@ class CanonicalProjectionLocatorResolver(Protocol):
     async def resolve(
         self, request: CanonicalProjectionEvidenceRequest
     ) -> tuple[CanonicalProjectionLocator, ...]: ...
+
+
+class CanonicalProjectionLocatorUnitOfWork(Protocol):
+    @property
+    def ingestion(self) -> IngestionRepository: ...
+
+    async def __aenter__(self) -> "CanonicalProjectionLocatorUnitOfWork": ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None: ...
+
+
+class ParsedArtifactCanonicalProjectionLocatorResolver:
+    """Resolve stable locator evidence from the committed parsed artifact."""
+
+    def __init__(
+        self,
+        *,
+        uow_factory: Callable[
+            [TrustedPersistenceContext], CanonicalProjectionLocatorUnitOfWork
+        ],
+        context_factory: Callable[[ProjectionCommand], TrustedPersistenceContext],
+        parsed_artifacts: ParsedArtifactRepository,
+    ) -> None:
+        self._uow_factory = uow_factory
+        self._context_factory = context_factory
+        self._parsed_artifacts = parsed_artifacts
+
+    async def resolve(
+        self, request: CanonicalProjectionEvidenceRequest
+    ) -> tuple[CanonicalProjectionLocator, ...]:
+        receipts: dict[UUID, ProcessingReceipt] = {}
+        async with self._uow_factory(
+            self._context_factory(request.command)
+        ) as uow:
+            for source in request.command.source_revisions:
+                if source.processing_receipt_id is None:
+                    raise ProjectionMappingError(
+                        "canonical processing receipt is missing"
+                    )
+                receipt = await uow.ingestion.resolve_processing_receipt_by_id(
+                    source.processing_receipt_id
+                )
+                if receipt is None:
+                    raise ProjectionMappingError(
+                        "canonical processing receipt is unavailable"
+                    )
+                receipts[source.source_revision_id] = receipt
+
+        locators: list[CanonicalProjectionLocator] = []
+        for source in request.command.source_revisions:
+            receipt = receipts.get(source.source_revision_id)
+            if receipt is None:
+                raise ProjectionMappingError("canonical processing receipt is missing")
+            if (
+                receipt.workspace_id != request.command.workspace_id
+                or receipt.environment_id != request.command.environment_id
+                or receipt.source_object_id != source.source_object_id
+                or receipt.source_revision_id != source.source_revision_id
+                or receipt.processing_receipt_id != source.processing_receipt_id
+                or receipt.locator_contract_version != source.locator_contract_version
+                or receipt.output_reference is None
+                or receipt.output_digest is None
+            ):
+                raise ProjectionMappingError("canonical processing receipt is invalid")
+            artifact = await self._parsed_artifacts.get(
+                workspace_id=request.command.workspace_id,
+                environment_id=request.command.environment_id,
+                artifact_id=receipt.output_reference,
+            )
+            if (
+                artifact is None
+                or artifact.source_object_id != source.source_object_id
+                or artifact.source_revision_id != source.source_revision_id
+                or artifact.source_revision_digest != source.revision_digest
+                or artifact.original_sha256 != receipt.original_sha256
+                or artifact.artifact_digest != receipt.output_digest
+                or artifact.parser_version != receipt.parser_version
+                or artifact.parser_config_reference != receipt.parser_config_reference
+                or artifact.locator_contract_version
+                != receipt.locator_contract_version
+                or not artifact.segments
+            ):
+                raise ProjectionMappingError("canonical parsed artifact is invalid")
+            for segment in artifact.segments:
+                stable = _stable_locator(segment.locator)
+                locators.append(
+                    CanonicalProjectionLocator(
+                        source_object_id=source.source_object_id,
+                        source_revision_id=source.source_revision_id,
+                        revision_digest=source.revision_digest,
+                        processing_receipt_id=receipt.processing_receipt_id,
+                        segment_id=f"segment-{segment.segment_id.hex}",
+                        locator_schema_version=receipt.locator_contract_version,
+                        locator=stable,
+                        locator_digest=_locator_digest(
+                            locator_schema_version=receipt.locator_contract_version,
+                            locator=stable,
+                        ),
+                    )
+                )
+        if not locators:
+            raise ProjectionMappingError("canonical projection locator evidence is missing")
+        return tuple(locators)
+
+
+def _stable_locator(locator: Locator) -> StableLocator:
+    """Map parser-specific locators to the closed provider-neutral contract."""
+
+    if isinstance(locator, PhysicalLineLocator):
+        return StableLocator(
+            kind="character_range",
+            value=(
+                f"line:{locator.line_number}:"
+                f"{locator.start_codepoint}-{locator.end_codepoint}"
+            ),
+        )
+    if isinstance(locator, PageTextLocator):
+        return StableLocator(
+            kind="page",
+            value=(
+                f"page:{locator.page_number}:"
+                f"{locator.start_codepoint}-{locator.end_codepoint}"
+            ),
+        )
+    if isinstance(locator, XlsxCellLocator):
+        return StableLocator(
+            kind="sheet_row",
+            value=f"{locator.sheet}:{locator.row}:{locator.cell_range}",
+        )
+    if isinstance(locator, OoxmlTextLocator):
+        path = "/".join(f"{step.kind}:{step.index}" for step in locator.block_path)
+        return StableLocator(
+            kind="custom",
+            value=(
+                f"ooxml:{path}:{locator.start_codepoint}-"
+                f"{locator.end_codepoint}"
+            ),
+        )
+    raise ProjectionMappingError("canonical parsed locator kind is unsupported")
+
+
+def _locator_digest(*, locator_schema_version: str, locator: StableLocator) -> str:
+    payload = {
+        "schema_version": "canonical-projection-locator:v1",
+        "locator_schema_version": locator_schema_version,
+        "locator": locator.model_dump(mode="json"),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 class CanonicalProjectionGatewayUnitOfWork(Protocol):
@@ -415,6 +582,8 @@ __all__ = [
     "CanonicalProjectionEvidenceRequest",
     "CanonicalProjectionGatewayUnitOfWork",
     "CanonicalProjectionLocatorResolver",
+    "CanonicalProjectionLocatorUnitOfWork",
+    "ParsedArtifactCanonicalProjectionLocatorResolver",
     "PersistenceCanonicalProjectionGateway",
     "build_projection_result_persistence",
 ]
