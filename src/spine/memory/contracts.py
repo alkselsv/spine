@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, StrictBool, StrictInt, model_validator
+from pydantic import ConfigDict, Field, StrictBool, StrictInt, field_validator, model_validator
 
 from spine.domain.common import ActorRef, DefinitionModel, SpineModel
 
@@ -531,6 +531,207 @@ class ProjectionRetrievalResult(_ProjectionModel):
     failure: ProjectionFailure | None = None
 
 
+class ContextOutcome(str, Enum):
+    """The closed, disclosure-safe outcome set for Context Broker v1."""
+
+    ALLOWED = "allowed"
+    DENIED = "denied"
+    UNAVAILABLE = "unavailable"
+    STALE = "stale"
+    DEGRADED = "degraded"
+    PARTIAL = "partial"
+    CANCELLED = "cancelled"
+    INSUFFICIENT = "insufficient"
+    ABSTAINED = "abstained"
+
+
+class ContextReasonCode(str, Enum):
+    """Bounded reason codes that never disclose provider or source details."""
+
+    ALLOWED = "allowed"
+    INVALID_TRUSTED_CONTEXT = "invalid_trusted_context"
+    AUTHORIZATION_DENIED = "authorization_denied"
+    PROFILE_UNAVAILABLE = "profile_unavailable"
+    RETRIEVAL_UNAVAILABLE = "retrieval_unavailable"
+    STALE_CONTEXT = "stale_context"
+    DEGRADED_CONTEXT = "degraded_context"
+    PARTIAL_CONTEXT = "partial_context"
+    CANCELLED = "cancelled"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    BUNDLE_UNAVAILABLE = "bundle_unavailable"
+
+
+class ContextProfileRef(DefinitionModel):
+    """The only public identity needed to pin a Context Profile."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={"$id": "spine/context-profile-ref:v1"},
+    )
+
+    profile_id: UUID
+    profile_version: int = Field(ge=1)
+    profile_digest: str = Field(pattern=_DIGEST)
+
+    @field_validator("profile_id")
+    @classmethod
+    def validate_profile_id(cls, value: UUID) -> UUID:
+        _require_non_zero(value, "profile_id")
+        return value
+
+
+class ContextBundleRef(DefinitionModel):
+    """Opaque identity of the exact bundle issued for one retrieval."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={"$id": "spine/context-bundle-ref:v1"},
+    )
+
+    bundle_id: UUID
+    bundle_version: int = Field(ge=1)
+    bundle_digest: str = Field(pattern=_DIGEST)
+
+    @field_validator("bundle_id")
+    @classmethod
+    def validate_bundle_id(cls, value: UUID) -> UUID:
+        _require_non_zero(value, "bundle_id")
+        return value
+
+
+class ContextProfile(_ProjectionModel):
+    """Server-approved retrieval policy resolved from a profile reference."""
+
+    schema_version: Literal["context-profile:v1"] = "context-profile:v1"
+    ref: ContextProfileRef
+    retrieval_strategy: str = Field(min_length=1, max_length=64, pattern=_IDENTIFIER)
+    max_items: int = Field(default=15, ge=1, le=100)
+
+
+class TrustedContextDiagnostic(_ProjectionModel):
+    """Content-free diagnostic metadata safe to return with any outcome."""
+
+    schema_version: Literal["context-safe-diagnostic:v1"] = "context-safe-diagnostic:v1"
+    retryable: StrictBool = False
+    opaque_reference: UUID | None = None
+
+    @field_validator("opaque_reference")
+    @classmethod
+    def validate_opaque_reference(cls, value: UUID | None) -> UUID | None:
+        if value is not None:
+            _require_non_zero(value, "opaque_reference")
+        return value
+
+
+class ContextRequest(_ProjectionModel):
+    """Provider-neutral request with no client-controlled projection authority."""
+
+    schema_version: Literal["context-request:v1"] = "context-request:v1"
+    request_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    query: str = Field(min_length=1, max_length=16_384)
+    profile_ref: ContextProfileRef
+    trusted_request_context_ref: UUID
+    authorization_context_ref: UUID
+    limit: int = Field(default=15, ge=1, le=100)
+
+    @field_validator(
+        "request_id",
+        "workspace_id",
+        "environment_id",
+        "trusted_request_context_ref",
+        "authorization_context_ref",
+    )
+    @classmethod
+    def validate_request_ids(cls, value: UUID, info: object) -> UUID:
+        _require_non_zero(value, getattr(info, "field_name", "identifier"))
+        return value
+
+
+class ContextRetrievalResult(_ProjectionModel):
+    """Content-free result from a retrieval port before bundle issuance."""
+
+    schema_version: Literal["context-retrieval-result:v1"] = "context-retrieval-result:v1"
+    outcome: ContextOutcome
+    reason_code: ContextReasonCode
+    diagnostic: TrustedContextDiagnostic = TrustedContextDiagnostic()
+
+    @model_validator(mode="after")
+    def validate_reason_for_outcome(self) -> "ContextRetrievalResult":
+        if self.reason_code is not context_reason_for_outcome(self.outcome):
+            raise ValueError("retrieval reason code does not match outcome")
+        return self
+
+
+class ContextResponse(_ProjectionModel):
+    """Typed broker result; protected context is represented only by a bundle ref."""
+
+    schema_version: Literal["context-response:v1"] = "context-response:v1"
+    outcome: ContextOutcome
+    context_bundle_ref: ContextBundleRef | None = None
+    reason_code: ContextReasonCode
+    diagnostic: TrustedContextDiagnostic = TrustedContextDiagnostic()
+
+    @model_validator(mode="after")
+    def validate_bundle_for_outcome(self) -> "ContextResponse":
+        bundle_outcomes = {
+            ContextOutcome.ALLOWED,
+            ContextOutcome.DEGRADED,
+            ContextOutcome.PARTIAL,
+        }
+        if self.outcome in bundle_outcomes and self.context_bundle_ref is None:
+            raise ValueError("bundle outcomes require a context bundle reference")
+        if self.outcome not in bundle_outcomes and self.context_bundle_ref is not None:
+            raise ValueError("non-bundle outcomes cannot carry a context bundle reference")
+        allowed_reasons = {
+            ContextOutcome.DENIED: {
+                ContextReasonCode.INVALID_TRUSTED_CONTEXT,
+                ContextReasonCode.AUTHORIZATION_DENIED,
+            },
+            ContextOutcome.UNAVAILABLE: {
+                ContextReasonCode.PROFILE_UNAVAILABLE,
+                ContextReasonCode.RETRIEVAL_UNAVAILABLE,
+                ContextReasonCode.BUNDLE_UNAVAILABLE,
+            },
+            ContextOutcome.STALE: {ContextReasonCode.STALE_CONTEXT},
+            ContextOutcome.DEGRADED: {ContextReasonCode.DEGRADED_CONTEXT},
+            ContextOutcome.PARTIAL: {ContextReasonCode.PARTIAL_CONTEXT},
+            ContextOutcome.CANCELLED: {ContextReasonCode.CANCELLED},
+            ContextOutcome.INSUFFICIENT: {ContextReasonCode.INSUFFICIENT_EVIDENCE},
+            ContextOutcome.ABSTAINED: {ContextReasonCode.INSUFFICIENT_EVIDENCE},
+            ContextOutcome.ALLOWED: {ContextReasonCode.ALLOWED},
+        }
+        if self.reason_code not in allowed_reasons[self.outcome]:
+            raise ValueError("response reason code does not match outcome")
+        return self
+
+
+def context_reason_for_outcome(outcome: ContextOutcome) -> ContextReasonCode:
+    return {
+        ContextOutcome.ALLOWED: ContextReasonCode.ALLOWED,
+        ContextOutcome.DENIED: ContextReasonCode.AUTHORIZATION_DENIED,
+        ContextOutcome.UNAVAILABLE: ContextReasonCode.RETRIEVAL_UNAVAILABLE,
+        ContextOutcome.STALE: ContextReasonCode.STALE_CONTEXT,
+        ContextOutcome.DEGRADED: ContextReasonCode.DEGRADED_CONTEXT,
+        ContextOutcome.PARTIAL: ContextReasonCode.PARTIAL_CONTEXT,
+        ContextOutcome.CANCELLED: ContextReasonCode.CANCELLED,
+        ContextOutcome.INSUFFICIENT: ContextReasonCode.INSUFFICIENT_EVIDENCE,
+        ContextOutcome.ABSTAINED: ContextReasonCode.INSUFFICIENT_EVIDENCE,
+    }[outcome]
+
+
+ContextDiagnostic = TrustedContextDiagnostic
+
+
+ContextRequestV1 = ContextRequest
+ContextResponseV1 = ContextResponse
+ContextProfileRefV1 = ContextProfileRef
+ContextBundleRefV1 = ContextBundleRef
+
+
 class ContextProjection(Protocol):
     """Replaceable physical projection port; it has no publication authority."""
 
@@ -572,6 +773,7 @@ class RetrievalResult(SpineModel):
     references: tuple[ContextReference, ...] = ()
     retrieval_strategy: str
     index_version: str | None = None
+    outcome: ContextOutcome | None = None
 
 
 class ContextBroker(Protocol):

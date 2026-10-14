@@ -1,5 +1,34 @@
 from spine.memory.cognee_memory import ask, format_answers, remember_texts
-from spine.memory.contracts import ContextProjection
+from spine.memory.broker import (
+    ContextBrokerV1,
+    ContextBundleIssuer,
+    ContextProfileResolver,
+    ContextRetrievalPort,
+    DeterministicFakeContextBroker,
+    ExplicitFakeContextBundleIssuer,
+    FakeContextProfileResolver,
+    FakeContextRetrieval,
+    FakeTrustedContextValidator,
+    LegacyContextBrokerAdapter,
+    TrustedContextValidator,
+)
+from spine.memory.contracts import (
+    ContextBroker,
+    ContextBundleRef,
+    ContextBundleRefV1,
+    ContextDiagnostic,
+    ContextOutcome,
+    ContextProfile,
+    ContextProfileRef,
+    ContextProfileRefV1,
+    ContextReasonCode,
+    ContextRequest,
+    ContextRequestV1,
+    ContextResponse,
+    ContextResponseV1,
+    ContextProjection,
+    context_reason_for_outcome,
+)
 from spine.memory.fake import DeterministicContextProjection, DeterministicPhysicalStore
 from spine.memory.namespace import (
     NamespaceLifecycleError,
@@ -12,8 +41,31 @@ from spine.memory.namespace import (
 
 __all__ = [
     "ContextProjection",
+    "ContextBroker",
+    "ContextBrokerV1",
+    "ContextBundleIssuer",
+    "ContextBundleRef",
+    "ContextBundleRefV1",
+    "ContextDiagnostic",
+    "ContextOutcome",
+    "ContextProfile",
+    "ContextProfileRef",
+    "ContextProfileRefV1",
+    "ContextReasonCode",
+    "ContextRequest",
+    "ContextRequestV1",
+    "ContextResponse",
+    "ContextResponseV1",
+    "ContextRetrievalPort",
+    "context_reason_for_outcome",
     "DeterministicContextProjection",
     "DeterministicPhysicalStore",
+    "DeterministicFakeContextBroker",
+    "ExplicitFakeContextBundleIssuer",
+    "FakeContextProfileResolver",
+    "FakeContextRetrieval",
+    "FakeTrustedContextValidator",
+    "LegacyContextBrokerAdapter",
     "NamespaceLifecycleError",
     "NamespaceRoutingError",
     "ProjectionNamespaceContext",
@@ -23,4 +75,5 @@ __all__ = [
     "format_answers",
     "namespace_identity_digest",
     "remember_texts",
+    "TrustedContextValidator",
 ]
