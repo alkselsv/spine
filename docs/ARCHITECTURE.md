@@ -1975,6 +1975,7 @@ src/spine/
     approvals/
     actions/
   application/
+    document_ingestion.py
     commands/
     queries/
     policies/
@@ -2230,6 +2231,10 @@ detectors без специальных обходов в platform core.
   deployment-scoped backup fencing, ordered operation tickets, immutable
   recovery manifests, explicit Profile A/Profile B separation, and the
   hash-linked recovery-evidence trust/readiness gate used during restore.
+- [ADR-025](adr/0025-idempotent-document-ingestion-orchestration.md): the
+  application-owned idempotent document-ingestion seam across storage, source
+  observation, admission, canonical acceptance, parsing, artifacts, ledger and
+  content-free processing requests.
 - ADR-TBD: artifact schemas и handoff evaluation protocol.
 - ADR-012: business outcome attribution и cost accounting.
 - ADR-013: future third-party Agent SDK, package trust и certification после появления подтверждённого внешнего кейса.

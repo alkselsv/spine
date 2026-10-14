@@ -1605,12 +1605,21 @@ class _InMemoryIngestionRepository:
         self._uow._guard_active()
         self._scope_check(command.item.workspace_id, command.item.environment_id)
         if command.observation.revision.kind.value == "content":
-            self._uow._fail(
-                ConstraintConflictError(
-                    "Original receipt verification is unavailable; content binding is fail-closed."
+            association = command.observation.receipt_association
+            binding = command.binding
+            if (
+                association is None
+                or binding.original_receipt_id != association.original_receipt_id
+                or binding.original_reference != association.original_reference
+                or binding.original_receipt_digest != association.original_sha256
+                or binding.original_receipt_kind != association.original_receipt_kind
+            ):
+                self._uow._fail(
+                    ConstraintConflictError(
+                        "Original receipt verification is unavailable or incomplete."
+                    )
                 )
-            )
-        if command.binding.original_receipt_id is not None:
+        if command.observation.revision.kind.value != "content" and command.binding.original_receipt_id is not None:
             self._uow._fail(
                 ConstraintConflictError(
                     "Contentless ingestion binding cannot include an original receipt."
@@ -1845,6 +1854,32 @@ class _InMemoryIngestionRepository:
         if item is None or (item.workspace_id, item.environment_id) != (self._uow.scope.workspace_id, self._uow.scope.environment_id):
             return None
         return item.model_copy(deep=True)
+
+    async def resolve_run_head(self, run_id: UUID) -> IngestionTransition | None:
+        self._uow._guard_active()
+        run = self._runs().get(run_id)
+        if run is None:
+            return None
+        head = self._head(run_id, IngestionTargetKind.RUN)
+        return head.model_copy(deep=True) if head is not None else None
+
+    async def resolve_item_head(self, item_id: UUID) -> IngestionTransition | None:
+        self._uow._guard_active()
+        item = self._items().get(item_id)
+        if item is None:
+            return None
+        head = self._head(item_id, IngestionTargetKind.ITEM)
+        return head.model_copy(deep=True) if head is not None else None
+
+    async def resolve_processing_receipt(self, item_id: UUID) -> ProcessingReceipt | None:
+        self._uow._guard_active()
+        receipts = tuple(
+            value for value in self._processing_receipts().values()
+            if value.ingestion_run_source_id == item_id
+        )
+        if not receipts:
+            return None
+        return max(receipts, key=lambda value: value.completed_at).model_copy(deep=True)
 
 
 class _IdempotencyRepository:
