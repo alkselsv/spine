@@ -9,9 +9,13 @@ from io import BytesIO
 import re
 from typing import Final, Literal
 from uuid import UUID
+from zipfile import ZipFile
 
 from spine.domain.artifacts import (
+    ExtractedOoxmlText,
     ExtractedPageText,
+    OoxmlBlockPathStep,
+    OoxmlTextLocator,
     ParseCoverage,
     ParseExclusion,
     PageTextLocator,
@@ -27,6 +31,20 @@ PARSER_CONFIG_REFERENCE: Final[str] = "text-markdown-default:v1"
 PDF_LOCATOR_CONTRACT_VERSION: Final[str] = "pdf-page-extracted-codepoint:v1"
 PDF_PARSER_VERSION: Final[str] = f"pdf:v1+pypdf-{version('pypdf')}"
 PDF_EXTRACTION_MODE: Final[str] = "plain"
+DOCX_MEDIA_TYPE: Final[str] = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+DOCX_LOCATOR_CONTRACT_VERSION: Final[str] = "docx-ooxml-block-codepoint:v1"
+DOCX_PARSER_VERSION: Final[str] = f"docx:v1+python-docx-{version('python-docx')}"
+_WORDPROCESSINGML: Final[str] = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_UNSUPPORTED_DOCX_STORIES: Final[frozenset[str]] = frozenset(
+    {"header", "footer", "footnotes", "endnotes", "comments"}
+)
+_UNSUPPORTED_DRAWING_TAGS: Final[frozenset[str]] = frozenset(
+    {
+        _WORDPROCESSINGML + "drawing",
+        _WORDPROCESSINGML + "object",
+        _WORDPROCESSINGML + "pict",
+    }
+)
 _HEADING = re.compile(r"^(#{1,6})[ \t]+(.+?)\s*#*\s*$")
 
 
@@ -79,7 +97,7 @@ class PdfParser:
         *,
         media_type: str = "application/pdf",
     ) -> ParsedDocument:
-        _validate_pdf_source(source_revision, content)
+        _validate_binary_source(source_revision, content)
 
         if len(content) > self.max_bytes:
             return _pdf_result(
@@ -247,35 +265,16 @@ class PdfParser:
     ) -> str:
         """Reopen one pinned PDF revision and resolve an exact page-text range."""
 
-        _validate_pdf_source(source_revision, content)
-        expected_identity = (
-            source_revision.workspace_id,
-            source_revision.environment_id,
-            source_revision.source_object_id,
-            source_revision.revision_id,
-            source_revision.revision_digest,
-            source_revision.original_sha256,
-            "pdf",
-            PDF_PARSER_VERSION,
-            self.config_reference,
-            PDF_LOCATOR_CONTRACT_VERSION,
-            "application/pdf",
+        _validate_binary_source(source_revision, content)
+        _assert_parser_identity(
+            source_revision,
+            document,
+            parser_name="pdf",
+            parser_version=PDF_PARSER_VERSION,
+            parser_config_reference=self.config_reference,
+            locator_contract_version=PDF_LOCATOR_CONTRACT_VERSION,
+            media_type="application/pdf",
         )
-        actual_identity = (
-            document.workspace_id,
-            document.environment_id,
-            document.source_object_id,
-            document.source_revision_id,
-            document.source_revision_digest,
-            document.original_sha256,
-            document.parser_name,
-            document.parser_version,
-            document.parser_config_reference,
-            document.locator_contract_version,
-            document.media_type,
-        )
-        if actual_identity != expected_identity:
-            raise ValueError("locator does not resolve")
 
         from pypdf import PdfReader
 
@@ -290,6 +289,192 @@ class PdfParser:
                 locator,
             )
         except (IndexError, TypeError, ValueError):
+            raise ValueError("locator does not resolve") from None
+        except Exception:
+            raise ValueError("locator does not resolve") from None
+
+
+@dataclass(slots=True)
+class _DocxTraversalBudget:
+    max_blocks: int
+    max_paragraph_chars: int
+    max_total_chars: int
+    block_count: int = 0
+    total_chars: int = 0
+    blocks_exhausted: bool = False
+
+    def admit_block(self) -> bool:
+        if self.block_count >= self.max_blocks:
+            self.blocks_exhausted = True
+            return False
+        self.block_count += 1
+        return True
+
+    def admit_text(self, text: str) -> bool:
+        if len(text) > self.max_paragraph_chars:
+            return False
+        if self.total_chars + len(text) > self.max_total_chars:
+            return False
+        self.total_chars += len(text)
+        return True
+
+
+@dataclass(frozen=True, slots=True)
+class DocxParser:
+    """Deterministic WordprocessingML adapter with structural paragraph locators."""
+
+    max_bytes: int = 10_000_000
+    max_archive_entries: int = 10_000
+    max_uncompressed_bytes: int = 100_000_000
+    max_nesting_depth: int = 32
+    max_blocks: int = 1_000_000
+    max_paragraph_chars: int = 2_000_000
+    max_total_chars: int = 10_000_000
+
+    def __post_init__(self) -> None:
+        if min(
+            self.max_bytes,
+            self.max_archive_entries,
+            self.max_uncompressed_bytes,
+            self.max_nesting_depth,
+            self.max_blocks,
+            self.max_paragraph_chars,
+            self.max_total_chars,
+        ) <= 0:
+            raise ValueError("parser bounds must be positive")
+
+    @property
+    def config_reference(self) -> str:
+        limits = (
+            f"strict=true:{self.max_bytes}:"
+            f"{self.max_archive_entries}:{self.max_uncompressed_bytes}:"
+            f"{self.max_nesting_depth}:{self.max_blocks}:"
+            f"{self.max_paragraph_chars}:{self.max_total_chars}"
+        )
+        digest = hashlib.sha256(limits.encode("ascii")).hexdigest()
+        return f"docx-python-docx-config:v1:{digest}"
+
+    def parse(
+        self,
+        source_revision: SourceRevision,
+        content: bytes,
+        *,
+        media_type: str = DOCX_MEDIA_TYPE,
+    ) -> ParsedDocument:
+        _validate_binary_source(source_revision, content)
+
+        if len(content) > self.max_bytes:
+            return _docx_result(
+                source_revision,
+                content,
+                media_type=media_type,
+                parser_config_reference=self.config_reference,
+                segments=(),
+                exclusions=(ParseExclusion(code="bounded_input", count=1),),
+            )
+
+        try:
+            with ZipFile(BytesIO(content)) as archive:
+                entries = archive.infolist()
+        except Exception:
+            return _docx_result(
+                source_revision,
+                content,
+                media_type=media_type,
+                parser_config_reference=self.config_reference,
+                segments=(),
+                exclusions=(ParseExclusion(code="malformed_document", count=1),),
+            )
+        if (
+            len(entries) > self.max_archive_entries
+            or sum(entry.file_size for entry in entries) > self.max_uncompressed_bytes
+        ):
+            return _docx_result(
+                source_revision,
+                content,
+                media_type=media_type,
+                parser_config_reference=self.config_reference,
+                segments=(),
+                exclusions=(ParseExclusion(code="bounded_input", count=1),),
+            )
+
+        from docx import Document
+
+        try:
+            document = Document(BytesIO(content))
+        except Exception:
+            return _docx_result(
+                source_revision,
+                content,
+                media_type=media_type,
+                parser_config_reference=self.config_reference,
+                segments=(),
+                exclusions=(ParseExclusion(code="malformed_document", count=1),),
+            )
+        segments, structural_exclusions = _walk_ooxml_blocks(
+            document.element.body,
+            budget=_DocxTraversalBudget(
+                max_blocks=self.max_blocks,
+                max_paragraph_chars=self.max_paragraph_chars,
+                max_total_chars=self.max_total_chars,
+            ),
+            max_nesting_depth=self.max_nesting_depth,
+        )
+        unsupported_story_count = sum(
+            relationship.reltype.rsplit("/", 1)[-1] in _UNSUPPORTED_DOCX_STORIES
+            for relationship in document.part.rels.values()
+        )
+        exclusions = structural_exclusions
+        if unsupported_story_count:
+            exclusions += (ParseExclusion(code="unsupported_story", count=unsupported_story_count),)
+        return _docx_result(
+            source_revision,
+            content,
+            media_type=media_type,
+            parser_config_reference=self.config_reference,
+            segments=segments,
+            exclusions=exclusions,
+        )
+
+    def resolve_locator(
+        self,
+        source_revision: SourceRevision,
+        content: bytes,
+        document: ParsedDocument,
+        locator: OoxmlTextLocator,
+    ) -> str:
+        """Reopen one pinned DOCX revision and resolve an exact OOXML range."""
+
+        _validate_binary_source(source_revision, content)
+        _assert_parser_identity(
+            source_revision,
+            document,
+            parser_name="docx",
+            parser_version=DOCX_PARSER_VERSION,
+            parser_config_reference=self.config_reference,
+            locator_contract_version=DOCX_LOCATOR_CONTRACT_VERSION,
+            media_type=DOCX_MEDIA_TYPE,
+        )
+
+        from docx import Document
+
+        try:
+            source_document = Document(BytesIO(content))
+            paragraph = _resolve_ooxml_paragraph(
+                source_document.element.body,
+                locator.block_path,
+            )
+            paragraph_text = _ooxml_paragraph_text(paragraph)
+            if locator.end_codepoint > len(paragraph_text):
+                raise ValueError("locator does not resolve")
+            return document.resolve_locator(
+                ExtractedOoxmlText(
+                    block_path=locator.block_path,
+                    text=paragraph_text,
+                ),
+                locator,
+            )
+        except (IndexError, StopIteration, TypeError, ValueError):
             raise ValueError("locator does not resolve") from None
         except Exception:
             raise ValueError("locator does not resolve") from None
@@ -319,6 +504,8 @@ def parse_document(
         )
     if selected_media_type == "application/pdf":
         return PdfParser(max_bytes=max_bytes).parse(source_revision, content)
+    if selected_media_type == DOCX_MEDIA_TYPE:
+        return DocxParser(max_bytes=max_bytes).parse(source_revision, content)
     raise ValueError("unsupported parser media type")
 
 
@@ -446,13 +633,7 @@ def _pdf_result(
     exclusions: tuple[ParseExclusion, ...],
     extracted_length: int,
 ) -> ParsedDocument:
-    coverage = (
-        ParseCoverage.FAILED
-        if exclusions and not segments
-        else ParseCoverage.PARTIAL
-        if exclusions
-        else ParseCoverage.COMPLETE
-    )
+    coverage = _coverage_for(segments, exclusions)
     return ParsedDocument.from_source(
         source_revision,
         parser_name="pdf",
@@ -468,7 +649,47 @@ def _pdf_result(
     )
 
 
-def _validate_pdf_source(source_revision: SourceRevision, content: bytes) -> None:
+def _assert_parser_identity(
+    source_revision: SourceRevision,
+    document: ParsedDocument,
+    *,
+    parser_name: str,
+    parser_version: str,
+    parser_config_reference: str,
+    locator_contract_version: str,
+    media_type: str,
+) -> None:
+    expected = (
+        source_revision.workspace_id,
+        source_revision.environment_id,
+        source_revision.source_object_id,
+        source_revision.revision_id,
+        source_revision.revision_digest,
+        source_revision.original_sha256,
+        parser_name,
+        parser_version,
+        parser_config_reference,
+        locator_contract_version,
+        media_type,
+    )
+    actual = (
+        document.workspace_id,
+        document.environment_id,
+        document.source_object_id,
+        document.source_revision_id,
+        document.source_revision_digest,
+        document.original_sha256,
+        document.parser_name,
+        document.parser_version,
+        document.parser_config_reference,
+        document.locator_contract_version,
+        document.media_type,
+    )
+    if actual != expected:
+        raise ValueError("locator does not resolve")
+
+
+def _validate_binary_source(source_revision: SourceRevision, content: bytes) -> None:
     if source_revision.kind is not RevisionKind.CONTENT:
         raise ValueError("only content revisions can be parsed")
     assert_revision_digest(source_revision)
@@ -477,6 +698,214 @@ def _validate_pdf_source(source_revision: SourceRevision, content: bytes) -> Non
         or hashlib.sha256(content).hexdigest() != source_revision.original_sha256
     ):
         raise ValueError("original content does not match source revision")
+def _walk_ooxml_blocks(
+    parent: object,
+    prefix: tuple[OoxmlBlockPathStep, ...] = (),
+    segments: list[ParsedSegment] | None = None,
+    exclusions: list[ParseExclusion] | None = None,
+    *,
+    budget: _DocxTraversalBudget | None = None,
+    nesting_depth: int = 0,
+    max_nesting_depth: int = 32,
+) -> tuple[tuple[ParsedSegment, ...], tuple[ParseExclusion, ...]]:
+    segment_values = [] if segments is None else segments
+    exclusion_values = [] if exclusions is None else exclusions
+    active_budget = budget or _DocxTraversalBudget(
+        max_blocks=1_000_000,
+        max_paragraph_chars=2_000_000,
+        max_total_chars=10_000_000,
+    )
+    for block_index, child in enumerate(parent):  # type: ignore[arg-type]
+        if active_budget.blocks_exhausted:
+            break
+        if child.tag in {
+            _WORDPROCESSINGML + "sectPr",
+            _WORDPROCESSINGML + "tcPr",
+        }:
+            continue
+        if not active_budget.admit_block():
+            exclusion_values.append(ParseExclusion(code="bounded_input", count=1))
+            break
+        if child.tag == _WORDPROCESSINGML + "p":
+            text = _ooxml_paragraph_text(child)
+            locator = OoxmlTextLocator(
+                block_path=prefix
+                + (OoxmlBlockPathStep(kind="paragraph", index=block_index),),
+                start_codepoint=0,
+                end_codepoint=len(text),
+            )
+            if text and active_budget.admit_text(text):
+                segment_values.append(
+                    ParsedSegment.model_construct(
+                        segment_id=UUID(int=1),
+                        segment_digest="0" * 64,
+                        artifact_digest="0" * 64,
+                        text=text,
+                        text_digest=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                        locator=locator,
+                        heading_path=(),
+                    )
+                )
+            elif text:
+                exclusion_values.append(ParseExclusion(code="bounded_input", count=1))
+            drawing_count = sum(
+                node.tag in _UNSUPPORTED_DRAWING_TAGS for node in child.iter()
+            )
+            if drawing_count:
+                exclusion_values.append(
+                    ParseExclusion(
+                        code="unsupported_drawing",
+                        count=drawing_count,
+                        locator=locator,
+                    )
+                )
+        elif child.tag == _WORDPROCESSINGML + "tbl":
+            if nesting_depth >= max_nesting_depth:
+                exclusion_values.append(ParseExclusion(code="bounded_input", count=1))
+                continue
+            table_path = prefix + (OoxmlBlockPathStep(kind="table", index=block_index),)
+            row_index = 0
+            for table_child in child:
+                if active_budget.blocks_exhausted:
+                    break
+                if table_child.tag in {
+                    _WORDPROCESSINGML + "tblPr",
+                    _WORDPROCESSINGML + "tblGrid",
+                }:
+                    continue
+                if not active_budget.admit_block():
+                    exclusion_values.append(ParseExclusion(code="bounded_input", count=1))
+                    break
+                if table_child.tag != _WORDPROCESSINGML + "tr":
+                    exclusion_values.append(
+                        ParseExclusion(code="unsupported_structure", count=1)
+                    )
+                    continue
+                row = table_child
+                row_path = table_path + (OoxmlBlockPathStep(kind="row", index=row_index),)
+                cell_index = 0
+                for row_child in row:
+                    if active_budget.blocks_exhausted:
+                        break
+                    if row_child.tag == _WORDPROCESSINGML + "trPr":
+                        continue
+                    if not active_budget.admit_block():
+                        exclusion_values.append(ParseExclusion(code="bounded_input", count=1))
+                        break
+                    if row_child.tag != _WORDPROCESSINGML + "tc":
+                        exclusion_values.append(
+                            ParseExclusion(code="unsupported_structure", count=1)
+                        )
+                        continue
+                    cell = row_child
+                    if (
+                        cell.find(
+                            _WORDPROCESSINGML + "tcPr/" + _WORDPROCESSINGML + "gridSpan"
+                        )
+                        is not None
+                        or cell.find(
+                            _WORDPROCESSINGML + "tcPr/" + _WORDPROCESSINGML + "vMerge"
+                        )
+                        is not None
+                    ):
+                        exclusion_values.append(
+                            ParseExclusion(code="ambiguous_merged_cell", count=1)
+                        )
+                        cell_index += 1
+                        continue
+                    cell_path = row_path + (OoxmlBlockPathStep(kind="cell", index=cell_index),)
+                    _walk_ooxml_blocks(
+                        cell,
+                        cell_path,
+                        segment_values,
+                        exclusion_values,
+                        budget=active_budget,
+                        nesting_depth=nesting_depth + 1,
+                        max_nesting_depth=max_nesting_depth,
+                    )
+                    cell_index += 1
+                row_index += 1
+        else:
+            exclusion_values.append(ParseExclusion(code="unsupported_structure", count=1))
+    return tuple(segment_values), tuple(exclusion_values)
+
+
+def _resolve_ooxml_paragraph(
+    body: object,
+    block_path: tuple[OoxmlBlockPathStep, ...],
+) -> object:
+    parent = body
+    position = 0
+    while position < len(block_path):
+        block = block_path[position]
+        child = parent[block.index]  # type: ignore[index]
+        if block.kind == "paragraph":
+            if child.tag != _WORDPROCESSINGML + "p" or position != len(block_path) - 1:
+                raise ValueError("locator does not resolve")
+            return child
+        if block.kind != "table" or child.tag != _WORDPROCESSINGML + "tbl":
+            raise ValueError("locator does not resolve")
+        row_step = block_path[position + 1]
+        cell_step = block_path[position + 2]
+        if row_step.kind != "row" or cell_step.kind != "cell":
+            raise ValueError("locator does not resolve")
+        row = child.findall(_WORDPROCESSINGML + "tr")[row_step.index]
+        parent = row.findall(_WORDPROCESSINGML + "tc")[cell_step.index]
+        position += 3
+    raise ValueError("locator does not resolve")
+
+
+def _ooxml_paragraph_text(paragraph: object) -> str:
+    pieces: list[str] = []
+    for node in paragraph.iter():  # type: ignore[attr-defined]
+        if any(
+            ancestor.tag in _UNSUPPORTED_DRAWING_TAGS
+            for ancestor in node.iterancestors()
+        ):
+            continue
+        if node.tag == _WORDPROCESSINGML + "t":
+            pieces.append(node.text or "")
+        elif node.tag == _WORDPROCESSINGML + "tab":
+            pieces.append("\t")
+        elif node.tag in {_WORDPROCESSINGML + "br", _WORDPROCESSINGML + "cr"}:
+            pieces.append("\n")
+    return "".join(pieces)
+
+
+def _docx_result(
+    source_revision: SourceRevision,
+    content: bytes,
+    *,
+    media_type: str,
+    parser_config_reference: str,
+    segments: tuple[ParsedSegment, ...],
+    exclusions: tuple[ParseExclusion, ...],
+) -> ParsedDocument:
+    coverage = _coverage_for(segments, exclusions)
+    return ParsedDocument.from_source(
+        source_revision,
+        parser_name="docx",
+        parser_version=DOCX_PARSER_VERSION,
+        parser_config_reference=parser_config_reference,
+        locator_contract_version=DOCX_LOCATOR_CONTRACT_VERSION,
+        media_type=media_type,
+        coverage=coverage,
+        segments=segments,
+        exclusions=exclusions,
+        source_byte_length=len(content),
+        source_codepoint_length=sum(len(segment.text) for segment in segments),
+    )
+
+
+def _coverage_for(
+    segments: tuple[ParsedSegment, ...],
+    exclusions: tuple[ParseExclusion, ...],
+) -> ParseCoverage:
+    if exclusions and not segments:
+        return ParseCoverage.FAILED
+    if exclusions:
+        return ParseCoverage.PARTIAL
+    return ParseCoverage.COMPLETE
 
 
 def _has_exact_unicode_text(value: str) -> bool:

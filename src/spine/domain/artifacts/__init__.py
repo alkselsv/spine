@@ -10,7 +10,10 @@ from spine.domain.artifacts.models import (
 __all__ = ["Artifact", "ArtifactRef", "ArtifactState", "validate_artifact_lineage"]
 from .models import (
     ExtractedPageText,
+    ExtractedOoxmlText,
     Locator,
+    OoxmlBlockPathStep,
+    OoxmlTextLocator,
     ParseCoverage,
     ParseExclusion,
     PageTextLocator,
@@ -23,7 +26,10 @@ from .models import (
 
 __all__ = [
     "ExtractedPageText",
+    "ExtractedOoxmlText",
     "Locator",
+    "OoxmlBlockPathStep",
+    "OoxmlTextLocator",
     "ParseCoverage",
     "ParseExclusion",
     "PageTextLocator",
