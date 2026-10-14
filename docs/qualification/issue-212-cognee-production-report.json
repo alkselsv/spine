@@ -1,6 +1,7 @@
 {
   "schema_version": "cognee-production-qualification:v1",
   "ticket": 212,
+  "qualification_run_id": "not-run",
   "profile": {
     "relational": "postgresql",
     "graph": "neo4j",

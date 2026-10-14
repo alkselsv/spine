@@ -9,16 +9,36 @@ against that exact profile.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import re
+from uuid import NAMESPACE_URL, uuid5
 
 import pytest
 
 from spine.memory.cognee.live_smoke import LiveSmokeConfig, run_local_smoke
 from spine.memory.cognee.context_projection import (
-    CogneeContextProjection,
     create_cognee_context_projection,
 )
+from spine.memory.cognee.indexing.store import CogneeChunkProjectionStore
 from spine.memory.cognee.qualification import SearchLane, SmokeStatus
+from spine.memory.cognee.production_qualification import (
+    GateObservation,
+    GateStatus,
+    required_gate_ids,
+    write_issue212_report,
+)
+from spine.memory.contracts import (
+    ProjectionCandidate,
+    ProjectionNamespaceState,
+    ProjectionOutcome,
+    ProjectionSourceRevision,
+    ProjectCommand,
+    RetrieveCommand,
+)
+from spine.memory.namespace import ProjectionNamespaceContext, ProjectionNamespaceRouter
+
+from tests.memory.cognee.test_graph import extraction_result, request
+from tests.memory.cognee.test_indexing import REVISION_ID, parsed_document
 
 
 pytestmark = [
@@ -103,10 +123,125 @@ async def test_public_cognee_profile_exercises_structured_sdk_lifecycle() -> Non
     }.issubset(report.operation_names)
 
 
-def test_complete_context_projection_factory_uses_public_cognee_profile() -> None:
+@pytest.mark.asyncio
+async def test_complete_context_projection_round_trips_public_cognee_profile() -> None:
+    from spine.memory.cognee_memory import configure_environment
+
+    configure_environment()
+    import cognee
+
+    run_id = os.environ["SPINE_COGNEE_QUALIFICATION_RUN_ID"]
+    extraction = extraction_result()
+    current = next(
+        source for source in extraction.source_revisions if source.status == "current"
+    )
+    template = request(extraction)
+    projection_run_id = uuid5(NAMESPACE_URL, f"spine-issue-212:{run_id}:run")
+    candidate = ProjectionCandidate(
+        candidate_id=uuid5(NAMESPACE_URL, f"spine-issue-212:{run_id}:candidate"),
+        run_id=projection_run_id,
+        partition_id=uuid5(NAMESPACE_URL, f"spine-issue-212:{run_id}:partition"),
+    )
+    namespace = ProjectionNamespaceRouter().route(
+        ProjectionNamespaceContext(
+            workspace_id=extraction.workspace_id,
+            environment_id=extraction.environment_id,
+            projection_candidate=candidate,
+            projection_config=template.projection_config,
+            canonical_boundary=template.canonical_boundary,
+            state=ProjectionNamespaceState.ACTIVE,
+        )
+    )
+    _, base_document = parsed_document(
+        b"Synthetic Organization Alpha employs Synthetic Person Ada.",
+        REVISION_ID,
+    )
+    document = base_document.model_copy(
+        update={
+            "workspace_id": extraction.workspace_id,
+            "environment_id": extraction.environment_id,
+            "source_object_id": current.source_object_id,
+            "source_revision_id": current.source_revision_id,
+            "source_revision_digest": current.revision_digest,
+        }
+    )
+    source = ProjectionSourceRevision(
+        source_object_id=current.source_object_id,
+        source_revision_id=current.source_revision_id,
+        revision_digest=current.revision_digest,
+        revision_number=current.revision_number,
+        status="current",
+        locator_contract_version="locator:v1",
+    )
+    common = {
+        "workspace_id": extraction.workspace_id,
+        "environment_id": extraction.environment_id,
+        "projection_run_id": projection_run_id,
+        "projection_candidate": candidate,
+        "projection_config": template.projection_config,
+        "canonical_boundary": template.canonical_boundary,
+        "source_revisions": (source,),
+        "physical_namespace": namespace,
+    }
     projection = create_cognee_context_projection(
-        artifacts={},
-        extraction_results={},
+        artifacts={current.source_revision_id: document},
+        extraction_results={current.source_revision_id: extraction},
+    )
+    dataset_name = CogneeChunkProjectionStore.dataset_name(namespace)
+
+    try:
+        projected = await projection.project(
+            ProjectCommand(
+                **common,
+                command_identity="issue-212-project",
+                command_digest="1" * 64,
+            )
+        )
+        retrieved = await projection.retrieve(
+            RetrieveCommand(
+                **common,
+                command_identity="issue-212-retrieve",
+                command_digest="2" * 64,
+                query="Who works for Synthetic Organization Alpha?",
+            )
+        )
+    finally:
+        await cognee.forget(dataset=dataset_name)
+
+    assert projected.outcome is ProjectionOutcome.SUCCEEDED
+    assert retrieved.outcome is ProjectionOutcome.SUCCEEDED
+    assert retrieved.chunks
+    assert retrieved.entities
+    assert retrieved.relations
+    assert all(
+        reference.source_revision_id == current.source_revision_id
+        for reference in retrieved.evidence
     )
 
-    assert isinstance(projection, CogneeContextProjection)
+    report_path = os.environ.get("SPINE_COGNEE_QUALIFICATION_REPORT")
+    if report_path:
+        passed = {
+            "public_sdk",
+            "structured_round_trip",
+            "explicit_retrieval_context",
+        }
+        write_issue212_report(
+            Path(report_path),
+            qualification_run_id=run_id,
+            observations=tuple(
+                GateObservation(
+                    gate_id=gate_id,
+                    status=(
+                        GateStatus.PASSED
+                        if gate_id in passed
+                        else GateStatus.NOT_RUN
+                    ),
+                    safe_code=(
+                        None
+                        if gate_id in passed
+                        else "live_prerequisite_unavailable"
+                    ),
+                )
+                for gate_id in required_gate_ids()
+            ),
+        )

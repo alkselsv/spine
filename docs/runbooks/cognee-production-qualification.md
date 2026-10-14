@@ -55,6 +55,10 @@ After installing the declared development dependencies, opt in explicitly:
 SPINE_COGNEE_PRODUCTION_QUALIFICATION=1 uv run pytest -q -m cognee_production tests/integration/cognee/test_production_profile.py
 ```
 
+Set `SPINE_COGNEE_QUALIFICATION_REPORT` to an operator-controlled output path
+to serialize the validated observations from that run. Do not point it at the
+committed report until the complete gate inventory has been reviewed.
+
 The target uses unique synthetic dataset names and public Cognee cleanup calls.
 It contains no customer data. Retain content-free test results and backend
 versions; do not retain raw provider errors in the report.

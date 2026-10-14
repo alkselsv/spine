@@ -54,7 +54,7 @@ traceability and collection of the live target. The operator-controlled live
 command is documented in
 `docs/runbooks/cognee-production-qualification.md`.
 
-The live target verifies the public SDK lifecycle and loads the complete
-physical factory. Passing it alone must not be used to edit the report to `go`:
+The live target verifies the public SDK lifecycle and a complete physical
+project/retrieve round trip. Passing it alone must not be used to edit the report to `go`:
 the report changes only from the complete gate inventory captured by one live
 qualification run.

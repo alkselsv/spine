@@ -9,6 +9,7 @@ content into the qualification report.
 from __future__ import annotations
 
 from enum import Enum
+from pathlib import Path
 from typing import Literal
 
 from pydantic import ConfigDict, Field, model_validator
@@ -149,6 +150,11 @@ class Issue212QualificationReport(ProductionQualificationResult):
     """Versioned, closed schema for the committed Issue #212 report."""
 
     ticket: Literal[212] = 212
+    qualification_run_id: str = Field(
+        min_length=1,
+        max_length=32,
+        pattern=r"^(not-run|[a-z0-9][a-z0-9-]{0,31})$",
+    )
     issue_211_fake_qualification: Literal["not_production_evidence"]
     postgres_demo: Literal["rejected"]
     canonical_lifecycle_owner: Literal["postgresql"]
@@ -229,9 +235,48 @@ def evaluate_production_profile(
     )
 
 
+def build_issue212_report(
+    *,
+    qualification_run_id: str,
+    observations: tuple[GateObservation, ...],
+) -> Issue212QualificationReport:
+    """Build the ticket report from one bounded live-run observation set."""
+
+    result = evaluate_production_profile(
+        profile=ProductionProfile.approved_candidate(),
+        mode=QualificationMode.LIVE_REAL_BACKENDS,
+        observations=observations,
+    )
+    return Issue212QualificationReport(
+        **result.model_dump(),
+        qualification_run_id=qualification_run_id,
+        issue_211_fake_qualification="not_production_evidence",
+        postgres_demo="rejected",
+        canonical_lifecycle_owner="postgresql",
+        physical_calls_inside_postgresql_unit_of_work=False,
+    )
+
+
+def write_issue212_report(
+    path: Path,
+    *,
+    qualification_run_id: str,
+    observations: tuple[GateObservation, ...],
+) -> Issue212QualificationReport:
+    """Write one validated, content-free report to an operator-selected path."""
+
+    report = build_issue212_report(
+        qualification_run_id=qualification_run_id,
+        observations=observations,
+    )
+    path.write_text(report.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    return report
+
+
 __all__ = [
     "GateObservation",
     "GateStatus",
+    "build_issue212_report",
     "Issue212QualificationReport",
     "ProductionProfile",
     "ProductionQualificationResult",
@@ -239,4 +284,5 @@ __all__ = [
     "QualificationMode",
     "evaluate_production_profile",
     "required_gate_ids",
+    "write_issue212_report",
 ]

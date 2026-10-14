@@ -37,7 +37,7 @@ from spine.memory.contracts import (
     RetrieveCommand,
     UpdateCommand,
 )
-from spine.memory.fake import ProjectionCoordinator
+from spine.memory.coordinator import ProjectionCoordinator
 
 
 class StructuredRetrieval(Protocol):

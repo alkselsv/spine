@@ -8,8 +8,12 @@ import subprocess
 import sys
 
 from spine.memory.cognee.production_qualification import (
+    GateObservation,
+    GateStatus,
     Issue212QualificationReport,
+    build_issue212_report,
     required_gate_ids,
+    write_issue212_report,
 )
 
 
@@ -31,6 +35,7 @@ def test_issue212_report_is_explicit_no_go_without_live_evidence() -> None:
 
     assert report.schema_version == "cognee-production-qualification:v1"
     assert report.ticket == 212
+    assert report.qualification_run_id == "not-run"
     assert report.profile.model_dump() == {
         "relational": "postgresql",
         "graph": "neo4j",
@@ -56,6 +61,32 @@ def test_issue212_report_does_not_promote_issue211_fake_evidence() -> None:
     assert report.physical_calls_inside_postgresql_unit_of_work is False
 
 
+def test_issue212_report_is_generated_from_one_run_observation_set(tmp_path: Path) -> None:
+    observations = tuple(
+        GateObservation(
+            gate_id=gate_id,
+            status=GateStatus.NOT_RUN,
+            safe_code="live_prerequisite_unavailable",
+        )
+        for gate_id in required_gate_ids()
+    )
+
+    expected = build_issue212_report(
+        qualification_run_id="run-212",
+        observations=observations,
+    )
+    written = write_issue212_report(
+        tmp_path / "report.json",
+        qualification_run_id="run-212",
+        observations=observations,
+    )
+
+    assert written == expected
+    assert Issue212QualificationReport.model_validate_json(
+        (tmp_path / "report.json").read_text(encoding="utf-8")
+    ) == expected
+
+
 def test_issue212_live_target_is_collectable_and_skipped_by_default() -> None:
     collected = subprocess.run(
         [sys.executable, "-m", "pytest", "--collect-only", "-q", LIVE_TARGET],
@@ -69,7 +100,7 @@ def test_issue212_live_target_is_collectable_and_skipped_by_default() -> None:
     assert collected.returncode == 0, output
     assert "test_production_profile_preflight_requires_exact_backends" in output
     assert "test_public_cognee_profile_exercises_structured_sdk_lifecycle" in output
-    assert "test_complete_context_projection_factory_uses_public_cognee_profile" in output
+    assert "test_complete_context_projection_round_trips_public_cognee_profile" in output
 
 
 def test_issue212_runbook_names_exact_prerequisites_and_command() -> None:
