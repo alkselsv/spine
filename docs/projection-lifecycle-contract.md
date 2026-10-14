@@ -12,7 +12,8 @@ canonical currentness or publication.
 
 Physical work is exposed as immutable `ProjectionEffect` values. A physical
 adapter implements `ProjectionEffectStore.apply`, returning the same effect
-with an applied, replayed or failed status. `ProjectionResult.effects` retains
+with an applied, replayed or failed status plus a typed failure code when
+needed. `ProjectionResult.effects` retains
 the safe effect statuses and `ProjectionResult.lifecycle` distinguishes normal
 success, replay, recovery, recoverable partial failure and revision fencing.
 
@@ -79,6 +80,28 @@ activation.
 `ProjectionNamespaceRegistry` is an offline lifecycle catalog for deterministic
 qualification. Its active-candidate view excludes failed and retired records;
 it does not own PostgreSQL publication or active-pointer authority.
+
+## Shadow rebuild orchestration
+
+Issue #204 adds `ShadowRebuildOrchestrator` as the workflow-facing seam for a
+full candidate rebuild. A `ShadowRebuildPlan` pins one run, candidate,
+configuration, canonical boundary and server-routed `shadow` (or
+`rebuilding`) namespace. Its replay inputs are sorted by source identity,
+revision, lane and command identity, so chunk and graph work is replayed in a
+stable order regardless of input arrival order.
+
+The orchestrator checkpoints content-free progress before and after each
+physical input through `ProjectionRebuildProgressStore`. It resumes only
+pending inputs after a retryable physical failure or abandoned run; completed
+inputs are not sent to a lane a second time. Chunk effects and graph requests
+share the same candidate scope and are coordinated by the same plan, while
+their provider-specific adapters remain behind their existing contracts.
+
+Provider exceptions and terminal lane failures become typed, content-free
+results. A failed or incomplete run remains in a non-active namespace and can
+never serve ordinary retrieval. The orchestrator does not transition an active
+pointer or publish a candidate; those decisions remain PostgreSQL-owned and
+outside this ticket.
 
 ## Cognee graph write-side adapter
 

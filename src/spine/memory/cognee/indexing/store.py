@@ -22,6 +22,7 @@ from spine.memory.contracts import (
     ProjectionEffect,
     ProjectionEffectAction,
     ProjectionEffectStatus,
+    ProjectionFailureCode,
     ProjectionNamespace,
     ProjectionNamespaceState,
     ProjectionOperation,
@@ -231,8 +232,15 @@ class CogneeChunkProjectionStore:
             previous_effect = self._applied_effects.get(effect.effect_id)
             if previous_effect is not None:
                 if not self._same_effect(previous_effect, effect):
-                    return effect.model_copy(update={"status": ProjectionEffectStatus.FAILED})
-                return effect.model_copy(update={"status": ProjectionEffectStatus.REPLAYED})
+                    return effect.model_copy(
+                        update={
+                            "status": ProjectionEffectStatus.FAILED,
+                            "failure_code": ProjectionFailureCode.INTEGRITY_CONFLICT,
+                        }
+                    )
+                return effect.model_copy(
+                    update={"status": ProjectionEffectStatus.REPLAYED, "failure_code": None}
+                )
             try:
                 self._validate_namespace(effect)
                 key = self._record_key(effect)
@@ -244,7 +252,12 @@ class CogneeChunkProjectionStore:
                         previous_digest != effect.command_digest
                         or previous_operation is not effect.operation
                     ):
-                        return effect.model_copy(update={"status": ProjectionEffectStatus.FAILED})
+                        return effect.model_copy(
+                            update={
+                                "status": ProjectionEffectStatus.FAILED,
+                                "failure_code": ProjectionFailureCode.INTEGRITY_CONFLICT,
+                            }
+                        )
                     if completed and previous_effect_id != effect.effect_id:
                         return effect.model_copy(update={"status": ProjectionEffectStatus.REPLAYED})
                 elif effect.command_digest:
@@ -257,15 +270,32 @@ class CogneeChunkProjectionStore:
 
                 record = self._records.get(key) or self._pending_records.get(key)
                 if self._is_fenced(effect, record):
-                    return effect.model_copy(update={"status": ProjectionEffectStatus.FAILED})
+                    return effect.model_copy(
+                        update={
+                            "status": ProjectionEffectStatus.FAILED,
+                            "failure_code": ProjectionFailureCode.REVISION_FENCED,
+                        }
+                    )
                 if effect.action is ProjectionEffectAction.REMOVE_SOURCE:
                     await self._remove(effect, key, record)
                 else:
                     await self._upsert(effect, key, record)
+            except NamespaceRoutingError:
+                return effect.model_copy(
+                    update={
+                        "status": ProjectionEffectStatus.FAILED,
+                        "failure_code": ProjectionFailureCode.NAMESPACE_UNAVAILABLE,
+                    }
+                )
             except Exception:
                 # Provider exceptions may contain source text or credentials.
                 # The provider-neutral effect exposes only its status.
-                return effect.model_copy(update={"status": ProjectionEffectStatus.FAILED})
+                return effect.model_copy(
+                    update={
+                        "status": ProjectionEffectStatus.FAILED,
+                        "failure_code": ProjectionFailureCode.PHYSICAL_FAILURE,
+                    }
+                )
             self._applied_effects[effect.effect_id] = effect
             if effect.command_digest:
                 self._commands[command_key] = (
@@ -274,7 +304,9 @@ class CogneeChunkProjectionStore:
                     effect.effect_id,
                     True,
                 )
-            return effect.model_copy(update={"status": ProjectionEffectStatus.APPLIED})
+            return effect.model_copy(
+                update={"status": ProjectionEffectStatus.APPLIED, "failure_code": None}
+            )
 
     async def mappings_for(
         self,
@@ -568,12 +600,12 @@ class CogneeChunkProjectionStore:
         try:
             self._router.validate(effect.physical_namespace, context)
         except NamespaceRoutingError as error:
-            raise ValueError("namespace is not trusted") from error
+            raise NamespaceRoutingError("namespace is not trusted") from error
         if effect.physical_namespace.state in {
             ProjectionNamespaceState.FAILED,
             ProjectionNamespaceState.RETIRED,
         }:
-            raise ValueError("namespace is unavailable")
+            raise NamespaceRoutingError("namespace is unavailable")
 
     @staticmethod
     def _same_effect(previous: ProjectionEffect, current: ProjectionEffect) -> bool:
