@@ -13,7 +13,7 @@ from types import TracebackType
 from typing import Any, NoReturn
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from sqlalchemy import func, insert, null, select, text, update
+from sqlalchemy import Table, func, insert, null, select, text, true, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 
 from spine.application.diagnostics.audit import (
@@ -313,6 +313,23 @@ class PostgreSQLTransactionStage(Enum):
 PostgreSQLTransactionProbe = Callable[
     [PostgreSQLTransactionStage], Awaitable[None]
 ]
+
+
+def _label_table_columns(table: Table, prefix: str) -> tuple[Any, ...]:
+    """Select a table's columns without allowing names to collide in a row."""
+
+    return tuple(
+        column.label(f"{prefix}_{column.name}") for column in table.c
+    )
+
+
+def _unlabel_table_row(
+    row: Mapping[str, Any], table: Table, prefix: str
+) -> dict[str, Any]:
+    return {
+        column.name: row[f"{prefix}_{column.name}"]
+        for column in table.c
+    }
 
 
 async def _ignore_transaction_stage(stage: PostgreSQLTransactionStage) -> None:
@@ -3473,54 +3490,183 @@ class _PostgreSQLProjectionSnapshotMixin:
     ) -> ProjectionPublicationResolution:
         self._uow._guard_active()
         scope = self._scope()
-        pointer_row = (
-            await self._uow._execute(
-                select(_ACTIVE_PROJECTIONS).where(
-                    _ACTIVE_PROJECTIONS.c.workspace_id == scope.workspace_id,
-                    _ACTIVE_PROJECTIONS.c.environment_id == scope.environment_id,
-                    _ACTIVE_PROJECTIONS.c.projection_kind == projection_kind,
-                )
+        effective_reconciliation = (
+            select(*_label_table_columns(_PROJECTION_RECONCILIATION_RESULTS, "reconciliation"))
+            .where(
+                _PROJECTION_RECONCILIATION_RESULTS.c.workspace_id == scope.workspace_id,
+                _PROJECTION_RECONCILIATION_RESULTS.c.environment_id == scope.environment_id,
+                _PROJECTION_RECONCILIATION_RESULTS.c.projection_kind == projection_kind,
+                _PROJECTION_RECONCILIATION_RESULTS.c.projection_snapshot_id
+                == _PROJECTION_SNAPSHOTS.c.projection_snapshot_id,
+                _PROJECTION_RECONCILIATION_RESULTS.c.projection_activation_id
+                == _PROJECTION_ACTIVATIONS.c.projection_activation_id,
+                _PROJECTION_RECONCILIATION_RESULTS.c.activation_generation
+                == _ACTIVE_PROJECTIONS.c.activation_generation,
             )
-        ).mappings().one_or_none()
-        if pointer_row is None:
+            .order_by(
+                _PROJECTION_RECONCILIATION_RESULTS.c.checked_at.desc(),
+                _PROJECTION_RECONCILIATION_RESULTS.c.reconciliation_result_id.desc(),
+            )
+            .limit(1)
+            .lateral("effective_reconciliation")
+        )
+        has_drift = (
+            select(1)
+            .where(
+                _PROJECTION_DRIFTS.c.workspace_id == scope.workspace_id,
+                _PROJECTION_DRIFTS.c.environment_id == scope.environment_id,
+                _PROJECTION_DRIFTS.c.projection_activation_id
+                == _ACTIVE_PROJECTIONS.c.projection_activation_id,
+                _PROJECTION_DRIFTS.c.activation_generation
+                == _ACTIVE_PROJECTIONS.c.activation_generation,
+            )
+            .exists()
+        )
+        publication_query = (
+            select(
+                *_label_table_columns(_ACTIVE_PROJECTIONS, "pointer"),
+                *_label_table_columns(_PROJECTION_ACTIVATIONS, "activation"),
+                *_label_table_columns(_PROJECTION_SNAPSHOTS, "snapshot"),
+                *_label_table_columns(_CANONICAL_BOUNDARIES, "boundary"),
+                *_label_table_columns(_PROJECTION_CONFIGS, "config"),
+                *effective_reconciliation.c,
+                has_drift.label("has_drift"),
+            )
+            .select_from(
+                _ACTIVE_PROJECTIONS
+                .outerjoin(
+                    _PROJECTION_ACTIVATIONS,
+                    (
+                        _PROJECTION_ACTIVATIONS.c.workspace_id
+                        == _ACTIVE_PROJECTIONS.c.workspace_id
+                    )
+                    & (
+                        _PROJECTION_ACTIVATIONS.c.environment_id
+                        == _ACTIVE_PROJECTIONS.c.environment_id
+                    )
+                    & (
+                        _PROJECTION_ACTIVATIONS.c.projection_kind
+                        == _ACTIVE_PROJECTIONS.c.projection_kind
+                    )
+                    & (
+                        _PROJECTION_ACTIVATIONS.c.projection_activation_id
+                        == _ACTIVE_PROJECTIONS.c.projection_activation_id
+                    )
+                    & (
+                        _PROJECTION_ACTIVATIONS.c.projection_snapshot_id
+                        == _ACTIVE_PROJECTIONS.c.projection_snapshot_id
+                    )
+                    & (
+                        _PROJECTION_ACTIVATIONS.c.activation_generation
+                        == _ACTIVE_PROJECTIONS.c.activation_generation
+                    ),
+                )
+                .outerjoin(
+                    _PROJECTION_SNAPSHOTS,
+                    (
+                        _PROJECTION_SNAPSHOTS.c.workspace_id
+                        == _ACTIVE_PROJECTIONS.c.workspace_id
+                    )
+                    & (
+                        _PROJECTION_SNAPSHOTS.c.environment_id
+                        == _ACTIVE_PROJECTIONS.c.environment_id
+                    )
+                    & (
+                        _PROJECTION_SNAPSHOTS.c.projection_kind
+                        == _ACTIVE_PROJECTIONS.c.projection_kind
+                    )
+                    & (
+                        _PROJECTION_SNAPSHOTS.c.projection_snapshot_id
+                        == _ACTIVE_PROJECTIONS.c.projection_snapshot_id
+                    ),
+                )
+                .outerjoin(
+                    _CANONICAL_BOUNDARIES,
+                    (
+                        _CANONICAL_BOUNDARIES.c.workspace_id
+                        == _PROJECTION_SNAPSHOTS.c.workspace_id
+                    )
+                    & (
+                        _CANONICAL_BOUNDARIES.c.environment_id
+                        == _PROJECTION_SNAPSHOTS.c.environment_id
+                    )
+                    & (
+                        _CANONICAL_BOUNDARIES.c.boundary_id
+                        == _PROJECTION_SNAPSHOTS.c.canonical_boundary_id
+                    ),
+                )
+                .outerjoin(
+                    _PROJECTION_CONFIGS,
+                    (
+                        _PROJECTION_CONFIGS.c.workspace_id
+                        == _PROJECTION_SNAPSHOTS.c.workspace_id
+                    )
+                    & (
+                        _PROJECTION_CONFIGS.c.environment_id
+                        == _PROJECTION_SNAPSHOTS.c.environment_id
+                    )
+                    & (
+                        _PROJECTION_CONFIGS.c.projection_config_version_id
+                        == _PROJECTION_SNAPSHOTS.c.projection_config_version_id
+                    ),
+                )
+                .outerjoin(effective_reconciliation, true())
+            )
+            .where(
+                _ACTIVE_PROJECTIONS.c.workspace_id == scope.workspace_id,
+                _ACTIVE_PROJECTIONS.c.environment_id == scope.environment_id,
+                _ACTIVE_PROJECTIONS.c.projection_kind == projection_kind,
+            )
+        )
+        row = (await self._uow._execute(publication_query)).mappings().one_or_none()
+        if row is None:
             return UnpublishedActivePublication(
                 workspace_id=scope.workspace_id,
                 environment_id=scope.environment_id,
                 projection_kind=projection_kind,
             )
-        pointer = self._pointer(pointer_row)
-        snapshot = await self.resolve_snapshot(pointer.projection_snapshot_id)
-        activation_row = (
-            await self._uow._execute(
-                select(_PROJECTION_ACTIVATIONS).where(
-                    _PROJECTION_ACTIVATIONS.c.projection_activation_id == pointer.projection_activation_id,
-                    _PROJECTION_ACTIVATIONS.c.workspace_id == scope.workspace_id,
-                    _PROJECTION_ACTIVATIONS.c.environment_id == scope.environment_id,
-                )
-            )
-        ).mappings().one_or_none()
-        activation = self._activation(activation_row) if activation_row is not None else None
-        boundary_row = (
-            await self._uow._execute(
-                select(_CANONICAL_BOUNDARIES).where(
-                    _CANONICAL_BOUNDARIES.c.boundary_id == snapshot.canonical_boundary_id,
-                    _CANONICAL_BOUNDARIES.c.workspace_id == scope.workspace_id,
-                    _CANONICAL_BOUNDARIES.c.environment_id == scope.environment_id,
-                )
-            )
-        ).mappings().one_or_none() if snapshot is not None else None
-        config = await self.resolve_config_version(snapshot.projection_config_version_id) if snapshot else None
-        if snapshot is None or activation is None or boundary_row is None or config is None:
+        pointer = self._pointer(
+            _unlabel_table_row(row, _ACTIVE_PROJECTIONS, "pointer")
+        )
+        snapshot_row = _unlabel_table_row(row, _PROJECTION_SNAPSHOTS, "snapshot")
+        activation_row = _unlabel_table_row(row, _PROJECTION_ACTIVATIONS, "activation")
+        boundary_row = _unlabel_table_row(row, _CANONICAL_BOUNDARIES, "boundary")
+        config_row = _unlabel_table_row(row, _PROJECTION_CONFIGS, "config")
+        snapshot = (
+            self._snapshot(snapshot_row)
+            if snapshot_row["projection_snapshot_id"] is not None
+            else None
+        )
+        activation = (
+            self._activation(activation_row)
+            if activation_row["projection_activation_id"] is not None
+            else None
+        )
+        boundary = (
+            CanonicalBoundary.model_validate(dict(boundary_row))
+            if boundary_row["boundary_id"] is not None
+            else None
+        )
+        config = (
+            self._config(config_row)
+            if config_row["projection_config_version_id"] is not None
+            else None
+        )
+        if snapshot is None or activation is None or boundary is None or config is None:
             return UnavailableActivePublication(
                 workspace_id=scope.workspace_id,
                 environment_id=scope.environment_id,
                 projection_kind=projection_kind,
                 reason_code="active_publication_integrity_conflict",
             )
-        boundary = CanonicalBoundary.model_validate(dict(boundary_row))
-        drifts = await self.list_drifts(activation.projection_activation_id)
-        reconciliations = await self.list_reconciliation_results(snapshot.projection_snapshot_id)
-        effective = reconciliations[-1] if reconciliations else None
+        reconciliation_row = _unlabel_table_row(
+            row, _PROJECTION_RECONCILIATION_RESULTS, "reconciliation"
+        )
+        effective = (
+            self._reconciliation(reconciliation_row)
+            if reconciliation_row["reconciliation_result_id"] is not None
+            else None
+        )
         return PublishedActivePublication(
             workspace_id=scope.workspace_id,
             environment_id=scope.environment_id,
@@ -3539,7 +3685,11 @@ class _PostgreSQLProjectionSnapshotMixin:
                 boundary_time=boundary.boundary_time,
             ),
             projection_config_version=config,
-            freshness=ProjectionFreshness.STALE if drifts else ProjectionFreshness.CURRENT,
+            freshness=(
+                ProjectionFreshness.STALE
+                if row["has_drift"]
+                else ProjectionFreshness.CURRENT
+            ),
             health=ProjectionHealth.HEALTHY
             if effective is not None and effective.outcome.value == "healthy"
             else ProjectionHealth.DEGRADED,
