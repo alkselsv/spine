@@ -36,6 +36,35 @@ environments = Table(
     Column("display_name", Text, nullable=False),
 )
 
+context_profiles = Table(
+    "context_profiles",
+    metadata,
+    Column("profile_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("profile_version", Integer, nullable=False),
+    Column("profile_digest", String(64), nullable=False),
+    Column("schema_version", Text, nullable=False),
+    Column("retrieval_strategy", Text, nullable=False),
+    Column("max_results", Integer, nullable=False),
+    Column("max_tokens", Integer, nullable=False),
+    Column("max_relation_hops", Integer, nullable=False),
+    Column("freshness_max_age_seconds", Integer, nullable=False),
+    Column("completeness_requirement", Text, nullable=False),
+    Column("partial_answer_fallback", Text, nullable=False),
+    Column("server_approved", Boolean, nullable=False),
+    Column("revoked", Boolean, nullable=False),
+    Column("predecessor_profile_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id",
+        "environment_id",
+        "profile_id",
+        "profile_version",
+        name="pk_context_profiles",
+    ),
+)
+
 idempotency_receipts = Table(
     "idempotency_receipts",
     metadata,
@@ -785,6 +814,7 @@ __all__ = [
     "access_policy_versions",
     "audit_events",
     "environments",
+    "context_profiles",
     "idempotency_receipts",
     "metadata",
     "outbox_intents",

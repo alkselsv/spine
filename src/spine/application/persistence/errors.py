@@ -99,3 +99,27 @@ class UnitOfWorkLifecycleError(PersistenceError):
 
 class ParsedArtifactConflictError(ConstraintConflictError):
     """A parsed artifact command or immutable identity conflicts with history."""
+
+
+class ContextProfileError(PersistenceError):
+    """Base class for safe, typed ContextProfile resolution failures."""
+
+
+class ContextProfileNotFoundError(ContextProfileError):
+    """No profile with the requested identity exists in the trusted scope."""
+
+
+class ContextProfileDigestMismatchError(ContextProfileError):
+    """The requested profile identity is present with another digest."""
+
+
+class ContextProfileRevokedError(ContextProfileError):
+    """The requested immutable profile version is revoked."""
+
+
+class ContextProfileApprovalError(ContextProfileError):
+    """The profile is not approved by the server for broker use."""
+
+
+class ContextProfileMalformedError(ContextProfileError):
+    """Persisted profile data is malformed or uses an unsupported schema."""

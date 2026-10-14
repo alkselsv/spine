@@ -33,6 +33,11 @@ from spine.application.persistence.errors import (
     CanonicalAuthorityConflictError,
     CanonicalEligibilityError,
     ConstraintConflictError,
+    ContextProfileApprovalError,
+    ContextProfileDigestMismatchError,
+    ContextProfileMalformedError,
+    ContextProfileNotFoundError,
+    ContextProfileRevokedError,
     IdempotencyConflictError,
     InvalidBootstrapAuthorityError,
     InvalidPersistenceContextError,
@@ -163,6 +168,7 @@ from spine.domain.projections import (
     UnavailableActivePublication,
     UnpublishedActivePublication,
 )
+from spine.domain.context_profiles import ContextProfileVersion
 from spine.infrastructure.persistence.projection import InMemoryProjectionRepository
 
 
@@ -174,6 +180,7 @@ _UNEXPECTED_FAILURE_MESSAGE = "Persistence operation failed."
 class _StoreState:
     workspaces: dict[UUID, Workspace]
     environments: dict[UUID, Environment]
+    context_profiles: dict[tuple[UUID, UUID, UUID, int], ContextProfileVersion]
     idempotency_receipts: dict["_ReceiptKey", "_IdempotencyReceipt"]
     outbox_intents: dict[UUID, OutboxIntent]
     source_objects: dict[UUID, SourceObject]
@@ -240,6 +247,7 @@ class _Store:
         self.state = _StoreState(
             workspaces={},
             environments={},
+            context_profiles={},
             idempotency_receipts={},
             outbox_intents={},
             source_objects={},
@@ -294,6 +302,10 @@ class _Store:
     @property
     def environments(self) -> dict[UUID, Environment]:
         return self.state.environments
+
+    @property
+    def context_profiles(self) -> dict[tuple[UUID, UUID, UUID, int], ContextProfileVersion]:
+        return self.state.context_profiles
 
     @property
     def idempotency_receipts(self) -> dict[_ReceiptKey, _IdempotencyReceipt]:
@@ -538,6 +550,107 @@ class _EnvironmentRepository:
             if isinstance(scope, EnvironmentScope) and environment.id != scope.environment_id:
                 return None
             return _environment_copy(environment)
+
+        return self._uow._repository_call(operation)
+
+
+class _ContextProfileRepository:
+    def __init__(self, uow: "InMemoryUnitOfWork") -> None:
+        self._uow = uow
+
+    @staticmethod
+    def _key(profile: ContextProfileVersion) -> tuple[UUID, UUID, UUID, int]:
+        return (
+            profile.workspace_id,
+            profile.environment_id,
+            profile.profile_id,
+            profile.profile_version,
+        )
+
+    def _profiles(self) -> dict[tuple[UUID, UUID, UUID, int], ContextProfileVersion]:
+        return self._uow._base_context_profiles | self._uow._pending_context_profiles
+
+    def _validate_scope(self, profile: ContextProfileVersion) -> None:
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope) or (
+            scope.workspace_id != profile.workspace_id
+            or scope.environment_id != profile.environment_id
+        ):
+            self._uow._fail(InvalidPersistenceContextError("Persistence context is invalid."))
+
+    async def add(self, profile: ContextProfileVersion) -> None:
+        self._uow._guard_active()
+
+        def operation() -> None:
+            self._validate_scope(profile)
+            if not profile.server_approved:
+                self._uow._fail(
+                    ContextProfileApprovalError("Context profile is not server-approved.")
+                )
+            if self._uow._resolve_environment(profile.environment_id) is None:
+                self._uow._fail(ConstraintConflictError("Owning Environment does not exist."))
+            key = self._key(profile)
+            if key in self._profiles():
+                self._uow._fail(
+                    ConstraintConflictError("Context profile immutable version already exists.")
+                )
+            self._uow._pending_context_profiles[key] = profile.model_copy(deep=True)
+
+        self._uow._repository_call(operation)
+
+    async def create(self, profile: ContextProfileVersion) -> ContextProfileVersion:
+        self._uow._guard_active()
+
+        def operation() -> ContextProfileVersion:
+            self._validate_scope(profile)
+            if not profile.server_approved:
+                self._uow._fail(
+                    ContextProfileApprovalError("Context profile is not server-approved.")
+                )
+            if self._uow._resolve_environment(profile.environment_id) is None:
+                self._uow._fail(ConstraintConflictError("Owning Environment does not exist."))
+            existing = self._profiles().get(self._key(profile))
+            if existing is not None:
+                if existing != profile:
+                    self._uow._fail(
+                        ConstraintConflictError(
+                            "Context profile immutable version conflicts with history."
+                        )
+                    )
+                return existing.model_copy(deep=True)
+            self._uow._pending_context_profiles[self._key(profile)] = profile.model_copy(
+                deep=True
+            )
+            return profile.model_copy(deep=True)
+
+        return self._uow._repository_call(operation)
+
+    async def resolve(
+        self,
+        *,
+        profile_id: UUID,
+        profile_version: int,
+        profile_digest: str,
+    ) -> ContextProfileVersion:
+        self._uow._guard_active()
+
+        def operation() -> ContextProfileVersion:
+            scope = self._uow.scope
+            if not isinstance(scope, EnvironmentScope):
+                self._uow._fail(InvalidPersistenceContextError("Persistence context is invalid."))
+            key = (scope.workspace_id, scope.environment_id, profile_id, profile_version)
+            stored = self._profiles().get(key)
+            if stored is None:
+                self._uow._fail(ContextProfileNotFoundError("Context profile is unavailable."))
+            if stored.profile_digest != profile_digest:
+                self._uow._fail(ContextProfileDigestMismatchError("Context profile identity is invalid."))
+            try:
+                restored = ContextProfileVersion.model_validate(stored.model_dump(mode="python"))
+            except (TypeError, ValueError):
+                self._uow._fail(ContextProfileMalformedError("Context profile is unavailable."))
+            if restored.revoked:
+                self._uow._fail(ContextProfileRevokedError("Context profile is unavailable."))
+            return restored
 
         return self._uow._repository_call(operation)
 
@@ -2326,6 +2439,7 @@ class InMemoryUnitOfWork:
         self._owner: asyncio.Task[object] | None = None
         self._base_workspaces: dict[UUID, Workspace] = {}
         self._base_environments: dict[UUID, Environment] = {}
+        self._base_context_profiles: dict[tuple[UUID, UUID, UUID, int], ContextProfileVersion] = {}
         self._base_receipts: dict[_ReceiptKey, _IdempotencyReceipt] = {}
         self._base_outbox_intents: dict[UUID, OutboxIntent] = {}
         self._base_source_objects: dict[UUID, SourceObject] = {}
@@ -2362,6 +2476,7 @@ class InMemoryUnitOfWork:
         self._base_projection_drifts: dict[UUID, ProjectionDrift] = {}
         self._pending_workspaces: dict[UUID, Workspace] = {}
         self._pending_environments: dict[UUID, Environment] = {}
+        self._pending_context_profiles: dict[tuple[UUID, UUID, UUID, int], ContextProfileVersion] = {}
         self._pending_receipts: dict[_ReceiptKey, _IdempotencyReceipt] = {}
         self._pending_outbox_intents: dict[UUID, OutboxIntent] = {}
         self._pending_source_objects: dict[UUID, SourceObject] = {}
@@ -2401,6 +2516,7 @@ class InMemoryUnitOfWork:
         self._canonical_lock_held = False
         self._workspaces = _WorkspaceRepository(self)
         self._environments = _EnvironmentRepository(self)
+        self._context_profiles = _ContextProfileRepository(self)
         self._idempotency = _IdempotencyRepository(self)
         self._outbox = _OutboxWriter(self)
         self._sources = _SourceObservationRepository(self)
@@ -2420,6 +2536,15 @@ class InMemoryUnitOfWork:
     def environments(self) -> _EnvironmentRepository:
         self._guard_active()
         return self._environments
+
+    @property
+    def context_profiles(self) -> _ContextProfileRepository:
+        self._guard_active()
+        return self._context_profiles
+
+    @property
+    def profiles(self) -> _ContextProfileRepository:
+        return self.context_profiles
 
     @property
     def idempotency(self) -> _IdempotencyRepository:
@@ -2529,6 +2654,10 @@ class InMemoryUnitOfWork:
                 self._base_environments = {
                     key: _environment_copy(value)
                     for key, value in self._store.environments.items()
+                }
+                self._base_context_profiles = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.context_profiles.items()
                 }
                 self._base_receipts = {
                     key: _receipt_copy(value)
@@ -2686,6 +2815,16 @@ class InMemoryUnitOfWork:
                     {
                         key: _environment_copy(value)
                         for key, value in self._pending_environments.items()
+                    }
+                )
+                prepared_context_profiles = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.context_profiles.items()
+                }
+                prepared_context_profiles.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_context_profiles.items()
                     }
                 )
                 prepared_receipts = {
@@ -2947,6 +3086,7 @@ class InMemoryUnitOfWork:
                 self._store.state = _StoreState(
                     workspaces=prepared_workspaces,
                     environments=prepared_environments,
+                    context_profiles=prepared_context_profiles,
                     idempotency_receipts=prepared_receipts,
                     outbox_intents=prepared_outbox_intents,
                     source_objects=prepared_source_objects,
@@ -2997,6 +3137,7 @@ class InMemoryUnitOfWork:
             raise UnitOfWorkLifecycleError("Unit of Work is not active.")
         self._pending_workspaces.clear()
         self._pending_environments.clear()
+        self._pending_context_profiles.clear()
         self._pending_receipts.clear()
         self._pending_outbox_intents.clear()
         self._pending_source_objects.clear()
@@ -3090,6 +3231,8 @@ class InMemoryUnitOfWork:
             raise ConstraintConflictError("Workspace identity already exists.")
         if self._pending_environments.keys() & self._store.environments.keys():
             raise ConstraintConflictError("Environment identity already exists.")
+        if self._pending_context_profiles.keys() & self._store.context_profiles.keys():
+            raise ConstraintConflictError("Context profile immutable version already exists.")
         if self._pending_receipts.keys() & self._store.idempotency_receipts.keys():
             raise IdempotencyConflictError("Idempotency key conflicts with existing command.")
         if self._pending_outbox_intents.keys() & self._store.outbox_intents.keys():
@@ -3317,6 +3460,11 @@ class InMemoryUnitOfWork:
             environment_id
         )
 
+    def _resolve_context_profile(
+        self, key: tuple[UUID, UUID, UUID, int]
+    ) -> ContextProfileVersion | None:
+        return self._pending_context_profiles.get(key) or self._base_context_profiles.get(key)
+
     def _resolve_receipt(self, key: _ReceiptKey) -> _IdempotencyReceipt | None:
         return self._pending_receipts.get(key) or self._base_receipts.get(key)
 
@@ -3401,6 +3549,7 @@ class InMemoryUnitOfWork:
     def _clear_transaction(self) -> None:
         self._base_workspaces.clear()
         self._base_environments.clear()
+        self._base_context_profiles.clear()
         self._base_receipts.clear()
         self._base_outbox_intents.clear()
         self._base_source_objects.clear()
@@ -3437,6 +3586,7 @@ class InMemoryUnitOfWork:
         self._base_projection_drifts.clear()
         self._pending_workspaces.clear()
         self._pending_environments.clear()
+        self._pending_context_profiles.clear()
         self._pending_receipts.clear()
         self._pending_outbox_intents.clear()
         self._pending_source_objects.clear()

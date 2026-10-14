@@ -18,6 +18,7 @@ from spine.application.persistence.ingestion import IngestionRepository
 from spine.application.persistence.canonical import CanonicalAcceptanceRepository
 from spine.application.persistence.boundary import CanonicalBoundaryRepository
 from spine.application.persistence.projection import ProjectionRepository
+from spine.application.persistence.context_profiles import ContextProfileRepository
 
 if TYPE_CHECKING:
     from spine.application.diagnostics.audit import AuditWriter
@@ -29,6 +30,9 @@ class TenantUnitOfWork(Protocol):
 
     @property
     def environments(self) -> EnvironmentRepository: ...
+
+    @property
+    def context_profiles(self) -> ContextProfileRepository: ...
 
     async def __aenter__(self) -> "TenantUnitOfWork": ...
 

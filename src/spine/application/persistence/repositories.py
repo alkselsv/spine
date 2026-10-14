@@ -23,6 +23,8 @@ from spine.domain.sources import (
 from spine.domain.sources.profile import OBSERVATION_SCHEMA
 from spine.domain.workspaces import Environment, Workspace
 
+from spine.application.persistence.context_profiles import ContextProfileRepository
+
 SOURCE_OBSERVATION_SCHEMA_VERSION = 1
 
 
@@ -203,4 +205,5 @@ __all__ = [
     "SourceObservationResult",
     "SOURCE_OBSERVATION_SCHEMA_VERSION",
     "WorkspaceRepository",
+    "ContextProfileRepository",
 ]
