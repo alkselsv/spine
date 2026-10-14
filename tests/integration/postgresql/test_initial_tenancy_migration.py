@@ -1394,9 +1394,6 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "environment_role_bindings",
         "environments",
         "context_profiles",
-        "pk_context_profiles",
-        "uq_context_profiles_identity_digest",
-        "ix_context_profiles_lookup",
         "idempotency_receipts",
         "initial_workspace_bootstrap",
         "outbox_intents",
@@ -2514,6 +2511,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "environment_memberships",
         "environment_role_bindings",
         "environments",
+        "context_profiles",
         "idempotency_receipts",
         "initial_workspace_bootstrap",
         "outbox_intents",
@@ -2548,6 +2546,17 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "ck_outbox_intents_producer_deduplication_id_length",
         "pk_outbox_intents",
         "pk_workspaces",
+        "pk_context_profiles",
+        "uq_context_profiles_identity_digest",
+        "fk_context_profiles_environment",
+        "ck_context_profiles_version_positive",
+        "ck_context_profiles_schema",
+        "ck_context_profiles_digest",
+        "ck_context_profiles_strategy",
+        "ck_context_profiles_bounds",
+        "ck_context_profiles_completeness",
+        "ck_context_profiles_partial_fallback",
+        "ck_context_profiles_server_approved",
         "uq_environments_workspace_id_id",
         "uq_initial_workspace_bootstrap_action_id",
         "uq_initial_workspace_bootstrap_workspace_id",
@@ -2595,6 +2604,23 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         ("workspaces", "display_name"),
         ("workspaces", "id"),
         ("workspaces", "slug"),
+        ("context_profiles", "profile_id"),
+        ("context_profiles", "workspace_id"),
+        ("context_profiles", "environment_id"),
+        ("context_profiles", "profile_version"),
+        ("context_profiles", "profile_digest"),
+        ("context_profiles", "schema_version"),
+        ("context_profiles", "retrieval_strategy"),
+        ("context_profiles", "max_results"),
+        ("context_profiles", "max_tokens"),
+        ("context_profiles", "max_relation_hops"),
+        ("context_profiles", "freshness_max_age_seconds"),
+        ("context_profiles", "completeness_requirement"),
+        ("context_profiles", "partial_answer_fallback"),
+        ("context_profiles", "server_approved"),
+        ("context_profiles", "revoked"),
+        ("context_profiles", "predecessor_profile_id"),
+        ("context_profiles", "created_at"),
     } | AUTHORIZATION_DIRECTORY_COLUMNS | AUDIT_COLUMNS | DELIVERY_COLUMNS | ADMISSION_COLUMNS
     assert columns[("workspaces", "id")] == ("uuid", "NO", None)
     assert columns[("environments", "id")] == ("uuid", "NO", None)
@@ -2617,6 +2643,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "initial_workspace_bootstrap",
         "outbox_intents",
         "outbox_deliveries",
+        "context_profiles",
     ):
         data_type, nullable, default = columns[(table, "created_at")]
         assert data_type == "timestamp with time zone"
@@ -2644,6 +2671,9 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "uq_outbox_intents_environment_producer",
         "uq_outbox_intents_workspace_producer",
         "uq_workspaces_slug",
+        "pk_context_profiles",
+        "uq_context_profiles_identity_digest",
+        "ix_context_profiles_lookup",
     } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES
     assert owners == {MIGRATION_ROLE}
 
@@ -3048,6 +3078,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "WHERE namespace.nspname = 'spine' "
                         "AND relation.relname IN "
                         "('workspaces', 'environments', 'idempotency_receipts', "
+                        "'context_profiles', "
                         "'initial_workspace_bootstrap', 'outbox_intents', "
                         "'outbox_deliveries', "
                         "'workspace_memberships', 'environment_memberships', "
@@ -3107,6 +3138,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "admission_decisions": (True, True),
         "workspaces": (True, True),
         "environments": (True, True),
+        "context_profiles": (True, True),
         "idempotency_receipts": (True, True),
         "initial_workspace_bootstrap": (True, True),
         "outbox_intents": (True, True),
@@ -4427,7 +4459,7 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
         "revision = '20261021_26'\n"
-        "down_revision = '20261022_26'\n"
+        "down_revision = '20261023_27'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"
