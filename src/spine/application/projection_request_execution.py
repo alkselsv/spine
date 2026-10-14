@@ -24,6 +24,9 @@ from spine.application.outbox import (
     TerminalOutboxConsumerFailure,
 )
 from spine.application.persistence.outbox import OutboxIntent
+from spine.application.persistence.unit_of_work_activity import (
+    unit_of_work_is_active,
+)
 from spine.application.projection_result_mapping import (
     AdapterProjectionReceipt,
     ProjectionMappingConflictError,
@@ -187,6 +190,10 @@ class ProjectionRequestConsumer:
             return OutboxConsumerSuccess(diagnostic_context=diagnostic_context)
 
         # Physical projection is deliberately outside every PostgreSQL UnitOfWork.
+        if unit_of_work_is_active():
+            raise TerminalOutboxConsumerFailure(
+                "projection.request.canonical_uow_open"
+            )
         try:
             result = await self._projection.project(command)
         except Exception:

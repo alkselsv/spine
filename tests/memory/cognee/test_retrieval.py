@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Any
 from uuid import UUID
 
@@ -18,6 +19,8 @@ from spine.memory.contracts import (
     RetrieveCommand,
 )
 from spine.memory.cognee.retrieval import (
+    CogneeDataMetadata,
+    CogneeDatasetUnavailableError,
     CogneePublicStructuredRetrievalSdk,
     CogneeStructuredRetrieval,
     CogneeStructuredRetrievalSdk,
@@ -34,6 +37,7 @@ CANDIDATE_ID = UUID("60000000-0000-4000-8000-000000000001")
 PARTITION_ID = UUID("70000000-0000-4000-8000-000000000001")
 CONFIG_ID = UUID("80000000-0000-4000-8000-000000000001")
 BOUNDARY_ID = UUID("90000000-0000-4000-8000-000000000001")
+SNAPSHOT_ID = UUID("91000000-0000-4000-8000-000000000001")
 
 
 @dataclass
@@ -41,6 +45,7 @@ class FakeSearchSdk(CogneeStructuredRetrievalSdk):
     version: str = "1.5.4"
     chunks_response: object = ()
     hybrid_response: object = ()
+    data_metadata: tuple[CogneeDataMetadata, ...] = ()
 
     def __post_init__(self) -> None:
         self.calls: list[dict[str, object]] = []
@@ -52,6 +57,12 @@ class FakeSearchSdk(CogneeStructuredRetrievalSdk):
             if kwargs["query_type"] == "chunks"
             else self.hybrid_response
         )
+
+    async def list_data_metadata(
+        self, dataset_name: str
+    ) -> tuple[CogneeDataMetadata, ...]:
+        self.calls.append({"list_data_metadata": dataset_name})
+        return self.data_metadata
 
 
 def source(*, status: str = "current") -> ProjectionSourceRevision:
@@ -77,6 +88,7 @@ def command(
         candidate_id=CANDIDATE_ID,
         run_id=RUN_ID,
         partition_id=PARTITION_ID,
+        snapshot_id=SNAPSHOT_ID,
     )
     config = ProjectionConfigVersion(
         config_id=CONFIG_ID,
@@ -125,6 +137,7 @@ def physical_metadata() -> dict[str, Any]:
         "revision_digest": "a" * 64,
         "revision_number": 1,
         "processing_receipt_id": "a0000000-0000-4000-8000-000000000001",
+        "locator_contract_version": "locator:v1",
         "evidence_digest": "f" * 64,
         "locator": {"kind": "page", "value": "2"},
     }
@@ -191,8 +204,190 @@ async def test_retrieval_maps_public_structured_search_to_provider_neutral_resul
     )
     assert result.evidence[0].locator_contract_version == "locator:v1"
     assert result.evidence[0].locator.value == "2"
-    assert {call["query_type"] for call in sdk.calls} == {"chunks", "hybrid_completion"}
-    assert all(call["datasets"] == [f"spine_context_{command().physical_namespace.namespace_digest}"] for call in sdk.calls)
+    search_calls = [call for call in sdk.calls if "query_type" in call]
+    assert {call["query_type"] for call in search_calls} == {
+        "chunks",
+        "hybrid_completion",
+    }
+    assert all(
+        call["datasets"]
+        == [f"spine_context_{command().physical_namespace.namespace_digest}"]
+        for call in search_calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_retrieval_joins_public_dataset_metadata_to_chunk_document_id() -> None:
+    data_id = "a0000000-0000-4000-8000-000000000009"
+    metadata = {
+        **physical_metadata(),
+        "spine_schema": "chunk-artifact:v1",
+        "segment_id": data_id,
+        "evidence_id": "segment-evidence-1",
+        "evidence_digest": "f" * 64,
+    }
+    chunks = [
+        {
+            "objects_result": [
+                {
+                    "payload": {
+                        "text": "Alice works for Acme.",
+                        "document_id": data_id,
+                        "metadata": {"index_fields": ["text"]},
+                    }
+                }
+            ],
+            "evidence": [],
+        }
+    ]
+    sdk = FakeSearchSdk(
+        chunks_response=chunks,
+        data_metadata=(
+            CogneeDataMetadata(data_id=data_id, external_metadata=metadata),
+        ),
+    )
+
+    result = await CogneeStructuredRetrieval(sdk=sdk).retrieve(command())
+
+    assert result.outcome is ProjectionOutcome.SUCCEEDED
+    assert result.chunks[0].chunk_id == data_id
+    assert result.evidence[0].evidence_id == "segment-evidence-1"
+    assert result.evidence[0].source_revision_id == SOURCE_REVISION_ID
+    assert sdk.calls[0] == {
+        "list_data_metadata": (
+            f"spine_context_{command().physical_namespace.namespace_digest}"
+        )
+    }
+
+
+@pytest.mark.asyncio
+async def test_retrieval_rejects_conflicting_joined_and_search_metadata() -> None:
+    data_id = "a0000000-0000-4000-8000-000000000009"
+    metadata = {
+        **physical_metadata(),
+        "spine_schema": "chunk-artifact:v1",
+        "segment_id": data_id,
+        "evidence_id": "segment-evidence-1",
+        "evidence_digest": "f" * 64,
+    }
+    chunks = [
+        {
+            "objects_result": [
+                {
+                    "id": "provider-chunk-1",
+                    "text": "protected customer text",
+                    "document_id": data_id,
+                    "metadata": {"workspace_id": str(UUID(int=99))},
+                }
+            ],
+            "evidence": [{"kind": "segment", "data_id": data_id}],
+        }
+    ]
+    sdk = FakeSearchSdk(
+        chunks_response=chunks,
+        data_metadata=(
+            CogneeDataMetadata(data_id=data_id, external_metadata=metadata),
+        ),
+    )
+
+    result = await CogneeStructuredRetrieval(sdk=sdk).retrieve(command())
+
+    assert result.outcome is ProjectionOutcome.AMBIGUOUS
+    assert result.failure is not None
+    assert result.failure.code is ProjectionFailureCode.AMBIGUOUS_EVIDENCE
+    assert result.chunks == ()
+    assert "protected customer text" not in result.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_retrieval_rejects_mismatched_locator_contract_version() -> None:
+    chunks, hybrid = search_responses()
+    chunks[0]["objects_result"][0]["metadata"]["locator_contract_version"] = (
+        "fabricated-locator:v1"
+    )
+
+    result = await CogneeStructuredRetrieval(
+        sdk=FakeSearchSdk(chunks_response=chunks, hybrid_response=hybrid)
+    ).retrieve(command())
+
+    assert result.outcome is ProjectionOutcome.MISSING
+    assert result.failure is not None
+    assert result.failure.code is ProjectionFailureCode.MISSING_EVIDENCE
+    assert result.chunks == ()
+
+
+@pytest.mark.asyncio
+async def test_retrieval_maps_typed_graph_artifacts_from_public_chunk_results() -> None:
+    entity_data_id = "a0000000-0000-4000-8000-000000000010"
+    relation_data_id = "a0000000-0000-4000-8000-000000000011"
+    evidence = {
+        "evidence_id": "graph-evidence-1",
+        "source_revision_id": str(SOURCE_REVISION_ID),
+        "locator": {"kind": "page", "value": "2"},
+        "evidence_digest": "f" * 64,
+        "status": "valid",
+    }
+
+    def graph_metadata(kind: str) -> dict[str, object]:
+        return {
+            **physical_metadata(),
+            "spine_schema": "graph-artifact:v1",
+            "artifact_kind": kind,
+            "evidence": [evidence],
+        }
+
+    chunks = [
+        {
+            "objects_result": [
+                {
+                    "payload": {
+                        "text": json.dumps(
+                            {
+                                "entity_id": "entity-acme",
+                                "entity_type": "organization",
+                                "canonical_name": "Acme",
+                            }
+                        ),
+                        "document_id": entity_data_id,
+                    }
+                },
+                {
+                    "payload": {
+                        "text": json.dumps(
+                            {
+                                "relation_id": "relation-employs",
+                                "relation_type": "employs",
+                                "subject_entity_id": "entity-acme",
+                                "object_entity_id": "entity-alice",
+                            }
+                        ),
+                        "document_id": relation_data_id,
+                    }
+                },
+            ]
+        }
+    ]
+    sdk = FakeSearchSdk(
+        chunks_response=chunks,
+        data_metadata=(
+            CogneeDataMetadata(
+                data_id=entity_data_id,
+                external_metadata=graph_metadata("entity"),
+            ),
+            CogneeDataMetadata(
+                data_id=relation_data_id,
+                external_metadata=graph_metadata("relation"),
+            ),
+        ),
+    )
+
+    result = await CogneeStructuredRetrieval(sdk=sdk).retrieve(command())
+
+    assert result.outcome is ProjectionOutcome.SUCCEEDED
+    assert result.chunks == ()
+    assert result.entities[0].entity_id == "entity-acme"
+    assert result.relations[0].relation_id == "relation-employs"
+    assert result.evidence[0].source_revision_id == SOURCE_REVISION_ID
 
 
 @pytest.mark.asyncio
@@ -207,6 +402,72 @@ async def test_retrieval_rejects_shadow_namespace_without_physical_call() -> Non
     assert result.outcome is ProjectionOutcome.FAILED
     assert result.failure is not None
     assert result.failure.code is ProjectionFailureCode.NAMESPACE_UNAVAILABLE
+    assert sdk.calls == []
+
+
+@pytest.mark.asyncio
+async def test_retrieval_rejects_mismatched_explicit_context_without_physical_call() -> None:
+    chunks, hybrid = search_responses()
+    sdk = FakeSearchSdk(chunks_response=chunks, hybrid_response=hybrid)
+    base = command()
+    wrong_snapshot = base.projection_candidate.model_copy(
+        update={"snapshot_id": UUID("91000000-0000-4000-8000-000000000002")}
+    )
+    wrong_boundary = base.canonical_boundary.model_copy(
+        update={
+            "boundary_id": UUID("90000000-0000-4000-8000-000000000002"),
+            "boundary_digest": "e" * 64,
+        }
+    )
+    wrong_namespace = ProjectionNamespaceRouter().route(
+        ProjectionNamespaceContext(
+            workspace_id=base.workspace_id,
+            environment_id=base.environment_id,
+            projection_candidate=wrong_snapshot,
+            projection_config=base.projection_config,
+            canonical_boundary=base.canonical_boundary,
+            state=ProjectionNamespaceState.ACTIVE,
+        )
+    )
+    mismatched = (
+        base.model_copy(
+            update={
+                "projection_candidate": wrong_snapshot,
+                "command_identity": "wrong-snapshot",
+                "command_digest": "1" * 64,
+            }
+        ),
+        base.model_copy(
+            update={
+                "canonical_boundary": wrong_boundary,
+                "command_identity": "wrong-boundary",
+                "command_digest": "2" * 64,
+            }
+        ),
+        base.model_copy(
+            update={
+                "physical_namespace": wrong_namespace,
+                "command_identity": "wrong-namespace",
+                "command_digest": "3" * 64,
+            }
+        ),
+    )
+
+    results = [
+        await CogneeStructuredRetrieval(sdk=sdk).retrieve(item)
+        for item in mismatched
+    ]
+
+    assert all(result.outcome is ProjectionOutcome.FAILED for result in results)
+    assert all(
+        result.failure is not None
+        and result.failure.code is ProjectionFailureCode.NAMESPACE_UNAVAILABLE
+        for result in results
+    )
+    assert all(result.chunks == () for result in results)
+    assert all(result.entities == () for result in results)
+    assert all(result.relations == () for result in results)
+    assert all("Acme" not in result.model_dump_json() for result in results)
     assert sdk.calls == []
 
 
@@ -283,7 +544,7 @@ async def test_retrieval_replays_and_rejects_digest_conflict_without_second_sear
     assert replay.outcome is ProjectionOutcome.REPLAYED
     assert conflict.failure is not None
     assert conflict.failure.code is ProjectionFailureCode.INTEGRITY_CONFLICT
-    assert len(sdk.calls) == 2
+    assert len([call for call in sdk.calls if "query_type" in call]) == 2
 
 
 @pytest.mark.asyncio
@@ -341,6 +602,23 @@ async def test_retrieval_returns_typed_incomplete_result_for_missing_locator() -
 
 
 @pytest.mark.asyncio
+async def test_retrieval_logs_only_bounded_stage_for_rejected_physical_evidence(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    chunks, hybrid = search_responses()
+    chunks[0]["objects_result"][0]["metadata"] = {  # type: ignore[index]
+        "source_revision_id": str(SOURCE_REVISION_ID),
+        "text": "protected customer text",
+    }
+    sdk = FakeSearchSdk(chunks_response=chunks, hybrid_response=hybrid)
+
+    await CogneeStructuredRetrieval(sdk=sdk).retrieve(command())
+
+    assert "stage=reference_scope" in caplog.text
+    assert "protected customer text" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_public_sdk_bridge_uses_only_public_search_and_search_type() -> None:
     class SearchType:
         CHUNKS = "public-chunks"
@@ -363,3 +641,79 @@ async def test_public_sdk_bridge_uses_only_public_search_and_search_type() -> No
     await bridge.search("query", query_type="chunks", datasets=["dataset"])
 
     assert public_sdk.calls == [("query", {"query_type": "public-chunks", "datasets": ["dataset"]})]
+
+
+@pytest.mark.asyncio
+async def test_public_sdk_bridge_reads_external_metadata_through_dataset_api() -> None:
+    dataset_id = UUID("a0000000-0000-4000-8000-000000000001")
+    data_id = UUID("b0000000-0000-4000-8000-000000000001")
+
+    class Datasets:
+        async def list_datasets(self) -> list[object]:
+            return [{"id": dataset_id, "name": "dataset"}]
+
+        async def list_data(self, requested_id: UUID) -> list[object]:
+            assert requested_id == dataset_id
+            return [
+                {
+                    "id": data_id,
+                    "external_metadata": {"source_revision_id": "revision-1"},
+                }
+            ]
+
+    class PublicSdk:
+        __version__ = "1.5.4"
+        datasets = Datasets()
+
+    records = await CogneePublicStructuredRetrievalSdk(
+        PublicSdk()
+    ).list_data_metadata("dataset")
+
+    assert records == (
+        CogneeDataMetadata(
+            data_id=str(data_id),
+            external_metadata={"source_revision_id": "revision-1"},
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_public_sdk_bridge_reports_an_absent_dataset() -> None:
+    class Datasets:
+        @staticmethod
+        async def list_datasets() -> list[object]:
+            return []
+
+    class PublicSdk:
+        __version__ = "1.5.4"
+        datasets = Datasets()
+
+    with pytest.raises(CogneeDatasetUnavailableError):
+        await CogneePublicStructuredRetrievalSdk(
+            PublicSdk()
+        ).list_data_metadata("absent-dataset")
+
+
+@pytest.mark.asyncio
+async def test_retrieval_returns_missing_without_searching_an_empty_dataset() -> None:
+    class MissingDatasetSdk(FakeSearchSdk):
+        async def list_data_metadata(
+            self, dataset_name: str
+        ) -> tuple[CogneeDataMetadata, ...]:
+            self.calls.append({"list_data_metadata": dataset_name})
+            raise CogneeDatasetUnavailableError("synthetic protected provider detail")
+
+    sdk = MissingDatasetSdk()
+
+    result = await CogneeStructuredRetrieval(sdk=sdk).retrieve(command())
+
+    assert result.outcome is ProjectionOutcome.MISSING
+    assert result.failure is not None
+    assert result.failure.code is ProjectionFailureCode.MISSING_EVIDENCE
+    assert sdk.calls == [
+        {
+            "list_data_metadata": (
+                f"spine_context_{command().physical_namespace.namespace_digest}"
+            )
+        }
+    ]

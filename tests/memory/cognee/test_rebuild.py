@@ -121,6 +121,7 @@ def effect(*, identity: str, source_object_id: int, revision_number: int) -> Pro
         source_revision_id=revision,
         revision_digest="d" * 64,
         revision_number=revision_number,
+        locator_contract_version="locator:v1",
     )
 
 

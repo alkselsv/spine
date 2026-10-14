@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -38,12 +40,31 @@ from spine.memory.cognee.indexing import (
 from spine.memory.namespace import NamespaceRoutingError, ProjectionNamespaceContext, ProjectionNamespaceRouter
 
 
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class CogneeDataMetadata:
+    """Content-free public dataset metadata keyed by Cognee data identity."""
+
+    data_id: str
+    external_metadata: Mapping[str, object]
+
+
+class CogneeDatasetUnavailableError(LookupError):
+    """The routed public Cognee dataset does not exist."""
+
+
 class CogneeStructuredRetrievalSdk(Protocol):
     """Small public-SDK-shaped seam for deterministic retrieval tests."""
 
     version: str
 
     async def search(self, query: str, **kwargs: object) -> object: ...
+
+    async def list_data_metadata(
+        self, dataset_name: str
+    ) -> tuple[CogneeDataMetadata, ...]: ...
 
 
 class CogneePublicStructuredRetrievalSdk:
@@ -72,11 +93,49 @@ class CogneePublicStructuredRetrievalSdk:
             raise ValueError("public Cognee SearchType is unavailable")
         return await self._sdk.search(query, query_type=query_type, **kwargs)
 
+    async def list_data_metadata(
+        self, dataset_name: str
+    ) -> tuple[CogneeDataMetadata, ...]:
+        datasets = await self._sdk.datasets.list_datasets()
+        matches = [
+            dataset
+            for dataset in datasets
+            if self._value(dataset, "name") == dataset_name
+        ]
+        if not matches:
+            raise CogneeDatasetUnavailableError("Cognee dataset is unavailable")
+        if len(matches) != 1:
+            raise ValueError("Cognee dataset identity is ambiguous")
+        dataset_id = self._value(matches[0], "id")
+        if dataset_id is None:
+            raise ValueError("Cognee dataset identity is unavailable")
+        rows = await self._sdk.datasets.list_data(dataset_id)
+        records: list[CogneeDataMetadata] = []
+        for row in rows:
+            data_id = self._value(row, "id")
+            metadata = self._value(row, "external_metadata")
+            if data_id is None or not isinstance(metadata, Mapping):
+                continue
+            records.append(
+                CogneeDataMetadata(
+                    data_id=str(data_id),
+                    external_metadata=dict(metadata),
+                )
+            )
+        return tuple(records)
+
+    @staticmethod
+    def _value(value: object, key: str) -> object | None:
+        if isinstance(value, Mapping):
+            return value.get(key)
+        return getattr(value, key, None)
+
 
 class _RetrievalIssue(Exception):
-    def __init__(self, code: ProjectionFailureCode) -> None:
+    def __init__(self, code: ProjectionFailureCode, stage: str = "unspecified") -> None:
         super().__init__(code.value)
         self.code = code
+        self.stage = stage
 
 
 class CogneeStructuredRetrieval:
@@ -116,10 +175,14 @@ class CogneeStructuredRetrieval:
                 return result
 
             try:
+                dataset_name = self.dataset_name(command)
+                data_metadata = self._metadata_by_data_id(
+                    await self._sdk.list_data_metadata(dataset_name)
+                )
                 chunks_response = await self._sdk.search(
                     command.query,
                     query_type="chunks",
-                    datasets=[self.dataset_name(command)],
+                    datasets=[dataset_name],
                     top_k=command.limit,
                     only_context=True,
                     verbose=True,
@@ -128,14 +191,17 @@ class CogneeStructuredRetrieval:
                 hybrid_response = await self._sdk.search(
                     command.query,
                     query_type="hybrid_completion",
-                    datasets=[self.dataset_name(command)],
+                    datasets=[dataset_name],
                     top_k=command.limit,
                     only_context=True,
                     verbose=True,
                     include_references=True,
                 )
                 chunks, entities, relations, evidence = self._map_responses(
-                    command, chunks_response, hybrid_response
+                    command,
+                    chunks_response,
+                    hybrid_response,
+                    data_metadata,
                 )
                 if not chunks and not entities and not relations:
                     raise _RetrievalIssue(ProjectionFailureCode.MISSING_EVIDENCE)
@@ -148,7 +214,17 @@ class CogneeStructuredRetrieval:
                     relations=tuple(relations),
                     evidence=tuple(evidence),
                 )
+            except CogneeDatasetUnavailableError:
+                result = self._failure(command, ProjectionFailureCode.MISSING_EVIDENCE)
             except _RetrievalIssue as error:
+                # Cognee disables existing loggers while configuring its own
+                # handlers; re-enable only this content-free diagnostic sink.
+                logger.disabled = False
+                logger.error(
+                    "structured retrieval rejected physical evidence: code=%s stage=%s",
+                    error.code.value,
+                    error.stage,
+                )
                 result = self._failure(command, error.code)
             except ValidationError:
                 result = self._failure(command, ProjectionFailureCode.INCOMPLETE_EVIDENCE)
@@ -188,6 +264,7 @@ class CogneeStructuredRetrieval:
         command: RetrieveCommand,
         chunks_response: object,
         hybrid_response: object,
+        data_metadata: Mapping[str, Mapping[str, object]],
     ) -> tuple[list[ProjectionChunk], list[ProjectionEntity], list[ProjectionRelation], list[Any]]:
         sources = {source.source_revision_id: source for source in command.source_revisions}
         chunks: dict[str, ProjectionChunk] = {}
@@ -196,16 +273,43 @@ class CogneeStructuredRetrieval:
         evidence: dict[str, Any] = {}
 
         for item, wrapper in self._lane_items(chunks_response, "chunks"):
-            chunk = self._map_chunk(command, sources, item, wrapper)
+            chunk = self._map_chunk(
+                command,
+                sources,
+                item,
+                wrapper,
+                data_metadata,
+            )
+            if chunk is None:
+                entity, relation = self._map_graph_artifact(
+                    command,
+                    sources,
+                    item,
+                    wrapper,
+                    data_metadata,
+                )
+                if entity is not None:
+                    self._merge(entities, entity.entity_id, entity)
+                    for reference in entity.evidence:
+                        self._merge(evidence, reference.evidence_id, reference)
+                if relation is not None:
+                    self._merge(relations, relation.relation_id, relation)
+                    for reference in relation.evidence:
+                        self._merge(evidence, reference.evidence_id, reference)
+                continue
             self._merge(chunks, chunk.chunk_id, chunk)
             for reference in chunk.evidence:
                 self._merge(evidence, reference.evidence_id, reference)
         for item, wrapper in self._lane_items(hybrid_response, "entities"):
+            if not self._has_spine_provenance(item, wrapper):
+                continue
             entity = self._map_entity(command, sources, item, wrapper)
             self._merge(entities, entity.entity_id, entity)
             for reference in entity.evidence:
                 self._merge(evidence, reference.evidence_id, reference)
         for item, wrapper in self._lane_items(hybrid_response, "relations"):
+            if not self._has_spine_provenance(item, wrapper):
+                continue
             relation = self._map_relation(command, sources, item, wrapper)
             self._merge(relations, relation.relation_id, relation)
             for reference in relation.evidence:
@@ -224,16 +328,145 @@ class CogneeStructuredRetrieval:
         sources: dict[UUID, ProjectionSourceRevision],
         item: object,
         wrapper: object,
-    ) -> ProjectionChunk:
+        data_metadata: Mapping[str, Mapping[str, object]],
+    ) -> ProjectionChunk | None:
         value = self._unwrap(item, "chunk")
+        value = self._unwrap(value, "payload")
         text = self._text(value)
+        supplemental_metadata = self._metadata_for_item(
+            value,
+            wrapper,
+            data_metadata,
+        )
+        schema = supplemental_metadata.get("spine_schema")
+        if schema is not None and schema != "chunk-artifact:v1":
+            return None
         identifier = self._identifier(value, ("chunk_id", "segment_id", "id")) or self._identifier(
             self._metadata(value), ("chunk_id", "segment_id", "id")
         )
-        if not text or not identifier:
-            raise _RetrievalIssue(ProjectionFailureCode.INCOMPLETE_EVIDENCE)
-        references = self._references(command, sources, value, wrapper)
+        identifier = identifier or self._identifier(
+            supplemental_metadata,
+            ("segment_id", "chunk_id"),
+        )
+        identifier = identifier or self._identifier(value, ("document_id",))
+        if not identifier:
+            identifiers = {
+                candidate
+                for reference in self._first_sequence(
+                    wrapper,
+                    ("evidence", "references"),
+                )
+                if self._value(reference, "kind") == "segment"
+                for candidate in (
+                    self._identifier(reference, ("chunk_id", "artifact_id")),
+                )
+                if candidate is not None
+            }
+            if len(identifiers) > 1:
+                raise _RetrievalIssue(
+                    ProjectionFailureCode.AMBIGUOUS_EVIDENCE,
+                    "chunk_identity",
+                )
+            identifier = next(iter(identifiers), None)
+        if not text:
+            raise _RetrievalIssue(
+                ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                "chunk_text",
+            )
+        if not identifier:
+            raise _RetrievalIssue(
+                ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                "chunk_identity",
+            )
+        references = self._references(
+            command,
+            sources,
+            value,
+            wrapper,
+            supplemental_metadata=supplemental_metadata,
+        )
         return ProjectionChunk(chunk_id=identifier, text=text, evidence=references)
+
+    def _map_graph_artifact(
+        self,
+        command: RetrieveCommand,
+        sources: dict[UUID, ProjectionSourceRevision],
+        item: object,
+        wrapper: object,
+        data_metadata: Mapping[str, Mapping[str, object]],
+    ) -> tuple[ProjectionEntity | None, ProjectionRelation | None]:
+        value = self._unwrap(self._unwrap(item, "chunk"), "payload")
+        metadata = self._metadata_for_item(value, wrapper, data_metadata)
+        if metadata.get("spine_schema") != "graph-artifact:v1":
+            return None, None
+        text = self._text(value)
+        if text is None:
+            raise _RetrievalIssue(
+                ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                "graph_artifact_text",
+            )
+        try:
+            payload = json.loads(text)
+        except (TypeError, ValueError) as error:
+            raise _RetrievalIssue(
+                ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                "graph_artifact_payload",
+            ) from error
+        if not isinstance(payload, Mapping):
+            raise _RetrievalIssue(
+                ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                "graph_artifact_payload",
+            )
+        references = self._references(
+            command,
+            sources,
+            payload,
+            wrapper,
+            supplemental_metadata=metadata,
+        )
+        kind = metadata.get("artifact_kind")
+        if kind == "entity":
+            identifier = self._text_value(payload, ("entity_id",))
+            name = self._text_value(payload, ("canonical_name",))
+            entity_type = self._text_value(payload, ("entity_type",))
+            if not identifier or not name or not entity_type:
+                raise _RetrievalIssue(
+                    ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                    "graph_entity_payload",
+                )
+            return (
+                ProjectionEntity(
+                    entity_id=identifier,
+                    kind=entity_type,
+                    name=name,
+                    evidence=references,
+                ),
+                None,
+            )
+        if kind == "relation":
+            identifier = self._text_value(payload, ("relation_id",))
+            relation_type = self._text_value(payload, ("relation_type",))
+            subject = self._text_value(payload, ("subject_entity_id",))
+            target = self._text_value(payload, ("object_entity_id",))
+            if not identifier or not relation_type or not subject or not target:
+                raise _RetrievalIssue(
+                    ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                    "graph_relation_payload",
+                )
+            return (
+                None,
+                ProjectionRelation(
+                    relation_id=identifier,
+                    kind=relation_type,
+                    subject_entity_id=subject,
+                    object_entity_id=target,
+                    evidence=references,
+                ),
+            )
+        raise _RetrievalIssue(
+            ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+            "graph_artifact_kind",
+        )
 
     def _map_entity(
         self,
@@ -250,7 +483,10 @@ class CogneeStructuredRetrieval:
         name = self._text_value(value, ("name", "canonical_name", "node_name", "entity"))
         kind = self._text_value(value, ("kind", "entity_type", "node_type", "type"))
         if not identifier or not name or not kind:
-            raise _RetrievalIssue(ProjectionFailureCode.INCOMPLETE_EVIDENCE)
+            raise _RetrievalIssue(
+                ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                "entity_shape",
+            )
         return ProjectionEntity(
             entity_id=identifier,
             kind=kind,
@@ -274,7 +510,10 @@ class CogneeStructuredRetrieval:
         subject = self._endpoint(value, ("subject_entity_id", "subject", "source", "from"))
         target = self._endpoint(value, ("object_entity_id", "object", "target", "to"))
         if not identifier or not kind or not subject or not target:
-            raise _RetrievalIssue(ProjectionFailureCode.INCOMPLETE_EVIDENCE)
+            raise _RetrievalIssue(
+                ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                "relation_shape",
+            )
         return ProjectionRelation(
             relation_id=identifier,
             kind=kind,
@@ -289,8 +528,13 @@ class CogneeStructuredRetrieval:
         sources: dict[UUID, ProjectionSourceRevision],
         item: object,
         wrapper: object,
+        *,
+        supplemental_metadata: Mapping[str, object] | None = None,
     ) -> tuple[EvidenceReference, ...]:
-        metadata = self._metadata(item)
+        metadata = self._merge_metadata(
+            supplemental_metadata or {},
+            self._metadata(item),
+        )
         raw_references = self._first_sequence(item, ("evidence", "references", "source_references"))
         if not raw_references:
             raw_references = self._first_sequence(metadata, ("evidence", "references"))
@@ -299,7 +543,10 @@ class CogneeStructuredRetrieval:
         if not raw_references and self._value(metadata, "source_revision_id") is not None:
             raw_references = (metadata,)
         if not raw_references:
-            raise _RetrievalIssue(ProjectionFailureCode.MISSING_EVIDENCE)
+            raise _RetrievalIssue(
+                ProjectionFailureCode.MISSING_EVIDENCE,
+                "references_absent",
+            )
 
         result = []
         for raw in raw_references:
@@ -308,23 +555,38 @@ class CogneeStructuredRetrieval:
             merged.update(reference)
             source_revision_id = self._uuid_value(merged, "source_revision_id")
             if source_revision_id is None or source_revision_id not in sources:
-                raise _RetrievalIssue(ProjectionFailureCode.MISSING_EVIDENCE)
+                raise _RetrievalIssue(
+                    ProjectionFailureCode.MISSING_EVIDENCE,
+                    "reference_source",
+                )
             source = sources[source_revision_id]
             self._validate_scope(command, source, merged)
             locator = self._locator(merged.get("locator"))
             if locator is None:
-                raise _RetrievalIssue(ProjectionFailureCode.INCOMPLETE_EVIDENCE)
+                raise _RetrievalIssue(
+                    ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                    "reference_locator",
+                )
             status = str(merged.get("status", merged.get("quality", "valid")))
             if status in {"accepted", "ok"}:
                 status = "valid"
             if status != "valid":
-                raise _RetrievalIssue(self._code_for_evidence_status(status))
+                raise _RetrievalIssue(
+                    self._code_for_evidence_status(status),
+                    "reference_status",
+                )
             evidence_id = self._text_value(merged, ("evidence_id", "id"))
             if not evidence_id:
-                raise _RetrievalIssue(ProjectionFailureCode.INCOMPLETE_EVIDENCE)
+                raise _RetrievalIssue(
+                    ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                    "reference_id",
+                )
             digest = self._text_value(merged, ("evidence_digest", "digest"))
             if not digest:
-                raise _RetrievalIssue(ProjectionFailureCode.INCOMPLETE_EVIDENCE)
+                raise _RetrievalIssue(
+                    ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                    "reference_digest",
+                )
             result.append(
                 EvidenceReference(
                     evidence_id=evidence_id,
@@ -341,8 +603,94 @@ class CogneeStructuredRetrieval:
                 )
             )
         if not result:
-            raise _RetrievalIssue(ProjectionFailureCode.MISSING_EVIDENCE)
+            raise _RetrievalIssue(
+                ProjectionFailureCode.MISSING_EVIDENCE,
+                "references_empty",
+            )
         return tuple(result)
+
+    @staticmethod
+    def _metadata_by_data_id(
+        records: Sequence[CogneeDataMetadata],
+    ) -> dict[str, Mapping[str, object]]:
+        result: dict[str, Mapping[str, object]] = {}
+        for record in records:
+            existing = result.get(record.data_id)
+            if existing is not None and dict(existing) != dict(record.external_metadata):
+                raise _RetrievalIssue(
+                    ProjectionFailureCode.AMBIGUOUS_EVIDENCE,
+                    "dataset_metadata_duplicate",
+                )
+            result[record.data_id] = record.external_metadata
+        return result
+
+    @classmethod
+    def _metadata_for_item(
+        cls,
+        item: object,
+        wrapper: object,
+        data_metadata: Mapping[str, Mapping[str, object]],
+    ) -> Mapping[str, object]:
+        candidates: set[str] = set()
+        for key in ("document_id", "data_id"):
+            value = cls._value(item, key)
+            if value is not None:
+                candidates.add(str(value))
+        for reference in cls._first_sequence(
+            wrapper,
+            ("evidence", "references"),
+        ):
+            if cls._value(reference, "kind") != "segment":
+                continue
+            data_id = cls._value(reference, "data_id")
+            if data_id is not None:
+                candidates.add(str(data_id))
+        if len(candidates) > 1:
+            raise _RetrievalIssue(
+                ProjectionFailureCode.AMBIGUOUS_EVIDENCE,
+                "dataset_metadata_identity",
+            )
+        if not candidates:
+            return {}
+        data_id = next(iter(candidates))
+        metadata = data_metadata.get(data_id, {})
+        segment_id = metadata.get("segment_id")
+        if segment_id is not None and str(segment_id) != data_id:
+            raise _RetrievalIssue(
+                ProjectionFailureCode.AMBIGUOUS_EVIDENCE,
+                "dataset_metadata_segment",
+            )
+        return metadata
+
+    @staticmethod
+    def _merge_metadata(
+        trusted: Mapping[str, object],
+        observed: Mapping[str, object],
+    ) -> dict[str, object]:
+        conflicts = {
+            key
+            for key in trusted.keys() & observed.keys()
+            if trusted[key] != observed[key]
+        }
+        if conflicts:
+            raise _RetrievalIssue(
+                ProjectionFailureCode.AMBIGUOUS_EVIDENCE,
+                "reference_metadata_conflict",
+            )
+        return {**trusted, **observed}
+
+    @classmethod
+    def _has_spine_provenance(cls, item: object, wrapper: object) -> bool:
+        if cls._value(cls._metadata(item), "source_revision_id") is not None:
+            return True
+        return any(
+            cls._value(reference, "source_revision_id") is not None
+            for source in (item, wrapper)
+            for reference in cls._first_sequence(
+                source,
+                ("evidence", "references", "source_references"),
+            )
+        )
 
     @staticmethod
     def _validate_scope(
@@ -357,9 +705,13 @@ class CogneeStructuredRetrieval:
             "source_revision_id",
             "revision_digest",
             "revision_number",
+            "locator_contract_version",
         )
         if any(metadata.get(field) is None for field in required):
-            raise _RetrievalIssue(ProjectionFailureCode.INCOMPLETE_EVIDENCE)
+            raise _RetrievalIssue(
+                ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                "reference_scope",
+            )
         for field, expected in (
             ("workspace_id", command.workspace_id),
             ("environment_id", command.environment_id),
@@ -370,22 +722,48 @@ class CogneeStructuredRetrieval:
             if actual is not None:
                 try:
                     if UUID(str(actual)) != expected:
-                        raise _RetrievalIssue(ProjectionFailureCode.MISSING_EVIDENCE)
+                        raise _RetrievalIssue(
+                            ProjectionFailureCode.MISSING_EVIDENCE,
+                            "reference_scope_mismatch",
+                        )
                 except ValueError as error:
-                    raise _RetrievalIssue(ProjectionFailureCode.MISSING_EVIDENCE) from error
+                    raise _RetrievalIssue(
+                        ProjectionFailureCode.MISSING_EVIDENCE,
+                        "reference_scope_invalid",
+                    ) from error
         if metadata.get("revision_digest") not in (None, source.revision_digest):
-            raise _RetrievalIssue(ProjectionFailureCode.STALE_EVIDENCE)
+            raise _RetrievalIssue(
+                ProjectionFailureCode.STALE_EVIDENCE,
+                "reference_revision_digest",
+            )
         if metadata.get("revision_number") not in (None, source.revision_number):
-            raise _RetrievalIssue(ProjectionFailureCode.STALE_EVIDENCE)
+            raise _RetrievalIssue(
+                ProjectionFailureCode.STALE_EVIDENCE,
+                "reference_revision_number",
+            )
+        if metadata.get("locator_contract_version") != source.locator_contract_version:
+            raise _RetrievalIssue(
+                ProjectionFailureCode.MISSING_EVIDENCE,
+                "reference_locator_contract",
+            )
         if source.processing_receipt_id is not None:
             receipt = metadata.get("processing_receipt_id")
             if receipt is None:
-                raise _RetrievalIssue(ProjectionFailureCode.INCOMPLETE_EVIDENCE)
+                raise _RetrievalIssue(
+                    ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                    "reference_receipt",
+                )
             try:
                 if UUID(str(receipt)) != source.processing_receipt_id:
-                    raise _RetrievalIssue(ProjectionFailureCode.MISSING_EVIDENCE)
+                    raise _RetrievalIssue(
+                        ProjectionFailureCode.MISSING_EVIDENCE,
+                        "reference_receipt_mismatch",
+                    )
             except ValueError as error:
-                raise _RetrievalIssue(ProjectionFailureCode.INCOMPLETE_EVIDENCE) from error
+                raise _RetrievalIssue(
+                    ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                    "reference_receipt_invalid",
+                ) from error
 
     @staticmethod
     def _locator(value: object) -> StableLocator | None:
@@ -582,6 +960,7 @@ class CogneeStructuredRetrieval:
 
 
 __all__ = [
+    "CogneeDataMetadata",
     "CogneePublicStructuredRetrievalSdk",
     "CogneeStructuredRetrieval",
     "CogneeStructuredRetrievalSdk",

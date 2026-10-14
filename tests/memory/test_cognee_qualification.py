@@ -45,6 +45,15 @@ def _sdk() -> SimpleNamespace:
 
     class Datasets:
         @staticmethod
+        async def list_datasets():
+            return []
+
+        @staticmethod
+        async def list_data(dataset_id):
+            del dataset_id
+            return []
+
+        @staticmethod
         async def delete_data(dataset_id, data_id, mode="soft"):
             del dataset_id, data_id, mode
 
@@ -71,6 +80,8 @@ def test_public_sdk_matrix_accepts_the_audited_version_and_required_operations()
         "update",
         "delete",
         "datasets.delete_data",
+        "datasets.list_datasets",
+        "datasets.list_data",
         "forget",
         "search",
     }
@@ -134,7 +145,31 @@ def test_search_payload_probe_returns_no_go_when_structured_read_is_incomplete()
 
     assert report.status is SmokeStatus.NO_GO
     assert report.missing_shapes == ("entity", "relation")
-    assert report.missing_evidence_kinds == ("segment", "graph_node", "graph_edge")
+    assert report.missing_evidence_kinds == ()
+
+
+def test_chunk_probe_accepts_public_dataset_metadata_identity_join() -> None:
+    report = inspect_search_payload(
+        SearchLane.CHUNKS,
+        [
+            {
+                "objects_result": [
+                    {
+                        "payload": {
+                            "text": "synthetic text",
+                            "document_id": "data-1",
+                        }
+                    }
+                ],
+                "evidence": [],
+            }
+        ],
+        dataset_data_ids=("data-1",),
+    )
+
+    assert report.status is SmokeStatus.SUPPORTED
+    assert report.evidence_kinds == ("dataset_metadata",)
+    assert report.missing_evidence_kinds == ()
 
 
 def test_search_payload_probe_returns_no_go_for_a_missing_result() -> None:

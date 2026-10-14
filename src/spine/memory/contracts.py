@@ -295,7 +295,7 @@ class ProjectionCount(_ProjectionModel):
 class ProjectionEffect(_ProjectionModel):
     """Deterministic, source-scoped work handed to a physical adapter."""
 
-    schema_version: Literal["projection-effect:v1"] = "projection-effect:v1"
+    schema_version: Literal["projection-effect:v2"] = "projection-effect:v2"
     effect_id: str = Field(min_length=1, max_length=256)
     operation: ProjectionOperation
     action: ProjectionEffectAction
@@ -313,6 +313,8 @@ class ProjectionEffect(_ProjectionModel):
     source_revision_id: UUID
     revision_digest: str = Field(pattern=_DIGEST)
     revision_number: int = Field(ge=1)
+    processing_receipt_id: UUID | None = None
+    locator_contract_version: str = Field(min_length=1, max_length=128)
 
     @model_validator(mode="after")
     def validate_identity(self) -> "ProjectionEffect":
@@ -323,6 +325,8 @@ class ProjectionEffect(_ProjectionModel):
             "source_revision_id",
         ):
             _require_non_zero(getattr(self, field_name), field_name)
+        if self.processing_receipt_id is not None:
+            _require_non_zero(self.processing_receipt_id, "processing_receipt_id")
         return self
 
 

@@ -1,6 +1,8 @@
 """Cognee retrieval adapter implementing the ContextProjection port."""
 
 from .adapter import (
+    CogneeDataMetadata,
+    CogneeDatasetUnavailableError,
     CogneePublicStructuredRetrievalSdk,
     CogneeStructuredRetrieval,
     CogneeStructuredRetrievalSdk,
@@ -18,6 +20,8 @@ from spine.memory.namespace import (
 )
 
 __all__ = [
+    "CogneeDataMetadata",
+    "CogneeDatasetUnavailableError",
     "CogneePublicStructuredRetrievalSdk",
     "CogneeStructuredRetrieval",
     "CogneeStructuredRetrievalSdk",

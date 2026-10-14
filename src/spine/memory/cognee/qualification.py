@@ -130,6 +130,8 @@ _API_REQUIREMENTS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "datasets.delete_data",
         ("dataset_id", "data_id", "mode"),
     ),
+    ("datasets.list_datasets", "datasets.list_datasets", ()),
+    ("datasets.list_data", "datasets.list_data", ("dataset_id",)),
     (
         "forget",
         "forget",
@@ -255,7 +257,26 @@ def _evidence_kinds(responses: Sequence[object]) -> tuple[str, ...]:
     return tuple(sorted(kinds))
 
 
-def inspect_search_payload(lane: SearchLane, responses: object) -> SearchObservation:
+def _chunk_document_ids(responses: Sequence[object]) -> tuple[str, ...]:
+    identifiers: set[str] = set()
+    for response in responses:
+        for item in _sequence(_search_objects(response)):
+            mapping = _as_mapping(item)
+            if mapping is None:
+                continue
+            payload = _as_mapping(mapping.get("payload")) or mapping
+            value = payload.get("document_id", payload.get("data_id"))
+            if value is not None:
+                identifiers.add(str(value))
+    return tuple(sorted(identifiers))
+
+
+def inspect_search_payload(
+    lane: SearchLane,
+    responses: object,
+    *,
+    dataset_data_ids: Sequence[str] = (),
+) -> SearchObservation:
     """Inspect verbose JSON returned by public ``cognee.search``.
 
     The function does not depend on Cognee result classes.  It accepts the
@@ -287,11 +308,25 @@ def inspect_search_payload(lane: SearchLane, responses: object) -> SearchObserva
             if _sequence(objects.get("facts", objects.get("relations", objects.get("triplets")))):
                 observed.add("relation")
         required = ("chunk", "entity", "relation")
-        required_evidence = ("segment", "graph_node", "graph_edge")
+        # The ContextProjection adapter does not trust provider-generated
+        # hybrid lineage. Typed Spine graph artifacts are read through the
+        # CHUNKS lane and joined to public dataset metadata instead.
+        required_evidence = ()
 
-    evidence_kinds = _evidence_kinds(response_items)
+    evidence_kind_set = set(_evidence_kinds(response_items))
+    if lane is SearchLane.CHUNKS:
+        document_ids = set(_chunk_document_ids(response_items))
+        public_data_ids = {str(value) for value in dataset_data_ids}
+        if document_ids and document_ids <= public_data_ids:
+            evidence_kind_set.add("dataset_metadata")
+    evidence_kinds = tuple(sorted(evidence_kind_set))
     missing_shapes = tuple(shape for shape in required if shape not in observed)
-    missing_evidence = tuple(kind for kind in required_evidence if kind not in evidence_kinds)
+    missing_evidence = tuple(
+        kind
+        for kind in required_evidence
+        if kind not in evidence_kinds
+        and not (kind == "segment" and "dataset_metadata" in evidence_kinds)
+    )
     status = (
         SmokeStatus.SUPPORTED
         if response_items and not missing_shapes and not missing_evidence

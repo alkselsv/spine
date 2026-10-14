@@ -52,8 +52,13 @@ async def test_public_cognee_154_local_smoke_matrix() -> None:
         "search:graph",
         "search:hybrid",
         "update",
+        "search:updated",
         "datasets.delete_data",
+        "search:deleted",
         "datasets.delete_data:repeat",
         "forget:memory_only",
         "forget:dataset",
     }.issubset(report.operation_names)
+    assert report.updated_content_observed is True
+    assert report.deleted_content_absent is True
+    assert report.cleanup_confirmed is True

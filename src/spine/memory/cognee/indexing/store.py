@@ -579,6 +579,7 @@ class CogneeChunkProjectionStore:
             or document.source_object_id != effect.source_object_id
             or document.source_revision_id != effect.source_revision_id
             or document.source_revision_digest != effect.revision_digest
+            or document.locator_contract_version != effect.locator_contract_version
         ):
             raise ValueError("parsed artifact lineage does not match projection effect")
         return document
@@ -713,7 +714,7 @@ class CogneeChunkProjectionStore:
         document: ParsedDocument,
         segment: Any,
     ) -> dict[str, object]:
-        return {
+        metadata: dict[str, object] = {
             "spine_schema": "chunk-artifact:v1",
             "workspace_id": str(effect.workspace_id),
             "environment_id": str(effect.environment_id),
@@ -735,8 +736,13 @@ class CogneeChunkProjectionStore:
             "locator_contract_version": document.locator_contract_version,
             "segment_id": str(segment.segment_id),
             "segment_digest": segment.segment_digest,
+            "evidence_id": str(segment.segment_id),
+            "evidence_digest": segment.segment_digest,
             "locator": segment.locator.model_dump(mode="json"),
         }
+        if effect.processing_receipt_id is not None:
+            metadata["processing_receipt_id"] = str(effect.processing_receipt_id)
+        return metadata
 
 
 __all__ = [
