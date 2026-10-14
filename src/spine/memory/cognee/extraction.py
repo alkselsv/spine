@@ -10,12 +10,19 @@ from __future__ import annotations
 from enum import Enum
 from hashlib import sha256
 import json
-from typing import Literal, Protocol, TypeVar
+from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
 from uuid import UUID
 
 from pydantic import Field, model_validator
 
 from spine.domain.common import DefinitionModel
+from spine.memory.contracts import (
+    CanonicalBoundary,
+    ProjectionCandidate,
+    ProjectionConfigVersion,
+    ProjectionNamespace,
+    ProjectionOperation,
+)
 from spine.memory.cognee.models.baseline import (
     ChunkFixture,
     EntityTypeMapping,
@@ -26,6 +33,9 @@ from spine.memory.cognee.models.baseline import (
     RelationTypeMapping,
     SourceRevisionFixture,
 )
+
+if TYPE_CHECKING:
+    from spine.memory.cognee.graph import GraphProjectionResult
 
 
 _DIGEST_PATTERN = r"^[0-9a-f]{64}$"
@@ -190,6 +200,34 @@ class ExtractionRejection(DefinitionModel):
         return self
 
 
+class ExtractionSourceRevision(DefinitionModel):
+    """Content-free source identity carried into the physical graph seam."""
+
+    schema_version: Literal["extraction-source-revision:v1"] = (
+        "extraction-source-revision:v1"
+    )
+    source_object_id: UUID
+    source_revision_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    revision_digest: str = Field(pattern=_DIGEST_PATTERN)
+    revision_number: int = Field(ge=1)
+    status: Literal["current", "stale", "tombstoned", "missing", "ambiguous", "incomplete"] = (
+        "current"
+    )
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> "ExtractionSourceRevision":
+        for field_name in (
+            "source_object_id",
+            "source_revision_id",
+            "workspace_id",
+            "environment_id",
+        ):
+            _require_non_zero(getattr(self, field_name), field_name)
+        return self
+
+
 class ExtractionResult(DefinitionModel):
     """Deterministic extraction output and safe degraded diagnostics."""
 
@@ -203,6 +241,7 @@ class ExtractionResult(DefinitionModel):
     ontology_digest: str = Field(pattern=_DIGEST_PATTERN)
     extraction_config_version: str = Field(min_length=1, max_length=32)
     extraction_config_digest: str = Field(pattern=_DIGEST_PATTERN)
+    source_revisions: tuple[ExtractionSourceRevision, ...] = ()
     entities: tuple[AcceptedEntity, ...] = ()
     relations: tuple[AcceptedRelation, ...] = ()
     conclusions: tuple[ExtractionConclusion, ...] = ()
@@ -213,6 +252,25 @@ class ExtractionResult(DefinitionModel):
     def validate_and_pin_digest(self) -> "ExtractionResult":
         _require_non_zero(self.workspace_id, "workspace_id")
         _require_non_zero(self.environment_id, "environment_id")
+        source_revisions = {
+            revision.source_revision_id: revision for revision in self.source_revisions
+        }
+        if len(source_revisions) != len(self.source_revisions):
+            raise ValueError("extraction result source revisions must be unique")
+        if any(
+            (revision.workspace_id, revision.environment_id)
+            != (self.workspace_id, self.environment_id)
+            for revision in self.source_revisions
+        ):
+            raise ValueError("extraction result source revision scope must match result")
+        if any(
+            entity.source_revision_id not in source_revisions
+            for entity in self.entities
+        ) or any(
+            relation.source_revision_id not in source_revisions
+            for relation in self.relations
+        ):
+            raise ValueError("accepted graph facts require a source revision snapshot")
         entity_ids = {entity.entity_id for entity in self.entities}
         if len(entity_ids) != len(self.entities):
             raise ValueError("extraction result entity IDs must be unique")
@@ -256,10 +314,46 @@ class ExtractionResult(DefinitionModel):
         return self
 
 
+class GraphProjectionRequest(DefinitionModel):
+    """Server-scoped input for writing one extraction result physically."""
+
+    schema_version: Literal["graph-projection-request:v1"] = "graph-projection-request:v1"
+    operation: Literal[
+        ProjectionOperation.PROJECT,
+        ProjectionOperation.UPDATE,
+        ProjectionOperation.REMOVE,
+        ProjectionOperation.REBUILD,
+    ]
+    workspace_id: UUID
+    environment_id: UUID
+    projection_run_id: UUID
+    command_identity: str = Field(min_length=1, max_length=64, pattern=_IDENTIFIER_PATTERN)
+    command_digest: str = Field(pattern=_DIGEST_PATTERN)
+    projection_candidate: ProjectionCandidate
+    projection_config: ProjectionConfigVersion
+    canonical_boundary: CanonicalBoundary
+    physical_namespace: ProjectionNamespace
+    result: ExtractionResult
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> "GraphProjectionRequest":
+        _require_non_zero(self.workspace_id, "workspace_id")
+        _require_non_zero(self.environment_id, "environment_id")
+        _require_non_zero(self.projection_run_id, "projection_run_id")
+        if self.projection_candidate.run_id != self.projection_run_id:
+            raise ValueError("projection candidate must belong to the graph projection run")
+        if (self.result.workspace_id, self.result.environment_id) != (
+            self.workspace_id,
+            self.environment_id,
+        ):
+            raise ValueError("extraction result scope must match graph projection request")
+        return self
+
+
 class ProjectionGraphWriter(Protocol):
     """Physical graph seam; implementations may be backed by Cognee."""
 
-    async def write(self, result: ExtractionResult) -> None: ...
+    async def write(self, request: GraphProjectionRequest) -> "GraphProjectionResult": ...
 
 
 CandidateT = TypeVar("CandidateT", EntityCandidate, RelationCandidate)
@@ -380,6 +474,19 @@ def _validate_chunks(
     return None
 
 
+def _source_revision(revision: SourceRevisionFixture) -> ExtractionSourceRevision:
+    status = "tombstoned" if revision.kind == "tombstone" or revision.state == "deleted" else revision.state
+    return ExtractionSourceRevision(
+        source_object_id=revision.source_object_id,
+        source_revision_id=revision.source_revision_id,
+        workspace_id=revision.workspace_id,
+        environment_id=revision.environment_id,
+        revision_digest=revision.revision_digest,
+        revision_number=revision.revision_number,
+        status=status,
+    )
+
+
 def _entity_mapping(
     *,
     mapping: EntityTypeMapping | None,
@@ -464,6 +571,12 @@ def extract_projection(batch: ExtractionBatch) -> ExtractionResult:
             ontology_digest=batch.ontology.digest,
             extraction_config_version=batch.extraction_config.version,
             extraction_config_digest=batch.extraction_config.digest,
+            source_revisions=tuple(
+                _source_revision(revision)
+                for revision in batch.source_revisions
+                if (revision.workspace_id, revision.environment_id)
+                == (batch.workspace_id, batch.environment_id)
+            ),
             conclusions=(),
             rejections=tuple(rejections),
         )
@@ -725,6 +838,12 @@ def extract_projection(batch: ExtractionBatch) -> ExtractionResult:
         ontology_digest=batch.ontology.digest,
         extraction_config_version=batch.extraction_config.version,
         extraction_config_digest=batch.extraction_config.digest,
+        source_revisions=tuple(
+            _source_revision(revision)
+            for revision in batch.source_revisions
+            if (revision.workspace_id, revision.environment_id)
+            == (batch.workspace_id, batch.environment_id)
+        ),
         entities=tuple(accepted_entities.values()),
         relations=tuple(accepted_relations.values()),
         conclusions=tuple(valid_conclusions),
@@ -739,7 +858,9 @@ __all__ = [
     "ExtractionBatch",
     "ExtractionRejection",
     "ExtractionResult",
+    "ExtractionSourceRevision",
     "ExtractionStatus",
+    "GraphProjectionRequest",
     "ProjectionGraphWriter",
     "RelationCandidate",
     "extract_projection",
