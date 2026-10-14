@@ -1928,6 +1928,22 @@ class _PostgreSQLIngestionRepository:
         row = (await self._uow._execute(select(_INGESTION_ITEMS).where(_INGESTION_ITEMS.c.ingestion_run_source_id == item_id, _INGESTION_ITEMS.c.workspace_id == scope.workspace_id, _INGESTION_ITEMS.c.environment_id == scope.environment_id))).mappings().one_or_none()
         return IngestionRunSource.model_validate(dict(row)) if row is not None else None
 
+    async def resolve_binding(self, item_id: UUID) -> IngestionRunSourceBinding | None:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        row = (
+            await self._uow._execute(
+                select(_INGESTION_BINDINGS)
+                .where(
+                    _INGESTION_BINDINGS.c.ingestion_run_source_id == item_id,
+                    _INGESTION_BINDINGS.c.workspace_id == scope.workspace_id,
+                    _INGESTION_BINDINGS.c.environment_id == scope.environment_id,
+                )
+                .limit(1)
+            )
+        ).mappings().one_or_none()
+        return self._binding_from_row(row) if row is not None else None
+
     async def resolve_run_head(self, run_id: UUID) -> IngestionTransition | None:
         self._uow._guard_active()
         return await self._head(run_id=run_id, item_id=None)

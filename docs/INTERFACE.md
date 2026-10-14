@@ -223,6 +223,21 @@ OpenAPI типы. Минимальные ресурсы:
 - feedback;
 - health/configuration summary.
 
+Минимальный transport-контракт для одной загрузки уже закреплён в OpenAPI:
+
+- `POST /api/v1/documents/uploads` принимает один streaming binary body. Для
+  повторов используется обязательный `Idempotency-Key`; `X-Upload-Identity`,
+  `X-Filename` и `X-Content-SHA256` являются bounded metadata headers. Лимит
+  тела проверяется до передачи байтов application service и во время чтения.
+- `GET /api/v1/ingestion/runs/{run_id}/items/{item_id}` возвращает отдельные
+  `acceptance` и `processing` фазы, общий `status`, safe diagnostic references и
+  processing receipt. Ответы не содержат excerpts, filenames или exception text.
+- Оба endpoint требуют Bearer authentication, роль `administrator` и exact
+  workspace/environment request scope. TXT/Markdown поддерживаются текущим
+  parser path; PDF/DOCX/XLSX могут быть приняты в ledger, но возвращаются как
+  processing failure/unsupported outcome до поставки соответствующих parser
+  adapters.
+
 API возвращает structured errors и сохраняет workspace, environment, acting
 subject и trace ID. Ответ Q&A включает как минимум outcome, structured citations
 для answered result, disclosure-safe reason для non-answer outcome, `as_of` и

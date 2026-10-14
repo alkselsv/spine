@@ -44,7 +44,6 @@ from spine.infrastructure.object_storage import (
     PreWriteRequestDigest,
     ReconciliationRequired,
     UploadCommandStateName,
-    UploadConflict,
 )
 from spine.infrastructure.object_storage.contracts import (
     ObservedContentIdentity,
@@ -434,7 +433,7 @@ async def test_same_key_replay_with_different_observed_bytes_preserves_finalized
 
     first = await orchestrator.upload(_context(), _command(), original_chunks())
 
-    with pytest.raises(UploadConflict):
+    with pytest.raises(IdempotencyConflictError):
         await orchestrator.upload(_context(), _command(), changed_chunks())
 
     record = store.uploads[UPLOAD_ID]

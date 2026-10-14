@@ -181,6 +181,8 @@ class IngestionRepository(Protocol):
 
     async def resolve_item(self, item_id: UUID) -> IngestionRunSource | None: ...
 
+    async def resolve_binding(self, item_id: UUID) -> IngestionRunSourceBinding | None: ...
+
 
 def deterministic_receipt_id(*, workspace_id: UUID, environment_id: UUID, operation: str, key: IdempotencyKey) -> UUID:
     return uuid5(

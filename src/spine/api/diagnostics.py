@@ -159,13 +159,19 @@ class DiagnosticContextMiddleware:
         await emit_diagnostic_safely(self._diagnostic_sink, event)
 
 
-def get_diagnostic_context(request: Request) -> DiagnosticContext:
+def _read_diagnostic_context(request: Request) -> DiagnosticContext:
     """Return only the middleware-issued request diagnostic context."""
 
     context = getattr(request.state, _CONTEXT_STATE_KEY, None)
     if type(context) is not DiagnosticContext:
         raise RuntimeError("Trusted request diagnostic context is unavailable.")
     return cast(DiagnosticContext, context)
+
+
+async def get_diagnostic_context(request: Request) -> DiagnosticContext:
+    """Async FastAPI dependency for the middleware-issued request context."""
+
+    return _read_diagnostic_context(request)
 
 
 def install_diagnostic_exception_handlers(
@@ -181,7 +187,7 @@ def install_diagnostic_exception_handlers(
     ) -> Response:
         if not _is_versioned_api_path(request.url.path):
             return await request_validation_exception_handler(request, failure)
-        context = get_diagnostic_context(request)
+        context = _read_diagnostic_context(request)
         error = StructuredError(
             code="spine.request.validation",
             safe_message="Request validation failed.",
@@ -196,7 +202,7 @@ def install_diagnostic_exception_handlers(
     async def handle_registered(request: Request, failure: Exception) -> Response:
         if not _is_versioned_api_path(request.url.path):
             raise failure
-        error = error_registry.map(failure, get_diagnostic_context(request))
+        error = error_registry.map(failure, _read_diagnostic_context(request))
         return JSONResponse(
             status_code=_status_for_structured_error(error),
             content=error.model_dump(mode="json"),
@@ -213,7 +219,7 @@ def install_diagnostic_exception_handlers(
             code="spine.request.rejected",
             safe_message="The request was rejected.",
             retryability=Retryability.NEVER,
-            trace_id=get_diagnostic_context(request).trace_id,
+            trace_id=_read_diagnostic_context(request).trace_id,
         )
         return JSONResponse(
             status_code=failure.status_code,
@@ -249,6 +255,12 @@ def _status_for_structured_error(error: StructuredError) -> int:
         "spine.persistence.unsupported_outbox_event",
         "spine.persistence.unsupported_audit_event",
     }:
+        return 400
+    if error.code == "spine.ingestion.payload_too_large":
+        return 413
+    if error.code == "spine.ingestion.not_found":
+        return 404
+    if error.code == "spine.ingestion.invalid_request":
         return 400
     if error.retryability is Retryability.AFTER_DELAY:
         return 503

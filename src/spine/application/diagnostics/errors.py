@@ -32,6 +32,12 @@ from spine.application.persistence.errors import (
     UnitOfWorkLifecycleError,
 )
 from spine.application.persistence.outbox import UnsupportedOutboxEventError
+from spine.application.ingestion_api_errors import (
+    IngestionRunNotFound,
+    IngestionServiceUnavailable,
+    InvalidIngestionRequest,
+    UploadPayloadTooLarge,
+)
 from spine.auth.errors import (
     AuthenticationUnavailableError,
     AuthorizationDeniedError,
@@ -72,6 +78,10 @@ _SAFE_MESSAGE_BY_CODE = MappingProxyType({
     "spine.persistence.unit_of_work_lifecycle": "The persistence operation has an invalid lifecycle.",
     "spine.persistence.unsupported_outbox_event": "The outbox event is not supported.",
     "spine.persistence.unsupported_audit_event": "The audit event is not supported.",
+    "spine.ingestion.invalid_request": "The ingestion request is invalid.",
+    "spine.ingestion.payload_too_large": "Upload exceeds the allowed size.",
+    "spine.ingestion.unavailable": "Ingestion is temporarily unavailable.",
+    "spine.ingestion.not_found": "The ingestion run was not found.",
 })
 
 
@@ -285,6 +295,10 @@ def build_default_error_registry() -> StructuredErrorRegistry:
         (UnitOfWorkLifecycleError, "spine.persistence.unit_of_work_lifecycle", "The persistence operation has an invalid lifecycle.", Retryability.NEVER),
         (UnsupportedOutboxEventError, "spine.persistence.unsupported_outbox_event", "The outbox event is not supported.", Retryability.NEVER),
         (UnsupportedAuditEventError, "spine.persistence.unsupported_audit_event", "The audit event is not supported.", Retryability.NEVER),
+        (InvalidIngestionRequest, "spine.ingestion.invalid_request", "The ingestion request is invalid.", Retryability.NEVER),
+        (UploadPayloadTooLarge, "spine.ingestion.payload_too_large", "Upload exceeds the allowed size.", Retryability.NEVER),
+        (IngestionServiceUnavailable, "spine.ingestion.unavailable", "Ingestion is temporarily unavailable.", Retryability.AFTER_DELAY),
+        (IngestionRunNotFound, "spine.ingestion.not_found", "The ingestion run was not found.", Retryability.NEVER),
     )
     for exception_type, code, safe_message, retryability in mappings:
         registry.register(exception_type, code, safe_message, retryability)

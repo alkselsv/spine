@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Literal, Protocol, cast
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import FastAPI, Request
@@ -30,10 +31,14 @@ from spine.auth import (
     is_http_bearer_token,
 )
 
+if TYPE_CHECKING:
+    from spine.application.persistence.context import TrustedPersistenceContext
+
 
 WORKSPACE_ID_HEADER = "X-Workspace-ID"
 ENVIRONMENT_ID_HEADER = "X-Environment-ID"
 _AUTHORIZED_CONTEXT_STATE_KEY = "authorized_request_context"
+_AUTHORIZED_PERSISTENCE_CONTEXT_STATE_KEY = "authorized_persistence_context"
 _BEARER = HTTPBearer(auto_error=False, scheme_name="BearerAuth")
 _PROTECTED_OPENAPI = {
     "security": [{"BearerAuth": []}],
@@ -267,7 +272,7 @@ class _ProtectedDependencyOverrideProvider:
         }
 
 
-def get_authorized_request_context(
+async def get_authorized_request_context(
     request: Request,
 ) -> AuthorizedRequestContext[DiagnosticContext]:
     """Return only the trusted context issued by the protected route wrapper."""
@@ -276,6 +281,15 @@ def get_authorized_request_context(
     if not isinstance(context, AuthorizedRequestContext):
         raise RuntimeError("Trusted authorized request context is unavailable.")
     return cast(AuthorizedRequestContext[DiagnosticContext], context)
+
+
+async def get_authorized_persistence_context(request: Request) -> TrustedPersistenceContext:
+    """Return the trusted persistence context released for a protected route."""
+
+    context = getattr(request.state, _AUTHORIZED_PERSISTENCE_CONTEXT_STATE_KEY, None)
+    if context is None:
+        raise RuntimeError("Trusted authorized persistence context is unavailable.")
+    return cast("TrustedPersistenceContext", context)
 
 
 def add_protected_api_route(
@@ -299,7 +313,11 @@ def add_protected_api_route(
     before = {id(route) for route in application.routes}
     caller_openapi = route_options.pop("openapi_extra", None)
     openapi_extra = dict(caller_openapi or {})
-    openapi_extra.update(_PROTECTED_OPENAPI)
+    openapi_extra["security"] = _PROTECTED_OPENAPI["security"]
+    openapi_extra["parameters"] = [
+        *(openapi_extra.get("parameters") or []),
+        *_PROTECTED_OPENAPI["parameters"],
+    ]
     route_options.setdefault("operation_id", route_id)
     override_provider = application.router.dependency_overrides_provider
     application.router.dependency_overrides_provider = (
@@ -531,7 +549,7 @@ def _authorized_route_app(
     async def authorized_app(scope: Scope, receive: Receive, send: Send) -> None:
         request = Request(scope, receive=receive)
         credentials = await get_bearer_credential(request)
-        diagnostic_context = get_diagnostic_context(request)
+        diagnostic_context = await get_diagnostic_context(request)
         async with bound.authorize_with_scope_resolver(
             credentials=credentials,
             requested_scope_resolver=lambda: _requested_scope(request),
@@ -539,10 +557,12 @@ def _authorized_route_app(
         ) as authorized:
             state = scope.setdefault("state", {})
             state[_AUTHORIZED_CONTEXT_STATE_KEY] = authorized.request_context
+            state[_AUTHORIZED_PERSISTENCE_CONTEXT_STATE_KEY] = authorized.persistence_context
             try:
                 await route_app(scope, receive, send)
             finally:
                 state.pop(_AUTHORIZED_CONTEXT_STATE_KEY, None)
+                state.pop(_AUTHORIZED_PERSISTENCE_CONTEXT_STATE_KEY, None)
 
     return authorized_app
 
@@ -599,6 +619,7 @@ __all__ = [
     "add_public_api_route",
     "add_protected_api_route",
     "get_authorized_request_context",
+    "get_authorized_persistence_context",
     "get_bearer_credential",
     "install_authorization_openapi",
     "validate_api_route_authorization",
