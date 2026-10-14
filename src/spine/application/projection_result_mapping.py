@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
+from enum import Enum
 from typing import Literal, Protocol
 from uuid import UUID, uuid4
 
@@ -58,6 +59,13 @@ class ProjectionMappingError(ValueError):
 
 class ProjectionMappingConflictError(ProjectionMappingError):
     """A command identity was already mapped with a different digest."""
+
+
+class ProjectionPreparationStatus(str, Enum):
+    """Named preflight outcome for physical projection execution."""
+
+    READY = "ready"
+    RECORDED = "recorded"
 
 
 class _MappingModel(DefinitionModel):
@@ -290,6 +298,8 @@ class ProjectionMappingResult(_MappingModel):
 class CanonicalProjectionGateway(Protocol):
     """Canonical lookup/idempotency seam; persistence is supplied by Issue #7."""
 
+    async def is_recorded(self, command: ProjectionCommand) -> bool: ...
+
     async def replay_for(self, command: ProjectionCommand) -> ProjectionMappingResult | None: ...
 
     async def resolve_context(
@@ -311,6 +321,19 @@ class ProjectionResultMappingBridge:
         self._gateway = gateway
         self._id_source = id_source
 
+    async def prepare(
+        self,
+        command: ProjectionCommand,
+    ) -> ProjectionPreparationStatus:
+        """Validate canonical command context before any physical mutation."""
+
+        context = await self._gateway.resolve_context(command)
+        recorded = await self._gateway.is_recorded(command)
+        self._validate_command_context(command, context, allow_recorded=recorded)
+        if recorded:
+            return ProjectionPreparationStatus.RECORDED
+        return ProjectionPreparationStatus.READY
+
     async def map(
         self,
         command: ProjectionCommand,
@@ -319,11 +342,13 @@ class ProjectionResultMappingBridge:
         adapter_receipt = AdapterProjectionReceipt.model_validate(
             adapter_receipt.model_dump(mode="python")
         )
+        context = await self._gateway.resolve_context(command)
+        recorded = await self._gateway.is_recorded(command)
+        self._validate_command_context(command, context, allow_recorded=recorded)
         replay = await self._gateway.replay_for(command)
         if replay is not None:
             return replay
-        context = await self._gateway.resolve_context(command)
-        self._validate_command(command, adapter_receipt, context)
+        self._validate_adapter_result(command, adapter_receipt)
         references = self._map_references(command, adapter_receipt, context)
         receipt = ProjectionReceipt(
             projection_receipt_id=context.projection_receipt_id,
@@ -358,11 +383,12 @@ class ProjectionResultMappingBridge:
         )
         return await self._gateway.accept(handoff)
 
-    def _validate_command(
+    def _validate_command_context(
         self,
         command: ProjectionCommand,
-        receipt: AdapterProjectionReceipt,
         context: CanonicalProjectionMappingContext,
+        *,
+        allow_recorded: bool = False,
     ) -> None:
         if command.operation not in {
             ProjectionOperation.PROJECT,
@@ -373,7 +399,10 @@ class ProjectionResultMappingBridge:
             raise ProjectionMappingError(
                 "only physical artifact operations can map to a projection receipt"
             )
-        if context.run.candidate_state is not ProjectionCandidateState.OPEN:
+        if (
+            context.run.candidate_state is not ProjectionCandidateState.OPEN
+            and not allow_recorded
+        ):
             raise ProjectionMappingError("sealed projection candidates reject new mappings")
         if command.physical_namespace.state not in {
             ProjectionNamespaceState.SHADOW,
@@ -399,13 +428,6 @@ class ProjectionResultMappingBridge:
             raise ProjectionMappingError(
                 "physical namespace is not server-routed for the canonical context"
             ) from None
-        if receipt.result.operation is not command.operation:
-            raise ProjectionMappingError("adapter operation does not match the command")
-        if (
-            receipt.result.command_identity != command.command_identity
-            or receipt.result.command_digest != command.command_digest
-        ):
-            raise ProjectionMappingError("adapter command identity or digest does not match")
         run = context.run
         partition = context.partition
         if (
@@ -417,9 +439,13 @@ class ProjectionResultMappingBridge:
         ):
             raise ProjectionMappingError("adapter command scope does not match canonical context")
         if (
-            partition.expected_command_identity != command.command_identity
-            or partition.expected_command_digest != command.command_digest
+            partition.expected_command_identity == command.command_identity
+            and partition.expected_command_digest != command.command_digest
         ):
+            raise ProjectionMappingConflictError(
+                "projection mapping digest conflict"
+            )
+        if partition.expected_command_identity != command.command_identity:
             raise ProjectionMappingError("adapter command does not match its canonical partition")
         config = context.projection_config
         if (
@@ -431,13 +457,6 @@ class ProjectionResultMappingBridge:
         ):
             raise ProjectionMappingError(
                 "adapter projection config does not match canonical config"
-            )
-        if (
-            receipt.implementation_metadata.adapter_contract
-            != command.projection_config.adapter_contract_version
-        ):
-            raise ProjectionMappingError(
-                "adapter implementation metadata does not match the pinned contract"
             )
         boundary = context.canonical_boundary
         if (
@@ -474,6 +493,26 @@ class ProjectionResultMappingBridge:
                 or source.locator_contract_version != locator.locator_schema_version
             ):
                 raise ProjectionMappingError("SourceRevision context is missing or fabricated")
+
+    def _validate_adapter_result(
+        self,
+        command: ProjectionCommand,
+        receipt: AdapterProjectionReceipt,
+    ) -> None:
+        if receipt.result.operation is not command.operation:
+            raise ProjectionMappingError("adapter operation does not match the command")
+        if (
+            receipt.result.command_identity != command.command_identity
+            or receipt.result.command_digest != command.command_digest
+        ):
+            raise ProjectionMappingError("adapter command identity or digest does not match")
+        if (
+            receipt.implementation_metadata.adapter_contract
+            != command.projection_config.adapter_contract_version
+        ):
+            raise ProjectionMappingError(
+                "adapter implementation metadata does not match the pinned contract"
+            )
         self._validate_effects(command, receipt)
 
     @staticmethod

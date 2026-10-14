@@ -18,12 +18,18 @@ from spine.application.projection_result_mapping import (
     CanonicalProjectionMappingContext,
     ProjectionMappingConflictError,
     ProjectionMappingError,
+    ProjectionPreparationStatus,
 )
 from spine.application.projection_result_persistence import (
     CanonicalProjectionEvidenceRequest,
     build_projection_result_persistence,
 )
-from spine.domain.projections import OntologyVersion, ProjectionReceipt, SourceProjectionReference
+from spine.domain.projections import (
+    OntologyVersion,
+    ProjectionCandidateState,
+    ProjectionReceipt,
+    SourceProjectionReference,
+)
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.memory.contracts import ProjectCommand, StableLocator
 
@@ -225,6 +231,75 @@ async def test_valid_handoff_persists_receipt_and_references() -> None:
     assert result.replay is False
     assert store.receipt == result.handoff.receipt_command.receipt
     assert store.references == result.handoff.source_references
+    assert store.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_recorded_handoff_replays_after_candidate_is_sealed() -> None:
+    command = _command()
+    context = _context(command)
+    store, _, _, bridge = _case(context)
+    await bridge.map(command, _adapter_receipt(command))
+    store.context = context.model_copy(
+        update={
+            "run": context.run.model_copy(
+                update={
+                    "candidate_state": ProjectionCandidateState.SEALED,
+                    "candidate_evidence_digest": "8" * 64,
+                    "candidate_sealed_at": NOW,
+                }
+            )
+        }
+    )
+
+    replay = await bridge.prepare(command)
+
+    assert replay is ProjectionPreparationStatus.RECORDED
+
+
+@pytest.mark.asyncio
+async def test_map_race_replays_after_candidate_is_sealed() -> None:
+    command = _command()
+    context = _context(command)
+    store, _, _, bridge = _case(
+        context,
+        reference_ids=(UUID(int=30), UUID(int=30)),
+    )
+    first = await bridge.map(command, _adapter_receipt(command))
+    store.context = context.model_copy(
+        update={
+            "run": context.run.model_copy(
+                update={
+                    "candidate_state": ProjectionCandidateState.SEALED,
+                    "candidate_evidence_digest": "8" * 64,
+                    "candidate_sealed_at": NOW,
+                }
+            )
+        }
+    )
+
+    replay = await bridge.map(command, _adapter_receipt(command))
+
+    assert replay.replay is True
+    assert replay.handoff == first.handoff
+
+
+@pytest.mark.asyncio
+async def test_recorded_identity_rejects_changed_command_context() -> None:
+    command = _command()
+    store, _, _, bridge = _case(_context(command))
+    await bridge.map(command, _adapter_receipt(command))
+    changed_command = command.model_copy(
+        update={
+            "projection_config": command.projection_config.model_copy(
+                update={"version": "2"}
+            )
+        }
+    )
+
+    with pytest.raises(ProjectionMappingError):
+        await bridge.prepare(changed_command)
+
     assert store.commits == 1
 
 

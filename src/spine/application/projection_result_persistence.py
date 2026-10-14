@@ -102,6 +102,28 @@ class PersistenceCanonicalProjectionGateway:
             idempotency_receipt_id_source or _idempotency_receipt_id
         )
 
+    async def is_recorded(self, command: ProjectionCommand) -> bool:
+        """Probe canonical receipt identity without requiring an open candidate."""
+
+        async with self._uow_factory(self._context_factory(command)) as uow:
+            receipts = await uow.projections.list_receipts(command.projection_run_id)
+            for receipt in receipts:
+                if receipt.command_identity != command.command_identity:
+                    continue
+                if (
+                    receipt.workspace_id != command.workspace_id
+                    or receipt.environment_id != command.environment_id
+                ):
+                    raise ProjectionMappingError(
+                        "canonical projection receipt scope is unauthorized"
+                    )
+                if receipt.command_digest != command.command_digest:
+                    raise ProjectionMappingConflictError(
+                        "projection mapping digest conflict"
+                    )
+                return True
+        return False
+
     async def replay_for(
         self, command: ProjectionCommand
     ) -> ProjectionMappingResult | None:

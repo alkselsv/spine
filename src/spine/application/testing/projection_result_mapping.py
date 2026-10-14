@@ -36,6 +36,13 @@ class DeterministicCanonicalProjectionGateway:
             )
         ] = context
 
+    async def is_recorded(self, command: ProjectionCommand) -> bool:
+        existing = self._mapped.get(_mapping_key(command))
+        if existing is None:
+            return False
+        _require_same_command(existing.command, command)
+        return True
+
     async def replay_for(self, command: ProjectionCommand) -> ProjectionMappingResult | None:
         existing = self._mapped.get(_mapping_key(command))
         if existing is None:
