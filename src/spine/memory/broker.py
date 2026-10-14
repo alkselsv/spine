@@ -12,6 +12,12 @@ from hashlib import sha256
 from typing import Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from spine.domain.projections import (
+    PublishedActivePublication,
+    UnavailableActivePublication,
+    UnpublishedActivePublication,
+)
+
 from .contracts import (
     ContextBundleRef,
     ContextOutcome,
@@ -21,6 +27,7 @@ from .contracts import (
     ContextRequest,
     ContextResponse,
     ContextRetrievalResult,
+    PublicationPin,
     RetrievalQuery,
     RetrievalResult,
     context_reason_for_outcome,
@@ -39,6 +46,14 @@ class ContextProfileResolver(Protocol):
     async def resolve(self, profile_ref: ContextProfileRef) -> ContextProfile | None: ...
 
 
+class ActivePublicationResolver(Protocol):
+    """Read the PostgreSQL-owned publication authority exactly once per attempt."""
+
+    async def resolve_active_publication(
+        self, projection_kind: str
+    ) -> PublishedActivePublication | UnpublishedActivePublication | UnavailableActivePublication: ...
+
+
 class ContextRetrievalPort(Protocol):
     """Return a typed, content-free retrieval disposition."""
 
@@ -46,6 +61,7 @@ class ContextRetrievalPort(Protocol):
         self,
         request: ContextRequest,
         profile: ContextProfile,
+        publication_pin: PublicationPin | None = None,
     ) -> ContextRetrievalResult: ...
 
 
@@ -57,6 +73,7 @@ class ContextBundleIssuer(Protocol):
         request: ContextRequest,
         profile: ContextProfile,
         retrieval: ContextRetrievalResult,
+        publication_pin: PublicationPin | None = None,
     ) -> ContextBundleRef: ...
 
 
@@ -70,11 +87,13 @@ class ContextBrokerV1:
         profile_resolver: ContextProfileResolver,
         retrieval: ContextRetrievalPort,
         bundle_issuer: ContextBundleIssuer,
+        publication_resolver: ActivePublicationResolver | None = None,
     ) -> None:
         self._trusted_context_validator = trusted_context_validator
         self._profile_resolver = profile_resolver
         self._retrieval = retrieval
         self._bundle_issuer = bundle_issuer
+        self._publication_resolver = publication_resolver
 
     async def retrieve(self, request: ContextRequest) -> ContextResponse:
         """Return a typed v1 response without exposing protected payloads."""
@@ -99,8 +118,56 @@ class ContextBrokerV1:
                 reason_code=ContextReasonCode.PROFILE_UNAVAILABLE,
             )
 
+        publication_pin: PublicationPin | None = None
+        if self._publication_resolver is not None:
+            try:
+                publication = await self._publication_resolver.resolve_active_publication(
+                    profile.projection_kind
+                )
+            except Exception:
+                return ContextResponse(
+                    outcome=ContextOutcome.UNAVAILABLE,
+                    reason_code=ContextReasonCode.PUBLICATION_UNAVAILABLE,
+                )
+            if isinstance(publication, UnpublishedActivePublication | UnavailableActivePublication):
+                return ContextResponse(
+                    outcome=ContextOutcome.UNAVAILABLE,
+                    reason_code=ContextReasonCode.PUBLICATION_UNAVAILABLE,
+                )
+            if (
+                publication.workspace_id != request.workspace_id
+                or publication.environment_id != request.environment_id
+                or publication.projection_kind != profile.projection_kind
+            ):
+                return ContextResponse(
+                    outcome=ContextOutcome.UNAVAILABLE,
+                    reason_code=ContextReasonCode.PUBLICATION_UNAVAILABLE,
+                )
+            try:
+                publication_pin = PublicationPin.from_publication(publication)
+            except Exception:
+                return ContextResponse(
+                    outcome=ContextOutcome.UNAVAILABLE,
+                    reason_code=ContextReasonCode.PUBLICATION_UNAVAILABLE,
+                )
+            if profile.require_current_publication and publication_pin.freshness.value == "stale":
+                return ContextResponse(
+                    outcome=ContextOutcome.STALE,
+                    reason_code=ContextReasonCode.STALE_CONTEXT,
+                    publication_pin_id=publication_pin.pin_id,
+                )
+            if profile.require_healthy_publication and publication_pin.health.value == "degraded":
+                return ContextResponse(
+                    outcome=ContextOutcome.DEGRADED,
+                    reason_code=ContextReasonCode.DEGRADED_CONTEXT,
+                    publication_pin_id=publication_pin.pin_id,
+                )
+
         try:
-            retrieval = await self._retrieval.retrieve(request, profile)
+            if publication_pin is None:
+                retrieval = await self._retrieval.retrieve(request, profile)
+            else:
+                retrieval = await self._retrieval.retrieve(request, profile, publication_pin)
         except Exception:
             return ContextResponse(
                 outcome=ContextOutcome.UNAVAILABLE,
@@ -115,10 +182,16 @@ class ContextBrokerV1:
                 outcome=retrieval.outcome,
                 reason_code=retrieval.reason_code,
                 diagnostic=retrieval.diagnostic,
+                publication_pin_id=publication_pin.pin_id if publication_pin else None,
             )
 
         try:
-            bundle_ref = await self._bundle_issuer.issue(request, profile, retrieval)
+            if publication_pin is None:
+                bundle_ref = await self._bundle_issuer.issue(request, profile, retrieval)
+            else:
+                bundle_ref = await self._bundle_issuer.issue(
+                    request, profile, retrieval, publication_pin
+                )
         except Exception:
             return ContextResponse(
                 outcome=ContextOutcome.UNAVAILABLE,
@@ -129,6 +202,7 @@ class ContextBrokerV1:
             context_bundle_ref=bundle_ref,
             reason_code=retrieval.reason_code,
             diagnostic=retrieval.diagnostic,
+            publication_pin_id=publication_pin.pin_id if publication_pin else None,
         )
 
 
@@ -182,6 +256,27 @@ class FakeContextProfileResolver:
         return self.profiles.get(profile_ref)
 
 
+class DeterministicFakePublicationResolver:
+    """Offline publication resolver with explicit, immutable test state."""
+
+    def __init__(
+        self,
+        resolution: PublishedActivePublication | UnpublishedActivePublication | UnavailableActivePublication,
+    ) -> None:
+        self.resolution = resolution
+        self.requests: list[str] = []
+
+    async def resolve_active_publication(
+        self, projection_kind: str
+    ) -> PublishedActivePublication | UnpublishedActivePublication | UnavailableActivePublication:
+        self.requests.append(projection_kind)
+        return self.resolution
+
+
+FakeProjectionRepository = DeterministicFakePublicationResolver
+FakeActivePublicationResolver = DeterministicFakePublicationResolver
+
+
 class FakeContextRetrieval:
     """Controlled fake result; it never claims to retrieve production evidence."""
 
@@ -194,19 +289,23 @@ class FakeContextRetrieval:
         self.outcome = outcome
         self.error = error
         self.requests: list[ContextRequest] = []
+        self.publication_pins: list[PublicationPin | None] = []
 
     async def retrieve(
         self,
         request: ContextRequest,
         profile: ContextProfile,
+        publication_pin: PublicationPin | None = None,
     ) -> ContextRetrievalResult:
         self.requests.append(request)
+        self.publication_pins.append(publication_pin)
         del profile
         if self.error is not None:
             raise self.error
         return ContextRetrievalResult(
             outcome=self.outcome,
             reason_code=context_reason_for_outcome(self.outcome),
+            publication_pin_id=publication_pin.pin_id if publication_pin else None,
         )
 
 
@@ -218,12 +317,14 @@ class ExplicitFakeContextBundleIssuer:
     def __init__(self, *, error: Exception | None = None) -> None:
         self.error = error
         self.issued: list[ContextBundleRef] = []
+        self.publication_pins: list[PublicationPin | None] = []
 
     async def issue(
         self,
         request: ContextRequest,
         profile: ContextProfile,
         retrieval: ContextRetrievalResult,
+        publication_pin: PublicationPin | None = None,
     ) -> ContextBundleRef:
         if self.error is not None:
             raise self.error
@@ -233,15 +334,21 @@ class ExplicitFakeContextBundleIssuer:
             ContextOutcome.PARTIAL,
         }:
             raise ValueError("fake issuer cannot issue a non-bundle outcome")
-        identity = f"{request.request_id}:{profile.ref.profile_id}:{profile.ref.profile_version}"
+        pin_identity = str(publication_pin.pin_id) if publication_pin else "legacy"
+        identity = (
+            f"{request.request_id}:{profile.ref.profile_id}:{profile.ref.profile_version}:"
+            f"{pin_identity}"
+        )
         bundle_id = uuid5(NAMESPACE_URL, f"spine:fake-context-bundle:{identity}")
         bundle_digest = sha256(identity.encode("utf-8")).hexdigest()
         bundle_ref = ContextBundleRef(
             bundle_id=bundle_id,
             bundle_version=1,
             bundle_digest=bundle_digest,
+            publication_pin_id=publication_pin.pin_id if publication_pin else None,
         )
         self.issued.append(bundle_ref)
+        self.publication_pins.append(publication_pin)
         return bundle_ref
 
 
@@ -296,6 +403,7 @@ ContextBundleRefV1 = ContextBundleRef
 
 __all__ = [
     "ContextBrokerV1",
+    "ActivePublicationResolver",
     "ContextBundleIssuer",
     "ContextProfileResolver",
     "ContextRetrievalPort",
@@ -308,6 +416,9 @@ __all__ = [
     "FakeContextProfileResolver",
     "FakeContextRetrieval",
     "FakeTrustedContextValidator",
+    "DeterministicFakePublicationResolver",
+    "FakeActivePublicationResolver",
+    "FakeProjectionRepository",
     "LegacyContextBrokerAdapter",
     "TrustedContextValidator",
 ]

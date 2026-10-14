@@ -1,5 +1,6 @@
 from spine.memory.cognee_memory import ask, format_answers, remember_texts
 from spine.memory.broker import (
+    ActivePublicationResolver,
     ContextBrokerV1,
     ContextBundleIssuer,
     ContextProfileResolver,
@@ -9,6 +10,9 @@ from spine.memory.broker import (
     FakeContextProfileResolver,
     FakeContextRetrieval,
     FakeTrustedContextValidator,
+    DeterministicFakePublicationResolver,
+    FakeActivePublicationResolver,
+    FakeProjectionRepository,
     LegacyContextBrokerAdapter,
     TrustedContextValidator,
 )
@@ -27,6 +31,7 @@ from spine.memory.contracts import (
     ContextResponse,
     ContextResponseV1,
     ContextProjection,
+    PublicationPin,
     context_reason_for_outcome,
 )
 from spine.memory.fake import DeterministicContextProjection, DeterministicPhysicalStore
@@ -42,6 +47,7 @@ from spine.memory.namespace import (
 __all__ = [
     "ContextProjection",
     "ContextBroker",
+    "ActivePublicationResolver",
     "ContextBrokerV1",
     "ContextBundleIssuer",
     "ContextBundleRef",
@@ -56,6 +62,7 @@ __all__ = [
     "ContextRequestV1",
     "ContextResponse",
     "ContextResponseV1",
+    "PublicationPin",
     "ContextRetrievalPort",
     "context_reason_for_outcome",
     "DeterministicContextProjection",
@@ -65,6 +72,9 @@ __all__ = [
     "FakeContextProfileResolver",
     "FakeContextRetrieval",
     "FakeTrustedContextValidator",
+    "DeterministicFakePublicationResolver",
+    "FakeActivePublicationResolver",
+    "FakeProjectionRepository",
     "LegacyContextBrokerAdapter",
     "NamespaceLifecycleError",
     "NamespaceRoutingError",

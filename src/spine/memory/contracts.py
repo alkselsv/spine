@@ -3,12 +3,24 @@
 from __future__ import annotations
 
 from enum import Enum
+from hashlib import sha256
+import json
 from typing import Any, Literal, Protocol
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import ConfigDict, Field, StrictBool, StrictInt, field_validator, model_validator
 
 from spine.domain.common import ActorRef, DefinitionModel, SpineModel
+from spine.domain.projections import (
+    CanonicalAsOf,
+    ProjectionActivation,
+    ProjectionConfigVersion as DomainProjectionConfigVersion,
+    ProjectionFreshness,
+    ProjectionHealth,
+    ProjectionReconciliationResult,
+    ProjectionSnapshot,
+    PublishedActivePublication,
+)
 
 
 _DIGEST = r"[0-9a-f]{64}"
@@ -559,6 +571,7 @@ class ContextReasonCode(str, Enum):
     CANCELLED = "cancelled"
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
     BUNDLE_UNAVAILABLE = "bundle_unavailable"
+    PUBLICATION_UNAVAILABLE = "publication_unavailable"
 
 
 class ContextProfileRef(DefinitionModel):
@@ -593,11 +606,19 @@ class ContextBundleRef(DefinitionModel):
     bundle_id: UUID
     bundle_version: int = Field(ge=1)
     bundle_digest: str = Field(pattern=_DIGEST)
+    publication_pin_id: UUID | None = None
 
     @field_validator("bundle_id")
     @classmethod
     def validate_bundle_id(cls, value: UUID) -> UUID:
         _require_non_zero(value, "bundle_id")
+        return value
+
+    @field_validator("publication_pin_id")
+    @classmethod
+    def validate_publication_pin_id(cls, value: UUID | None) -> UUID | None:
+        if value is not None:
+            _require_non_zero(value, "publication_pin_id")
         return value
 
 
@@ -608,6 +629,128 @@ class ContextProfile(_ProjectionModel):
     ref: ContextProfileRef
     retrieval_strategy: str = Field(min_length=1, max_length=64, pattern=_IDENTIFIER)
     max_items: int = Field(default=15, ge=1, le=100)
+    projection_kind: str = Field(default="qa", pattern=_IDENTIFIER)
+    require_current_publication: bool = False
+    require_healthy_publication: bool = False
+
+
+class PublicationPin(_ProjectionModel):
+    """Immutable active-publication identity captured for one broker attempt."""
+
+    schema_version: Literal["publication-pin:v1"] = "publication-pin:v1"
+    pin_id: UUID
+    pin_digest: str = Field(pattern=_DIGEST)
+    workspace_id: UUID
+    environment_id: UUID
+    projection_kind: str = Field(pattern=_IDENTIFIER)
+    projection_snapshot: ProjectionSnapshot
+    projection_activation: ProjectionActivation
+    activation_generation: int = Field(ge=1)
+    active_pointer_cas_version: int = Field(ge=1)
+    canonical_boundary: CanonicalBoundary
+    as_of: CanonicalAsOf
+    projection_config_version: DomainProjectionConfigVersion
+    freshness: ProjectionFreshness
+    health: ProjectionHealth
+    effective_reconciliation: ProjectionReconciliationResult | None = None
+
+    @classmethod
+    def from_publication(cls, publication: PublishedActivePublication) -> "PublicationPin":
+        """Capture one resolver result without introducing a second authority."""
+
+        identity = (
+            f"spine:publication-pin:v1:{publication.workspace_id}:"
+            f"{publication.environment_id}:{publication.projection_kind}:"
+            f"{publication.projection_activation.projection_activation_id}:"
+            f"{publication.activation_generation}"
+        )
+        pin_id = uuid5(NAMESPACE_URL, identity)
+        canonical_boundary = CanonicalBoundary(
+            boundary_id=publication.canonical_boundary_id,
+            boundary_digest=publication.canonical_boundary_manifest_digest,
+            accepted_through_generation=publication.accepted_through_generation,
+        )
+        payload = {
+            "schema": "publication-pin:v1",
+            "pin_id": str(pin_id),
+            "publication": publication.model_dump(mode="json"),
+            "canonical_boundary": canonical_boundary.model_dump(mode="json"),
+        }
+        pin_digest = sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        return cls(
+            pin_id=pin_id,
+            pin_digest=pin_digest,
+            workspace_id=publication.workspace_id,
+            environment_id=publication.environment_id,
+            projection_kind=publication.projection_kind,
+            projection_snapshot=publication.projection_snapshot,
+            projection_activation=publication.projection_activation,
+            activation_generation=publication.activation_generation,
+            active_pointer_cas_version=publication.active_pointer_cas_version,
+            canonical_boundary=canonical_boundary,
+            as_of=publication.as_of,
+            projection_config_version=publication.projection_config_version,
+            freshness=publication.freshness,
+            health=publication.health,
+            effective_reconciliation=publication.effective_reconciliation,
+        )
+
+    @field_validator("pin_id", "workspace_id", "environment_id")
+    @classmethod
+    def validate_pin_ids(cls, value: UUID, info: object) -> UUID:
+        _require_non_zero(value, getattr(info, "field_name", "identifier"))
+        return value
+
+    @model_validator(mode="after")
+    def validate_lineage(self) -> "PublicationPin":
+        if (
+            self.projection_snapshot.workspace_id != self.workspace_id
+            or self.projection_snapshot.environment_id != self.environment_id
+            or self.projection_activation.workspace_id != self.workspace_id
+            or self.projection_activation.environment_id != self.environment_id
+            or self.projection_config_version.workspace_id != self.workspace_id
+            or self.projection_config_version.environment_id != self.environment_id
+            or self.projection_snapshot.projection_kind != self.projection_kind
+            or self.projection_activation.projection_kind != self.projection_kind
+            or self.projection_config_version.projection_kind != self.projection_kind
+            or self.projection_snapshot.projection_snapshot_id
+            != self.projection_activation.projection_snapshot_id
+            or self.projection_activation.activation_generation != self.activation_generation
+            or self.projection_snapshot.canonical_boundary_id
+            != self.canonical_boundary.boundary_id
+            or self.as_of.canonical_boundary_id != self.canonical_boundary.boundary_id
+            or self.as_of.accepted_through_generation
+            != self.canonical_boundary.accepted_through_generation
+            or self.projection_snapshot.projection_config_version_id
+            != self.projection_config_version.projection_config_version_id
+        ):
+            raise ValueError("publication pin lineage is inconsistent")
+        if self.effective_reconciliation is not None and (
+            self.effective_reconciliation.workspace_id != self.workspace_id
+            or self.effective_reconciliation.environment_id != self.environment_id
+            or self.effective_reconciliation.projection_kind != self.projection_kind
+            or self.effective_reconciliation.projection_snapshot_id
+            != self.projection_snapshot.projection_snapshot_id
+            or self.effective_reconciliation.projection_activation_id
+            != self.projection_activation.projection_activation_id
+            or self.effective_reconciliation.activation_generation != self.activation_generation
+        ):
+            raise ValueError("publication pin reconciliation lineage is inconsistent")
+        return self
+
+    @property
+    def publication_pin_id(self) -> UUID:
+        """Stable audit-facing alias for the pin identity."""
+
+        return self.pin_id
+
+    @property
+    def canonical_as_of(self) -> CanonicalAsOf:
+        """Explicit alias used by attempt and bundle consumers."""
+
+        return self.as_of
 
 
 class TrustedContextDiagnostic(_ProjectionModel):
@@ -658,6 +801,14 @@ class ContextRetrievalResult(_ProjectionModel):
     outcome: ContextOutcome
     reason_code: ContextReasonCode
     diagnostic: TrustedContextDiagnostic = TrustedContextDiagnostic()
+    publication_pin_id: UUID | None = None
+
+    @field_validator("publication_pin_id")
+    @classmethod
+    def validate_publication_pin_id(cls, value: UUID | None) -> UUID | None:
+        if value is not None:
+            _require_non_zero(value, "publication_pin_id")
+        return value
 
     @model_validator(mode="after")
     def validate_reason_for_outcome(self) -> "ContextRetrievalResult":
@@ -674,6 +825,14 @@ class ContextResponse(_ProjectionModel):
     context_bundle_ref: ContextBundleRef | None = None
     reason_code: ContextReasonCode
     diagnostic: TrustedContextDiagnostic = TrustedContextDiagnostic()
+    publication_pin_id: UUID | None = None
+
+    @field_validator("publication_pin_id")
+    @classmethod
+    def validate_publication_pin_id(cls, value: UUID | None) -> UUID | None:
+        if value is not None:
+            _require_non_zero(value, "publication_pin_id")
+        return value
 
     @model_validator(mode="after")
     def validate_bundle_for_outcome(self) -> "ContextResponse":
@@ -682,7 +841,8 @@ class ContextResponse(_ProjectionModel):
             ContextOutcome.DEGRADED,
             ContextOutcome.PARTIAL,
         }
-        if self.outcome in bundle_outcomes and self.context_bundle_ref is None:
+        required_bundle_outcomes = {ContextOutcome.ALLOWED, ContextOutcome.PARTIAL}
+        if self.outcome in required_bundle_outcomes and self.context_bundle_ref is None:
             raise ValueError("bundle outcomes require a context bundle reference")
         if self.outcome not in bundle_outcomes and self.context_bundle_ref is not None:
             raise ValueError("non-bundle outcomes cannot carry a context bundle reference")
@@ -695,6 +855,7 @@ class ContextResponse(_ProjectionModel):
                 ContextReasonCode.PROFILE_UNAVAILABLE,
                 ContextReasonCode.RETRIEVAL_UNAVAILABLE,
                 ContextReasonCode.BUNDLE_UNAVAILABLE,
+                ContextReasonCode.PUBLICATION_UNAVAILABLE,
             },
             ContextOutcome.STALE: {ContextReasonCode.STALE_CONTEXT},
             ContextOutcome.DEGRADED: {ContextReasonCode.DEGRADED_CONTEXT},
