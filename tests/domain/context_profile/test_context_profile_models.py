@@ -40,10 +40,15 @@ def profile(**overrides: object) -> ContextProfileVersion:
     return ContextProfileVersion.create(**values)
 
 
-def test_context_profile_version_is_frozen_and_digest_addressed() -> None:
+def test_context_profile_version_digest_is_addressed() -> None:
     subject = profile()
 
     assert subject.profile_digest == ContextProfileVersion.calculate_digest(subject)
+
+
+def test_context_profile_version_is_frozen() -> None:
+    subject = profile()
+
     with pytest.raises(ValidationError):
         subject.profile_version = 2  # type: ignore[misc]
 
