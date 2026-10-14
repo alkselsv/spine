@@ -1,7 +1,5 @@
 {
   "schema_version": "cognee-production-qualification:v2",
-  "ticket": 212,
-  "qualification_run_id": "not-run",
   "profile": {
     "relational": "postgresql",
     "graph": "neo4j",
@@ -12,19 +10,18 @@
   "production_approval": false,
   "safe_reason_code": "gate_failure_or_missing_evidence",
   "observations": [
-    {"gate_id": "public_sdk", "status": "not_run", "safe_code": "live_prerequisite_unavailable"},
-    {"gate_id": "structured_round_trip", "status": "not_run", "safe_code": "live_prerequisite_unavailable"},
-    {"gate_id": "unsafe_evidence", "status": "not_run", "safe_code": "live_prerequisite_unavailable"},
-    {"gate_id": "workspace_isolation", "status": "not_run", "safe_code": "live_prerequisite_unavailable"},
-    {"gate_id": "namespace_isolation", "status": "not_run", "safe_code": "live_prerequisite_unavailable"},
-    {"gate_id": "explicit_retrieval_context", "status": "not_run", "safe_code": "live_prerequisite_unavailable"},
-    {"gate_id": "update_remove_tombstone", "status": "not_run", "safe_code": "live_prerequisite_unavailable"},
-    {"gate_id": "rebuild_recovery_validation_diagnostics", "status": "not_run", "safe_code": "live_prerequisite_unavailable"},
-    {"gate_id": "concurrency_failure_cleanup", "status": "not_run", "safe_code": "live_prerequisite_unavailable"},
+    {"gate_id": "public_sdk", "status": "failed", "safe_code": "configuration_mismatch"},
+    {"gate_id": "structured_round_trip", "status": "failed", "safe_code": "physical_failure"},
+    {"gate_id": "unsafe_evidence", "status": "failed", "safe_code": "incomplete_evidence"},
+    {"gate_id": "workspace_isolation", "status": "failed", "safe_code": "isolation_failure"},
+    {"gate_id": "namespace_isolation", "status": "failed", "safe_code": "isolation_failure"},
+    {"gate_id": "explicit_retrieval_context", "status": "failed", "safe_code": "isolation_failure"},
+    {"gate_id": "update_remove_tombstone", "status": "failed", "safe_code": "physical_failure"},
+    {"gate_id": "rebuild_recovery_validation_diagnostics", "status": "passed", "safe_code": null},
+    {"gate_id": "concurrency_failure_cleanup", "status": "failed", "safe_code": "concurrency_failure"},
     {"gate_id": "canonical_lifecycle_separation", "status": "not_run", "safe_code": "live_prerequisite_unavailable"}
   ],
-  "failed_gate_ids": [],
-  "not_run_gate_ids": [
+  "failed_gate_ids": [
     "public_sdk",
     "structured_round_trip",
     "unsafe_evidence",
@@ -32,11 +29,12 @@
     "namespace_isolation",
     "explicit_retrieval_context",
     "update_remove_tombstone",
-    "rebuild_recovery_validation_diagnostics",
-    "concurrency_failure_cleanup",
-    "canonical_lifecycle_separation"
+    "concurrency_failure_cleanup"
   ],
+  "not_run_gate_ids": ["canonical_lifecycle_separation"],
   "fallback": "owned_postgresql_projection_mapping",
+  "ticket": 212,
+  "qualification_run_id": "issue212-docker-006",
   "issue_211_fake_qualification": "not_production_evidence",
   "postgres_demo": "rejected",
   "canonical_lifecycle_owner": "postgresql",

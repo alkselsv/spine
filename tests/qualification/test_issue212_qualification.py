@@ -7,6 +7,11 @@ import re
 import subprocess
 import sys
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
+    import tomli as tomllib
+
 import pytest
 from pydantic import ValidationError
 
@@ -24,6 +29,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REPORT = PROJECT_ROOT / "docs/qualification/issue-212-cognee-production-report.json"
 TRACEABILITY = PROJECT_ROOT / "docs/qualification/issue-212-cognee-production.md"
 RUNBOOK = PROJECT_ROOT / "docs/runbooks/cognee-production-qualification.md"
+PYPROJECT = PROJECT_ROOT / "pyproject.toml"
 LIVE_TARGET = "tests/integration/cognee/test_production_profile.py"
 
 
@@ -33,12 +39,12 @@ def _report() -> Issue212QualificationReport:
     )
 
 
-def test_issue212_report_is_explicit_no_go_without_live_evidence() -> None:
+def test_issue212_report_is_explicit_no_go_from_one_live_run() -> None:
     report = _report()
 
     assert report.schema_version == "cognee-production-qualification:v2"
     assert report.ticket == 212
-    assert report.qualification_run_id == "not-run"
+    assert report.qualification_run_id == "issue212-docker-006"
     assert report.profile.model_dump() == {
         "relational": "postgresql",
         "graph": "neo4j",
@@ -51,7 +57,20 @@ def test_issue212_report_is_explicit_no_go_without_live_evidence() -> None:
     assert [item.gate_id for item in report.observations] == list(
         required_gate_ids()
     )
-    assert all(item.status.value == "not_run" for item in report.observations)
+    statuses = {item.gate_id: item.status.value for item in report.observations}
+    assert statuses["rebuild_recovery_validation_diagnostics"] == "passed"
+    assert statuses["canonical_lifecycle_separation"] == "not_run"
+    assert set(report.failed_gate_ids) == {
+        "public_sdk",
+        "structured_round_trip",
+        "unsafe_evidence",
+        "workspace_isolation",
+        "namespace_isolation",
+        "explicit_retrieval_context",
+        "update_remove_tombstone",
+        "concurrency_failure_cleanup",
+    }
+    assert report.not_run_gate_ids == ("canonical_lifecycle_separation",)
     assert report.fallback == "owned_postgresql_projection_mapping"
 
 
@@ -137,6 +156,9 @@ def test_issue212_runbook_names_exact_prerequisites_and_command() -> None:
         "Neo4j",
         "PGVector",
         "Cognee 1.5.4",
+        "GRAPH_DATASET_DATABASE_HANDLER=neo4j_community",
+        "NEO4J_COMMUNITY_IMAGE=spine/neo4j-cognee:5-community",
+        "docker/neo4j-cognee/Dockerfile",
         "SPINE_COGNEE_PRODUCTION_QUALIFICATION=1",
         "-m cognee_production",
         LIVE_TARGET,
@@ -144,6 +166,16 @@ def test_issue212_runbook_names_exact_prerequisites_and_command() -> None:
         assert required in content
     assert "postgres_demo" in content
     assert "no-go" in content.lower()
+
+
+def test_issue212_backend_drivers_are_direct_runtime_dependencies() -> None:
+    project = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["project"]
+    dependency_names = {
+        re.split(r"[<>=!~\[]", requirement, maxsplit=1)[0].lower()
+        for requirement in project["dependencies"]
+    }
+
+    assert {"asyncpg", "neo4j", "pgvector"} <= dependency_names
 
 
 def test_issue212_traceability_covers_every_acceptance_criterion() -> None:

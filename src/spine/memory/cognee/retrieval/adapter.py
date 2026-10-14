@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 from uuid import UUID
@@ -36,6 +37,9 @@ from spine.memory.cognee.indexing import (
     SUPPORTED_COGNEE_VERSION,
 )
 from spine.memory.namespace import NamespaceRoutingError, ProjectionNamespaceContext, ProjectionNamespaceRouter
+
+
+logger = logging.getLogger(__name__)
 
 
 class CogneeStructuredRetrievalSdk(Protocol):
@@ -74,9 +78,10 @@ class CogneePublicStructuredRetrievalSdk:
 
 
 class _RetrievalIssue(Exception):
-    def __init__(self, code: ProjectionFailureCode) -> None:
+    def __init__(self, code: ProjectionFailureCode, stage: str = "unspecified") -> None:
         super().__init__(code.value)
         self.code = code
+        self.stage = stage
 
 
 class CogneeStructuredRetrieval:
@@ -149,6 +154,14 @@ class CogneeStructuredRetrieval:
                     evidence=tuple(evidence),
                 )
             except _RetrievalIssue as error:
+                # Cognee disables existing loggers while configuring its own
+                # handlers; re-enable only this content-free diagnostic sink.
+                logger.disabled = False
+                logger.error(
+                    "structured retrieval rejected physical evidence: code=%s stage=%s",
+                    error.code.value,
+                    error.stage,
+                )
                 result = self._failure(command, error.code)
             except ValidationError:
                 result = self._failure(command, ProjectionFailureCode.INCOMPLETE_EVIDENCE)
@@ -231,7 +244,10 @@ class CogneeStructuredRetrieval:
             self._metadata(value), ("chunk_id", "segment_id", "id")
         )
         if not text or not identifier:
-            raise _RetrievalIssue(ProjectionFailureCode.INCOMPLETE_EVIDENCE)
+            raise _RetrievalIssue(
+                ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                "chunk_shape",
+            )
         references = self._references(command, sources, value, wrapper)
         return ProjectionChunk(chunk_id=identifier, text=text, evidence=references)
 
@@ -250,7 +266,10 @@ class CogneeStructuredRetrieval:
         name = self._text_value(value, ("name", "canonical_name", "node_name", "entity"))
         kind = self._text_value(value, ("kind", "entity_type", "node_type", "type"))
         if not identifier or not name or not kind:
-            raise _RetrievalIssue(ProjectionFailureCode.INCOMPLETE_EVIDENCE)
+            raise _RetrievalIssue(
+                ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                "entity_shape",
+            )
         return ProjectionEntity(
             entity_id=identifier,
             kind=kind,
@@ -274,7 +293,10 @@ class CogneeStructuredRetrieval:
         subject = self._endpoint(value, ("subject_entity_id", "subject", "source", "from"))
         target = self._endpoint(value, ("object_entity_id", "object", "target", "to"))
         if not identifier or not kind or not subject or not target:
-            raise _RetrievalIssue(ProjectionFailureCode.INCOMPLETE_EVIDENCE)
+            raise _RetrievalIssue(
+                ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                "relation_shape",
+            )
         return ProjectionRelation(
             relation_id=identifier,
             kind=kind,
@@ -299,7 +321,10 @@ class CogneeStructuredRetrieval:
         if not raw_references and self._value(metadata, "source_revision_id") is not None:
             raw_references = (metadata,)
         if not raw_references:
-            raise _RetrievalIssue(ProjectionFailureCode.MISSING_EVIDENCE)
+            raise _RetrievalIssue(
+                ProjectionFailureCode.MISSING_EVIDENCE,
+                "references_absent",
+            )
 
         result = []
         for raw in raw_references:
@@ -308,23 +333,38 @@ class CogneeStructuredRetrieval:
             merged.update(reference)
             source_revision_id = self._uuid_value(merged, "source_revision_id")
             if source_revision_id is None or source_revision_id not in sources:
-                raise _RetrievalIssue(ProjectionFailureCode.MISSING_EVIDENCE)
+                raise _RetrievalIssue(
+                    ProjectionFailureCode.MISSING_EVIDENCE,
+                    "reference_source",
+                )
             source = sources[source_revision_id]
             self._validate_scope(command, source, merged)
             locator = self._locator(merged.get("locator"))
             if locator is None:
-                raise _RetrievalIssue(ProjectionFailureCode.INCOMPLETE_EVIDENCE)
+                raise _RetrievalIssue(
+                    ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                    "reference_locator",
+                )
             status = str(merged.get("status", merged.get("quality", "valid")))
             if status in {"accepted", "ok"}:
                 status = "valid"
             if status != "valid":
-                raise _RetrievalIssue(self._code_for_evidence_status(status))
+                raise _RetrievalIssue(
+                    self._code_for_evidence_status(status),
+                    "reference_status",
+                )
             evidence_id = self._text_value(merged, ("evidence_id", "id"))
             if not evidence_id:
-                raise _RetrievalIssue(ProjectionFailureCode.INCOMPLETE_EVIDENCE)
+                raise _RetrievalIssue(
+                    ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                    "reference_id",
+                )
             digest = self._text_value(merged, ("evidence_digest", "digest"))
             if not digest:
-                raise _RetrievalIssue(ProjectionFailureCode.INCOMPLETE_EVIDENCE)
+                raise _RetrievalIssue(
+                    ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                    "reference_digest",
+                )
             result.append(
                 EvidenceReference(
                     evidence_id=evidence_id,
@@ -341,7 +381,10 @@ class CogneeStructuredRetrieval:
                 )
             )
         if not result:
-            raise _RetrievalIssue(ProjectionFailureCode.MISSING_EVIDENCE)
+            raise _RetrievalIssue(
+                ProjectionFailureCode.MISSING_EVIDENCE,
+                "references_empty",
+            )
         return tuple(result)
 
     @staticmethod
@@ -359,7 +402,10 @@ class CogneeStructuredRetrieval:
             "revision_number",
         )
         if any(metadata.get(field) is None for field in required):
-            raise _RetrievalIssue(ProjectionFailureCode.INCOMPLETE_EVIDENCE)
+            raise _RetrievalIssue(
+                ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                "reference_scope",
+            )
         for field, expected in (
             ("workspace_id", command.workspace_id),
             ("environment_id", command.environment_id),
@@ -370,22 +416,43 @@ class CogneeStructuredRetrieval:
             if actual is not None:
                 try:
                     if UUID(str(actual)) != expected:
-                        raise _RetrievalIssue(ProjectionFailureCode.MISSING_EVIDENCE)
+                        raise _RetrievalIssue(
+                            ProjectionFailureCode.MISSING_EVIDENCE,
+                            "reference_scope_mismatch",
+                        )
                 except ValueError as error:
-                    raise _RetrievalIssue(ProjectionFailureCode.MISSING_EVIDENCE) from error
+                    raise _RetrievalIssue(
+                        ProjectionFailureCode.MISSING_EVIDENCE,
+                        "reference_scope_invalid",
+                    ) from error
         if metadata.get("revision_digest") not in (None, source.revision_digest):
-            raise _RetrievalIssue(ProjectionFailureCode.STALE_EVIDENCE)
+            raise _RetrievalIssue(
+                ProjectionFailureCode.STALE_EVIDENCE,
+                "reference_revision_digest",
+            )
         if metadata.get("revision_number") not in (None, source.revision_number):
-            raise _RetrievalIssue(ProjectionFailureCode.STALE_EVIDENCE)
+            raise _RetrievalIssue(
+                ProjectionFailureCode.STALE_EVIDENCE,
+                "reference_revision_number",
+            )
         if source.processing_receipt_id is not None:
             receipt = metadata.get("processing_receipt_id")
             if receipt is None:
-                raise _RetrievalIssue(ProjectionFailureCode.INCOMPLETE_EVIDENCE)
+                raise _RetrievalIssue(
+                    ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                    "reference_receipt",
+                )
             try:
                 if UUID(str(receipt)) != source.processing_receipt_id:
-                    raise _RetrievalIssue(ProjectionFailureCode.MISSING_EVIDENCE)
+                    raise _RetrievalIssue(
+                        ProjectionFailureCode.MISSING_EVIDENCE,
+                        "reference_receipt_mismatch",
+                    )
             except ValueError as error:
-                raise _RetrievalIssue(ProjectionFailureCode.INCOMPLETE_EVIDENCE) from error
+                raise _RetrievalIssue(
+                    ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                    "reference_receipt_invalid",
+                ) from error
 
     @staticmethod
     def _locator(value: object) -> StableLocator | None:

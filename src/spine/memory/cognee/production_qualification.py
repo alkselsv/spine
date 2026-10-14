@@ -10,12 +10,16 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from enum import Enum
+import logging
 from pathlib import Path
 from typing import Literal
 
 from pydantic import ConfigDict, Field, model_validator
 
 from spine.domain.common import DefinitionModel
+
+
+logger = logging.getLogger(__name__)
 
 
 class GateStatus(str, Enum):
@@ -229,7 +233,25 @@ async def run_qualification_gates(
             continue
         try:
             await gate()
-        except Exception:
+        except Exception as error:
+            traceback = error.__traceback__
+            while traceback is not None and traceback.tb_next is not None:
+                traceback = traceback.tb_next
+            location = (
+                f"{Path(traceback.tb_frame.f_code.co_filename).name}:"
+                f"{traceback.tb_lineno}"
+                if traceback is not None
+                else "unavailable"
+            )
+            # Cognee configures logging with existing loggers disabled.  Keep
+            # this bounded operator diagnostic available after provider setup.
+            logger.disabled = False
+            logger.error(
+                "qualification gate failed: gate_id=%s exception_type=%s location=%s",
+                gate_id,
+                type(error).__name__,
+                location,
+            )
             observations.append(
                 GateObservation(
                     gate_id=gate_id,

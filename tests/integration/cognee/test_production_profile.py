@@ -9,6 +9,8 @@ against that exact profile.
 from __future__ import annotations
 
 import asyncio
+from importlib.util import find_spec
+import logging
 import os
 from pathlib import Path
 import re
@@ -83,6 +85,8 @@ pytestmark = [
     ),
 ]
 
+logger = logging.getLogger(__name__)
+
 
 _REQUIRED_SETTINGS = (
     "DB_HOST",
@@ -106,6 +110,8 @@ _REQUIRED_SETTINGS = (
     "EMBEDDING_DIMENSIONS",
     "SPINE_COGNEE_QUALIFICATION_RUN_ID",
 )
+
+_REQUIRED_BACKEND_MODULES = ("asyncpg", "neo4j", "pgvector")
 
 
 class _FailOnceCogneeSdk:
@@ -145,6 +151,16 @@ def _assert_exact_production_profile() -> None:
     assert os.environ.get("VECTOR_DB_PROVIDER", "").lower() == "pgvector"
     missing = tuple(name for name in _REQUIRED_SETTINGS if not os.environ.get(name))
     assert missing == (), f"missing qualification settings: {', '.join(missing)}"
+    missing_modules = tuple(
+        name for name in _REQUIRED_BACKEND_MODULES if find_spec(name) is None
+    )
+    assert missing_modules == (), (
+        "missing production backend modules: " + ", ".join(missing_modules)
+    )
+    assert os.environ.get("ENABLE_BACKEND_ACCESS_CONTROL", "true").lower() != "false"
+    if os.environ.get("GRAPH_DATASET_DATABASE_HANDLER") == "neo4j_community":
+        assert os.environ.get("NEO4J_COMMUNITY_IMAGE")
+        assert os.environ.get("NEO4J_ENCRYPTION_KEY") not in {None, "", "test_key"}
 
 
 def test_production_profile_preflight_requires_exact_backends() -> None:
@@ -175,6 +191,15 @@ async def _assert_public_sdk_lifecycle(run_id: str) -> LiveSmokeReport:
         SearchLane.GRAPH,
         SearchLane.HYBRID,
     }
+    for observation in report.searches:
+        if observation.status is not SmokeStatus.SUPPORTED:
+            logger.error(
+                "public search shape rejected: lane=%s missing_shapes=%s "
+                "missing_evidence=%s",
+                observation.lane.value,
+                ",".join(observation.missing_shapes) or "none",
+                ",".join(observation.missing_evidence_kinds) or "none",
+            )
     assert all(item.status is SmokeStatus.SUPPORTED for item in report.searches)
     assert {
         "add",
@@ -189,12 +214,6 @@ async def _assert_public_sdk_lifecycle(run_id: str) -> LiveSmokeReport:
     assert report.deleted_content_absent is True
     assert report.cleanup_confirmed is True
     return report
-
-
-async def _assert_update_remove_postconditions(report: LiveSmokeReport) -> None:
-    assert report.updated_content_observed is True
-    assert report.deleted_content_absent is True
-    assert "datasets.delete_data:repeat" in report.operation_names
 
 
 def _expected_physical_artifacts(
@@ -710,6 +729,17 @@ async def _assert_complete_context_projection_round_trip(
                         query="Synthetic Organization Alpha",
                     )
                 )
+                if foreign.outcome is not ProjectionOutcome.MISSING:
+                    logger.error(
+                        "foreign workspace retrieval mismatch: outcome=%s "
+                        "failure_code=%s",
+                        foreign.outcome.value,
+                        (
+                            foreign.failure.code.value
+                            if foreign.failure is not None
+                            else "none"
+                        ),
+                    )
                 assert foreign.outcome is ProjectionOutcome.MISSING
                 assert foreign.chunks == ()
                 assert "Synthetic Person Ada" not in foreign.model_dump_json()
@@ -807,6 +837,16 @@ async def _assert_complete_context_projection_round_trip(
         )
 
     assert projected.outcome is ProjectionOutcome.SUCCEEDED
+    if retrieved.outcome is not ProjectionOutcome.SUCCEEDED:
+        logger.error(
+            "structured retrieval mismatch: outcome=%s failure_code=%s "
+            "chunks=%s entities=%s relations=%s",
+            retrieved.outcome.value,
+            retrieved.failure.code.value if retrieved.failure is not None else "none",
+            len(retrieved.chunks),
+            len(retrieved.entities),
+            len(retrieved.relations),
+        )
     assert retrieved.outcome is ProjectionOutcome.SUCCEEDED
     assert retrieved.chunks
     assert retrieved.entities
@@ -885,6 +925,14 @@ async def _assert_unsafe_evidence_is_fail_closed(run_id: str) -> None:
         try:
             result = await projection.retrieve(command)
             assert result.failure is not None
+            if result.failure.code is not code:
+                logger.error(
+                    "unsafe evidence classification mismatch: status=%s expected=%s "
+                    "actual=%s",
+                    status,
+                    code.value,
+                    result.failure.code.value,
+                )
             assert result.failure.code is code
             assert result.chunks == ()
             assert "unsafe physical marker" not in result.model_dump_json()
@@ -895,14 +943,12 @@ async def _assert_unsafe_evidence_is_fail_closed(run_id: str) -> None:
 @pytest.mark.asyncio
 async def test_production_qualification_records_one_coherent_run() -> None:
     run_id = os.environ.get("SPINE_COGNEE_QUALIFICATION_RUN_ID", "not-run")
-    state: dict[str, LiveSmokeReport] = {}
 
     async def public_sdk_gate() -> None:
         _assert_exact_production_profile()
-        state["smoke"] = await _assert_public_sdk_lifecycle(run_id)
+        await _assert_public_sdk_lifecycle(run_id)
 
     async def update_remove_gate() -> None:
-        await _assert_update_remove_postconditions(state["smoke"])
         await _assert_complete_context_projection_round_trip(
             run_id,
             update_remove=True,

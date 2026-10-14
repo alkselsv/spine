@@ -13,6 +13,21 @@ not configure or modify a production deployment.
 - a dedicated database/schema and credentials that may be cleaned after the
   run.
 
+Neo4j Community does not support the per-dataset databases used by Cognee's
+default Neo4j handler. For a disposable local qualification, build the pinned
+Neo4j 5.26.32 Community image with its matching bundled APOC Core plugin:
+
+```text
+docker build --tag spine/neo4j-cognee:5-community --file docker/neo4j-cognee/Dockerfile .
+```
+
+The `neo4j_community` handler then provides physical dataset isolation by
+creating one temporary container and volume per dataset. It requires access to
+the Docker daemon. Production Neo4j Enterprise may instead use Cognee's
+multi-database `neo4j` handler. The qualification image also protects the
+official entrypoint from treating a generated password that begins with `-` as
+a `neo4j-admin` option.
+
 Set Cognee's standard configuration variables for the exact profile:
 
 ```text
@@ -27,6 +42,10 @@ GRAPH_DATABASE_HOST=...
 GRAPH_DATABASE_PORT=...
 GRAPH_DATABASE_USERNAME=...
 GRAPH_DATABASE_PASSWORD=...
+GRAPH_DATASET_DATABASE_HANDLER=neo4j_community
+NEO4J_COMMUNITY_IMAGE=spine/neo4j-cognee:5-community
+NEO4J_ENCRYPTION_KEY=... # dedicated qualification secret, never use test_key
+NEO4J_COMMUNITY_MAX_CONTAINERS=4
 VECTOR_DB_PROVIDER=pgvector
 VECTOR_DB_HOST=...
 VECTOR_DB_PORT=...
@@ -46,6 +65,8 @@ commit them or copy them into the qualification report.
 
 `GRAPH_DATABASE_PROVIDER=postgres_demo` is forbidden. The preflight must fail
 for that value; it is not an alternative way to satisfy the Neo4j requirement.
+Do not set `ENABLE_BACKEND_ACCESS_CONTROL=false`: a run without backend access
+control is not production evidence.
 
 ## Run
 
@@ -63,6 +84,11 @@ The target uses unique synthetic dataset names and public Cognee cleanup calls.
 It contains no customer data. Retain content-free test results and backend
 versions; do not retain raw provider errors in the report.
 
+After an interrupted Community run, inspect containers carrying label
+`ai.cognee.neo4j_community=true` and remove only those qualification containers
+and their `cognee-neo4j-data-*` volumes. A completed run removes its datasets
+through Cognee's public `forget` API.
+
 The orchestrated target continues through independent failures so the report
 contains one observation for every required gate. The canonical-lifecycle gate
 is intentionally emitted as `not_run` until a PostgreSQL-backed projection
@@ -72,10 +98,11 @@ serialized.
 
 ## Interpreting the result
 
-The current committed result is **no-go** because no coherent live run has been
-recorded. The complete `CogneeContextProjection` composition exists and runs
-the shared contract suite offline, but only the real PostgreSQL + Neo4j +
-PGVector profile can produce production evidence.
+The current committed result is **no-go** from coherent live run
+`issue212-docker-006`. The pinned PostgreSQL + Neo4j + PGVector profile failed
+the public search evidence, structured provenance, isolation, update/remove and
+concurrency retrieval gates. The rebuild/recovery/validation gate passed, but
+one passing gate cannot grant production approval.
 
 Do not convert a partial pass, skipped test, local Cognee profile or Issue #211
 fake-backed result into production approval. A future `go` requires every gate

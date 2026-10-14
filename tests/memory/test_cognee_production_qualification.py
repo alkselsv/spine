@@ -156,7 +156,9 @@ def test_report_shape_contains_only_bounded_safe_codes() -> None:
         )
 
 
-async def test_gate_runner_executes_complete_inventory_after_a_safe_failure() -> None:
+async def test_gate_runner_executes_complete_inventory_after_a_safe_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     executed: list[str] = []
 
     async def passing() -> None:
@@ -179,3 +181,6 @@ async def test_gate_runner_executes_complete_inventory_after_a_safe_failure() ->
     assert failed.status is GateStatus.FAILED
     assert failed.safe_code == "incomplete_evidence"
     assert "protected customer text" not in repr(observations)
+    assert "gate_id=unsafe_evidence" in caplog.text
+    assert "exception_type=RuntimeError" in caplog.text
+    assert "protected customer text" not in caplog.text

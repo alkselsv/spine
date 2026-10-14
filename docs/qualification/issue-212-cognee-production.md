@@ -7,13 +7,23 @@ its relational store, Neo4j as its graph store and PGVector as its vector
 store. The machine-readable decision is recorded in
 `docs/qualification/issue-212-cognee-production-report.json`.
 
-No live service endpoints or model resources were available in the execution
-environment. The repository now exposes a complete `CogneeContextProjection`
-composition over the chunk, graph and structured-retrieval adapters, and that
-composition runs the unchanged suite in `tests/contracts/memory`. This closes
-the composition gap, but it does not turn offline evidence into a production
-qualification: every live observation remains `not_run` until one coherent
-PostgreSQL + Neo4j + PGVector execution records it.
+A coherent live run, `issue212-docker-006`, exercised Cognee 1.5.4 against a
+disposable PostgreSQL 17 database with PGVector 0.8.7 and isolated Neo4j
+5.26.32 Community + APOC dataset containers. Operator-supplied LLM and
+embedding resources were used without retaining credentials, endpoints,
+provider responses or source content in the report.
+
+The run is a production **no-go**. Cognee's public chunk and hybrid search
+responses did not carry the evidence kinds required to reconstruct stable
+Spine provenance. The physical chunk payload also lacked a usable chunk
+identity/provenance shape, so structured retrieval correctly abstained with
+`incomplete_evidence`. An absent foreign-workspace dataset surfaced as a
+bounded `physical_failure`, rather than the required isolated missing result.
+Spine did not weaken any evidence or isolation check to obtain a pass.
+
+The rebuild/recovery/physical-validation gate passed, proving that the pinned
+backend profile can execute physical writes, injected recovery and content-free
+artifact validation. That isolated success is not sufficient for approval.
 
 The machine-readable report uses schema `cognee-production-qualification:v2`.
 Its `canonical_lifecycle_separation` field is `not_verified` unless that exact
@@ -42,14 +52,14 @@ its own ticket and architecture review before it can become production code.
 
 | Criterion | Evidence | Result |
 | --- | --- | --- |
-| AC1 | `tests/integration/cognee/test_production_profile.py::test_production_qualification_records_one_coherent_run` | Not run on the real profile; public SDK smoke is present but cannot grant production approval. |
-| AC2 | The shared contract runs for `cognee-composition`; the live target performs a physical chunk/entity/relation round trip and verifies provenance | Harness implemented; no live observation is committed. |
-| AC3 | The live target executes missing/ambiguous/stale/incomplete/tombstoned fail-closed cases and checks disclosure-safe results | Harness implemented; no live observation is committed. |
-| AC4 | The live target executes foreign-workspace isolation, rejects mismatched snapshot/boundary/namespace context before retrieval and keeps distinct active/shadow datasets from leaking into each other | Harness implemented; no live observation is committed. |
-| AC5 | Bounded gate runner tests plus injected provider failure in the live target | Harness emits only typed safe codes; no live observation is committed. |
+| AC1 | `tests/integration/cognee/test_production_profile.py::test_production_qualification_records_one_coherent_run`; run `issue212-docker-006` | Failed: required public search evidence was absent. |
+| AC2 | Live structured round trip plus the shared `cognee-composition` contract | Failed live: physical chunk shape could not reconstruct provenance. |
+| AC3 | Live missing/ambiguous/stale/incomplete/tombstoned cases | Failed: physical status/provenance was not preserved; results remained fail-closed. |
+| AC4 | Live foreign-workspace, explicit-context and simultaneous active/shadow scenarios | Failed; no protected content was returned. |
+| AC5 | Bounded gate runner diagnostics plus injected provider failure | Passed for safe reporting; the combined concurrency gate failed retrieval completeness. |
 | AC6 | `src/spine/memory/cognee/qualification.py::build_backend_matrix` and `tests/memory/test_cognee_production_qualification.py::test_postgres_demo_is_rejected_even_when_observations_pass` | `postgres_demo` remains rejected. |
 | AC7 | ADR 0018/0027 plus the required `canonical_lifecycle_separation` gate | The repository has no PostgreSQL-backed projection-request resolver composition to observe yet, so the gate remains `not_run` and prevents a false production `go`. |
-| AC8 | This report and its `not_run` live observations | No-go with owned fallback recommendation; no unexecuted gate is marked passed. |
+| AC8 | This report and coherent live run `issue212-docker-006` | No-go with owned fallback recommendation; only the observed rebuild/recovery gate is marked passed. |
 | AC9 | Issue #211 report and `tests/memory/test_cognee_production_qualification.py::test_fake_backed_success_cannot_be_promoted_to_production_approval` | Issue #211 is explicitly not production evidence. |
 
 ## Executable gate
@@ -59,12 +69,11 @@ traceability and collection of the live target. The operator-controlled live
 command is documented in
 `docs/runbooks/cognee-production-qualification.md`.
 
-The live target executes the available physical gate inventory in one run: public SDK,
-structured round trip, unsafe evidence, workspace isolation, simultaneous active/shadow
-isolation, explicit snapshot/boundary/namespace context, update/remove/tombstone,
-shadow rebuild/recovery/diagnostics,
-and concurrency/failure injection/cleanup. The required canonical-lifecycle
-gate remains explicitly `not_run` until a PostgreSQL-backed resolver composition
-can be observed; therefore the target cannot produce `go` prematurely. It writes
-only bounded observations. The committed report changes only after that
-operator-controlled output has been reviewed.
+The live target executed the available physical gate inventory in one run:
+public SDK, structured round trip, unsafe evidence, workspace isolation,
+simultaneous active/shadow isolation, explicit snapshot/boundary/namespace
+context, update/remove/tombstone, shadow rebuild/recovery/diagnostics, and
+concurrency/failure injection/cleanup. The required canonical-lifecycle gate
+remains explicitly `not_run` until a PostgreSQL-backed resolver composition can
+be observed; therefore the target cannot produce `go` prematurely. It writes
+only bounded observations.

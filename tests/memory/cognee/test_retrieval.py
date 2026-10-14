@@ -409,6 +409,23 @@ async def test_retrieval_returns_typed_incomplete_result_for_missing_locator() -
 
 
 @pytest.mark.asyncio
+async def test_retrieval_logs_only_bounded_stage_for_rejected_physical_evidence(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    chunks, hybrid = search_responses()
+    chunks[0]["objects_result"][0]["metadata"] = {  # type: ignore[index]
+        "source_revision_id": str(SOURCE_REVISION_ID),
+        "text": "protected customer text",
+    }
+    sdk = FakeSearchSdk(chunks_response=chunks, hybrid_response=hybrid)
+
+    await CogneeStructuredRetrieval(sdk=sdk).retrieve(command())
+
+    assert "stage=reference_scope" in caplog.text
+    assert "protected customer text" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_public_sdk_bridge_uses_only_public_search_and_search_type() -> None:
     class SearchType:
         CHUNKS = "public-chunks"
