@@ -86,6 +86,19 @@ from spine.domain.capabilities.evaluate_answer import (
     evaluate_answer_candidate,
 )
 from spine.domain.capabilities.models import CapabilityDefinition
+from spine.domain.capabilities.semantic_support import (
+    SEMANTIC_SUPPORT_ASSESSMENT_SCHEMA,
+    SEMANTIC_SUPPORT_POLICY_SCHEMA,
+    SEMANTIC_SUPPORT_REQUEST_SCHEMA,
+    SEMANTIC_SUPPORT_RESULT_SCHEMA,
+    SemanticSupportAssessment,
+    SemanticSupportEvidence,
+    SemanticSupportOutcome,
+    SemanticSupportPolicy,
+    SemanticSupportReasonCode,
+    SemanticSupportRequest,
+    SemanticSupportResult,
+)
 
 __all__ = [
     "ApprovedPrecedenceRule",
@@ -151,6 +164,17 @@ __all__ = [
     "RetrievalOutcome",
     "RunAttemptCorrelation",
     "SafeAttemptReason",
+    "SEMANTIC_SUPPORT_ASSESSMENT_SCHEMA",
+    "SEMANTIC_SUPPORT_POLICY_SCHEMA",
+    "SEMANTIC_SUPPORT_REQUEST_SCHEMA",
+    "SEMANTIC_SUPPORT_RESULT_SCHEMA",
+    "SemanticSupportAssessment",
+    "SemanticSupportEvidence",
+    "SemanticSupportOutcome",
+    "SemanticSupportPolicy",
+    "SemanticSupportReasonCode",
+    "SemanticSupportRequest",
+    "SemanticSupportResult",
     "TrustedAnswerQuestionConfiguration",
     "ObservedCoverage",
     "ObservedCoverageMember",
