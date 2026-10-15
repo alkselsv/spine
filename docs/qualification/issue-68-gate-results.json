@@ -1,5 +1,5 @@
 {
-  "staged_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "staged_diff_sha256": "c121797e008b7c768e0f95f8241374d88b3f37af31167129235260441c2ab6e1",
   "results": [
     {
       "command": "uv sync --extra dev",
@@ -17,7 +17,7 @@
       "command": "uv run pytest -q",
       "returncode": 0,
       "status": "passed",
-      "summary": "2570 passed"
+        "summary": "2577 passed"
     },
     {
       "command": "uv run python -m compileall -q src tests",
