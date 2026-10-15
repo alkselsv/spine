@@ -12,6 +12,21 @@ from .models import (
     EvidenceLocator,
     PolicyDecisionGeneration,
 )
+from .revalidation import (
+    RevalidationAvailability,
+    RevalidationCheckpoint,
+    RevalidationCheckpointResult,
+    RevalidationDisposition,
+    RevalidationEvidenceObservation,
+    RevalidationFailureCode,
+    RevalidationObservation,
+    RevalidationPublicationImpact,
+    RevalidationPublicationObservation,
+    RevalidationRegenerationPlan,
+    RevalidationRequest,
+    RevalidationSourceObservation,
+    regeneration_ids,
+)
 
 __all__ = [
     "CONTEXT_BUNDLE_SCHEMA",
@@ -24,4 +39,17 @@ __all__ = [
     "ContextBundleState",
     "EvidenceLocator",
     "PolicyDecisionGeneration",
+    "RevalidationAvailability",
+    "RevalidationCheckpoint",
+    "RevalidationCheckpointResult",
+    "RevalidationDisposition",
+    "RevalidationEvidenceObservation",
+    "RevalidationFailureCode",
+    "RevalidationObservation",
+    "RevalidationPublicationImpact",
+    "RevalidationPublicationObservation",
+    "RevalidationRegenerationPlan",
+    "RevalidationRequest",
+    "RevalidationSourceObservation",
+    "regeneration_ids",
 ]
