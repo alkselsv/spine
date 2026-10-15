@@ -87,6 +87,7 @@ class EnvironmentMembership(DefinitionModel):
     version: int = Field(ge=1)
     status: AuthorizationRecordStatus
     provenance: AuthorizationRecordProvenance
+    effective_team_ids: frozenset[UUID] = frozenset()
 
     @field_validator(
         "membership_id",
@@ -97,6 +98,13 @@ class EnvironmentMembership(DefinitionModel):
     @classmethod
     def _validate_ids(cls, value: UUID, info: ValidationInfo) -> UUID:
         return _non_nil_uuid(value, info)
+
+    @field_validator("effective_team_ids")
+    @classmethod
+    def _validate_team_ids(cls, value: frozenset[UUID]) -> frozenset[UUID]:
+        if any(team_id.int == 0 for team_id in value):
+            raise ValueError("effective_team_ids must contain non-nil UUIDs")
+        return value
 
 
 class EnvironmentRoleBinding(DefinitionModel):
@@ -163,6 +171,7 @@ class CurrentAuthorizationSnapshot(DefinitionModel):
     environment_id: UUID
     roles: frozenset[AuthorizationRole]
     authorization_generation: int = Field(ge=1)
+    effective_team_ids: frozenset[UUID] = frozenset()
 
     @field_validator(
         "canonical_human_identity_id", "workspace_id", "environment_id"
@@ -170,6 +179,13 @@ class CurrentAuthorizationSnapshot(DefinitionModel):
     @classmethod
     def _validate_ids(cls, value: UUID, info: ValidationInfo) -> UUID:
         return _non_nil_uuid(value, info)
+
+    @field_validator("effective_team_ids")
+    @classmethod
+    def _validate_team_ids(cls, value: frozenset[UUID]) -> frozenset[UUID]:
+        if any(team_id.int == 0 for team_id in value):
+            raise ValueError("effective_team_ids must contain non-nil UUIDs")
+        return value
 
 
 __all__ = [

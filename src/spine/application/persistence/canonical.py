@@ -332,6 +332,10 @@ class CanonicalAcceptanceRepository(Protocol):
         self, canonical_acceptance_id: UUID
     ) -> CanonicalAcceptance | None: ...
 
+    async def list_acceptances(
+        self, source_object_id: UUID
+    ) -> tuple[CanonicalAcceptance, ...]: ...
+
 
 __all__ = [
     "ALLOWED_CANONICAL_ADMISSION_PROFILES",

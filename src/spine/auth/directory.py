@@ -63,6 +63,7 @@ class RepositoryAuthorizationDirectory:
             authentication_configuration_version=(
                 alias_snapshot.authentication_configuration_version
             ),
+            effective_team_ids=snapshot.effective_team_ids,
         )
 
 

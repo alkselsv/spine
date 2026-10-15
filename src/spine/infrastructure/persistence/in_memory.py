@@ -904,6 +904,30 @@ class _SourceObservationRepository:
 
         return self._uow._repository_call(operation)
 
+    async def list_sources(
+        self, *, limit: int, after: tuple[datetime, UUID] | None = None
+    ) -> tuple[SourceObject, ...]:
+        self._uow._guard_active()
+
+        def operation() -> tuple[SourceObject, ...]:
+            scope = self._uow.scope
+            if not isinstance(scope, EnvironmentScope):
+                return ()
+            values = sorted(
+                (
+                    source
+                    for source in self._objects().values()
+                    if source.workspace_id == scope.workspace_id
+                    and source.environment_id == scope.environment_id
+                    and (after is None or (source.created_at, source.source_object_id) < after)
+                ),
+                key=lambda source: (source.created_at, source.source_object_id),
+                reverse=True,
+            )[:limit]
+            return tuple(source.model_copy(deep=True) for source in values)
+
+        return self._uow._repository_call(operation)
+
     async def resolve_or_create_source(self, source: SourceObject) -> SourceObject:
         self._uow._guard_active()
 
@@ -1153,6 +1177,62 @@ class _SourceObservationRepository:
             )
         )
 
+    async def list_revisions(
+        self,
+        source_object_id: UUID,
+        *,
+        limit: int,
+        after: tuple[datetime, UUID] | None = None,
+    ) -> tuple[SourceRevision, ...]:
+        self._uow._guard_active()
+
+        def operation() -> tuple[SourceRevision, ...]:
+            scope = self._uow.scope
+            if not isinstance(scope, EnvironmentScope):
+                return ()
+            values = sorted(
+                (
+                    revision
+                    for revision in self._revisions().values()
+                    if revision.source_object_id == source_object_id
+                    and revision.workspace_id == scope.workspace_id
+                    and revision.environment_id == scope.environment_id
+                    and (
+                        after is None
+                        or (revision.observed_at, revision.revision_id) < after
+                    )
+                ),
+                key=lambda revision: (revision.observed_at, revision.revision_id),
+                reverse=True,
+            )[:limit]
+            return tuple(revision.model_copy(deep=True) for revision in values)
+
+        return self._uow._repository_call(operation)
+
+    async def list_provenance(
+        self, revision_id: UUID
+    ) -> tuple[SourceRevisionProvenance, ...]:
+        self._uow._guard_active()
+
+        def operation() -> tuple[SourceRevisionProvenance, ...]:
+            scope = self._uow.scope
+            if not isinstance(scope, EnvironmentScope):
+                return ()
+            values = sorted(
+                (
+                    value
+                    for value in self._provenance().values()
+                    if value.revision_id == revision_id
+                    and value.workspace_id == scope.workspace_id
+                    and value.environment_id == scope.environment_id
+                ),
+                key=lambda value: (value.observed_at, value.provenance_id),
+                reverse=True,
+            )
+            return tuple(value.model_copy(deep=True) for value in values)
+
+        return self._uow._repository_call(operation)
+
     async def resolve_receipt_associations(
         self, revision_id: UUID
     ) -> tuple[SourceRevisionReceiptAssociation, ...]:
@@ -1367,6 +1447,25 @@ class _CanonicalAcceptanceRepository:
         ):
             return None
         return value.model_copy(deep=True)
+
+    async def list_acceptances(
+        self, source_object_id: UUID
+    ) -> tuple[CanonicalAcceptance, ...]:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return ()
+        values = sorted(
+            (
+                value
+                for value in self._acceptances().values()
+                if value.source_object_id == source_object_id
+                and value.workspace_id == scope.workspace_id
+                and value.environment_id == scope.environment_id
+            ),
+            key=lambda value: value.accepted_generation,
+        )
+        return tuple(value.model_copy(deep=True) for value in values)
 
     async def accept(
         self, command: CanonicalAcceptanceCommand
@@ -2459,6 +2558,26 @@ class _InMemoryIngestionRepository:
             None,
         )
         return binding.model_copy(deep=True) if binding is not None else None
+
+    async def list_bindings_for_source_revision(
+        self, source_object_id: UUID, source_revision_id: UUID
+    ) -> tuple[IngestionRunSourceBinding, ...]:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return ()
+        values = sorted(
+            (
+                value
+                for value in self._bindings().values()
+                if value.source_object_id == source_object_id
+                and value.source_revision_id == source_revision_id
+                and value.workspace_id == scope.workspace_id
+                and value.environment_id == scope.environment_id
+            ),
+            key=lambda value: value.binding_id,
+        )
+        return tuple(value.model_copy(deep=True) for value in values)
 
     async def resolve_run_head(self, run_id: UUID) -> IngestionTransition | None:
         self._uow._guard_active()

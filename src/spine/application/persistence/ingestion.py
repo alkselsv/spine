@@ -209,6 +209,10 @@ class IngestionRepository(Protocol):
 
     async def resolve_binding(self, item_id: UUID) -> IngestionRunSourceBinding | None: ...
 
+    async def list_bindings_for_source_revision(
+        self, source_object_id: UUID, source_revision_id: UUID
+    ) -> tuple[IngestionRunSourceBinding, ...]: ...
+
 
 def deterministic_receipt_id(*, workspace_id: UUID, environment_id: UUID, operation: str, key: IdempotencyKey) -> UUID:
     return uuid5(

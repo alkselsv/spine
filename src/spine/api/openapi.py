@@ -28,6 +28,15 @@ from spine.application.ingestion_history import (
     IngestionHistoryPosition,
 )
 from spine.application.ingestion_history import IngestionHistoryService
+from spine.application.document_queries import (
+    DocumentPage,
+    DocumentPosition,
+    DocumentQueryRequester,
+    DocumentQueryService,
+    DocumentSnapshot,
+    RevisionPosition,
+    RevisionSnapshot,
+)
 from spine.application.projection_control import (
     UnavailableProjectionRecoveryService,
     UnavailableProjectionStatusService,
@@ -86,6 +95,41 @@ class _UnavailableIngestionHistoryService:
         del context, limit, after
         raise RuntimeError("The OpenAPI composition is not executable.")
 
+
+class _UnavailableDocumentQueryService:
+    async def list_documents(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        requester: DocumentQueryRequester,
+        limit: int,
+        after: DocumentPosition | None,
+    ) -> DocumentPage[DocumentSnapshot]:
+        del context, requester, limit, after
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+    async def get_document(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        requester: DocumentQueryRequester,
+        source_object_id: UUID,
+    ) -> DocumentSnapshot | None:
+        del context, requester, source_object_id
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+    async def list_revisions(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        requester: DocumentQueryRequester,
+        source_object_id: UUID,
+        limit: int,
+        after: RevisionPosition | None,
+    ) -> DocumentPage[RevisionSnapshot] | None:
+        del context, requester, source_object_id, limit, after
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
 async def _contract_readiness() -> ApiAuthorizationReadiness:
     return ApiAuthorizationReadiness(
         ready=False,
@@ -116,6 +160,11 @@ def create_openapi_app() -> FastAPI:
             _UnavailableIngestionHistoryService(),
         ),
         ingestion_history_cursor_secret=secrets.token_bytes(32),
+        document_query_service=cast(
+            DocumentQueryService,
+            _UnavailableDocumentQueryService(),
+        ),
+        document_query_cursor_secret=secrets.token_bytes(32),
         projection_status_service=UnavailableProjectionStatusService(),
         projection_recovery_service=UnavailableProjectionRecoveryService(),
     )

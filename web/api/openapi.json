@@ -1,6 +1,15 @@
 {
   "components": {
     "schemas": {
+      "AdmissionDisposition": {
+        "enum": [
+          "admitted",
+          "quarantined",
+          "rejected"
+        ],
+        "title": "AdmissionDisposition",
+        "type": "string"
+      },
       "ApiCollectionEnvelope_DocumentProcessingHistoryResponse_": {
         "additionalProperties": false,
         "properties": {
@@ -60,6 +69,67 @@
           "limit"
         ],
         "title": "ApiCollectionEnvelope[DocumentProcessingHistoryResponse]",
+        "type": "object"
+      },
+      "ApiCollectionEnvelope_DocumentSnapshot_": {
+        "additionalProperties": false,
+        "properties": {
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DocumentSnapshot"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 768,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "trace_id": {
+            "format": "uuid",
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "environment_id",
+          "trace_id",
+          "items",
+          "limit"
+        ],
+        "title": "ApiCollectionEnvelope[DocumentSnapshot]",
         "type": "object"
       },
       "ApiCollectionEnvelope_IngestionRunHistoryResponse_": {
@@ -123,6 +193,67 @@
         "title": "ApiCollectionEnvelope[IngestionRunHistoryResponse]",
         "type": "object"
       },
+      "ApiCollectionEnvelope_RevisionSnapshot_": {
+        "additionalProperties": false,
+        "properties": {
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RevisionSnapshot"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 768,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "trace_id": {
+            "format": "uuid",
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "environment_id",
+          "trace_id",
+          "items",
+          "limit"
+        ],
+        "title": "ApiCollectionEnvelope[RevisionSnapshot]",
+        "type": "object"
+      },
       "ApiCommandResult_ProjectionRecoveryResponse_": {
         "additionalProperties": false,
         "properties": {
@@ -179,6 +310,43 @@
           "status"
         ],
         "title": "ApiCommandResult[ProjectionRecoveryResponse]",
+        "type": "object"
+      },
+      "ApiResponseEnvelope_DocumentSnapshot_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/DocumentSnapshot"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "trace_id": {
+            "format": "uuid",
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "environment_id",
+          "trace_id",
+          "data"
+        ],
+        "title": "ApiResponseEnvelope[DocumentSnapshot]",
         "type": "object"
       },
       "ApiResponseEnvelope_HealthSummaryResponse_": {
@@ -638,6 +806,77 @@
         "title": "CommandStatus",
         "type": "string"
       },
+      "DocumentIdentitySnapshot": {
+        "additionalProperties": false,
+        "description": "Protected source identity, absent from metadata-only responses.",
+        "properties": {
+          "connection_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Id"
+          },
+          "external_generation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Generation"
+          },
+          "external_namespace": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Namespace"
+          },
+          "external_object_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Object Id"
+          },
+          "identity_mode": {
+            "title": "Identity Mode",
+            "type": "string"
+          },
+          "upload_identity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upload Identity"
+          }
+        },
+        "required": [
+          "identity_mode"
+        ],
+        "title": "DocumentIdentitySnapshot",
+        "type": "object"
+      },
       "DocumentProcessingHistoryResponse": {
         "additionalProperties": false,
         "properties": {
@@ -802,6 +1041,77 @@
           "status_url"
         ],
         "title": "DocumentProcessingHistoryResponse",
+        "type": "object"
+      },
+      "DocumentPublicationStatus": {
+        "enum": [
+          "published",
+          "unpublished",
+          "unavailable"
+        ],
+        "title": "DocumentPublicationStatus",
+        "type": "string"
+      },
+      "DocumentSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_revision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RevisionSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "identity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DocumentIdentitySnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "publication": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PublicationSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "source_kind": {
+            "title": "Source Kind",
+            "type": "string"
+          },
+          "source_object_id": {
+            "format": "uuid",
+            "title": "Source Object Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_object_id",
+          "source_kind",
+          "created_at"
+        ],
+        "title": "DocumentSnapshot",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -1140,6 +1450,23 @@
         "title": "IngestResponse",
         "type": "object"
       },
+      "IngestionItemState": {
+        "enum": [
+          "received",
+          "stored",
+          "observed",
+          "admission_pending",
+          "quarantined",
+          "rejected",
+          "accepted",
+          "processing",
+          "processed",
+          "processing_failed",
+          "projection_requested"
+        ],
+        "title": "IngestionItemState",
+        "type": "string"
+      },
       "IngestionReceiptResponse": {
         "additionalProperties": false,
         "properties": {
@@ -1271,6 +1598,99 @@
         "title": "LivenessResponse",
         "type": "object"
       },
+      "OriginalReferenceSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "byte_length": {
+            "minimum": 0.0,
+            "title": "Byte Length",
+            "type": "integer"
+          },
+          "digest_algorithm": {
+            "title": "Digest Algorithm",
+            "type": "string"
+          },
+          "digest_hex": {
+            "title": "Digest Hex",
+            "type": "string"
+          },
+          "object_id": {
+            "format": "uuid",
+            "title": "Object Id",
+            "type": "string"
+          },
+          "storage_generation": {
+            "format": "uuid",
+            "title": "Storage Generation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object_id",
+          "storage_generation",
+          "digest_algorithm",
+          "digest_hex",
+          "byte_length"
+        ],
+        "title": "OriginalReferenceSnapshot",
+        "type": "object"
+      },
+      "ProcessingCoverage": {
+        "enum": [
+          "complete",
+          "partial",
+          "failed"
+        ],
+        "title": "ProcessingCoverage",
+        "type": "string"
+      },
+      "ProcessingReferenceSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProcessingCoverage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ingestion_item_id": {
+            "format": "uuid",
+            "title": "Ingestion Item Id",
+            "type": "string"
+          },
+          "ingestion_run_id": {
+            "format": "uuid",
+            "title": "Ingestion Run Id",
+            "type": "string"
+          },
+          "processing_receipt_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processing Receipt Id"
+          },
+          "state": {
+            "$ref": "#/components/schemas/IngestionItemState"
+          }
+        },
+        "required": [
+          "ingestion_run_id",
+          "ingestion_item_id",
+          "state"
+        ],
+        "title": "ProcessingReferenceSnapshot",
+        "type": "object"
+      },
       "ProjectionAsOfResponse": {
         "additionalProperties": false,
         "properties": {
@@ -1297,6 +1717,14 @@
         ],
         "title": "ProjectionAsOfResponse",
         "type": "object"
+      },
+      "ProjectionCandidateState": {
+        "enum": [
+          "open",
+          "sealed"
+        ],
+        "title": "ProjectionCandidateState",
+        "type": "string"
       },
       "ProjectionFreshness": {
         "enum": [
@@ -1468,6 +1896,68 @@
         ],
         "title": "ProjectionRecoveryResponse",
         "type": "object"
+      },
+      "ProjectionReferenceSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "projection_candidate_id": {
+            "format": "uuid",
+            "title": "Projection Candidate Id",
+            "type": "string"
+          },
+          "projection_kind": {
+            "title": "Projection Kind",
+            "type": "string"
+          },
+          "projection_reference_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Projection Reference Id"
+          },
+          "projection_run_id": {
+            "format": "uuid",
+            "title": "Projection Run Id",
+            "type": "string"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectionRunState"
+              },
+              {
+                "$ref": "#/components/schemas/ProjectionCandidateState"
+              }
+            ],
+            "title": "State"
+          }
+        },
+        "required": [
+          "projection_run_id",
+          "projection_candidate_id",
+          "projection_kind",
+          "state"
+        ],
+        "title": "ProjectionReferenceSnapshot",
+        "type": "object"
+      },
+      "ProjectionRunState": {
+        "enum": [
+          "requested",
+          "building",
+          "validating",
+          "complete",
+          "failed",
+          "abandoned"
+        ],
+        "title": "ProjectionRunState",
+        "type": "string"
       },
       "ProjectionStatusResponse": {
         "additionalProperties": false,
@@ -1705,6 +2195,90 @@
         "title": "PublicProcessingStatus",
         "type": "string"
       },
+      "PublicationSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "drift_count": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Drift Count"
+          },
+          "freshness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectionFreshness"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "health": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectionHealth"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "manifest_complete": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manifest Complete"
+          },
+          "projection_kind": {
+            "title": "Projection Kind",
+            "type": "string"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id"
+          },
+          "source_covered": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Covered"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DocumentPublicationStatus"
+          }
+        },
+        "required": [
+          "projection_kind",
+          "status"
+        ],
+        "title": "PublicationSnapshot",
+        "type": "object"
+      },
       "ReadinessResponse": {
         "additionalProperties": false,
         "properties": {
@@ -1755,6 +2329,248 @@
         ],
         "title": "Retryability",
         "type": "string"
+      },
+      "RevisionContentSnapshot": {
+        "additionalProperties": false,
+        "description": "Protected fields released only after the current read_content decision.",
+        "properties": {
+          "byte_length": {
+            "minimum": 0.0,
+            "title": "Byte Length",
+            "type": "integer"
+          },
+          "document_language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Language"
+          },
+          "embedded_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedded Title"
+          },
+          "locator": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StableLocatorSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "media_type": {
+            "title": "Media Type",
+            "type": "string"
+          },
+          "original_reference": {
+            "$ref": "#/components/schemas/OriginalReferenceSnapshot"
+          },
+          "original_sha256": {
+            "title": "Original Sha256",
+            "type": "string"
+          },
+          "revision_digest": {
+            "title": "Revision Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision_digest",
+          "original_sha256",
+          "byte_length",
+          "media_type",
+          "original_reference"
+        ],
+        "title": "RevisionContentSnapshot",
+        "type": "object"
+      },
+      "RevisionKind": {
+        "enum": [
+          "content",
+          "tombstone"
+        ],
+        "title": "RevisionKind",
+        "type": "string"
+      },
+      "RevisionLifecycle": {
+        "enum": [
+          "observed",
+          "quarantined",
+          "rejected",
+          "superseded",
+          "current",
+          "tombstoned",
+          "processing"
+        ],
+        "title": "RevisionLifecycle",
+        "type": "string"
+      },
+      "RevisionSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepted At"
+          },
+          "accepted_generation": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepted Generation"
+          },
+          "admission_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AdmissionDisposition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "content": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RevisionContentSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "deletion_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deletion Reason"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/RevisionKind"
+          },
+          "lifecycle": {
+            "$ref": "#/components/schemas/RevisionLifecycle"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          },
+          "predecessor_revision_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Predecessor Revision Id"
+          },
+          "processing_references": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ProcessingReferenceSnapshot"
+            },
+            "title": "Processing References",
+            "type": "array"
+          },
+          "projection_references": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ProjectionReferenceSnapshot"
+            },
+            "title": "Projection References",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "source_revision_id": {
+            "format": "uuid",
+            "title": "Source Revision Id",
+            "type": "string"
+          },
+          "superseded_by_revision_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Superseded By Revision Id"
+          }
+        },
+        "required": [
+          "source_revision_id",
+          "kind",
+          "observed_at",
+          "lifecycle"
+        ],
+        "title": "RevisionSnapshot",
+        "type": "object"
+      },
+      "StableLocatorSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "locator_kind": {
+            "title": "Locator Kind",
+            "type": "string"
+          },
+          "locator_schema": {
+            "title": "Locator Schema",
+            "type": "string"
+          },
+          "locator_value": {
+            "title": "Locator Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "locator_kind",
+          "locator_value",
+          "locator_schema"
+        ],
+        "title": "StableLocatorSnapshot",
+        "type": "object"
       },
       "StructuredError": {
         "additionalProperties": false,
@@ -1851,6 +2667,169 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/documents": {
+      "get": {
+        "operationId": "documents.list",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 768,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Environment-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCollectionEnvelope_DocumentSnapshot_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Safe request error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authentication is invalid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authorization is denied."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Resource is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Command conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request payload is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Unexpected internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Dependency is unavailable."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Documents.List"
+      }
+    },
     "/api/v1/documents/batches": {
       "post": {
         "operationId": "ingestion.batch_upload",
@@ -2171,6 +3150,322 @@
           }
         ],
         "summary": "Documents.Processing History"
+      }
+    },
+    "/api/v1/documents/{source_object_id}": {
+      "get": {
+        "operationId": "documents.detail",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_object_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Source Object Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Environment-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseEnvelope_DocumentSnapshot_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Safe request error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authentication is invalid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authorization is denied."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Resource is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Command conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request payload is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Unexpected internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Dependency is unavailable."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Documents.Detail"
+      }
+    },
+    "/api/v1/documents/{source_object_id}/revisions": {
+      "get": {
+        "operationId": "documents.revisions",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_object_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Source Object Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 768,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Environment-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCollectionEnvelope_RevisionSnapshot_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Safe request error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authentication is invalid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authorization is denied."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Resource is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Command conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request payload is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Unexpected internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Dependency is unavailable."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Documents.Revisions"
       }
     },
     "/api/v1/health/live": {

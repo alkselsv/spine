@@ -30,7 +30,7 @@ _BIND_RESOLUTION_SCOPE = text(
     "set_config('spine.environment_id', :environment_id, true)"
 )
 _RESOLVE_CURRENT_SNAPSHOT = text(
-    "SELECT acting_subject_id, authorization_generation "
+    "SELECT acting_subject_id, authorization_generation, effective_team_ids "
     "FROM spine.resolve_current_authorization_snapshot("
     ":issuer, :subject, :workspace_id, :environment_id)"
 )
@@ -82,6 +82,9 @@ class PostgreSQLAuthorizationSnapshotRepository:
                 environment_id=requested_scope.environment_id,
                 roles=frozenset({AuthorizationRole.ADMINISTRATOR}),
                 authorization_generation=row.authorization_generation,
+                effective_team_ids=frozenset(
+                    row.effective_team_ids or ()
+                ),
             )
         except asyncio.CancelledError:
             raise

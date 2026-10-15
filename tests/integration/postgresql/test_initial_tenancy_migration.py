@@ -188,7 +188,7 @@ AUTHORIZATION_DIRECTORY_COLUMNS = {
     ("environment_memberships", column)
     for column in (
         "membership_id", "workspace_id", "environment_id",
-        "canonical_human_identity_id", "version", "status", "change_id",
+        "canonical_human_identity_id", "effective_team_ids", "version", "status", "change_id",
         "recorded_by", "recorded_at",
     )
 } | {
@@ -4523,13 +4523,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261022_26_projection_publication.py",
         "20261023_27_context_profiles.py",
         "20261024_28_context_bundles.py",
+        "20261025_29_authorization_team_memberships.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "20261021_26_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
         "revision = '20261021_26'\n"
-        "down_revision = '20261024_28'\n"
+        "down_revision = '20261025_29'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

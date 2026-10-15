@@ -326,3 +326,74 @@ async def test_observation_rollback_removes_source_revision_and_provenance(persi
     async with persistence_adapter.uow_factory(persistence_adapter.source_context(workspace_id, environment_id)) as uow:
         assert await uow.sources.resolve_revision(source_revision.revision_id) is None
         await uow.rollback()
+
+
+@pytest.mark.asyncio
+async def test_source_queries_are_bounded_ordered_and_tenant_isolated(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id, environment_id = synthetic_uuid(7070), synthetic_uuid(7071)
+    other_workspace_id, other_environment_id = synthetic_uuid(7072), synthetic_uuid(7073)
+    await prepare(persistence_adapter, workspace_id, environment_id)
+    await prepare(persistence_adapter, other_workspace_id, other_environment_id)
+    first_source = source(workspace_id, environment_id)
+    second_source = first_source.model_copy(
+        update={
+            "source_object_id": synthetic_uuid(7074),
+            "upload_identity": "contract-upload-2",
+            "created_at": NOW.replace(hour=13),
+        }
+    )
+    other_source = source(other_workspace_id, other_environment_id)
+    cases = (
+        (first_source, synthetic_uuid(7075), "event-1", "query-source-1"),
+        (second_source, synthetic_uuid(7076), "event-2", "query-source-2"),
+        (other_source, synthetic_uuid(7077), "event-3", "query-source-3"),
+    )
+    for source_object, revision_id, event, key in cases:
+        source_revision = revision(source_object, revision_id)
+        source_provenance = provenance(source_object, revision_id, event)
+        async with persistence_adapter.uow_factory(
+            persistence_adapter.source_context(
+                source_object.workspace_id, source_object.environment_id
+            )
+        ) as uow:
+            await uow.sources.record_observation(
+                SourceObservationCommand.create(
+                    source=source_object,
+                    revision=source_revision,
+                    provenance=source_provenance,
+                    idempotency_key=IdempotencyKey(key),
+                )
+            )
+            await uow.commit()
+
+    async with persistence_adapter.uow_factory(
+        persistence_adapter.source_context(workspace_id, environment_id)
+    ) as uow:
+        first_page = await uow.sources.list_sources(limit=1)
+        second_page = await uow.sources.list_sources(
+            limit=1,
+            after=(first_page[0].created_at, first_page[0].source_object_id),
+        )
+        revisions = await uow.sources.list_revisions(
+            second_source.source_object_id,
+            limit=2,
+        )
+        provenance_items = await uow.sources.list_provenance(
+            revisions[0].revision_id
+        )
+        await uow.commit()
+
+    assert [item.source_object_id for item in first_page] == [
+        second_source.source_object_id
+    ]
+    assert [item.source_object_id for item in second_page] == [
+        first_source.source_object_id
+    ]
+    assert [item.source_object_id for item in (*first_page, *second_page)] == [
+        second_source.source_object_id,
+        first_source.source_object_id,
+    ]
+    assert [item.revision_id for item in revisions] == [synthetic_uuid(7076)]
+    assert [item.revision_id for item in provenance_items] == [synthetic_uuid(7076)]

@@ -4,6 +4,23 @@
  */
 
 export interface paths {
+    "/api/v1/documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Documents.List */
+        get: operations["documents.list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/documents/batches": {
         parameters: {
             query?: never;
@@ -30,6 +47,40 @@ export interface paths {
         };
         /** Documents.Processing History */
         get: operations["documents.processing_history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/documents/{source_object_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Documents.Detail */
+        get: operations["documents.detail"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/documents/{source_object_id}/revisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Documents.Revisions */
+        get: operations["documents.revisions"];
         put?: never;
         post?: never;
         delete?: never;
@@ -212,6 +263,11 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AdmissionDisposition
+         * @enum {string}
+         */
+        AdmissionDisposition: "admitted" | "quarantined" | "rejected";
         /** ApiCollectionEnvelope[DocumentProcessingHistoryResponse] */
         ApiCollectionEnvelope_DocumentProcessingHistoryResponse_: {
             /**
@@ -221,6 +277,36 @@ export interface components {
             environment_id: string;
             /** Items */
             items: components["schemas"]["DocumentProcessingHistoryResponse"][];
+            /** Limit */
+            limit: number;
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** ApiCollectionEnvelope[DocumentSnapshot] */
+        ApiCollectionEnvelope_DocumentSnapshot_: {
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /** Items */
+            items: components["schemas"]["DocumentSnapshot"][];
             /** Limit */
             limit: number;
             /** Next Cursor */
@@ -272,6 +358,36 @@ export interface components {
              */
             workspace_id: string;
         };
+        /** ApiCollectionEnvelope[RevisionSnapshot] */
+        ApiCollectionEnvelope_RevisionSnapshot_: {
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /** Items */
+            items: components["schemas"]["RevisionSnapshot"][];
+            /** Limit */
+            limit: number;
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
         /** ApiCommandResult[ProjectionRecoveryResponse] */
         ApiCommandResult_ProjectionRecoveryResponse_: {
             /**
@@ -297,6 +413,31 @@ export interface components {
              */
             schema_version: 1;
             status: components["schemas"]["CommandStatus"];
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** ApiResponseEnvelope[DocumentSnapshot] */
+        ApiResponseEnvelope_DocumentSnapshot_: {
+            data: components["schemas"]["DocumentSnapshot"];
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
             /**
              * Trace Id
              * Format: uuid
@@ -510,6 +651,24 @@ export interface components {
          * @enum {string}
          */
         CommandStatus: "accepted" | "completed" | "failed" | "cancelled";
+        /**
+         * DocumentIdentitySnapshot
+         * @description Protected source identity, absent from metadata-only responses.
+         */
+        DocumentIdentitySnapshot: {
+            /** Connection Id */
+            connection_id?: string | null;
+            /** External Generation */
+            external_generation?: string | null;
+            /** External Namespace */
+            external_namespace?: string | null;
+            /** External Object Id */
+            external_object_id?: string | null;
+            /** Identity Mode */
+            identity_mode: string;
+            /** Upload Identity */
+            upload_identity?: string | null;
+        };
         /** DocumentProcessingHistoryResponse */
         DocumentProcessingHistoryResponse: {
             acceptance: components["schemas"]["PublicAcceptanceStatus"];
@@ -570,6 +729,35 @@ export interface components {
              * @default []
              */
             warnings: components["schemas"]["BatchIngestionWarningResponse"][];
+        };
+        /**
+         * DocumentPublicationStatus
+         * @enum {string}
+         */
+        DocumentPublicationStatus: "published" | "unpublished" | "unavailable";
+        /** DocumentSnapshot */
+        DocumentSnapshot: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            current_revision?: components["schemas"]["RevisionSnapshot"] | null;
+            identity?: components["schemas"]["DocumentIdentitySnapshot"] | null;
+            publication?: components["schemas"]["PublicationSnapshot"] | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Source Kind */
+            source_kind: string;
+            /**
+             * Source Object Id
+             * Format: uuid
+             */
+            source_object_id: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -652,6 +840,11 @@ export interface components {
             /** Status */
             status: string;
         };
+        /**
+         * IngestionItemState
+         * @enum {string}
+         */
+        IngestionItemState: "received" | "stored" | "observed" | "admission_pending" | "quarantined" | "rejected" | "accepted" | "processing" | "processed" | "processing_failed" | "projection_requested";
         /** IngestionReceiptResponse */
         IngestionReceiptResponse: {
             /** Artifact Digest */
@@ -708,6 +901,47 @@ export interface components {
              */
             status: "ok";
         };
+        /** OriginalReferenceSnapshot */
+        OriginalReferenceSnapshot: {
+            /** Byte Length */
+            byte_length: number;
+            /** Digest Algorithm */
+            digest_algorithm: string;
+            /** Digest Hex */
+            digest_hex: string;
+            /**
+             * Object Id
+             * Format: uuid
+             */
+            object_id: string;
+            /**
+             * Storage Generation
+             * Format: uuid
+             */
+            storage_generation: string;
+        };
+        /**
+         * ProcessingCoverage
+         * @enum {string}
+         */
+        ProcessingCoverage: "complete" | "partial" | "failed";
+        /** ProcessingReferenceSnapshot */
+        ProcessingReferenceSnapshot: {
+            coverage?: components["schemas"]["ProcessingCoverage"] | null;
+            /**
+             * Ingestion Item Id
+             * Format: uuid
+             */
+            ingestion_item_id: string;
+            /**
+             * Ingestion Run Id
+             * Format: uuid
+             */
+            ingestion_run_id: string;
+            /** Processing Receipt Id */
+            processing_receipt_id?: string | null;
+            state: components["schemas"]["IngestionItemState"];
+        };
         /** ProjectionAsOfResponse */
         ProjectionAsOfResponse: {
             /** Accepted Through Generation */
@@ -723,6 +957,11 @@ export interface components {
              */
             canonical_boundary_id: string;
         };
+        /**
+         * ProjectionCandidateState
+         * @enum {string}
+         */
+        ProjectionCandidateState: "open" | "sealed";
         /**
          * ProjectionFreshness
          * @enum {string}
@@ -810,6 +1049,30 @@ export interface components {
              */
             state: "accepted";
         };
+        /** ProjectionReferenceSnapshot */
+        ProjectionReferenceSnapshot: {
+            /**
+             * Projection Candidate Id
+             * Format: uuid
+             */
+            projection_candidate_id: string;
+            /** Projection Kind */
+            projection_kind: string;
+            /** Projection Reference Id */
+            projection_reference_id?: string | null;
+            /**
+             * Projection Run Id
+             * Format: uuid
+             */
+            projection_run_id: string;
+            /** State */
+            state: components["schemas"]["ProjectionRunState"] | components["schemas"]["ProjectionCandidateState"];
+        };
+        /**
+         * ProjectionRunState
+         * @enum {string}
+         */
+        ProjectionRunState: "requested" | "building" | "validating" | "complete" | "failed" | "abandoned";
         /** ProjectionStatusResponse */
         ProjectionStatusResponse: {
             /** Activation Generation */
@@ -874,6 +1137,22 @@ export interface components {
          * @enum {string}
          */
         PublicProcessingStatus: "not_started" | "processing" | "succeeded" | "partial" | "failed" | "unsupported" | "cancelled";
+        /** PublicationSnapshot */
+        PublicationSnapshot: {
+            /** Drift Count */
+            drift_count?: number | null;
+            freshness?: components["schemas"]["ProjectionFreshness"] | null;
+            health?: components["schemas"]["ProjectionHealth"] | null;
+            /** Manifest Complete */
+            manifest_complete?: boolean | null;
+            /** Projection Kind */
+            projection_kind: string;
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** Source Covered */
+            source_covered?: boolean | null;
+            status: components["schemas"]["DocumentPublicationStatus"];
+        };
         /** ReadinessResponse */
         ReadinessResponse: {
             /**
@@ -898,6 +1177,88 @@ export interface components {
          * @enum {string}
          */
         Retryability: "never" | "same_command" | "after_delay";
+        /**
+         * RevisionContentSnapshot
+         * @description Protected fields released only after the current read_content decision.
+         */
+        RevisionContentSnapshot: {
+            /** Byte Length */
+            byte_length: number;
+            /** Document Language */
+            document_language?: string | null;
+            /** Embedded Title */
+            embedded_title?: string | null;
+            locator?: components["schemas"]["StableLocatorSnapshot"] | null;
+            /** Media Type */
+            media_type: string;
+            original_reference: components["schemas"]["OriginalReferenceSnapshot"];
+            /** Original Sha256 */
+            original_sha256: string;
+            /** Revision Digest */
+            revision_digest: string;
+        };
+        /**
+         * RevisionKind
+         * @enum {string}
+         */
+        RevisionKind: "content" | "tombstone";
+        /**
+         * RevisionLifecycle
+         * @enum {string}
+         */
+        RevisionLifecycle: "observed" | "quarantined" | "rejected" | "superseded" | "current" | "tombstoned" | "processing";
+        /** RevisionSnapshot */
+        RevisionSnapshot: {
+            /** Accepted At */
+            accepted_at?: string | null;
+            /** Accepted Generation */
+            accepted_generation?: number | null;
+            admission_status?: components["schemas"]["AdmissionDisposition"] | null;
+            content?: components["schemas"]["RevisionContentSnapshot"] | null;
+            /** Deletion Reason */
+            deletion_reason?: string | null;
+            kind: components["schemas"]["RevisionKind"];
+            lifecycle: components["schemas"]["RevisionLifecycle"];
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Predecessor Revision Id */
+            predecessor_revision_id?: string | null;
+            /**
+             * Processing References
+             * @default []
+             */
+            processing_references: components["schemas"]["ProcessingReferenceSnapshot"][];
+            /**
+             * Projection References
+             * @default []
+             */
+            projection_references: components["schemas"]["ProjectionReferenceSnapshot"][];
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Source Revision Id
+             * Format: uuid
+             */
+            source_revision_id: string;
+            /** Superseded By Revision Id */
+            superseded_by_revision_id?: string | null;
+        };
+        /** StableLocatorSnapshot */
+        StableLocatorSnapshot: {
+            /** Locator Kind */
+            locator_kind: string;
+            /** Locator Schema */
+            locator_schema: string;
+            /** Locator Value */
+            locator_value: string;
+        };
         /**
          * StructuredError
          * @description The allowlisted public error envelope for schema version one.
@@ -946,6 +1307,113 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    "documents.list": {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiCollectionEnvelope_DocumentSnapshot_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
     "ingestion.batch_upload": {
         parameters: {
             query?: never;
@@ -1079,6 +1547,221 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiCollectionEnvelope_DocumentProcessingHistoryResponse_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "documents.detail": {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                source_object_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope_DocumentSnapshot_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "documents.revisions": {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                source_object_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiCollectionEnvelope_RevisionSnapshot_"];
                 };
             };
             /** @description Safe request error. */

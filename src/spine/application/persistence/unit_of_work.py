@@ -23,6 +23,7 @@ from spine.application.persistence.context_bundles import ContextBundleRepositor
 
 if TYPE_CHECKING:
     from spine.application.diagnostics.audit import AuditWriter
+    from spine.application.access_policies import AccessPolicyRepository
 
 
 class TenantUnitOfWork(Protocol):
@@ -77,6 +78,8 @@ class UnitOfWork(TenantUnitOfWork, Protocol):
 
     @property
     def projection(self) -> ProjectionRepository: ...
+    @property
+    def access_policies(self) -> "AccessPolicyRepository": ...
     @property
     def idempotency(self) -> IdempotencyRepository: ...
 

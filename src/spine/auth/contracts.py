@@ -140,11 +140,19 @@ class AuthorizationResolution(DefinitionModel):
     roles: frozenset[AuthorizationRole]
     authorization_generation: int = Field(ge=1)
     authentication_configuration_version: VersionIdentifier
+    effective_team_ids: frozenset[UUID] = frozenset()
 
     @field_validator("acting_subject_id")
     @classmethod
     def _reject_nil_actor(cls, value: UUID) -> UUID:
         return _require_non_nil_uuid(value, field_name="acting_subject_id")
+
+    @field_validator("effective_team_ids")
+    @classmethod
+    def _reject_nil_team_ids(cls, value: frozenset[UUID]) -> frozenset[UUID]:
+        if any(team_id.int == 0 for team_id in value):
+            raise ValueError("effective_team_ids must contain non-nil UUIDs")
+        return value
 
     @field_validator("authentication_configuration_version")
     @classmethod
@@ -202,6 +210,10 @@ class AuthorizedRequestContext(Generic[DiagnosticContextT]):
 
     @property
     def authorization_generation(self) -> int:
+        raise NotImplementedError
+
+    @property
+    def effective_team_ids(self) -> frozenset[UUID]:
         raise NotImplementedError
 
     @property
