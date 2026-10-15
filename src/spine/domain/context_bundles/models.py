@@ -58,7 +58,12 @@ def _json_value(value: Any) -> Any:
     if hasattr(value, "model_dump"):
         return _json_value(value.model_dump(mode="python"))
     if isinstance(value, Mapping):
-        return {str(key): _json_value(item) for key, item in value.items()}
+        normalized = {str(key): _json_value(item) for key, item in value.items()}
+        if normalized.get("schema_version") == "context-evidence-reference:v1":
+            normalized.pop("original_sha256", None)
+            normalized.pop("locator_digest", None)
+            normalized.pop("projected_kind", None)
+        return normalized
     if isinstance(value, (tuple, list)):
         return [_json_value(item) for item in value]
     return value
@@ -122,7 +127,9 @@ class ContextBundleEvidenceReference(DefinitionModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["context-evidence-reference:v1"] = (
+    schema_version: Literal[
+        "context-evidence-reference:v1", "context-evidence-reference:v2"
+    ] = (
         "context-evidence-reference:v1"
     )
     evidence_id: str = Field(min_length=1, max_length=128)
@@ -132,11 +139,14 @@ class ContextBundleEvidenceReference(DefinitionModel):
     activation_generation: int = Field(ge=1)
     source_object_id: UUID
     source_revision_id: UUID
+    original_sha256: str | None = Field(default=None, pattern=_DIGEST)
     revision_digest: str | None = Field(default=None, pattern=_DIGEST)
     revision_number: int | None = Field(default=None, ge=1)
     processing_receipt_id: UUID | None = None
+    projected_kind: Literal["chunk", "entity", "relation"] | None = None
     locator_contract_version: str | None = Field(default=None, min_length=1, max_length=128)
     locator: EvidenceLocator
+    locator_digest: str | None = Field(default=None, pattern=_DIGEST)
     evidence_digest: str = Field(pattern=_DIGEST)
     status: ContextBundleEvidenceStatus = ContextBundleEvidenceStatus.VALID
 
@@ -152,6 +162,17 @@ class ContextBundleEvidenceReference(DefinitionModel):
             _require_id(getattr(self, field_name), field_name)
         if self.processing_receipt_id is not None:
             _require_id(self.processing_receipt_id, "processing_receipt_id")
+        if self.schema_version == "context-evidence-reference:v1" and (
+            self.original_sha256 is not None
+            or self.locator_digest is not None
+            or self.projected_kind is not None
+        ):
+            raise ValueError("v1 evidence references cannot carry v2 digest fields")
+        if (
+            self.schema_version == "context-evidence-reference:v2"
+            and self.projected_kind is None
+        ):
+            raise ValueError("v2 evidence references require a projected kind")
         return self
 
 

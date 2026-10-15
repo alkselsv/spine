@@ -25,10 +25,10 @@ from spine.domain.context_bundles import (
 
 
 ANSWER_QUESTION_INPUT_SCHEMA = "answer-question.input:v1"
-ANSWER_QUESTION_OUTPUT_SCHEMA = "answer-question.output:v1"
-ANSWER_CONTENT_SCHEMA = "answer-content:v1"
+ANSWER_QUESTION_OUTPUT_SCHEMA = "answer-question.output:v2"
+ANSWER_CONTENT_SCHEMA = "answer-content:v2"
 ANSWER_CLAIM_SCHEMA = "answer-claim:v1"
-CITATION_SCHEMA = "citation:v1"
+CITATION_SCHEMA = "citation:v2"
 CLAIM_EVIDENCE_RELATIONSHIP_SCHEMA = "claim-evidence-relationship:v1"
 _MAX_TEXT_LENGTH = 32_768
 
@@ -226,10 +226,16 @@ class Citation(_AnswerQuestionModel):
         ):
             raise ValueError("citation evidence has a mixed workspace or environment")
         if (
-            self.evidence_reference.revision_digest is None
+            self.evidence_reference.schema_version != "context-evidence-reference:v2"
+            or self.evidence_reference.original_sha256 is None
+            or self.evidence_reference.locator_digest is None
+            or self.evidence_reference.revision_digest is None
+            or self.evidence_reference.processing_receipt_id is None
             or self.evidence_reference.locator_contract_version is None
         ):
-            raise ValueError("citation evidence requires complete revision and locator lineage")
+            raise ValueError(
+                "citation evidence requires complete original, revision, and locator lineage"
+            )
         if self.evidence_reference.status is not ContextBundleEvidenceStatus.VALID:
             raise ValueError("citation requires valid persisted evidence")
         return self
@@ -258,11 +264,11 @@ class Citation(_AnswerQuestionModel):
 
     @property
     def original_sha256(self) -> str:
-        """Compatibility name for the immutable source-revision digest."""
+        """Immutable digest of the source bytes behind the revision."""
 
-        if self.evidence_reference.revision_digest is None:
-            raise ValueError("citation evidence does not retain a revision digest")
-        return self.evidence_reference.revision_digest
+        if self.evidence_reference.original_sha256 is None:
+            raise ValueError("citation evidence does not retain an original digest")
+        return self.evidence_reference.original_sha256
 
     @property
     def evidence_id(self) -> str:
@@ -287,6 +293,10 @@ class Citation(_AnswerQuestionModel):
     @property
     def locator_contract_version(self) -> str | None:
         return self.evidence_reference.locator_contract_version
+
+    @property
+    def locator_digest(self) -> str | None:
+        return self.evidence_reference.locator_digest
 
     @property
     def evidence_digest(self) -> str:

@@ -82,6 +82,7 @@ def citation() -> CitationReference:
             attempt_id=ATTEMPT_ID,
         ),
         evidence_reference=ContextBundleEvidenceReference(
+            schema_version="context-evidence-reference:v2",
             evidence_id="evidence-1",
             workspace_id=WORKSPACE_ID,
             environment_id=ENVIRONMENT_ID,
@@ -89,9 +90,13 @@ def citation() -> CitationReference:
             activation_generation=1,
             source_object_id=SOURCE_OBJECT_ID,
             source_revision_id=SOURCE_REVISION_ID,
+            original_sha256="d" * 64,
             revision_digest="b" * 64,
+            processing_receipt_id=UUID(int=121),
+            projected_kind="chunk",
             locator_contract_version="stable-locator:v1",
             locator={"kind": "page", "value": "1"},
+            locator_digest="e" * 64,
             evidence_digest="a" * 64,
         ),
     )

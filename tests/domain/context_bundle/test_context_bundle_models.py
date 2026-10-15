@@ -179,6 +179,25 @@ def test_context_bundle_create_is_digest_addressed_and_immutable() -> None:
         bundle.attempt_id = UUID(int=25)  # type: ignore[misc]
 
 
+def test_v1_evidence_reference_digest_survives_legacy_json_without_v2_fields() -> None:
+    bundle = context_bundle()
+    payload = bundle.model_dump(mode="json")
+    for reference in payload["evidence_references"]:
+        reference.pop("original_sha256", None)
+        reference.pop("locator_digest", None)
+
+    assert ContextBundle.model_validate(payload) == bundle
+
+
+def test_v1_evidence_reference_rejects_v2_digest_fields() -> None:
+    reference = context_bundle().evidence_references[0]
+
+    with pytest.raises(ValidationError, match="v1 evidence references"):
+        ContextBundleEvidenceReference.model_validate(
+            {**reference.model_dump(), "original_sha256": "a" * 64}
+        )
+
+
 def test_context_bundle_ref_matches_public_v1_identity() -> None:
     bundle = context_bundle()
 
