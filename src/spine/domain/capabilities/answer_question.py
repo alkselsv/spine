@@ -17,11 +17,19 @@ from uuid import UUID
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from spine.domain.common import ValidatedDefinitionModel
+from spine.domain.context_bundles import (
+    ContextBundleEvidenceReference,
+    ContextBundleEvidenceStatus,
+    ContextBundleLineageRef,
+)
 
 
 ANSWER_QUESTION_INPUT_SCHEMA = "answer-question.input:v1"
 ANSWER_QUESTION_OUTPUT_SCHEMA = "answer-question.output:v1"
-_SHA256 = r"^[0-9a-f]{64}$"
+ANSWER_CONTENT_SCHEMA = "answer-content:v1"
+ANSWER_CLAIM_SCHEMA = "answer-claim:v1"
+CITATION_SCHEMA = "citation:v1"
+CLAIM_EVIDENCE_RELATIONSHIP_SCHEMA = "claim-evidence-relationship:v1"
 _MAX_TEXT_LENGTH = 32_768
 
 
@@ -143,71 +151,266 @@ class RunAttemptCorrelation(_AnswerQuestionModel):
         return _require_non_zero(value, info.field_name)
 
 
-class CitationReference(_AnswerQuestionModel):
-    """A structured pointer to one exact, bundle-scoped source revision."""
+class AnswerClaimKind(str, Enum):
+    """Whether a claim asserts evidence or a reproducible derivation from it."""
 
+    FACTUAL = "factual"
+    DERIVED = "derived"
+
+
+class ClaimEvidenceRelationshipKind(str, Enum):
+    """Closed composition semantics for claim-level attribution."""
+
+    INDEPENDENT = "independent"
+    CORROBORATING = "corroborating"
+    JOINT = "joint"
+    DERIVATION_INPUT = "derivation_input"
+    CONTRADICTION = "contradiction"
+
+
+class AnswerClaimLocation(_AnswerQuestionModel):
+    """A stable span in one immutable accepted answer representation.
+
+    The containing answer identity is explicit.  Offsets locate the claim for
+    inspection and rendering, but neither offsets nor rendered markers define
+    the claim's authoritative identity.
+    """
+
+    schema_version: Literal["answer-claim-location:v1"] = "answer-claim-location:v1"
+    answer_id: UUID
+    start_offset: int = Field(ge=0)
+    end_offset: int = Field(gt=0)
+
+    @field_validator("answer_id")
+    @classmethod
+    def validate_answer_id(cls, value: UUID) -> UUID:
+        return _require_non_zero(value, "answer_id")
+
+    @model_validator(mode="after")
+    def validate_offsets(self) -> AnswerClaimLocation:
+        if self.end_offset <= self.start_offset:
+            raise ValueError("claim location end must follow its start")
+        return self
+
+
+class Citation(_AnswerQuestionModel):
+    """One exact persisted ContextBundle evidence identity.
+
+    Display titles, excerpts, URLs, retrieval scores and inline markers are
+    deliberately absent.  They are presentation or diagnostic data and cannot
+    substitute for the persisted evidence lineage below.
+    """
+
+    schema_version: Literal[CITATION_SCHEMA] = CITATION_SCHEMA
     citation_id: UUID
-    context_bundle_id: UUID
-    evidence_id: str = Field(min_length=1, max_length=256)
-    source_object_id: UUID
-    source_revision_id: UUID
-    original_sha256: str = Field(pattern=_SHA256)
-    locator_contract_version: str = Field(min_length=1, max_length=128)
-    locator_kind: Literal[
-        "page",
-        "sheet_row",
-        "message",
-        "character_range",
-        "record_field",
-        "custom",
-    ]
-    locator: str = Field(min_length=1, max_length=512)
-    evidence_digest: str = Field(pattern=_SHA256)
+    answer_id: UUID
+    context_bundle: ContextBundleLineageRef
+    evidence_reference: ContextBundleEvidenceReference
 
     @field_validator(
         "citation_id",
-        "context_bundle_id",
-        "source_object_id",
-        "source_revision_id",
+        "answer_id",
+    )
+    @classmethod
+    def validate_identifier(cls, value: UUID | None, info: Any) -> UUID | None:
+        if value is None:
+            return None
+        return _require_non_zero(value, info.field_name)
+
+    @model_validator(mode="after")
+    def validate_evidence_scope(self) -> Citation:
+        if (
+            self.evidence_reference.workspace_id != self.context_bundle.workspace_id
+            or self.evidence_reference.environment_id
+            != self.context_bundle.environment_id
+        ):
+            raise ValueError("citation evidence has a mixed workspace or environment")
+        if (
+            self.evidence_reference.revision_digest is None
+            or self.evidence_reference.locator_contract_version is None
+        ):
+            raise ValueError("citation evidence requires complete revision and locator lineage")
+        if self.evidence_reference.status is not ContextBundleEvidenceStatus.VALID:
+            raise ValueError("citation requires valid persisted evidence")
+        return self
+
+    @property
+    def context_bundle_id(self) -> UUID:
+        """Compatibility accessor for callers needing only the bundle UUID."""
+
+        return self.context_bundle.bundle.bundle_id
+
+    @property
+    def workspace_id(self) -> UUID:
+        return self.context_bundle.workspace_id
+
+    @property
+    def environment_id(self) -> UUID:
+        return self.context_bundle.environment_id
+
+    @property
+    def run_id(self) -> UUID:
+        return self.context_bundle.run_id
+
+    @property
+    def attempt_id(self) -> UUID:
+        return self.context_bundle.attempt_id
+
+    @property
+    def original_sha256(self) -> str:
+        """Compatibility name for the immutable source-revision digest."""
+
+        if self.evidence_reference.revision_digest is None:
+            raise ValueError("citation evidence does not retain a revision digest")
+        return self.evidence_reference.revision_digest
+
+    @property
+    def evidence_id(self) -> str:
+        return self.evidence_reference.evidence_id
+
+    @property
+    def source_object_id(self) -> UUID:
+        return self.evidence_reference.source_object_id
+
+    @property
+    def source_revision_id(self) -> UUID:
+        return self.evidence_reference.source_revision_id
+
+    @property
+    def revision_digest(self) -> str | None:
+        return self.evidence_reference.revision_digest
+
+    @property
+    def processing_receipt_id(self) -> UUID | None:
+        return self.evidence_reference.processing_receipt_id
+
+    @property
+    def locator_contract_version(self) -> str | None:
+        return self.evidence_reference.locator_contract_version
+
+    @property
+    def evidence_digest(self) -> str:
+        return self.evidence_reference.evidence_digest
+
+
+# The previous capability contract exported this name.  Keeping the alias lets
+# consumers migrate without creating a second, weaker citation representation.
+CitationReference = Citation
+
+
+class AnswerClaim(_AnswerQuestionModel):
+    """One independently identified semantic claim in an accepted answer."""
+
+    schema_version: Literal[ANSWER_CLAIM_SCHEMA] = ANSWER_CLAIM_SCHEMA
+    claim_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    run_id: UUID
+    attempt_id: UUID
+    kind: AnswerClaimKind = AnswerClaimKind.FACTUAL
+    text: str = Field(min_length=1, max_length=_MAX_TEXT_LENGTH)
+    location: AnswerClaimLocation
+
+    @field_validator(
+        "claim_id", "workspace_id", "environment_id", "run_id", "attempt_id"
     )
     @classmethod
     def validate_identifier(cls, value: UUID, info: Any) -> UUID:
         return _require_non_zero(value, info.field_name)
-
-
-class AnswerClaim(_AnswerQuestionModel):
-    """One independently addressable claim in an accepted answer."""
-
-    claim_id: UUID
-    text: str = Field(min_length=1, max_length=_MAX_TEXT_LENGTH)
-    citation_ids: tuple[UUID, ...] = Field(min_length=1)
-
-    @field_validator("claim_id")
-    @classmethod
-    def validate_claim_id(cls, value: UUID) -> UUID:
-        return _require_non_zero(value, "claim_id")
 
     @field_validator("text")
     @classmethod
     def validate_claim_text(cls, value: str) -> str:
         return _require_text(value, "claim text")
 
+
+class ClaimEvidenceRelationship(_AnswerQuestionModel):
+    """Canonical claim attribution, independent of rendered citation markers."""
+
+    schema_version: Literal[CLAIM_EVIDENCE_RELATIONSHIP_SCHEMA] = (
+        CLAIM_EVIDENCE_RELATIONSHIP_SCHEMA
+    )
+    relationship_id: UUID
+    answer_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    run_id: UUID
+    attempt_id: UUID
+    claim_id: UUID
+    kind: ClaimEvidenceRelationshipKind
+    citation_ids: tuple[UUID, ...] = ()
+    related_claim_id: UUID | None = None
+
+    @field_validator(
+        "relationship_id",
+        "answer_id",
+        "workspace_id",
+        "environment_id",
+        "run_id",
+        "attempt_id",
+        "claim_id",
+        "related_claim_id",
+    )
+    @classmethod
+    def validate_identifier(cls, value: UUID | None, info: Any) -> UUID | None:
+        if value is None:
+            return None
+        return _require_non_zero(value, info.field_name)
+
     @field_validator("citation_ids")
     @classmethod
     def validate_citation_ids(cls, value: tuple[UUID, ...]) -> tuple[UUID, ...]:
         if any(identifier.int == 0 for identifier in value):
-            raise ValueError("claim citation identifiers must be non-zero")
+            raise ValueError("relationship citation identifiers must be non-zero")
         if len(set(value)) != len(value):
-            raise ValueError("claim citation identifiers must be unique")
+            raise ValueError("relationship citation identifiers must be unique")
         return value
+
+    @model_validator(mode="after")
+    def validate_composition(self) -> ClaimEvidenceRelationship:
+        if self.kind is ClaimEvidenceRelationshipKind.CONTRADICTION:
+            if self.related_claim_id is None or self.citation_ids:
+                raise ValueError(
+                    "contradiction relationship requires one related claim and no citations"
+                )
+            if self.related_claim_id == self.claim_id:
+                raise ValueError("contradiction relationship cannot target its own claim")
+            return self
+        if self.related_claim_id is not None:
+            raise ValueError("evidence relationship cannot include a related claim")
+        if self.kind in {
+            ClaimEvidenceRelationshipKind.INDEPENDENT,
+            ClaimEvidenceRelationshipKind.CORROBORATING,
+        } and len(self.citation_ids) != 1:
+            raise ValueError(f"{self.kind.value} relationship requires one citation")
+        if self.kind is ClaimEvidenceRelationshipKind.JOINT and len(self.citation_ids) < 2:
+            raise ValueError("joint relationship requires at least two citations")
+        if (
+            self.kind is ClaimEvidenceRelationshipKind.DERIVATION_INPUT
+            and not self.citation_ids
+        ):
+            raise ValueError("derivation input relationship requires evidence")
+        return self
 
 
 class AnswerContent(_AnswerQuestionModel):
-    """Accepted answer text plus structured claim and citation references."""
+    """One accepted answer and its complete canonical evidence graph."""
 
+    schema_version: Literal[ANSWER_CONTENT_SCHEMA] = ANSWER_CONTENT_SCHEMA
+    answer_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    run_id: UUID
+    attempt_id: UUID
     text: str = Field(min_length=1, max_length=_MAX_TEXT_LENGTH)
     claims: tuple[AnswerClaim, ...] = Field(min_length=1)
-    citations: tuple[CitationReference, ...] = Field(min_length=1)
+    citations: tuple[Citation, ...] = Field(min_length=1)
+    relationships: tuple[ClaimEvidenceRelationship, ...] = Field(min_length=1)
+
+    @field_validator("answer_id", "workspace_id", "environment_id", "run_id", "attempt_id")
+    @classmethod
+    def validate_identifier(cls, value: UUID, info: Any) -> UUID:
+        return _require_non_zero(value, info.field_name)
 
     @field_validator("text")
     @classmethod
@@ -215,14 +418,144 @@ class AnswerContent(_AnswerQuestionModel):
         return _require_text(value, "answer content")
 
     @model_validator(mode="after")
-    def validate_claim_references(self) -> AnswerContent:
-        citation_ids = {citation.citation_id for citation in self.citations}
-        if len(citation_ids) != len(self.citations):
-            raise ValueError("answer citation identifiers must be unique")
-        for claim in self.claims:
-            if not set(claim.citation_ids) <= citation_ids:
-                raise ValueError("answer claim references an unknown citation")
+    def validate_evidence_graph(self) -> AnswerContent:
+        self._validate_unique_identities()
+        self._validate_scope_and_locations()
+        self._validate_bundle_and_evidence_identities()
+        self._validate_relationships()
         return self
+
+    def _validate_unique_identities(self) -> None:
+        for label, identifiers in (
+            ("claim", [item.claim_id for item in self.claims]),
+            ("citation", [item.citation_id for item in self.citations]),
+            ("relationship", [item.relationship_id for item in self.relationships]),
+        ):
+            if len(set(identifiers)) != len(identifiers):
+                raise ValueError(f"answer {label} identifiers must be unique")
+
+    def _validate_scope_and_locations(self) -> None:
+        scoped_items = (*self.claims, *self.citations, *self.relationships)
+        if any(
+            item.workspace_id != self.workspace_id
+            or item.environment_id != self.environment_id
+            for item in scoped_items
+        ):
+            raise ValueError("answer evidence has a mixed workspace or environment")
+        if any(
+            item.run_id != self.run_id or item.attempt_id != self.attempt_id
+            for item in scoped_items
+        ):
+            raise ValueError("answer evidence has a mixed run or attempt")
+        for claim in self.claims:
+            location = claim.location
+            if location.answer_id != self.answer_id:
+                raise ValueError("claim location belongs to a different accepted answer")
+            if location.end_offset > len(self.text):
+                raise ValueError("claim location is outside the accepted answer")
+            if self.text[location.start_offset : location.end_offset] != claim.text:
+                raise ValueError("claim location does not identify its text in the accepted answer")
+        if any(
+            item.answer_id != self.answer_id
+            for item in (*self.citations, *self.relationships)
+        ):
+            raise ValueError("answer evidence belongs to a different accepted answer")
+
+    def _validate_bundle_and_evidence_identities(self) -> None:
+        bundle_identities = {
+            (
+                item.context_bundle.bundle.bundle_id,
+                item.context_bundle.bundle.bundle_version,
+                item.context_bundle.bundle.bundle_digest,
+            )
+            for item in self.citations
+        }
+        if len(bundle_identities) != 1:
+            raise ValueError("answer citations must use one exact context bundle")
+        evidence_identities = {
+            (
+                item.context_bundle.bundle.bundle_id,
+                item.context_bundle.bundle.bundle_version,
+                item.context_bundle.bundle.bundle_digest,
+                item.evidence_reference.evidence_id,
+            )
+            for item in self.citations
+        }
+        if len(evidence_identities) != len(self.citations):
+            raise ValueError("duplicate citation evidence identity")
+
+    def _validate_relationships(self) -> None:
+        claim_by_id = {item.claim_id: item for item in self.claims}
+        citation_ids = {item.citation_id for item in self.citations}
+        signatures: set[tuple[object, ...]] = set()
+        cited_ids: set[UUID] = set()
+        relationships_by_claim: dict[UUID, list[ClaimEvidenceRelationship]] = {
+            claim_id: [] for claim_id in claim_by_id
+        }
+        citation_roles_by_claim: dict[UUID, set[UUID]] = {
+            claim_id: set() for claim_id in claim_by_id
+        }
+        for relationship in self.relationships:
+            if relationship.claim_id not in claim_by_id:
+                raise ValueError("relationship references an unknown claim")
+            if not set(relationship.citation_ids) <= citation_ids:
+                raise ValueError("relationship references an unknown citation")
+            if (
+                relationship.related_claim_id is not None
+                and relationship.related_claim_id not in claim_by_id
+            ):
+                raise ValueError("contradiction references an unknown claim")
+            if relationship.kind is ClaimEvidenceRelationshipKind.CONTRADICTION:
+                claim_pair = tuple(
+                    sorted(
+                        (relationship.claim_id, relationship.related_claim_id),
+                        key=lambda identifier: identifier.int,
+                    )
+                )
+                signature = (relationship.kind, claim_pair)
+            else:
+                signature = (
+                    relationship.claim_id,
+                    relationship.kind,
+                    relationship.citation_ids,
+                )
+            if signature in signatures:
+                raise ValueError("duplicate claim evidence relationship")
+            signatures.add(signature)
+            repeated_roles = citation_roles_by_claim[relationship.claim_id] & set(
+                relationship.citation_ids
+            )
+            if repeated_roles:
+                raise ValueError(
+                    "one citation cannot have multiple evidence roles for the same claim"
+                )
+            citation_roles_by_claim[relationship.claim_id].update(
+                relationship.citation_ids
+            )
+            cited_ids.update(relationship.citation_ids)
+            relationships_by_claim[relationship.claim_id].append(relationship)
+
+        if cited_ids != citation_ids:
+            raise ValueError("every citation must participate in claim attribution")
+        for claim_id, relationships in relationships_by_claim.items():
+            claim = claim_by_id[claim_id]
+            evidence_kinds = {
+                item.kind
+                for item in relationships
+                if item.kind is not ClaimEvidenceRelationshipKind.CONTRADICTION
+            }
+            if claim.kind is AnswerClaimKind.DERIVED:
+                if evidence_kinds != {ClaimEvidenceRelationshipKind.DERIVATION_INPUT}:
+                    raise ValueError("derived claim requires only derivation input evidence")
+                continue
+            if ClaimEvidenceRelationshipKind.DERIVATION_INPUT in evidence_kinds:
+                raise ValueError("factual claim cannot use derivation input evidence")
+            primary = evidence_kinds & {
+                ClaimEvidenceRelationshipKind.INDEPENDENT,
+                ClaimEvidenceRelationshipKind.JOINT,
+            }
+            if not primary:
+                raise ValueError("factual claim requires independent or joint evidence")
 
 
 class LineageReference(_AnswerQuestionModel):
@@ -295,6 +628,16 @@ class AnswerQuestionOutput(_AnswerQuestionModel):
         if self.outcome is AnswerQuestionOutcome.ANSWERED:
             if not has_answer or has_clarification or has_reason:
                 raise ValueError("answered output requires exactly one answer payload")
+            if (
+                self.answer.workspace_id != self.scope.workspace_id
+                or self.answer.environment_id != self.scope.environment_id
+            ):
+                raise ValueError("answer evidence scope does not match capability scope")
+            if (
+                self.answer.run_id != self.correlation.run_id
+                or self.answer.attempt_id != self.correlation.attempt_id
+            ):
+                raise ValueError("answer evidence lineage does not match run attempt")
             context_bundle_ids = {
                 reference.identifier
                 for reference in self.lineage
@@ -400,9 +743,15 @@ def map_retrieval_outcome(
 
 
 __all__ = [
+    "ANSWER_CLAIM_SCHEMA",
+    "ANSWER_CONTENT_SCHEMA",
     "ANSWER_QUESTION_INPUT_SCHEMA",
     "ANSWER_QUESTION_OUTPUT_SCHEMA",
+    "CITATION_SCHEMA",
+    "CLAIM_EVIDENCE_RELATIONSHIP_SCHEMA",
     "AnswerClaim",
+    "AnswerClaimKind",
+    "AnswerClaimLocation",
     "AnswerContent",
     "AnswerQuestionContractError",
     "AnswerQuestionInput",
@@ -411,7 +760,10 @@ __all__ = [
     "AnswerQuestionSafeReason",
     "AnswerQuestionSafeReasonCode",
     "AnswerQuestionScope",
+    "Citation",
     "CitationReference",
+    "ClaimEvidenceRelationship",
+    "ClaimEvidenceRelationshipKind",
     "ClarificationRequest",
     "LineageReference",
     "QuestionSubject",

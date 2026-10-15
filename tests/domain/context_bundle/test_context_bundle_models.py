@@ -190,6 +190,16 @@ def test_context_bundle_ref_matches_public_v1_identity() -> None:
     )
 
 
+def test_context_bundle_lineage_ref_binds_identity_to_tenant_and_attempt() -> None:
+    bundle = context_bundle()
+
+    assert bundle.lineage_reference.bundle == bundle.reference
+    assert bundle.lineage_reference.workspace_id == WORKSPACE
+    assert bundle.lineage_reference.environment_id == ENVIRONMENT
+    assert bundle.lineage_reference.run_id == RUN
+    assert bundle.lineage_reference.attempt_id == ATTEMPT
+
+
 def test_context_bundle_rejects_mixed_workspace_evidence() -> None:
     with pytest.raises(ValidationError, match="tenant"):
         context_bundle(
@@ -206,6 +216,31 @@ def test_context_bundle_rejects_mixed_workspace_evidence() -> None:
                     evidence_digest="7" * 64,
                 ),
             )
+        )
+
+
+def test_context_bundle_rejects_ambiguous_duplicate_evidence_identifier() -> None:
+    first = context_bundle().evidence_references[0]
+    duplicate = first.model_copy(
+        update={
+            "source_object_id": UUID(int=25),
+            "source_revision_id": UUID(int=26),
+        }
+    )
+    with pytest.raises(ValidationError, match="evidence identifiers must be unique"):
+        context_bundle(
+            evidence_references=(first, duplicate),
+            policy_decision_generations=(
+                *context_bundle().policy_decision_generations,
+                PolicyDecisionGeneration(
+                    source_object_id=UUID(int=25),
+                    policy_version_id=UUID(int=27),
+                    policy_generation=1,
+                    membership_generation=1,
+                    authority_generation=1,
+                    decision_reference=UUID(int=28),
+                ),
+            ),
         )
 
 

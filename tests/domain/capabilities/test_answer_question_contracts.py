@@ -10,6 +10,7 @@ from spine.domain.capabilities import (
     ANSWER_QUESTION_INPUT_SCHEMA,
     ANSWER_QUESTION_OUTPUT_SCHEMA,
     AnswerClaim,
+    AnswerClaimLocation,
     AnswerContent,
     AnswerQuestionContractError,
     AnswerQuestionInput,
@@ -19,6 +20,8 @@ from spine.domain.capabilities import (
     AnswerQuestionSafeReason,
     AnswerQuestionSafeReasonCode,
     CitationReference,
+    ClaimEvidenceRelationship,
+    ClaimEvidenceRelationshipKind,
     ClarificationRequest,
     LineageReference,
     QuestionSubject,
@@ -27,6 +30,11 @@ from spine.domain.capabilities import (
     map_retrieval_outcome,
     parse_answer_question_input,
     parse_answer_question_output,
+)
+from spine.domain.context_bundles import (
+    ContextBundleEvidenceReference,
+    ContextBundleLineageRef,
+    ContextBundleRef,
 )
 
 
@@ -40,6 +48,7 @@ SOURCE_OBJECT_ID = UUID("00000000-0000-0000-0000-000000000107")
 SOURCE_REVISION_ID = UUID("00000000-0000-0000-0000-000000000108")
 CITATION_ID = UUID("00000000-0000-0000-0000-000000000109")
 CLAIM_ID = UUID("00000000-0000-0000-0000-000000000110")
+ANSWER_ID = UUID("00000000-0000-0000-0000-000000000111")
 
 
 def scope() -> AnswerQuestionScope:
@@ -60,29 +69,71 @@ def correlation() -> RunAttemptCorrelation:
 def citation() -> CitationReference:
     return CitationReference(
         citation_id=CITATION_ID,
-        context_bundle_id=CONTEXT_BUNDLE_ID,
-        evidence_id="evidence-1",
-        source_object_id=SOURCE_OBJECT_ID,
-        source_revision_id=SOURCE_REVISION_ID,
-        original_sha256="b" * 64,
-        locator_contract_version="stable-locator:v1",
-        locator_kind="page",
-        locator="page:1",
-        evidence_digest="a" * 64,
+        answer_id=ANSWER_ID,
+        context_bundle=ContextBundleLineageRef(
+            bundle=ContextBundleRef(
+                bundle_id=CONTEXT_BUNDLE_ID,
+                bundle_version=1,
+                bundle_digest="c" * 64,
+            ),
+            workspace_id=WORKSPACE_ID,
+            environment_id=ENVIRONMENT_ID,
+            run_id=RUN_ID,
+            attempt_id=ATTEMPT_ID,
+        ),
+        evidence_reference=ContextBundleEvidenceReference(
+            evidence_id="evidence-1",
+            workspace_id=WORKSPACE_ID,
+            environment_id=ENVIRONMENT_ID,
+            projection_snapshot_id=UUID(int=120),
+            activation_generation=1,
+            source_object_id=SOURCE_OBJECT_ID,
+            source_revision_id=SOURCE_REVISION_ID,
+            revision_digest="b" * 64,
+            locator_contract_version="stable-locator:v1",
+            locator={"kind": "page", "value": "1"},
+            evidence_digest="a" * 64,
+        ),
     )
 
 
 def answer() -> AnswerContent:
     return AnswerContent(
+        answer_id=ANSWER_ID,
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        run_id=RUN_ID,
+        attempt_id=ATTEMPT_ID,
         text="The answer is grounded in the approved document.",
         claims=(
             AnswerClaim(
                 claim_id=CLAIM_ID,
+                workspace_id=WORKSPACE_ID,
+                environment_id=ENVIRONMENT_ID,
+                run_id=RUN_ID,
+                attempt_id=ATTEMPT_ID,
                 text="The answer is grounded in the approved document.",
-                citation_ids=(CITATION_ID,),
+                location=AnswerClaimLocation(
+                    answer_id=ANSWER_ID,
+                    start_offset=0,
+                    end_offset=48,
+                ),
             ),
         ),
         citations=(citation(),),
+        relationships=(
+            ClaimEvidenceRelationship(
+                relationship_id=UUID(int=200),
+                answer_id=ANSWER_ID,
+                workspace_id=WORKSPACE_ID,
+                environment_id=ENVIRONMENT_ID,
+                run_id=RUN_ID,
+                attempt_id=ATTEMPT_ID,
+                claim_id=CLAIM_ID,
+                kind=ClaimEvidenceRelationshipKind.INDEPENDENT,
+                citation_ids=(CITATION_ID,),
+            ),
+        ),
     )
 
 
@@ -159,7 +210,7 @@ def test_answer_question_output_accepts_structured_claim_lineage_and_citations()
 
     assert result.schema_version == ANSWER_QUESTION_OUTPUT_SCHEMA
     assert result.answer is not None
-    assert result.answer.claims[0].citation_ids == (CITATION_ID,)
+    assert result.answer.relationships[0].citation_ids == (CITATION_ID,)
     assert parse_answer_question_output(result.canonical_json()) == result
 
 
@@ -292,21 +343,6 @@ def test_invalid_scope_schema_and_incompatible_result_fail_closed() -> None:
     with pytest.raises(ValidationError, match="exactly one"):
         output(answer=None, reason=AnswerQuestionSafeReason(code=AnswerQuestionSafeReasonCode.INSUFFICIENT_SUPPORT))
 
-    with pytest.raises(ValidationError, match="citation"):
-        output(
-            answer=AnswerContent(
-                text="Answer",
-                claims=(
-                    AnswerClaim(
-                        claim_id=CLAIM_ID,
-                        text="Claim",
-                        citation_ids=(CITATION_ID,),
-                    ),
-                ),
-            )
-        )
-
-
 def test_contract_rejects_unknown_fields_and_typed_parser_raises_contract_error() -> None:
     with pytest.raises(ValidationError):
         AnswerQuestionInput(
@@ -318,3 +354,8 @@ def test_contract_rejects_unknown_fields_and_typed_parser_raises_contract_error(
 
     with pytest.raises(AnswerQuestionContractError):
         parse_answer_question_output('{"schema_version":"answer-question.output:v99"}')
+
+
+def test_answer_content_rejects_missing_citations() -> None:
+    with pytest.raises(ValidationError, match="citation"):
+        AnswerContent.model_validate({**answer().model_dump(), "citations": ()})

@@ -1,9 +1,15 @@
 """Stable capability contracts shared by workflows and agent implementations."""
 
 from spine.domain.capabilities.answer_question import (
+    ANSWER_CLAIM_SCHEMA,
+    ANSWER_CONTENT_SCHEMA,
     ANSWER_QUESTION_INPUT_SCHEMA,
     ANSWER_QUESTION_OUTPUT_SCHEMA,
+    CITATION_SCHEMA,
+    CLAIM_EVIDENCE_RELATIONSHIP_SCHEMA,
     AnswerClaim,
+    AnswerClaimKind,
+    AnswerClaimLocation,
     AnswerContent,
     AnswerQuestionContractError,
     AnswerQuestionInput,
@@ -12,7 +18,10 @@ from spine.domain.capabilities.answer_question import (
     AnswerQuestionSafeReason,
     AnswerQuestionSafeReasonCode,
     AnswerQuestionScope,
+    Citation,
     CitationReference,
+    ClaimEvidenceRelationship,
+    ClaimEvidenceRelationshipKind,
     ClarificationRequest,
     LineageReference,
     QuestionSubject,
@@ -25,9 +34,15 @@ from spine.domain.capabilities.answer_question import (
 from spine.domain.capabilities.models import CapabilityDefinition
 
 __all__ = [
+    "ANSWER_CLAIM_SCHEMA",
+    "ANSWER_CONTENT_SCHEMA",
     "ANSWER_QUESTION_INPUT_SCHEMA",
     "ANSWER_QUESTION_OUTPUT_SCHEMA",
+    "CITATION_SCHEMA",
+    "CLAIM_EVIDENCE_RELATIONSHIP_SCHEMA",
     "AnswerClaim",
+    "AnswerClaimKind",
+    "AnswerClaimLocation",
     "AnswerContent",
     "AnswerQuestionContractError",
     "AnswerQuestionInput",
@@ -37,7 +52,10 @@ __all__ = [
     "AnswerQuestionSafeReasonCode",
     "AnswerQuestionScope",
     "CapabilityDefinition",
+    "Citation",
     "CitationReference",
+    "ClaimEvidenceRelationship",
+    "ClaimEvidenceRelationshipKind",
     "ClarificationRequest",
     "LineageReference",
     "QuestionSubject",

@@ -201,6 +201,31 @@ class ContextBundleRef(DefinitionModel):
         return self
 
 
+class ContextBundleLineageRef(DefinitionModel):
+    """Exact bundle identity together with its owning tenant and attempt."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={"$id": "spine/context-bundle-lineage-ref:v1"},
+    )
+
+    schema_version: Literal["context-bundle-lineage-ref:v1"] = (
+        "context-bundle-lineage-ref:v1"
+    )
+    bundle: ContextBundleRef
+    workspace_id: UUID
+    environment_id: UUID
+    run_id: UUID
+    attempt_id: UUID
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> "ContextBundleLineageRef":
+        for field_name in ("workspace_id", "environment_id", "run_id", "attempt_id"):
+            _require_id(getattr(self, field_name), field_name)
+        return self
+
+
 class ContextBundle(DefinitionModel):
     """One immutable, replayable broker handoff for one run and attempt."""
 
@@ -270,6 +295,16 @@ class ContextBundle(DefinitionModel):
             bundle_version=self.bundle_version,
             bundle_digest=self.bundle_digest,
             publication_pin_id=self.publication_pin_id,
+        )
+
+    @property
+    def lineage_reference(self) -> ContextBundleLineageRef:
+        return ContextBundleLineageRef(
+            bundle=self.reference,
+            workspace_id=self.workspace_id,
+            environment_id=self.environment_id,
+            run_id=self.run_id,
+            attempt_id=self.attempt_id,
         )
 
     @staticmethod
@@ -365,6 +400,9 @@ class ContextBundle(DefinitionModel):
                 or evidence.activation_generation != self.activation_generation
             ):
                 raise ValueError("evidence reference has mixed tenant or snapshot lineage")
+        evidence_ids = [item.evidence_id for item in self.evidence_references]
+        if len(set(evidence_ids)) != len(evidence_ids):
+            raise ValueError("context bundle evidence identifiers must be unique")
         contributors = {item.source_object_id for item in self.evidence_references}
         decisions = {item.source_object_id for item in self.policy_decision_generations}
         if not contributors <= decisions:
@@ -383,6 +421,7 @@ __all__ = [
     "ContextBundle",
     "ContextBundleEvidenceReference",
     "ContextBundleEvidenceStatus",
+    "ContextBundleLineageRef",
     "ContextBundleOutcome",
     "ContextBundleRef",
     "ContextBundleState",
