@@ -956,6 +956,23 @@ qa_disclosure_validation_results = Table(
     ),
 )
 
+qa_answer_disclosure_records = Table(
+    "qa_answer_disclosure_records",
+    metadata,
+    Column("request_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("outcome", Text, nullable=False),
+    Column("payload", JSONB, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id",
+        "environment_id",
+        "request_id",
+        name="pk_qa_answer_disclosure_records",
+    ),
+)
+
 __all__ = [
     "access_policy_grants",
     "access_policy_versions",
@@ -1010,4 +1027,5 @@ __all__ = [
     "qa_session_versions",
     "qa_message_versions",
     "qa_disclosure_validation_results",
+    "qa_answer_disclosure_records",
 ]

@@ -81,6 +81,7 @@ from spine.application.persistence.answer_question_runs import (
 from spine.application.disclosure_revalidation import (
     InMemoryDisclosureValidationResultRepository,
 )
+from spine.application.answer_disclosure import InMemoryAnswerDisclosureRepository
 from spine.application.persistence.repositories import (
     SourceObservationCommand,
     SourceObservationResult,
@@ -337,6 +338,7 @@ class _Store:
         self.outbox_deliveries: dict[UUID, OutboxDelivery] = {}
         self.qa_sessions = InMemoryQASessionRepository()
         self.disclosure_validations = InMemoryDisclosureValidationResultRepository()
+        self.answer_disclosures = InMemoryAnswerDisclosureRepository()
 
     @property
     def workspaces(self) -> dict[UUID, Workspace]:
@@ -3276,6 +3278,7 @@ class InMemoryUnitOfWork:
         self._answer_question_runs = _AnswerQuestionRunRepository(self)
         self._qa_sessions = store.qa_sessions
         self._disclosure_validations = store.disclosure_validations
+        self._answer_disclosures = store.answer_disclosures
         self._idempotency = _IdempotencyRepository(self)
         self._outbox = _OutboxWriter(self)
         self._sources = _SourceObservationRepository(self)
@@ -3320,6 +3323,11 @@ class InMemoryUnitOfWork:
     def disclosure_validations(self) -> InMemoryDisclosureValidationResultRepository:
         self._guard_active()
         return self._disclosure_validations
+
+    @property
+    def answer_disclosures(self) -> InMemoryAnswerDisclosureRepository:
+        self._guard_active()
+        return self._answer_disclosures
 
     @property
     def idempotency(self) -> _IdempotencyRepository:

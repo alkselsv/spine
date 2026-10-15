@@ -1400,6 +1400,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "qa_session_versions",
         "qa_message_versions",
         "qa_disclosure_validation_results",
+        "qa_answer_disclosure_records",
         "idempotency_receipts",
         "initial_workspace_bootstrap",
         "outbox_intents",
@@ -1809,6 +1810,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "fk_qa_disclosure_validation_results_environment",
         "ck_qa_disclosure_validation_results_checkpoint",
         "ck_qa_disclosure_validation_results_disposition",
+        "pk_qa_answer_disclosure_records",
+        "fk_qa_answer_disclosure_records_environment",
+        "ck_qa_answer_disclosure_records_outcome",
     }
     expected_final_constraints |= (
         AUTHORIZATION_DIRECTORY_CONSTRAINTS
@@ -2139,6 +2143,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "pk_qa_session_versions",
         "pk_qa_message_versions",
         "pk_qa_disclosure_validation_results",
+        "pk_qa_answer_disclosure_records",
         "ix_qa_session_versions_navigation",
         "ix_qa_message_versions_navigation",
         "ix_projection_activations_kind_generation",
@@ -2156,6 +2161,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "qa_session_versions": (True, True),
         "qa_message_versions": (True, True),
         "qa_disclosure_validation_results": (True, True),
+        "qa_answer_disclosure_records": (True, True),
         "idempotency_receipts": (True, True),
         "initial_workspace_bootstrap": (True, True),
         "outbox_intents": (True, True),
@@ -2283,6 +2289,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "qa_session_versions": (True, True, False, False),
         "qa_message_versions": (True, True, False, False),
         "qa_disclosure_validation_results": (True, True, False, False),
+        "qa_answer_disclosure_records": (True, True, False, False),
         "idempotency_receipts": (True, True, False, False),
         "initial_workspace_bootstrap": (False, False, False, False),
         "outbox_intents": (False, True, False, False),
@@ -2477,7 +2484,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                                 "'projection_drifts', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                                "'qa_message_versions', 'qa_disclosure_validation_results'))"
+                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records'))"
                     )
                 )
             ).scalars()
@@ -2512,7 +2519,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                             "'projection_drifts', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                                "'qa_message_versions', 'qa_disclosure_validation_results')"
+                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records')"
                     )
                 )
             ).mappings()
@@ -2541,7 +2548,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                                 "'projection_drifts', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                                "'qa_message_versions', 'qa_disclosure_validation_results')"
+                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records')"
                     )
                 )
             ).scalars()
@@ -2569,7 +2576,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                                 "'projection_drifts', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                                "'qa_message_versions', 'qa_disclosure_validation_results')"
+                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records')"
                     )
                 )
             ).scalars()
@@ -2597,7 +2604,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                                 "'projection_drifts', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                                "'qa_message_versions', 'qa_disclosure_validation_results')"
+                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records')"
                     )
                 )
             ).scalars()
@@ -3236,6 +3243,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                             "'answer_question_runs', 'answer_question_attempts', "
                             "'qa_session_versions', 'qa_message_versions', "
                             "'qa_disclosure_validation_results', "
+                        "'qa_answer_disclosure_records', "
                         "'initial_workspace_bootstrap', 'outbox_intents', "
                         "'outbox_deliveries', "
                         "'workspace_memberships', 'environment_memberships', "
@@ -3302,6 +3310,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "qa_session_versions": (True, True),
             "qa_message_versions": (True, True),
             "qa_disclosure_validation_results": (True, True),
+            "qa_answer_disclosure_records": (True, True),
         "idempotency_receipts": (True, True),
         "initial_workspace_bootstrap": (True, True),
         "outbox_intents": (True, True),
