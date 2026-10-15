@@ -147,3 +147,25 @@ class ContextBundleEvidenceUnavailableError(ContextBundleError):
 
 class ContextBundleConflictError(ConstraintConflictError, ContextBundleError):
     """An immutable bundle identity conflicts with already committed content."""
+
+
+class AnswerQuestionPersistenceError(PersistenceError):
+    """Base class for disclosure-safe Q&A run persistence failures."""
+
+
+class AnswerQuestionRunNotFoundError(AnswerQuestionPersistenceError):
+    """No Q&A run exists in the trusted workspace/environment scope."""
+
+
+class AnswerQuestionAttemptNotFoundError(AnswerQuestionPersistenceError):
+    """No Q&A attempt exists in the trusted workspace/environment scope."""
+
+
+class AnswerQuestionRunConflictError(ConstraintConflictError, AnswerQuestionPersistenceError):
+    """A Q&A run identity or terminal record conflicts with canonical history."""
+
+
+class AnswerQuestionAttemptImmutableError(
+    ConstraintConflictError, AnswerQuestionPersistenceError
+):
+    """A completed Q&A attempt cannot be replaced by different content."""

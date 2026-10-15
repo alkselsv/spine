@@ -29,6 +29,10 @@ from spine.application.persistence.context import (
     WorkspaceScope,
 )
 from spine.application.persistence.errors import (
+    AnswerQuestionAttemptImmutableError,
+    AnswerQuestionAttemptNotFoundError,
+    AnswerQuestionRunConflictError,
+    AnswerQuestionRunNotFoundError,
     AuditConflictError,
     CanonicalAuthorityConflictError,
     CanonicalEligibilityError,
@@ -64,6 +68,16 @@ from spine.application.persistence.idempotency import (
     OwnedIdempotencyClaim,
     idempotency_conflict,
 )
+from spine.application.persistence.answer_question_runs import (
+    ANSWER_QUESTION_RUN_OPERATION_SCHEMA_VERSION,
+    ANSWER_QUESTION_RUN_RESULT_TYPE,
+    AnswerQuestionRunCommand,
+    AnswerQuestionRunMutationResult,
+    validate_answer_question_attempt_completion,
+    validate_answer_question_attempt_start,
+    validate_answer_question_context_bundle,
+    validate_answer_question_run_completion,
+)
 from spine.application.persistence.repositories import (
     SourceObservationCommand,
     SourceObservationResult,
@@ -98,6 +112,11 @@ from spine.application.persistence.boundary import (
 )
 from spine.infrastructure.persistence.access_policies import (
     InMemoryAccessPolicyRepository,
+)
+from spine.infrastructure.persistence.answer_question_audit import (
+    answer_question_attempt_audit_event_id,
+    answer_question_run_audit_event_id,
+    build_answer_question_transition_audit,
 )
 from spine.application.persistence.ingestion import (
     IngestionBindingCommand,
@@ -175,6 +194,12 @@ from spine.domain.projections import (
 )
 from spine.domain.context_profiles import ContextProfileVersion
 from spine.domain.context_bundles import ContextBundle
+from spine.domain.capabilities.answer_question_runs import (
+    AnswerQuestionAttempt,
+    AnswerQuestionAttemptState,
+    AnswerQuestionRun,
+    AnswerQuestionRunState,
+)
 from spine.infrastructure.persistence.projection import InMemoryProjectionRepository
 
 
@@ -188,6 +213,8 @@ class _StoreState:
     environments: dict[UUID, Environment]
     context_profiles: dict[tuple[UUID, UUID, UUID, int], ContextProfileVersion]
     context_bundles: dict[tuple[UUID, UUID, UUID, int], ContextBundle]
+    answer_question_runs: dict[tuple[UUID, UUID, UUID], AnswerQuestionRun]
+    answer_question_attempts: dict[tuple[UUID, UUID, UUID], AnswerQuestionAttempt]
     idempotency_receipts: dict["_ReceiptKey", "_IdempotencyReceipt"]
     outbox_intents: dict[UUID, OutboxIntent]
     source_objects: dict[UUID, SourceObject]
@@ -256,6 +283,8 @@ class _Store:
             environments={},
             context_profiles={},
             context_bundles={},
+            answer_question_runs={},
+            answer_question_attempts={},
             idempotency_receipts={},
             outbox_intents={},
             source_objects={},
@@ -318,6 +347,16 @@ class _Store:
     @property
     def context_bundles(self) -> dict[tuple[UUID, UUID, UUID, int], ContextBundle]:
         return self.state.context_bundles
+
+    @property
+    def answer_question_runs(self) -> dict[tuple[UUID, UUID, UUID], AnswerQuestionRun]:
+        return self.state.answer_question_runs
+
+    @property
+    def answer_question_attempts(
+        self,
+    ) -> dict[tuple[UUID, UUID, UUID], AnswerQuestionAttempt]:
+        return self.state.answer_question_attempts
 
     @property
     def idempotency_receipts(self) -> dict[_ReceiptKey, _IdempotencyReceipt]:
@@ -859,6 +898,310 @@ class _ContextBundleRepository:
             return self._safe_read(matches[0])
 
         return self._uow._repository_call(operation)
+
+
+class _AnswerQuestionRunRepository:
+    def __init__(self, uow: "InMemoryUnitOfWork") -> None:
+        self._uow = uow
+
+    def _scope(self) -> EnvironmentScope:
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            self._uow._fail(InvalidPersistenceContextError("Persistence context is invalid."))
+        return scope
+
+    def _run_key(self, run_id: UUID) -> tuple[UUID, UUID, UUID]:
+        scope = self._scope()
+        return (scope.workspace_id, scope.environment_id, run_id)
+
+    def _attempt_key(self, attempt_id: UUID) -> tuple[UUID, UUID, UUID]:
+        scope = self._scope()
+        return (scope.workspace_id, scope.environment_id, attempt_id)
+
+    def _runs(self) -> dict[tuple[UUID, UUID, UUID], AnswerQuestionRun]:
+        return self._uow._base_answer_question_runs | self._uow._pending_answer_question_runs
+
+    def _attempts(self) -> dict[tuple[UUID, UUID, UUID], AnswerQuestionAttempt]:
+        return (
+            self._uow._base_answer_question_attempts
+            | self._uow._pending_answer_question_attempts
+        )
+
+    def _validate_run_scope(self, run: AnswerQuestionRun) -> None:
+        scope = self._scope()
+        if run.workspace_id != scope.workspace_id or run.environment_id != scope.environment_id:
+            self._uow._fail(InvalidPersistenceContextError("Persistence context is invalid."))
+
+    async def create_run(
+        self, command: AnswerQuestionRunCommand
+    ) -> AnswerQuestionRunMutationResult:
+        self._uow._guard_active()
+        self._validate_run_scope(command.run)
+        if command.run.state is not AnswerQuestionRunState.RUNNING:
+            self._uow._fail(AnswerQuestionRunConflictError("Q&A run must start as running."))
+        if command.run.command_digest != command.digest.value:
+            self._uow._fail(AnswerQuestionRunConflictError("Q&A run command is invalid."))
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=ANSWER_QUESTION_RUN_OPERATION_SCHEMA_VERSION,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        if isinstance(claim, IdempotencyReplay):
+            if (
+                claim.result.result_type != ANSWER_QUESTION_RUN_RESULT_TYPE
+                or claim.result.schema_version != 1
+            ):
+                self._uow._fail(AnswerQuestionRunConflictError("Q&A run replay is invalid."))
+            existing = self._runs().get(self._run_key(claim.result.result_id))
+            if existing is None:
+                self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
+            return AnswerQuestionRunMutationResult(
+                run=existing.model_copy(deep=True),
+                replay=True,
+                result_reference=claim.result,
+            )
+
+        if self._run_key(command.run.run_id) in self._runs() or any(
+            item.idempotency_key == command.run.idempotency_key
+            for item in self._runs().values()
+        ):
+            self._uow._fail(AnswerQuestionRunConflictError("Q&A run identity conflicts with history."))
+        stored = command.run.model_copy(deep=True)
+        context = self._uow._context_snapshot_active()
+        await self._uow.audit.append(
+            build_answer_question_transition_audit(
+                registry=self._uow._audit_events,
+                context=context,
+                audit_event_id=answer_question_run_audit_event_id(
+                    stored.workspace_id,
+                    stored.environment_id,
+                    stored.run_id,
+                    "answer_question.run.started",
+                ),
+                object_type="answer_question_run",
+                object_id=stored.run_id,
+                transition="answer_question.run.started",
+                occurred_at=stored.created_at,
+                reason="answer_question_run_started",
+            )
+        )
+        self._uow._pending_answer_question_runs[self._run_key(stored.run_id)] = stored
+        result_reference = OpaqueResultReference(
+            result_type=ANSWER_QUESTION_RUN_RESULT_TYPE,
+            result_id=stored.run_id,
+            schema_version=1,
+        )
+        await self._uow.idempotency.complete(claim, result_reference)
+        return AnswerQuestionRunMutationResult(
+            run=stored.model_copy(deep=True),
+            replay=False,
+            result_reference=result_reference,
+        )
+
+    async def resolve_run(self, run_id: UUID) -> AnswerQuestionRun:
+        self._uow._guard_active()
+        run = self._runs().get(self._run_key(run_id))
+        if run is None:
+            self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
+        return run.model_copy(deep=True)
+
+    async def resolve_run_by_key(self, idempotency_key: str) -> AnswerQuestionRun:
+        self._uow._guard_active()
+        scope = self._scope()
+        run = next(
+            (
+                item
+                for item in self._runs().values()
+                if item.workspace_id == scope.workspace_id
+                and item.environment_id == scope.environment_id
+                and item.idempotency_key == idempotency_key
+            ),
+            None,
+        )
+        if run is None:
+            self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
+        return run.model_copy(deep=True)
+
+    async def complete_run(self, run: AnswerQuestionRun) -> AnswerQuestionRun:
+        self._uow._guard_active()
+        self._validate_run_scope(run)
+        if run.state is not AnswerQuestionRunState.COMPLETED:
+            self._uow._fail(AnswerQuestionRunConflictError("Q&A run completion is invalid."))
+        key = self._run_key(run.run_id)
+        existing = self._runs().get(key)
+        if existing is None:
+            self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
+        if existing.state is AnswerQuestionRunState.COMPLETED:
+            if existing != run:
+                self._uow._fail(AnswerQuestionRunConflictError("Q&A run is already terminal."))
+            return existing.model_copy(deep=True)
+        terminal_attempt = next(
+            (
+                attempt
+                for attempt in self._attempts().values()
+                if attempt.attempt_id == run.final_attempt_id
+                and attempt.run_id == run.run_id
+            ),
+            None,
+        )
+        if terminal_attempt is None:
+            self._uow._fail(AnswerQuestionRunConflictError("Q&A run terminal attempt is unavailable."))
+        try:
+            validate_answer_question_run_completion(existing, terminal_attempt, run)
+        except ValueError:
+            self._uow._fail(AnswerQuestionRunConflictError("Q&A run completion lineage is invalid."))
+        context = self._uow._context_snapshot_active()
+        assert run.completed_at is not None
+        await self._uow.audit.append(
+            build_answer_question_transition_audit(
+                registry=self._uow._audit_events,
+                context=context,
+                audit_event_id=answer_question_run_audit_event_id(
+                    run.workspace_id,
+                    run.environment_id,
+                    run.run_id,
+                    "answer_question.run.completed",
+                ),
+                object_type="answer_question_run",
+                object_id=run.run_id,
+                transition="answer_question.run.completed",
+                occurred_at=run.completed_at,
+                reason="answer_question_run_completed",
+            )
+        )
+        self._uow._pending_answer_question_runs[key] = run.model_copy(deep=True)
+        return run.model_copy(deep=True)
+
+    async def start_attempt(
+        self, attempt: AnswerQuestionAttempt
+    ) -> AnswerQuestionAttempt:
+        self._uow._guard_active()
+        scope = self._scope()
+        if (
+            attempt.workspace_id != scope.workspace_id
+            or attempt.environment_id != scope.environment_id
+            or attempt.state is not AnswerQuestionAttemptState.RUNNING
+        ):
+            self._uow._fail(InvalidPersistenceContextError("Persistence context is invalid."))
+        run = self._runs().get(self._run_key(attempt.run_id))
+        if run is None:
+            self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
+        try:
+            validate_answer_question_attempt_start(run, attempt)
+        except ValueError:
+            self._uow._fail(AnswerQuestionRunConflictError("Q&A attempt lineage is invalid."))
+        key = self._attempt_key(attempt.attempt_id)
+        existing = self._attempts().get(key)
+        if existing is not None:
+            if existing != attempt:
+                self._uow._fail(AnswerQuestionAttemptImmutableError("Q&A attempt identity conflicts with history."))
+            return existing.model_copy(deep=True)
+        if any(
+            item.run_id == attempt.run_id and item.attempt_number == attempt.attempt_number
+            for item in self._attempts().values()
+        ):
+            self._uow._fail(AnswerQuestionAttemptImmutableError("Q&A attempt number conflicts with history."))
+        context = self._uow._context_snapshot_active()
+        await self._uow.audit.append(
+            build_answer_question_transition_audit(
+                registry=self._uow._audit_events,
+                context=context,
+                audit_event_id=answer_question_attempt_audit_event_id(
+                    attempt.workspace_id,
+                    attempt.environment_id,
+                    attempt.attempt_id,
+                    attempt.events[0].event_id,
+                    "answer_question.attempt.started",
+                ),
+                object_type="answer_question_attempt",
+                object_id=attempt.attempt_id,
+                transition="answer_question.attempt.started",
+                occurred_at=attempt.started_at,
+                reason="answer_question_attempt_started",
+            )
+        )
+        self._uow._pending_answer_question_attempts[key] = attempt.model_copy(deep=True)
+        return attempt.model_copy(deep=True)
+
+    async def complete_attempt(
+        self, attempt: AnswerQuestionAttempt
+    ) -> AnswerQuestionAttempt:
+        self._uow._guard_active()
+        scope = self._scope()
+        if (
+            attempt.workspace_id != scope.workspace_id
+            or attempt.environment_id != scope.environment_id
+            or attempt.state is AnswerQuestionAttemptState.RUNNING
+        ):
+            self._uow._fail(InvalidPersistenceContextError("Persistence context is invalid."))
+        key = self._attempt_key(attempt.attempt_id)
+        existing = self._attempts().get(key)
+        if existing is None:
+            self._uow._fail(AnswerQuestionAttemptNotFoundError("Q&A attempt is unavailable."))
+        if existing.state is not AnswerQuestionAttemptState.RUNNING:
+            if existing != attempt:
+                self._uow._fail(AnswerQuestionAttemptImmutableError("Q&A attempt is already terminal."))
+            return existing.model_copy(deep=True)
+        try:
+            validate_answer_question_attempt_completion(existing, attempt)
+        except ValueError:
+            self._uow._fail(AnswerQuestionAttemptImmutableError("Q&A attempt lineage is immutable."))
+        if attempt.context_bundle_ref is not None:
+            bundle = await self._uow.context_bundles.resolve(
+                bundle_id=attempt.context_bundle_ref.bundle_id,
+                bundle_version=attempt.context_bundle_ref.bundle_version,
+                bundle_digest=attempt.context_bundle_ref.bundle_digest,
+            )
+            try:
+                validate_answer_question_context_bundle(attempt, bundle)
+            except ValueError:
+                self._uow._fail(
+                    AnswerQuestionAttemptImmutableError(
+                        "Q&A attempt ContextBundle lineage is invalid."
+                    )
+                )
+        context = self._uow._context_snapshot_active()
+        terminal_event = attempt.events[-1]
+        await self._uow.audit.append(
+            build_answer_question_transition_audit(
+                registry=self._uow._audit_events,
+                context=context,
+                audit_event_id=answer_question_attempt_audit_event_id(
+                    attempt.workspace_id,
+                    attempt.environment_id,
+                    attempt.attempt_id,
+                    terminal_event.event_id,
+                    f"answer_question.attempt.{attempt.state.value}",
+                ),
+                object_type="answer_question_attempt",
+                object_id=attempt.attempt_id,
+                transition=f"answer_question.attempt.{attempt.state.value}",
+                occurred_at=terminal_event.occurred_at,
+                reason=(attempt.reason.value if attempt.reason is not None else "answer_question_attempt_succeeded"),
+            )
+        )
+        self._uow._pending_answer_question_attempts[key] = attempt.model_copy(deep=True)
+        return attempt.model_copy(deep=True)
+
+    async def resolve_attempt(self, attempt_id: UUID) -> AnswerQuestionAttempt:
+        self._uow._guard_active()
+        attempt = self._attempts().get(self._attempt_key(attempt_id))
+        if attempt is None:
+            self._uow._fail(AnswerQuestionAttemptNotFoundError("Q&A attempt is unavailable."))
+        return attempt.model_copy(deep=True)
+
+    async def list_attempts(self, run_id: UUID) -> tuple[AnswerQuestionAttempt, ...]:
+        self._uow._guard_active()
+        scope = self._scope()
+        attempts = [
+            item.model_copy(deep=True)
+            for item in self._attempts().values()
+            if item.workspace_id == scope.workspace_id
+            and item.environment_id == scope.environment_id
+            and item.run_id == run_id
+        ]
+        attempts.sort(key=lambda item: item.attempt_number)
+        return tuple(attempts)
 
 
 class _SourceObservationRepository:
@@ -2837,6 +3180,10 @@ class InMemoryUnitOfWork:
         self._base_environments: dict[UUID, Environment] = {}
         self._base_context_profiles: dict[tuple[UUID, UUID, UUID, int], ContextProfileVersion] = {}
         self._base_context_bundles: dict[tuple[UUID, UUID, UUID, int], ContextBundle] = {}
+        self._base_answer_question_runs: dict[tuple[UUID, UUID, UUID], AnswerQuestionRun] = {}
+        self._base_answer_question_attempts: dict[
+            tuple[UUID, UUID, UUID], AnswerQuestionAttempt
+        ] = {}
         self._base_receipts: dict[_ReceiptKey, _IdempotencyReceipt] = {}
         self._base_outbox_intents: dict[UUID, OutboxIntent] = {}
         self._base_source_objects: dict[UUID, SourceObject] = {}
@@ -2875,6 +3222,10 @@ class InMemoryUnitOfWork:
         self._pending_environments: dict[UUID, Environment] = {}
         self._pending_context_profiles: dict[tuple[UUID, UUID, UUID, int], ContextProfileVersion] = {}
         self._pending_context_bundles: dict[tuple[UUID, UUID, UUID, int], ContextBundle] = {}
+        self._pending_answer_question_runs: dict[tuple[UUID, UUID, UUID], AnswerQuestionRun] = {}
+        self._pending_answer_question_attempts: dict[
+            tuple[UUID, UUID, UUID], AnswerQuestionAttempt
+        ] = {}
         self._pending_receipts: dict[_ReceiptKey, _IdempotencyReceipt] = {}
         self._pending_outbox_intents: dict[UUID, OutboxIntent] = {}
         self._pending_source_objects: dict[UUID, SourceObject] = {}
@@ -2916,6 +3267,7 @@ class InMemoryUnitOfWork:
         self._environments = _EnvironmentRepository(self)
         self._context_profiles = _ContextProfileRepository(self)
         self._context_bundles = _ContextBundleRepository(self)
+        self._answer_question_runs = _AnswerQuestionRunRepository(self)
         self._idempotency = _IdempotencyRepository(self)
         self._outbox = _OutboxWriter(self)
         self._sources = _SourceObservationRepository(self)
@@ -2945,6 +3297,11 @@ class InMemoryUnitOfWork:
     def context_bundles(self) -> _ContextBundleRepository:
         self._guard_active()
         return self._context_bundles
+
+    @property
+    def answer_question_runs(self) -> _AnswerQuestionRunRepository:
+        self._guard_active()
+        return self._answer_question_runs
 
     @property
     def idempotency(self) -> _IdempotencyRepository:
@@ -3062,6 +3419,14 @@ class InMemoryUnitOfWork:
                 self._base_context_bundles = {
                     key: value.model_copy(deep=True)
                     for key, value in self._store.context_bundles.items()
+                }
+                self._base_answer_question_runs = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.answer_question_runs.items()
+                }
+                self._base_answer_question_attempts = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.answer_question_attempts.items()
                 }
                 self._base_receipts = {
                     key: _receipt_copy(value)
@@ -3239,6 +3604,26 @@ class InMemoryUnitOfWork:
                     {
                         key: value.model_copy(deep=True)
                         for key, value in self._pending_context_bundles.items()
+                    }
+                )
+                prepared_answer_question_runs = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.answer_question_runs.items()
+                }
+                prepared_answer_question_runs.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_answer_question_runs.items()
+                    }
+                )
+                prepared_answer_question_attempts = {
+                    key: value.model_copy(deep=True)
+                    for key, value in self._store.answer_question_attempts.items()
+                }
+                prepared_answer_question_attempts.update(
+                    {
+                        key: value.model_copy(deep=True)
+                        for key, value in self._pending_answer_question_attempts.items()
                     }
                 )
                 prepared_receipts = {
@@ -3502,6 +3887,8 @@ class InMemoryUnitOfWork:
                     environments=prepared_environments,
                     context_profiles=prepared_context_profiles,
                     context_bundles=prepared_context_bundles,
+                    answer_question_runs=prepared_answer_question_runs,
+                    answer_question_attempts=prepared_answer_question_attempts,
                     idempotency_receipts=prepared_receipts,
                     outbox_intents=prepared_outbox_intents,
                     source_objects=prepared_source_objects,
@@ -3554,6 +3941,8 @@ class InMemoryUnitOfWork:
         self._pending_environments.clear()
         self._pending_context_profiles.clear()
         self._pending_context_bundles.clear()
+        self._pending_answer_question_runs.clear()
+        self._pending_answer_question_attempts.clear()
         self._pending_receipts.clear()
         self._pending_outbox_intents.clear()
         self._pending_source_objects.clear()
@@ -3651,6 +4040,24 @@ class InMemoryUnitOfWork:
             raise ConstraintConflictError("Context profile immutable version already exists.")
         if self._pending_context_bundles.keys() & self._store.context_bundles.keys():
             raise ContextBundleConflictError("Context bundle immutable identity already exists.")
+        for key in self._pending_answer_question_runs:
+            snapshot = self._base_answer_question_runs.get(key)
+            committed = self._store.answer_question_runs.get(key)
+            if (snapshot is None and committed is not None) or (
+                snapshot is not None and committed != snapshot
+            ):
+                raise AnswerQuestionRunConflictError(
+                    "Q&A run changed concurrently."
+                )
+        for key in self._pending_answer_question_attempts:
+            snapshot = self._base_answer_question_attempts.get(key)
+            committed = self._store.answer_question_attempts.get(key)
+            if (snapshot is None and committed is not None) or (
+                snapshot is not None and committed != snapshot
+            ):
+                raise AnswerQuestionAttemptImmutableError(
+                    "Q&A attempt changed concurrently."
+                )
         committed_attempts = {
             (
                 bundle.workspace_id,
@@ -3998,6 +4405,8 @@ class InMemoryUnitOfWork:
         self._base_environments.clear()
         self._base_context_profiles.clear()
         self._base_context_bundles.clear()
+        self._base_answer_question_runs.clear()
+        self._base_answer_question_attempts.clear()
         self._base_receipts.clear()
         self._base_outbox_intents.clear()
         self._base_source_objects.clear()
@@ -4036,6 +4445,8 @@ class InMemoryUnitOfWork:
         self._pending_environments.clear()
         self._pending_context_profiles.clear()
         self._pending_context_bundles.clear()
+        self._pending_answer_question_runs.clear()
+        self._pending_answer_question_attempts.clear()
         self._pending_receipts.clear()
         self._pending_outbox_intents.clear()
         self._pending_source_objects.clear()

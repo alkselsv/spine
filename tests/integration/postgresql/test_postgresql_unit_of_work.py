@@ -193,6 +193,15 @@ from tests.contracts.persistence.test_context_profile_repository_contract import
     test_context_profile_repository_replays_same_immutable_version as contract_context_profile_replay,
     test_context_profile_repository_retries_after_uncommitted_create_failure as contract_context_profile_retry,
 )
+from tests.contracts.persistence.test_answer_question_run_repository_contract import (
+    test_answer_question_attempt_rejects_unresolvable_context_bundle_reference as contract_qa_context_bundle,
+    test_answer_question_attempt_concurrent_completion_has_one_terminal_winner as contract_qa_concurrent_completion,
+    test_answer_question_partial_failure_retry_and_cancellation_are_replayable as contract_qa_retry_cancel,
+    test_answer_question_attempt_terminal_record_is_immutable_and_replayable as contract_qa_attempt_immutable,
+    test_answer_question_run_conflicting_command_key_fails_closed as contract_qa_conflicting_key,
+    test_answer_question_run_create_and_replay_are_canonical_and_idempotent as contract_qa_create_replay,
+    test_answer_question_run_resolution_does_not_cross_workspace_or_environment as contract_qa_isolation,
+)
 from tests.contracts.persistence.test_unit_of_work_contract import (
     test_concurrent_duplicate_commit_has_one_logical_effect as contract_concurrent_duplicate,
     test_duplicate_workspace_identity_raises_typed_conflict as contract_duplicate_workspace,
@@ -2708,3 +2717,45 @@ async def test_postgresql_projection_runs_resolve_by_canonical_source_revision(
         partitions = await uow.projections.list_partitions(run.projection_run_id)
         assert len(partitions) == 1
         await uow.rollback()
+
+
+async def test_postgresql_answer_question_run_create_and_replay_contract(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    await contract_qa_create_replay(postgresql_adapter)
+
+
+async def test_postgresql_answer_question_run_conflicting_key_contract(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    await contract_qa_conflicting_key(postgresql_adapter)
+
+
+async def test_postgresql_answer_question_attempt_immutability_contract(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    await contract_qa_attempt_immutable(postgresql_adapter)
+
+
+async def test_postgresql_answer_question_context_bundle_reference_contract(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    await contract_qa_context_bundle(postgresql_adapter)
+
+
+async def test_postgresql_answer_question_concurrent_completion_contract(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    await contract_qa_concurrent_completion(postgresql_adapter)
+
+
+async def test_postgresql_answer_question_run_isolation_contract(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    await contract_qa_isolation(postgresql_adapter)
+
+
+async def test_postgresql_answer_question_retry_cancellation_contract(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    await contract_qa_retry_cancel(postgresql_adapter)

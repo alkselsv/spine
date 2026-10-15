@@ -113,6 +113,46 @@ context_bundles = Table(
     ),
 )
 
+answer_question_runs = Table(
+    "answer_question_runs",
+    metadata,
+    Column("run_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("idempotency_key", Text, nullable=False),
+    Column("command_digest", String(64), nullable=False),
+    Column("state", Text, nullable=False),
+    Column("outcome", Text, nullable=True),
+    Column("payload", JSONB, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("completed_at", DateTime(timezone=True), nullable=True),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id", "run_id", name="pk_answer_question_runs"
+    ),
+)
+
+answer_question_attempts = Table(
+    "answer_question_attempts",
+    metadata,
+    Column("attempt_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("run_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("attempt_number", Integer, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("outcome", Text, nullable=True),
+    Column("context_bundle_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("context_bundle_version", Integer, nullable=True),
+    Column("context_bundle_digest", String(64), nullable=True),
+    Column("payload", JSONB, nullable=False),
+    Column("started_at", DateTime(timezone=True), nullable=False),
+    Column("completed_at", DateTime(timezone=True), nullable=True),
+    PrimaryKeyConstraint(
+        "workspace_id", "environment_id", "attempt_id",
+        name="pk_answer_question_attempts",
+    ),
+)
+
 idempotency_receipts = Table(
     "idempotency_receipts",
     metadata,
