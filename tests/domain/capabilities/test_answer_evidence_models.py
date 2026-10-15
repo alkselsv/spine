@@ -84,6 +84,7 @@ def citation(
             attempt_id=ATTEMPT,
         ),
         "evidence_reference": ContextBundleEvidenceReference(
+            schema_version="context-evidence-reference:v2",
             evidence_id=evidence_id,
             workspace_id=WORKSPACE,
             environment_id=ENVIRONMENT,
@@ -91,10 +92,13 @@ def citation(
             activation_generation=1,
             source_object_id=source_object_id,
             source_revision_id=source_revision_id,
+            original_sha256="a" * 64,
             revision_digest="b" * 64,
             processing_receipt_id=UUID(int=32),
+            projected_kind="chunk",
             locator_contract_version="locator:v1",
             locator={"kind": "page", "value": "1"},
+            locator_digest="d" * 64,
             evidence_digest="c" * 64,
         ),
     }
@@ -146,9 +150,9 @@ def content(**overrides: object) -> AnswerContent:
 def test_single_source_answer_models_are_explicitly_versioned() -> None:
     answer = content()
 
-    assert answer.schema_version == "answer-content:v1"
+    assert answer.schema_version == "answer-content:v2"
     assert answer.claims[0].schema_version == "answer-claim:v1"
-    assert answer.citations[0].schema_version == "citation:v1"
+    assert answer.citations[0].schema_version == "citation:v2"
     assert answer.relationships[0].schema_version == "claim-evidence-relationship:v1"
 
 
@@ -331,12 +335,13 @@ def test_citation_rejects_cross_tenant_persisted_evidence_reference() -> None:
         citation(evidence_reference=foreign_evidence)
 
 
-def test_citation_requires_complete_revision_lineage() -> None:
+@pytest.mark.parametrize("field", ["original_sha256", "revision_digest", "locator_digest"])
+def test_citation_requires_complete_revision_lineage(field: str) -> None:
     incomplete_evidence = citation().evidence_reference.model_copy(
-        update={"revision_digest": None}
+        update={field: None}
     )
 
-    with pytest.raises(ValidationError, match="complete revision and locator lineage"):
+    with pytest.raises(ValidationError, match="complete original, revision, and locator lineage"):
         citation(evidence_reference=incomplete_evidence)
 
 
