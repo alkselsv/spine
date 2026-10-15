@@ -31,6 +31,16 @@ from spine.domain.capabilities.answer_question import (
     parse_answer_question_input,
     parse_answer_question_output,
 )
+from spine.domain.capabilities.answer_question_execution import (
+    ANSWER_QUESTION_EXECUTION_PIN_SCHEMA,
+    AnswerQuestionExecutionPin,
+    PinnedAgentVersion,
+    PinnedConfigurationVersion,
+    PinnedContextProfile,
+    PinnedProjection,
+    TrustedAnswerQuestionConfiguration,
+    agent_version_digest,
+)
 from spine.domain.capabilities.models import CapabilityDefinition
 
 __all__ = [
@@ -38,6 +48,7 @@ __all__ = [
     "ANSWER_CONTENT_SCHEMA",
     "ANSWER_QUESTION_INPUT_SCHEMA",
     "ANSWER_QUESTION_OUTPUT_SCHEMA",
+    "ANSWER_QUESTION_EXECUTION_PIN_SCHEMA",
     "CITATION_SCHEMA",
     "CLAIM_EVIDENCE_RELATIONSHIP_SCHEMA",
     "AnswerClaim",
@@ -46,6 +57,7 @@ __all__ = [
     "AnswerContent",
     "AnswerQuestionContractError",
     "AnswerQuestionInput",
+    "AnswerQuestionExecutionPin",
     "AnswerQuestionOutcome",
     "AnswerQuestionOutput",
     "AnswerQuestionSafeReason",
@@ -58,9 +70,15 @@ __all__ = [
     "ClaimEvidenceRelationshipKind",
     "ClarificationRequest",
     "LineageReference",
+    "PinnedAgentVersion",
+    "PinnedConfigurationVersion",
+    "PinnedContextProfile",
+    "PinnedProjection",
     "QuestionSubject",
     "RetrievalOutcome",
     "RunAttemptCorrelation",
+    "TrustedAnswerQuestionConfiguration",
+    "agent_version_digest",
     "map_retrieval_outcome",
     "parse_answer_question_input",
     "parse_answer_question_output",

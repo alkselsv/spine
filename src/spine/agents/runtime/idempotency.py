@@ -77,6 +77,9 @@ def digest_agent_invocation(
             "input_artifact_ids": invocation.input_artifact_ids,
             "validated_input": validated_input.model_dump(mode="json"),
             "constraints": invocation.constraints,
+            "execution_configuration_digest": (
+                invocation.execution_configuration_digest
+            ),
             "retry_safety": invocation.retry_safety,
             "context_request": invocation.context_request,
             "context_profile": context.context_profile,
