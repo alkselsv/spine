@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -16,9 +17,15 @@ from spine.api.diagnostics import (
     get_diagnostic_context,
     install_diagnostic_exception_handlers,
 )
+from spine.api.health import (
+    LivenessResponse,
+    ReadinessResponse,
+    install_health_summary_route,
+)
 from spine.api.batch_ingestion import install_batch_ingestion_routes
 from spine.api.ingestion import install_ingestion_routes
 from spine.api.authorization import (
+    ApiAuthorizationReadiness,
     ApiAuthorizationRuntime,
     ApiRouteClassificationRegistry,
     add_public_api_route,
@@ -33,6 +40,7 @@ from spine.application.diagnostics import (
 )
 from spine.application.ingestion_api import DocumentIngestionService
 from spine.application.batch_ingestion_api import BatchDocumentIngestionService
+from spine.application.health_summary import HealthStatusServices
 from spine.config import settings
 from spine.ingest.loaders import documents_to_remember_payloads, load_path
 from spine.infrastructure.diagnostics import JsonLoggingDiagnosticSink
@@ -67,26 +75,38 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "service": "spine", "phase": "qa"}
 
 
-async def liveness() -> dict[str, str]:
-    return {"status": "ok", "service": "spine"}
+async def liveness() -> LivenessResponse:
+    return LivenessResponse(status="ok", service="spine")
 
 
 async def readiness(request: Request) -> JSONResponse:
     runtime = getattr(request.app.state, "authorization_runtime", None)
     if type(runtime) is ApiAuthorizationRuntime:
-        authorization_readiness = await runtime.check_readiness()
-        ready = authorization_readiness.ready
-        code = authorization_readiness.code.value
+        try:
+            authorization_readiness = await asyncio.wait_for(
+                runtime.check_readiness(),
+                timeout=request.app.state.health_readiness_timeout_seconds,
+            )
+            if type(authorization_readiness) is not ApiAuthorizationReadiness:
+                raise TypeError("authorization readiness is not canonical")
+            ready = authorization_readiness.ready
+            code = authorization_readiness.code.value
+        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            ready = False
+            code = "authorization.unavailable"
     else:
         ready = True
         code = "authorization.ready"
+    body = ReadinessResponse(
+        status="ready" if ready else "not_ready",
+        service="spine",
+        code=code,  # type: ignore[arg-type]
+    )
     return JSONResponse(
         status_code=200 if ready else 503,
-        content={
-            "status": "ready" if ready else "not_ready",
-            "service": "spine",
-            "code": code,
-        },
+        content=body.model_dump(mode="json"),
     )
 
 
@@ -145,8 +165,15 @@ def create_app(
     max_batch_files: int = 20,
     max_batch_file_bytes: int = 10_000_000,
     max_batch_upload_bytes: int = 50_000_000,
+    health_status_services: HealthStatusServices | None = None,
+    build_version: str | None = None,
+    health_summary_timeout_seconds: float = 0.25,
+    health_readiness_timeout_seconds: float = 0.25,
 ) -> FastAPI:
     """Compose the HTTP API with injectable deterministic diagnostics."""
+
+    if health_readiness_timeout_seconds <= 0 or health_readiness_timeout_seconds > 5:
+        raise ValueError("health readiness timeout must be between 0 and 5 seconds")
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -182,6 +209,7 @@ def create_app(
     application.state.batch_document_ingestion_service = (
         batch_document_ingestion_service
     )
+    application.state.health_readiness_timeout_seconds = health_readiness_timeout_seconds
     application.state.route_classifications = ApiRouteClassificationRegistry()
     install_authorization_openapi(application)
     resolved_error_registry = error_registry or build_default_error_registry()
@@ -204,13 +232,23 @@ def create_app(
         liveness,
         route_id="system.health.live",
         methods=["GET"],
+        response_model=LivenessResponse,
     )
+    if type(authorization_runtime) is ApiAuthorizationRuntime:
+        install_health_summary_route(
+            application,
+            services=health_status_services,
+            build_version=build_version,
+            timeout_seconds=health_summary_timeout_seconds,
+        )
     add_public_api_route(
         application,
         "/api/v1/health/ready",
         readiness,
         route_id="system.health.ready",
         methods=["GET"],
+        response_model=ReadinessResponse,
+        responses={503: {"model": ReadinessResponse}},
     )
     application.add_api_route(
         "/ask",

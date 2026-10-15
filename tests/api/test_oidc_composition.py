@@ -52,6 +52,8 @@ class ImmediateAuditGate:
 
 class UnusedComposer:
     def bind_route(self, route_id: str) -> object:
+        if route_id == "system.health.summary":
+            return object()
         raise AssertionError(f"unexpected route binding: {route_id}")
 
 
