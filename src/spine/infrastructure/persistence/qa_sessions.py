@@ -22,6 +22,7 @@ from spine.application.qa_sessions import (
     QASessionVersionConflict,
 )
 from spine.domain.capabilities import AnswerQuestionOutcome
+from spine.domain.disclosure import DisclosureDependencySet
 from spine.domain.qa_sessions import QAMessage, QAMessageState, QASession, QASessionStatus
 
 
@@ -233,6 +234,7 @@ class InMemoryQASessionRepository(QASessionRepository):
         completed_at: datetime,
         command_id: UUID,
         idempotency_key: IdempotencyKey,
+        disclosure_dependencies: DisclosureDependencySet | None,
         digest: CommandDigest,
     ) -> QAMutationResult[QAMessage]:
         async with self._lock:
@@ -242,11 +244,16 @@ class InMemoryQASessionRepository(QASessionRepository):
             current = self._message_for(workspace_id, environment_id, session_id, message_id)
             if current.state is QAMessageState.TERMINAL:
                 raise QASessionVersionConflict("The message is already terminal.")
+            dependencies = disclosure_dependencies or current.disclosure_dependencies
             updated = current.model_copy(
                 update={
                     "version": current.version + 1,
                     "state": QAMessageState.TERMINAL,
                     "answer": answer,
+                    "disclosure_dependencies": dependencies,
+                    "disclosure_dependency_ids": tuple(
+                        item.dependency_id for item in dependencies.dependencies
+                    ),
                     "terminal_outcome": outcome,
                     "cancelled": cancelled,
                     "updated_at": completed_at,
