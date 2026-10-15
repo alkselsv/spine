@@ -363,6 +363,7 @@ class LocalAgentRuntime:
         try:
             self._context.cancellation.raise_if_cancelled()
             output = self._schemas.load_output(response.output)
+            self._schemas.check_handoff(typed_input, output, response)
         except CooperativeCancellationError:
             return await self._finish_claimed_cancelled(claim, result_reference)
         except Exception:

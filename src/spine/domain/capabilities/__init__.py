@@ -67,6 +67,16 @@ from spine.domain.capabilities.answer_question_execution import (
     TrustedAnswerQuestionConfiguration,
     agent_version_digest,
 )
+from spine.domain.capabilities.answer_question_candidate import (
+    ANSWER_QUESTION_CANDIDATE_INPUT_SCHEMA,
+    ANSWER_QUESTION_CANDIDATE_OUTPUT_SCHEMA,
+    AnswerCandidateInput,
+    AnswerCandidateOutput,
+    AnswerQuestionCandidateInput,
+    AnswerQuestionCandidateOutput,
+    parse_answer_question_candidate_input,
+    parse_answer_question_candidate_output,
+)
 from spine.domain.capabilities.answer_question_runs import (
     ANSWER_QUESTION_ATTEMPT_SCHEMA,
     ANSWER_QUESTION_RUN_SCHEMA,
@@ -111,9 +121,15 @@ __all__ = [
     "ANSWER_QUESTION_INPUT_SCHEMA",
     "ANSWER_QUESTION_OUTPUT_SCHEMA",
     "ANSWER_QUESTION_EXECUTION_PIN_SCHEMA",
+    "ANSWER_QUESTION_CANDIDATE_INPUT_SCHEMA",
+    "ANSWER_QUESTION_CANDIDATE_OUTPUT_SCHEMA",
     "CITATION_SCHEMA",
     "CLAIM_EVIDENCE_RELATIONSHIP_SCHEMA",
     "AnswerClaim",
+    "AnswerCandidateInput",
+    "AnswerCandidateOutput",
+    "AnswerQuestionCandidateInput",
+    "AnswerQuestionCandidateOutput",
     "AnswerClaimKind",
     "AnswerClaimLocation",
     "AnswerContent",
@@ -188,4 +204,6 @@ __all__ = [
     "map_retrieval_outcome",
     "parse_answer_question_input",
     "parse_answer_question_output",
+    "parse_answer_question_candidate_input",
+    "parse_answer_question_candidate_output",
 ]
