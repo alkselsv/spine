@@ -1,0 +1,139 @@
+{
+  "schema_version": "context-broker-qualification:v1",
+  "ticket": 269,
+  "parent_ticket": 27,
+  "mode": "deterministic_offline_with_mandatory_postgresql_gate",
+  "release_gate": {
+    "status": "qualified_offline",
+    "postgresql": "mandatory_external_gate",
+    "provider_qualification": "not_approved"
+  },
+  "readiness": {
+    "technical": "qualified_offline",
+    "contract": "qualified_offline",
+    "native_dependency": "not_run",
+    "agent_claimability": "qualified_offline",
+    "production": "not_approved"
+  },
+  "production_approval": false,
+  "criteria": [
+    {
+      "id": "AC1",
+      "status": "qualified_offline",
+      "evidence": [
+        "tests/application/test_authorized_context_broker.py::test_allowed_request_persists_exact_bundle_and_replays_without_second_read",
+        "tests/contracts/memory/test_context_broker_v1.py::test_fake_broker_issues_an_explicit_fake_bundle_for_allowed_retrieval",
+        "tests/application/persistence/test_context_bundles.py::test_context_bundle_repository_replays_exact_immutable_attempt"
+      ]
+    },
+    {
+      "id": "AC2",
+      "status": "qualified_offline",
+      "evidence": [
+        "tests/contracts/memory/test_context_broker_v1.py::test_context_request_rejects_client_selected_projection_authority",
+        "tests/contracts/memory/test_context_broker_v1.py::test_fake_broker_maps_controlled_retrieval_outcomes_safely",
+        "tests/contracts/memory/test_context_broker_v1.py::test_context_response_rejects_bundle_on_denied_outcome",
+        "tests/application/test_authorized_context_broker.py::test_unpublished_active_projection_is_safe_unavailable"
+      ]
+    },
+    {
+      "id": "AC3",
+      "status": "qualified_offline",
+      "evidence": [
+        "tests/application/test_authorized_retrieval_scope.py::test_mixed_access_omits_unauthorized_source_without_denied_source_leakage",
+        "tests/application/test_authorized_retrieval_scope.py::test_interactive_processing_requires_human_and_service_grants",
+        "tests/application/test_authorized_retrieval_scope.py::test_scope_rejects_wrong_purpose_and_cross_environment_without_repository_call",
+        "tests/application/test_authorized_context_broker.py::test_workspace_mismatch_denies_without_leaking_other_workspace_state",
+        "tests/application/test_attempt_revalidation.py::test_same_idempotency_key_isolated_between_workspaces",
+        "tests/contracts/memory/test_context_broker_v1.py::test_fake_broker_keeps_two_workspace_requests_isolated"
+      ]
+    },
+    {
+      "id": "AC4",
+      "status": "qualified_offline",
+      "evidence": [
+        "tests/application/test_authorized_retrieval_scope.py::test_superseded_revision_fails_closed_instead_of_using_old_publication_member",
+        "tests/application/test_authorized_retrieval_scope.py::test_missing_retention_or_tombstoned_current_revision_fails_closed",
+        "tests/memory/test_physical_read_plan.py::test_missing_receipt_lineage_fails_closed",
+        "tests/memory/test_physical_read_plan.py::test_cross_workspace_reference_fails_closed_without_repairing_the_reference",
+        "tests/memory/test_structured_retrieval.py::test_executor_keeps_incompatible_duplicate_provenance_as_separate_items"
+      ]
+    },
+    {
+      "id": "AC5",
+      "status": "qualified_offline",
+      "evidence": [
+        "tests/application/test_authorized_retrieval_scope.py::test_missing_provider_safety_proof_fails_closed",
+        "tests/memory/test_physical_read_plan.py::test_isolation_failure_is_typed_and_never_produces_a_plan",
+        "tests/memory/test_physical_read_plan.py::test_non_active_namespace_is_excluded_before_provider_boundary",
+        "tests/memory/test_physical_read_plan.py::test_changed_publication_pin_cannot_mix_with_the_authorized_scope",
+        "tests/memory/test_structured_retrieval.py::test_executor_rejects_unsafe_resolution_without_provider_call"
+      ]
+    },
+    {
+      "id": "AC6",
+      "status": "qualified_offline",
+      "evidence": [
+        "tests/application/test_authorized_context_broker.py::test_replay_returns_immutable_bundle_without_reinvoking_profile_or_publication",
+        "tests/application/persistence/test_context_bundles.py::test_context_bundle_repository_rejects_conflicting_replay",
+        "tests/application/test_attempt_revalidation.py::test_exact_duplicate_is_idempotent",
+        "tests/application/test_attempt_revalidation.py::test_concurrent_duplicate_submissions_share_one_logical_result",
+        "tests/application/test_attempt_revalidation.py::test_policy_revocation_rejects_reuse_without_a_regeneration_plan",
+        "tests/application/test_attempt_revalidation.py::test_tombstoned_source_fails_closed_even_when_the_old_evidence_is_present"
+      ]
+    },
+    {
+      "id": "AC7",
+      "status": "qualified_offline",
+      "evidence": [
+        "tests/application/test_attempt_revalidation.py::test_cancelled_request_has_no_protected_bundle_result",
+        "tests/application/test_attempt_revalidation.py::test_partial_bundle_replay_keeps_a_typed_partial_outcome_without_evidence",
+        "tests/memory/test_structured_retrieval.py::test_executor_reports_partial_provider_failure_without_failed_lane_content",
+        "tests/memory/test_structured_retrieval.py::test_executor_propagates_cancellation_before_starting_next_partition",
+        "tests/contracts/memory/test_retrieval_contract.py::test_retrieval_score_is_optional_and_round_trips_when_provider_supplies_it"
+      ]
+    },
+    {
+      "id": "AC8",
+      "status": "qualified_offline",
+      "evidence": [
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_context_bundle_replays_isolates_and_safe_reads",
+        "tests/infrastructure/persistence/test_postgresql_publication_resolution.py::test_active_publication_resolution_uses_one_consistent_statement_snapshot",
+        "tests/integration/postgresql/test_initial_tenancy_migration.py::test_workspace_rls_hides_and_rejects_another_workspace_rows",
+        "tests/integration/postgresql/test_initial_tenancy_migration.py::test_environment_rls_isolates_two_environments_in_one_workspace",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_concurrent_duplicate_claims_have_one_owner_and_stable_replay",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_lost_commit_response_replays_one_combined_effect",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_access_policy_activation_has_one_concurrent_cas_winner_and_stable_replay",
+        "tests/integration/postgresql/test_authorization_directory.py::test_revoked_generation_stops_next_composed_request_before_handler",
+        "tests/test_architecture_scaffold.py::ArchitectureScaffoldTests::test_domain_layer_has_no_framework_imports"
+      ]
+    }
+  ],
+  "boundaries": {
+    "postgresql_publication_authority": "consumed_not_owned",
+    "access_policy_authority": "consumed_not_owned",
+    "cognee": "rebuildable_physical_projection_only",
+    "answer_generation": "out_of_scope",
+    "final_disclosure": "out_of_scope"
+  },
+  "postgresql_prerequisite": {
+    "status": "mandatory_external_gate",
+    "requirement": "Run the real PostgreSQL contract/race suite with SPINE_TEST_DATABASE_URL pointing at the exact disposable test database and marker, or with Docker/Testcontainers available.",
+    "offline_status": "not_claimed",
+    "tests": [
+      "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_context_bundle_replays_isolates_and_safe_reads",
+      "tests/infrastructure/persistence/test_postgresql_publication_resolution.py::test_active_publication_resolution_uses_one_consistent_statement_snapshot",
+      "tests/integration/postgresql/test_initial_tenancy_migration.py::test_workspace_rls_hides_and_rejects_another_workspace_rows",
+      "tests/integration/postgresql/test_initial_tenancy_migration.py::test_environment_rls_isolates_two_environments_in_one_workspace",
+      "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_concurrent_duplicate_claims_have_one_owner_and_stable_replay",
+      "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_lost_commit_response_replays_one_combined_effect",
+      "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_access_policy_activation_has_one_concurrent_cas_winner_and_stable_replay",
+      "tests/integration/postgresql/test_authorization_directory.py::test_revoked_generation_stops_next_composed_request_before_handler"
+    ]
+  },
+  "limitations": [
+    "The offline result is fake-backed deterministic qualification, not production approval.",
+    "The PostgreSQL contract and race suite remains a mandatory external prerequisite and is not represented as passed by this artifact.",
+    "Real Cognee, Neo4j, PGVector, external identity providers and production deployment configuration are outside this gate."
+  ]
+}
