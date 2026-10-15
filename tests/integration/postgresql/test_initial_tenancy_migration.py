@@ -1395,6 +1395,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "environments",
         "context_profiles",
         "context_bundles",
+        "answer_question_runs",
+        "answer_question_attempts",
         "idempotency_receipts",
         "initial_workspace_bootstrap",
         "outbox_intents",
@@ -1763,8 +1765,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ck_context_profiles_completeness",
         "ck_context_profiles_partial_fallback",
         "ck_context_profiles_server_approved",
-        "pk_context_bundles",
-        "uq_context_bundles_attempt",
+            "pk_context_bundles",
+            "uq_context_bundles_attempt",
+            "uq_context_bundles_exact_identity",
         "fk_context_bundles_environment",
         "fk_context_bundles_profile",
         "ck_context_bundles_positive_versions",
@@ -1773,6 +1776,22 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ck_context_bundles_publication_state",
         "ck_context_bundles_outcome",
         "ck_context_bundles_state",
+        "pk_answer_question_runs",
+        "fk_answer_question_runs_environment",
+        "uq_answer_question_runs_idempotency",
+        "ck_answer_question_runs_digest",
+        "ck_answer_question_runs_state",
+        "ck_answer_question_runs_outcome",
+        "ck_answer_question_runs_terminal",
+        "pk_answer_question_attempts",
+        "fk_answer_question_attempts_run",
+        "fk_answer_question_attempts_context_bundle",
+        "uq_answer_question_attempts_number",
+        "ck_answer_question_attempts_positive",
+        "ck_answer_question_attempts_state",
+        "ck_answer_question_attempts_outcome",
+        "ck_answer_question_attempts_terminal",
+        "ck_answer_question_attempts_bundle_ref",
     }
     expected_final_constraints |= (
         AUTHORIZATION_DIRECTORY_CONSTRAINTS
@@ -2075,8 +2094,14 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ix_context_profiles_lookup",
         "pk_context_bundles",
         "uq_context_bundles_attempt",
+        "uq_context_bundles_exact_identity",
         "ix_context_bundles_attempt",
         "ix_context_bundles_snapshot_generation",
+        "pk_answer_question_runs",
+        "uq_answer_question_runs_idempotency",
+        "pk_answer_question_attempts",
+        "uq_answer_question_attempts_number",
+        "ix_answer_question_attempts_run",
         "ix_projection_activations_kind_generation",
         "ix_active_projections_snapshot_generation",
         "ix_projection_drifts_source",
@@ -2087,6 +2112,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "environments": (True, True),
         "context_profiles": (True, True),
         "context_bundles": (True, True),
+        "answer_question_runs": (True, True),
+        "answer_question_attempts": (True, True),
         "idempotency_receipts": (True, True),
         "initial_workspace_bootstrap": (True, True),
         "outbox_intents": (True, True),
@@ -2209,6 +2236,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "environments": (True, True, True, True),
         "context_profiles": (True, True, False, False),
         "context_bundles": (True, True, False, False),
+        "answer_question_runs": (True, True, True, False),
+        "answer_question_attempts": (True, True, True, False),
         "idempotency_receipts": (True, True, False, False),
         "initial_workspace_bootstrap": (False, False, False, False),
         "outbox_intents": (False, True, False, False),
@@ -2401,7 +2430,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_partitions', 'projection_receipts', 'source_projection_references', "
                             "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
-                            "'projection_drifts'))"
+                                "'projection_drifts', 'answer_question_runs', "
+                                "'answer_question_attempts'))"
                     )
                 )
             ).scalars()
@@ -2434,7 +2464,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_receipts', 'source_projection_references', "
                             "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
-                            "'projection_drifts')"
+                                "'projection_drifts', 'answer_question_runs', "
+                                "'answer_question_attempts')"
                     )
                 )
             ).mappings()
@@ -2461,7 +2492,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_receipts', 'source_projection_references', "
                             "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
-                            "'projection_drifts')"
+                                "'projection_drifts', 'answer_question_runs', "
+                                "'answer_question_attempts')"
                     )
                 )
             ).scalars()
@@ -2487,7 +2519,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_receipts', 'source_projection_references', "
                             "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
-                            "'projection_drifts')"
+                                "'projection_drifts', 'answer_question_runs', "
+                                "'answer_question_attempts')"
                     )
                 )
             ).scalars()
@@ -2513,7 +2546,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_receipts', 'source_projection_references', "
                             "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
-                            "'projection_drifts')"
+                                "'projection_drifts', 'answer_question_runs', "
+                                "'answer_question_attempts')"
                     )
                 )
             ).scalars()
@@ -2578,6 +2612,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "ck_context_profiles_server_approved",
         "pk_context_bundles",
         "uq_context_bundles_attempt",
+        "uq_context_bundles_exact_identity",
         "fk_context_bundles_environment",
         "fk_context_bundles_profile",
         "ck_context_bundles_positive_versions",
@@ -2740,6 +2775,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "ix_context_profiles_lookup",
         "pk_context_bundles",
         "uq_context_bundles_attempt",
+        "uq_context_bundles_exact_identity",
         "ix_context_bundles_attempt",
         "ix_context_bundles_snapshot_generation",
     } | AUTHORIZATION_DIRECTORY_INDEXES | AUDIT_INDEXES | DELIVERY_INDEXES | ADMISSION_INDEXES
@@ -3146,7 +3182,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "WHERE namespace.nspname = 'spine' "
                         "AND relation.relname IN "
                         "('workspaces', 'environments', 'idempotency_receipts', "
-                        "'context_profiles', 'context_bundles', "
+                            "'context_profiles', 'context_bundles', "
+                            "'answer_question_runs', 'answer_question_attempts', "
                         "'initial_workspace_bootstrap', 'outbox_intents', "
                         "'outbox_deliveries', "
                         "'workspace_memberships', 'environment_memberships', "
@@ -3206,8 +3243,10 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "admission_decisions": (True, True),
         "workspaces": (True, True),
         "environments": (True, True),
-        "context_profiles": (True, True),
-        "context_bundles": (True, True),
+            "context_profiles": (True, True),
+            "context_bundles": (True, True),
+            "answer_question_runs": (True, True),
+            "answer_question_attempts": (True, True),
         "idempotency_receipts": (True, True),
         "initial_workspace_bootstrap": (True, True),
         "outbox_intents": (True, True),
@@ -4524,13 +4563,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261023_27_context_profiles.py",
         "20261024_28_context_bundles.py",
         "20261025_29_authorization_team_memberships.py",
+        "20261026_30_answer_question_runs.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "20261021_26_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
         "revision = '20261021_26'\n"
-        "down_revision = '20261025_29'\n"
+        "down_revision = '20261026_30'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

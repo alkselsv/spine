@@ -47,6 +47,11 @@ from spine.application.persistence.delivery import (
     UnresolvedOutboxIntent,
 )
 from spine.application.persistence.errors import (
+    AnswerQuestionAttemptImmutableError,
+    AnswerQuestionAttemptNotFoundError,
+    AnswerQuestionPersistenceError,
+    AnswerQuestionRunConflictError,
+    AnswerQuestionRunNotFoundError,
     AuditConflictError,
     ConstraintConflictError,
     ObservationIntegrityConflictError,
@@ -86,6 +91,14 @@ from spine.application.persistence.idempotency import (
     IdempotencyReplay,
     OpaqueResultReference,
     OwnedIdempotencyClaim,
+)
+from spine.application.persistence.answer_question_runs import (
+    ANSWER_QUESTION_RUN_OPERATION,
+    ANSWER_QUESTION_RUN_OPERATION_SCHEMA_VERSION,
+    ANSWER_QUESTION_RUN_RESULT_TYPE,
+    AnswerQuestionRunCommand,
+    AnswerQuestionRunMutationResult,
+    AnswerQuestionRunRepository,
 )
 from spine.application.persistence.outbox import (
     OpaqueObjectReference,
@@ -139,6 +152,17 @@ from spine.application.persistence.unit_of_work import (
 )
 
 __all__ = [
+    "ANSWER_QUESTION_RUN_OPERATION",
+    "ANSWER_QUESTION_RUN_OPERATION_SCHEMA_VERSION",
+    "ANSWER_QUESTION_RUN_RESULT_TYPE",
+    "AnswerQuestionAttemptImmutableError",
+    "AnswerQuestionAttemptNotFoundError",
+    "AnswerQuestionPersistenceError",
+    "AnswerQuestionRunCommand",
+    "AnswerQuestionRunConflictError",
+    "AnswerQuestionRunMutationResult",
+    "AnswerQuestionRunNotFoundError",
+    "AnswerQuestionRunRepository",
     "AuditConflictError",
     "PROJECTION_ACTIVATION_SCHEMA_VERSION",
     "PROJECTION_ACTIVATED_OUTBOX_EVENT_TYPE",

@@ -52,6 +52,10 @@ from spine.application.persistence.context import (
     WorkspaceScope,
 )
 from spine.application.persistence.errors import (
+    AnswerQuestionAttemptImmutableError,
+    AnswerQuestionAttemptNotFoundError,
+    AnswerQuestionRunConflictError,
+    AnswerQuestionRunNotFoundError,
     AuditConflictError,
     CanonicalAuthorityConflictError,
     CanonicalEligibilityError,
@@ -118,6 +122,16 @@ from spine.application.persistence.idempotency import (
     OpaqueResultReference,
     OwnedIdempotencyClaim,
     idempotency_conflict,
+)
+from spine.application.persistence.answer_question_runs import (
+    ANSWER_QUESTION_RUN_OPERATION_SCHEMA_VERSION,
+    ANSWER_QUESTION_RUN_RESULT_TYPE,
+    AnswerQuestionRunCommand,
+    AnswerQuestionRunMutationResult,
+    validate_answer_question_attempt_completion,
+    validate_answer_question_attempt_start,
+    validate_answer_question_context_bundle,
+    validate_answer_question_run_completion,
 )
 from spine.application.persistence.outbox import (
     OpaqueObjectReference,
@@ -202,9 +216,20 @@ from spine.domain.projections import (
 )
 from spine.domain.context_profiles import ContextProfileVersion
 from spine.domain.context_bundles import ContextBundle
+from spine.domain.capabilities.answer_question_runs import (
+    AnswerQuestionAttempt,
+    AnswerQuestionAttemptState,
+    AnswerQuestionRun,
+    AnswerQuestionRunState,
+)
 from spine.infrastructure.db.engine import SessionFactory
 from spine.infrastructure.persistence.backup_recovery import (
     PostgreSQLBackupRecoveryRepository,
+)
+from spine.infrastructure.persistence.answer_question_audit import (
+    answer_question_attempt_audit_event_id,
+    answer_question_run_audit_event_id,
+    build_answer_question_transition_audit,
 )
 from spine.infrastructure.persistence.postgresql_errors import (
     translate_persistence_error,
@@ -217,6 +242,8 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     environments as _ENVIRONMENTS,
     context_profiles as _CONTEXT_PROFILES,
     context_bundles as _CONTEXT_BUNDLES,
+    answer_question_attempts as _ANSWER_QUESTION_ATTEMPTS,
+    answer_question_runs as _ANSWER_QUESTION_RUNS,
     idempotency_receipts as _IDEMPOTENCY_RECEIPTS,
     outbox_intents as _OUTBOX_INTENTS,
     source_objects as _SOURCE_OBJECTS,
@@ -932,6 +959,398 @@ class _PostgreSQLContextBundleRepository:
         if row is None:
             await self._uow._fail(ContextBundleNotFoundError("Context bundle is unavailable."))
         return await self._safe_read(row)
+
+
+class _PostgreSQLAnswerQuestionRunRepository:
+    def __init__(self, uow: "PostgreSQLTenantUnitOfWork") -> None:
+        self._uow = uow
+
+    def _scope(self) -> EnvironmentScope:
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            raise InvalidPersistenceContextError("Persistence context is invalid.")
+        return scope
+
+    @staticmethod
+    def _run_values(run: AnswerQuestionRun) -> dict[str, object]:
+        return {
+            "run_id": run.run_id,
+            "workspace_id": run.workspace_id,
+            "environment_id": run.environment_id,
+            "idempotency_key": run.idempotency_key,
+            "command_digest": run.command_digest,
+            "state": run.state.value,
+            "outcome": run.outcome.value if run.outcome is not None else None,
+            "payload": run.model_dump(mode="json"),
+            "created_at": run.created_at,
+            "completed_at": run.completed_at,
+        }
+
+    @staticmethod
+    def _attempt_values(attempt: AnswerQuestionAttempt) -> dict[str, object]:
+        bundle = attempt.context_bundle_ref
+        return {
+            "attempt_id": attempt.attempt_id,
+            "workspace_id": attempt.workspace_id,
+            "environment_id": attempt.environment_id,
+            "run_id": attempt.run_id,
+            "attempt_number": attempt.attempt_number,
+            "state": attempt.state.value,
+            "outcome": attempt.outcome.value if attempt.outcome is not None else None,
+            "context_bundle_id": bundle.bundle_id if bundle is not None else None,
+            "context_bundle_version": bundle.bundle_version if bundle is not None else None,
+            "context_bundle_digest": bundle.bundle_digest if bundle is not None else None,
+            "payload": attempt.model_dump(mode="json"),
+            "started_at": attempt.started_at,
+            "completed_at": attempt.completed_at,
+        }
+
+    @staticmethod
+    def _restore_run(row: Mapping[str, object]) -> AnswerQuestionRun:
+        try:
+            payload = row["payload"]
+            if not isinstance(payload, Mapping):
+                raise ValueError
+            run = AnswerQuestionRun.model_validate(payload)
+            if (
+                run.run_id != row["run_id"]
+                or run.workspace_id != row["workspace_id"]
+                or run.environment_id != row["environment_id"]
+                or run.idempotency_key != row["idempotency_key"]
+                or run.command_digest != row["command_digest"]
+                or run.state.value != row["state"]
+                or (run.outcome.value if run.outcome is not None else None) != row["outcome"]
+            ):
+                raise ValueError
+            return run
+        except (KeyError, TypeError, ValueError):
+            raise AnswerQuestionRunConflictError("Q&A run record is invalid.") from None
+
+    @staticmethod
+    def _restore_attempt(row: Mapping[str, object]) -> AnswerQuestionAttempt:
+        try:
+            payload = row["payload"]
+            if not isinstance(payload, Mapping):
+                raise ValueError
+            attempt = AnswerQuestionAttempt.model_validate(payload)
+            bundle = attempt.context_bundle_ref
+            if (
+                attempt.attempt_id != row["attempt_id"]
+                or attempt.workspace_id != row["workspace_id"]
+                or attempt.environment_id != row["environment_id"]
+                or attempt.run_id != row["run_id"]
+                or attempt.attempt_number != row["attempt_number"]
+                or attempt.state.value != row["state"]
+                or (attempt.outcome.value if attempt.outcome is not None else None)
+                != row["outcome"]
+                or (bundle.bundle_id if bundle is not None else None)
+                != row["context_bundle_id"]
+                or (bundle.bundle_version if bundle is not None else None)
+                != row["context_bundle_version"]
+                or (bundle.bundle_digest if bundle is not None else None)
+                != row["context_bundle_digest"]
+            ):
+                raise ValueError
+            return attempt
+        except (KeyError, TypeError, ValueError):
+            raise AnswerQuestionAttemptImmutableError("Q&A attempt record is invalid.") from None
+
+    async def _find_run(
+        self, *, run_id: UUID | None = None, idempotency_key: str | None = None
+    ) -> Mapping[str, object] | None:
+        scope = self._scope()
+        conditions = [
+            _ANSWER_QUESTION_RUNS.c.workspace_id == scope.workspace_id,
+            _ANSWER_QUESTION_RUNS.c.environment_id == scope.environment_id,
+        ]
+        if run_id is not None:
+            conditions.append(_ANSWER_QUESTION_RUNS.c.run_id == run_id)
+        if idempotency_key is not None:
+            conditions.append(_ANSWER_QUESTION_RUNS.c.idempotency_key == idempotency_key)
+        result = await self._uow._execute(select(_ANSWER_QUESTION_RUNS).where(*conditions))
+        return result.mappings().one_or_none()
+
+    async def _find_attempt(self, attempt_id: UUID) -> Mapping[str, object] | None:
+        scope = self._scope()
+        result = await self._uow._execute(
+            select(_ANSWER_QUESTION_ATTEMPTS).where(
+                _ANSWER_QUESTION_ATTEMPTS.c.workspace_id == scope.workspace_id,
+                _ANSWER_QUESTION_ATTEMPTS.c.environment_id == scope.environment_id,
+                _ANSWER_QUESTION_ATTEMPTS.c.attempt_id == attempt_id,
+            )
+        )
+        return result.mappings().one_or_none()
+
+    def _validate_run_scope(self, run: AnswerQuestionRun) -> None:
+        scope = self._scope()
+        if run.workspace_id != scope.workspace_id or run.environment_id != scope.environment_id:
+            raise InvalidPersistenceContextError("Persistence context is invalid.")
+
+    async def create_run(
+        self, command: AnswerQuestionRunCommand
+    ) -> AnswerQuestionRunMutationResult:
+        self._uow._guard_active()
+        self._validate_run_scope(command.run)
+        if (
+            command.run.state is not AnswerQuestionRunState.RUNNING
+            or command.run.command_digest != command.digest.value
+        ):
+            await self._uow._fail(AnswerQuestionRunConflictError("Q&A run command is invalid."))
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=ANSWER_QUESTION_RUN_OPERATION_SCHEMA_VERSION,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        if isinstance(claim, IdempotencyReplay):
+            if (
+                claim.result.result_type != ANSWER_QUESTION_RUN_RESULT_TYPE
+                or claim.result.schema_version != 1
+            ):
+                await self._uow._fail(AnswerQuestionRunConflictError("Q&A run replay is invalid."))
+            row = await self._find_run(run_id=claim.result.result_id)
+            if row is None:
+                await self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
+            return AnswerQuestionRunMutationResult(
+                run=self._restore_run(row), replay=True, result_reference=claim.result
+            )
+        context = self._uow._context_snapshot_active()
+        await self._uow.audit.append(
+            build_answer_question_transition_audit(
+                registry=self._uow._audit_events,
+                context=context,
+                audit_event_id=answer_question_run_audit_event_id(
+                    command.run.workspace_id,
+                    command.run.environment_id,
+                    command.run.run_id,
+                    "answer_question.run.started",
+                ),
+                object_type="answer_question_run",
+                object_id=command.run.run_id,
+                transition="answer_question.run.started",
+                occurred_at=command.run.created_at,
+                reason="answer_question_run_started",
+            )
+        )
+        await self._uow._execute(insert(_ANSWER_QUESTION_RUNS).values(self._run_values(command.run)))
+        result_reference = OpaqueResultReference(
+            result_type=ANSWER_QUESTION_RUN_RESULT_TYPE,
+            result_id=command.run.run_id,
+            schema_version=1,
+        )
+        await self._uow.idempotency.complete(claim, result_reference)
+        return AnswerQuestionRunMutationResult(
+            run=command.run, replay=False, result_reference=result_reference
+        )
+
+    async def resolve_run(self, run_id: UUID) -> AnswerQuestionRun:
+        self._uow._guard_active()
+        row = await self._find_run(run_id=run_id)
+        if row is None:
+            await self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
+        return self._restore_run(row)
+
+    async def resolve_run_by_key(self, idempotency_key: str) -> AnswerQuestionRun:
+        self._uow._guard_active()
+        row = await self._find_run(idempotency_key=idempotency_key)
+        if row is None:
+            await self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
+        return self._restore_run(row)
+
+    async def complete_run(self, run: AnswerQuestionRun) -> AnswerQuestionRun:
+        self._uow._guard_active()
+        self._validate_run_scope(run)
+        if run.state is not AnswerQuestionRunState.COMPLETED:
+            await self._uow._fail(AnswerQuestionRunConflictError("Q&A run completion is invalid."))
+        row = await self._find_run(run_id=run.run_id)
+        if row is None:
+            await self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
+        existing = self._restore_run(row)
+        if existing.state is AnswerQuestionRunState.COMPLETED:
+            if existing != run:
+                await self._uow._fail(AnswerQuestionRunConflictError("Q&A run is already terminal."))
+            return existing
+        terminal_attempt_row = await self._find_attempt(run.final_attempt_id)  # type: ignore[arg-type]
+        if terminal_attempt_row is None:
+            await self._uow._fail(AnswerQuestionRunConflictError("Q&A run terminal attempt is unavailable."))
+        terminal_attempt = self._restore_attempt(terminal_attempt_row)
+        try:
+            validate_answer_question_run_completion(existing, terminal_attempt, run)
+        except ValueError:
+            await self._uow._fail(AnswerQuestionRunConflictError("Q&A run completion lineage is invalid."))
+        context = self._uow._context_snapshot_active()
+        assert run.completed_at is not None
+        await self._uow.audit.append(
+            build_answer_question_transition_audit(
+                registry=self._uow._audit_events,
+                context=context,
+                audit_event_id=answer_question_run_audit_event_id(
+                    run.workspace_id,
+                    run.environment_id,
+                    run.run_id,
+                    "answer_question.run.completed",
+                ),
+                object_type="answer_question_run",
+                object_id=run.run_id,
+                transition="answer_question.run.completed",
+                occurred_at=run.completed_at,
+                reason="answer_question_run_completed",
+            )
+        )
+        updated = await self._uow._execute(
+            update(_ANSWER_QUESTION_RUNS)
+            .where(
+                _ANSWER_QUESTION_RUNS.c.workspace_id == run.workspace_id,
+                _ANSWER_QUESTION_RUNS.c.environment_id == run.environment_id,
+                _ANSWER_QUESTION_RUNS.c.run_id == run.run_id,
+                _ANSWER_QUESTION_RUNS.c.state == "running",
+            )
+            .values(self._run_values(run))
+            .returning(_ANSWER_QUESTION_RUNS.c.run_id)
+        )
+        if updated.scalar_one_or_none() is None:
+            await self._uow._fail(
+                AnswerQuestionRunConflictError("Q&A run changed concurrently.")
+            )
+        return run
+
+    async def start_attempt(self, attempt: AnswerQuestionAttempt) -> AnswerQuestionAttempt:
+        self._uow._guard_active()
+        scope = self._scope()
+        if (
+            attempt.workspace_id != scope.workspace_id
+            or attempt.environment_id != scope.environment_id
+            or attempt.state is not AnswerQuestionAttemptState.RUNNING
+        ):
+            await self._uow._fail(InvalidPersistenceContextError("Persistence context is invalid."))
+        run = await self.resolve_run(attempt.run_id)
+        try:
+            validate_answer_question_attempt_start(run, attempt)
+        except ValueError:
+            await self._uow._fail(AnswerQuestionRunConflictError("Q&A attempt lineage is invalid."))
+        existing_row = await self._find_attempt(attempt.attempt_id)
+        if existing_row is not None:
+            existing = self._restore_attempt(existing_row)
+            if existing != attempt:
+                await self._uow._fail(AnswerQuestionAttemptImmutableError("Q&A attempt identity conflicts with history."))
+            return existing
+        context = self._uow._context_snapshot_active()
+        await self._uow.audit.append(
+            build_answer_question_transition_audit(
+                registry=self._uow._audit_events,
+                context=context,
+                audit_event_id=answer_question_attempt_audit_event_id(
+                    attempt.workspace_id,
+                    attempt.environment_id,
+                    attempt.attempt_id,
+                    attempt.events[0].event_id,
+                    "answer_question.attempt.started",
+                ),
+                object_type="answer_question_attempt",
+                object_id=attempt.attempt_id,
+                transition="answer_question.attempt.started",
+                occurred_at=attempt.started_at,
+                reason="answer_question_attempt_started",
+            )
+        )
+        await self._uow._execute(
+            insert(_ANSWER_QUESTION_ATTEMPTS).values(self._attempt_values(attempt))
+        )
+        return attempt
+
+    async def complete_attempt(self, attempt: AnswerQuestionAttempt) -> AnswerQuestionAttempt:
+        self._uow._guard_active()
+        scope = self._scope()
+        if (
+            attempt.workspace_id != scope.workspace_id
+            or attempt.environment_id != scope.environment_id
+            or attempt.state is AnswerQuestionAttemptState.RUNNING
+        ):
+            await self._uow._fail(InvalidPersistenceContextError("Persistence context is invalid."))
+        row = await self._find_attempt(attempt.attempt_id)
+        if row is None:
+            await self._uow._fail(AnswerQuestionAttemptNotFoundError("Q&A attempt is unavailable."))
+        existing = self._restore_attempt(row)
+        if existing.state is not AnswerQuestionAttemptState.RUNNING:
+            if existing != attempt:
+                await self._uow._fail(AnswerQuestionAttemptImmutableError("Q&A attempt is already terminal."))
+            return existing
+        try:
+            validate_answer_question_attempt_completion(existing, attempt)
+        except ValueError:
+            await self._uow._fail(AnswerQuestionAttemptImmutableError("Q&A attempt lineage is immutable."))
+        if attempt.context_bundle_ref is not None:
+            bundle = await self._uow.context_bundles.resolve(
+                bundle_id=attempt.context_bundle_ref.bundle_id,
+                bundle_version=attempt.context_bundle_ref.bundle_version,
+                bundle_digest=attempt.context_bundle_ref.bundle_digest,
+            )
+            try:
+                validate_answer_question_context_bundle(attempt, bundle)
+            except ValueError:
+                await self._uow._fail(
+                    AnswerQuestionAttemptImmutableError(
+                        "Q&A attempt ContextBundle lineage is invalid."
+                    )
+                )
+        context = self._uow._context_snapshot_active()
+        terminal_event = attempt.events[-1]
+        await self._uow.audit.append(
+            build_answer_question_transition_audit(
+                registry=self._uow._audit_events,
+                context=context,
+                audit_event_id=answer_question_attempt_audit_event_id(
+                    attempt.workspace_id,
+                    attempt.environment_id,
+                    attempt.attempt_id,
+                    terminal_event.event_id,
+                    f"answer_question.attempt.{attempt.state.value}",
+                ),
+                object_type="answer_question_attempt",
+                object_id=attempt.attempt_id,
+                transition=f"answer_question.attempt.{attempt.state.value}",
+                occurred_at=terminal_event.occurred_at,
+                reason=(attempt.reason.value if attempt.reason is not None else "answer_question_attempt_succeeded"),
+            )
+        )
+        updated = await self._uow._execute(
+            update(_ANSWER_QUESTION_ATTEMPTS)
+            .where(
+                _ANSWER_QUESTION_ATTEMPTS.c.workspace_id == attempt.workspace_id,
+                _ANSWER_QUESTION_ATTEMPTS.c.environment_id == attempt.environment_id,
+                _ANSWER_QUESTION_ATTEMPTS.c.attempt_id == attempt.attempt_id,
+                _ANSWER_QUESTION_ATTEMPTS.c.state == "running",
+            )
+            .values(self._attempt_values(attempt))
+            .returning(_ANSWER_QUESTION_ATTEMPTS.c.attempt_id)
+        )
+        if updated.scalar_one_or_none() is None:
+            await self._uow._fail(
+                AnswerQuestionAttemptImmutableError(
+                    "Q&A attempt changed concurrently."
+                )
+            )
+        return attempt
+
+    async def resolve_attempt(self, attempt_id: UUID) -> AnswerQuestionAttempt:
+        self._uow._guard_active()
+        row = await self._find_attempt(attempt_id)
+        if row is None:
+            await self._uow._fail(AnswerQuestionAttemptNotFoundError("Q&A attempt is unavailable."))
+        return self._restore_attempt(row)
+
+    async def list_attempts(self, run_id: UUID) -> tuple[AnswerQuestionAttempt, ...]:
+        self._uow._guard_active()
+        scope = self._scope()
+        result = await self._uow._execute(
+            select(_ANSWER_QUESTION_ATTEMPTS)
+            .where(
+                _ANSWER_QUESTION_ATTEMPTS.c.workspace_id == scope.workspace_id,
+                _ANSWER_QUESTION_ATTEMPTS.c.environment_id == scope.environment_id,
+                _ANSWER_QUESTION_ATTEMPTS.c.run_id == run_id,
+            )
+            .order_by(_ANSWER_QUESTION_ATTEMPTS.c.attempt_number)
+        )
+        return tuple(self._restore_attempt(row) for row in result.mappings().all())
 
 
 class _PostgreSQLSourceObservationRepository:
@@ -5045,6 +5464,7 @@ class PostgreSQLTenantUnitOfWork:
         self._environments = _PostgreSQLEnvironmentRepository(self)
         self._context_profiles = _PostgreSQLContextProfileRepository(self)
         self._context_bundles = _PostgreSQLContextBundleRepository(self)
+        self._answer_question_runs = _PostgreSQLAnswerQuestionRunRepository(self)
         self._sources = _PostgreSQLSourceObservationRepository(self)
         self._canonical = _PostgreSQLCanonicalAcceptanceRepository(self)
         self._boundaries = _PostgreSQLCanonicalBoundaryRepository(self)
@@ -5085,6 +5505,11 @@ class PostgreSQLTenantUnitOfWork:
     def context_bundles(self) -> _PostgreSQLContextBundleRepository:
         self._guard_active()
         return self._context_bundles
+
+    @property
+    def answer_question_runs(self) -> _PostgreSQLAnswerQuestionRunRepository:
+        self._guard_active()
+        return self._answer_question_runs
 
     @property
     def sources(self) -> _PostgreSQLSourceObservationRepository:
