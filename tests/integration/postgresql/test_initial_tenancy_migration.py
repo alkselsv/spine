@@ -1813,7 +1813,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ck_qa_disclosure_validation_results_disposition",
         "pk_qa_answer_disclosure_records",
         "fk_qa_answer_disclosure_records_environment",
-        "ck_qa_answer_disclosure_records_outcome",
+        "ck_qa_answer_disclosure_records_ck_qa_answer_disclosure_84df",
         "pk_qa_answer_disclosure_deliveries",
         "fk_qa_answer_disclosure_deliveries_record",
     }
@@ -4637,13 +4637,15 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261026_30_answer_question_runs.py",
         "20261027_31_qa_sessions.py",
         "20261027_32_disclosure_revalidation.py",
+        "20261028_33_answer_disclosure.py",
+        "20261029_34_answer_disclosure_delivery.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "20261021_26_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
         "revision = '20261021_26'\n"
-        "down_revision = '20261027_32'\n"
+        "down_revision = '20261029_34'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"
