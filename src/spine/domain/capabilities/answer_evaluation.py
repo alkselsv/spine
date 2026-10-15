@@ -157,28 +157,75 @@ class ObservedCoverage(_EvaluationModel):
         return self
 
 
-class GroundedClaimAssessment(_EvaluationModel):
-    """Trusted result of claim grounding and partial-answer checks."""
+class ClaimGroundingStatus(str, Enum):
+    GROUNDED = "grounded"
+    REJECTED = "rejected"
 
-    schema_version: Literal["grounded-claim-assessment:v1"] = (
-        "grounded-claim-assessment:v1"
+
+class ClaimAuthorizationStatus(str, Enum):
+    CURRENT = "current"
+    REJECTED = "rejected"
+
+
+class PartialClaimUtility(str, Enum):
+    INDEPENDENTLY_USEFUL = "independently_useful"
+    DEPENDENT = "dependent"
+
+
+class MissingCoverageImpact(str, Enum):
+    IMMATERIAL = "immaterial"
+    MATERIAL = "material"
+    UNKNOWN = "unknown"
+
+
+class ClaimEvidenceValidation(_EvaluationModel):
+    """Boundary-pinned grounding facts for one cited evidence item."""
+
+    schema_version: Literal["claim-evidence-validation:v1"] = (
+        "claim-evidence-validation:v1"
     )
+    citation_id: UUID
+    citation_validation_reference: UUID
+    semantic_support_validation_reference: UUID
+    authorization_validation_reference: UUID
+
+    @field_validator(
+        "citation_id",
+        "citation_validation_reference",
+        "semantic_support_validation_reference",
+        "authorization_validation_reference",
+    )
+    @classmethod
+    def validate_id(cls, value: UUID, info: Any) -> UUID:
+        return _require_id(value, info.field_name)
+
+
+class GroundedClaimAssessment(_EvaluationModel):
+    """Trusted boundary-pinned result of grounding and partial-safety checks."""
+
+    schema_version: Literal["grounded-claim-assessment:v2"] = (
+        "grounded-claim-assessment:v2"
+    )
+    boundary: AttemptProjectionBoundary
     claim_id: UUID
-    grounded: bool
-    current_authorized: bool
-    independently_useful: bool
-    stable_under_incomplete_coverage: bool
-    validation_references: tuple[UUID, ...]
+    grounding_status: ClaimGroundingStatus
+    authorization_status: ClaimAuthorizationStatus
+    partial_utility: PartialClaimUtility
+    missing_coverage_impact: MissingCoverageImpact
+    evidence_validations: tuple[ClaimEvidenceValidation, ...] = Field(min_length=1)
+    partial_validation_reference: UUID
 
-    @field_validator("claim_id")
+    @field_validator("claim_id", "partial_validation_reference")
     @classmethod
-    def validate_claim_id(cls, value: UUID) -> UUID:
-        return _require_id(value, "claim_id")
+    def validate_id(cls, value: UUID, info: Any) -> UUID:
+        return _require_id(value, info.field_name)
 
-    @field_validator("validation_references")
-    @classmethod
-    def validate_references(cls, value: tuple[UUID, ...]) -> tuple[UUID, ...]:
-        return _unique_ids(value, "validation_references")
+    @model_validator(mode="after")
+    def validate_evidence(self) -> "GroundedClaimAssessment":
+        citation_ids = tuple(item.citation_id for item in self.evidence_validations)
+        if len(set(citation_ids)) != len(citation_ids):
+            raise ValueError("claim evidence validations must be unique")
+        return self
 
 
 class PartialFallbackAuthority(str, Enum):
@@ -195,11 +242,14 @@ class PartialFallbackAuthorization(_EvaluationModel):
     boundary: AttemptProjectionBoundary
     authority: PartialFallbackAuthority
     authorization_reference: UUID
+    policy_version: str = Field(pattern=_VERSION)
+    applicability_reference: UUID
+    current_request_precedence: Literal["satisfied"] = "satisfied"
 
-    @field_validator("authorization_reference")
+    @field_validator("authorization_reference", "applicability_reference")
     @classmethod
-    def validate_reference(cls, value: UUID) -> UUID:
-        return _require_id(value, "authorization_reference")
+    def validate_reference(cls, value: UUID, info: Any) -> UUID:
+        return _require_id(value, info.field_name)
 
 
 class GroundedConflict(_EvaluationModel):
@@ -290,11 +340,21 @@ class CoverageEvaluationStatus(str, Enum):
     UNPROVEN = "unproven"
 
 
-class AnswerEvaluationStatus(str, Enum):
-    COMPLETE = "complete"
-    PARTIAL = "partial"
-    GROUNDED_CONFLICT = "grounded_conflict"
+class AnswerDisclosureStatus(str, Enum):
+    ACCEPTED = "accepted"
     REJECTED = "rejected"
+
+
+class AnswerPartialityStatus(str, Enum):
+    EXHAUSTIVE = "exhaustive"
+    PARTIAL = "partial"
+    NONE = "none"
+
+
+class GroundedConflictStatus(str, Enum):
+    NONE = "none"
+    PRESENTED = "presented"
+    RESOLVED_BY_PRECEDENCE = "resolved_by_precedence"
 
 
 class AnswerEvaluationSafeReason(str, Enum):
@@ -310,14 +370,26 @@ class AnswerEvaluationSafeReason(str, Enum):
 class AnswerEvaluationDecision(_EvaluationModel):
     """Disclosure-safe decision; protected source diagnostics stay in inputs."""
 
-    schema_version: Literal["answer-evaluation-decision:v1"] = (
-        "answer-evaluation-decision:v1"
+    schema_version: Literal["answer-evaluation-decision:v2"] = (
+        "answer-evaluation-decision:v2"
     )
-    answer_status: AnswerEvaluationStatus
+    boundary: AttemptProjectionBoundary
+    target_scope_id: UUID
+    observed_coverage_id: UUID
+    evaluation_lineage_reference: UUID
+    disclosure_status: AnswerDisclosureStatus
     coverage_status: CoverageEvaluationStatus
+    partiality_status: AnswerPartialityStatus
+    conflict_status: GroundedConflictStatus
     safe_reason: AnswerEvaluationSafeReason
     disclosable_claim_ids: tuple[UUID, ...] = ()
-    partial_fallback_applied: bool = False
+
+    @field_validator(
+        "target_scope_id", "observed_coverage_id", "evaluation_lineage_reference"
+    )
+    @classmethod
+    def validate_id(cls, value: UUID, info: Any) -> UUID:
+        return _require_id(value, info.field_name)
 
     @field_validator("disclosable_claim_ids")
     @classmethod
@@ -326,28 +398,25 @@ class AnswerEvaluationDecision(_EvaluationModel):
 
     @model_validator(mode="after")
     def validate_decision(self) -> "AnswerEvaluationDecision":
-        if self.answer_status is AnswerEvaluationStatus.REJECTED:
-            if self.disclosable_claim_ids or self.partial_fallback_applied:
+        if self.disclosure_status is AnswerDisclosureStatus.REJECTED:
+            if (
+                self.disclosable_claim_ids
+                or self.partiality_status is not AnswerPartialityStatus.NONE
+                or self.conflict_status is not GroundedConflictStatus.NONE
+            ):
                 raise ValueError("rejected evaluation cannot disclose claims")
             return self
         if not self.disclosable_claim_ids:
             raise ValueError("accepted evaluation requires disclosable claims")
-        if self.answer_status is AnswerEvaluationStatus.COMPLETE:
-            if (
-                self.coverage_status is not CoverageEvaluationStatus.COMPLETE
-                or self.partial_fallback_applied
-            ):
-                raise ValueError("complete answer requires complete coverage")
-        elif self.answer_status is AnswerEvaluationStatus.PARTIAL:
-            if (
-                self.coverage_status is not CoverageEvaluationStatus.INSUFFICIENT
-                or not self.partial_fallback_applied
-            ):
-                raise ValueError("partial answer requires authorized incomplete coverage")
-        elif (
-            self.coverage_status is CoverageEvaluationStatus.INSUFFICIENT
-        ) != self.partial_fallback_applied:
-            raise ValueError("partial conflict requires fallback authorization")
+        expected_partiality = (
+            AnswerPartialityStatus.EXHAUSTIVE
+            if self.coverage_status is CoverageEvaluationStatus.COMPLETE
+            else AnswerPartialityStatus.PARTIAL
+        )
+        if self.partiality_status is not expected_partiality:
+            raise ValueError("answer partiality does not match coverage")
+        if self.coverage_status is CoverageEvaluationStatus.UNPROVEN:
+            raise ValueError("unproven coverage cannot be disclosed")
         return self
 
 
@@ -355,18 +424,25 @@ __all__ = [
     "ApprovedPrecedenceRule",
     "AnswerEvaluationDecision",
     "AnswerEvaluationSafeReason",
-    "AnswerEvaluationStatus",
+    "AnswerDisclosureStatus",
+    "AnswerPartialityStatus",
     "AttemptProjectionBoundary",
     "CoverageEvaluationStatus",
     "CoverageMemberStatus",
+    "ClaimAuthorizationStatus",
+    "ClaimEvidenceValidation",
+    "ClaimGroundingStatus",
     "DerivationInput",
     "DeterministicDerivation",
     "GroundedConflict",
+    "GroundedConflictStatus",
     "GroundedClaimAssessment",
+    "MissingCoverageImpact",
     "ObservedCoverage",
     "ObservedCoverageMember",
     "PartialFallbackAuthorization",
     "PartialFallbackAuthority",
+    "PartialClaimUtility",
     "TargetCompletenessScope",
     "TargetScopeMember",
 ]

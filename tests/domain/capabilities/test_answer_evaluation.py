@@ -1,32 +1,42 @@
 from __future__ import annotations
 
+from typing import Any
 from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
 
-from spine.application.answer_evaluation import evaluate_answer_candidate
 from spine.domain.capabilities import (
     ApprovedPrecedenceRule,
     AnswerClaim,
     AnswerClaimKind,
     AnswerClaimLocation,
     AnswerContent,
+    AnswerDisclosureStatus,
+    AnswerEvaluationRequest,
+    AnswerPartialityStatus,
     AttemptProjectionBoundary,
     Citation,
     ClaimEvidenceRelationship,
     ClaimEvidenceRelationshipKind,
+    ClaimAuthorizationStatus,
+    ClaimEvidenceValidation,
+    ClaimGroundingStatus,
     CoverageMemberStatus,
     DerivationInput,
     DeterministicDerivation,
     GroundedConflict,
+    GroundedConflictStatus,
     GroundedClaimAssessment,
     ObservedCoverage,
     ObservedCoverageMember,
+    MissingCoverageImpact,
     PartialFallbackAuthorization,
     PartialFallbackAuthority,
+    PartialClaimUtility,
     TargetCompletenessScope,
     TargetScopeMember,
+    evaluate_answer_candidate as _evaluate_answer_candidate,
 )
 from spine.domain.context_bundles import (
     ContextBundleEvidenceReference,
@@ -49,6 +59,12 @@ REVISION = UUID(int=11)
 TARGET = UUID(int=12)
 CLAIM_B = UUID(int=13)
 CITATION_B = UUID(int=14)
+EVALUATION_LINEAGE = UUID(int=15)
+
+
+def evaluate_answer_candidate(**values: Any) -> Any:
+    values.setdefault("evaluation_lineage_reference", EVALUATION_LINEAGE)
+    return _evaluate_answer_candidate(AnswerEvaluationRequest(**values))
 
 
 def _boundary() -> AttemptProjectionBoundary:
@@ -231,19 +247,11 @@ def test_proven_exhaustive_coverage_produces_complete_answer() -> None:
         answer=_answer(),
         target_scope=_target(),
         observed_coverage=_coverage(),
-        claim_assessments=(
-            GroundedClaimAssessment(
-                claim_id=CLAIM,
-                grounded=True,
-                current_authorized=True,
-                independently_useful=True,
-                stable_under_incomplete_coverage=True,
-                validation_references=(UUID(int=50),),
-            ),
-        ),
+        claim_assessments=(_grounded_assessment(),),
     )
 
-    assert result.answer_status.value == "complete"
+    assert result.disclosure_status is AnswerDisclosureStatus.ACCEPTED
+    assert result.partiality_status is AnswerPartialityStatus.EXHAUSTIVE
     assert result.coverage_status.value == "complete"
     assert result.disclosable_claim_ids == (CLAIM,)
 
@@ -266,39 +274,26 @@ def test_incomplete_coverage_with_current_fallback_produces_partial_answer() -> 
         answer=_answer(),
         target_scope=_target(),
         observed_coverage=incomplete,
-        claim_assessments=(
-            GroundedClaimAssessment(
-                claim_id=CLAIM,
-                grounded=True,
-                current_authorized=True,
-                independently_useful=True,
-                stable_under_incomplete_coverage=True,
-                validation_references=(UUID(int=50),),
-            ),
-        ),
+        claim_assessments=(_grounded_assessment(),),
         partial_fallback=PartialFallbackAuthorization(
             boundary=_boundary(),
             authority=PartialFallbackAuthority.CURRENT_REQUEST,
             authorization_reference=UUID(int=51),
+            policy_version="partial-fallback:v1",
+            applicability_reference=UUID(int=52),
         ),
     )
 
-    assert result.answer_status.value == "partial"
+    assert result.disclosure_status is AnswerDisclosureStatus.ACCEPTED
+    assert result.partiality_status is AnswerPartialityStatus.PARTIAL
     assert result.coverage_status.value == "insufficient"
     assert result.disclosable_claim_ids == (CLAIM,)
 
 
 def test_current_grounded_conflict_is_presented_without_selecting_a_winner() -> None:
     assessments = tuple(
-        GroundedClaimAssessment(
-            claim_id=claim_id,
-            grounded=True,
-            current_authorized=True,
-            independently_useful=True,
-            stable_under_incomplete_coverage=True,
-            validation_references=(UUID(int=50 + index),),
-        )
-        for index, claim_id in enumerate((CLAIM, CLAIM_B))
+        _grounded_assessment(claim_id=claim_id)
+        for claim_id in (CLAIM, CLAIM_B)
     )
 
     result = evaluate_answer_candidate(
@@ -317,7 +312,8 @@ def test_current_grounded_conflict_is_presented_without_selecting_a_winner() -> 
         ),
     )
 
-    assert result.answer_status.value == "grounded_conflict"
+    assert result.disclosure_status is AnswerDisclosureStatus.ACCEPTED
+    assert result.conflict_status is GroundedConflictStatus.PRESENTED
     assert result.disclosable_claim_ids == (CLAIM, CLAIM_B)
 
 
@@ -330,15 +326,8 @@ def test_approved_deterministic_precedence_selects_the_winning_claim() -> None:
         detection_policy_version="conflict-policy:v1",
     )
     assessments = tuple(
-        GroundedClaimAssessment(
-            claim_id=claim_id,
-            grounded=True,
-            current_authorized=True,
-            independently_useful=True,
-            stable_under_incomplete_coverage=True,
-            validation_references=(UUID(int=50 + index),),
-        )
-        for index, claim_id in enumerate((CLAIM, CLAIM_B))
+        _grounded_assessment(claim_id=claim_id)
+        for claim_id in (CLAIM, CLAIM_B)
     )
 
     result = evaluate_answer_candidate(
@@ -359,7 +348,8 @@ def test_approved_deterministic_precedence_selects_the_winning_claim() -> None:
         ),
     )
 
-    assert result.answer_status.value == "complete"
+    assert result.disclosure_status is AnswerDisclosureStatus.ACCEPTED
+    assert result.conflict_status is GroundedConflictStatus.RESOLVED_BY_PRECEDENCE
     assert result.disclosable_claim_ids == (CLAIM_B,)
 
 
@@ -382,16 +372,7 @@ def test_derived_claim_requires_grounded_inputs_and_transformation_lineage() -> 
         answer=derived,
         target_scope=_target(),
         observed_coverage=_coverage(),
-        claim_assessments=(
-            GroundedClaimAssessment(
-                claim_id=CLAIM,
-                grounded=True,
-                current_authorized=True,
-                independently_useful=True,
-                stable_under_incomplete_coverage=True,
-                validation_references=(UUID(int=50),),
-            ),
-        ),
+        claim_assessments=(_grounded_assessment(),),
         derivations=(
             DeterministicDerivation(
                 claim_id=CLAIM,
@@ -403,25 +384,36 @@ def test_derived_claim_requires_grounded_inputs_and_transformation_lineage() -> 
                 inputs=(
                     DerivationInput(
                         citation_id=CITATION,
-                        grounding_validation_reference=UUID(int=71),
+                        grounding_validation_reference=UUID(int=59),
                     ),
                 ),
             ),
         ),
     )
 
-    assert result.answer_status.value == "complete"
+    assert result.disclosure_status is AnswerDisclosureStatus.ACCEPTED
     assert result.disclosable_claim_ids == (CLAIM,)
 
 
 def _grounded_assessment(**overrides: object) -> GroundedClaimAssessment:
+    claim_id = overrides.get("claim_id", CLAIM)
+    citation_id = CITATION_B if claim_id == CLAIM_B else CITATION
     values: dict[str, object] = {
+        "boundary": _boundary(),
         "claim_id": CLAIM,
-        "grounded": True,
-        "current_authorized": True,
-        "independently_useful": True,
-        "stable_under_incomplete_coverage": True,
-        "validation_references": (UUID(int=50),),
+        "grounding_status": ClaimGroundingStatus.GROUNDED,
+        "authorization_status": ClaimAuthorizationStatus.CURRENT,
+        "partial_utility": PartialClaimUtility.INDEPENDENTLY_USEFUL,
+        "missing_coverage_impact": MissingCoverageImpact.IMMATERIAL,
+        "evidence_validations": (
+            ClaimEvidenceValidation(
+                citation_id=citation_id,
+                citation_validation_reference=UUID(int=50 + citation_id.int),
+                semantic_support_validation_reference=UUID(int=70 + citation_id.int),
+                authorization_validation_reference=UUID(int=90 + citation_id.int),
+            ),
+        ),
+        "partial_validation_reference": UUID(int=110 + citation_id.int),
     }
     values.update(overrides)
     return GroundedClaimAssessment(**values)
@@ -457,7 +449,7 @@ def test_explicit_coverage_gap_without_fallback_rejects_answer(
         claim_assessments=(_grounded_assessment(),),
     )
 
-    assert result.answer_status.value == "rejected"
+    assert result.disclosure_status is AnswerDisclosureStatus.REJECTED
     assert result.coverage_status.value == "insufficient"
     assert result.safe_reason.value == "incomplete_authorized_coverage"
 
@@ -472,7 +464,7 @@ def test_represented_scope_without_explicit_proof_is_unproven() -> None:
         claim_assessments=(_grounded_assessment(),),
     )
 
-    assert result.answer_status.value == "rejected"
+    assert result.disclosure_status is AnswerDisclosureStatus.REJECTED
     assert result.coverage_status.value == "unproven"
     assert result.safe_reason.value == "coverage_not_proven"
 
@@ -496,16 +488,20 @@ def test_partial_fallback_rejects_claim_that_missing_coverage_could_invalidate()
         target_scope=_target(),
         observed_coverage=incomplete,
         claim_assessments=(
-            _grounded_assessment(stable_under_incomplete_coverage=False),
+            _grounded_assessment(
+                missing_coverage_impact=MissingCoverageImpact.MATERIAL
+            ),
         ),
         partial_fallback=PartialFallbackAuthorization(
             boundary=_boundary(),
             authority=PartialFallbackAuthority.CURRENT_REQUEST,
             authorization_reference=UUID(int=51),
+            policy_version="partial-fallback:v1",
+            applicability_reference=UUID(int=52),
         ),
     )
 
-    assert result.answer_status.value == "rejected"
+    assert result.disclosure_status is AnswerDisclosureStatus.REJECTED
     assert result.disclosable_claim_ids == ()
 
 
@@ -533,10 +529,12 @@ def test_stale_partial_authorization_from_another_attempt_is_rejected() -> None:
             boundary=stale_boundary,
             authority=PartialFallbackAuthority.ACCEPTED_PREFERENCE,
             authorization_reference=UUID(int=51),
+            policy_version="partial-fallback:v1",
+            applicability_reference=UUID(int=52),
         ),
     )
 
-    assert result.answer_status.value == "rejected"
+    assert result.disclosure_status is AnswerDisclosureStatus.REJECTED
     assert result.coverage_status.value == "insufficient"
 
 
@@ -552,7 +550,7 @@ def test_mismatched_projection_boundary_cannot_prove_coverage() -> None:
         claim_assessments=(_grounded_assessment(),),
     )
 
-    assert result.answer_status.value == "rejected"
+    assert result.disclosure_status is AnswerDisclosureStatus.REJECTED
     assert result.coverage_status.value == "unproven"
 
 
@@ -607,7 +605,7 @@ def test_answer_from_another_workspace_cannot_cross_the_evaluation_boundary() ->
         claim_assessments=(_grounded_assessment(),),
     )
 
-    assert result.answer_status.value == "rejected"
+    assert result.disclosure_status is AnswerDisclosureStatus.REJECTED
     assert result.disclosable_claim_ids == ()
 
 
@@ -633,5 +631,154 @@ def test_derived_claim_without_transformation_lineage_is_rejected() -> None:
         claim_assessments=(_grounded_assessment(),),
     )
 
-    assert result.answer_status.value == "rejected"
+    assert result.disclosure_status is AnswerDisclosureStatus.REJECTED
     assert result.disclosable_claim_ids == ()
+
+
+def test_contradiction_relationship_without_detected_conflict_is_rejected() -> None:
+    result = evaluate_answer_candidate(
+        answer=_conflicting_answer(),
+        target_scope=_target(),
+        observed_coverage=_coverage(),
+        claim_assessments=tuple(
+            _grounded_assessment(claim_id=claim_id)
+            for claim_id in (CLAIM, CLAIM_B)
+        ),
+    )
+
+    assert result.disclosure_status is AnswerDisclosureStatus.REJECTED
+
+
+def test_detected_conflict_without_contradiction_relationship_is_rejected() -> None:
+    answer = _conflicting_answer()
+    answer_without_conflict = answer.model_copy(
+        update={"relationships": answer.relationships[:2]}
+    )
+
+    result = evaluate_answer_candidate(
+        answer=answer_without_conflict,
+        target_scope=_target(),
+        observed_coverage=_coverage(),
+        claim_assessments=tuple(
+            _grounded_assessment(claim_id=claim_id)
+            for claim_id in (CLAIM, CLAIM_B)
+        ),
+        conflicts=(
+            GroundedConflict(
+                conflict_id=UUID(int=60),
+                boundary=_boundary(),
+                claim_ids=(CLAIM, CLAIM_B),
+                detection_reference=UUID(int=61),
+                detection_policy_version="conflict-policy:v1",
+            ),
+        ),
+    )
+
+    assert result.disclosure_status is AnswerDisclosureStatus.REJECTED
+
+
+def test_stale_claim_grounding_assessment_is_rejected() -> None:
+    stale = _grounded_assessment().model_copy(
+        update={
+            "boundary": _boundary().model_copy(update={"attempt_id": UUID(int=999)})
+        }
+    )
+
+    result = evaluate_answer_candidate(
+        answer=_answer(),
+        target_scope=_target(),
+        observed_coverage=_coverage(),
+        claim_assessments=(stale,),
+    )
+
+    assert result.disclosure_status is AnswerDisclosureStatus.REJECTED
+
+
+def test_overlapping_conflict_precedence_is_rejected_fail_closed() -> None:
+    first = GroundedConflict(
+        conflict_id=UUID(int=60),
+        boundary=_boundary(),
+        claim_ids=(CLAIM, CLAIM_B),
+        detection_reference=UUID(int=61),
+        detection_policy_version="conflict-policy:v1",
+    )
+    duplicate = first.model_copy(
+        update={"conflict_id": UUID(int=62), "detection_reference": UUID(int=63)}
+    )
+
+    result = evaluate_answer_candidate(
+        answer=_conflicting_answer(),
+        target_scope=_target(),
+        observed_coverage=_coverage(),
+        claim_assessments=tuple(
+            _grounded_assessment(claim_id=claim_id)
+            for claim_id in (CLAIM, CLAIM_B)
+        ),
+        conflicts=(first, duplicate),
+        precedence_rules=(
+            ApprovedPrecedenceRule(
+                precedence_rule_id=UUID(int=64),
+                boundary=_boundary(),
+                conflict_id=first.conflict_id,
+                winning_claim_id=CLAIM,
+                rule_version="source-precedence:v2",
+                approval_reference=UUID(int=65),
+            ),
+            ApprovedPrecedenceRule(
+                precedence_rule_id=UUID(int=66),
+                boundary=_boundary(),
+                conflict_id=duplicate.conflict_id,
+                winning_claim_id=CLAIM_B,
+                rule_version="source-precedence:v2",
+                approval_reference=UUID(int=67),
+            ),
+        ),
+    )
+
+    assert result.disclosure_status is AnswerDisclosureStatus.REJECTED
+
+
+def test_partial_grounded_conflict_preserves_independent_semantics() -> None:
+    incomplete = _coverage().model_copy(
+        update={
+            "members": (
+                _coverage().members[0].model_copy(
+                    update={
+                        "status": CoverageMemberStatus.PROJECTION_GAP,
+                        "proof_reference": None,
+                    }
+                ),
+            )
+        }
+    )
+
+    result = evaluate_answer_candidate(
+        answer=_conflicting_answer(),
+        target_scope=_target(),
+        observed_coverage=incomplete,
+        claim_assessments=tuple(
+            _grounded_assessment(claim_id=claim_id)
+            for claim_id in (CLAIM, CLAIM_B)
+        ),
+        partial_fallback=PartialFallbackAuthorization(
+            boundary=_boundary(),
+            authority=PartialFallbackAuthority.CURRENT_REQUEST,
+            authorization_reference=UUID(int=51),
+            policy_version="partial-fallback:v1",
+            applicability_reference=UUID(int=52),
+        ),
+        conflicts=(
+            GroundedConflict(
+                conflict_id=UUID(int=60),
+                boundary=_boundary(),
+                claim_ids=(CLAIM, CLAIM_B),
+                detection_reference=UUID(int=61),
+                detection_policy_version="conflict-policy:v1",
+            ),
+        ),
+    )
+
+    assert result.disclosure_status is AnswerDisclosureStatus.ACCEPTED
+    assert result.partiality_status is AnswerPartialityStatus.PARTIAL
+    assert result.conflict_status is GroundedConflictStatus.PRESENTED
+    assert result.evaluation_lineage_reference == EVALUATION_LINEAGE
