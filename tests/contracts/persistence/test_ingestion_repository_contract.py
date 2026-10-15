@@ -88,6 +88,18 @@ async def exercise_ingestion_run_item_contract(adapter: PersistenceAdapter) -> N
     assert state.items == (item,)
     assert state.item_states == (IngestionItemState.RECEIVED,)
 
+    async with adapter.uow_factory(
+        context_factory(workspace_id, environment_id, "ingestion_history")
+    ) as uow:
+        runs = await uow.ingestion.list_runs(limit=10)
+        items = await uow.ingestion.list_items(limit=10)
+        await uow.commit()
+
+    assert [view.run.ingestion_run_id for view in runs] == [run.ingestion_run_id]
+    assert [value.ingestion_run_source_id for value in items] == [
+        item.ingestion_run_source_id
+    ]
+
 
 @pytest.mark.asyncio
 async def test_ingestion_binding_requires_a_scoped_original_receipt(

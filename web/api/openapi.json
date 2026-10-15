@@ -1,6 +1,128 @@
 {
   "components": {
     "schemas": {
+      "ApiCollectionEnvelope_DocumentProcessingHistoryResponse_": {
+        "additionalProperties": false,
+        "properties": {
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DocumentProcessingHistoryResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 768,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "trace_id": {
+            "format": "uuid",
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "environment_id",
+          "trace_id",
+          "items",
+          "limit"
+        ],
+        "title": "ApiCollectionEnvelope[DocumentProcessingHistoryResponse]",
+        "type": "object"
+      },
+      "ApiCollectionEnvelope_IngestionRunHistoryResponse_": {
+        "additionalProperties": false,
+        "properties": {
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/IngestionRunHistoryResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 768,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "trace_id": {
+            "format": "uuid",
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "environment_id",
+          "trace_id",
+          "items",
+          "limit"
+        ],
+        "title": "ApiCollectionEnvelope[IngestionRunHistoryResponse]",
+        "type": "object"
+      },
       "ApiResponseEnvelope_HealthSummaryResponse_": {
         "additionalProperties": false,
         "properties": {
@@ -410,6 +532,172 @@
         "title": "BatchIngestionWarningResponse",
         "type": "object"
       },
+      "DocumentProcessingHistoryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptance": {
+            "$ref": "#/components/schemas/PublicAcceptanceStatus"
+          },
+          "attempt": {
+            "minimum": 0.0,
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "binding_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Binding Id"
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage"
+          },
+          "failure_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Failure Ids",
+            "type": "array"
+          },
+          "failures": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/BatchIngestionFailureResponse"
+            },
+            "title": "Failures",
+            "type": "array"
+          },
+          "input_identity": {
+            "title": "Input Identity",
+            "type": "string"
+          },
+          "input_ordinal": {
+            "minimum": 1.0,
+            "title": "Input Ordinal",
+            "type": "integer"
+          },
+          "item_id": {
+            "format": "uuid",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "item_state": {
+            "title": "Item State",
+            "type": "string"
+          },
+          "processing": {
+            "$ref": "#/components/schemas/PublicProcessingStatus"
+          },
+          "processing_receipt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IngestionReceiptResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retryable": {
+            "title": "Retryable",
+            "type": "boolean"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "run_state": {
+            "title": "Run State",
+            "type": "string"
+          },
+          "source_object_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Object Id"
+          },
+          "source_revision_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Revision Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PublicIngestionStatus"
+          },
+          "status_url": {
+            "title": "Status Url",
+            "type": "string"
+          },
+          "terminal": {
+            "title": "Terminal",
+            "type": "boolean"
+          },
+          "warning_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Warning Ids",
+            "type": "array"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/BatchIngestionWarningResponse"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "item_id",
+          "input_ordinal",
+          "input_identity",
+          "status",
+          "item_state",
+          "acceptance",
+          "processing",
+          "terminal",
+          "retryable",
+          "attempt",
+          "run_id",
+          "run_state",
+          "status_url"
+        ],
+        "title": "DocumentProcessingHistoryResponse",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -800,6 +1088,62 @@
         "title": "IngestionReceiptResponse",
         "type": "object"
       },
+      "IngestionRunHistoryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptance": {
+            "$ref": "#/components/schemas/PublicAcceptanceStatus"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DocumentProcessingHistoryResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "processing": {
+            "$ref": "#/components/schemas/PublicProcessingStatus"
+          },
+          "requested_at": {
+            "format": "date-time",
+            "title": "Requested At",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "run_state": {
+            "title": "Run State",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PublicBatchStatus"
+          },
+          "status_url": {
+            "title": "Status Url",
+            "type": "string"
+          },
+          "terminal": {
+            "title": "Terminal",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "run_id",
+          "requested_at",
+          "status",
+          "run_state",
+          "acceptance",
+          "processing",
+          "terminal",
+          "status_url",
+          "items"
+        ],
+        "title": "IngestionRunHistoryResponse",
+        "type": "object"
+      },
       "LivenessResponse": {
         "additionalProperties": false,
         "properties": {
@@ -1174,6 +1518,169 @@
         "summary": "Ingestion.Batch Upload"
       }
     },
+    "/api/v1/documents/processing-history": {
+      "get": {
+        "operationId": "documents.processing_history",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 768,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Environment-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCollectionEnvelope_DocumentProcessingHistoryResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Safe request error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authentication is invalid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authorization is denied."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Resource is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Command conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request payload is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Unexpected internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Dependency is unavailable."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Documents.Processing History"
+      }
+    },
     "/api/v1/health/live": {
       "get": {
         "operationId": "system_health_live_api_v1_health_live_get",
@@ -1351,6 +1858,169 @@
           }
         ],
         "summary": "System.Health.Summary"
+      }
+    },
+    "/api/v1/ingestion/runs": {
+      "get": {
+        "operationId": "ingestion.run_history",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 768,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Environment-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCollectionEnvelope_IngestionRunHistoryResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Safe request error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authentication is invalid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authorization is denied."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Resource is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Command conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request payload is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Unexpected internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Dependency is unavailable."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Ingestion.Run History"
       }
     },
     "/api/v1/ingestion/runs/{run_id}": {

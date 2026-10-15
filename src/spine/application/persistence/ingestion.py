@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -175,6 +176,20 @@ class IngestionRepository(Protocol):
     ) -> IngestionMutationResult: ...
 
     async def derive_run_state(self, run_id: UUID) -> IngestionRunStateView | None: ...
+
+    async def list_runs(
+        self,
+        *,
+        limit: int,
+        after: tuple[datetime, UUID] | None = None,
+    ) -> tuple[IngestionRunStateView, ...]: ...
+
+    async def list_items(
+        self,
+        *,
+        limit: int,
+        after: tuple[datetime, UUID] | None = None,
+    ) -> tuple[IngestionRunSource, ...]: ...
 
     async def resolve_run_head(self, run_id: UUID) -> IngestionTransition | None: ...
 

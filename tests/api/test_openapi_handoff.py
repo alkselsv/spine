@@ -24,4 +24,6 @@ def test_generation_export_matches_backend_openapi_document(tmp_path: Path) -> N
 
     assert document == create_openapi_app().openapi()
     assert "/api/v1/documents/batches" in document["paths"]
+    assert "/api/v1/documents/processing-history" in document["paths"]
+    assert "/api/v1/ingestion/runs" in document["paths"]
     assert "/api/v1/ingestion/runs/{run_id}" in document["paths"]

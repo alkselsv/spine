@@ -24,6 +24,7 @@ from spine.api.health import (
 )
 from spine.api.batch_ingestion import install_batch_ingestion_routes
 from spine.api.ingestion import install_ingestion_routes
+from spine.api.ingestion_history import install_ingestion_history_routes
 from spine.api.authorization import (
     ApiAuthorizationReadiness,
     ApiAuthorizationRuntime,
@@ -40,6 +41,7 @@ from spine.application.diagnostics import (
 )
 from spine.application.ingestion_api import DocumentIngestionService
 from spine.application.batch_ingestion_api import BatchDocumentIngestionService
+from spine.application.ingestion_history import IngestionHistoryService
 from spine.application.health_summary import HealthStatusServices
 from spine.config import settings
 from spine.ingest.loaders import documents_to_remember_payloads, load_path
@@ -161,6 +163,8 @@ def create_app(
     authorization_runtime: ApiAuthorizationRuntime | None = None,
     document_ingestion_service: DocumentIngestionService | None = None,
     batch_document_ingestion_service: BatchDocumentIngestionService | None = None,
+    ingestion_history_service: IngestionHistoryService | None = None,
+    ingestion_history_cursor_secret: bytes | None = None,
     max_upload_bytes: int = 10_000_000,
     max_batch_files: int = 20,
     max_batch_file_bytes: int = 10_000_000,
@@ -209,6 +213,7 @@ def create_app(
     application.state.batch_document_ingestion_service = (
         batch_document_ingestion_service
     )
+    application.state.ingestion_history_service = ingestion_history_service
     application.state.health_readiness_timeout_seconds = health_readiness_timeout_seconds
     application.state.route_classifications = ApiRouteClassificationRegistry()
     install_authorization_openapi(application)
@@ -279,6 +284,16 @@ def create_app(
             max_files=max_batch_files,
             max_file_bytes=max_batch_file_bytes,
             max_batch_bytes=max_batch_upload_bytes,
+        )
+    if ingestion_history_service is not None:
+        if type(authorization_runtime) is not ApiAuthorizationRuntime:
+            raise RuntimeError("Ingestion history routes require an authorization runtime.")
+        if ingestion_history_cursor_secret is None:
+            raise RuntimeError("Ingestion history routes require a cursor secret.")
+        install_ingestion_history_routes(
+            application,
+            service=ingestion_history_service,
+            cursor_secret=ingestion_history_cursor_secret,
         )
     return application
 
