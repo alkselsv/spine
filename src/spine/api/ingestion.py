@@ -14,6 +14,7 @@ from spine.api.authorization import (
     add_protected_api_route,
     get_authorized_persistence_context,
 )
+from spine.api.schemas import parse_idempotency_key_header
 from spine.application.document_ingestion import (
     DocumentIngestionStatus,
     DocumentUploadCommand,
@@ -204,7 +205,12 @@ def _service(request: Request) -> DocumentIngestionService:
 
 
 def _command_from_request(request: Request) -> DocumentUploadCommand:
-    idempotency_key = _single_header(request, _IDEMPOTENCY_KEY, required=True)
+    try:
+        idempotency_key = parse_idempotency_key_header(
+            request.headers.getlist(_IDEMPOTENCY_KEY)
+        ).value
+    except ValueError:
+        raise InvalidIngestionRequest() from None
     upload_identity = _single_header(request, _UPLOAD_IDENTITY, required=False)
     if upload_identity is None:
         upload_identity = f"upload-{_stable_key_suffix(idempotency_key)}"

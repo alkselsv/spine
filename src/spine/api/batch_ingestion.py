@@ -18,6 +18,7 @@ from spine.api.authorization import (
     add_protected_api_route,
     get_authorized_persistence_context,
 )
+from spine.api.schemas import parse_idempotency_key_header
 from spine.api.ingestion import (
     IngestionReceiptResponse,
     PublicAcceptanceStatus,
@@ -155,7 +156,12 @@ def install_batch_ingestion_routes(
         content_length = _content_length(request)
         if content_length is not None and content_length > max_batch_bytes:
             raise UploadPayloadTooLarge()
-        idempotency_key = _single_header(request, _IDEMPOTENCY_KEY)
+        try:
+            idempotency_key = parse_idempotency_key_header(
+                request.headers.getlist(_IDEMPOTENCY_KEY)
+            ).value
+        except ValueError:
+            raise InvalidIngestionRequest() from None
         form = await _parse_files(
             request,
             max_files=max_files,
@@ -539,16 +545,6 @@ def _item_terminal(
         IngestionItemState.PROJECTION_REQUESTED,
         IngestionItemState.PROCESSING_FAILED,
     }
-
-
-def _single_header(request: Request, name: str) -> str:
-    values = request.headers.getlist(name)
-    if len(values) != 1:
-        raise InvalidIngestionRequest()
-    value = values[0].strip()
-    if not value or "\x00" in value:
-        raise InvalidIngestionRequest()
-    return value
 
 
 def _scope_id(request: Request, name: str) -> UUID:

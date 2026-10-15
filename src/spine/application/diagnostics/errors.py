@@ -61,6 +61,7 @@ _SAFE_MESSAGE_BY_CODE = MappingProxyType({
     "spine.tool.unavailable": "Required tool is temporarily unavailable.",
     "spine.request.rejected": "The request was rejected.",
     "spine.request.validation": "Request validation failed.",
+    "spine.request.invalid_cursor": "The cursor is invalid.",
     "spine.persistence.failure": "Persistence operation failed.",
     "spine.persistence.invalid_context": "Persistence context is invalid.",
     "spine.persistence.invalid_bootstrap_authority": "Bootstrap authority is invalid.",

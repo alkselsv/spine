@@ -225,6 +225,25 @@ async def test_oversized_upload_is_rejected_before_service_receives_bytes() -> N
     assert service.submissions == []
 
 
+async def test_oversized_idempotency_key_is_rejected_before_service_receives_bytes() -> None:
+    service = FakeIngestionService()
+    application = _app(service)
+    headers = _headers()
+    headers["Idempotency-Key"] = "x" * 256
+    transport = httpx.ASGITransport(app=application)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/documents/uploads",
+            headers=headers,
+            content=b"# hello\n",
+        )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "spine.ingestion.invalid_request"
+    assert service.submissions == []
+
+
 async def test_streaming_limit_rejects_without_content_length() -> None:
     service = FakeIngestionService()
     application = _app(service, max_upload_bytes=4)
