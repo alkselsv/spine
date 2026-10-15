@@ -8,13 +8,15 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Literal
+from collections.abc import Mapping
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from spine.domain.capabilities.answer_question import AnswerQuestionOutcome
 from spine.domain.common import ValidatedDefinitionModel
+from spine.domain.disclosure import DisclosureDependency, DisclosureDependencySet
 
 
 _MAX_TEXT_LENGTH = 32_768
@@ -109,11 +111,26 @@ class QAMessage(_QASessionModel):
     terminal_outcome: AnswerQuestionOutcome | None = None
     cancelled: bool = False
     disclosure_dependency_ids: tuple[UUID, ...] = ()
+    disclosure_dependencies: DisclosureDependencySet = DisclosureDependencySet()
     disclosure_eligibility: QAMessageDisclosureEligibility = (
         QAMessageDisclosureEligibility.UNKNOWN
     )
     created_at: datetime
     updated_at: datetime
+
+    @model_validator(mode="before")
+    @classmethod
+    def populate_dependency_ids(cls, values: Any) -> Any:
+        if isinstance(values, Mapping):
+            data = dict(values)
+            dependencies = data.get("disclosure_dependencies")
+            if dependencies is not None and not data.get("disclosure_dependency_ids"):
+                dependency_values = getattr(dependencies, "dependencies", dependencies)
+                data["disclosure_dependency_ids"] = tuple(
+                    item.dependency_id for item in dependency_values
+                )
+            return data
+        return values
 
     @field_validator(
         "message_id",
@@ -165,6 +182,12 @@ class QAMessage(_QASessionModel):
             raise ValueError("answered messages require answer content")
         if self.terminal_outcome is not AnswerQuestionOutcome.ANSWERED and self.answer is not None:
             raise ValueError("only answered messages may contain answer content")
+        dependency_ids = tuple(
+            dependency.dependency_id
+            for dependency in self.disclosure_dependencies.dependencies
+        )
+        if self.disclosure_dependency_ids and self.disclosure_dependency_ids != dependency_ids:
+            raise ValueError("disclosure dependency IDs do not match dependency records")
         return self
 
 

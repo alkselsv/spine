@@ -26,6 +26,7 @@ from spine.application.persistence.errors import (
 )
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.domain.capabilities import AnswerQuestionOutcome
+from spine.domain.disclosure import DisclosureDependencySet
 from spine.domain.qa_sessions import QAMessage, QAMessageDisclosureEligibility, QAMessageState, QASession
 
 
@@ -203,6 +204,7 @@ class QASessionRepository(Protocol):
         completed_at: datetime,
         command_id: UUID,
         idempotency_key: IdempotencyKey,
+        disclosure_dependencies: DisclosureDependencySet | None,
         digest: CommandDigest,
     ) -> QAMutationResult[QAMessage]: ...
 
@@ -456,11 +458,13 @@ class PersistedQASessionService:
         outcome: AnswerQuestionOutcome,
         cancelled: bool,
         idempotency_key: IdempotencyKey,
+        disclosure_dependencies: DisclosureDependencySet | None = None,
     ) -> QAMutationResult[QAMessage]:
         workspace_id, environment_id = _scope(context)
         return await self.repository.complete_message(
             workspace_id=workspace_id, environment_id=environment_id,
             session_id=session_id, message_id=message_id, answer=answer,
+            disclosure_dependencies=disclosure_dependencies,
             outcome=outcome, cancelled=cancelled, completed_at=self.clock(),
             command_id=self.command_id_factory(), idempotency_key=idempotency_key,
             digest=_digest(
@@ -469,6 +473,11 @@ class PersistedQASessionService:
                     "session_id": session_id,
                     "message_id": message_id,
                     "answer": answer,
+                    "disclosure_dependencies": (
+                        disclosure_dependencies.model_dump(mode="json")
+                        if disclosure_dependencies is not None
+                        else None
+                    ),
                     "outcome": outcome,
                     "cancelled": cancelled,
                 },

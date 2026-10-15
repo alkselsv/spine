@@ -314,6 +314,7 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "answer_question_attempts": ExpectedTablePrivileges(True, True, True, True, False),
         "qa_session_versions": ExpectedTablePrivileges(True, True, True, False, False),
         "qa_message_versions": ExpectedTablePrivileges(True, True, True, False, False),
+        "qa_disclosure_validation_results": ExpectedTablePrivileges(True, True, True, False, False),
         "initial_workspace_bootstrap": ExpectedTablePrivileges(True, False, False, False, False),
         "idempotency_receipts": ExpectedTablePrivileges(True, True, True, False, False),
         "outbox_intents": ExpectedTablePrivileges(True, False, True, False, False),

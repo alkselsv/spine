@@ -928,10 +928,32 @@ qa_message_versions = Table(
     Column("terminal_outcome", Text, nullable=True),
     Column("cancelled", Boolean, nullable=False),
     Column("disclosure_dependency_ids", JSONB, nullable=False),
+    Column("disclosure_dependencies", JSONB, nullable=False),
     Column("disclosure_eligibility", Text, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
     PrimaryKeyConstraint("workspace_id", "environment_id", "message_id", "version", name="pk_qa_message_versions"),
+)
+
+qa_disclosure_validation_results = Table(
+    "qa_disclosure_validation_results",
+    metadata,
+    Column("request_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("request_digest", Text, nullable=False),
+    Column("checkpoint", Text, nullable=False),
+    Column("disposition", Text, nullable=False),
+    Column("failure_codes", JSONB, nullable=False),
+    Column("safe_reason", Text, nullable=False),
+    Column("facts", JSONB, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id",
+        "environment_id",
+        "request_id",
+        name="pk_qa_disclosure_validation_results",
+    ),
 )
 
 __all__ = [
@@ -987,4 +1009,5 @@ __all__ = [
     "projection_drifts",
     "qa_session_versions",
     "qa_message_versions",
+    "qa_disclosure_validation_results",
 ]

@@ -84,6 +84,7 @@ from spine.application.persistence.errors import (
     ContextBundleNotFoundError,
 )
 from spine.application.persistence.context_bundles import ContextBundleRepository
+from spine.application.persistence.disclosure import DisclosureValidationRepository
 from spine.application.persistence.context_profiles import ContextProfileRepository
 from spine.application.persistence.idempotency import (
     IdempotencyClaimResult,
@@ -194,6 +195,7 @@ __all__ = [
     "ContextBundleMalformedError",
     "ContextBundleNotFoundError",
     "ContextBundleRepository",
+    "DisclosureValidationRepository",
     "COMMAND_DIGEST_ALGORITHM_VERSION",
     "CommandDigest",
     "ClaimedOutboxDelivery",

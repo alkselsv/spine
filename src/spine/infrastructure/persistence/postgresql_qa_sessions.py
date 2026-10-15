@@ -25,6 +25,7 @@ from spine.application.qa_sessions import (
     QASessionPosition,
     QASessionVersionConflict,
 )
+from spine.domain.disclosure import DisclosureDependencySet
 from spine.domain.qa_sessions import QAMessage, QAMessageState, QASession, QASessionStatus
 from spine.infrastructure.persistence.postgresql_mappings import qa_message_versions, qa_session_versions
 
@@ -257,6 +258,7 @@ class PostgreSQLQASessionRepository:
         completed_at: datetime,
         command_id: UUID,
         idempotency_key: IdempotencyKey,
+        disclosure_dependencies: DisclosureDependencySet | None,
         digest: CommandDigest,
     ) -> QAMutationResult[QAMessage]:
         replay = await self._claim(idempotency_key, digest)
@@ -269,7 +271,8 @@ class PostgreSQLQASessionRepository:
         current = await self._lock_message(workspace_id, environment_id, session_id, message_id)
         if current.state is QAMessageState.TERMINAL:
             raise QASessionVersionConflict()
-        updated = current.model_copy(update={"version": current.version + 1, "state": QAMessageState.TERMINAL, "answer": answer, "terminal_outcome": outcome, "cancelled": cancelled, "updated_at": completed_at})
+        dependencies = disclosure_dependencies or current.disclosure_dependencies
+        updated = current.model_copy(update={"version": current.version + 1, "state": QAMessageState.TERMINAL, "answer": answer, "terminal_outcome": outcome, "cancelled": cancelled, "disclosure_dependency_ids": tuple(item.dependency_id for item in dependencies.dependencies), "disclosure_dependencies": dependencies, "updated_at": completed_at})
         await self._uow._execute(insert(qa_message_versions).values(self._message_values(updated)))
         stable_command_id = self._owned_claims[digest.value].receipt_id
         await self._complete(digest, message_id, "qa_message")
@@ -348,6 +351,7 @@ class PostgreSQLQASessionRepository:
             "terminal_outcome": value.terminal_outcome.value if value.terminal_outcome else None,
             "cancelled": value.cancelled,
             "disclosure_dependency_ids": [str(item) for item in value.disclosure_dependency_ids],
+            "disclosure_dependencies": value.disclosure_dependencies.model_dump(mode="json"),
             "disclosure_eligibility": value.disclosure_eligibility.value,
             "created_at": value.created_at,
             "updated_at": value.updated_at,

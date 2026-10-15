@@ -1399,6 +1399,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "answer_question_attempts",
         "qa_session_versions",
         "qa_message_versions",
+        "qa_disclosure_validation_results",
         "idempotency_receipts",
         "initial_workspace_bootstrap",
         "outbox_intents",
@@ -1804,6 +1805,10 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ck_qa_message_versions_ordinal_positive",
         "ck_qa_message_versions_state",
         "ck_qa_message_versions_outcome",
+        "pk_qa_disclosure_validation_results",
+        "fk_qa_disclosure_validation_results_environment",
+        "ck_qa_disclosure_validation_results_checkpoint",
+        "ck_qa_disclosure_validation_results_disposition",
     }
     expected_final_constraints |= (
         AUTHORIZATION_DIRECTORY_CONSTRAINTS
@@ -2132,6 +2137,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "answer_question_attempts": (True, True),
         "qa_session_versions": (True, True),
         "qa_message_versions": (True, True),
+        "qa_disclosure_validation_results": (True, True),
         "idempotency_receipts": (True, True),
         "initial_workspace_bootstrap": (True, True),
         "outbox_intents": (True, True),
@@ -2258,6 +2264,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "answer_question_attempts": (True, True, True, False),
         "qa_session_versions": (True, True, False, False),
         "qa_message_versions": (True, True, False, False),
+        "qa_disclosure_validation_results": (True, True, False, False),
         "idempotency_receipts": (True, True, False, False),
         "initial_workspace_bootstrap": (False, False, False, False),
         "outbox_intents": (False, True, False, False),
@@ -2452,7 +2459,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                                 "'projection_drifts', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                                "'qa_message_versions'))"
+                                "'qa_message_versions', 'qa_disclosure_validation_results'))"
                     )
                 )
             ).scalars()
@@ -2487,7 +2494,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                             "'projection_drifts', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                                "'qa_message_versions')"
+                                "'qa_message_versions', 'qa_disclosure_validation_results')"
                     )
                 )
             ).mappings()
@@ -2516,7 +2523,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                                 "'projection_drifts', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                                "'qa_message_versions')"
+                                "'qa_message_versions', 'qa_disclosure_validation_results')"
                     )
                 )
             ).scalars()
@@ -2544,7 +2551,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                                 "'projection_drifts', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                                "'qa_message_versions')"
+                                "'qa_message_versions', 'qa_disclosure_validation_results')"
                     )
                 )
             ).scalars()
@@ -2572,7 +2579,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                                 "'projection_drifts', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                                "'qa_message_versions')"
+                                "'qa_message_versions', 'qa_disclosure_validation_results')"
                     )
                 )
             ).scalars()
@@ -3210,6 +3217,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                             "'context_profiles', 'context_bundles', "
                             "'answer_question_runs', 'answer_question_attempts', "
                             "'qa_session_versions', 'qa_message_versions', "
+                            "'qa_disclosure_validation_results', "
                         "'initial_workspace_bootstrap', 'outbox_intents', "
                         "'outbox_deliveries', "
                         "'workspace_memberships', 'environment_memberships', "
@@ -3275,6 +3283,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "answer_question_attempts": (True, True),
             "qa_session_versions": (True, True),
             "qa_message_versions": (True, True),
+            "qa_disclosure_validation_results": (True, True),
         "idempotency_receipts": (True, True),
         "initial_workspace_bootstrap": (True, True),
         "outbox_intents": (True, True),
@@ -4593,13 +4602,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261025_29_authorization_team_memberships.py",
         "20261026_30_answer_question_runs.py",
         "20261027_31_qa_sessions.py",
+        "20261027_32_disclosure_revalidation.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "20261021_26_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
         "revision = '20261021_26'\n"
-        "down_revision = '20261027_31'\n"
+        "down_revision = '20261027_32'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

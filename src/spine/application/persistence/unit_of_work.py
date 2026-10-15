@@ -21,6 +21,7 @@ from spine.application.persistence.projection import ProjectionRepository
 from spine.application.persistence.context_profiles import ContextProfileRepository
 from spine.application.persistence.context_bundles import ContextBundleRepository
 from spine.application.persistence.answer_question_runs import AnswerQuestionRunRepository
+from spine.application.persistence.disclosure import DisclosureValidationRepository
 from spine.application.qa_sessions import QASessionRepository
 
 if TYPE_CHECKING:
@@ -43,6 +44,9 @@ class TenantUnitOfWork(Protocol):
 
     @property
     def answer_question_runs(self) -> AnswerQuestionRunRepository: ...
+
+    @property
+    def disclosure_validations(self) -> DisclosureValidationRepository: ...
 
     @property
     def qa_sessions(self) -> QASessionRepository: ...

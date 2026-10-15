@@ -285,6 +285,9 @@ from spine.infrastructure.persistence.postgresql_mappings import (
 from spine.infrastructure.persistence.postgresql_qa_sessions import (
     PostgreSQLQASessionRepository,
 )
+from spine.infrastructure.persistence.postgresql_disclosure import (
+    PostgreSQLDisclosureValidationRepository,
+)
 
 _BIND_CONTEXT = text(
     "SELECT "
@@ -5469,6 +5472,7 @@ class PostgreSQLTenantUnitOfWork:
         self._context_bundles = _PostgreSQLContextBundleRepository(self)
         self._answer_question_runs = _PostgreSQLAnswerQuestionRunRepository(self)
         self._qa_sessions = PostgreSQLQASessionRepository(self)
+        self._disclosure_validations = PostgreSQLDisclosureValidationRepository(self)
         self._sources = _PostgreSQLSourceObservationRepository(self)
         self._canonical = _PostgreSQLCanonicalAcceptanceRepository(self)
         self._boundaries = _PostgreSQLCanonicalBoundaryRepository(self)
@@ -5519,6 +5523,11 @@ class PostgreSQLTenantUnitOfWork:
     def qa_sessions(self) -> PostgreSQLQASessionRepository:
         self._guard_active()
         return self._qa_sessions
+
+    @property
+    def disclosure_validations(self) -> PostgreSQLDisclosureValidationRepository:
+        self._guard_active()
+        return self._disclosure_validations
 
     @property
     def sources(self) -> _PostgreSQLSourceObservationRepository:
