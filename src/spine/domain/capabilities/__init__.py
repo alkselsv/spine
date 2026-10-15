@@ -56,6 +56,19 @@ from spine.domain.capabilities.answer_question_runs import (
     SafeAttemptReason,
 )
 from spine.domain.capabilities.models import CapabilityDefinition
+from spine.domain.capabilities.semantic_support import (
+    SEMANTIC_SUPPORT_ASSESSMENT_SCHEMA,
+    SEMANTIC_SUPPORT_POLICY_SCHEMA,
+    SEMANTIC_SUPPORT_REQUEST_SCHEMA,
+    SEMANTIC_SUPPORT_RESULT_SCHEMA,
+    SemanticSupportAssessment,
+    SemanticSupportEvidence,
+    SemanticSupportOutcome,
+    SemanticSupportPolicy,
+    SemanticSupportReasonCode,
+    SemanticSupportRequest,
+    SemanticSupportResult,
+)
 
 __all__ = [
     "ANSWER_QUESTION_ATTEMPT_SCHEMA",
@@ -103,6 +116,17 @@ __all__ = [
     "RetrievalOutcome",
     "RunAttemptCorrelation",
     "SafeAttemptReason",
+    "SEMANTIC_SUPPORT_ASSESSMENT_SCHEMA",
+    "SEMANTIC_SUPPORT_POLICY_SCHEMA",
+    "SEMANTIC_SUPPORT_REQUEST_SCHEMA",
+    "SEMANTIC_SUPPORT_RESULT_SCHEMA",
+    "SemanticSupportAssessment",
+    "SemanticSupportEvidence",
+    "SemanticSupportOutcome",
+    "SemanticSupportPolicy",
+    "SemanticSupportReasonCode",
+    "SemanticSupportRequest",
+    "SemanticSupportResult",
     "TrustedAnswerQuestionConfiguration",
     "agent_version_digest",
     "map_retrieval_outcome",
