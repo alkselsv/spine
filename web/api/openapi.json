@@ -123,6 +123,64 @@
         "title": "ApiCollectionEnvelope[IngestionRunHistoryResponse]",
         "type": "object"
       },
+      "ApiCommandResult_ProjectionRecoveryResponse_": {
+        "additionalProperties": false,
+        "properties": {
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "replay": {
+            "default": false,
+            "title": "Replay",
+            "type": "boolean"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectionRecoveryResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CommandStatus"
+          },
+          "trace_id": {
+            "format": "uuid",
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "environment_id",
+          "trace_id",
+          "command_id",
+          "status"
+        ],
+        "title": "ApiCommandResult[ProjectionRecoveryResponse]",
+        "type": "object"
+      },
       "ApiResponseEnvelope_HealthSummaryResponse_": {
         "additionalProperties": false,
         "properties": {
@@ -158,6 +216,43 @@
           "data"
         ],
         "title": "ApiResponseEnvelope[HealthSummaryResponse]",
+        "type": "object"
+      },
+      "ApiResponseEnvelope_ProjectionStatusResponse_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ProjectionStatusResponse"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "trace_id": {
+            "format": "uuid",
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "environment_id",
+          "trace_id",
+          "data"
+        ],
+        "title": "ApiResponseEnvelope[ProjectionStatusResponse]",
         "type": "object"
       },
       "AskRequest": {
@@ -531,6 +626,17 @@
         ],
         "title": "BatchIngestionWarningResponse",
         "type": "object"
+      },
+      "CommandStatus": {
+        "description": "Public lifecycle of a requested mutation.",
+        "enum": [
+          "accepted",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "title": "CommandStatus",
+        "type": "string"
       },
       "DocumentProcessingHistoryResponse": {
         "additionalProperties": false,
@@ -1163,6 +1269,392 @@
           "service"
         ],
         "title": "LivenessResponse",
+        "type": "object"
+      },
+      "ProjectionAsOfResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted_through_generation": {
+            "minimum": 0.0,
+            "title": "Accepted Through Generation",
+            "type": "integer"
+          },
+          "boundary_time": {
+            "format": "date-time",
+            "title": "Boundary Time",
+            "type": "string"
+          },
+          "canonical_boundary_id": {
+            "format": "uuid",
+            "title": "Canonical Boundary Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "canonical_boundary_id",
+          "accepted_through_generation",
+          "boundary_time"
+        ],
+        "title": "ProjectionAsOfResponse",
+        "type": "object"
+      },
+      "ProjectionFreshness": {
+        "enum": [
+          "current",
+          "stale"
+        ],
+        "title": "ProjectionFreshness",
+        "type": "string"
+      },
+      "ProjectionHealth": {
+        "enum": [
+          "healthy",
+          "degraded"
+        ],
+        "title": "ProjectionHealth",
+        "type": "string"
+      },
+      "ProjectionOperationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "operation": {
+            "enum": [
+              "build",
+              "catch_up",
+              "rebuild",
+              "rollback",
+              "publish",
+              "reconciliation"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "retryable": {
+            "default": false,
+            "title": "Retryable",
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "accepted",
+              "running",
+              "completed",
+              "failed",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "status"
+        ],
+        "title": "ProjectionOperationResponse",
+        "type": "object"
+      },
+      "ProjectionPublicationStatus": {
+        "enum": [
+          "published",
+          "unpublished",
+          "unavailable"
+        ],
+        "title": "ProjectionPublicationStatus",
+        "type": "string"
+      },
+      "ProjectionReconciliationOutcome": {
+        "enum": [
+          "healthy",
+          "degraded",
+          "failed",
+          "interrupted"
+        ],
+        "title": "ProjectionReconciliationOutcome",
+        "type": "string"
+      },
+      "ProjectionReconciliationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "checked_at": {
+            "format": "date-time",
+            "title": "Checked At",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/ProjectionReconciliationOutcome"
+          },
+          "result_id": {
+            "format": "uuid",
+            "title": "Result Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result_id",
+          "outcome",
+          "checked_at"
+        ],
+        "title": "ProjectionReconciliationResponse",
+        "type": "object"
+      },
+      "ProjectionRecoveryAction": {
+        "description": "Operator-requested work; the worker selects canonical inputs later.",
+        "enum": [
+          "retry",
+          "rebuild",
+          "recover"
+        ],
+        "title": "ProjectionRecoveryAction",
+        "type": "string"
+      },
+      "ProjectionRecoveryRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/ProjectionRecoveryAction"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "ProjectionRecoveryRequest",
+        "type": "object"
+      },
+      "ProjectionRecoveryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/ProjectionRecoveryAction"
+          },
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "projection_kind": {
+            "pattern": "^[a-z][a-z0-9_.:-]{0,63}$",
+            "title": "Projection Kind",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "state": {
+            "const": "accepted",
+            "default": "accepted",
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command_id",
+          "projection_kind",
+          "action"
+        ],
+        "title": "ProjectionRecoveryResponse",
+        "type": "object"
+      },
+      "ProjectionStatusResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "activation_generation": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activation Generation"
+          },
+          "activation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activation Id"
+          },
+          "as_of": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectionAsOfResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "canonical_boundary_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canonical Boundary Id"
+          },
+          "drift_count": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Drift Count"
+          },
+          "freshness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectionFreshness"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "health": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectionHealth"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_operation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectionOperationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "projection_config_version": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Projection Config Version"
+          },
+          "projection_config_version_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Projection Config Version Id"
+          },
+          "projection_kind": {
+            "pattern": "^[a-z][a-z0-9_.:-]{0,63}$",
+            "title": "Projection Kind",
+            "type": "string"
+          },
+          "publication_status": {
+            "$ref": "#/components/schemas/ProjectionPublicationStatus"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z][a-z0-9_.:-]{0,63}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          },
+          "reconciliation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectionReconciliationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recovery_state": {
+            "default": "not_requested",
+            "enum": [
+              "not_requested",
+              "pending",
+              "succeeded",
+              "failed",
+              "unavailable"
+            ],
+            "title": "Recovery State",
+            "type": "string"
+          },
+          "retryable": {
+            "default": false,
+            "title": "Retryable",
+            "type": "boolean"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id"
+          }
+        },
+        "required": [
+          "projection_kind",
+          "publication_status"
+        ],
+        "title": "ProjectionStatusResponse",
         "type": "object"
       },
       "PublicAcceptanceStatus": {
@@ -2164,6 +2656,311 @@
           }
         ],
         "summary": "Ingestion.Batch Status"
+      }
+    },
+    "/api/v1/projections/{projection_kind}/recovery": {
+      "post": {
+        "operationId": "projection.recovery",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "projection_kind",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z][a-z0-9_.:-]{0,63}$",
+              "title": "Projection Kind",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Environment-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectionRecoveryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCommandResult_ProjectionRecoveryResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Safe request error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authentication is invalid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authorization is denied."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Resource is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Command conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request payload is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Unexpected internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Dependency is unavailable."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Projection.Recovery"
+      }
+    },
+    "/api/v1/projections/{projection_kind}/status": {
+      "get": {
+        "operationId": "projection.status",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "projection_kind",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z][a-z0-9_.:-]{0,63}$",
+              "title": "Projection Kind",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Environment-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseEnvelope_ProjectionStatusResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Safe request error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authentication is invalid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authorization is denied."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Resource is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Command conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request payload is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Unexpected internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Dependency is unavailable."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Projection.Status"
       }
     },
     "/ask": {

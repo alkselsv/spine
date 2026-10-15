@@ -27,3 +27,16 @@ def test_generation_export_matches_backend_openapi_document(tmp_path: Path) -> N
     assert "/api/v1/documents/processing-history" in document["paths"]
     assert "/api/v1/ingestion/runs" in document["paths"]
     assert "/api/v1/ingestion/runs/{run_id}" in document["paths"]
+    assert "/api/v1/projections/{projection_kind}/status" in document["paths"]
+    assert "/api/v1/projections/{projection_kind}/recovery" in document["paths"]
+
+    status_operation = document["paths"]["/api/v1/projections/{projection_kind}/status"]["get"]
+    recovery_operation = document["paths"]["/api/v1/projections/{projection_kind}/recovery"]["post"]
+    assert status_operation["operationId"] == "projection.status"
+    assert recovery_operation["operationId"] == "projection.recovery"
+    assert any(
+        parameter["name"] == "Idempotency-Key"
+        and parameter["in"] == "header"
+        and parameter["required"] is True
+        for parameter in recovery_operation["parameters"]
+    )

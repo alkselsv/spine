@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import Enum
 from typing import Literal, Protocol
 from uuid import UUID
 
@@ -31,6 +32,7 @@ from spine.domain.projections import (
     ProjectionRunTransition,
     ProjectionSnapshot,
     ProjectionSnapshotMember,
+    ProjectionKind,
     PublishedActivePublication,
     ProjectionValidation,
     SourceProjectionReference,
@@ -54,7 +56,16 @@ PROJECTION_RECONCILIATION_SCHEMA_VERSION = 1
 PROJECTION_ACTIVATION_SCHEMA_VERSION = 1
 PROJECTION_ACTIVATED_OUTBOX_EVENT_TYPE = "projection.activated"
 PROJECTION_CATCH_UP_OUTBOX_EVENT_TYPE = "projection.catch_up_requested"
+PROJECTION_RECOVERY_REQUESTED_OUTBOX_EVENT_TYPE = "projection.recovery_requested"
 PROJECTION_OUTBOX_SCHEMA_VERSION = 1
+
+
+class ProjectionRecoveryAction(str, Enum):
+    """Operator-requested work; the worker selects canonical inputs later."""
+
+    RETRY = "retry"
+    REBUILD = "rebuild"
+    RECOVER = "recover"
 
 
 class ProjectionActivatedOutboxPayload(BaseModel):
@@ -62,7 +73,7 @@ class ProjectionActivatedOutboxPayload(BaseModel):
 
     projection_activation_id: UUID
     projection_snapshot_id: UUID
-    projection_kind: str = Field(pattern=r"^[a-z][a-z0-9_.:-]{0,63}$")
+    projection_kind: ProjectionKind
     activation_generation: int = Field(ge=1)
     activation_kind: ProjectionActivationKind
     canonical_boundary_id: UUID
@@ -76,12 +87,23 @@ class ProjectionCatchUpRequestedOutboxPayload(BaseModel):
 
     projection_drift_id: UUID
     projection_activation_id: UUID
-    projection_kind: str = Field(pattern=r"^[a-z][a-z0-9_.:-]{0,63}$")
+    projection_kind: ProjectionKind
     activation_generation: int = Field(ge=1)
     canonical_acceptance_id: UUID
     source_object_id: UUID
     source_revision_id: UUID
     accepted_generation: int = Field(ge=1)
+
+
+class ProjectionRecoveryRequestedOutboxPayload(BaseModel):
+    """Content-free request for a worker-owned projection recovery attempt."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    command_id: UUID
+    projection_kind: ProjectionKind
+    action: ProjectionRecoveryAction
+    command_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 def register_projection_outbox_events(registry: object) -> None:
@@ -97,6 +119,11 @@ def register_projection_outbox_events(registry: object) -> None:
         event_type=PROJECTION_CATCH_UP_OUTBOX_EVENT_TYPE,
         schema_version=PROJECTION_OUTBOX_SCHEMA_VERSION,
         payload_type=ProjectionCatchUpRequestedOutboxPayload,
+    )
+    register(
+        event_type=PROJECTION_RECOVERY_REQUESTED_OUTBOX_EVENT_TYPE,
+        schema_version=PROJECTION_OUTBOX_SCHEMA_VERSION,
+        payload_type=ProjectionRecoveryRequestedOutboxPayload,
     )
 
 
@@ -666,6 +693,7 @@ def has_complete_physical_validation(
 
 
 __all__ = [
+    "PROJECTION_RECOVERY_REQUESTED_OUTBOX_EVENT_TYPE",
     "PROJECTION_RECEIPT_SCHEMA_VERSION",
     "PROJECTION_RESULT_SCHEMA_VERSION",
     "PROJECTION_RUN_SCHEMA_VERSION",
@@ -692,6 +720,8 @@ __all__ = [
     "ProjectionSnapshotCommand",
     "ProjectionValidationCommand",
     "ProjectionPublicationResolution",
+    "ProjectionRecoveryAction",
+    "ProjectionRecoveryRequestedOutboxPayload",
     "require_expected_candidate",
     "has_complete_physical_validation",
     "transition_allowed",

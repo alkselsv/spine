@@ -25,6 +25,7 @@ from spine.api.health import (
 from spine.api.batch_ingestion import install_batch_ingestion_routes
 from spine.api.ingestion import install_ingestion_routes
 from spine.api.ingestion_history import install_ingestion_history_routes
+from spine.api.projection_control import install_projection_control_routes
 from spine.api.authorization import (
     ApiAuthorizationReadiness,
     ApiAuthorizationRuntime,
@@ -43,6 +44,10 @@ from spine.application.ingestion_api import DocumentIngestionService
 from spine.application.batch_ingestion_api import BatchDocumentIngestionService
 from spine.application.ingestion_history import IngestionHistoryService
 from spine.application.health_summary import HealthStatusServices
+from spine.application.projection_control import (
+    ProjectionRecoveryCommandService,
+    ProjectionStatusService,
+)
 from spine.config import settings
 from spine.ingest.loaders import documents_to_remember_payloads, load_path
 from spine.infrastructure.diagnostics import JsonLoggingDiagnosticSink
@@ -173,6 +178,8 @@ def create_app(
     build_version: str | None = None,
     health_summary_timeout_seconds: float = 0.25,
     health_readiness_timeout_seconds: float = 0.25,
+    projection_status_service: ProjectionStatusService | None = None,
+    projection_recovery_service: ProjectionRecoveryCommandService | None = None,
 ) -> FastAPI:
     """Compose the HTTP API with injectable deterministic diagnostics."""
 
@@ -246,6 +253,12 @@ def create_app(
             build_version=build_version,
             timeout_seconds=health_summary_timeout_seconds,
         )
+        if projection_status_service is not None or projection_recovery_service is not None:
+            install_projection_control_routes(
+                application,
+                status_service=projection_status_service,
+                recovery_service=projection_recovery_service,
+            )
     add_public_api_route(
         application,
         "/api/v1/health/ready",
