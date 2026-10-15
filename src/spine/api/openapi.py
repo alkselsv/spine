@@ -28,6 +28,10 @@ from spine.application.ingestion_history import (
     IngestionHistoryPosition,
 )
 from spine.application.ingestion_history import IngestionHistoryService
+from spine.application.projection_control import (
+    UnavailableProjectionRecoveryService,
+    UnavailableProjectionStatusService,
+)
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.auth import RoutePolicyRegistry
 
@@ -112,6 +116,8 @@ def create_openapi_app() -> FastAPI:
             _UnavailableIngestionHistoryService(),
         ),
         ingestion_history_cursor_secret=secrets.token_bytes(32),
+        projection_status_service=UnavailableProjectionStatusService(),
+        projection_recovery_service=UnavailableProjectionRecoveryService(),
     )
 
 

@@ -38,6 +38,10 @@ from spine.application.ingestion_api_errors import (
     InvalidIngestionRequest,
     UploadPayloadTooLarge,
 )
+from spine.application.projection_control import (
+    InvalidProjectionControlRequest,
+    ProjectionControlServiceUnavailable,
+)
 from spine.auth.errors import (
     AuthenticationUnavailableError,
     AuthorizationDeniedError,
@@ -83,6 +87,8 @@ _SAFE_MESSAGE_BY_CODE = MappingProxyType({
     "spine.ingestion.payload_too_large": "Upload exceeds the allowed size.",
     "spine.ingestion.unavailable": "Ingestion is temporarily unavailable.",
     "spine.ingestion.not_found": "The ingestion run was not found.",
+    "spine.projection.invalid_request": "The projection request is invalid.",
+    "spine.projection.unavailable": "Projection control is temporarily unavailable.",
 })
 
 
@@ -300,6 +306,8 @@ def build_default_error_registry() -> StructuredErrorRegistry:
         (UploadPayloadTooLarge, "spine.ingestion.payload_too_large", "Upload exceeds the allowed size.", Retryability.NEVER),
         (IngestionServiceUnavailable, "spine.ingestion.unavailable", "Ingestion is temporarily unavailable.", Retryability.AFTER_DELAY),
         (IngestionRunNotFound, "spine.ingestion.not_found", "The ingestion run was not found.", Retryability.NEVER),
+        (InvalidProjectionControlRequest, "spine.projection.invalid_request", "The projection request is invalid.", Retryability.NEVER),
+        (ProjectionControlServiceUnavailable, "spine.projection.unavailable", "Projection control is temporarily unavailable.", Retryability.AFTER_DELAY),
     )
     for exception_type, code, safe_message, retryability in mappings:
         registry.register(exception_type, code, safe_message, retryability)

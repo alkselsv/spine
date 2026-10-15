@@ -13,7 +13,7 @@ import json
 import re
 from collections.abc import Mapping
 from enum import Enum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
@@ -24,6 +24,8 @@ from spine.domain.common import DefinitionModel, FrozenDict, ValidatedDefinition
 _DIGEST = r"^[0-9a-f]{64}$"
 _IDENTIFIER = r"^[a-z][a-z0-9_.:-]{0,63}$"
 _VERSION = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+PROJECTION_KIND_PATTERN = _IDENTIFIER
+ProjectionKind = Annotated[str, Field(pattern=PROJECTION_KIND_PATTERN)]
 
 ONTOLOGY_DEFINITION_SCHEMA = "ontology-definition:r1"
 PROJECTION_CONFIG_SCHEMA = "projection-config:r1"
@@ -898,6 +900,8 @@ __all__ = [
     "ONTOLOGY_DEFINITION_SCHEMA",
     "PROJECTION_CONFIG_SCHEMA",
     "PROJECTION_EVIDENCE_SCHEMA",
+    "PROJECTION_KIND_PATTERN",
+    "ProjectionKind",
     "OntologyVersion",
     "ActiveProjection",
     "CanonicalAsOf",

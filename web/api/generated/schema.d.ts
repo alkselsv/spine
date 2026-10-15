@@ -123,6 +123,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projections/{projection_kind}/recovery": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Projection.Recovery */
+        post: operations["projection.recovery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projections/{projection_kind}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Projection.Status */
+        get: operations["projection.status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ask": {
         parameters: {
             query?: never;
@@ -238,9 +272,70 @@ export interface components {
              */
             workspace_id: string;
         };
+        /** ApiCommandResult[ProjectionRecoveryResponse] */
+        ApiCommandResult_ProjectionRecoveryResponse_: {
+            /**
+             * Command Id
+             * Format: uuid
+             */
+            command_id: string;
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Replay
+             * @default false
+             */
+            replay: boolean;
+            result?: components["schemas"]["ProjectionRecoveryResponse"] | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            status: components["schemas"]["CommandStatus"];
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
         /** ApiResponseEnvelope[HealthSummaryResponse] */
         ApiResponseEnvelope_HealthSummaryResponse_: {
             data: components["schemas"]["HealthSummaryResponse"];
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** ApiResponseEnvelope[ProjectionStatusResponse] */
+        ApiResponseEnvelope_ProjectionStatusResponse_: {
+            data: components["schemas"]["ProjectionStatusResponse"];
             /**
              * Environment Id
              * Format: uuid
@@ -409,6 +504,12 @@ export interface components {
              */
             warning_id: string;
         };
+        /**
+         * CommandStatus
+         * @description Public lifecycle of a requested mutation.
+         * @enum {string}
+         */
+        CommandStatus: "accepted" | "completed" | "failed" | "cancelled";
         /** DocumentProcessingHistoryResponse */
         DocumentProcessingHistoryResponse: {
             acceptance: components["schemas"]["PublicAcceptanceStatus"];
@@ -606,6 +707,152 @@ export interface components {
              * @constant
              */
             status: "ok";
+        };
+        /** ProjectionAsOfResponse */
+        ProjectionAsOfResponse: {
+            /** Accepted Through Generation */
+            accepted_through_generation: number;
+            /**
+             * Boundary Time
+             * Format: date-time
+             */
+            boundary_time: string;
+            /**
+             * Canonical Boundary Id
+             * Format: uuid
+             */
+            canonical_boundary_id: string;
+        };
+        /**
+         * ProjectionFreshness
+         * @enum {string}
+         */
+        ProjectionFreshness: "current" | "stale";
+        /**
+         * ProjectionHealth
+         * @enum {string}
+         */
+        ProjectionHealth: "healthy" | "degraded";
+        /** ProjectionOperationResponse */
+        ProjectionOperationResponse: {
+            /** Completed At */
+            completed_at?: string | null;
+            /**
+             * Operation
+             * @enum {string}
+             */
+            operation: "build" | "catch_up" | "rebuild" | "rollback" | "publish" | "reconciliation";
+            /**
+             * Retryable
+             * @default false
+             */
+            retryable: boolean;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "accepted" | "running" | "completed" | "failed" | "unavailable";
+        };
+        /**
+         * ProjectionPublicationStatus
+         * @enum {string}
+         */
+        ProjectionPublicationStatus: "published" | "unpublished" | "unavailable";
+        /**
+         * ProjectionReconciliationOutcome
+         * @enum {string}
+         */
+        ProjectionReconciliationOutcome: "healthy" | "degraded" | "failed" | "interrupted";
+        /** ProjectionReconciliationResponse */
+        ProjectionReconciliationResponse: {
+            /**
+             * Checked At
+             * Format: date-time
+             */
+            checked_at: string;
+            outcome: components["schemas"]["ProjectionReconciliationOutcome"];
+            /**
+             * Result Id
+             * Format: uuid
+             */
+            result_id: string;
+        };
+        /**
+         * ProjectionRecoveryAction
+         * @description Operator-requested work; the worker selects canonical inputs later.
+         * @enum {string}
+         */
+        ProjectionRecoveryAction: "retry" | "rebuild" | "recover";
+        /** ProjectionRecoveryRequest */
+        ProjectionRecoveryRequest: {
+            action: components["schemas"]["ProjectionRecoveryAction"];
+        };
+        /** ProjectionRecoveryResponse */
+        ProjectionRecoveryResponse: {
+            action: components["schemas"]["ProjectionRecoveryAction"];
+            /**
+             * Command Id
+             * Format: uuid
+             */
+            command_id: string;
+            /** Projection Kind */
+            projection_kind: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * State
+             * @default accepted
+             * @constant
+             */
+            state: "accepted";
+        };
+        /** ProjectionStatusResponse */
+        ProjectionStatusResponse: {
+            /** Activation Generation */
+            activation_generation?: number | null;
+            /** Activation Id */
+            activation_id?: string | null;
+            as_of?: components["schemas"]["ProjectionAsOfResponse"] | null;
+            /** Canonical Boundary Id */
+            canonical_boundary_id?: string | null;
+            /** Drift Count */
+            drift_count?: number | null;
+            freshness?: components["schemas"]["ProjectionFreshness"] | null;
+            health?: components["schemas"]["ProjectionHealth"] | null;
+            last_operation?: components["schemas"]["ProjectionOperationResponse"] | null;
+            /** Projection Config Version */
+            projection_config_version?: number | null;
+            /** Projection Config Version Id */
+            projection_config_version_id?: string | null;
+            /** Projection Kind */
+            projection_kind: string;
+            publication_status: components["schemas"]["ProjectionPublicationStatus"];
+            /** Reason Code */
+            reason_code?: string | null;
+            reconciliation?: components["schemas"]["ProjectionReconciliationResponse"] | null;
+            /**
+             * Recovery State
+             * @default not_requested
+             * @enum {string}
+             */
+            recovery_state: "not_requested" | "pending" | "succeeded" | "failed" | "unavailable";
+            /**
+             * Retryable
+             * @default false
+             */
+            retryable: boolean;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Snapshot Id */
+            snapshot_id?: string | null;
         };
         /**
          * PublicAcceptanceStatus
@@ -1198,6 +1445,223 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BatchIngestionStatusResponse"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "projection.recovery": {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                projection_kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectionRecoveryRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiCommandResult_ProjectionRecoveryResponse_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "projection.status": {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                projection_kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope_ProjectionStatusResponse_"];
                 };
             };
             /** @description Safe request error. */
