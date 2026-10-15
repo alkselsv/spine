@@ -96,7 +96,6 @@ def evaluate_answer_candidate(
         )
     conflict_by_id = {conflict.conflict_id: conflict for conflict in conflicts}
     rules_by_conflict = {rule.conflict_id: rule for rule in precedence_rules}
-    conflict_claim_sets = tuple(frozenset(conflict.claim_ids) for conflict in conflicts)
     contradiction_pairs = {
         frozenset((relationship.claim_id, relationship.related_claim_id))
         for relationship in answer.relationships
@@ -108,11 +107,19 @@ def evaluate_answer_candidate(
         for conflict in conflicts
         for pair in combinations(conflict.claim_ids, 2)
     }
+    precedence_winners = {rule.winning_claim_id for rule in precedence_rules}
+    precedence_losers = {
+        claim_id
+        for rule in precedence_rules
+        for conflict in (conflict_by_id.get(rule.conflict_id),)
+        if conflict is not None
+        for claim_id in conflict.claim_ids
+        if claim_id != rule.winning_claim_id
+    }
     conflicts_are_valid = (
         len(conflict_by_id) == len(conflicts)
         and len(rules_by_conflict) == len(precedence_rules)
-        and sum(len(group) for group in conflict_claim_sets)
-        == len(set().union(*conflict_claim_sets))
+        and len(detected_pairs) == len(conflicts)
         and detected_pairs == contradiction_pairs
         and all(
             conflict.boundary == target_scope.boundary
@@ -126,6 +133,7 @@ def evaluate_answer_candidate(
             for rule in precedence_rules
         )
         and (not precedence_rules or set(rules_by_conflict) == set(conflict_by_id))
+        and not precedence_winners.intersection(precedence_losers)
     )
     if not conflicts_are_valid:
         return _decision(
@@ -139,14 +147,10 @@ def evaluate_answer_candidate(
         )
     selected_claim_ids = claim_ids
     if precedence_rules:
-        conflict_claim_ids = {
-            claim_id for conflict in conflicts for claim_id in conflict.claim_ids
-        }
-        winning_claim_ids = {rule.winning_claim_id for rule in precedence_rules}
         selected_claim_ids = tuple(
             claim_id
             for claim_id in claim_ids
-            if claim_id not in conflict_claim_ids or claim_id in winning_claim_ids
+            if claim_id not in precedence_losers
         )
     if coverage_status is not CoverageEvaluationStatus.COMPLETE:
         partial_allowed = (
@@ -251,6 +255,9 @@ def _derivations_are_valid(
     if len(by_claim) != len(derivations) or set(by_claim) != derived_claim_ids:
         return False
     for claim_id, derivation in by_claim.items():
+        assessment = assessments.get(claim_id)
+        if assessment is None:
+            return False
         expected_inputs = {
             citation_id
             for relationship in answer.relationships
@@ -261,14 +268,16 @@ def _derivations_are_valid(
         actual_inputs = {item.citation_id for item in derivation.inputs}
         validation_by_citation = {
             item.citation_id: item
-            for item in assessments[claim_id].evidence_validations
+            for item in assessment.evidence_validations
         }
         if (
             derivation.boundary != boundary
             or actual_inputs != expected_inputs
             or any(
                 validation_by_citation.get(item.citation_id) is None
-                or validation_by_citation[item.citation_id].citation_validation_reference
+                or validation_by_citation[
+                    item.citation_id
+                ].semantic_support_validation_reference
                 != item.grounding_validation_reference
                 for item in derivation.inputs
             )

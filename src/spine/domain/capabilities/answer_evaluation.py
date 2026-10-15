@@ -258,7 +258,7 @@ class GroundedConflict(_EvaluationModel):
     schema_version: Literal["grounded-conflict:v1"] = "grounded-conflict:v1"
     conflict_id: UUID
     boundary: AttemptProjectionBoundary
-    claim_ids: tuple[UUID, ...] = Field(min_length=2)
+    claim_ids: tuple[UUID, ...] = Field(min_length=2, max_length=2)
     detection_reference: UUID
     detection_policy_version: str = Field(pattern=_VERSION)
 

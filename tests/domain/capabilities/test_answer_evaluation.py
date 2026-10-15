@@ -60,6 +60,8 @@ TARGET = UUID(int=12)
 CLAIM_B = UUID(int=13)
 CITATION_B = UUID(int=14)
 EVALUATION_LINEAGE = UUID(int=15)
+CLAIM_C = UUID(int=16)
+CITATION_C = UUID(int=17)
 
 
 def evaluate_answer_candidate(**values: Any) -> Any:
@@ -203,6 +205,61 @@ def _conflicting_answer() -> AnswerContent:
                     kind=ClaimEvidenceRelationshipKind.CONTRADICTION,
                     citation_ids=(),
                     related_claim_id=CLAIM_B,
+                ),
+            ),
+        }
+    )
+
+
+def _overlapping_conflict_answer() -> AnswerContent:
+    first = _conflicting_answer()
+    third_citation = first.citations[1].model_copy(
+        update={
+            "citation_id": CITATION_C,
+            "evidence_reference": first.citations[1].evidence_reference.model_copy(
+                update={
+                    "evidence_id": "evidence-3",
+                    "evidence_digest": "3" * 64,
+                }
+            ),
+        }
+    )
+    third_claim = first.claims[1].model_copy(
+        update={
+            "claim_id": CLAIM_C,
+            "text": "Gamma",
+            "location": AnswerClaimLocation(
+                answer_id=ANSWER,
+                start_offset=11,
+                end_offset=16,
+            ),
+        }
+    )
+    return first.model_copy(
+        update={
+            "text": "Alpha Beta Gamma",
+            "claims": (*first.claims, third_claim),
+            "citations": (*first.citations, third_citation),
+            "relationships": (
+                *first.relationships,
+                first.relationships[1].model_copy(
+                    update={
+                        "relationship_id": UUID(int=25),
+                        "claim_id": CLAIM_C,
+                        "citation_ids": (CITATION_C,),
+                    }
+                ),
+                ClaimEvidenceRelationship(
+                    relationship_id=UUID(int=26),
+                    answer_id=ANSWER,
+                    workspace_id=WORKSPACE,
+                    environment_id=ENVIRONMENT,
+                    run_id=RUN,
+                    attempt_id=ATTEMPT,
+                    claim_id=CLAIM_B,
+                    kind=ClaimEvidenceRelationshipKind.CONTRADICTION,
+                    citation_ids=(),
+                    related_claim_id=CLAIM_C,
                 ),
             ),
         }
@@ -384,7 +441,7 @@ def test_derived_claim_requires_grounded_inputs_and_transformation_lineage() -> 
                 inputs=(
                     DerivationInput(
                         citation_id=CITATION,
-                        grounding_validation_reference=UUID(int=59),
+                        grounding_validation_reference=UUID(int=79),
                     ),
                 ),
             ),
@@ -395,9 +452,55 @@ def test_derived_claim_requires_grounded_inputs_and_transformation_lineage() -> 
     assert result.disclosable_claim_ids == (CLAIM,)
 
 
+def test_derived_claim_rejects_citation_validation_as_grounding_lineage() -> None:
+    factual = _answer()
+    derived = factual.model_copy(
+        update={
+            "claims": (
+                factual.claims[0].model_copy(update={"kind": AnswerClaimKind.DERIVED}),
+            ),
+            "relationships": (
+                factual.relationships[0].model_copy(
+                    update={"kind": ClaimEvidenceRelationshipKind.DERIVATION_INPUT}
+                ),
+            ),
+        }
+    )
+
+    result = evaluate_answer_candidate(
+        answer=derived,
+        target_scope=_target(),
+        observed_coverage=_coverage(),
+        claim_assessments=(_grounded_assessment(),),
+        derivations=(
+            DeterministicDerivation(
+                claim_id=CLAIM,
+                boundary=_boundary(),
+                transformation_name="sum_invoice_amounts",
+                transformation_version="sum:v1",
+                transformation_digest="2" * 64,
+                execution_reference=UUID(int=70),
+                inputs=(
+                    DerivationInput(
+                        citation_id=CITATION,
+                        grounding_validation_reference=UUID(int=59),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    assert result.disclosure_status is AnswerDisclosureStatus.REJECTED
+    assert result.disclosable_claim_ids == ()
+
+
 def _grounded_assessment(**overrides: object) -> GroundedClaimAssessment:
     claim_id = overrides.get("claim_id", CLAIM)
-    citation_id = CITATION_B if claim_id == CLAIM_B else CITATION
+    citation_id = {
+        CLAIM: CITATION,
+        CLAIM_B: CITATION_B,
+        CLAIM_C: CITATION_C,
+    }[claim_id]
     values: dict[str, object] = {
         "boundary": _boundary(),
         "claim_id": CLAIM,
@@ -782,3 +885,35 @@ def test_partial_grounded_conflict_preserves_independent_semantics() -> None:
     assert result.partiality_status is AnswerPartialityStatus.PARTIAL
     assert result.conflict_status is GroundedConflictStatus.PRESENTED
     assert result.evaluation_lineage_reference == EVALUATION_LINEAGE
+
+
+def test_overlapping_unresolved_conflict_edges_are_presented() -> None:
+    result = evaluate_answer_candidate(
+        answer=_overlapping_conflict_answer(),
+        target_scope=_target(),
+        observed_coverage=_coverage(),
+        claim_assessments=tuple(
+            _grounded_assessment(claim_id=claim_id)
+            for claim_id in (CLAIM, CLAIM_B, CLAIM_C)
+        ),
+        conflicts=(
+            GroundedConflict(
+                conflict_id=UUID(int=60),
+                boundary=_boundary(),
+                claim_ids=(CLAIM, CLAIM_B),
+                detection_reference=UUID(int=61),
+                detection_policy_version="conflict-policy:v1",
+            ),
+            GroundedConflict(
+                conflict_id=UUID(int=62),
+                boundary=_boundary(),
+                claim_ids=(CLAIM_B, CLAIM_C),
+                detection_reference=UUID(int=63),
+                detection_policy_version="conflict-policy:v1",
+            ),
+        ),
+    )
+
+    assert result.disclosure_status is AnswerDisclosureStatus.ACCEPTED
+    assert result.conflict_status is GroundedConflictStatus.PRESENTED
+    assert result.disclosable_claim_ids == (CLAIM, CLAIM_B, CLAIM_C)
