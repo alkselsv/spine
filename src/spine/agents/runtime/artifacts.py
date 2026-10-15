@@ -220,12 +220,15 @@ class CapabilityArtifactSchema:
     output_model: type[BaseModel]
     assemble_input: Callable[[tuple[Artifact, ...]], Any]
     validate_metadata: Callable[[AgentResponse[Any]], None]
+    validate_handoff: Callable[[BaseModel, BaseModel, AgentResponse[Any]], None] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.schema_identity, CapabilitySchemaIdentity):
             raise TypeError("artifact schema identity is invalid")
         if not callable(self.assemble_input) or not callable(self.validate_metadata):
             raise TypeError("artifact schema adapters must be callable")
+        if self.validate_handoff is not None and not callable(self.validate_handoff):
+            raise TypeError("artifact handoff validator must be callable")
         for model in (self.input_model, self.output_model):
             if not isinstance(model, type) or not issubclass(model, BaseModel):
                 raise TypeError("artifact schemas must be Pydantic model types")
@@ -242,6 +245,23 @@ class CapabilityArtifactSchema:
         """Apply the Capability-owned evidence/metrics/action policy."""
 
         self.validate_metadata(value)
+
+    def check_handoff(
+        self,
+        input_model: BaseModel,
+        output_model: BaseModel,
+        response: AgentResponse[Any],
+    ) -> None:
+        """Validate relationships that span the typed input and output.
+
+        Most capabilities only need independent input/output schema checks.
+        Evidence-bearing capabilities can use this optional hook to enforce
+        that output lineage belongs to the exact input handoff without making
+        the generic runtime aware of their domain model.
+        """
+
+        if self.validate_handoff is not None:
+            self.validate_handoff(input_model, output_model, response)
 
     def load_output(self, value: Any) -> BaseModel:
         """Revalidate handler output even when it is already a model instance."""
