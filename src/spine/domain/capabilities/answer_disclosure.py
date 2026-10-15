@@ -27,7 +27,6 @@ from spine.domain.capabilities.answer_question import (
     AnswerQuestionOutcome,
     AnswerQuestionSafeReason,
     AnswerQuestionSafeReasonCode,
-    LineageReference,
 )
 from spine.domain.common import DefinitionModel
 
@@ -74,6 +73,11 @@ class CurrentDisclosureEligibility(DefinitionModel):
     status: DisclosureEligibilityStatus
     validation_reference: UUID
     reason: DisclosureEligibilityReason
+    workspace_id: UUID | None = None
+    environment_id: UUID | None = None
+    run_id: UUID | None = None
+    attempt_id: UUID | None = None
+    validation_fact_ids: tuple[UUID, ...] = ()
     dependency_ids: tuple[UUID, ...] = ()
 
     @property
@@ -83,8 +87,18 @@ class CurrentDisclosureEligibility(DefinitionModel):
     @model_validator(mode="after")
     def validate_result(self) -> "CurrentDisclosureEligibility":
         _id(self.validation_reference, "validation_reference")
+        for name in ("workspace_id", "environment_id", "run_id", "attempt_id"):
+            value = getattr(self, name)
+            if value is not None:
+                _id(value, name)
         if any(identifier.int == 0 for identifier in self.dependency_ids):
             raise ValueError("disclosure dependency IDs must be non-zero")
+        if any(identifier.int == 0 for identifier in self.validation_fact_ids):
+            raise ValueError("disclosure validation fact IDs must be non-zero")
+        if len(set(self.validation_fact_ids)) != len(self.validation_fact_ids):
+            raise ValueError("disclosure validation fact IDs must be unique")
+        if self.status is DisclosureEligibilityStatus.ELIGIBLE and not self.validation_fact_ids:
+            raise ValueError("eligible disclosure requires validation fact IDs")
         if len(set(self.dependency_ids)) != len(self.dependency_ids):
             raise ValueError("disclosure dependency IDs must be unique")
         expected = {
@@ -114,6 +128,8 @@ class AnswerDisclosureValidation(DefinitionModel):
     context_bundle_digest: str = Field(pattern=_DIGEST)
     claim_ids: tuple[UUID, ...] = Field(min_length=1)
     citation_ids: tuple[UUID, ...] = Field(min_length=1)
+    validation_fact_ids: tuple[UUID, ...] = ()
+    dependency_ids: tuple[UUID, ...] = ()
 
     @model_validator(mode="after")
     def validate_references(self) -> "AnswerDisclosureValidation":
@@ -132,6 +148,12 @@ class AnswerDisclosureValidation(DefinitionModel):
             raise ValueError("disclosure claim IDs must be unique")
         if len(set(self.citation_ids)) != len(self.citation_ids):
             raise ValueError("disclosure citation IDs must be unique")
+        if any(identifier.int == 0 for identifier in (*self.validation_fact_ids, *self.dependency_ids)):
+            raise ValueError("disclosure lineage identifiers must be non-zero")
+        if len(set(self.validation_fact_ids)) != len(self.validation_fact_ids):
+            raise ValueError("disclosure validation fact IDs must be unique")
+        if len(set(self.dependency_ids)) != len(self.dependency_ids):
+            raise ValueError("disclosure dependency IDs must be unique")
         return self
 
 
@@ -203,6 +225,7 @@ class AnswerDisclosureDecision(DefinitionModel):
 
     schema_version: Literal["answer-disclosure-decision:v1"] = ANSWER_DISCLOSURE_DECISION_SCHEMA
     resolution: AnswerOutcomeResolution
+    validation: AnswerDisclosureValidation | None = None
     accepted_answer: AcceptedGroundedAnswer | None = None
 
     @model_validator(mode="after")
@@ -212,6 +235,8 @@ class AnswerDisclosureDecision(DefinitionModel):
                 raise ValueError("only answered resolution can carry accepted content")
             if self.resolution.output is None or self.resolution.output.answer != self.accepted_answer.answer:
                 raise ValueError("accepted answer does not match terminal resolution")
+            if self.validation != self.accepted_answer.validation:
+                raise ValueError("accepted answer validation does not match decision validation")
         elif self.resolution.outcome is AnswerQuestionOutcome.ANSWERED:
             raise ValueError("answered resolution requires accepted content")
         return self
@@ -236,6 +261,7 @@ class AnswerDisclosureRecord(DefinitionModel):
     run_id: UUID
     attempt_id: UUID
     outcome: AnswerQuestionOutcome
+    validation: AnswerDisclosureValidation | None = None
     accepted_answer: AcceptedGroundedAnswer | None = None
     safe_output: AnswerQuestionOutput | None = None
     created_at: datetime
@@ -256,11 +282,28 @@ class AnswerDisclosureRecord(DefinitionModel):
         if self.accepted_answer is not None:
             if self.outcome is not AnswerQuestionOutcome.ANSWERED:
                 raise ValueError("accepted disclosure record must be answered")
+            if self.validation != self.accepted_answer.validation:
+                raise ValueError("accepted disclosure validation does not match answer validation")
+            payload_workspace_id = self.accepted_answer.answer.workspace_id
+            payload_environment_id = self.accepted_answer.answer.environment_id
+            payload_run_id = self.accepted_answer.answer.run_id
+            payload_attempt_id = self.accepted_answer.answer.attempt_id
         else:
             if self.safe_output is None or self.safe_output.outcome is AnswerQuestionOutcome.ANSWERED:
                 raise ValueError("safe disclosure record cannot contain answer content")
             if self.safe_output.outcome is not self.outcome:
                 raise ValueError("safe disclosure outcome does not match record")
+            payload_workspace_id = self.safe_output.scope.workspace_id
+            payload_environment_id = self.safe_output.scope.environment_id
+            payload_run_id = self.safe_output.correlation.run_id
+            payload_attempt_id = self.safe_output.correlation.attempt_id
+        if (
+            payload_workspace_id != self.workspace_id
+            or payload_environment_id != self.environment_id
+            or payload_run_id != self.run_id
+            or payload_attempt_id != self.attempt_id
+        ):
+            raise ValueError("disclosure result scope does not match its record")
         return self
 
 
@@ -271,7 +314,17 @@ def compose_answer_disclosure(
 ) -> AnswerDisclosureDecision:
     """Run the binary disclosure predicate after all validation facts exist."""
 
+    validation = _validation_for(request)
     eligibility = request.current_eligibility
+    if not _eligibility_matches_candidate(request):
+        return AnswerDisclosureDecision(
+            resolution=_safe_resolution(
+                request,
+                AnswerQuestionSafeReasonCode.MANDATORY_PROCESSING_FAILED,
+                outcome=AnswerQuestionOutcome.FAILED,
+            ),
+            validation=validation,
+        )
     if request.decision.candidate is not None and (
         eligibility is None
         or eligibility.status is DisclosureEligibilityStatus.UNAVAILABLE
@@ -281,7 +334,8 @@ def compose_answer_disclosure(
                 request,
                 AnswerQuestionSafeReasonCode.MANDATORY_PROCESSING_FAILED,
                 outcome=AnswerQuestionOutcome.FAILED,
-            )
+            ),
+            validation=validation,
         )
     eligible = eligibility is not None and eligibility.can_disclose
     decision = request.decision.model_copy(update={"disclosure_eligible": eligible})
@@ -292,7 +346,7 @@ def compose_answer_disclosure(
             AnswerQuestionSafeReasonCode.INSUFFICIENT_SUPPORT,
         )
     if resolution.outcome is not AnswerQuestionOutcome.ANSWERED:
-        return AnswerDisclosureDecision(resolution=resolution)
+        return AnswerDisclosureDecision(resolution=resolution, validation=validation)
 
     candidate = request.decision.candidate
     evaluation = request.decision.evaluation
@@ -300,10 +354,37 @@ def compose_answer_disclosure(
     semantic_support = request.decision.semantic_support
     if candidate is None or evaluation is None or citation_validation is None or semantic_support is None:
         return AnswerDisclosureDecision(
-            resolution=_safe_resolution(request, AnswerQuestionSafeReasonCode.REJECTED_CANDIDATE)
+            resolution=_safe_resolution(request, AnswerQuestionSafeReasonCode.REJECTED_CANDIDATE),
+            validation=validation,
         )
     assert eligibility is not None
-    validation = AnswerDisclosureValidation(
+    assert validation is not None
+    return AnswerDisclosureDecision(
+        resolution=resolution,
+        validation=validation,
+        accepted_answer=AcceptedGroundedAnswer(
+            answer=candidate.answer,
+            validation=validation,
+            accepted_at=accepted_at,
+        ),
+    )
+
+
+def _validation_for(request: AnswerDisclosureRequest) -> AnswerDisclosureValidation | None:
+    candidate = request.decision.candidate
+    eligibility = request.current_eligibility
+    citation_validation = request.decision.citation_validation
+    semantic_support = request.decision.semantic_support
+    evaluation = request.decision.evaluation
+    if (
+        candidate is None
+        or eligibility is None
+        or citation_validation is None
+        or semantic_support is None
+        or evaluation is None
+    ):
+        return None
+    return AnswerDisclosureValidation(
         citation_validation_reference=citation_validation.validation_reference,
         semantic_support_validation_reference=semantic_support.validation_reference,
         evaluation_lineage_reference=evaluation.evaluation_lineage_reference,
@@ -313,14 +394,25 @@ def compose_answer_disclosure(
         context_bundle_digest=candidate.context_bundle.bundle.bundle_digest,
         claim_ids=tuple(claim.claim_id for claim in candidate.answer.claims),
         citation_ids=tuple(citation.citation_id for citation in candidate.answer.citations),
+        validation_fact_ids=eligibility.validation_fact_ids,
+        dependency_ids=eligibility.dependency_ids,
     )
-    return AnswerDisclosureDecision(
-        resolution=resolution,
-        accepted_answer=AcceptedGroundedAnswer(
-            answer=candidate.answer,
-            validation=validation,
-            accepted_at=accepted_at,
-        ),
+
+
+def _eligibility_matches_candidate(request: AnswerDisclosureRequest) -> bool:
+    candidate = request.decision.candidate
+    eligibility = request.current_eligibility
+    if candidate is None or eligibility is None:
+        return True
+    scope = candidate.answer
+    return all(
+        expected is None or expected == actual
+        for expected, actual in (
+            (eligibility.workspace_id, scope.workspace_id),
+            (eligibility.environment_id, scope.environment_id),
+            (eligibility.run_id, scope.run_id),
+            (eligibility.attempt_id, scope.attempt_id),
+        )
     )
 
 

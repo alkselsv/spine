@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import importlib
 
-from spine.infrastructure.persistence.postgresql_mappings import qa_answer_disclosure_records
+from spine.infrastructure.persistence.postgresql_mappings import (
+    qa_answer_disclosure_deliveries,
+    qa_answer_disclosure_records,
+)
 
 
 def test_answer_disclosure_mapping_is_tenant_scoped_and_payload_backed() -> None:
@@ -25,3 +28,14 @@ def test_answer_disclosure_migration_follows_revalidation_head() -> None:
 
     assert migration.revision == "20261028_33"
     assert migration.down_revision == "20261027_32"
+
+
+def test_answer_disclosure_delivery_mapping_is_scoped_and_separate() -> None:
+    assert [column.name for column in qa_answer_disclosure_deliveries.primary_key.columns] == [
+        "workspace_id",
+        "environment_id",
+        "request_id",
+    ]
+    assert {"output_reference", "published_at"} <= {
+        column.name for column in qa_answer_disclosure_deliveries.columns
+    }

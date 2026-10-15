@@ -90,6 +90,11 @@ def _request(*, eligible: bool = True, cancellation_requested: bool = False):
                 if eligible
                 else DisclosureEligibilityReason.CURRENT_AUTHORITY_REJECTED
             ),
+            workspace_id=question().scope.workspace_id,
+            environment_id=question().scope.environment_id,
+            run_id=question().correlation.run_id,
+            attempt_id=question().correlation.attempt_id,
+            validation_fact_ids=(uid(809),) if eligible else (),
         ),
     )
 
@@ -124,3 +129,22 @@ def test_cancellation_never_reaches_accepted_output() -> None:
     assert result.resolution.outcome is AnswerQuestionOutcome.CANCELLED
     assert result.accepted_answer is None
     assert result.output.answer is None
+
+
+def test_unsupported_semantics_return_safe_non_content_result() -> None:
+    request = _request()
+    unsupported = request.decision.semantic_support.model_copy(
+        update={"status": SemanticSupportSummaryStatus.INSUFFICIENT}
+    )
+    request = request.model_copy(
+        update={"decision": request.decision.model_copy(update={"semantic_support": unsupported})}
+    )
+
+    result = compose_answer_disclosure(
+        request, accepted_at=datetime(2026, 10, 16, tzinfo=timezone.utc)
+    )
+
+    assert result.resolution.outcome is AnswerQuestionOutcome.ABSTAINED
+    assert result.accepted_answer is None
+    assert result.output.answer is None
+    assert result.validation is not None

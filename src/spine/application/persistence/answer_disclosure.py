@@ -1,4 +1,4 @@
-"""Persistence port for immutable final Q&A disclosure results."""
+"""Persistence ports for immutable final Q&A disclosure results and delivery state."""
 
 from __future__ import annotations
 
@@ -14,6 +14,19 @@ class AnswerDisclosureRepository(Protocol):
     ) -> AnswerDisclosureRecord | None: ...
 
     async def save(self, record: AnswerDisclosureRecord) -> AnswerDisclosureRecord: ...
+
+    async def resolve_delivery(
+        self, *, workspace_id: UUID, environment_id: UUID, request_id: UUID
+    ) -> UUID | None: ...
+
+    async def record_delivery(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        request_id: UUID,
+        output_reference: UUID,
+    ) -> UUID: ...
 
 
 __all__ = ["AnswerDisclosureRepository"]
