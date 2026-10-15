@@ -208,6 +208,93 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/qa/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Qa.Sessions.List */
+        get: operations["qa.sessions.list"];
+        put?: never;
+        /** Qa.Sessions.Create */
+        post: operations["qa.sessions.create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/qa/sessions/{session_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Qa.Sessions.Detail */
+        get: operations["qa.sessions.detail"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/qa/sessions/{session_id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Qa.Messages.List */
+        get: operations["qa.messages.list"];
+        put?: never;
+        /** Qa.Messages.Create */
+        post: operations["qa.messages.create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/qa/sessions/{session_id}/messages/{message_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Qa.Messages.Detail */
+        get: operations["qa.messages.detail"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/qa/sessions/{session_id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Qa.Sessions.Restore */
+        post: operations["qa.sessions.restore"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ask": {
         parameters: {
             query?: never;
@@ -268,6 +355,12 @@ export interface components {
          * @enum {string}
          */
         AdmissionDisposition: "admitted" | "quarantined" | "rejected";
+        /**
+         * AnswerQuestionOutcome
+         * @description The complete and closed set of terminal Q&A outcomes.
+         * @enum {string}
+         */
+        AnswerQuestionOutcome: "answered" | "clarification_required" | "abstained" | "denied" | "failed" | "cancelled";
         /** ApiCollectionEnvelope[DocumentProcessingHistoryResponse] */
         ApiCollectionEnvelope_DocumentProcessingHistoryResponse_: {
             /**
@@ -358,6 +451,66 @@ export interface components {
              */
             workspace_id: string;
         };
+        /** ApiCollectionEnvelope[QAMessageResponse] */
+        ApiCollectionEnvelope_QAMessageResponse_: {
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /** Items */
+            items: components["schemas"]["QAMessageResponse"][];
+            /** Limit */
+            limit: number;
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** ApiCollectionEnvelope[QASessionResponse] */
+        ApiCollectionEnvelope_QASessionResponse_: {
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /** Items */
+            items: components["schemas"]["QASessionResponse"][];
+            /** Limit */
+            limit: number;
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
         /** ApiCollectionEnvelope[RevisionSnapshot] */
         ApiCollectionEnvelope_RevisionSnapshot_: {
             /**
@@ -406,6 +559,78 @@ export interface components {
              */
             replay: boolean;
             result?: components["schemas"]["ProjectionRecoveryResponse"] | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            status: components["schemas"]["CommandStatus"];
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** ApiCommandResult[QAMessageResponse] */
+        ApiCommandResult_QAMessageResponse_: {
+            /**
+             * Command Id
+             * Format: uuid
+             */
+            command_id: string;
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Replay
+             * @default false
+             */
+            replay: boolean;
+            result?: components["schemas"]["QAMessageResponse"] | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            status: components["schemas"]["CommandStatus"];
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** ApiCommandResult[QASessionResponse] */
+        ApiCommandResult_QASessionResponse_: {
+            /**
+             * Command Id
+             * Format: uuid
+             */
+            command_id: string;
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Replay
+             * @default false
+             */
+            replay: boolean;
+            result?: components["schemas"]["QASessionResponse"] | null;
             /**
              * Schema Version
              * @default 1
@@ -477,6 +702,56 @@ export interface components {
         /** ApiResponseEnvelope[ProjectionStatusResponse] */
         ApiResponseEnvelope_ProjectionStatusResponse_: {
             data: components["schemas"]["ProjectionStatusResponse"];
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** ApiResponseEnvelope[QAMessageResponse] */
+        ApiResponseEnvelope_QAMessageResponse_: {
+            data: components["schemas"]["QAMessageResponse"];
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** ApiResponseEnvelope[QASessionResponse] */
+        ApiResponseEnvelope_QASessionResponse_: {
+            data: components["schemas"]["QASessionResponse"];
             /**
              * Environment Id
              * Format: uuid
@@ -651,6 +926,15 @@ export interface components {
          * @enum {string}
          */
         CommandStatus: "accepted" | "completed" | "failed" | "cancelled";
+        /** CreateQAMessageRequest */
+        CreateQAMessageRequest: {
+            /** Question */
+            question: string;
+            /** Run Id */
+            run_id?: string | null;
+        };
+        /** CreateQASessionRequest */
+        CreateQASessionRequest: Record<string, never>;
         /**
          * DocumentIdentitySnapshot
          * @description Protected source identity, absent from metadata-only responses.
@@ -1153,6 +1437,121 @@ export interface components {
             source_covered?: boolean | null;
             status: components["schemas"]["DocumentPublicationStatus"];
         };
+        /** QAMessageResponse */
+        QAMessageResponse: {
+            /** Answer */
+            answer: string | null;
+            /** Cancelled */
+            cancelled: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Disclosure Eligibility
+             * @enum {string}
+             */
+            disclosure_eligibility: "eligible" | "ineligible";
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Message Id
+             * Format: uuid
+             */
+            message_id: string;
+            /** Ordinal */
+            ordinal: number;
+            /** Question */
+            question: string | null;
+            /** Run Id */
+            run_id: string | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            state: components["schemas"]["QAMessageState"];
+            terminal_outcome: components["schemas"]["AnswerQuestionOutcome"] | null;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Version */
+            version: number;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /**
+         * QAMessageState
+         * @enum {string}
+         */
+        QAMessageState: "pending" | "running" | "terminal";
+        /** QASessionResponse */
+        QASessionResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            status: components["schemas"]["QASessionStatus"];
+            /**
+             * Subject Id
+             * Format: uuid
+             */
+            subject_id: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Version */
+            version: number;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /**
+         * QASessionStatus
+         * @enum {string}
+         */
+        QASessionStatus: "active" | "archived";
         /** ReadinessResponse */
         ReadinessResponse: {
             /**
@@ -1170,6 +1569,11 @@ export interface components {
              * @enum {string}
              */
             status: "ready" | "not_ready";
+        };
+        /** RestoreQASessionRequest */
+        RestoreQASessionRequest: {
+            /** Expected Version */
+            expected_version: number;
         };
         /**
          * Retryability
@@ -2345,6 +2749,763 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponseEnvelope_ProjectionStatusResponse_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "qa.sessions.list": {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiCollectionEnvelope_QASessionResponse_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "qa.sessions.create": {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateQASessionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiCommandResult_QASessionResponse_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "qa.sessions.detail": {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope_QASessionResponse_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "qa.messages.list": {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiCollectionEnvelope_QAMessageResponse_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "qa.messages.create": {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateQAMessageRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiCommandResult_QAMessageResponse_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "qa.messages.detail": {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                session_id: string;
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope_QAMessageResponse_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "qa.sessions.restore": {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RestoreQASessionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiCommandResult_QASessionResponse_"];
                 };
             };
             /** @description Safe request error. */

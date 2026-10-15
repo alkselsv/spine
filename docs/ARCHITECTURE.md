@@ -2267,6 +2267,9 @@ detectors без специальных обходов в platform core.
   application-owned idempotent document-ingestion seam across storage, source
   observation, admission, canonical acceptance, parsing, artifacts, ledger and
   content-free processing requests.
+- [ADR-032](adr/0032-versioned-qa-sessions-and-messages.md): PostgreSQL-canonical,
+  immutable and tenant-scoped Q&A session/message history with current disclosure
+  checks and no evidentiary authority.
 - ADR-TBD: artifact schemas и handoff evaluation protocol.
 - ADR-012: business outcome attribution и cost accounting.
 - ADR-013: future third-party Agent SDK, package trust и certification после появления подтверждённого внешнего кейса.

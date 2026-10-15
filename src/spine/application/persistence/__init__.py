@@ -150,6 +150,7 @@ from spine.application.persistence.unit_of_work import (
     UnitOfWork,
     UnitOfWorkFactory,
 )
+from spine.application.qa_sessions import QASessionRepository
 
 __all__ = [
     "ANSWER_QUESTION_RUN_OPERATION",
@@ -259,6 +260,7 @@ __all__ = [
     "TrustedPersistenceContext",
     "UnitOfWork",
     "UnitOfWorkFactory",
+    "QASessionRepository",
     "UnitOfWorkLifecycleError",
     "UnsupportedOutboxEventError",
     "UnsupportedDeliveryRouteError",

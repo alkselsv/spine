@@ -201,6 +201,7 @@ from spine.domain.capabilities.answer_question_runs import (
     AnswerQuestionRunState,
 )
 from spine.infrastructure.persistence.projection import InMemoryProjectionRepository
+from spine.infrastructure.persistence.qa_sessions import InMemoryQASessionRepository
 
 
 _ResultT = TypeVar("_ResultT")
@@ -331,6 +332,7 @@ class _Store:
         self.boundary_id_factory = boundary_id_factory
         self.boundary_clock = boundary_clock
         self.outbox_deliveries: dict[UUID, OutboxDelivery] = {}
+        self.qa_sessions = InMemoryQASessionRepository()
 
     @property
     def workspaces(self) -> dict[UUID, Workspace]:
@@ -3268,6 +3270,7 @@ class InMemoryUnitOfWork:
         self._context_profiles = _ContextProfileRepository(self)
         self._context_bundles = _ContextBundleRepository(self)
         self._answer_question_runs = _AnswerQuestionRunRepository(self)
+        self._qa_sessions = store.qa_sessions
         self._idempotency = _IdempotencyRepository(self)
         self._outbox = _OutboxWriter(self)
         self._sources = _SourceObservationRepository(self)
@@ -3302,6 +3305,11 @@ class InMemoryUnitOfWork:
     def answer_question_runs(self) -> _AnswerQuestionRunRepository:
         self._guard_active()
         return self._answer_question_runs
+
+    @property
+    def qa_sessions(self) -> InMemoryQASessionRepository:
+        self._guard_active()
+        return self._qa_sessions
 
     @property
     def idempotency(self) -> _IdempotencyRepository:

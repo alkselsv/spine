@@ -221,6 +221,18 @@ One bounded generation and validation attempt using exactly one pinned Projectio
 Snapshot, Canonical Boundary and Context Bundle.
 _Avoid_: Q&A run, retry loop, mixed-snapshot answer
 
+**Q&A Session**:
+A bounded navigation context for one subject's questions and answers. Session
+history supports continuity and review but does not authorize access or ground a
+future Answer Claim.
+_Avoid_: Conversation, agent memory, evidence scope
+
+**Q&A Message**:
+An immutable, versioned question-and-answer turn in a Q&A Session, linked to its
+trace and optional execution run. Protected question and answer content is
+disclosed only after a current authorization check.
+_Avoid_: Chat message, transcript, mutable answer record
+
 **Disclosure Dependency**:
 A protected source whose content reached generation, directly or through content
 carried from an earlier attempt, and therefore constrains later answer disclosure.
