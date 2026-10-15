@@ -1,5 +1,11 @@
 """Offline, handoff, regression, and deployment evaluations."""
 
+from spine.evaluations.evidence_lineage import (
+    EVIDENCE_LINEAGE_EVALUATOR_VERSION,
+    EvidenceLineageEvaluationReport,
+    evaluate_evidence_lineage_outcomes,
+)
+
 from spine.evaluations.retrieval_metrics import (
     MRR_EVALUATOR_KEY,
     RECALL_AT_K_EVALUATOR_KEY,
@@ -28,6 +34,9 @@ from spine.evaluations.citation_metrics import (
 )
 
 __all__ = [
+    "EVIDENCE_LINEAGE_EVALUATOR_VERSION",
+    "EvidenceLineageEvaluationReport",
+    "evaluate_evidence_lineage_outcomes",
     "MRR_EVALUATOR_KEY",
     "RECALL_AT_K_EVALUATOR_KEY",
     "RETRIEVAL_METRICS_EVALUATOR_VERSION",
