@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-import hashlib
-import json
 from types import TracebackType
 from typing import Protocol
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -32,6 +30,7 @@ from spine.application.projection_result_mapping import (
     ProjectionMappingResult,
     ProjectionResultMappingBridge,
 )
+from spine.application.projection_locator import canonical_projection_locator_digest
 from spine.domain.projections import (
     OntologyVersion,
     ProjectionConfigVersion,
@@ -170,8 +169,8 @@ class ParsedArtifactCanonicalProjectionLocatorResolver:
                         segment_id=f"segment-{segment.segment_id.hex}",
                         locator_schema_version=receipt.locator_contract_version,
                         locator=stable,
-                        locator_digest=_locator_digest(
-                            locator_schema_version=receipt.locator_contract_version,
+                        locator_digest=canonical_projection_locator_digest(
+                            locator_contract_version=receipt.locator_contract_version,
                             locator=stable,
                         ),
                     )
@@ -215,17 +214,6 @@ def _stable_locator(locator: Locator) -> StableLocator:
             ),
         )
     raise ProjectionMappingError("canonical parsed locator kind is unsupported")
-
-
-def _locator_digest(*, locator_schema_version: str, locator: StableLocator) -> str:
-    payload = {
-        "schema_version": "canonical-projection-locator:v1",
-        "locator_schema_version": locator_schema_version,
-        "locator": locator.model_dump(mode="json"),
-    }
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
 
 
 class CanonicalProjectionGatewayUnitOfWork(Protocol):

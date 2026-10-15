@@ -1,0 +1,39 @@
+{
+  "dataset_id": "evidence-lineage-synthetic",
+  "version": "1.0.0",
+  "schema_version": "evidence-lineage-eval:v1",
+  "retrieval_contract_version": "structured-retrieval:v1",
+  "parser_version": "not-applicable",
+  "validation_policy_version": "evidence-lineage:v1",
+  "locator_contract_version": "locator:v1",
+  "context_profile_version": "not-applicable",
+  "projection_config_version": "config:v1",
+  "model_version": "not-applicable",
+  "prompt_version": "not-applicable",
+  "assumptions": [
+    "All fixtures are synthetic and contain no customer or production data.",
+    "Canonical repository and authorization responses are deterministic in-memory fakes.",
+    "Expected outcomes derive from issue 265 lineage and contributor-authorization rules; protected markers are synthetic values that rejection output must not disclose.",
+    "This gate evaluates lineage decisions and disclosure safety, not physical provider qualification."
+  ],
+  "cases": [
+    {
+      "case_id": "authorized-single-source",
+      "expected_status": "verified",
+      "expected_reason_code": "verified",
+      "protected_markers": []
+    },
+    {
+      "case_id": "forged-evidence-digest",
+      "expected_status": "rejected",
+      "expected_reason_code": "evidence_unverified",
+      "protected_markers": ["Synthetic authorized evidence", "evidence-1"]
+    },
+    {
+      "case_id": "mixed-access-derived-entity",
+      "expected_status": "rejected",
+      "expected_reason_code": "authorization_denied",
+      "protected_markers": ["evidence-2", "Synthetic customer"]
+    }
+  ]
+}
