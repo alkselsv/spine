@@ -897,6 +897,43 @@ projection_drifts = Table(
     Column("detected_at", DateTime(timezone=True), nullable=False),
 )
 
+qa_session_versions = Table(
+    "qa_session_versions",
+    metadata,
+    Column("session_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("subject_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint("workspace_id", "environment_id", "session_id", "version", name="pk_qa_session_versions"),
+)
+
+qa_message_versions = Table(
+    "qa_message_versions",
+    metadata,
+    Column("message_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("session_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("ordinal", Integer, nullable=False),
+    Column("trace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("run_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("question", Text, nullable=False),
+    Column("answer", Text, nullable=True),
+    Column("state", Text, nullable=False),
+    Column("terminal_outcome", Text, nullable=True),
+    Column("cancelled", Boolean, nullable=False),
+    Column("disclosure_dependency_ids", JSONB, nullable=False),
+    Column("disclosure_eligibility", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint("workspace_id", "environment_id", "message_id", "version", name="pk_qa_message_versions"),
+)
+
 __all__ = [
     "access_policy_grants",
     "access_policy_versions",
@@ -948,4 +985,6 @@ __all__ = [
     "projection_activations",
     "active_projections",
     "projection_drifts",
+    "qa_session_versions",
+    "qa_message_versions",
 ]

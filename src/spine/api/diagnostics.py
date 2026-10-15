@@ -278,6 +278,12 @@ def _status_for_structured_error(error: StructuredError) -> int:
         return 404
     if error.code == "spine.documents.not_found":
         return 404
+    if error.code in {"spine.qa_sessions.not_found", "spine.qa_sessions.message_not_found"}:
+        return 404
+    if error.code == "spine.qa_sessions.conflict":
+        return 409
+    if error.code == "spine.qa_sessions.invalid_request":
+        return 400
     if error.code == "spine.ingestion.invalid_request":
         return 400
     if error.code == "spine.projection.invalid_request":

@@ -282,6 +282,9 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     active_projections as _ACTIVE_PROJECTIONS,
     projection_drifts as _PROJECTION_DRIFTS,
 )
+from spine.infrastructure.persistence.postgresql_qa_sessions import (
+    PostgreSQLQASessionRepository,
+)
 
 _BIND_CONTEXT = text(
     "SELECT "
@@ -5465,6 +5468,7 @@ class PostgreSQLTenantUnitOfWork:
         self._context_profiles = _PostgreSQLContextProfileRepository(self)
         self._context_bundles = _PostgreSQLContextBundleRepository(self)
         self._answer_question_runs = _PostgreSQLAnswerQuestionRunRepository(self)
+        self._qa_sessions = PostgreSQLQASessionRepository(self)
         self._sources = _PostgreSQLSourceObservationRepository(self)
         self._canonical = _PostgreSQLCanonicalAcceptanceRepository(self)
         self._boundaries = _PostgreSQLCanonicalBoundaryRepository(self)
@@ -5510,6 +5514,11 @@ class PostgreSQLTenantUnitOfWork:
     def answer_question_runs(self) -> _PostgreSQLAnswerQuestionRunRepository:
         self._guard_active()
         return self._answer_question_runs
+
+    @property
+    def qa_sessions(self) -> PostgreSQLQASessionRepository:
+        self._guard_active()
+        return self._qa_sessions
 
     @property
     def sources(self) -> _PostgreSQLSourceObservationRepository:

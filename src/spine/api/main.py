@@ -27,6 +27,7 @@ from spine.api.ingestion import install_ingestion_routes
 from spine.api.ingestion_history import install_ingestion_history_routes
 from spine.api.documents import install_document_query_routes
 from spine.api.projection_control import install_projection_control_routes
+from spine.api.qa_sessions import install_qa_session_routes
 from spine.api.authorization import (
     ApiAuthorizationReadiness,
     ApiAuthorizationRuntime,
@@ -50,6 +51,7 @@ from spine.application.projection_control import (
     ProjectionRecoveryCommandService,
     ProjectionStatusService,
 )
+from spine.application.qa_sessions import QASessionService
 from spine.config import settings
 from spine.ingest.loaders import documents_to_remember_payloads, load_path
 from spine.infrastructure.diagnostics import JsonLoggingDiagnosticSink
@@ -184,6 +186,8 @@ def create_app(
     health_readiness_timeout_seconds: float = 0.25,
     projection_status_service: ProjectionStatusService | None = None,
     projection_recovery_service: ProjectionRecoveryCommandService | None = None,
+    qa_session_service: QASessionService | None = None,
+    qa_session_cursor_secret: bytes | None = None,
 ) -> FastAPI:
     """Compose the HTTP API with injectable deterministic diagnostics."""
 
@@ -322,6 +326,16 @@ def create_app(
             application,
             service=document_query_service,
             cursor_secret=document_query_cursor_secret,
+        )
+    if qa_session_service is not None:
+        if type(authorization_runtime) is not ApiAuthorizationRuntime:
+            raise RuntimeError("Q&A session routes require an authorization runtime.")
+        if qa_session_cursor_secret is None:
+            raise RuntimeError("Q&A session routes require a cursor secret.")
+        install_qa_session_routes(
+            application,
+            service=qa_session_service,
+            cursor_secret=qa_session_cursor_secret,
         )
     return application
 
