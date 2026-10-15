@@ -21,6 +21,7 @@ from spine.agents.runtime import (
     EventSink,
     TrustedExecutionIdentity,
     TrustedExecutionIdentitySnapshot,
+    digest_agent_invocation,
     invocation_context_from_invocation,
     agent_result_from_response,
     typed_request_from_invocation,
@@ -103,6 +104,31 @@ def test_runtime_context_has_a_data_only_serialization_boundary() -> None:
     assert copied.workspace_id == execution_context.workspace_id
     with pytest.raises(ValidationError):
         AgentExecutionContext.model_validate(serialized)
+
+
+def test_execution_configuration_digest_is_server_only_command_identity() -> None:
+    base = AgentInvocation(
+        work_item_id=uid(30),
+        step_run_id=uid(32),
+        capability="answer_question",
+        acting_on_behalf_of=ActorRef(kind=ActorKind.HUMAN, id=uid(3)),
+        idempotency_key="qa:30:1",
+        execution_configuration_digest="1" * 64,
+    )
+    same = base.model_copy()
+    changed = base.model_copy(update={"execution_configuration_digest": "2" * 64})
+
+    def digest(invocation: AgentInvocation) -> str:
+        return digest_agent_invocation(
+            context=context(),
+            invocation=invocation,
+            validated_input=InputModel(question="q"),
+        ).value
+
+    assert digest(base) == digest(same)
+    assert digest(base) != digest(changed)
+    assert "execution_configuration_digest" not in base.model_dump()
+    assert "execution_configuration_digest" not in json.loads(base.model_dump_json())
 
 
 def test_schema_identity_must_match_capability_but_unknown_versions_remain_structural() -> None:

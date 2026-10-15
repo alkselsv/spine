@@ -31,6 +31,11 @@ class AgentInvocation(SpineModel):
     input_artifact_ids: tuple[UUID, ...] = ()
     context_request: dict[str, Any] = Field(default_factory=dict)
     constraints: dict[str, Any] = Field(default_factory=dict)
+    execution_configuration_digest: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+        exclude=True,
+    )
     idempotency_key: str
     retry_safety: AgentRetrySafety = AgentRetrySafety.NEVER
 
