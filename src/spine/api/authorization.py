@@ -19,7 +19,7 @@ from starlette.routing import Mount
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from spine.api.diagnostics import get_diagnostic_context
-from spine.application.diagnostics import DiagnosticContext
+from spine.application.diagnostics import DiagnosticContext, StructuredError
 from spine.auth import (
     AccessTokenCredential,
     AuthorizationDeniedError,
@@ -56,6 +56,17 @@ _PROTECTED_OPENAPI = {
             "schema": {"type": "string", "format": "uuid"},
         },
     ],
+}
+_PROTECTED_ERROR_RESPONSES = {
+    400: {"model": StructuredError, "description": "Safe request error."},
+    401: {"model": StructuredError, "description": "Authentication is invalid."},
+    403: {"model": StructuredError, "description": "Authorization is denied."},
+    404: {"model": StructuredError, "description": "Resource is unavailable."},
+    409: {"model": StructuredError, "description": "Command conflict."},
+    413: {"model": StructuredError, "description": "Request payload is too large."},
+    422: {"model": StructuredError, "description": "Request validation failed."},
+    500: {"model": StructuredError, "description": "Unexpected internal error."},
+    503: {"model": StructuredError, "description": "Dependency is unavailable."},
 }
 
 
@@ -312,6 +323,7 @@ def add_protected_api_route(
     bound = runtime.register_and_bind(route_id, policy)
     before = {id(route) for route in application.routes}
     caller_openapi = route_options.pop("openapi_extra", None)
+    caller_responses = route_options.pop("responses", None)
     openapi_extra = dict(caller_openapi or {})
     openapi_extra["security"] = _PROTECTED_OPENAPI["security"]
     openapi_extra["parameters"] = [
@@ -319,6 +331,9 @@ def add_protected_api_route(
         *_PROTECTED_OPENAPI["parameters"],
     ]
     route_options.setdefault("operation_id", route_id)
+    responses = dict(_PROTECTED_ERROR_RESPONSES)
+    responses.update(caller_responses or {})
+    route_options["responses"] = responses
     override_provider = application.router.dependency_overrides_provider
     application.router.dependency_overrides_provider = (
         _ProtectedDependencyOverrideProvider(override_provider)

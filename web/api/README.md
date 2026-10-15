@@ -14,6 +14,15 @@ Bearer security, and required UUID headers named `X-Workspace-ID` and
 required inputs and apply the bearer credential through its authentication
 configuration; identity, roles and route policy are never request fields.
 
+New R1 collection and mutation routes use the shared transport contracts in
+`spine.api.schemas`: immutable schema-version-one envelopes carry the trusted
+workspace/environment scope and trace ID; collection pages use a bounded limit
+and opaque HMAC-signed cursors bound to the operation, filters and scope; and
+mutations use one bounded `Idempotency-Key` with a typed command ID, lifecycle
+status and replay flag. Cursor or key failures are mapped by each route to its
+existing safe structured validation error. Legacy upload and health responses
+remain compatibility contracts and are not wrapped retroactively.
+
 The backend compatibility test in `tests/api/test_authorization.py` verifies
 these generator-facing OpenAPI fields. `web/src/api/client.ts` creates the typed
 client with an injected credential and immutable Workspace/Environment scope;

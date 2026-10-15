@@ -802,6 +802,12 @@ def test_protected_route_openapi_declares_bearer_and_required_scope_headers() ->
     operation = schema["paths"]["/api/v1/test/authorization"]["get"]
     assert operation["operationId"] == ROUTE_ID
     assert operation["security"] == [{"BearerAuth": []}]
+    assert operation["responses"]["400"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/StructuredError"
+    }
+    assert operation["responses"]["409"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/StructuredError"
+    }
     assert [
         {
             "name": parameter["name"],

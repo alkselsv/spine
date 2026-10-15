@@ -18,6 +18,7 @@ from starlette.datastructures import Headers, MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from spine.api.schemas import InvalidCursor
 from spine.application.diagnostics import (
     DiagnosticContext,
     DiagnosticEventRegistry,
@@ -209,6 +210,20 @@ def install_diagnostic_exception_handlers(
             headers=_headers_for_structured_error(error),
         )
 
+    async def handle_invalid_cursor(request: Request, failure: InvalidCursor) -> Response:
+        if not _is_versioned_api_path(request.url.path):
+            raise failure
+        error = StructuredError(
+            code="spine.request.invalid_cursor",
+            safe_message="The cursor is invalid.",
+            retryability=Retryability.NEVER,
+            trace_id=_read_diagnostic_context(request).trace_id,
+        )
+        return JSONResponse(
+            status_code=400,
+            content=error.model_dump(mode="json"),
+        )
+
     async def handle_http(
         request: Request,
         failure: StarletteHTTPException,
@@ -228,6 +243,7 @@ def install_diagnostic_exception_handlers(
 
     application.add_exception_handler(RequestValidationError, handle_validation)
     application.add_exception_handler(StarletteHTTPException, handle_http)
+    application.add_exception_handler(InvalidCursor, handle_invalid_cursor)
     for exception_type in error_registry.exception_types:
         application.add_exception_handler(exception_type, handle_registered)
 

@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from spine.api.main import create_app, get_diagnostic_context
 from spine.api import main as api_main
+from spine.api.schemas import InvalidCursor
 from spine.application.diagnostics import DiagnosticContext, DiagnosticEventRegistry
 from spine.application.persistence import PersistenceUnavailableError
 from spine.infrastructure.diagnostics import (
@@ -62,6 +63,10 @@ def diagnostic_app(
     @application.get("/api/v1/unexpected-failure")
     async def unexpected_failure() -> None:
         raise RuntimeError("SELECT password FROM credentials")
+
+    @application.get("/api/v1/invalid-cursor")
+    async def invalid_cursor() -> None:
+        raise InvalidCursor("protected cursor payload")
 
     return application, sink
 
@@ -204,6 +209,24 @@ async def test_unexpected_api_failure_is_generic_and_keeps_request_trace() -> No
         "trace_id": str(FALLBACK_TRACE_ID),
     }
     assert "password" not in response.text
+
+
+async def test_invalid_cursor_uses_safe_structured_400_without_cursor_details() -> None:
+    application, _ = diagnostic_app()
+    transport = httpx.ASGITransport(app=application)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/v1/invalid-cursor")
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "schema_version": 1,
+        "code": "spine.request.invalid_cursor",
+        "safe_message": "The cursor is invalid.",
+        "retryability": "never",
+        "trace_id": str(FALLBACK_TRACE_ID),
+    }
+    assert "protected cursor payload" not in response.text
 
 
 async def test_request_diagnostic_contains_only_safe_status_metadata() -> None:
