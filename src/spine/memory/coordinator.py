@@ -558,6 +558,12 @@ class ProjectionCoordinator(ContextProjection):
             and not self._namespace_router.is_ordinary_retrieval(command.physical_namespace)
         ):
             return ProjectionFailureCode.NAMESPACE_UNAVAILABLE
+        if (
+            command.operation.value == "retrieve"
+            and command.read_context is not None
+            and not command.read_context.source_isolation_pre_retrieval_enforced
+        ):
+            return ProjectionFailureCode.SOURCE_ISOLATION_UNPROVEN
         return None
 
     @staticmethod
@@ -615,6 +621,9 @@ class ProjectionCoordinator(ContextProjection):
             ProjectionFailureCode.INCOMPLETE_EVIDENCE: ProjectionOutcome.INCOMPLETE,
             ProjectionFailureCode.NAMESPACE_UNAVAILABLE: ProjectionOutcome.FAILED,
             ProjectionFailureCode.PHYSICAL_FAILURE: ProjectionOutcome.FAILED,
+            ProjectionFailureCode.SOURCE_ISOLATION_UNPROVEN: ProjectionOutcome.FAILED,
+            ProjectionFailureCode.PARTIAL_FAILURE: ProjectionOutcome.PARTIAL,
+            ProjectionFailureCode.CANCELLED: ProjectionOutcome.CANCELLED,
         }[code]
 
     @staticmethod
@@ -630,6 +639,7 @@ class ProjectionCoordinator(ContextProjection):
                 ProjectionFailureCode.MISSING_EVIDENCE,
                 ProjectionFailureCode.NAMESPACE_UNAVAILABLE,
                 ProjectionFailureCode.PHYSICAL_FAILURE,
+                ProjectionFailureCode.SOURCE_ISOLATION_UNPROVEN,
             },
             safe_detail=ProjectionDiagnostic(namespace_digest=namespace_digest),
         )

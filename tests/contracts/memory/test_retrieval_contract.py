@@ -7,6 +7,7 @@ from spine.memory.contracts import (
     ProjectionFailureCode,
     ProjectionOutcome,
     ProjectionRelation,
+    RetrievalScore,
 )
 
 from .adapter import ContextProjectionFactory
@@ -41,6 +42,37 @@ async def test_retrieval_is_structured_and_never_requires_a_completion_string(
     assert result.chunks[0].text == "answer evidence"
     assert result.relations[0].kind == "owns"
     assert result.evidence[0].evidence_id == reference.evidence_id
+
+
+async def test_retrieval_score_is_optional_and_round_trips_when_provider_supplies_it(
+    context_projection_factory: ContextProjectionFactory,
+) -> None:
+    adapter = context_projection_factory()
+    reference = evidence()
+    adapter.seed_retrieval(
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        chunks=(
+            ProjectionChunk(
+                chunk_id="scored",
+                text="scored evidence",
+                evidence=(reference,),
+                score=RetrievalScore(
+                    value=0.75,
+                    metric="cosine",
+                    direction="higher_is_better",
+                    provider_contract_version="fake:v1",
+                ),
+            ),
+        ),
+    )
+
+    result = await adapter.projection.retrieve(
+        retrieve_command(identity="score", digest="8" * 64)
+    )
+
+    assert result.chunks[0].score is not None
+    assert result.chunks[0].score.value == 0.75
 
 
 @pytest.mark.parametrize(
