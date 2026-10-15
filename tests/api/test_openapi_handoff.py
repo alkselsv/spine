@@ -25,6 +25,9 @@ def test_generation_export_matches_backend_openapi_document(tmp_path: Path) -> N
     assert document == create_openapi_app().openapi()
     assert "/api/v1/documents/batches" in document["paths"]
     assert "/api/v1/documents/processing-history" in document["paths"]
+    assert "/api/v1/documents" in document["paths"]
+    assert "/api/v1/documents/{source_object_id}" in document["paths"]
+    assert "/api/v1/documents/{source_object_id}/revisions" in document["paths"]
     assert "/api/v1/ingestion/runs" in document["paths"]
     assert "/api/v1/ingestion/runs/{run_id}" in document["paths"]
     assert "/api/v1/projections/{projection_kind}/status" in document["paths"]
@@ -34,6 +37,9 @@ def test_generation_export_matches_backend_openapi_document(tmp_path: Path) -> N
     recovery_operation = document["paths"]["/api/v1/projections/{projection_kind}/recovery"]["post"]
     assert status_operation["operationId"] == "projection.status"
     assert recovery_operation["operationId"] == "projection.recovery"
+    assert document["paths"]["/api/v1/documents"]["get"]["operationId"] == "documents.list"
+    assert document["paths"]["/api/v1/documents/{source_object_id}"]["get"]["operationId"] == "documents.detail"
+    assert document["paths"]["/api/v1/documents/{source_object_id}/revisions"]["get"]["operationId"] == "documents.revisions"
     assert any(
         parameter["name"] == "Idempotency-Key"
         and parameter["in"] == "header"

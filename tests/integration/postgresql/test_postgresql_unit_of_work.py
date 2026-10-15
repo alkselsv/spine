@@ -138,6 +138,7 @@ from tests.contracts.persistence.test_source_observation_contract import (
     test_source_observation_reuses_revision_for_new_provenance as contract_source_observation_revision_reuse,
     test_content_reappearance_requires_tombstone_predecessor as contract_source_content_reappearance_rejected,
     test_tombstone_reappearance_requires_tombstone_predecessor as contract_source_reappearance,
+    test_source_queries_are_bounded_ordered_and_tenant_isolated as contract_source_queries,
 )
 from tests.contracts.persistence.test_canonical_acceptance_contract import (
     _activate_policy as activate_canonical_policy,
@@ -753,6 +754,7 @@ async def test_postgresql_adapter_satisfies_outbox_contract(
         contract_source_metadata_change,
         contract_source_reappearance,
         contract_source_content_reappearance_rejected,
+        contract_source_queries,
         contract_source_observation_rollback,
     ),
     ids=lambda contract: contract.__name__.removeprefix("test_"),

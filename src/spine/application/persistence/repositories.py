@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
@@ -152,11 +153,27 @@ class SourceObservationCommand:
 class SourceObservationRepository(Protocol):
     async def resolve_source(self, source_object_id: UUID) -> SourceObject | None: ...
 
+    async def list_sources(
+        self, *, limit: int, after: tuple[datetime, UUID] | None = None
+    ) -> tuple[SourceObject, ...]: ...
+
     async def resolve_or_create_source(self, source: SourceObject) -> SourceObject: ...
 
     async def record_observation(self, command: SourceObservationCommand) -> SourceObservationResult: ...
 
     async def resolve_revision(self, revision_id: UUID) -> SourceRevision | None: ...
+
+    async def list_revisions(
+        self,
+        source_object_id: UUID,
+        *,
+        limit: int,
+        after: tuple[datetime, UUID] | None = None,
+    ) -> tuple[SourceRevision, ...]: ...
+
+    async def list_provenance(
+        self, revision_id: UUID
+    ) -> tuple[SourceRevisionProvenance, ...]: ...
 
     async def resolve_receipt_associations(
         self, revision_id: UUID

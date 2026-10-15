@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, ForeignKeyConstraint
 from sqlalchemy import Integer, String, Table, Text, text
-from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
+from sqlalchemy.dialects.postgresql import ARRAY, UUID as PostgreSQLUUID
 
 from spine.infrastructure.persistence.postgresql_mappings import metadata
 
@@ -109,6 +109,12 @@ environment_memberships = Table(
     ),
     Column("version", Integer, nullable=False),
     Column("status", String(16), nullable=False),
+    Column(
+        "effective_team_ids",
+        ARRAY(PostgreSQLUUID(as_uuid=True)),
+        nullable=False,
+        server_default=text("'{}'::uuid[]"),
+    ),
     Column("change_id", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("recorded_by", Text, nullable=False),
     Column(

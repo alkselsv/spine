@@ -13,7 +13,7 @@ from types import TracebackType
 from typing import Any, NoReturn
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from sqlalchemy import Table, func, insert, null, or_, select, text, true, update
+from sqlalchemy import Table, and_, func, insert, null, or_, select, text, true, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 
 from spine.application.diagnostics.audit import (
@@ -982,6 +982,40 @@ class _PostgreSQLSourceObservationRepository:
         ).mappings().one_or_none()
         return SourceObject.model_validate(dict(row)) if row is not None else None
 
+    async def list_sources(
+        self, *, limit: int, after: tuple[datetime, UUID] | None = None
+    ) -> tuple[SourceObject, ...]:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return ()
+        predicates = [
+            _SOURCE_OBJECTS.c.workspace_id == scope.workspace_id,
+            _SOURCE_OBJECTS.c.environment_id == scope.environment_id,
+        ]
+        if after is not None:
+            predicates.append(
+                or_(
+                    _SOURCE_OBJECTS.c.created_at < after[0],
+                    and_(
+                        _SOURCE_OBJECTS.c.created_at == after[0],
+                        _SOURCE_OBJECTS.c.source_object_id < after[1],
+                    ),
+                )
+            )
+        rows = (
+            await self._uow._execute(
+                select(_SOURCE_OBJECTS)
+                .where(*predicates)
+                .order_by(
+                    _SOURCE_OBJECTS.c.created_at.desc(),
+                    _SOURCE_OBJECTS.c.source_object_id.desc(),
+                )
+                .limit(limit)
+            )
+        ).mappings().all()
+        return tuple(SourceObject.model_validate(dict(row)) for row in rows)
+
     async def resolve_or_create_source(self, source: SourceObject) -> SourceObject:
         self._uow._guard_active()
         self._check_scope(source.workspace_id, source.environment_id)
@@ -1196,6 +1230,70 @@ class _PostgreSQLSourceObservationRepository:
         row = (await self._uow._execute(select(_SOURCE_REVISIONS).where(_SOURCE_REVISIONS.c.revision_id == revision_id, _SOURCE_REVISIONS.c.workspace_id == scope.workspace_id, _SOURCE_REVISIONS.c.environment_id == scope.environment_id))).mappings().one_or_none()
         return self._revision_from_row(row) if row is not None else None
 
+    async def list_revisions(
+        self,
+        source_object_id: UUID,
+        *,
+        limit: int,
+        after: tuple[datetime, UUID] | None = None,
+    ) -> tuple[SourceRevision, ...]:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return ()
+        predicates = [
+            _SOURCE_REVISIONS.c.source_object_id == source_object_id,
+            _SOURCE_REVISIONS.c.workspace_id == scope.workspace_id,
+            _SOURCE_REVISIONS.c.environment_id == scope.environment_id,
+        ]
+        if after is not None:
+            predicates.append(
+                or_(
+                    _SOURCE_REVISIONS.c.observed_at < after[0],
+                    and_(
+                        _SOURCE_REVISIONS.c.observed_at == after[0],
+                        _SOURCE_REVISIONS.c.revision_id < after[1],
+                    ),
+                )
+            )
+        rows = (
+            await self._uow._execute(
+                select(_SOURCE_REVISIONS)
+                .where(*predicates)
+                .order_by(
+                    _SOURCE_REVISIONS.c.observed_at.desc(),
+                    _SOURCE_REVISIONS.c.revision_id.desc(),
+                )
+                .limit(limit)
+            )
+        ).mappings().all()
+        return tuple(self._revision_from_row(row) for row in rows)
+
+    async def list_provenance(
+        self, revision_id: UUID
+    ) -> tuple[SourceRevisionProvenance, ...]:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return ()
+        rows = (
+            await self._uow._execute(
+                select(_SOURCE_PROVENANCE)
+                .where(
+                    _SOURCE_PROVENANCE.c.revision_id == revision_id,
+                    _SOURCE_PROVENANCE.c.workspace_id == scope.workspace_id,
+                    _SOURCE_PROVENANCE.c.environment_id == scope.environment_id,
+                )
+                .order_by(
+                    _SOURCE_PROVENANCE.c.observed_at.desc(),
+                    _SOURCE_PROVENANCE.c.provenance_id.desc(),
+                )
+            )
+        ).mappings().all()
+        return tuple(
+            SourceRevisionProvenance.model_validate(dict(row)) for row in rows
+        )
+
     async def resolve_receipt_associations(
         self, revision_id: UUID
     ) -> tuple[SourceRevisionReceiptAssociation, ...]:
@@ -1362,6 +1460,26 @@ class _PostgreSQLCanonicalAcceptanceRepository:
             )
         ).mappings().one_or_none()
         return self._acceptance(row) if row is not None else None
+
+    async def list_acceptances(
+        self, source_object_id: UUID
+    ) -> tuple[CanonicalAcceptance, ...]:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return ()
+        rows = (
+            await self._uow._execute(
+                select(_CANONICAL_ACCEPTANCES)
+                .where(
+                    _CANONICAL_ACCEPTANCES.c.source_object_id == source_object_id,
+                    _CANONICAL_ACCEPTANCES.c.workspace_id == scope.workspace_id,
+                    _CANONICAL_ACCEPTANCES.c.environment_id == scope.environment_id,
+                )
+                .order_by(_CANONICAL_ACCEPTANCES.c.accepted_generation)
+            )
+        ).mappings().all()
+        return tuple(self._acceptance(row) for row in rows)
 
     async def _replay(
         self,
@@ -2678,6 +2796,27 @@ class _PostgreSQLIngestionRepository:
             )
         ).mappings().one_or_none()
         return self._binding_from_row(row) if row is not None else None
+
+    async def list_bindings_for_source_revision(
+        self, source_object_id: UUID, source_revision_id: UUID
+    ) -> tuple[IngestionRunSourceBinding, ...]:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return ()
+        rows = (
+            await self._uow._execute(
+                select(_INGESTION_BINDINGS)
+                .where(
+                    _INGESTION_BINDINGS.c.source_object_id == source_object_id,
+                    _INGESTION_BINDINGS.c.source_revision_id == source_revision_id,
+                    _INGESTION_BINDINGS.c.workspace_id == scope.workspace_id,
+                    _INGESTION_BINDINGS.c.environment_id == scope.environment_id,
+                )
+                .order_by(_INGESTION_BINDINGS.c.binding_id)
+            )
+        ).mappings().all()
+        return tuple(self._binding_from_row(row) for row in rows)
 
     async def resolve_run_head(self, run_id: UUID) -> IngestionTransition | None:
         self._uow._guard_active()

@@ -42,6 +42,7 @@ from spine.application.projection_control import (
     InvalidProjectionControlRequest,
     ProjectionControlServiceUnavailable,
 )
+from spine.application.document_queries import DocumentNotFound
 from spine.auth.errors import (
     AuthenticationUnavailableError,
     AuthorizationDeniedError,
@@ -89,6 +90,7 @@ _SAFE_MESSAGE_BY_CODE = MappingProxyType({
     "spine.ingestion.not_found": "The ingestion run was not found.",
     "spine.projection.invalid_request": "The projection request is invalid.",
     "spine.projection.unavailable": "Projection control is temporarily unavailable.",
+    "spine.documents.not_found": "The document was not found.",
 })
 
 
@@ -308,6 +310,7 @@ def build_default_error_registry() -> StructuredErrorRegistry:
         (IngestionRunNotFound, "spine.ingestion.not_found", "The ingestion run was not found.", Retryability.NEVER),
         (InvalidProjectionControlRequest, "spine.projection.invalid_request", "The projection request is invalid.", Retryability.NEVER),
         (ProjectionControlServiceUnavailable, "spine.projection.unavailable", "Projection control is temporarily unavailable.", Retryability.AFTER_DELAY),
+        (DocumentNotFound, "spine.documents.not_found", "The document was not found.", Retryability.NEVER),
     )
     for exception_type, code, safe_message, retryability in mappings:
         registry.register(exception_type, code, safe_message, retryability)

@@ -169,6 +169,7 @@ def test_authorized_request_context_has_closed_shape() -> None:
         "scope",
         "roles",
         "authorization_generation",
+            "effective_team_ids",
         "authentication_configuration_version",
         "route_policy",
         "diagnostic_context",

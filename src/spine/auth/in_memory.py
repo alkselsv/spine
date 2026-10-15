@@ -190,6 +190,7 @@ class InMemoryAuthorizationSnapshotRepository:
             environment_id=requested_scope.environment_id,
             roles=frozenset({AuthorizationRole.ADMINISTRATOR}),
             authorization_generation=generation.generation,
+            effective_team_ids=environment_membership.effective_team_ids,
         )
 
 

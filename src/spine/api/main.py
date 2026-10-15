@@ -25,6 +25,7 @@ from spine.api.health import (
 from spine.api.batch_ingestion import install_batch_ingestion_routes
 from spine.api.ingestion import install_ingestion_routes
 from spine.api.ingestion_history import install_ingestion_history_routes
+from spine.api.documents import install_document_query_routes
 from spine.api.projection_control import install_projection_control_routes
 from spine.api.authorization import (
     ApiAuthorizationReadiness,
@@ -43,6 +44,7 @@ from spine.application.diagnostics import (
 from spine.application.ingestion_api import DocumentIngestionService
 from spine.application.batch_ingestion_api import BatchDocumentIngestionService
 from spine.application.ingestion_history import IngestionHistoryService
+from spine.application.document_queries import DocumentQueryService
 from spine.application.health_summary import HealthStatusServices
 from spine.application.projection_control import (
     ProjectionRecoveryCommandService,
@@ -170,6 +172,8 @@ def create_app(
     batch_document_ingestion_service: BatchDocumentIngestionService | None = None,
     ingestion_history_service: IngestionHistoryService | None = None,
     ingestion_history_cursor_secret: bytes | None = None,
+    document_query_service: DocumentQueryService | None = None,
+    document_query_cursor_secret: bytes | None = None,
     max_upload_bytes: int = 10_000_000,
     max_batch_files: int = 20,
     max_batch_file_bytes: int = 10_000_000,
@@ -221,6 +225,7 @@ def create_app(
         batch_document_ingestion_service
     )
     application.state.ingestion_history_service = ingestion_history_service
+    application.state.document_query_service = document_query_service
     application.state.health_readiness_timeout_seconds = health_readiness_timeout_seconds
     application.state.route_classifications = ApiRouteClassificationRegistry()
     install_authorization_openapi(application)
@@ -307,6 +312,16 @@ def create_app(
             application,
             service=ingestion_history_service,
             cursor_secret=ingestion_history_cursor_secret,
+        )
+    if document_query_service is not None:
+        if type(authorization_runtime) is not ApiAuthorizationRuntime:
+            raise RuntimeError("Document query routes require an authorization runtime.")
+        if document_query_cursor_secret is None:
+            raise RuntimeError("Document query routes require a cursor secret.")
+        install_document_query_routes(
+            application,
+            service=document_query_service,
+            cursor_secret=document_query_cursor_secret,
         )
     return application
 

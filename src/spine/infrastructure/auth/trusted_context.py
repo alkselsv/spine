@@ -47,6 +47,7 @@ class _RequestSnapshot:
     environment_id: UUID
     roles: frozenset[AuthorizationRole]
     authorization_generation: int
+    effective_team_ids: frozenset[UUID]
     authentication_configuration_version: str
     purpose: str
     operation: str
@@ -102,6 +103,10 @@ class _IssuedAuthorizedRequestContext(
     @property
     def authorization_generation(self) -> int:
         return self._require_active().authorization_generation
+
+    @property
+    def effective_team_ids(self) -> frozenset[UUID]:
+        return frozenset(self._require_active().effective_team_ids)
 
     @property
     def authentication_configuration_version(self) -> str:
@@ -344,6 +349,7 @@ def _canonical_request(snapshot: _RequestSnapshot) -> bytes:
         snapshot.environment_id.hex,
         ",".join(sorted(role.value for role in snapshot.roles)),
         str(snapshot.authorization_generation),
+        ",".join(sorted(team_id.hex for team_id in snapshot.effective_team_ids)),
         snapshot.authentication_configuration_version,
         snapshot.purpose,
         snapshot.operation,

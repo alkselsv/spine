@@ -410,6 +410,7 @@ def _snapshot_resolution(value: AuthorizationResolution) -> AuthorizationResolut
             authentication_configuration_version=(
                 value.authentication_configuration_version
             ),
+            effective_team_ids=frozenset(value.effective_team_ids),
         )
     except AuthorizationDeniedError:
         raise
@@ -449,6 +450,9 @@ def _request_snapshot(
         environment_id=UUID(int=resolution.scope.environment_id.int),
         roles=frozenset(resolution.roles),
         authorization_generation=resolution.authorization_generation,
+        effective_team_ids=frozenset(
+            UUID(int=team_id.int) for team_id in resolution.effective_team_ids
+        ),
         authentication_configuration_version=(
             configuration_version
             if configuration_version is not None
