@@ -177,6 +177,31 @@ namespace, and digest conflicts do not issue another physical search. ACL,
 active-pointer selection, ContextBundle construction and PostgreSQL UnitOfWork
 remain outside this adapter.
 
+### Safe pinned plan execution
+
+`spine.memory.retrieval.PhysicalReadPlanExecutor` is the broker-owned CB-09
+composition seam. It accepts only a ready `PhysicalReadPlan`, creates one
+existing `RetrieveCommand` for each ordered `PhysicalReadOperation`, and sends
+the operation's source restriction and `RetrievalReadContext:v1` through the
+existing `ContextProjection.retrieve` port. A rejected or incomplete plan,
+non-active namespace, or unproven pre-retrieval source isolation produces a
+typed safe failure without a provider call.
+
+The executor attaches the pinned read context to every returned chunk, entity
+and relation, then merges lanes by explicit identity and compatible provenance.
+Incompatible provenance is retained as separate results. Results are bounded by
+the plan, ordered by a confirmed common `RetrievalScore:v1` contract when one
+exists, and otherwise by partition and stable identity. A score with missing
+metric, direction or provider contract version is ignored or rejected; it is
+never invented. Partial provider failures retain only safe failure metadata and
+never expose a failed partition's source existence or payload.
+
+`RetrievalScore:v1` and the read-context fields are optional extensions to the
+provider-neutral result, so existing deterministic and Cognee compositions
+remain compatible. The current public Cognee bridge advertises no source-level
+pre-search isolation capability; it therefore fails closed for plan-originated
+commands until a separately qualified provider restriction exists.
+
 ## Publication handoff
 
 Issue #210 connects completed physical results and recovery to the Issue #89

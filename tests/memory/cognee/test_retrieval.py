@@ -16,6 +16,7 @@ from spine.memory.contracts import (
     ProjectionNamespaceState,
     ProjectionOutcome,
     ProjectionSourceRevision,
+    RetrievalReadContext,
     RetrieveCommand,
 )
 from spine.memory.cognee.retrieval import (
@@ -46,6 +47,7 @@ class FakeSearchSdk(CogneeStructuredRetrievalSdk):
     chunks_response: object = ()
     hybrid_response: object = ()
     data_metadata: tuple[CogneeDataMetadata, ...] = ()
+    supports_source_isolation: bool = False
 
     def __post_init__(self) -> None:
         self.calls: list[dict[str, object]] = []
@@ -184,6 +186,34 @@ def search_responses() -> tuple[list[dict[str, object]], list[dict[str, object]]
     return chunks, hybrid
 
 
+def read_context_for(
+    item: RetrieveCommand,
+    *,
+    source_isolation_pre_retrieval_enforced: bool = True,
+) -> RetrievalReadContext:
+    return RetrievalReadContext(
+        workspace_id=item.workspace_id,
+        environment_id=item.environment_id,
+        publication_pin_id=UUID("a1000000-0000-4000-8000-000000000001"),
+        publication_pin_digest="1" * 64,
+        projection_snapshot_id=item.projection_candidate.snapshot_id,
+        projection_activation_id=UUID("a2000000-0000-4000-8000-000000000001"),
+        activation_generation=1,
+        canonical_boundary_id=item.canonical_boundary.boundary_id,
+        canonical_boundary_digest=item.canonical_boundary.boundary_digest,
+        projection_run_id=item.projection_run_id,
+        projection_candidate_id=item.projection_candidate.candidate_id,
+        projection_partition_id=item.projection_candidate.partition_id,
+        projection_receipt_id=UUID("a3000000-0000-4000-8000-000000000001"),
+        physical_namespace=item.physical_namespace.namespace,
+        physical_namespace_digest=item.physical_namespace.namespace_digest,
+        source_object_ids=(SOURCE_OBJECT_ID,),
+        source_revision_ids=(SOURCE_REVISION_ID,),
+        provider_capability_reference="cognee-source-filter:v1",
+        source_isolation_pre_retrieval_enforced=source_isolation_pre_retrieval_enforced,
+    )
+
+
 @pytest.mark.asyncio
 async def test_retrieval_maps_public_structured_search_to_provider_neutral_result() -> None:
     chunks, hybrid = search_responses()
@@ -214,6 +244,39 @@ async def test_retrieval_maps_public_structured_search_to_provider_neutral_resul
         == [f"spine_context_{command().physical_namespace.namespace_digest}"]
         for call in search_calls
     )
+
+
+@pytest.mark.asyncio
+async def test_retrieval_maps_only_explicit_score_contract() -> None:
+    chunks, hybrid = search_responses()
+    chunks[0]["objects_result"][0]["metadata"]["retrieval_score"] = {  # type: ignore[index]
+        "value": 0.9,
+        "metric": "cosine",
+        "direction": "higher_is_better",
+        "provider_contract_version": "cognee:v1",
+    }
+    sdk = FakeSearchSdk(chunks_response=chunks, hybrid_response=hybrid)
+
+    result = await CogneeStructuredRetrieval(sdk=sdk).retrieve(command())
+
+    assert result.chunks[0].score is not None
+    assert result.chunks[0].score.metric == "cosine"
+
+
+@pytest.mark.asyncio
+async def test_retrieval_fails_closed_before_search_without_source_isolation_proof() -> None:
+    sdk = FakeSearchSdk()
+    item = command().model_copy(
+        update={"read_context": read_context_for(
+            command(), source_isolation_pre_retrieval_enforced=False
+        )}
+    )
+
+    result = await CogneeStructuredRetrieval(sdk=sdk).retrieve(item)
+
+    assert result.failure is not None
+    assert result.failure.code is ProjectionFailureCode.SOURCE_ISOLATION_UNPROVEN
+    assert sdk.calls == []
 
 
 @pytest.mark.asyncio

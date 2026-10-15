@@ -32,6 +32,9 @@ from spine.memory.contracts import (
     ContextResponseV1,
     ContextProjection,
     PublicationPin,
+    RetrievalReadContext,
+    RetrievalScore,
+    RetrievalSource,
     context_reason_for_outcome,
 )
 from spine.memory.fake import DeterministicContextProjection, DeterministicPhysicalStore
@@ -54,6 +57,7 @@ from spine.memory.read_plan import (
     PhysicalReadPlanReason,
     PhysicalReadPlanResolution,
 )
+from spine.memory.retrieval import PhysicalReadPlanExecutor, StructuredRetrievalProvider
 
 __all__ = [
     "ContextProjection",
@@ -74,6 +78,9 @@ __all__ = [
     "ContextResponse",
     "ContextResponseV1",
     "PublicationPin",
+    "RetrievalReadContext",
+    "RetrievalScore",
+    "RetrievalSource",
     "ContextRetrievalPort",
     "context_reason_for_outcome",
     "DeterministicContextProjection",
@@ -104,6 +111,8 @@ __all__ = [
     "PhysicalReadPlanOutcome",
     "PhysicalReadPlanReason",
     "PhysicalReadPlanResolution",
+    "PhysicalReadPlanExecutor",
+    "StructuredRetrievalProvider",
     "remember_texts",
     "TrustedContextValidator",
 ]

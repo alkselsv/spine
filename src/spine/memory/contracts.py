@@ -5,6 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from hashlib import sha256
 import json
+from math import isfinite
 from typing import Any, Literal, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -54,6 +55,8 @@ class ProjectionOutcome(str, Enum):
     TOMBSTONED = "tombstoned"
     AMBIGUOUS = "ambiguous"
     INCOMPLETE = "incomplete"
+    PARTIAL = "partial"
+    CANCELLED = "cancelled"
 
 
 class ProjectionLifecycle(str, Enum):
@@ -93,6 +96,9 @@ class ProjectionFailureCode(str, Enum):
     NAMESPACE_UNAVAILABLE = "namespace_unavailable"
     REVISION_FENCED = "revision_fenced"
     PHYSICAL_FAILURE = "physical_failure"
+    SOURCE_ISOLATION_UNPROVEN = "source_isolation_unproven"
+    PARTIAL_FAILURE = "partial_failure"
+    CANCELLED = "cancelled"
 
 
 class ProjectionNamespaceState(str, Enum):
@@ -236,11 +242,99 @@ class EvidenceReference(_ProjectionModel):
         return self
 
 
+class RetrievalScore(_ProjectionModel):
+    """An optional provider score with explicit, non-portable semantics."""
+
+    schema_version: Literal["retrieval-score:v1"] = "retrieval-score:v1"
+    value: float
+    metric: str = Field(min_length=1, max_length=128)
+    direction: Literal["higher_is_better", "lower_is_better"]
+    provider_contract_version: str = Field(min_length=1, max_length=128)
+
+    @field_validator("value")
+    @classmethod
+    def validate_value(cls, value: float) -> float:
+        if not isfinite(value):
+            raise ValueError("retrieval score must be finite")
+        return value
+
+
+class RetrievalSource(_ProjectionModel):
+    """A source identity carried by a physical read without invented facts."""
+
+    schema_version: Literal["retrieval-source:v1"] = "retrieval-source:v1"
+    source_object_id: UUID
+    source_revision_id: UUID
+    revision_digest: str | None = Field(default=None, pattern=_DIGEST)
+    revision_number: int | None = Field(default=None, ge=1)
+    processing_receipt_id: UUID | None = None
+    locator_contract_version: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> "RetrievalSource":
+        _require_non_zero(self.source_object_id, "source_object_id")
+        _require_non_zero(self.source_revision_id, "source_revision_id")
+        if self.processing_receipt_id is not None:
+            _require_non_zero(self.processing_receipt_id, "processing_receipt_id")
+        return self
+
+
+class RetrievalReadContext(_ProjectionModel):
+    """The pinned broker context that made one physical read eligible."""
+
+    schema_version: Literal["retrieval-read-context:v1"] = "retrieval-read-context:v1"
+    workspace_id: UUID
+    environment_id: UUID
+    publication_pin_id: UUID
+    publication_pin_digest: str = Field(pattern=_DIGEST)
+    projection_snapshot_id: UUID
+    projection_activation_id: UUID
+    activation_generation: int = Field(ge=1)
+    canonical_boundary_id: UUID
+    canonical_boundary_digest: str = Field(pattern=_DIGEST)
+    projection_run_id: UUID
+    projection_candidate_id: UUID
+    projection_partition_id: UUID
+    projection_receipt_id: UUID
+    physical_namespace: str = Field(min_length=1, max_length=512)
+    physical_namespace_digest: str = Field(pattern=_DIGEST)
+    source_object_ids: tuple[UUID, ...] = Field(min_length=1)
+    source_revision_ids: tuple[UUID, ...] = Field(min_length=1)
+    provider_capability_reference: str = Field(min_length=1, max_length=256)
+    source_isolation_pre_retrieval_enforced: bool
+
+    @model_validator(mode="after")
+    def validate_lineage(self) -> "RetrievalReadContext":
+        for name in (
+            "workspace_id",
+            "environment_id",
+            "publication_pin_id",
+            "projection_snapshot_id",
+            "projection_activation_id",
+            "canonical_boundary_id",
+            "projection_run_id",
+            "projection_candidate_id",
+            "projection_partition_id",
+            "projection_receipt_id",
+        ):
+            _require_non_zero(getattr(self, name), name)
+        for name in ("source_object_ids", "source_revision_ids"):
+            values = getattr(self, name)
+            if any(value.int == 0 for value in values) or len(values) != len(set(values)):
+                raise ValueError(f"{name} must contain unique non-zero UUIDs")
+        if len(self.source_object_ids) != len(self.source_revision_ids):
+            raise ValueError("source object and revision identities must be paired")
+        return self
+
+
 class ProjectionChunk(_ProjectionModel):
     schema_version: Literal["projection-chunk:v1"] = "projection-chunk:v1"
     chunk_id: str = Field(min_length=1, max_length=128)
     text: str = Field(min_length=1)
     evidence: tuple[EvidenceReference, ...] = Field(min_length=1)
+    score: RetrievalScore | None = None
+    read_context: RetrievalReadContext | None = None
+    read_contexts: tuple[RetrievalReadContext, ...] = ()
 
 
 class ProjectionEntity(_ProjectionModel):
@@ -249,6 +343,9 @@ class ProjectionEntity(_ProjectionModel):
     kind: str = Field(min_length=1, max_length=128)
     name: str = Field(min_length=1, max_length=512)
     evidence: tuple[EvidenceReference, ...] = Field(min_length=1)
+    score: RetrievalScore | None = None
+    read_context: RetrievalReadContext | None = None
+    read_contexts: tuple[RetrievalReadContext, ...] = ()
 
 
 class ProjectionRelation(_ProjectionModel):
@@ -258,6 +355,9 @@ class ProjectionRelation(_ProjectionModel):
     subject_entity_id: str = Field(min_length=1, max_length=128)
     object_entity_id: str = Field(min_length=1, max_length=128)
     evidence: tuple[EvidenceReference, ...] = Field(min_length=1)
+    score: RetrievalScore | None = None
+    read_context: RetrievalReadContext | None = None
+    read_contexts: tuple[RetrievalReadContext, ...] = ()
 
 
 class ProjectionDiagnostic(_ProjectionModel):
@@ -451,6 +551,8 @@ class RetrieveCommand(ProjectionCommand):
     operation: Literal[ProjectionOperation.RETRIEVE] = ProjectionOperation.RETRIEVE
     query: str = Field(min_length=1, max_length=4096)
     limit: int = Field(default=15, ge=1, le=100)
+    retrieval_sources: tuple[RetrievalSource, ...] = ()
+    read_context: RetrievalReadContext | None = None
 
 
 class ProjectionResult(_ProjectionModel):
@@ -549,6 +651,12 @@ class ProjectionRetrievalResult(_ProjectionModel):
     entities: tuple[ProjectionEntity, ...] = ()
     relations: tuple[ProjectionRelation, ...] = ()
     evidence: tuple[EvidenceReference, ...] = ()
+    retrieval_strategy: str = Field(default="context_projection:v1", max_length=128)
+    logical_projection_version: str | None = Field(default=None, max_length=256)
+    physical_projection_version: str | None = Field(default=None, max_length=256)
+    read_context: RetrievalReadContext | None = None
+    read_contexts: tuple[RetrievalReadContext, ...] = ()
+    partial_failures: tuple[ProjectionFailure, ...] = ()
     failure: ProjectionFailure | None = None
 
 

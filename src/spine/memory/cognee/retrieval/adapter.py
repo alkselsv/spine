@@ -30,6 +30,8 @@ from spine.memory.contracts import (
     ProjectionRelation,
     ProjectionRetrievalResult,
     ProjectionSourceRevision,
+    RetrievalScore,
+    RetrievalSource,
     RetrieveCommand,
     StableLocator,
 )
@@ -80,6 +82,9 @@ class CogneePublicStructuredRetrievalSdk:
             sdk = cognee
         self._sdk = sdk
         self.version = str(getattr(sdk, "__version__", ""))
+        self.supports_source_isolation = bool(
+            getattr(sdk, "supports_source_isolation", False)
+        )
         if self.version != SUPPORTED_COGNEE_VERSION:
             raise CogneeVersionError(
                 f"Cognee {SUPPORTED_COGNEE_VERSION} is required, got {self.version or 'unknown'}"
@@ -254,6 +259,18 @@ class CogneeStructuredRetrieval:
             return ProjectionFailureCode.NAMESPACE_UNAVAILABLE
         if command.physical_namespace.state is not ProjectionNamespaceState.ACTIVE:
             return ProjectionFailureCode.NAMESPACE_UNAVAILABLE
+        if command.read_context is not None:
+            if not command.read_context.source_isolation_pre_retrieval_enforced:
+                return ProjectionFailureCode.SOURCE_ISOLATION_UNPROVEN
+            if not getattr(self._sdk, "supports_source_isolation", False):
+                return ProjectionFailureCode.SOURCE_ISOLATION_UNPROVEN
+            if (
+                command.read_context.workspace_id != command.workspace_id
+                or command.read_context.environment_id != command.environment_id
+                or command.read_context.physical_namespace_digest
+                != command.physical_namespace.namespace_digest
+            ):
+                return ProjectionFailureCode.INCOMPLETE_EVIDENCE
         for source in command.source_revisions:
             if source.status != "current":
                 return self._code_for_source_status(source.status)
@@ -266,7 +283,7 @@ class CogneeStructuredRetrieval:
         hybrid_response: object,
         data_metadata: Mapping[str, Mapping[str, object]],
     ) -> tuple[list[ProjectionChunk], list[ProjectionEntity], list[ProjectionRelation], list[Any]]:
-        sources = {source.source_revision_id: source for source in command.source_revisions}
+        sources = self._sources(command)
         chunks: dict[str, ProjectionChunk] = {}
         entities: dict[str, ProjectionEntity] = {}
         relations: dict[str, ProjectionRelation] = {}
@@ -325,7 +342,7 @@ class CogneeStructuredRetrieval:
     def _map_chunk(
         self,
         command: RetrieveCommand,
-        sources: dict[UUID, ProjectionSourceRevision],
+        sources: dict[UUID, ProjectionSourceRevision | RetrievalSource],
         item: object,
         wrapper: object,
         data_metadata: Mapping[str, Mapping[str, object]],
@@ -385,12 +402,17 @@ class CogneeStructuredRetrieval:
             wrapper,
             supplemental_metadata=supplemental_metadata,
         )
-        return ProjectionChunk(chunk_id=identifier, text=text, evidence=references)
+        return ProjectionChunk(
+            chunk_id=identifier,
+            text=text,
+            evidence=references,
+            score=self._score(value, wrapper, supplemental_metadata),
+        )
 
     def _map_graph_artifact(
         self,
         command: RetrieveCommand,
-        sources: dict[UUID, ProjectionSourceRevision],
+        sources: dict[UUID, ProjectionSourceRevision | RetrievalSource],
         item: object,
         wrapper: object,
         data_metadata: Mapping[str, Mapping[str, object]],
@@ -440,6 +462,7 @@ class CogneeStructuredRetrieval:
                     kind=entity_type,
                     name=name,
                     evidence=references,
+                    score=self._score(payload, wrapper, metadata),
                 ),
                 None,
             )
@@ -461,6 +484,7 @@ class CogneeStructuredRetrieval:
                     subject_entity_id=subject,
                     object_entity_id=target,
                     evidence=references,
+                    score=self._score(payload, wrapper, metadata),
                 ),
             )
         raise _RetrievalIssue(
@@ -471,7 +495,7 @@ class CogneeStructuredRetrieval:
     def _map_entity(
         self,
         command: RetrieveCommand,
-        sources: dict[UUID, ProjectionSourceRevision],
+        sources: dict[UUID, ProjectionSourceRevision | RetrievalSource],
         item: object,
         wrapper: object,
     ) -> ProjectionEntity:
@@ -492,12 +516,13 @@ class CogneeStructuredRetrieval:
             kind=kind,
             name=name,
             evidence=self._references(command, sources, value, wrapper),
+            score=self._score(value, wrapper, metadata),
         )
 
     def _map_relation(
         self,
         command: RetrieveCommand,
-        sources: dict[UUID, ProjectionSourceRevision],
+        sources: dict[UUID, ProjectionSourceRevision | RetrievalSource],
         item: object,
         wrapper: object,
     ) -> ProjectionRelation:
@@ -520,12 +545,13 @@ class CogneeStructuredRetrieval:
             subject_entity_id=subject,
             object_entity_id=target,
             evidence=self._references(command, sources, value, wrapper),
+            score=self._score(value, wrapper, metadata),
         )
 
     def _references(
         self,
         command: RetrieveCommand,
-        sources: dict[UUID, ProjectionSourceRevision],
+        sources: dict[UUID, ProjectionSourceRevision | RetrievalSource],
         item: object,
         wrapper: object,
         *,
@@ -695,7 +721,7 @@ class CogneeStructuredRetrieval:
     @staticmethod
     def _validate_scope(
         command: RetrieveCommand,
-        source: ProjectionSourceRevision,
+        source: ProjectionSourceRevision | RetrievalSource,
         metadata: Mapping[str, object],
     ) -> None:
         required = (
@@ -703,9 +729,6 @@ class CogneeStructuredRetrieval:
             "environment_id",
             "source_object_id",
             "source_revision_id",
-            "revision_digest",
-            "revision_number",
-            "locator_contract_version",
         )
         if any(metadata.get(field) is None for field in required):
             raise _RetrievalIssue(
@@ -731,17 +754,27 @@ class CogneeStructuredRetrieval:
                         ProjectionFailureCode.MISSING_EVIDENCE,
                         "reference_scope_invalid",
                     ) from error
-        if metadata.get("revision_digest") not in (None, source.revision_digest):
+        if source.revision_digest is not None and metadata.get("revision_digest") not in (
+            None,
+            source.revision_digest,
+        ):
             raise _RetrievalIssue(
                 ProjectionFailureCode.STALE_EVIDENCE,
                 "reference_revision_digest",
             )
-        if metadata.get("revision_number") not in (None, source.revision_number):
+        if source.revision_number is not None and metadata.get("revision_number") not in (
+            None,
+            source.revision_number,
+        ):
             raise _RetrievalIssue(
                 ProjectionFailureCode.STALE_EVIDENCE,
                 "reference_revision_number",
             )
-        if metadata.get("locator_contract_version") != source.locator_contract_version:
+        if (
+            source.locator_contract_version is not None
+            and metadata.get("locator_contract_version")
+            != source.locator_contract_version
+        ):
             raise _RetrievalIssue(
                 ProjectionFailureCode.MISSING_EVIDENCE,
                 "reference_locator_contract",
@@ -790,6 +823,44 @@ class CogneeStructuredRetrieval:
             kind="custom",
             value=json.dumps(mapping, sort_keys=True, separators=(",", ":")),
         )
+
+    @staticmethod
+    def _sources(
+        command: RetrieveCommand,
+    ) -> dict[UUID, ProjectionSourceRevision | RetrievalSource]:
+        if command.retrieval_sources:
+            return {
+                source.source_revision_id: source for source in command.retrieval_sources
+            }
+        return {
+            source.source_revision_id: source for source in command.source_revisions
+        }
+
+    @staticmethod
+    def _score(
+        value: object,
+        wrapper: object,
+        metadata: Mapping[str, object],
+    ) -> RetrievalScore | None:
+        """Accept a score only when its metric and provider contract are explicit."""
+
+        candidates = (
+            CogneeStructuredRetrieval._value(value, "retrieval_score"),
+            CogneeStructuredRetrieval._metadata(value).get("retrieval_score"),
+            metadata.get("retrieval_score"),
+            CogneeStructuredRetrieval._value(wrapper, "retrieval_score"),
+        )
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            try:
+                return RetrievalScore.model_validate(candidate)
+            except ValidationError as error:
+                raise _RetrievalIssue(
+                    ProjectionFailureCode.INCOMPLETE_EVIDENCE,
+                    "score_contract",
+                ) from error
+        return None
 
     @staticmethod
     def _locator_kind(kind: str) -> str:
