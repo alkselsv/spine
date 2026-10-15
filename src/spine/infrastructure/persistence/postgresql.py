@@ -13,7 +13,7 @@ from types import TracebackType
 from typing import Any, NoReturn
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from sqlalchemy import Table, func, insert, null, select, text, true, update
+from sqlalchemy import Table, func, insert, null, or_, select, text, true, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 
 from spine.application.diagnostics.audit import (
@@ -2575,6 +2575,87 @@ class _PostgreSQLIngestionRepository:
             items=items,
             item_states=tuple(item_states),
         )
+
+    async def list_runs(
+        self,
+        *,
+        limit: int,
+        after: tuple[datetime, UUID] | None = None,
+    ) -> tuple[IngestionRunStateView, ...]:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if limit <= 0 or not isinstance(scope, EnvironmentScope):
+            return ()
+        predicates = [
+            _INGESTION_RUNS.c.workspace_id == scope.workspace_id,
+            _INGESTION_RUNS.c.environment_id == scope.environment_id,
+        ]
+        if after is not None:
+            occurred_at, identity = after
+            predicates.append(
+                or_(
+                    _INGESTION_RUNS.c.requested_at < occurred_at,
+                    (
+                        (_INGESTION_RUNS.c.requested_at == occurred_at)
+                        & (_INGESTION_RUNS.c.ingestion_run_id < identity)
+                    ),
+                )
+            )
+        rows = (
+            await self._uow._execute(
+                select(_INGESTION_RUNS)
+                .where(*predicates)
+                .order_by(
+                    _INGESTION_RUNS.c.requested_at.desc(),
+                    _INGESTION_RUNS.c.ingestion_run_id.desc(),
+                )
+                .limit(limit)
+            )
+        ).mappings().all()
+        views: list[IngestionRunStateView] = []
+        for row in rows:
+            view = await self.derive_run_state(row.ingestion_run_id)
+            if view is not None:
+                views.append(view)
+        return tuple(views)
+
+    async def list_items(
+        self,
+        *,
+        limit: int,
+        after: tuple[datetime, UUID] | None = None,
+    ) -> tuple[IngestionRunSource, ...]:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if limit <= 0 or not isinstance(scope, EnvironmentScope):
+            return ()
+        predicates = [
+            _INGESTION_ITEMS.c.workspace_id == scope.workspace_id,
+            _INGESTION_ITEMS.c.environment_id == scope.environment_id,
+        ]
+        if after is not None:
+            occurred_at, identity = after
+            predicates.append(
+                or_(
+                    _INGESTION_ITEMS.c.created_at < occurred_at,
+                    (
+                        (_INGESTION_ITEMS.c.created_at == occurred_at)
+                        & (_INGESTION_ITEMS.c.ingestion_run_source_id < identity)
+                    ),
+                )
+            )
+        rows = (
+            await self._uow._execute(
+                select(_INGESTION_ITEMS)
+                .where(*predicates)
+                .order_by(
+                    _INGESTION_ITEMS.c.created_at.desc(),
+                    _INGESTION_ITEMS.c.ingestion_run_source_id.desc(),
+                )
+                .limit(limit)
+            )
+        ).mappings().all()
+        return tuple(IngestionRunSource.model_validate(dict(row)) for row in rows)
 
     async def resolve_item(self, item_id: UUID) -> IngestionRunSource | None:
         self._uow._guard_active()

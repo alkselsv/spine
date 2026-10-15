@@ -2382,6 +2382,63 @@ class _InMemoryIngestionRepository:
             item_states=item_states,
         )
 
+    async def list_runs(
+        self,
+        *,
+        limit: int,
+        after: tuple[datetime, UUID] | None = None,
+    ) -> tuple[IngestionRunStateView, ...]:
+        self._uow._guard_active()
+        if limit <= 0 or not isinstance(self._uow.scope, EnvironmentScope):
+            return ()
+        scope = self._uow.scope
+        runs = sorted(
+            (
+                run
+                for run in self._runs().values()
+                if (run.workspace_id, run.environment_id)
+                == (scope.workspace_id, scope.environment_id)
+                and (
+                    after is None
+                    or (run.requested_at, run.ingestion_run_id) < after
+                )
+            ),
+            key=lambda run: (run.requested_at, run.ingestion_run_id),
+            reverse=True,
+        )
+        views: list[IngestionRunStateView] = []
+        for run in runs[:limit]:
+            view = await self.derive_run_state(run.ingestion_run_id)
+            if view is not None:
+                views.append(view)
+        return tuple(views)
+
+    async def list_items(
+        self,
+        *,
+        limit: int,
+        after: tuple[datetime, UUID] | None = None,
+    ) -> tuple[IngestionRunSource, ...]:
+        self._uow._guard_active()
+        if limit <= 0 or not isinstance(self._uow.scope, EnvironmentScope):
+            return ()
+        scope = self._uow.scope
+        items = sorted(
+            (
+                item
+                for item in self._items().values()
+                if (item.workspace_id, item.environment_id)
+                == (scope.workspace_id, scope.environment_id)
+                and (
+                    after is None
+                    or (item.created_at, item.ingestion_run_source_id) < after
+                )
+            ),
+            key=lambda item: (item.created_at, item.ingestion_run_source_id),
+            reverse=True,
+        )
+        return tuple(item.model_copy(deep=True) for item in items[:limit])
+
     async def resolve_item(self, item_id: UUID) -> IngestionRunSource | None:
         self._uow._guard_active()
         item = self._items().get(item_id)

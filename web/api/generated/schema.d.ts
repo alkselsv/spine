@@ -21,6 +21,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/documents/processing-history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Documents.Processing History */
+        get: operations["documents.processing_history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/health/live": {
         parameters: {
             query?: never;
@@ -64,6 +81,23 @@ export interface paths {
         };
         /** System.Health.Summary */
         get: operations["system.health.summary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ingestion/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Ingestion.Run History */
+        get: operations["ingestion.run_history"];
         put?: never;
         post?: never;
         delete?: never;
@@ -144,6 +178,66 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** ApiCollectionEnvelope[DocumentProcessingHistoryResponse] */
+        ApiCollectionEnvelope_DocumentProcessingHistoryResponse_: {
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /** Items */
+            items: components["schemas"]["DocumentProcessingHistoryResponse"][];
+            /** Limit */
+            limit: number;
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** ApiCollectionEnvelope[IngestionRunHistoryResponse] */
+        ApiCollectionEnvelope_IngestionRunHistoryResponse_: {
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /** Items */
+            items: components["schemas"]["IngestionRunHistoryResponse"][];
+            /** Limit */
+            limit: number;
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
         /** ApiResponseEnvelope[HealthSummaryResponse] */
         ApiResponseEnvelope_HealthSummaryResponse_: {
             data: components["schemas"]["HealthSummaryResponse"];
@@ -315,6 +409,67 @@ export interface components {
              */
             warning_id: string;
         };
+        /** DocumentProcessingHistoryResponse */
+        DocumentProcessingHistoryResponse: {
+            acceptance: components["schemas"]["PublicAcceptanceStatus"];
+            /** Attempt */
+            attempt: number;
+            /** Binding Id */
+            binding_id?: string | null;
+            /** Coverage */
+            coverage?: string | null;
+            /**
+             * Failure Ids
+             * @default []
+             */
+            failure_ids: string[];
+            /**
+             * Failures
+             * @default []
+             */
+            failures: components["schemas"]["BatchIngestionFailureResponse"][];
+            /** Input Identity */
+            input_identity: string;
+            /** Input Ordinal */
+            input_ordinal: number;
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Item State */
+            item_state: string;
+            processing: components["schemas"]["PublicProcessingStatus"];
+            processing_receipt?: components["schemas"]["IngestionReceiptResponse"] | null;
+            /** Retryable */
+            retryable: boolean;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Run State */
+            run_state: string;
+            /** Source Object Id */
+            source_object_id?: string | null;
+            /** Source Revision Id */
+            source_revision_id?: string | null;
+            status: components["schemas"]["PublicIngestionStatus"];
+            /** Status Url */
+            status_url: string;
+            /** Terminal */
+            terminal: boolean;
+            /**
+             * Warning Ids
+             * @default []
+             */
+            warning_ids: string[];
+            /**
+             * Warnings
+             * @default []
+             */
+            warnings: components["schemas"]["BatchIngestionWarningResponse"][];
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -414,6 +569,30 @@ export interface components {
              * Format: uuid
              */
             receipt_id: string;
+        };
+        /** IngestionRunHistoryResponse */
+        IngestionRunHistoryResponse: {
+            acceptance: components["schemas"]["PublicAcceptanceStatus"];
+            /** Items */
+            items: components["schemas"]["DocumentProcessingHistoryResponse"][];
+            processing: components["schemas"]["PublicProcessingStatus"];
+            /**
+             * Requested At
+             * Format: date-time
+             */
+            requested_at: string;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Run State */
+            run_state: string;
+            status: components["schemas"]["PublicBatchStatus"];
+            /** Status Url */
+            status_url: string;
+            /** Terminal */
+            terminal: boolean;
         };
         /** LivenessResponse */
         LivenessResponse: {
@@ -631,6 +810,113 @@ export interface operations {
             };
         };
     };
+    "documents.processing_history": {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiCollectionEnvelope_DocumentProcessingHistoryResponse_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
     system_health_live_api_v1_health_live_get: {
         parameters: {
             query?: never;
@@ -699,6 +985,113 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponseEnvelope_HealthSummaryResponse_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "ingestion.run_history": {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiCollectionEnvelope_IngestionRunHistoryResponse_"];
                 };
             };
             /** @description Safe request error. */

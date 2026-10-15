@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from collections.abc import Sequence
 from typing import cast
 from uuid import UUID
@@ -22,6 +23,11 @@ from spine.application.batch_ingestion_api import (
     BatchDocumentIngestionService,
     BatchIngestionSnapshot,
 )
+from spine.application.ingestion_history import (
+    IngestionHistoryPage,
+    IngestionHistoryPosition,
+)
+from spine.application.ingestion_history import IngestionHistoryService
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.auth import RoutePolicyRegistry
 
@@ -55,6 +61,27 @@ class _UnavailableBatchDocumentIngestionService:
         raise RuntimeError("The OpenAPI composition is not executable.")
 
 
+class _UnavailableIngestionHistoryService:
+    async def list_runs(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        limit: int,
+        after: IngestionHistoryPosition | None,
+    ) -> IngestionHistoryPage:
+        del context, limit, after
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+    async def list_processing_history(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        limit: int,
+        after: IngestionHistoryPosition | None,
+    ) -> IngestionHistoryPage:
+        del context, limit, after
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
 async def _contract_readiness() -> ApiAuthorizationReadiness:
     return ApiAuthorizationReadiness(
         ready=False,
@@ -80,6 +107,11 @@ def create_openapi_app() -> FastAPI:
             BatchDocumentIngestionService,
             _UnavailableBatchDocumentIngestionService(),
         ),
+        ingestion_history_service=cast(
+            IngestionHistoryService,
+            _UnavailableIngestionHistoryService(),
+        ),
+        ingestion_history_cursor_secret=secrets.token_bytes(32),
     )
 
 

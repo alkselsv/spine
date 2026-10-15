@@ -232,7 +232,12 @@ OpenAPI типы. Минимальные ресурсы:
 - `GET /api/v1/ingestion/runs/{run_id}/items/{item_id}` возвращает отдельные
   `acceptance` и `processing` фазы, общий `status`, safe diagnostic references и
   processing receipt. Ответы не содержат excerpts, filenames или exception text.
-- Оба endpoint требуют Bearer authentication, роль `administrator` и exact
+- `GET /api/v1/ingestion/runs` возвращает bounded cursor-пагинацию ingestion runs
+  с per-file outcomes и ссылками на polling.
+- `GET /api/v1/documents/processing-history` возвращает ту же scope-bound историю
+  по отдельным документам; cursor нельзя перенести между workspace/environment,
+  operation или page limit.
+- Все перечисленные endpoints требуют Bearer authentication, роль `administrator` и exact
   workspace/environment request scope. TXT/Markdown поддерживаются текущим
   parser path; PDF/DOCX/XLSX могут быть приняты в ledger, но возвращаются как
   processing failure/unsupported outcome до поставки соответствующих parser
