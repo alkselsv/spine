@@ -55,6 +55,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/health/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** System.Health.Summary */
+        get: operations["system.health.summary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/ingestion/runs/{run_id}": {
         parameters: {
             query?: never;
@@ -127,6 +144,31 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** ApiResponseEnvelope[HealthSummaryResponse] */
+        ApiResponseEnvelope_HealthSummaryResponse_: {
+            data: components["schemas"]["HealthSummaryResponse"];
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
         /** AskRequest */
         AskRequest: {
             /** Dataset */
@@ -278,6 +320,61 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** HealthComponentResponse */
+        HealthComponentResponse: {
+            /**
+             * Code
+             * @enum {string}
+             */
+            code: "authorization.ready" | "local.ready" | "oidc.ready" | "oidc.check_deferred" | "oidc.stale_keys" | "oidc.provider_unavailable" | "oidc.provider_incompatible" | "oidc.runtime_closed" | "authorization.degraded" | "authorization.unavailable" | "authorization.stale" | "authorization.store_unavailable" | "authorization.provider_unavailable" | "authorization.provider_incompatible" | "dependency.unavailable" | "ingestion.ready" | "ingestion.degraded" | "ingestion.partial" | "ingestion.unavailable" | "ingestion.stale" | "publication.ready" | "publication.degraded" | "publication.unavailable" | "publication.stale";
+            /** Provider Name */
+            provider_name?: ("local" | "oidc" | "postgresql" | "filesystem" | "cognee" | "neo4j" | "pgvector" | "memory") | null;
+            status: components["schemas"]["HealthStatus"];
+        };
+        /** HealthOperationResponse */
+        HealthOperationResponse: {
+            /** Completed At */
+            completed_at?: string | null;
+            /**
+             * Operation
+             * @enum {string}
+             */
+            operation: "authorization" | "ingestion" | "publication" | "reconciliation";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "accepted" | "running" | "completed" | "failed" | "stale" | "unavailable";
+        };
+        /** HealthProvidersResponse */
+        HealthProvidersResponse: {
+            /** Authentication */
+            authentication?: ("local" | "oidc" | "postgresql" | "filesystem" | "cognee" | "neo4j" | "pgvector" | "memory") | null;
+            /** Ingestion */
+            ingestion?: ("local" | "oidc" | "postgresql" | "filesystem" | "cognee" | "neo4j" | "pgvector" | "memory") | null;
+            /** Publication */
+            publication?: ("local" | "oidc" | "postgresql" | "filesystem" | "cognee" | "neo4j" | "pgvector" | "memory") | null;
+        };
+        /**
+         * HealthStatus
+         * @enum {string}
+         */
+        HealthStatus: "ready" | "degraded" | "unavailable" | "stale";
+        /** HealthSummaryResponse */
+        HealthSummaryResponse: {
+            /** Authentication Mode */
+            authentication_mode?: ("local" | "oidc") | null;
+            authorization: components["schemas"]["HealthComponentResponse"];
+            /** Build Version */
+            build_version: string;
+            /** Configuration Version */
+            configuration_version?: string | null;
+            ingestion: components["schemas"]["HealthComponentResponse"];
+            last_operation?: components["schemas"]["HealthOperationResponse"] | null;
+            providers: components["schemas"]["HealthProvidersResponse"];
+            publication: components["schemas"]["HealthComponentResponse"];
+            status: components["schemas"]["HealthStatus"];
+        };
         /** IngestRequest */
         IngestRequest: {
             /** Dataset */
@@ -318,6 +415,19 @@ export interface components {
              */
             receipt_id: string;
         };
+        /** LivenessResponse */
+        LivenessResponse: {
+            /**
+             * Service
+             * @constant
+             */
+            service: "spine";
+            /**
+             * Status
+             * @constant
+             */
+            status: "ok";
+        };
         /**
          * PublicAcceptanceStatus
          * @enum {string}
@@ -338,6 +448,24 @@ export interface components {
          * @enum {string}
          */
         PublicProcessingStatus: "not_started" | "processing" | "succeeded" | "partial" | "failed" | "unsupported" | "cancelled";
+        /** ReadinessResponse */
+        ReadinessResponse: {
+            /**
+             * Code
+             * @enum {string}
+             */
+            code: "authorization.ready" | "authorization.unavailable" | "authorization.store_unavailable" | "local.ready" | "oidc.ready" | "oidc.check_deferred" | "oidc.stale_keys" | "oidc.provider_unavailable" | "oidc.provider_incompatible" | "oidc.runtime_closed";
+            /**
+             * Service
+             * @constant
+             */
+            service: "spine";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready" | "not_ready";
+        };
         /**
          * Retryability
          * @description Caller-facing retry advice; this enum does not execute retries.
@@ -518,9 +646,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: string;
-                    };
+                    "application/json": components["schemas"]["LivenessResponse"];
                 };
             };
         };
@@ -540,7 +666,120 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ReadinessResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadinessResponse"];
+                };
+            };
+        };
+    };
+    "system.health.summary": {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope_HealthSummaryResponse_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
                 };
             };
         };

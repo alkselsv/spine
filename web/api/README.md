@@ -23,6 +23,12 @@ status and replay flag. Cursor or key failures are mapped by each route to its
 existing safe structured validation error. Legacy upload and health responses
 remain compatibility contracts and are not wrapped retroactively.
 
+The administrator-only `GET /api/v1/health/summary` route is the versioned
+operational metadata surface. It returns only trusted workspace/environment
+scope, build and authentication configuration versions, allowlisted provider
+names, publication/ingestion state, safe operation metadata and the request
+trace ID; it never returns credentials, provider errors or tenant content.
+
 The backend compatibility test in `tests/api/test_authorization.py` verifies
 these generator-facing OpenAPI fields. `web/src/api/client.ts` creates the typed
 client with an injected credential and immutable Workspace/Environment scope;

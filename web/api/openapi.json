@@ -1,6 +1,43 @@
 {
   "components": {
     "schemas": {
+      "ApiResponseEnvelope_HealthSummaryResponse_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/HealthSummaryResponse"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "trace_id": {
+            "format": "uuid",
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "environment_id",
+          "trace_id",
+          "data"
+        ],
+        "title": "ApiResponseEnvelope[HealthSummaryResponse]",
+        "type": "object"
+      },
       "AskRequest": {
         "properties": {
           "dataset": {
@@ -386,6 +423,267 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "HealthComponentResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "enum": [
+              "authorization.ready",
+              "local.ready",
+              "oidc.ready",
+              "oidc.check_deferred",
+              "oidc.stale_keys",
+              "oidc.provider_unavailable",
+              "oidc.provider_incompatible",
+              "oidc.runtime_closed",
+              "authorization.degraded",
+              "authorization.unavailable",
+              "authorization.stale",
+              "authorization.store_unavailable",
+              "authorization.provider_unavailable",
+              "authorization.provider_incompatible",
+              "dependency.unavailable",
+              "ingestion.ready",
+              "ingestion.degraded",
+              "ingestion.partial",
+              "ingestion.unavailable",
+              "ingestion.stale",
+              "publication.ready",
+              "publication.degraded",
+              "publication.unavailable",
+              "publication.stale"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "provider_name": {
+            "anyOf": [
+              {
+                "enum": [
+                  "local",
+                  "oidc",
+                  "postgresql",
+                  "filesystem",
+                  "cognee",
+                  "neo4j",
+                  "pgvector",
+                  "memory"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Name"
+          },
+          "status": {
+            "$ref": "#/components/schemas/HealthStatus"
+          }
+        },
+        "required": [
+          "status",
+          "code"
+        ],
+        "title": "HealthComponentResponse",
+        "type": "object"
+      },
+      "HealthOperationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "operation": {
+            "enum": [
+              "authorization",
+              "ingestion",
+              "publication",
+              "reconciliation"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "accepted",
+              "running",
+              "completed",
+              "failed",
+              "stale",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "status"
+        ],
+        "title": "HealthOperationResponse",
+        "type": "object"
+      },
+      "HealthProvidersResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "authentication": {
+            "anyOf": [
+              {
+                "enum": [
+                  "local",
+                  "oidc",
+                  "postgresql",
+                  "filesystem",
+                  "cognee",
+                  "neo4j",
+                  "pgvector",
+                  "memory"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authentication"
+          },
+          "ingestion": {
+            "anyOf": [
+              {
+                "enum": [
+                  "local",
+                  "oidc",
+                  "postgresql",
+                  "filesystem",
+                  "cognee",
+                  "neo4j",
+                  "pgvector",
+                  "memory"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ingestion"
+          },
+          "publication": {
+            "anyOf": [
+              {
+                "enum": [
+                  "local",
+                  "oidc",
+                  "postgresql",
+                  "filesystem",
+                  "cognee",
+                  "neo4j",
+                  "pgvector",
+                  "memory"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication"
+          }
+        },
+        "title": "HealthProvidersResponse",
+        "type": "object"
+      },
+      "HealthStatus": {
+        "enum": [
+          "ready",
+          "degraded",
+          "unavailable",
+          "stale"
+        ],
+        "title": "HealthStatus",
+        "type": "string"
+      },
+      "HealthSummaryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "authentication_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "local",
+                  "oidc"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authentication Mode"
+          },
+          "authorization": {
+            "$ref": "#/components/schemas/HealthComponentResponse"
+          },
+          "build_version": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Build Version",
+            "type": "string"
+          },
+          "configuration_version": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Configuration Version"
+          },
+          "ingestion": {
+            "$ref": "#/components/schemas/HealthComponentResponse"
+          },
+          "last_operation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HealthOperationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "providers": {
+            "$ref": "#/components/schemas/HealthProvidersResponse"
+          },
+          "publication": {
+            "$ref": "#/components/schemas/HealthComponentResponse"
+          },
+          "status": {
+            "$ref": "#/components/schemas/HealthStatus"
+          }
+        },
+        "required": [
+          "status",
+          "build_version",
+          "authorization",
+          "publication",
+          "ingestion",
+          "providers"
+        ],
+        "title": "HealthSummaryResponse",
+        "type": "object"
+      },
       "IngestRequest": {
         "properties": {
           "dataset": {
@@ -502,6 +800,27 @@
         "title": "IngestionReceiptResponse",
         "type": "object"
       },
+      "LivenessResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "service": {
+            "const": "spine",
+            "title": "Service",
+            "type": "string"
+          },
+          "status": {
+            "const": "ok",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "service"
+        ],
+        "title": "LivenessResponse",
+        "type": "object"
+      },
       "PublicAcceptanceStatus": {
         "enum": [
           "pending",
@@ -549,6 +868,47 @@
         ],
         "title": "PublicProcessingStatus",
         "type": "string"
+      },
+      "ReadinessResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "enum": [
+              "authorization.ready",
+              "authorization.unavailable",
+              "authorization.store_unavailable",
+              "local.ready",
+              "oidc.ready",
+              "oidc.check_deferred",
+              "oidc.stale_keys",
+              "oidc.provider_unavailable",
+              "oidc.provider_incompatible",
+              "oidc.runtime_closed"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "service": {
+            "const": "spine",
+            "title": "Service",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "not_ready"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "service",
+          "code"
+        ],
+        "title": "ReadinessResponse",
+        "type": "object"
       },
       "Retryability": {
         "description": "Caller-facing retry advice; this enum does not execute retries.",
@@ -822,11 +1182,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "title": "Response System Health Live Api V1 Health Live Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/LivenessResponse"
                 }
               }
             },
@@ -843,13 +1199,158 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessResponse"
+                }
               }
             },
             "description": "Successful Response"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "summary": "System.Health.Ready"
+      }
+    },
+    "/api/v1/health/summary": {
+      "get": {
+        "operationId": "system.health.summary",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Workspace-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Environment-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseEnvelope_HealthSummaryResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Safe request error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authentication is invalid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authorization is denied."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Resource is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Command conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request payload is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Unexpected internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Dependency is unavailable."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "System.Health.Summary"
       }
     },
     "/api/v1/ingestion/runs/{run_id}": {
