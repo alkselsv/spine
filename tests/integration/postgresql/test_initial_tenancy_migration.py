@@ -1816,11 +1816,28 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         | DELIVERY_CONSTRAINTS
         | ADMISSION_CONSTRAINTS
     )
+    disclosure_constraint_prefix = (
+        "ck_qa_disclosure_validation_results_ck_qa_disclosure_"
+    )
+    disclosure_constraints = {
+        actual
+        for actual in constraints
+        if actual.startswith(disclosure_constraint_prefix)
+    }
+    assert len(disclosure_constraints) == 2, disclosure_constraints
     missing_final_constraints = {
         expected
         for expected in expected_final_constraints
         if expected not in constraints
         and not any(actual.endswith(expected) for actual in constraints)
+        and not (
+            expected
+            in {
+                "ck_qa_disclosure_validation_results_checkpoint",
+                "ck_qa_disclosure_validation_results_disposition",
+            }
+            and disclosure_constraints
+        )
         and not (
             expected
             in {
@@ -2121,6 +2138,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ix_answer_question_attempts_run",
         "pk_qa_session_versions",
         "pk_qa_message_versions",
+        "pk_qa_disclosure_validation_results",
         "ix_qa_session_versions_navigation",
         "ix_qa_message_versions_navigation",
         "ix_projection_activations_kind_generation",
