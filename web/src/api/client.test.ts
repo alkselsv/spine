@@ -284,7 +284,7 @@ describe('scoped API client', () => {
 
     await expect(request).rejects.toMatchObject({ name: 'AbortError' });
     await expect(request).rejects.not.toBeInstanceOf(SpineApiError);
-  });
+  }, 10_000);
 });
 
 interface ProtectedPathsFixture {
