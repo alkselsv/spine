@@ -10,6 +10,7 @@ import { ApiErrorPanel, StatusPanel } from '../../app/status';
 import { useScope } from '../../app/scope';
 import { ru } from '../../i18n/resources';
 import { DocumentAccessMetadata } from './DocumentAccessMetadata';
+import { DocumentLifecycleActions } from './DocumentLifecycleActions';
 import {
   diagnosticAction,
   freshnessLabel,
@@ -95,6 +96,7 @@ export function DocumentDetailPage() {
       searchParams={scopeSearch}
       scope={scope}
       queryKey={queryKey}
+      onRefresh={() => void documentQuery.refetch()}
       traceId={documentQuery.data.traceId}
       tab={tab}
     />
@@ -164,6 +166,7 @@ function DocumentOverview({
   searchParams,
   scope,
   queryKey,
+  onRefresh,
   traceId,
   tab,
 }: {
@@ -174,6 +177,7 @@ function DocumentOverview({
   searchParams: URLSearchParams;
   scope: { environmentId: string; workspaceId: string };
   queryKey: (resource: string) => readonly unknown[];
+  onRefresh: () => void | Promise<unknown>;
   traceId: string;
   tab: DocumentDetailTab;
 }) {
@@ -242,6 +246,17 @@ function DocumentOverview({
       <div className={styles.grid}>
         <DocumentAccessMetadata metadata={metadata} scope={scope} traceId={traceId} />
       </div>
+
+      <DocumentLifecycleActions
+        client={client}
+        currentRevisionId={revision?.source_revision_id}
+        onRefresh={onRefresh}
+        queryKey={queryKey}
+        scope={scope}
+        sourceObjectId={document.source_object_id}
+        uploadIdentity={document.identity?.upload_identity}
+        key={`${scope.workspaceId}:${scope.environmentId}:${document.source_object_id}`}
+      />
 
       {tab === 'revisions' ? (
         <RevisionTimeline
