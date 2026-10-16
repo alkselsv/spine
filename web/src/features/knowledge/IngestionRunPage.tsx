@@ -10,6 +10,7 @@ import { ApiErrorPanel, StatusPanel, type InterfaceState } from '../../app/statu
 import { useScope } from '../../app/scope';
 import { ru } from '../../i18n/resources';
 import { loadBatchStatus } from './upload-api';
+import { ProcessingCommandAction } from './ProcessingCommandAction';
 import {
   loadProcessingHistory,
   loadRunHistory,
@@ -113,7 +114,9 @@ export function IngestionRunPage() {
 
       {runId ? (
         <RunDetails
+          client={client}
           currentSearch={currentSearch}
+          queryKey={queryKey('document-processing-history')}
           query={runQuery}
           scope={scope}
         />
@@ -150,11 +153,15 @@ export function IngestionRunPage() {
 }
 
 function RunDetails({
+  client,
   currentSearch,
+  queryKey,
   query,
   scope,
 }: {
+  client: ReturnType<typeof createScopedApiClient>;
   currentSearch: string;
+  queryKey: readonly unknown[];
   query: ReturnType<typeof useQuery<components['schemas']['BatchIngestionStatusResponse'], SpineApiError>>;
   scope: { workspaceId: string; environmentId: string };
 }) {
@@ -222,9 +229,11 @@ function RunDetails({
       <ul className={styles.runItemList} aria-label={ru.documents.upload.runItems}>
         {query.data.items.map((item) => (
           <RunItem
+            client={client}
             currentSearch={currentSearch}
             item={item}
             key={item.item_id}
+            queryKey={queryKey}
             runId={query.data.run_id}
           />
         ))}
@@ -387,7 +396,19 @@ function ProcessingHistorySection({
   );
 }
 
-function RunItem({ currentSearch, item, runId }: { currentSearch: string; item: RunItem; runId: string }) {
+function RunItem({
+  client,
+  currentSearch,
+  item,
+  queryKey,
+  runId,
+}: {
+  client: ReturnType<typeof createScopedApiClient>;
+  currentSearch: string;
+  item: RunItem;
+  queryKey: readonly unknown[];
+  runId: string;
+}) {
   const state = mapIngestionItemState(item);
   const retryable = itemRetryable(item);
   return (
@@ -411,13 +432,15 @@ function RunItem({ currentSearch, item, runId }: { currentSearch: string; item: 
           <span key={warning.warning_id}>
             {ru.documents.run.warning
               .replace('{code}', warning.code)
-              .replace('{stage}', warning.stage)}
+              .replace('{stage}', warning.stage)}{' '}
+            · {ru.documents.run.warningId}: <code>{warning.warning_id}</code>
           </span>
         ))}
         {item.failures.map((failure) => (
           <span key={failure.failure_id}>
             {ru.documents.run.failure.replace('{code}', failure.code).replace('{stage}', failure.stage)} ·{' '}
-            {failure.retryable ? ru.documents.run.failureRetryable : ru.documents.run.failureFinal}
+            {failure.retryable ? ru.documents.run.failureRetryable : ru.documents.run.failureFinal} ·{' '}
+            {ru.documents.run.failureId}: <code>{failure.failure_id}</code>
           </span>
         ))}
         {item.retryable ? <span>{ru.documents.run.retryable}</span> : null}
@@ -426,6 +449,20 @@ function RunItem({ currentSearch, item, runId }: { currentSearch: string; item: 
         </span>
         {item.processing_receipt ? <ReceiptView receipt={item.processing_receipt} /> : null}
       </div>
+      {item.retryable && item.source_object_id && item.source_revision_id
+        ? item.failures.filter((failure) => failure.retryable).map((failure) => (
+            <ProcessingCommandAction
+              client={client}
+              currentRevisionId={item.source_revision_id!}
+              key={failure.failure_id}
+              mode={{ kind: 'retry', failureId: failure.failure_id, retryable: failure.retryable }}
+              processingReceiptId={item.processing_receipt?.receipt_id}
+              queryKey={queryKey}
+              sourceObjectId={item.source_object_id!}
+              sourceRevisionId={item.source_revision_id!}
+            />
+          ))
+        : null}
       <Link
         className={styles.rowLink}
         to={{ pathname: `/runs/${runId}`, search: currentSearch }}

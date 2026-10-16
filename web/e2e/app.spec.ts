@@ -161,6 +161,199 @@ test('test_ingestion_run_displays_partial_outcomes_retryability_and_safe_diagnos
   await expect(page.locator('body')).not.toContainText(/provider|secret|stack|customer/i);
 });
 
+test('test_document_retry_polls_durable_operation_and_reloads_its_run', async ({ page }) => {
+  await installControlledRunReadModels(page);
+  const operationId = '80000000-0000-4000-8000-000000000001';
+  const retryRunId = '80000000-0000-4000-8000-000000000002';
+  const retryItemId = '80000000-0000-4000-8000-000000000003';
+  const retrySourceObjectId = '80000000-0000-4000-8000-000000000004';
+  const retryRevisionId = '80000000-0000-4000-8000-000000000005';
+  const failureId = '60000000-0000-0000-0000-000000000002';
+  const commandRequests: Array<{ body: string; headers: Record<string, string>; url: string }> = [];
+  let commandReady = false;
+  await page.route(`**/api/v1/ingestion/runs/${firstDocument}`, async (route) => {
+    const status = controlledPartialRunStatus();
+    const failed = status.items[1]!;
+    failed.source_object_id = retrySourceObjectId;
+    failed.source_revision_id = retryRevisionId;
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(status), status: 200 });
+  });
+  await page.route('**/api/v1/documents/processing/retry', async (route) => {
+    const request = route.request();
+    commandRequests.push({ body: request.postData() ?? '', headers: request.headers(), url: request.url() });
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(processingCommandReceipt({
+      failureIds: [], itemId: retryItemId, operationId, runId: retryRunId, sourceObjectId: retrySourceObjectId,
+      sourceRevisionId: retryRevisionId, status: 'accepted',
+    })), status: 202 });
+  });
+  await page.route(`**/api/v1/documents/processing/operations/${operationId}`, async (route) => {
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(processingCommandReceipt({
+      failureIds: [], itemId: retryItemId, operationId, runId: retryRunId, sourceObjectId: retrySourceObjectId,
+      sourceRevisionId: retryRevisionId, status: commandReady ? 'ready' : 'accepted',
+    })), status: 200 });
+  });
+  await page.route(`**/api/v1/ingestion/runs/${retryRunId}`, async (route) => {
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+      items: [controlledUploadItem({
+        input_identity: 'failed.txt', item_id: retryItemId, input_ordinal: 1, source_object_id: retrySourceObjectId,
+        source_revision_id: retryRevisionId, item_state: 'processed', processing: 'succeeded', status: 'succeeded',
+        terminal: true,
+      })],
+      run_id: retryRunId, run_state: 'completed', schema_version: 1, status: 'succeeded', terminal: true,
+    }), status: 200 });
+  });
+
+  await page.goto(`/runs/${firstDocument}?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`);
+  const failedFile = page.getByRole('listitem').filter({ hasText: 'failed.txt' });
+  await failedFile.getByRole('button', { name: 'Повторить обработку файла' }).click();
+  await expect(failedFile).toContainText('Команда в очереди. Обработка ещё не завершена.');
+  commandReady = true;
+  await page.reload();
+  const reloadedFailedFile = page.getByRole('listitem').filter({ hasText: 'failed.txt' });
+  await expect(reloadedFailedFile.getByRole('region', { name: 'Результат команды обработки' })).toContainText('Обработка завершена');
+  await expect(reloadedFailedFile).toContainText('Ошибка');
+  await expect(page.locator('body')).not.toContainText(/provider|stack|customer secret/i);
+  await expect(reloadedFailedFile.getByRole('link', { name: 'Открыть запуск обработки' })).toHaveAttribute(
+    'href', new RegExp(`/runs/${retryRunId}.*workspace=${salesWorkspace}.*environment=${stagingEnvironment}`),
+  );
+
+  expect(commandRequests).toHaveLength(1);
+  expect(commandRequests[0]?.url).toContain('/api/v1/documents/processing/retry');
+  expect(commandRequests[0]?.headers['idempotency-key']).toMatch(/^[0-9a-f-]{36}$/);
+  expect(commandRequests[0]?.headers['x-workspace-id']).toBe(salesWorkspace);
+  expect(commandRequests[0]?.headers['x-environment-id']).toBe(stagingEnvironment);
+  expect(JSON.parse(commandRequests[0]!.body)).toEqual({
+    expected_current_revision_id: retryRevisionId,
+    parent_failure_id: failureId,
+    parent_processing_receipt_id: '60000000-0000-4000-8000-000000000003',
+    source_object_id: retrySourceObjectId,
+    source_revision_id: retryRevisionId,
+  });
+
+  await reloadedFailedFile.getByRole('link', { name: 'Открыть запуск обработки' }).click();
+  await expect(page).toHaveURL(new RegExp(`/runs/${retryRunId}.*workspace=${salesWorkspace}`));
+  await page.reload();
+  await expect(page.getByRole('list', { name: 'Результаты файлов' })).toContainText('Готов');
+});
+
+test('test_document_reprocess_uses_current_revision_and_conflict_requires_refresh', async ({ page }) => {
+  const requests: Array<{ body: string; headers: Record<string, string> }> = [];
+  let returnReady = false;
+  await installControlledDocumentDetail(page);
+  await page.route('**/api/v1/documents/processing/reprocess', async (route) => {
+    const request = route.request();
+    requests.push({ body: request.postData() ?? '', headers: request.headers() });
+    if (returnReady) {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify(processingCommandReceipt({
+          failureIds: [], itemId: '80000000-0000-4000-8000-000000000003',
+          operationId: '80000000-0000-4000-8000-000000000001',
+          runId: '80000000-0000-4000-8000-000000000002',
+          sourceObjectId: firstDocument, sourceRevisionId: secondDocument, status: 'ready',
+          triggerKind: 'reprocess',
+        })),
+        status: 202,
+      });
+      return;
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        code: 'spine.processing.revision_conflict',
+        retryability: 'never',
+        safe_message: 'The selected revision is no longer current.',
+        schema_version: 1,
+        trace_id: traceId,
+        protected_detail: 'provider failure secret',
+      }),
+      status: 409,
+    });
+  });
+
+  await page.goto(`/knowledge/documents/${firstDocument}?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}&tab=revisions&revision=${secondDocument}`);
+  await page.getByRole('button', { name: 'Обработать текущую ревизию заново' }).click();
+  await expect(page.getByRole('alert')).toContainText('Команда конфликтует с текущим состоянием');
+  await expect(page.getByText('Обновите сведения о документе и проверьте текущую ревизию перед новой командой.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Обновить состояние ревизии' })).toBeVisible();
+  await expect(page.locator('body')).not.toContainText('provider failure secret');
+  expect(requests).toHaveLength(1);
+
+  returnReady = true;
+  await page.getByRole('button', { name: 'Обновить состояние ревизии' }).click();
+  await page.getByRole('button', { name: 'Обработать текущую ревизию заново' }).click();
+  await expect(page.getByRole('region', { name: 'Результат команды обработки' })).toContainText('Обработка завершена');
+  expect(requests).toHaveLength(2);
+  expect(requests[0]?.headers['x-workspace-id']).toBe(salesWorkspace);
+  expect(requests[0]?.headers['x-environment-id']).toBe(stagingEnvironment);
+  expect(JSON.parse(requests[0]!.body)).toMatchObject({
+    expected_current_revision_id: secondDocument,
+    processing_profile_reference: 'document-processing:r1',
+    source_object_id: firstDocument,
+    source_revision_id: secondDocument,
+  });
+});
+
+test('test_document_retry_replay_failed_cancelled_and_denied_states_are_safe', async ({ page }) => {
+  await installControlledRunReadModels(page);
+  const sourceObjectId = '80000000-0000-4000-8000-000000000004';
+  const sourceRevisionId = '80000000-0000-4000-8000-000000000005';
+  let commandCount = 0;
+  await page.route(`**/api/v1/ingestion/runs/${firstDocument}`, async (route) => {
+    const status = controlledPartialRunStatus();
+    const failed = status.items[1]!;
+    failed.source_object_id = sourceObjectId;
+    failed.source_revision_id = sourceRevisionId;
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(status), status: 200 });
+  });
+  await page.route('**/api/v1/documents/processing/retry', async (route) => {
+    commandCount += 1;
+    if (commandCount === 4) {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          code: 'spine.authorization.denied',
+          retryability: 'never',
+          safe_message: 'Доступ запрещён',
+          schema_version: 1,
+          trace_id: traceId,
+          protected_detail: 'provider failure secret',
+        }),
+        status: 403,
+      });
+      return;
+    }
+    const status = commandCount === 1 ? 'ready' : commandCount === 2 ? 'failed' : 'cancelled';
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(processingCommandReceipt({
+        failureIds: [], itemId: '80000000-0000-4000-8000-000000000003',
+        operationId: `80000000-0000-4000-8000-00000000000${commandCount}`,
+        runId: '80000000-0000-4000-8000-000000000002', sourceObjectId, sourceRevisionId,
+        status, replay: commandCount === 1,
+      })),
+      status: 202,
+    });
+  });
+
+  await page.goto(`/runs/${firstDocument}?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`);
+  const failedFile = page.getByRole('listitem').filter({ hasText: 'failed.txt' });
+  const retry = failedFile.getByRole('button', { name: 'Повторить обработку файла' });
+  await retry.click();
+  await expect(failedFile.getByRole('region', { name: 'Результат команды обработки' })).toContainText('Обработка завершена');
+  await expect(failedFile).toContainText('Показан сохранённый результат этой команды.');
+
+  await retry.click();
+  await expect(failedFile.getByRole('region', { name: 'Результат команды обработки' })).toContainText('Ошибка обработки');
+  await retry.click();
+  await expect(failedFile.getByRole('region', { name: 'Результат команды обработки' })).toContainText('Обработка отменена');
+  await retry.click();
+  await expect(failedFile.getByRole('alert')).toContainText('Доступ запрещён');
+  await expect(page.locator('body')).not.toContainText('provider failure secret');
+  await expect(failedFile.getByRole('button', { name: 'Повторить ту же команду' })).toHaveCount(0);
+  expect(commandCount).toBe(4);
+});
+
 async function installControlledRunReadModels(page: Page) {
   await page.route('**/api/v1/ingestion/runs', async (route) => {
     const request = route.request();
@@ -940,5 +1133,33 @@ function controlledPartialRunStatus(): components['schemas']['BatchIngestionStat
     schema_version: 1,
     status: 'partial',
     terminal: true,
+  };
+}
+
+function processingCommandReceipt(input: {
+  failureIds: string[];
+  itemId: string;
+  operationId: string;
+  runId: string;
+  sourceObjectId: string;
+  sourceRevisionId: string;
+  status: components['schemas']['ProcessingCommandStatus'];
+  triggerKind?: components['schemas']['ProcessingCommandResponse']['trigger_kind'];
+  replay?: boolean;
+}): components['schemas']['ProcessingCommandResponse'] {
+  return {
+    failure_ids: input.failureIds,
+    item_id: input.itemId,
+    next_action: input.status === 'ready' ? 'none' : 'poll',
+    operation_id: input.operationId,
+    processing_receipt_id: input.status === 'ready' ? '80000000-0000-4000-8000-000000000006' : null,
+    replay: input.replay ?? false,
+    run_id: input.runId,
+    schema_version: 1,
+    source_object_id: input.sourceObjectId,
+    source_revision_id: input.sourceRevisionId,
+    status: input.status,
+    status_url: `/api/v1/documents/processing/operations/${input.operationId}`,
+    trigger_kind: input.triggerKind ?? 'retry',
   };
 }

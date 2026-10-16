@@ -22,6 +22,7 @@ import { formatDate } from './format';
 import { ContentInspectionTab } from './ParsedContentInspector';
 import { ProjectionStatusPanel } from './ProjectionStatusPanel';
 import { loadRevisionHistory } from './revision-api';
+import { ProcessingCommandAction } from './ProcessingCommandAction';
 import styles from './DocumentDetailPage.module.css';
 
 type DocumentSnapshot = components['schemas']['DocumentSnapshot'];
@@ -248,6 +249,7 @@ function DocumentOverview({
           client={client}
           document={document}
           documentId={documentId}
+          queryKey={queryKey('document-processing-history')}
           searchParams={searchParams}
           scope={scope}
         />
@@ -369,12 +371,14 @@ function RevisionTimeline({
   client,
   document,
   documentId,
+  queryKey,
   searchParams,
   scope,
 }: {
   client: ReturnType<typeof createScopedApiClient>;
   document: DocumentSnapshot;
   documentId: string;
+  queryKey: readonly unknown[];
   searchParams: URLSearchParams;
   scope: { environmentId: string; workspaceId: string };
 }) {
@@ -451,7 +455,10 @@ function RevisionTimeline({
       <p className={styles.protectedNotice} role="note">{ru.documents.protectedRevisionDetails}</p>
       {selectedRevision ? (
         <SelectedRevision
+          client={client}
+          document={document}
           documentId={documentId}
+          queryKey={queryKey}
           revision={selectedRevision}
           searchParams={safeSearch}
         />
@@ -510,11 +517,17 @@ function RevisionTimeline({
 }
 
 function SelectedRevision({
+  client,
+  document,
   documentId,
+  queryKey,
   revision,
   searchParams,
 }: {
+  client: ReturnType<typeof createScopedApiClient>;
+  document: DocumentSnapshot;
   documentId: string;
+  queryKey: readonly unknown[];
   revision: RevisionSnapshot;
   searchParams: URLSearchParams;
 }) {
@@ -546,6 +559,19 @@ function SelectedRevision({
           </Link>
         ))}
       </div>
+      {revision.kind === 'content' &&
+      revision.lifecycle === 'current' &&
+      document.current_revision?.source_revision_id === revision.source_revision_id ? (
+        <ProcessingCommandAction
+          client={client}
+          currentRevisionId={revision.source_revision_id}
+          mode={{ kind: 'reprocess' }}
+          processingReceiptId={revision.processing_references.at(-1)?.processing_receipt_id}
+          queryKey={queryKey}
+          sourceObjectId={document.source_object_id}
+          sourceRevisionId={revision.source_revision_id}
+        />
+      ) : null}
     </section>
   );
 }

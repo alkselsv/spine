@@ -1,0 +1,62 @@
+.panel {
+  display: grid;
+  justify-items: start;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.action {
+  border: 1px solid var(--color-border, #64748b);
+  border-radius: 0.5rem;
+  background: var(--color-surface, #fff);
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0.55rem 0.8rem;
+}
+
+.action:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.receipt {
+  width: 100%;
+  border: 1px solid var(--color-border, #cbd5e1);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+}
+
+.receipt dl {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.6rem 0;
+}
+
+.receipt dl > div {
+  display: grid;
+  grid-template-columns: minmax(8rem, auto) 1fr;
+  gap: 0.5rem;
+}
+
+.receipt dt {
+  color: var(--color-text-muted, #475569);
+}
+
+.receipt dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.receipt p {
+  margin: 0.5rem 0;
+}
+
+.receipt a {
+  color: var(--color-link, #1d4ed8);
+}
+
+.feedback {
+  display: grid;
+  gap: 0.5rem;
+}

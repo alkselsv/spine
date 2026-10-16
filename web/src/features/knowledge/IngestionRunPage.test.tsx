@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 
@@ -64,7 +65,9 @@ describe('Knowledge ingestion run view', () => {
     expect(detailView.getByText(scope.workspaceId)).toBeVisible();
     expect(detailView.getByText('Частично завершён')).toBeVisible();
     expect(detailView.getByText('Частичное')).toBeVisible();
-    expect(detailView.getAllByText('Предупреждение: parser.warning (parse)').length).toBeGreaterThan(0);
+    expect(detailView.getAllByText((_, element) => element?.textContent?.startsWith('Предупреждение: parser.warning (parse)') ?? false).length).toBeGreaterThan(0);
+    expect(detailView.getAllByText('60000000-0000-0000-0000-000000000003').length).toBeGreaterThan(0);
+    expect(detailView.getAllByText('60000000-0000-0000-0000-000000000002').length).toBeGreaterThan(0);
     expect(detailView.getByText(/Ошибка: parser\.invalid \(parse\)/)).toBeVisible();
     expect(detailView.getByText(/Ошибка: parser\.final \(index\).*Повтор этой ошибки запрещён/)).toBeVisible();
     expect(detailView.getByText('Повтор операции разрешён')).toBeVisible();
@@ -84,6 +87,74 @@ describe('Knowledge ingestion run view', () => {
       .find((url) => url.pathname === '/api/v1/ingestion/runs');
     expect(historyRequest?.searchParams.get('cursor')).toBe('restored-cursor');
     expect(router.state.location.search).toContain(`workspace=${scope.workspaceId}`);
+  });
+
+  it('test_retry_action_targets_only_retryable_failure_and_preserves_file_outcomes', async () => {
+    const requests: Request[] = [];
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (input) => {
+      const request = input as Request;
+      requests.push(request);
+      const url = new URL(request.url);
+      if (url.pathname === `/api/v1/ingestion/runs/${runId}`) {
+        const response = runStatus();
+        response.items[1] = makeBatchItem({
+          acceptance: 'accepted',
+          attempt: 2,
+          coverage: 'failed',
+          failures: [
+            {
+              attempt: 2,
+              code: 'parser.invalid',
+              failure_id: '60000000-0000-4000-8000-000000000002',
+              retryable: true,
+              stage: 'parse',
+            },
+            {
+              attempt: 2,
+              code: 'parser.final',
+              failure_id: '60000000-0000-4000-8000-000000000004',
+              retryable: false,
+              stage: 'index',
+            },
+          ],
+          item_id: secondItemId,
+          input_identity: 'file-2',
+          input_ordinal: 2,
+          processing: 'failed',
+          retryable: true,
+          source_object_id: '30000000-0000-4000-8000-000000000010',
+          source_revision_id: '40000000-0000-4000-8000-000000000010',
+          status: 'failed',
+        });
+        return Response.json(response);
+      }
+      if (url.pathname === '/api/v1/ingestion/runs') return Response.json(runHistoryCollection());
+      if (url.pathname === '/api/v1/documents/processing-history') return Response.json(processingHistoryCollection());
+      return Response.json(processingCommandResponse(url.pathname.includes('/operations/')));
+    });
+    vi.stubGlobal('fetch', fetch);
+    vi.stubGlobal('crypto', { randomUUID: () => 'run-retry-command-key' });
+
+    renderRun(`/runs/${runId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}`);
+    const file = await screen.findByText('file-2');
+    const fileItem = file.closest('li');
+    expect(fileItem).not.toBeNull();
+    expect(within(fileItem!).getAllByRole('button', { name: 'Повторить обработку файла' })).toHaveLength(1);
+    const unaffectedFile = screen.getAllByText('file-1')[0]?.closest('li');
+    expect(unaffectedFile).not.toBeNull();
+    expect(within(unaffectedFile!).getByText('Частичный результат')).toBeVisible();
+    await userEvent.setup().click(within(fileItem!).getByRole('button', { name: 'Повторить обработку файла' }));
+
+    expect(await within(fileItem!).findByText('Обработка завершена')).toBeVisible();
+    const post = requests.find((request) => request.method === 'POST');
+    expect(post?.headers.get('Idempotency-Key')).toBe('run-retry-command-key');
+    expect(await post?.json()).toMatchObject({
+      expected_current_revision_id: '40000000-0000-4000-8000-000000000010',
+      parent_failure_id: '60000000-0000-4000-8000-000000000002',
+      source_object_id: '30000000-0000-4000-8000-000000000010',
+      source_revision_id: '40000000-0000-4000-8000-000000000010',
+    });
+    expect(screen.getAllByText('file-1').length).toBeGreaterThan(0);
   });
 
   it('test_history_pagination_updates_and_restores_both_cursor_parameters', async () => {
@@ -362,6 +433,25 @@ function runStatus(): components['schemas']['BatchIngestionStatusResponse'] {
     schema_version: 1,
     status: 'partial',
     terminal: true,
+  };
+}
+
+function processingCommandResponse(ready: boolean) {
+  const operationId = '80000000-0000-4000-8000-000000000001';
+  return {
+    failure_ids: [],
+    item_id: '80000000-0000-4000-8000-000000000002',
+    next_action: ready ? 'none' : 'poll',
+    operation_id: operationId,
+    processing_receipt_id: ready ? '80000000-0000-4000-8000-000000000003' : null,
+    replay: false,
+    run_id: '90000000-0000-4000-8000-000000000001',
+    schema_version: 1,
+    source_object_id: '30000000-0000-4000-8000-000000000010',
+    source_revision_id: '40000000-0000-4000-8000-000000000010',
+    status: ready ? 'ready' : 'accepted',
+    status_url: `/api/v1/documents/processing/operations/${operationId}`,
+    trigger_kind: 'retry',
   };
 }
 
