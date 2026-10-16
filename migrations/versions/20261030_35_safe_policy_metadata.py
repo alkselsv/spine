@@ -49,12 +49,6 @@ def _scope_policy(table: str, role: str) -> None:
 def upgrade() -> None:
     runtime = _role("runtime_role")
     uuid_type = postgresql.UUID(as_uuid=True)
-    op.create_unique_constraint(
-        "uq_policy_activations_scope_id",
-        "policy_activations",
-        ["workspace_id", "environment_id", "source_object_id", "policy_activation_id"],
-        schema=SCHEMA,
-    )
     op.create_table(
         "source_security_domain_bindings",
         sa.Column("binding_id", uuid_type, nullable=False),
@@ -102,18 +96,8 @@ def upgrade() -> None:
             name="fk_source_security_domain_bindings_predecessor",
         ),
         sa.ForeignKeyConstraint(
-            [
-                "workspace_id",
-                "environment_id",
-                "source_object_id",
-                "policy_activation_id",
-            ],
-            [
-                f"{SCHEMA}.policy_activations.workspace_id",
-                f"{SCHEMA}.policy_activations.environment_id",
-                f"{SCHEMA}.policy_activations.source_object_id",
-                f"{SCHEMA}.policy_activations.policy_activation_id",
-            ],
+            ["policy_activation_id"],
+            [f"{SCHEMA}.policy_activations.policy_activation_id"],
             name="fk_source_security_domain_bindings_activation",
         ),
         sa.CheckConstraint(
@@ -188,9 +172,3 @@ def downgrade() -> None:
         "access_policy_versions", "security_domain_binding_id", schema=SCHEMA
     )
     op.drop_table("source_security_domain_bindings", schema=SCHEMA)
-    op.drop_constraint(
-        "uq_policy_activations_scope_id",
-        "policy_activations",
-        schema=SCHEMA,
-        type_="unique",
-    )

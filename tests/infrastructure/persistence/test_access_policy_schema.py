@@ -33,5 +33,4 @@ def test_safe_policy_metadata_migration_adds_immutable_binding_head() -> None:
     assert "source_security_domain_bindings" in source
     assert "ENABLE ROW LEVEL SECURITY" in source
     assert "BEFORE UPDATE OR DELETE" in source
-    assert "uq_policy_activations_scope_id" in source
     assert "fk_access_policy_versions_security_domain_binding" not in source
