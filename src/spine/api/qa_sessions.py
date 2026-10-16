@@ -250,11 +250,11 @@ def install_qa_session_routes(
         return _response(request_context, _message_response(message))
 
     policy = _policy("qa_sessions")
-    add_protected_api_route(application, "/api/v1/qa/sessions", create_session_endpoint, route_id="qa.sessions.create", policy=policy, methods=["POST"], response_model=ApiCommandResult[QASessionResponse])
+    add_protected_api_route(application, "/api/v1/qa/sessions", create_session_endpoint, route_id="qa.sessions.create", policy=policy, methods=["POST"], response_model=ApiCommandResult[QASessionResponse], openapi_extra=_idempotency_openapi_extra())
     add_protected_api_route(application, "/api/v1/qa/sessions", list_sessions_endpoint, route_id=_SESSIONS_OPERATION, policy=policy, methods=["GET"], response_model=ApiCollectionEnvelope[QASessionResponse])
     add_protected_api_route(application, "/api/v1/qa/sessions/{session_id}", get_session_endpoint, route_id="qa.sessions.detail", policy=policy, methods=["GET"], response_model=ApiResponseEnvelope[QASessionResponse])
-    add_protected_api_route(application, "/api/v1/qa/sessions/{session_id}/restore", restore_session_endpoint, route_id="qa.sessions.restore", policy=policy, methods=["POST"], response_model=ApiCommandResult[QASessionResponse])
-    add_protected_api_route(application, "/api/v1/qa/sessions/{session_id}/messages", create_message_endpoint, route_id="qa.messages.create", policy=policy, methods=["POST"], response_model=ApiCommandResult[QAMessageResponse])
+    add_protected_api_route(application, "/api/v1/qa/sessions/{session_id}/restore", restore_session_endpoint, route_id="qa.sessions.restore", policy=policy, methods=["POST"], response_model=ApiCommandResult[QASessionResponse], openapi_extra=_idempotency_openapi_extra())
+    add_protected_api_route(application, "/api/v1/qa/sessions/{session_id}/messages", create_message_endpoint, route_id="qa.messages.create", policy=policy, methods=["POST"], response_model=ApiCommandResult[QAMessageResponse], openapi_extra=_idempotency_openapi_extra())
     add_protected_api_route(application, "/api/v1/qa/sessions/{session_id}/messages", list_messages_endpoint, route_id=_MESSAGES_OPERATION, policy=policy, methods=["GET"], response_model=ApiCollectionEnvelope[QAMessageResponse])
     add_protected_api_route(application, "/api/v1/qa/sessions/{session_id}/messages/{message_id}", get_message_endpoint, route_id="qa.messages.detail", policy=policy, methods=["GET"], response_model=ApiResponseEnvelope[QAMessageResponse])
 
@@ -385,6 +385,19 @@ def _policy(operation: str) -> RouteAuthorizationPolicy:
         purpose=PersistencePurpose("knowledge_control"),
         operation=PersistenceOperation(operation),
     )
+
+
+def _idempotency_openapi_extra() -> dict[str, object]:
+    return {
+        "parameters": [
+            {
+                "name": "Idempotency-Key",
+                "in": "header",
+                "required": True,
+                "schema": {"type": "string", "minLength": 1, "maxLength": 255},
+            }
+        ]
+    }
 
 
 __all__ = [

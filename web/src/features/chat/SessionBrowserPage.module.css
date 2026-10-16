@@ -1,0 +1,195 @@
+.page {
+  max-width: 90rem;
+}
+
+.pageHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-6);
+  margin-bottom: var(--space-6);
+}
+
+.eyebrow {
+  margin: 0 0 var(--space-2);
+  color: var(--color-muted);
+  font-size: 0.72rem;
+  font-weight: 750;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.page h2 {
+  margin-bottom: var(--space-3);
+  font-size: clamp(1.7rem, 3vw, 2.5rem);
+  letter-spacing: -0.04em;
+}
+
+.lede {
+  max-width: 45rem;
+  margin: 0;
+  color: var(--color-muted);
+  line-height: 1.6;
+}
+
+.primaryButton,
+.secondaryButton {
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  padding: 0.7rem 1rem;
+  background: var(--color-surface);
+  color: var(--color-link);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primaryButton {
+  border-color: transparent;
+  background: var(--color-link);
+  color: white;
+}
+
+.primaryButton:hover,
+.primaryButton:focus-visible,
+.secondaryButton:hover,
+.secondaryButton:focus-visible {
+  filter: brightness(0.95);
+}
+
+.primaryButton:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.sessionList,
+.messageList {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.sessionLink {
+  display: grid;
+  gap: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: 0.7rem;
+  padding: var(--space-4);
+  background: var(--color-surface);
+  color: var(--color-ink);
+  text-decoration: none;
+}
+
+.sessionLink:hover,
+.sessionLink:focus-visible {
+  background: var(--color-surface-strong);
+}
+
+.sessionHeading,
+.messageMeta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.sessionStatus,
+.messageMeta span {
+  color: var(--color-muted);
+  font-size: 0.82rem;
+}
+
+.sessionStatus[data-state='active'] {
+  color: var(--color-success, #247c4b);
+}
+
+.sessionDate,
+.pageHint {
+  color: var(--color-muted);
+  font-size: 0.82rem;
+}
+
+.sessionList + .secondaryButton,
+.messageList + .secondaryButton,
+.messagePanel > .secondaryButton {
+  margin-top: var(--space-4);
+}
+
+.recoveryPanel,
+.messagePanel {
+  display: grid;
+  gap: var(--space-4);
+  margin-top: var(--space-6);
+  border: 1px solid var(--color-border);
+  border-radius: 0.8rem;
+  padding: var(--space-5);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+}
+
+.recoveryPanel > span {
+  color: var(--color-muted);
+  line-height: 1.5;
+}
+
+.recoveryPanel .primaryButton {
+  justify-self: start;
+}
+
+.messagePanel h3 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.messageCard {
+  display: grid;
+  gap: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: 0.7rem;
+  padding: var(--space-4);
+  background: var(--color-surface-strong);
+  overflow-wrap: anywhere;
+}
+
+.messageCard p {
+  margin: var(--space-2) 0 0;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.messageMeta time,
+.messageLabel,
+.identity > span {
+  color: var(--color-muted);
+  font-size: 0.78rem;
+}
+
+.messageLabel {
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.protectedNotice {
+  color: var(--color-muted);
+}
+
+.identity {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-6);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-4);
+}
+
+.identity code {
+  overflow-wrap: anywhere;
+  font-size: 0.82rem;
+}
+
+@media (max-width: 720px) {
+  .pageHeader,
+  .sessionHeading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

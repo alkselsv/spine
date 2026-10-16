@@ -14,6 +14,8 @@ export type AuthenticationStatus =
 export interface AuthState {
   status: AuthenticationStatus;
   role?: 'administrator' | 'member';
+  /** Stable non-secret version that changes when the bearer credential or principal changes. */
+  identityVersion?: string;
   /**
    * The identity adapter injects the access token. The shell never accepts a
    * token from a route, request body or user-controlled scope.

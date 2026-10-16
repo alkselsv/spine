@@ -131,3 +131,22 @@ def test_generation_export_matches_backend_openapi_document(tmp_path: Path) -> N
         and parameter["required"] is True
         for parameter in recovery_operation["parameters"]
     )
+
+
+def test_qa_session_mutations_document_the_existing_idempotency_contract():
+    document = create_openapi_app().openapi()
+    operations = (
+        document["paths"]["/api/v1/qa/sessions"]["post"],
+        document["paths"]["/api/v1/qa/sessions/{session_id}/restore"]["post"],
+        document["paths"]["/api/v1/qa/sessions/{session_id}/messages"]["post"],
+    )
+
+    for operation in operations:
+        parameter = next(
+            parameter
+            for parameter in operation["parameters"]
+            if parameter["name"] == "Idempotency-Key"
+        )
+        assert parameter["in"] == "header"
+        assert parameter["required"] is True
+        assert parameter["schema"]["maxLength"] == 255

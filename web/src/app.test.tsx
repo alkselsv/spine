@@ -33,7 +33,7 @@ describe('application bootstrap', () => {
   });
 
   it('test_shell_exposes_scoped_context_as_a_labeled_accessible_group', () => {
-    const router = createMemoryRouter(appRoutes, { initialEntries: ['/chat/demo-session'] });
+    const router = createMemoryRouter(appRoutes, { initialEntries: ['/chat'] });
 
     renderApp(router);
 
@@ -108,7 +108,7 @@ describe('application bootstrap', () => {
     await user.click(screen.getByRole('link', { name: 'Знания' }));
     expect(router.state.location.pathname).toBe('/knowledge/documents');
     await user.click(screen.getByRole('link', { name: 'Чат' }));
-    expect(router.state.location.pathname).toBe('/chat/demo-session');
+    expect(router.state.location.pathname).toBe('/chat');
     await user.click(screen.getByRole('link', { name: 'Запуски' }));
     await waitFor(() => expect(router.state.location.pathname).toBe('/runs'));
     await user.click(screen.getByRole('link', { name: 'Настройки' }));
