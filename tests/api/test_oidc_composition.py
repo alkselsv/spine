@@ -52,7 +52,10 @@ class ImmediateAuditGate:
 
 class UnusedComposer:
     def bind_route(self, route_id: str) -> object:
-        if route_id == "system.health.summary":
+        if route_id in {
+            "system.health.summary",
+            "outbox.deliveries.quarantined",
+        }:
             return object()
         raise AssertionError(f"unexpected route binding: {route_id}")
 

@@ -173,6 +173,7 @@ class PostgreSQLOutboxDeliveryRepository:
                     ),
                     status=OutboxDeliveryStatus.PENDING.value,
                     attempt_count=0,
+                    correlation_id=row.correlation_id,
                     next_attempt_at=materialized_at,
                     version=0,
                     created_at=materialized_at,

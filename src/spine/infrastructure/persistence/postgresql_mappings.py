@@ -208,6 +208,7 @@ outbox_deliveries = Table(
     Column("lease_token", PostgreSQLUUID(as_uuid=True), nullable=True),
     Column("lease_expires_at", DateTime(timezone=True), nullable=True),
     Column("last_error_code", Text, nullable=True),
+    Column("correlation_id", PostgreSQLUUID(as_uuid=True), nullable=True),
     Column("delivered_at", DateTime(timezone=True), nullable=True),
     Column("quarantined_at", DateTime(timezone=True), nullable=True),
     Column("version", Integer, nullable=False),

@@ -13,6 +13,7 @@ import pytest_asyncio
 from pydantic import SecretStr
 from sqlalchemy import event, text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from spine.application.diagnostics.audit import AuditEventRegistry
@@ -42,6 +43,8 @@ from spine.application.persistence.delivery import (
 )
 from spine.application.persistence.outbox import OutboxIntent
 from spine.application.persistence.errors import AuditConflictError
+from spine.domain.common import EnvironmentKind
+from spine.domain.workspaces import Environment, Workspace
 from spine.infrastructure.db.migrations import upgrade_database
 from spine.infrastructure.db.operator import bootstrap_database_roles
 from spine.infrastructure.db.settings import (
@@ -50,7 +53,10 @@ from spine.infrastructure.db.settings import (
     OperatorDatabaseSettings,
 )
 from spine.infrastructure.db.test_harness import TestDatabaseProvision
-from spine.infrastructure.outbox import PostgreSQLOutboxDeliveryRepository
+from spine.infrastructure.outbox import (
+    PostgreSQLOutboxDeliveryInspection,
+    PostgreSQLOutboxDeliveryRepository,
+)
 from spine.infrastructure.diagnostics import (
     JsonLoggingDiagnosticSink,
     RecordingDiagnosticSink,
@@ -277,6 +283,185 @@ async def test_postgresql_claim_commits_a_bounded_lease_before_delivery(
     postgresql_delivery_adapter: DeliveryPersistenceAdapter,
 ) -> None:
     await contract_claim(postgresql_delivery_adapter)
+
+
+async def test_runtime_inspection_is_rls_scoped_safe_and_read_only(
+    postgresql_delivery_adapter: DeliveryPersistenceAdapter,
+    delivery_database: DeliveryDatabase,
+) -> None:
+    adapter = postgresql_delivery_adapter
+    runtime_sessions = async_sessionmaker(
+        delivery_database.runtime_engine,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=synthetic_uuid(6810),
+        secret=b"issue-365-delivery-inspection-boundary",
+    )
+    persistence = PostgreSQLPersistence(
+        session_factory=runtime_sessions,
+        context_verifier=boundary,
+        outbox_events=adapter.outbox_events,
+        audit_events=adapter.audit_events,
+    )
+    tenant_scopes = (
+        (synthetic_uuid(6811), synthetic_uuid(6812), synthetic_uuid(6813)),
+        (synthetic_uuid(6814), synthetic_uuid(6815), synthetic_uuid(6816)),
+    )
+    created: list[tuple[UUID, UUID, UUID]] = []
+    for workspace_id, environment_id, event_id in tenant_scopes:
+        workspace_context = boundary.interactive(
+            scope=WorkspaceScope(workspace_id=workspace_id),
+            acting_subject_id=synthetic_uuid(6817),
+            purpose=PersistencePurpose("outbox_inspection_test"),
+            operation=PersistenceOperation("create_test_scope"),
+            trace_id=synthetic_uuid(6818),
+        )
+        async with persistence.uow_factory(workspace_context) as uow:
+            await uow.workspaces.add(
+                Workspace(
+                    id=workspace_id,
+                    slug=f"outbox-inspection-{workspace_id.hex[-8:]}",
+                    display_name="Inspection test workspace",
+                )
+            )
+            await uow.environments.add(
+                Environment(
+                    id=environment_id,
+                    workspace_id=workspace_id,
+                    kind=EnvironmentKind.PRODUCTION,
+                    display_name="Production",
+                )
+            )
+            await uow.commit()
+        context = boundary.interactive(
+            scope=EnvironmentScope(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+            ),
+            acting_subject_id=synthetic_uuid(6819),
+            purpose=PersistencePurpose("outbox_inspection_test"),
+            operation=PersistenceOperation("append_test_intent"),
+            trace_id=synthetic_uuid(6820),
+        )
+        async with persistence.uow_factory(context) as uow:
+            await uow.outbox.append(
+                intent(
+                    adapter,
+                    event_id=event_id,
+                    workspace_id=workspace_id,
+                    environment_id=environment_id,
+                    producer_deduplication_id=None,
+                    correlation_id=synthetic_uuid(6825 + len(created)),
+                    trace_id=context.trace_id,
+                )
+            )
+            await uow.commit()
+        created.append((workspace_id, environment_id, event_id))
+
+    claim_time = datetime(2026, 10, 16, 12, tzinfo=timezone.utc)
+    claims = await adapter.delivery_repository.claim_due(
+        limit=2,
+        worker_identity="inspection_test_worker",
+        claimed_at=claim_time,
+        lease_duration=timedelta(seconds=30),
+    )
+    assert len(claims) == 2
+    for claim in claims:
+        await adapter.delivery_repository.quarantine(
+            claim,
+            quarantined_at=claim_time + timedelta(seconds=1),
+            error_code="consumer.unavailable",
+        )
+
+    inspector = PostgreSQLOutboxDeliveryInspection(
+        session_factory=runtime_sessions,
+        context_verifier=boundary,
+    )
+
+    def inspection_context(workspace_id: UUID, environment_id: UUID):
+        return boundary.interactive(
+            scope=EnvironmentScope(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+            ),
+            acting_subject_id=synthetic_uuid(6821),
+            purpose=PersistencePurpose("outbox_inspection"),
+            operation=PersistenceOperation("inspect_quarantined_deliveries"),
+            trace_id=synthetic_uuid(6822),
+        )
+
+    workspace_id, environment_id, event_id = created[0]
+    async with delivery_database.migration_engine.connect() as connection:
+        before = (
+            await connection.execute(
+                text(
+                    "SELECT row_to_json(delivery)::text "
+                    "FROM spine.outbox_deliveries AS delivery "
+                    "WHERE event_id = :event_id"
+                ),
+                {"event_id": event_id},
+            )
+        ).scalar_one()
+    page = await inspector.list_quarantined(
+        context=inspection_context(workspace_id, environment_id),
+        limit=10,
+        after=None,
+    )
+    repeated = await inspector.list_quarantined(
+        context=inspection_context(workspace_id, environment_id),
+        limit=10,
+        after=None,
+    )
+    async with delivery_database.migration_engine.connect() as connection:
+        after = (
+            await connection.execute(
+                text(
+                    "SELECT row_to_json(delivery)::text "
+                    "FROM spine.outbox_deliveries AS delivery "
+                    "WHERE event_id = :event_id"
+                ),
+                {"event_id": event_id},
+            )
+        ).scalar_one()
+
+    assert page.state == "complete"
+    assert len(page.items) == 1
+    assert page.items[0].event_id == event_id
+    assert page.items[0].workspace_id == workspace_id
+    assert page.items[0].environment_id == environment_id
+    assert page.items[0].correlation_id == synthetic_uuid(6825)
+    assert repeated == page
+    assert before == after
+    runtime_session = runtime_sessions()
+    try:
+        with pytest.raises(ProgrammingError):
+            async with runtime_session.begin():
+                await runtime_session.execute(
+                    text(
+                        "SELECT payload FROM spine.outbox_intents "
+                        "WHERE event_id = :event_id"
+                    ),
+                    {"event_id": event_id},
+                )
+    finally:
+        await runtime_session.close()
+    with pytest.raises(PermissionError):
+        await inspector.list_quarantined(
+            context=boundary.worker(
+                scope=EnvironmentScope(
+                    workspace_id=workspace_id,
+                    environment_id=environment_id,
+                ),
+                service_principal_id=synthetic_uuid(6823),
+                purpose=PersistencePurpose("outbox_inspection"),
+                operation=PersistenceOperation("inspect_quarantined_deliveries"),
+                trace_id=synthetic_uuid(6824),
+            ),
+            limit=10,
+            after=None,
+        )
 
 
 async def test_postgresql_materialize_creates_bounded_pending_state(

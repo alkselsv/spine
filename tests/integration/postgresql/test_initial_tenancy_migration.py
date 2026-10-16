@@ -280,6 +280,7 @@ DELIVERY_COLUMNS = {
         "lease_token",
         "lease_expires_at",
         "last_error_code",
+        "correlation_id",
         "delivered_at",
         "quarantined_at",
         "version",
@@ -4722,13 +4723,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261030_35_safe_policy_metadata.py",
         "20261030_36_feedback_records.py",
         "20261031_37_processing_commands.py",
+        "20261101_38_outbox_delivery_correlation_reference.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261031_38_injected_failure.py").write_text(
+    (target / "versions" / "20261101_39_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261031_38'\n"
-        "down_revision = '20261031_37'\n"
+        "revision = '20261101_39'\n"
+        "down_revision = '20261101_38'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

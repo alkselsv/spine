@@ -3,5 +3,11 @@
 from spine.infrastructure.outbox.delivery import (
     PostgreSQLOutboxDeliveryRepository,
 )
+from spine.infrastructure.outbox.inspection import (
+    PostgreSQLOutboxDeliveryInspection,
+)
 
-__all__ = ["PostgreSQLOutboxDeliveryRepository"]
+__all__ = [
+    "PostgreSQLOutboxDeliveryInspection",
+    "PostgreSQLOutboxDeliveryRepository",
+]

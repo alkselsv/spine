@@ -39,6 +39,7 @@ WORKSPACE_ID_HEADER = "X-Workspace-ID"
 ENVIRONMENT_ID_HEADER = "X-Environment-ID"
 _AUTHORIZED_CONTEXT_STATE_KEY = "authorized_request_context"
 _AUTHORIZED_PERSISTENCE_CONTEXT_STATE_KEY = "authorized_persistence_context"
+_AUTHORIZATION_AUDIT_EVENT_ID_STATE_KEY = "authorization_audit_event_id"
 _BEARER = HTTPBearer(auto_error=False, scheme_name="BearerAuth")
 _PROTECTED_OPENAPI = {
     "security": [{"BearerAuth": []}],
@@ -292,6 +293,15 @@ async def get_authorized_request_context(
     if not isinstance(context, AuthorizedRequestContext):
         raise RuntimeError("Trusted authorized request context is unavailable.")
     return cast(AuthorizedRequestContext[DiagnosticContext], context)
+
+
+async def get_authorization_audit_event_id(request: Request) -> UUID:
+    """Return the immutable allow-audit reference for this authorized request."""
+
+    audit_event_id = getattr(request.state, _AUTHORIZATION_AUDIT_EVENT_ID_STATE_KEY, None)
+    if not isinstance(audit_event_id, UUID):
+        raise RuntimeError("Trusted authorization audit reference is unavailable.")
+    return UUID(int=audit_event_id.int)
 
 
 async def get_authorized_persistence_context(request: Request) -> TrustedPersistenceContext:
@@ -573,11 +583,15 @@ def _authorized_route_app(
             state = scope.setdefault("state", {})
             state[_AUTHORIZED_CONTEXT_STATE_KEY] = authorized.request_context
             state[_AUTHORIZED_PERSISTENCE_CONTEXT_STATE_KEY] = authorized.persistence_context
+            audit_event_id = getattr(authorized, "authorization_audit_event_id", None)
+            if isinstance(audit_event_id, UUID):
+                state[_AUTHORIZATION_AUDIT_EVENT_ID_STATE_KEY] = audit_event_id
             try:
                 await route_app(scope, receive, send)
             finally:
                 state.pop(_AUTHORIZED_CONTEXT_STATE_KEY, None)
                 state.pop(_AUTHORIZED_PERSISTENCE_CONTEXT_STATE_KEY, None)
+                state.pop(_AUTHORIZATION_AUDIT_EVENT_ID_STATE_KEY, None)
 
     return authorized_app
 
@@ -635,6 +649,7 @@ __all__ = [
     "add_protected_api_route",
     "get_authorized_request_context",
     "get_authorized_persistence_context",
+    "get_authorization_audit_event_id",
     "get_bearer_credential",
     "install_authorization_openapi",
     "validate_api_route_authorization",
