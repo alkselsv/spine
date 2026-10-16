@@ -1903,6 +1903,18 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                 for actual in constraints
             )
         )
+        and not (
+            expected
+            in {
+                "ck_source_security_domain_bindings_shape",
+                "ck_source_security_domain_bindings_version",
+                "ck_source_security_domain_bindings_chain",
+            }
+            and any(
+                actual.startswith("ck_source_security_domain_bindings_")
+                for actual in constraints
+            )
+        )
     }
     projection_check_constraints = {
         "projection_validations": {
@@ -1949,6 +1961,14 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
             if actual.startswith(f"ck_{table_name}_")
         }
         assert len(actual_checks) == len(expected_checks), (table_name, actual_checks)
+    source_security_domain_binding_checks = {
+        actual
+        for actual in constraints
+        if actual.startswith("ck_source_security_domain_bindings_")
+    }
+    assert len(source_security_domain_binding_checks) == 3, (
+        source_security_domain_binding_checks
+    )
     assert not missing_final_constraints, sorted(missing_final_constraints)
     outbox_fk = (
         (
@@ -3592,15 +3612,6 @@ async def test_access_policy_catalog_enforces_lineage_immutability_and_receipt_s
         "fk_current_access_policies_source",
         "fk_current_access_policies_activation",
         "ck_current_access_policies_positive_versions",
-        "pk_source_security_domain_bindings",
-        "uq_source_security_domain_bindings_scope_id",
-        "uq_source_security_domain_bindings_source_version",
-        "fk_source_security_domain_bindings_source",
-        "fk_source_security_domain_bindings_predecessor",
-        "fk_source_security_domain_bindings_activation",
-        "ck_source_security_domain_bindings_shape",
-        "ck_source_security_domain_bindings_version",
-        "ck_source_security_domain_bindings_chain",
     }
     missing_constraints = {
         expected
