@@ -39,6 +39,7 @@ def intent(
     event_id: UUID | None,
     environment_id: UUID | None = None,
     producer_deduplication_id: str | None = "workspace:create:v1",
+    correlation_id: UUID | None = None,
     trace_id: UUID,
 ):
     return adapter.outbox_events.build_intent(
@@ -57,6 +58,7 @@ def intent(
         ),
         producer_deduplication_id=producer_deduplication_id,
         trace_id=trace_id,
+        correlation_id=correlation_id,
     )
 
 

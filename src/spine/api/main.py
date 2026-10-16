@@ -22,6 +22,7 @@ from spine.api.health import (
     ReadinessResponse,
     install_health_summary_route,
 )
+from spine.api.outbox_inspection import install_outbox_inspection_route
 from spine.api.batch_ingestion import install_batch_ingestion_routes
 from spine.api.ingestion import install_ingestion_routes
 from spine.api.ingestion_history import install_ingestion_history_routes
@@ -58,6 +59,7 @@ from spine.application.batch_ingestion_api import BatchDocumentIngestionService
 from spine.application.ingestion_history import IngestionHistoryService
 from spine.application.document_queries import DocumentQueryService
 from spine.application.health_summary import HealthStatusServices
+from spine.application.outbox_inspection import OutboxDeliveryInspectionService
 from spine.application.projection_control import (
     ProjectionRecoveryCommandService,
     ProjectionStatusService,
@@ -204,6 +206,8 @@ def create_app(
     health_status_services: HealthStatusServices | None = None,
     build_version: str | None = None,
     health_summary_timeout_seconds: float = 0.25,
+    outbox_delivery_inspection_service: OutboxDeliveryInspectionService | None = None,
+    outbox_inspection_cursor_secret: bytes | None = None,
     health_readiness_timeout_seconds: float = 0.25,
     projection_status_service: ProjectionStatusService | None = None,
     projection_recovery_service: ProjectionRecoveryCommandService | None = None,
@@ -293,6 +297,11 @@ def create_app(
             services=health_status_services,
             build_version=build_version,
             timeout_seconds=health_summary_timeout_seconds,
+        )
+        install_outbox_inspection_route(
+            application,
+            service=outbox_delivery_inspection_service,
+            cursor_secret=outbox_inspection_cursor_secret,
         )
         if projection_status_service is not None or projection_recovery_service is not None:
             install_projection_control_routes(
