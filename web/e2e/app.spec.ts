@@ -444,6 +444,26 @@ test('test_document_revision_history_direct_url_reloads_exact_selected_revision'
   expect(requests.every(({ headers }) => headers['x-environment-id'] === stagingEnvironment)).toBe(true);
 });
 
+test('test_document_content_inspection_renders_exact_revision_and_locator', async ({ page }) => {
+  const requests = await installControlledDocumentDetail(page);
+  await page.goto(
+    `/knowledge/documents/${firstDocument}?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}&tab=content&revision=${secondDocument}`,
+  );
+
+  await expect(page.getByRole('heading', { name: 'Инспекция разобранного содержимого' })).toBeVisible();
+  await expect(page.getByText('Synthetic protected content')).toBeVisible();
+  await expect(page.getByText(/Страница 2/)).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Содержимое' })).toHaveAttribute('aria-current', 'page');
+  await expect(page).toHaveURL(new RegExp(`tab=content.*revision=${secondDocument}`));
+
+  const inspectionRequest = requests.find(({ url }) => url.includes('/parsed-content'));
+  expect(inspectionRequest).toBeDefined();
+  expect(inspectionRequest?.url).toContain(`processing_receipt_id=${firstDocument}`);
+  expect(inspectionRequest?.headers['x-workspace-id']).toBe(salesWorkspace);
+  expect(inspectionRequest?.headers['x-environment-id']).toBe(stagingEnvironment);
+  expect(requests.every(({ url }) => !url.includes('Synthetic protected content'))).toBe(true);
+});
+
 test('test_authentication_denial_hides_administrator_shell_without_api_request', async ({ page }) => {
   let requestCount = 0;
   await page.route('**/api/v1/**', async (route) => {
@@ -613,7 +633,7 @@ async function installControlledDocumentDetail(page: Page) {
             coverage: 'complete' as const,
             ingestion_item_id: secondDocument,
             ingestion_run_id: firstDocument,
-            processing_receipt_id: null,
+            processing_receipt_id: firstDocument,
             state: 'processed' as const,
           },
         ],
@@ -679,7 +699,13 @@ async function installControlledDocumentDetail(page: Page) {
       lifecycle: 'current' as const,
       observed_at: '2026-01-02T03:00:00Z',
       predecessor_revision_id: null,
-      processing_references: [],
+      processing_references: [{
+        coverage: 'complete' as const,
+        ingestion_item_id: secondDocument,
+        ingestion_run_id: firstDocument,
+        processing_receipt_id: firstDocument,
+        state: 'processed' as const,
+      }],
       projection_references: [],
       schema_version: 1 as const,
       source_revision_id: secondDocument,
@@ -694,6 +720,50 @@ async function installControlledDocumentDetail(page: Page) {
       trace_id: traceId,
       workspace_id: headers['x-workspace-id'] ?? '',
     } satisfies components['schemas']['ApiCollectionEnvelope_RevisionSnapshot_'];
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(response), status: 200 });
+  });
+  await page.route(`**/api/v1/knowledge/documents/${firstDocument}/revisions/${secondDocument}/parsed-content*`, async (route) => {
+    const request = route.request();
+    requests.push({ url: request.url(), headers: request.headers() });
+    const headers = request.headers();
+    const response = {
+      data: {
+        artifact_digest: 'controlled-artifact-digest',
+        artifact_id: firstDocument,
+        items: [{
+          heading_path: ['Controlled section'],
+          locator: {
+            end_codepoint: 26,
+            kind: 'page_text' as const,
+            page_number: 2,
+            start_codepoint: 0,
+          },
+          segment_digest: 'controlled-segment-digest',
+          segment_id: firstDocument,
+          source_object_id: firstDocument,
+          source_revision_digest: 'controlled-revision-digest',
+          source_revision_id: secondDocument,
+          text: 'Synthetic protected content',
+          text_digest: 'controlled-text-digest',
+        }],
+        locator_contract_version: 'controlled-locator-v1',
+        next_cursor: null,
+        original_sha256: 'controlled-original-sha256',
+        parser_config_reference: 'controlled-parser-config',
+        parser_name: 'controlled-parser',
+        parser_version: 'controlled-parser-v1',
+        processing_receipt_id: firstDocument,
+        schema_version: 'knowledge-parsed-content-inspection:v1' as const,
+        source_object_id: firstDocument,
+        source_revision_digest: 'controlled-revision-digest',
+        source_revision_id: secondDocument,
+        status: 'ready' as const,
+      },
+      environment_id: headers['x-environment-id'] ?? '',
+      schema_version: 1 as const,
+      trace_id: traceId,
+      workspace_id: headers['x-workspace-id'] ?? '',
+    } satisfies components['schemas']['ApiResponseEnvelope_ParsedContentInspectionResponse_'];
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(response), status: 200 });
   });
   return requests;
