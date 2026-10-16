@@ -157,7 +157,7 @@ h1 {
 }
 
 .status[data-state='failed'] {
-  color: var(--color-danger, #ffaaa3);
+  color: var(--color-header-ink);
 }
 
 .statusDot {
@@ -175,8 +175,8 @@ h1 {
 }
 
 .status[data-state='failed'] .statusDot {
-  background: var(--color-danger, #ffaaa3);
-  box-shadow: 0 0 0 0.25rem rgb(255 170 163 / 16%);
+  background: var(--color-header-ink);
+  box-shadow: 0 0 0 0.25rem rgb(255 255 255 / 16%);
 }
 
 .refreshButton {
@@ -294,18 +294,18 @@ h1 {
 
 .statusPanel_loading,
 .statusPanel_stale {
-  border-left-color: var(--color-warning, #e8b949);
+  border-left-color: var(--color-accent);
 }
 
 .statusPanel_degraded,
 .statusPanel_failed,
 .statusPanel_permissionDenied,
 .statusPanel_validationFailed {
-  border-left-color: #dd6b63;
+  border-left-color: var(--color-link);
 }
 
 .statusPanel_conflict {
-  border-left-color: var(--color-danger, #dd6b63);
+  border-left-color: var(--color-link);
 }
 
 .chatMeta {

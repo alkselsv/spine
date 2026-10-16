@@ -2,16 +2,22 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryRouter, RouterProvider } from 'react-router';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { appRoutes } from './app/routes';
+import { AuthProvider, type AuthState } from './app/auth';
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
-function renderApp(router: ReturnType<typeof createMemoryRouter>) {
+function renderApp(router: ReturnType<typeof createMemoryRouter>, auth?: AuthState) {
   return render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <RouterProvider router={router} />
+      <AuthProvider value={auth ?? { status: 'authenticated', role: 'administrator' }}>
+        <RouterProvider router={router} />
+      </AuthProvider>
     </QueryClientProvider>,
   );
 }
@@ -49,6 +55,26 @@ describe('application bootstrap', () => {
     await user.click(screen.getByRole('button', { name: 'Проверить соединение' }));
 
     expect(screen.getByRole('status')).toHaveTextContent('Соединение проверено');
+  });
+
+  it('test_scope_change_clears_failed_connection_status', async () => {
+    const user = userEvent.setup();
+    const router = createMemoryRouter(appRoutes, { initialEntries: ['/'] });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Network unavailable')));
+
+    renderApp(router, {
+      status: 'authenticated',
+      role: 'administrator',
+      getBearerCredential: () => 'test-token',
+    });
+    await user.click(screen.getByRole('button', { name: 'Проверить соединение' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('Соединение недоступно');
+
+    await user.click(screen.getByRole('combobox', { name: 'Среда' }));
+    await user.click(await screen.findByRole('option', { name: 'Staging' }));
+
+    expect(screen.getByRole('status')).toHaveTextContent('Подключено');
+    expect(screen.getByRole('status')).toHaveAttribute('data-state', 'connected');
   });
 
   it('test_direct_link_restores_scope_and_scope_change_updates_url', async () => {
