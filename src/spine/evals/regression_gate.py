@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable
+import hashlib
+import json
 from pathlib import Path
 from typing import Final, Literal
 
@@ -24,10 +26,21 @@ from spine.evals.offline_runner import (
     run_r1_evaluation_sync,
 )
 from spine.evals.qa_r1 import QACase, QADataset, load_r1_dataset
+from spine.evals.baseline_comparison import (
+    BaselineComparisonReport,
+    compare_r1_reports,
+)
+from spine.evaluations.release_gates.applicability import (
+    DEFAULT_R1_APPLICABILITY_MANIFEST,
+    ExecutionEvidence,
+    ApplicabilityReport,
+    build_r1_applicability_report,
+)
 
 
-OFFLINE_GATE_REPORT_SCHEMA_VERSION: Final[str] = "offline-regression-gate-report:v1"
+OFFLINE_GATE_REPORT_SCHEMA_VERSION: Final[str] = "r1-gate-status:v1"
 OFFLINE_GATE_VERSION: Final[str] = "v1"
+GateStatus = Literal["passed", "failed", "skipped", "unavailable", "not-qualified"]
 EXPECTED_R1_DATASET_IDENTITY: Final[DatasetIdentity] = DatasetIdentity(
     dataset_id="qa-r1-synthetic",
     version="1.0.0",
@@ -43,6 +56,11 @@ EXPECTED_EVALUATOR_VERSIONS: Final[dict[str, str]] = {
     "qa.locator_validity": "v1",
     "qa.groundedness": "v1",
 }
+R1_BASELINE_REPORT_PATH: Final[Path] = Path("docs/qualification/r1-baseline-report.json")
+R1_BASELINE_REPORT_SHA256: Final[str] = (
+    "50964e810416fcef6857be1ecf13124fea0d053bbc0511a4980361ff122381e9"
+)
+R1_BASELINE_REPORT_ID: Final[str] = "f05c7bcd-5702-5d2c-a9f2-0dd86c2ba7f6"
 _HARD_EVALUATOR_KEYS = frozenset(
     key for key in EXPECTED_EVALUATOR_VERSIONS if key.startswith("qa.")
 )
@@ -68,7 +86,7 @@ class RegressionGateFailure(DefinitionModel):
 
 
 class OfflineRegressionGateReport(DefinitionModel):
-    """Complete CI artifact for one two-pass offline regression gate."""
+    """Complete R1 gate artifact, including offline and qualification evidence."""
 
     schema_version: Literal[OFFLINE_GATE_REPORT_SCHEMA_VERSION] = (
         OFFLINE_GATE_REPORT_SCHEMA_VERSION
@@ -76,12 +94,31 @@ class OfflineRegressionGateReport(DefinitionModel):
     gate_version: Literal[OFFLINE_GATE_VERSION] = OFFLINE_GATE_VERSION
     qualification_scope: Literal[QUALIFICATION_SCOPE] = QUALIFICATION_SCOPE
     passed: bool
+    production_approval: Literal[False] = False
     reproducible: bool
     runs_completed: int = Field(ge=0, le=2)
+    status: GateStatus
+    repository_pytest_status: Literal["passed", "failed", "unavailable"]
     dataset: DatasetIdentity | None = None
     evaluator_catalog: tuple[EvaluatorIdentity, ...] = ()
     report: OfflineEvaluationReport | None = None
+    applicability: ApplicabilityReport | None = None
+    baseline_comparison: BaselineComparisonReport | None = None
+    qualification_evidence: tuple["QualificationEvidence", ...] = ()
+    provider_profiles: tuple["ProviderProfileStatus", ...] = ()
     failures: tuple[RegressionGateFailure, ...] = ()
+
+
+class QualificationEvidence(DefinitionModel):
+    evidence_id: str = Field(min_length=1, max_length=128)
+    source: str = Field(min_length=1, max_length=256)
+    status: Literal["passed", "failed", "unavailable"]
+
+
+class ProviderProfileStatus(DefinitionModel):
+    profile: Literal["cognee", "llm"]
+    status: Literal["skipped", "unavailable"]
+    reason: str = Field(min_length=1, max_length=128)
 
 
 ReportFactory = Callable[[], OfflineEvaluationReport]
@@ -90,6 +127,8 @@ ReportFactory = Callable[[], OfflineEvaluationReport]
 def run_offline_regression_gate(
     *,
     report_factory: ReportFactory | None = None,
+    repository_pytest_status: Literal["passed", "failed", "unavailable"] = "unavailable",
+    selected_provider_profiles: tuple[str, ...] = (),
 ) -> OfflineRegressionGateReport:
     """Run the offline report twice and enforce hard, non-threshold invariants.
 
@@ -140,16 +179,306 @@ def run_offline_regression_gate(
         failures.extend(_validate_report(report))
 
     failures = _deduplicate_failures(failures)
+    mandatory_offline_passed = len(failures) == 0 and len(reports) == 2
+    qualification_evidence = _qualification_evidence(
+        mandatory_offline_passed=mandatory_offline_passed
+    )
+    evidence_by_id = {item.evidence_id: item for item in qualification_evidence}
+    execution_evidence = tuple(
+        ExecutionEvidence(
+            evidence_id=evidence_id,
+            suite_id=suite.suite_id,
+            suite_version=suite.suite_version,
+            manifest_id=DEFAULT_R1_APPLICABILITY_MANIFEST.manifest_id,
+            manifest_version=DEFAULT_R1_APPLICABILITY_MANIFEST.schema_version,
+            status=("passed" if evidence_by_id[evidence_id].status == "passed" else "unavailable"),
+            component_versions=DEFAULT_R1_APPLICABILITY_MANIFEST.component_versions,
+            evaluator_versions=DEFAULT_R1_APPLICABILITY_MANIFEST.evaluator_versions,
+            dataset_versions=DEFAULT_R1_APPLICABILITY_MANIFEST.dataset_versions,
+        )
+        for suite in DEFAULT_R1_APPLICABILITY_MANIFEST.suites
+        for evidence_id in suite.evidence_ids
+        if evidence_id in evidence_by_id
+    )
+    applicability = build_r1_applicability_report(
+        changed_files=(
+            "src/spine/ingestion/parser.py",
+            "src/spine/domain/source/models.py",
+            "src/spine/memory/projection.py",
+            "src/spine/memory/retrieval/adapter.py",
+            "src/spine/auth/policy.py",
+            "src/spine/agents/prompts/r1.md",
+            "src/spine/models/profile.py",
+            "src/spine/domain/capabilities/answer.py",
+            "src/spine/evaluations/answer.py",
+            "src/spine/evals/data/qa_r1.json",
+            ".github/workflows/test.yml",
+        ),
+        execution_evidence=execution_evidence,
+    )
+    baseline = _load_r1_baseline()
+    comparison = compare_r1_reports(baseline, report) if baseline and report else None
+    if baseline is None:
+        failures.append(
+            RegressionGateFailure(
+                category="integration",
+                reason="pinned R1 baseline report is unavailable or invalid",
+            )
+        )
+    provider_profiles = tuple(
+        ProviderProfileStatus(
+            profile=profile,
+            status="unavailable" if profile in selected_provider_profiles else "skipped",
+            reason=(
+                "provider_profile_execution_not_configured"
+                if profile in selected_provider_profiles
+                else "profile_not_selected"
+            ),
+        )
+        for profile in ("cognee", "llm")
+    )
+    status = _aggregate_status(
+        mandatory_passed=len(failures) == 0 and len(reports) == 2,
+        repository_pytest_status=repository_pytest_status,
+        applicability_passed=applicability.passed,
+        comparison=comparison,
+        qualification_evidence=qualification_evidence,
+        provider_profiles=provider_profiles,
+    )
+    if status != "passed" and not failures:
+        failures.append(
+            RegressionGateFailure(
+                category="integration",
+                reason=f"aggregate R1 qualification status is {status}",
+            )
+        )
     return OfflineRegressionGateReport(
-        passed=len(failures) == 0 and len(reports) == 2,
+        passed=status == "passed",
         reproducible=len(reports) == 2
         and not any(failure.category == "reproducibility" for failure in failures),
         runs_completed=len(reports),
+        status=status,
+        repository_pytest_status=repository_pytest_status,
         dataset=report.dataset if report is not None else None,
         evaluator_catalog=report.evaluator_catalog if report is not None else (),
         report=report,
+        applicability=applicability,
+        baseline_comparison=comparison,
+        qualification_evidence=qualification_evidence,
+        provider_profiles=provider_profiles,
         failures=tuple(failures),
     )
+
+
+def _qualification_evidence(
+    *, mandatory_offline_passed: bool
+) -> tuple[QualificationEvidence, ...]:
+    """Read prior parser, projection and R1 safety qualification records."""
+
+    root = Path(__file__).parents[3]
+    definitions = (
+        ("issue-194:qualification:v1", "docs/qualification/issue-194-document-ingestion-report.json", "release_gate.status", "passed"),
+        ("issue-90:qualification:v1", "docs/qualification/issue-90-source-projection-lifecycle-report.json", "release_gate.status", "qualified"),
+        ("issue-211:qualification:v1", "docs/qualification/issue-211-context-projection-report.json", "release_gate.status", "passed"),
+        ("g01:execution:v1", "docs/qualification/issue-356-unauthorized-retrieval-disclosure-report.json", "observation_seam", "r1-production-contract-observation:v1"),
+        ("g02:execution:v1", "docs/qualification/issue-356-unauthorized-retrieval-disclosure-report.json", "status", "passed"),
+        ("g03:execution:v1", "docs/qualification/issue-357-grounded-answers-report.json", "status", "qualified_offline"),
+        ("g06:execution:v1", "docs/qualification/issue-354-context-adapter-parity-report.json", "release_gate.status", "passed"),
+        ("r1-evaluator-catalog:v1", "docs/qualification/issue-357-grounded-answers-report.json", "status", "qualified_offline"),
+        ("qa-r1-dataset:v1", "docs/qualification/issue-357-grounded-answers-report.json", "status", "qualified_offline"),
+        ("r1-gate-applicability:v1", "docs/qualification/issue-355-gate-applicability-report.json", "status", "qualified_offline"),
+        ("r1-baseline-comparison:v1", "docs/qualification/issue-358-baseline-comparison.md", "comparison_policy", "r1-baseline-comparison:v1"),
+    )
+    expected_schemas = {
+        "docs/qualification/issue-194-document-ingestion-report.json": "document-ingestion-qualification:v1",
+        "docs/qualification/issue-90-source-projection-lifecycle-report.json": "source-projection-lifecycle-qualification:v1",
+        "docs/qualification/issue-211-context-projection-report.json": "context-projection-qualification:v1",
+        "docs/qualification/issue-354-context-adapter-parity-report.json": "context-adapter-parity-qualification:v1",
+        "docs/qualification/issue-355-gate-applicability-report.json": "r1-gate-applicability-qualification:v1",
+        "docs/qualification/issue-356-unauthorized-retrieval-disclosure-report.json": "unauthorized-retrieval-disclosure-qualification:v1",
+        "docs/qualification/issue-357-grounded-answers-report.json": "grounded-answer-qualification:v1",
+    }
+    evidence: list[QualificationEvidence] = []
+    evidence.append(
+        QualificationEvidence(
+            evidence_id="offline-regression-gate:v1",
+            source="spine-eval-gate:offline-r1",
+            status="passed" if mandatory_offline_passed else "unavailable",
+        )
+    )
+    for evidence_id, relative_path, status_path, expected_status in definitions:
+        source = root / relative_path
+        observed: object = None
+        record: dict[str, object] | None = None
+        try:
+            if source.suffix == ".json":
+                parsed = json.loads(source.read_text(encoding="utf-8"))
+                if (
+                    not isinstance(parsed, dict)
+                    or parsed.get("schema_version") != expected_schemas[relative_path]
+                    or not _qualification_record_is_valid(
+                        relative_path, parsed
+                    )
+                ):
+                    record = None
+                else:
+                    record = parsed
+                    observed = record
+                    for key in status_path.split("."):
+                        observed = observed[key]  # type: ignore[index]
+            elif status_path == "comparison_policy":
+                observed = (
+                    expected_status
+                    if expected_status in source.read_text(encoding="utf-8")
+                    else None
+                )
+        except (OSError, json.JSONDecodeError, KeyError, TypeError):
+            pass
+        evidence_status: Literal["passed", "failed", "unavailable"] = "unavailable"
+        if record is not None and relative_path.endswith(
+            "issue-356-unauthorized-retrieval-disclosure-report.json"
+        ) and (
+            record.get("safety_violation_count", 0) > 0
+            or record.get("protected_payload_disclosure_count", 0) > 0
+        ):
+            evidence_status = "failed"
+        if evidence_status != "failed":
+            evidence_status = (
+                "passed" if observed == expected_status else "unavailable"
+            )
+        evidence.append(
+            QualificationEvidence(
+                evidence_id=evidence_id,
+                source=relative_path,
+                status=evidence_status,
+            )
+        )
+    return tuple(evidence)
+
+
+def _qualification_record_is_valid(
+    relative_path: str,
+    record: dict[str, object],
+) -> bool:
+    """Reject stale or internally contradictory checked-in qualification evidence."""
+
+    if (
+        "production_approval" in record
+        and record.get("production_approval") is not False
+    ):
+        return False
+    criteria = record.get("criteria")
+    if criteria is not None and (
+        not isinstance(criteria, list)
+        or not criteria
+        or any(
+            not isinstance(item, dict)
+            or item.get("status") not in {"passed", "qualified"}
+            for item in criteria
+        )
+    ):
+        return False
+    if relative_path.endswith("issue-356-unauthorized-retrieval-disclosure-report.json"):
+        return (
+            record.get("safety_violation_count") == 0
+            and record.get("protected_payload_disclosure_count") == 0
+            and record.get("qualification_scope") == "offline-contract-only"
+        )
+    if relative_path.endswith("issue-355-gate-applicability-report.json"):
+        mandatory = record.get("mandatory_offline_suite")
+        manifest = record.get("manifest")
+        return (
+            record.get("policy_version") == DEFAULT_R1_APPLICABILITY_MANIFEST.schema_version
+            and record.get("manifest_id") == DEFAULT_R1_APPLICABILITY_MANIFEST.manifest_id
+            and manifest == DEFAULT_R1_APPLICABILITY_MANIFEST.model_dump(mode="json")
+            and isinstance(mandatory, dict)
+            and mandatory.get("always_selected") is True
+            and mandatory.get("evidence_id") == "offline-regression-gate:v1"
+            and record.get("provider_quality_confirmation") == "not-confirmed"
+        )
+    if relative_path.endswith("issue-357-grounded-answers-report.json"):
+        return (
+            record.get("qualification_scope") == "offline-contract-only"
+            and record.get("external_qualification")
+            == {
+                "real_cognee": "not_run",
+                "real_llm": "not_run",
+                "production_provider": "not_run",
+            }
+        )
+    if relative_path.endswith("issue-354-context-adapter-parity-report.json"):
+        release_gate = record.get("release_gate")
+        return (
+            isinstance(release_gate, dict)
+            and release_gate.get("provider_qualification") == "not_approved"
+        )
+    if relative_path.endswith("issue-194-document-ingestion-report.json"):
+        release_gate = record.get("release_gate")
+        return isinstance(release_gate, dict) and release_gate.get("r1_release") == "not_approved"
+    if relative_path.endswith("issue-90-source-projection-lifecycle-report.json"):
+        release_gate = record.get("release_gate")
+        return (
+            isinstance(release_gate, dict)
+            and release_gate.get("postgresql") == "mandatory_in_full_repository_gate"
+        )
+    if relative_path.endswith("issue-211-context-projection-report.json"):
+        release_gate = record.get("release_gate")
+        return (
+            isinstance(release_gate, dict)
+            and release_gate.get("provider_qualification") == "not_approved"
+        )
+    return True
+
+
+def _load_r1_baseline() -> OfflineEvaluationReport | None:
+    """Load the checked-in, versioned synthetic report used as the R1 baseline."""
+
+    path = Path(__file__).parents[3] / R1_BASELINE_REPORT_PATH
+    try:
+        payload = path.read_bytes()
+        if hashlib.sha256(payload).hexdigest() != R1_BASELINE_REPORT_SHA256:
+            return None
+        baseline = OfflineEvaluationReport.model_validate_json(payload)
+    except (OSError, ValidationError):
+        return None
+    if (
+        str(baseline.report_id) != R1_BASELINE_REPORT_ID
+        or baseline.dataset != EXPECTED_R1_DATASET_IDENTITY
+        or baseline.runner_version != OFFLINE_RUNNER_VERSION
+        or baseline.evaluator_catalog
+        != tuple(
+            EvaluatorIdentity(evaluator_key=key, evaluator_version=version)
+            for key, version in sorted(EXPECTED_EVALUATOR_VERSIONS.items())
+        )
+    ):
+        return None
+    return baseline
+
+
+def _aggregate_status(
+    *,
+    mandatory_passed: bool,
+    repository_pytest_status: Literal["passed", "failed", "unavailable"],
+    applicability_passed: bool,
+    comparison: BaselineComparisonReport | None,
+    qualification_evidence: tuple[QualificationEvidence, ...],
+    provider_profiles: tuple[ProviderProfileStatus, ...],
+) -> GateStatus:
+    if not mandatory_passed:
+        return "failed"
+    if repository_pytest_status == "failed":
+        return "failed"
+    if any(item.status == "failed" for item in qualification_evidence):
+        return "failed"
+    if any(item.status == "unavailable" for item in provider_profiles):
+        return "not-qualified"
+    if repository_pytest_status != "passed" or not applicability_passed or comparison is None:
+        return "not-qualified"
+    if comparison.status != "comparable" or comparison.safety_gate_failed:
+        return "not-qualified"
+    if any(item.status != "passed" for item in qualification_evidence):
+        return "not-qualified"
+    return "passed"
 
 
 def _validate_report(report: OfflineEvaluationReport) -> list[RegressionGateFailure]:
@@ -542,12 +871,44 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional path for the machine-readable JSON gate artifact",
     )
+    repository_tests = parser.add_mutually_exclusive_group()
+    repository_tests.add_argument(
+        "--repository-tests-passed",
+        dest="repository_pytest_status",
+        action="store_const",
+        const="passed",
+        help="record that the mandatory full repository pytest suite completed successfully",
+    )
+    repository_tests.add_argument(
+        "--repository-tests-failed",
+        dest="repository_pytest_status",
+        action="store_const",
+        const="failed",
+        help="record a failed mandatory full repository pytest suite",
+    )
+    repository_tests.add_argument(
+        "--repository-tests-unavailable",
+        dest="repository_pytest_status",
+        action="store_const",
+        const="unavailable",
+        help="record that a mandatory full repository pytest prerequisite was unavailable",
+    )
+    parser.add_argument(
+        "--provider-profile",
+        action="append",
+        choices=("cognee", "llm"),
+        default=[],
+        help="select an optional provider profile; unavailable profiles fail qualification",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
-    result = run_offline_regression_gate()
+    result = run_offline_regression_gate(
+        repository_pytest_status=args.repository_pytest_status or "unavailable",
+        selected_provider_profiles=tuple(args.provider_profile),
+    )
     payload = result.model_dump_json(indent=2) + "\n"
     if args.output is not None:
         args.output.write_text(payload, encoding="utf-8")
@@ -565,6 +926,8 @@ __all__ = [
     "OFFLINE_GATE_REPORT_SCHEMA_VERSION",
     "OFFLINE_GATE_VERSION",
     "OfflineRegressionGateReport",
+    "ProviderProfileStatus",
+    "QualificationEvidence",
     "RegressionGateFailure",
     "build_parser",
     "main",

@@ -19,7 +19,11 @@ GATE_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("uv", "run", "python", "-m", "compileall", "-q", "src", "tests"),
     ("git", "diff", "--cached", "--check"),
 )
-POSTGRES_BLOCK_MARKER = "mandatory PostgreSQL gate could not start"
+POSTGRES_BLOCK_MARKERS = (
+    "mandatory PostgreSQL gate could not start",
+    "mandatory PostgreSQL gate requires SPINE_TEST_DATABASE_URL",
+    "mandatory PostgreSQL gate cannot import Testcontainers",
+)
 GATE_ARTIFACT = Path("docs/qualification/issue-68-gate-results.json")
 _ARTIFACT_STATUSES = {"passed", "failed", "blocked-infrastructure"}
 
@@ -102,7 +106,7 @@ def _is_pure_postgresql_block(output: str) -> bool:
             next_line += 1
         if (
             next_line == len(lines)
-            or not lines[next_line].strip().startswith(POSTGRES_BLOCK_MARKER)
+            or not lines[next_line].strip().startswith(POSTGRES_BLOCK_MARKERS)
         ):
             return False
     return True
@@ -120,7 +124,7 @@ def classify_result(
         return GateResult(command_tuple, returncode, "passed", summary)
     if (
         command_tuple[2:4] == ("pytest", "-q")
-        and POSTGRES_BLOCK_MARKER in output
+        and any(marker in output for marker in POSTGRES_BLOCK_MARKERS)
         and _is_pure_postgresql_block(output)
     ):
         return GateResult(

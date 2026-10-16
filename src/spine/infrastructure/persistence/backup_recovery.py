@@ -19,12 +19,15 @@ from spine.domain.storage.recovery import (
     FenceOperationTicket,
     QuiescentEvidence,
     ComponentState,
+    RecoveryComponentEvidence,
+    RecoveryFailureCategory,
     RecoveryEvidenceEventKind,
     RecoveryEvidenceInvalidation,
     RecoveryManifestProfile,
     RecoveryManifestStatus,
     StorageRecoveryManifest,
 )
+from spine.domain.storage.backup_profile import BackupProtectionProfile
 
 from .postgresql_mappings import (
     backup_fence_leases,
@@ -345,9 +348,15 @@ def _manifest_from_row(row: object) -> StorageRecoveryManifest:
             "schema_version",
             "profile",
             "manifest_status",
+            "backup_profile_version",
+            "staged_state_policy",
+            "backup_protection_profile",
+            "failure_category",
             "fence_epoch",
             "cutoff_ticket_sequence",
             "quiescent_evidence",
+            "postgres_component_evidence",
+            "object_component_evidence",
             "postgres_boundary",
             "postgres_recovery_watermark",
             "object_volume_generation",
@@ -372,8 +381,24 @@ def _manifest_from_row(row: object) -> StorageRecoveryManifest:
         values["quiescent_evidence"] = QuiescentEvidence.model_validate(
             values["quiescent_evidence"], strict=False
         )
+    if values["schema_version"] == 1:
+        values["backup_profile_version"] = "r1-coordinated-backup:v1"
+        values["staged_state_policy"] = "exclude-staged-restart-or-reconcile-before-use:v1"
+    elif values["backup_protection_profile"] is not None:
+        values["backup_protection_profile"] = BackupProtectionProfile.model_validate(
+            values["backup_protection_profile"], strict=False
+        )
+    for name in ("postgres_component_evidence", "object_component_evidence"):
+        if values[name] is not None:
+            values[name] = RecoveryComponentEvidence.model_validate(
+                values[name], strict=False
+            )
     values["profile"] = RecoveryManifestProfile(values["profile"])
     values["manifest_status"] = RecoveryManifestStatus(values["manifest_status"])
+    if values["failure_category"] is not None:
+        values["failure_category"] = RecoveryFailureCategory(
+            values["failure_category"]
+        )
     values["postgres_component_state"] = ComponentState(
         values["postgres_component_state"]
     )

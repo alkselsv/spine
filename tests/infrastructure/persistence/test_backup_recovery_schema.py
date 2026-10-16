@@ -13,10 +13,12 @@ from spine.infrastructure.persistence.postgresql_mappings import (
 from spine.domain.storage.recovery import (
     ComponentState,
     QuiescentEvidence,
+    RecoveryComponentEvidence,
     RecoveryManifestProfile,
     RecoveryManifestStatus,
     StorageRecoveryManifest,
 )
+from spine.domain.storage.backup_profile import BackupProtectionProfile
 from spine.infrastructure.persistence.backup_recovery import _manifest_values
 
 
@@ -45,6 +47,8 @@ def test_backup_recovery_mappings_keep_live_and_immutable_records_separate() -> 
     assert "ticket_sequence" in fence_operation_tickets.c
     assert "verification_digest" in recovery_quiescence_evidence.c
     assert "manifest_digest" in storage_recovery_manifests.c
+    assert "postgres_component_evidence" in storage_recovery_manifests.c
+    assert "object_component_evidence" in storage_recovery_manifests.c
     assert "previous_event_digest" in recovery_evidence_invalidations.c
     assert "event_digest" in recovery_evidence_invalidations.c
 
@@ -58,6 +62,39 @@ def test_manifest_values_are_json_serializable_for_jsonb_evidence() -> None:
         pre_fence_terminal_ticket_count=0,
         captured_at=now,
     )
+    included_set_digest = "1" * 64
+    postgres_component_evidence = RecoveryComponentEvidence(
+        component="postgres",
+        expected_identity="backup:pg-1",
+        observed_identity="backup:pg-1",
+        artifact_reference="artifact:pg-1",
+        artifact_digest="2" * 64,
+        tool_profile="pg_dump-custom-compatible-restore:v1",
+        tool_version="postgres-17.0",
+        fence_epoch=1,
+        cutoff_ticket_sequence=0,
+        included_set_digest=included_set_digest,
+        inclusion_policy="r1-finalized-originals-and-canonical-metadata:v1",
+        durable=True,
+        verified=True,
+        verification_reference="verify:pg-1",
+    )
+    object_component_evidence = RecoveryComponentEvidence(
+        component="object_volume",
+        expected_identity="volume:1",
+        observed_identity="volume:1",
+        artifact_reference="artifact:objects-1",
+        artifact_digest="3" * 64,
+        tool_profile="linux-posix-finalized-originals:v1",
+        tool_version="python-3.13.0",
+        fence_epoch=1,
+        cutoff_ticket_sequence=0,
+        included_set_digest=included_set_digest,
+        inclusion_policy="r1-finalized-originals-and-canonical-metadata:v1",
+        durable=True,
+        verified=True,
+        verification_reference="verify:volume-1",
+    )
     manifest = StorageRecoveryManifest.build(
         recovery_set_id="recovery-1",
         deployment_scope_id="deployment-1",
@@ -66,6 +103,16 @@ def test_manifest_values_are_json_serializable_for_jsonb_evidence() -> None:
         fence_epoch=1,
         cutoff_ticket_sequence=0,
         quiescent_evidence=evidence,
+        backup_protection_profile=BackupProtectionProfile(
+            source_volume_id="volume:1",
+            destination_id="destination:1",
+            encryption_at_rest_profile="encryption:approved",
+            protected_transfer_profile="transfer:approved",
+            backup_identity="identity:backup",
+            restore_identity="identity:restore",
+        ),
+        postgres_component_evidence=postgres_component_evidence,
+        object_component_evidence=object_component_evidence,
         postgres_boundary="snapshot:pg-1",
         postgres_recovery_watermark="pg:1",
         object_volume_generation="volume:1",
@@ -84,3 +131,6 @@ def test_manifest_values_are_json_serializable_for_jsonb_evidence() -> None:
 
     values = _manifest_values(manifest)
     assert isinstance(values["quiescent_evidence"]["captured_at"], str)
+    assert values["postgres_component_evidence"]["artifact_digest"] == "2" * 64
+    assert values["backup_protection_profile"]["cadence"] == "daily"
+    assert values["backup_protection_profile"]["retention_days"] == 30

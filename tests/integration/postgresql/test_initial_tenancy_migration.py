@@ -590,6 +590,7 @@ def _recovery_manifest_for_integration() -> StorageRecoveryManifest:
         captured_at=now,
     )
     return StorageRecoveryManifest.build(
+        schema_version=1,
         recovery_set_id="recovery-integration-101",
         deployment_scope_id="deployment-integration-101",
         profile=RecoveryManifestProfile.COORDINATED,
@@ -4740,14 +4741,15 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261030_36_feedback_records.py",
         "20261031_37_processing_commands.py",
         "20261101_38_outbox_delivery_correlation_reference.py",
-        "20261102_39_operational_metrics.py",
+        "20261102_39_recovery_component_artifacts.py",
+        "20261103_40_operational_metrics.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261101_39_injected_failure.py").write_text(
+    (target / "versions" / "20261103_40_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261101_39'\n"
-        "down_revision = '20261102_39'\n"
+        "revision = '20261104_41'\n"
+        "down_revision = '20261103_40'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

@@ -20,8 +20,9 @@ import os
 import stat
 import threading
 import time
+import tarfile
 from collections import OrderedDict
-from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -46,6 +47,7 @@ from .contracts import (
     UploadCommandStateName,
     WriteReceipt,
 )
+from spine.domain.storage.backup_profile import canonical_included_set_digest
 from .errors import (
     IntegrityMismatch,
     InvalidObjectReference,
@@ -97,6 +99,17 @@ class _ReadPlan:
     limit: int
     deadline: float
     payload_identity: tuple[int, int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class FilesystemBackupSnapshotReceipt:
+    """Sanitized identity and inclusion evidence for a finalized-object archive."""
+
+    sha256: str
+    byte_length: int
+    included_set_digest: str
+    verified_object_count: int
+    excluded_staged_upload_count: int
 
 
 class _BlockingOperationAbandoned(StorageIntegrityIndeterminate):
@@ -891,6 +904,181 @@ class FilesystemOriginalObjectStore:
                 environment_id,
                 deadline=deadline,
             )
+
+    async def export_finalized_backup(
+        self,
+        destination: str | os.PathLike[str],
+        expected_references: Sequence[ObjectReference],
+    ) -> FilesystemBackupSnapshotReceipt:
+        """Write a verified archive of finalized objects and their private manifests."""
+
+        await self._ensure_ready()
+        self._ensure_operational()
+        target = Path(destination)
+        deadline = self._deadline()
+        return await self._run_blocking(
+            self._export_finalized_backup_sync,
+            target,
+            tuple(expected_references),
+            deadline,
+            deadline=deadline,
+        )
+
+    def _export_finalized_backup_sync(
+        self,
+        destination: Path,
+        expected_references: tuple[ObjectReference, ...],
+        deadline: float,
+    ) -> FilesystemBackupSnapshotReceipt:
+        if not destination.is_absolute() or destination.is_relative_to(self._root):
+            raise StorageConfigurationError()
+        destination_parent_fd, destination_name = _open_absolute_parent(destination)
+        try:
+            try:
+                os.stat(destination_name, dir_fd=destination_parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise StorageIntegrityIndeterminate()
+        except BaseException:
+            os.close(destination_parent_fd)
+            raise
+        try:
+            staged_count, discovered, expected_set_digest = (
+                self._collect_finalized_backup_entries(expected_references, deadline)
+            )
+        except BaseException:
+            os.close(destination_parent_fd)
+            raise
+        destination_fd: int | None = None
+        destination_created = False
+        try:
+            destination_fd = os.open(
+                destination_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=destination_parent_fd,
+            )
+            destination_created = True
+            with os.fdopen(destination_fd, "wb", closefd=True) as target:
+                destination_fd = None
+                with tarfile.open(fileobj=target, mode="w", format=tarfile.PAX_FORMAT) as archive:
+                    for name, manifest_path, payload_path, receipt in sorted(
+                        discovered, key=lambda item: item[0]
+                    ):
+                        self._add_backup_archive_file(
+                            archive, manifest_path, f"{name}.private", deadline
+                        )
+                        self._add_backup_archive_file(
+                            archive,
+                            payload_path,
+                            f"objects/{manifest_path.parent.name}/{receipt.object_reference.object_id.hex}",
+                            deadline,
+                        )
+                target.flush()
+                os.fsync(target.fileno())
+            os.fsync(destination_parent_fd)
+            integrity = _hash_openat_file(destination_parent_fd, destination_name)
+            return FilesystemBackupSnapshotReceipt(
+                sha256=integrity[0],
+                byte_length=integrity[1],
+                included_set_digest=expected_set_digest,
+                verified_object_count=len(discovered),
+                excluded_staged_upload_count=staged_count,
+            )
+        except StorageError:
+            if destination_fd is not None:
+                os.close(destination_fd)
+                destination_fd = None
+            if destination_created:
+                try:
+                    os.unlink(destination_name, dir_fd=destination_parent_fd)
+                    os.fsync(destination_parent_fd)
+                except OSError:
+                    raise StorageIntegrityIndeterminate() from None
+            raise
+        except (OSError, tarfile.TarError, ValueError, TypeError):
+            if destination_fd is not None:
+                os.close(destination_fd)
+                destination_fd = None
+            if destination_created:
+                try:
+                    os.unlink(destination_name, dir_fd=destination_parent_fd)
+                    os.fsync(destination_parent_fd)
+                except OSError:
+                    raise StorageIntegrityIndeterminate() from None
+            raise StorageIntegrityIndeterminate() from None
+        finally:
+            if destination_fd is not None:
+                os.close(destination_fd)
+            os.close(destination_parent_fd)
+
+    def _collect_finalized_backup_entries(
+        self,
+        expected_references: tuple[ObjectReference, ...],
+        deadline: float,
+    ) -> tuple[int, list[tuple[str, Path, Path, WriteReceipt]], str]:
+        self._validate_staged_namespace(deadline=deadline)
+        staged_count = sum(
+            1
+            for scope_dir in self._iter_scope_directories(self._staged_root)
+            for entry in self._scandir(scope_dir)
+            if entry.is_dir
+        )
+        expected_by_id = {ref.object_id: ref for ref in expected_references}
+        if len(expected_by_id) != len(expected_references):
+            raise StorageIntegrityIndeterminate()
+        discovered: list[tuple[str, Path, Path, WriteReceipt]] = []
+        for manifest_path in self._iter_final_manifests():
+            if self._monotonic_clock() > deadline:
+                raise UploadLimitExceeded()
+            manifest = self._read_manifest(manifest_path)
+            self._assert_manifest_scope(manifest, manifest_path.parent)
+            receipt = self._receipt_from_manifest(manifest, manifest_path)
+            reference = receipt.object_reference
+            if self._is_deleted_reference(reference) or self._is_deletion_pending(reference):
+                raise StorageIntegrityIndeterminate()
+            expected = expected_by_id.pop(reference.object_id, None)
+            if expected != reference:
+                raise StorageIntegrityIndeterminate()
+            payload_path = manifest_path.parent / self._payload_name_from_manifest(manifest)
+            self._verify_finalized_file(payload_path, receipt, deadline=deadline)
+            discovered.append(
+                (
+                    f"objects/{manifest_path.parent.name}/{manifest_path.name}",
+                    manifest_path,
+                    payload_path,
+                    receipt,
+                )
+            )
+        if expected_by_id:
+            raise StorageIntegrityIndeterminate()
+        return staged_count, discovered, canonical_included_set_digest(expected_references)
+
+    def _add_backup_archive_file(
+        self,
+        archive: tarfile.TarFile,
+        path: Path,
+        archive_name: str,
+        deadline: float,
+    ) -> None:
+        fd = self._open_read(path)
+        try:
+            metadata = os.fstat(fd)
+            info = tarfile.TarInfo(archive_name)
+            info.size = metadata.st_size
+            info.mode = 0o600
+            info.mtime = 0
+            info.uid = 0
+            info.gid = 0
+            info.uname = ""
+            info.gname = ""
+            with os.fdopen(fd, "rb", closefd=False) as payload:
+                archive.addfile(info, payload)
+            if self._monotonic_clock() > deadline:
+                raise UploadLimitExceeded()
+        finally:
+            os.close(fd)
 
     def _reconciliation_inventory_sync(
         self,
@@ -3181,4 +3369,49 @@ class FilesystemOriginalObjectStore:
         return ObjectUnavailable()
 
 
-__all__ = ["FilesystemOriginalObjectStore", "FilesystemStorageProfile"]
+def _open_absolute_parent(path: Path) -> tuple[int, str]:
+    if not path.is_absolute() or path.name in {"", ".", ".."}:
+        raise StorageConfigurationError()
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(os.sep, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        for component in path.parent.parts[1:]:
+            next_descriptor = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=descriptor,
+            )
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return descriptor, path.name
+    except OSError:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise StorageIntegrityIndeterminate() from None
+
+
+def _hash_openat_file(parent_fd: int, name: str) -> tuple[str, int]:
+    descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    digest = hashlib.sha256()
+    length = 0
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise StorageIntegrityIndeterminate()
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            length += len(chunk)
+    except OSError:
+        raise StorageIntegrityIndeterminate() from None
+    finally:
+        os.close(descriptor)
+    return digest.hexdigest(), length
+
+
+__all__ = [
+    "FilesystemBackupSnapshotReceipt",
+    "FilesystemOriginalObjectStore",
+    "FilesystemStorageProfile",
+]

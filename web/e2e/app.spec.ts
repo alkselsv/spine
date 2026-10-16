@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type Route } from '@playwright/test';
 import type { components } from '../api/generated/schema';
 
 const primaryWorkspace = '10000000-0000-4000-8000-000000000001';
@@ -8,6 +8,8 @@ const stagingEnvironment = '20000000-0000-4000-8000-000000000002';
 const traceId = '50000000-0000-4000-8000-000000000001';
 const firstDocument = '30000000-0000-4000-8000-000000000001';
 const secondDocument = '30000000-0000-4000-8000-000000000002';
+const primaryDocument = '30000000-0000-4000-8000-000000000003';
+const primaryRevision = '30000000-0000-4000-8000-000000000004';
 
 test('test_control_plane_navigation_preserves_scope_and_generated_client_context', async ({ page }) => {
   const healthRequests = await installControlledHealth(page);
@@ -85,10 +87,18 @@ test('test_documents_discovery_filters_paginates_and_navigates_without_content_i
   await page.reload();
   await expect(page.getByText(`ID: ${secondDocument}`)).toBeVisible();
 
+  const restoredScopeRequest = page.waitForRequest((request) => {
+    const headers = request.headers();
+    return request.url().includes('/api/v1/documents')
+      && headers['x-workspace-id'] === primaryWorkspace
+      && headers['x-environment-id'] === localEnvironment;
+  });
   await choose(page, 'Рабочая область', 'Основная');
   await choose(page, 'Среда', 'Local');
   await expect(page).toHaveURL(new RegExp(`workspace=${primaryWorkspace}&environment=${localEnvironment}`));
-  await expect(page.getByText(`ID: ${firstDocument}`)).toBeVisible();
+  await restoredScopeRequest;
+  await expect(page.getByText(`ID: ${primaryDocument}`)).toBeVisible();
+  await expect(page.getByText(`ID: ${firstDocument}`)).toHaveCount(0);
 
   expect(documentRequests.length).toBeGreaterThanOrEqual(2);
   expect(documentRequests.every(({ headers }) => headers.authorization === 'Bearer controlled-browser-token')).toBe(true);
@@ -140,7 +150,14 @@ test('test_documents_upload_reviews_batch_polls_processing_and_links_run', async
 
 test('test_ingestion_run_displays_partial_outcomes_retryability_and_safe_diagnostics', async ({ page }) => {
   await installControlledRunReadModels(page);
+  const runRequests: Array<Record<string, string>> = [];
   await page.route(`**/api/v1/ingestion/runs/${firstDocument}`, async (route) => {
+    const headers = route.request().headers();
+    runRequests.push(headers);
+    if (!isOwnedScope(headers, salesWorkspace, stagingEnvironment)) {
+      await fulfillForeignScopeDenied(route);
+      return;
+    }
     await route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify(controlledPartialRunStatus()),
@@ -159,6 +176,23 @@ test('test_ingestion_run_displays_partial_outcomes_retryability_and_safe_diagnos
   await expect(page.getByText('Повтор операции разрешён', { exact: true })).toBeVisible();
   await expect(page.getByText('Следующее действие: Повтор операции разрешён.')).toBeVisible();
   await expect(page.locator('body')).not.toContainText(/provider|secret|stack|customer/i);
+
+  const isolatedRunRequest = page.waitForRequest((request) => {
+    const headers = request.headers();
+    return request.url().endsWith(`/api/v1/ingestion/runs/${firstDocument}`)
+      && headers['x-workspace-id'] === primaryWorkspace
+      && headers['x-environment-id'] === localEnvironment;
+  });
+  await choose(page, 'Рабочая область', 'Основная');
+  await choose(page, 'Среда', 'Local');
+  await isolatedRunRequest;
+  await expect(page).toHaveURL(new RegExp(`workspace=${primaryWorkspace}.*environment=${localEnvironment}`));
+  await page.reload();
+  await expect(page.getByRole('alert').filter({ hasText: 'Доступ запрещён' }).first()).toBeVisible();
+  await expect(page.getByText('Ошибка: parser.invalid (parse)')).toHaveCount(0);
+  await expect(page.locator('body')).not.toContainText('failed.txt');
+  expect(runRequests.some((headers) => headers['x-workspace-id'] === salesWorkspace && headers['x-environment-id'] === stagingEnvironment)).toBe(true);
+  expect(runRequests.some((headers) => headers['x-workspace-id'] === primaryWorkspace && headers['x-environment-id'] === localEnvironment)).toBe(true);
 });
 
 test('test_document_retry_polls_durable_operation_and_reloads_its_run', async ({ page }) => {
@@ -354,6 +388,58 @@ test('test_document_retry_replay_failed_cancelled_and_denied_states_are_safe', a
   expect(commandCount).toBe(4);
 });
 
+test('test_document_retry_reuses_idempotency_key_and_returns_stable_replay_receipt', async ({ page }) => {
+  await installControlledRunReadModels(page);
+  const sourceObjectId = '80000000-0000-4000-8000-000000000004';
+  const sourceRevisionId = '80000000-0000-4000-8000-000000000005';
+  const idempotencyKeys: string[] = [];
+  let attempt = 0;
+  await page.route(`**/api/v1/ingestion/runs/${firstDocument}`, async (route) => {
+    const status = controlledPartialRunStatus();
+    status.items[1]!.source_object_id = sourceObjectId;
+    status.items[1]!.source_revision_id = sourceRevisionId;
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(status), status: 200 });
+  });
+  await page.route('**/api/v1/documents/processing/retry', async (route) => {
+    attempt += 1;
+    idempotencyKeys.push(route.request().headers()['idempotency-key'] ?? '');
+    if (attempt === 1) {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ code: 'spine.processing.retryable', retryability: 'same_command', safe_message: 'Retry the same command.', schema_version: 1, trace_id: traceId }),
+        status: 503,
+      });
+      return;
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(processingCommandReceipt({
+        failureIds: [],
+        itemId: '80000000-0000-4000-8000-000000000003',
+        operationId: '80000000-0000-4000-8000-000000000009',
+        replay: true,
+        runId: '80000000-0000-4000-8000-000000000002',
+        sourceObjectId,
+        sourceRevisionId,
+        status: 'ready',
+      })),
+      status: 202,
+    });
+  });
+
+  await page.goto(`/runs/${firstDocument}?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`);
+  const failedFile = page.getByRole('listitem').filter({ hasText: 'failed.txt' });
+  await failedFile.getByRole('button', { name: 'Повторить обработку файла' }).click();
+  await failedFile.getByRole('button', { name: 'Повторить ту же команду' }).click();
+
+  const receipt = failedFile.getByRole('region', { name: 'Результат команды обработки' });
+  await expect(receipt).toContainText('80000000-0000-4000-8000-000000000009');
+  await expect(receipt).toContainText('Показан сохранённый результат этой команды.');
+  expect(idempotencyKeys).toHaveLength(2);
+  expect(idempotencyKeys[0]).toMatch(/^[0-9a-f-]{36}$/);
+  expect(idempotencyKeys[1]).toBe(idempotencyKeys[0]);
+});
+
 async function installControlledRunReadModels(page: Page) {
   await page.route('**/api/v1/ingestion/runs', async (route) => {
     const request = route.request();
@@ -457,31 +543,85 @@ test('test_document_detail_deep_link_reloads_and_preserves_scope_and_subview_nav
     new RegExp(`/knowledge/documents/${firstDocument}.*tab=projection`),
   );
 
-  expect(documentRequests).toHaveLength(4);
+  const isolatedDetailRequest = page.waitForRequest((request) => {
+    const headers = request.headers();
+    return request.url().endsWith(`/api/v1/documents/${firstDocument}`)
+      && headers['x-workspace-id'] === primaryWorkspace
+      && headers['x-environment-id'] === localEnvironment;
+  });
+  await choose(page, 'Рабочая область', 'Основная');
+  await choose(page, 'Среда', 'Local');
+  await isolatedDetailRequest;
+  await expect(page).toHaveURL(new RegExp(`workspace=${primaryWorkspace}.*environment=${localEnvironment}.*tab=revisions`));
+  await expect(page.getByRole('alert').filter({ hasText: 'Доступ запрещён' }).first()).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'История ревизий' })).toHaveCount(0);
+  await expect(page.locator('body')).not.toContainText(/secret\.pdf|protected title|checksum/i);
+  await page.reload();
+  await expect(page.getByRole('alert').filter({ hasText: 'Доступ запрещён' }).first()).toBeVisible();
+
+  expect(documentRequests.length).toBeGreaterThanOrEqual(7);
   expect(documentRequests.every(({ headers }) => headers.authorization === 'Bearer controlled-browser-token')).toBe(true);
-  expect(documentRequests.every(({ headers }) => headers['x-workspace-id'] === salesWorkspace)).toBe(true);
-  expect(documentRequests.every(({ headers }) => headers['x-environment-id'] === stagingEnvironment)).toBe(true);
+  expect(documentRequests.some(({ headers }) => headers['x-workspace-id'] === salesWorkspace && headers['x-environment-id'] === stagingEnvironment)).toBe(true);
+  expect(documentRequests.some(({ headers }) => headers['x-workspace-id'] === primaryWorkspace && headers['x-environment-id'] === localEnvironment)).toBe(true);
 });
 
-test('test_document_lifecycle_actions_send_safe_commands_and_show_terminal_receipts', async ({ page }) => {
+test('test_document_lifecycle_actions_are_scope_owned_and_preserve_tombstone_lineage', async ({ page }) => {
   await installControlledDocumentDetail(page);
   const lifecycleRequests: Array<{ body: string; headers: Record<string, string>; method: string; url: string }> = [];
   const statusRequests: Array<{ headers: Record<string, string>; url: string }> = [];
-  let statusRequestCount = 0;
-  await page.route(`**/api/v1/documents/lifecycle/operations/${firstDocument}`, async (route) => {
+  const statusRequestCounts = new Map<string, number>();
+  await page.route(`**/api/v1/documents/${primaryDocument}/revisions*`, async (route) => {
+    const headers = route.request().headers();
+    if (!isOwnedScope(headers, primaryWorkspace, localEnvironment)) {
+      await fulfillForeignScopeDenied(route);
+      return;
+    }
+    const revisions = [
+      controlledRevision({
+        kind: 'tombstone',
+        lifecycle: 'tombstoned',
+        observedAt: '2026-01-02T06:00:00Z',
+        predecessorRevisionId: '41000000-0000-4000-8000-000000000012',
+        sourceRevisionId: '41000000-0000-4000-8000-000000000013',
+      }),
+      controlledRevision({
+        lifecycle: 'superseded',
+        observedAt: '2026-01-02T05:00:00Z',
+        predecessorRevisionId: primaryRevision,
+        sourceRevisionId: '41000000-0000-4000-8000-000000000012',
+        supersededByRevisionId: '41000000-0000-4000-8000-000000000013',
+      }),
+      controlledRevision({
+        lifecycle: 'superseded',
+        sourceRevisionId: primaryRevision,
+        supersededByRevisionId: '41000000-0000-4000-8000-000000000012',
+      }),
+    ];
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+      environment_id: headers['x-environment-id'], items: revisions, limit: 25, next_cursor: null,
+      schema_version: 1, trace_id: traceId, workspace_id: headers['x-workspace-id'],
+    }), status: 200 });
+  });
+  await page.route('**/api/v1/documents/lifecycle/operations/*', async (route) => {
     const request = route.request();
     statusRequests.push({ headers: request.headers(), url: request.url() });
-    statusRequestCount += 1;
-    const operationKind = statusRequestCount <= 2 ? 'replacement' : 'tombstone';
-    const status = statusRequestCount % 2 === 1 ? 'processing_dispatched' : 'completed';
+    const sourceObjectId = request.url().endsWith(`/${primaryDocument}`) ? primaryDocument : firstDocument;
+    const operationKind = sourceObjectId === primaryDocument ? 'tombstone' : 'replacement';
+    const requestCount = (statusRequestCounts.get(sourceObjectId) ?? 0) + 1;
+    statusRequestCounts.set(sourceObjectId, requestCount);
+    const status = requestCount % 2 === 1 ? 'processing_dispatched' : 'completed';
     await route.fulfill({
       contentType: 'application/json',
-      body: JSON.stringify(controlledLifecycleReceipt(operationKind, status)),
+      body: JSON.stringify(controlledLifecycleReceipt(operationKind, status, sourceObjectId, sourceObjectId === primaryDocument ? primaryRevision : secondDocument)),
       status: 200,
     });
   });
   await page.route(`**/api/v1/documents/${firstDocument}/replacement`, async (route) => {
     const request = route.request();
+    if (!isOwnedScope(request.headers(), salesWorkspace, stagingEnvironment)) {
+      await fulfillForeignScopeDenied(route);
+      return;
+    }
     lifecycleRequests.push({ body: request.postData() ?? '', headers: request.headers(), method: request.method(), url: request.url() });
     await route.fulfill({
       contentType: 'application/json',
@@ -489,12 +629,16 @@ test('test_document_lifecycle_actions_send_safe_commands_and_show_terminal_recei
       status: 202,
     });
   });
-  await page.route(`**/api/v1/documents/${firstDocument}/tombstone`, async (route) => {
+  await page.route(`**/api/v1/documents/${primaryDocument}/tombstone`, async (route) => {
     const request = route.request();
+    if (!isOwnedScope(request.headers(), primaryWorkspace, localEnvironment)) {
+      await fulfillForeignScopeDenied(route);
+      return;
+    }
     lifecycleRequests.push({ body: request.postData() ?? '', headers: request.headers(), method: request.method(), url: request.url() });
     await route.fulfill({
       contentType: 'application/json',
-      body: JSON.stringify(controlledLifecycleReceipt('tombstone', 'accepted_processing_pending')),
+      body: JSON.stringify(controlledLifecycleReceipt('tombstone', 'accepted_processing_pending', primaryDocument, primaryRevision)),
       status: 202,
     });
   });
@@ -513,12 +657,32 @@ test('test_document_lifecycle_actions_send_safe_commands_and_show_terminal_recei
   await expect(page.locator('[aria-labelledby="document-actions-heading"]')).toContainText('Запуск обработки');
   await expect(page.getByRole('button', { name: 'Проверить статус операции' })).toBeVisible();
 
+  const isolatedDetailRequest = page.waitForRequest((request) => {
+    const headers = request.headers();
+    return request.url().endsWith(`/api/v1/documents/${firstDocument}`)
+      && headers['x-workspace-id'] === primaryWorkspace
+      && headers['x-environment-id'] === localEnvironment;
+  });
+  await choose(page, 'Рабочая область', 'Основная');
+  await choose(page, 'Среда', 'Local');
+  await isolatedDetailRequest;
+  await expect(page.getByRole('alert').filter({ hasText: 'Доступ запрещён' }).first()).toBeVisible();
+  await expect(page.getByLabel('Причина логического удаления')).toHaveCount(0);
+  await page.goto(
+    `/knowledge/documents/${primaryDocument}?fixture=controlled&workspace=${primaryWorkspace}&environment=${localEnvironment}`,
+  );
   await page.getByLabel('Причина логического удаления').selectOption('source_deleted');
   await page.getByRole('button', { name: 'Создать tombstone' }).click();
   await expect(page.getByText('Новая неизменяемая tombstone-ревизия сохранена в истории.')).toBeVisible();
   await expect(page.getByText('Причина tombstone: source_deleted')).toBeVisible();
+  await page.getByRole('link', { name: 'История ревизий' }).click();
+  await expect(page.getByRole('heading', { name: 'История ревизий' })).toBeVisible();
+  await expect(page.getByText('Граница удаления')).toBeVisible();
+  await expect(page.getByRole('link', { name: '41000000-0000-4000-8000-000000000013' })).toBeVisible();
+  await expect(page.getByRole('link', { name: '41000000-0000-4000-8000-000000000012' })).toBeVisible();
+  await expect(page.getByRole('link', { name: primaryRevision })).toBeVisible();
   await page.reload();
-  await expect(page.getByRole('heading', { name: 'Действия с документом' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'История ревизий' })).toBeVisible();
 
   expect(lifecycleRequests).toHaveLength(2);
   expect(lifecycleRequests[0]?.method).toBe('POST');
@@ -529,11 +693,13 @@ test('test_document_lifecycle_actions_send_safe_commands_and_show_terminal_recei
   expect(lifecycleRequests[0]?.body).toContain('staged-upload:controlled-001');
   expect(lifecycleRequests[1]?.headers['idempotency-key']).toMatch(/^document-tombstone-/);
   expect(lifecycleRequests[1]?.body).toContain('source_deleted');
+  expect(lifecycleRequests[1]?.headers['x-workspace-id']).toBe(primaryWorkspace);
+  expect(lifecycleRequests[1]?.headers['x-environment-id']).toBe(localEnvironment);
   expect(lifecycleRequests.every(({ body }) => !body.includes('physical') && !body.includes('canonical_acceptance'))).toBe(true);
   expect(statusRequests).toHaveLength(4);
   expect(statusRequests.every(({ headers }) => headers.authorization === 'Bearer controlled-browser-token')).toBe(true);
-  expect(statusRequests.every(({ headers }) => headers['x-workspace-id'] === salesWorkspace)).toBe(true);
-  expect(statusRequests.every(({ headers }) => headers['x-environment-id'] === stagingEnvironment)).toBe(true);
+  expect(statusRequests.some(({ headers }) => headers['x-workspace-id'] === salesWorkspace && headers['x-environment-id'] === stagingEnvironment)).toBe(true);
+  expect(statusRequests.some(({ headers }) => headers['x-workspace-id'] === primaryWorkspace && headers['x-environment-id'] === localEnvironment)).toBe(true);
 });
 
 test('test_projection_status_scope_switch_reload_and_safe_degradation', async ({ page }) => {
@@ -630,8 +796,27 @@ test('test_projection_status_scope_switch_reload_and_safe_degradation', async ({
   await expect(page.locator('body')).not.toContainText('must not be rendered');
   await expect(page).toHaveURL(/tab=projection.*projection_kind=qa/);
 
+  const isolatedDetailRequest = page.waitForRequest((request) => {
+    const headers = request.headers();
+    return request.url().endsWith(`/api/v1/documents/${firstDocument}`)
+      && headers['x-workspace-id'] === primaryWorkspace
+      && headers['x-environment-id'] === localEnvironment;
+  });
   await choose(page, 'Рабочая область', 'Основная');
-  await expect(page).toHaveURL(new RegExp(`workspace=${primaryWorkspace}.*tab=projection.*projection_kind=qa`));
+  await choose(page, 'Среда', 'Local');
+  await isolatedDetailRequest;
+  await expect(page).toHaveURL(new RegExp(`workspace=${primaryWorkspace}.*environment=${localEnvironment}.*tab=projection.*projection_kind=qa`));
+  await expect(page.getByRole('alert').filter({ hasText: 'Доступ запрещён' }).first()).toBeVisible();
+  const isolatedProjectionRequest = page.waitForRequest((request) => {
+    const headers = request.headers();
+    return request.url().includes('/api/v1/projections/qa/status')
+      && headers['x-workspace-id'] === primaryWorkspace
+      && headers['x-environment-id'] === localEnvironment;
+  });
+  await page.goto(
+    `/knowledge/documents/${primaryDocument}?fixture=controlled&workspace=${primaryWorkspace}&environment=${localEnvironment}&tab=projection&projection_kind=qa`,
+  );
+  await isolatedProjectionRequest;
   await expect(panel.getByText('Недоступен')).toHaveCount(2);
   await page.reload();
   await expect(panel.getByText('Недоступен')).toHaveCount(2);
@@ -639,7 +824,7 @@ test('test_projection_status_scope_switch_reload_and_safe_degradation', async ({
   expect(projectionRequests.every(({ url }) => url.includes('/projections/qa/status'))).toBe(true);
   expect(projectionRequests.some(({ headers }) => headers['x-workspace-id'] === salesWorkspace)).toBe(true);
   expect(projectionRequests.some(({ headers }) => headers['x-workspace-id'] === primaryWorkspace)).toBe(true);
-  expect(projectionRequests.every(({ headers }) => headers['x-environment-id'] === stagingEnvironment)).toBe(true);
+  expect(projectionRequests.some(({ headers }) => headers['x-workspace-id'] === primaryWorkspace && headers['x-environment-id'] === localEnvironment)).toBe(true);
 });
 
 test('test_projection_recovery_receipt_polls_status_until_server_reports_completion', async ({ page }) => {
@@ -728,6 +913,121 @@ test('test_document_content_inspection_renders_exact_revision_and_locator', asyn
   expect(inspectionRequest?.headers['x-workspace-id']).toBe(salesWorkspace);
   expect(inspectionRequest?.headers['x-environment-id']).toBe(stagingEnvironment);
   expect(requests.every(({ url }) => !url.includes('Synthetic protected content'))).toBe(true);
+});
+
+test('test_revoked_content_authorization_removes_cached_excerpt_for_administrator', async ({ page }) => {
+  await installControlledDocumentDetail(page);
+  const inspectionRequests: Array<{ headers: Record<string, string>; url: string }> = [];
+  let readContentAllowed = true;
+  await page.route(
+    `**/api/v1/knowledge/documents/${firstDocument}/revisions/${secondDocument}/parsed-content*`,
+    async (route) => {
+      const request = route.request();
+      const headers = request.headers();
+      inspectionRequests.push({ headers, url: request.url() });
+      if (readContentAllowed) {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          code: 'spine.authorization.denied',
+          retryability: 'never',
+          safe_message: 'Authorization is denied.',
+          schema_version: 1,
+          trace_id: traceId,
+          protected_text: 'revoked customer content must not leak',
+        }),
+        status: 403,
+      });
+    },
+  );
+
+  await page.goto(
+    `/knowledge/documents/${firstDocument}?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}&tab=content&revision=${secondDocument}`,
+  );
+  await expect(page.getByText('Synthetic protected content')).toBeVisible();
+
+  readContentAllowed = false;
+  await page.reload();
+
+  await expect(page.getByRole('alert')).toContainText('Доступ запрещён');
+  await expect(page.getByText('Synthetic protected content')).toHaveCount(0);
+  await expect(page.locator('body')).not.toContainText('revoked customer content must not leak');
+  expect(inspectionRequests.map(({ headers }) => headers['x-workspace-id'])).toEqual([
+    salesWorkspace,
+    salesWorkspace,
+  ]);
+  expect(inspectionRequests.every(({ headers }) => headers['x-environment-id'] === stagingEnvironment)).toBe(true);
+  expect(inspectionRequests.every(({ url }) => !url.includes('Synthetic protected content'))).toBe(true);
+});
+
+test('test_documents_loading_state_is_named_while_the_controlled_response_is_pending', async ({ page }) => {
+  let releaseInitialResponse: (() => void) | undefined;
+  const initialResponse = new Promise<void>((resolve) => {
+    releaseInitialResponse = resolve;
+  });
+  await page.route('**/api/v1/documents*', async (route) => {
+    const headers = route.request().headers();
+    await initialResponse;
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(controlledDocumentCollection(headers, [])), status: 200 });
+  });
+
+  const navigation = page.goto(
+    `/knowledge/documents?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`,
+  );
+  await expect(page.getByRole('region', { name: 'Загрузка' })).toBeVisible();
+  releaseInitialResponse?.();
+  await navigation;
+});
+
+test('test_documents_empty_state_offers_a_safe_retry_action', async ({ page }) => {
+  await page.route('**/api/v1/documents*', async (route) => {
+    const headers = route.request().headers();
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(controlledDocumentCollection(headers, [])), status: 200 });
+  });
+  await page.goto(`/knowledge/documents?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`);
+  await expect(page.getByRole('region', { name: 'Пока нет данных' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Повторить загрузку' })).toBeVisible();
+});
+
+test('test_documents_validation_failure_hides_protected_diagnostics', async ({ page }) => {
+  await page.route('**/api/v1/documents*', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ code: 'spine.validation.invalid', retryability: 'never', safe_message: 'The request is invalid.', schema_version: 1, trace_id: traceId, protected_detail: 'validation provider detail' }),
+      status: 422,
+    });
+  });
+  await page.goto(`/knowledge/documents?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`);
+  await expect(page.getByRole('alert')).toContainText('Проверьте данные');
+  await expect(page.locator('body')).not.toContainText('validation provider detail');
+});
+
+test('test_documents_partial_state_distinguishes_stale_degraded_and_unpublished', async ({ page }) => {
+  await page.route('**/api/v1/documents*', async (route) => {
+    const headers = route.request().headers();
+    const item = controlledDocumentSnapshot({ freshness: 'stale', health: 'degraded', metadataStatus: 'degraded', publicationStatus: 'unpublished' });
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(controlledDocumentCollection(headers, [item])), status: 200 });
+  });
+  await page.goto(`/knowledge/documents?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`);
+  await expect(page.getByRole('region', { name: 'Показаны не все данные' })).toBeVisible();
+  await expect(page.getByRole('table')).toContainText('Не опубликован');
+  await expect(page.getByRole('table')).toContainText('Ограничен');
+});
+
+test('test_documents_failed_state_hides_provider_diagnostics', async ({ page }) => {
+  await page.route('**/api/v1/documents*', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ code: 'spine.internal.safe_failure', retryability: 'after_delay', safe_message: 'The service is temporarily unavailable.', schema_version: 1, trace_id: traceId, protected_detail: 'provider stack must not leak' }),
+      status: 500,
+    });
+  });
+  await page.goto(`/knowledge/documents?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`);
+  await expect(page.getByRole('alert')).toContainText('Сервис временно недоступен');
+  await expect(page.locator('body')).not.toContainText('provider stack must not leak');
 });
 
 test('test_authentication_denial_hides_administrator_shell_without_api_request', async ({ page }) => {
@@ -827,49 +1127,16 @@ async function installControlledDocuments(page: Page) {
     const environmentHeader = headers['x-environment-id'];
     if (!workspaceHeader || !environmentHeader) throw new Error('Controlled scope headers are missing.');
     const url = new URL(request.url());
-    const isSecondPage = url.searchParams.get('cursor') === 'documents-next';
-    const sourceObjectId = isSecondPage ? secondDocument : firstDocument;
-    const item = {
-      created_at: '2026-01-02T03:04:05Z',
-      operational_metadata: {
-        access_policy: {
-          generation: 3,
-          policy_version_id: '51000000-0000-0000-0000-000000000025',
-          schema_version: 1 as const,
-          version: 2,
-        },
-        lifecycle: 'current',
-        processing_state: 'processed',
-        publication_status: 'published',
-        schema_version: 1 as const,
-        source_object_id: sourceObjectId,
-        status: 'available',
-        security_domain: {
-          binding_version: 1,
-          reference: 'security-domain:controlled',
-          schema_version: 1 as const,
-          version: 'r1',
-        },
-      },
-      publication: {
-        freshness: 'current',
-        health: 'healthy',
-        projection_kind: 'qa',
-        status: 'published',
-      },
-      schema_version: 1 as const,
-      source_kind: 'document',
-      source_object_id: sourceObjectId,
-    } satisfies components['schemas']['DocumentSnapshot'];
-    const body = {
-      environment_id: environmentHeader,
-      items: [item],
-      limit: 25,
-      next_cursor: isSecondPage ? null : 'documents-next',
-      schema_version: 1 as const,
-      trace_id: traceId,
-      workspace_id: workspaceHeader,
-    } satisfies components['schemas']['ApiCollectionEnvelope_DocumentSnapshot_'];
+    const isSalesScope = isOwnedScope(headers, salesWorkspace, stagingEnvironment);
+    const isSecondPage = isSalesScope && url.searchParams.get('cursor') === 'documents-next';
+    const sourceObjectId = isSalesScope
+      ? (isSecondPage ? secondDocument : firstDocument)
+      : primaryDocument;
+    const body = controlledDocumentCollection(
+      headers,
+      [controlledDocumentSnapshot({ sourceObjectId })],
+      isSalesScope && !isSecondPage ? 'documents-next' : null,
+    );
     await route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify(body),
@@ -879,12 +1146,104 @@ async function installControlledDocuments(page: Page) {
   return requests;
 }
 
+function controlledDocumentSnapshot({
+  freshness = 'current',
+  health = 'healthy',
+  metadataStatus = 'available',
+  publicationStatus = 'published',
+  sourceObjectId = firstDocument,
+}: {
+  freshness?: components['schemas']['ProjectionFreshness'];
+  health?: components['schemas']['ProjectionHealth'];
+  metadataStatus?: components['schemas']['DocumentOperationalMetadata']['status'];
+  publicationStatus?: components['schemas']['ProjectionPublicationStatus'];
+  sourceObjectId?: string;
+} = {}): components['schemas']['DocumentSnapshot'] {
+  return {
+    created_at: '2026-01-02T03:04:05Z',
+    operational_metadata: {
+      access_policy: { generation: 3, policy_version_id: '51000000-0000-0000-0000-000000000025', schema_version: 1, version: 2 },
+      freshness,
+      health,
+      lifecycle: 'current',
+      processing_state: 'processed',
+      publication_status: publicationStatus,
+      schema_version: 1,
+      security_domain: { binding_version: 1, reference: 'security-domain:controlled', schema_version: 1, version: 'r1' },
+      source_object_id: sourceObjectId,
+      status: metadataStatus,
+    },
+    publication: { freshness, health, projection_kind: 'qa', status: publicationStatus },
+    schema_version: 1,
+    source_kind: 'document',
+    source_object_id: sourceObjectId,
+  };
+}
+
+function controlledDocumentCollection(
+  headers: Record<string, string>,
+  items: components['schemas']['DocumentSnapshot'][],
+  nextCursor: string | null = null,
+): components['schemas']['ApiCollectionEnvelope_DocumentSnapshot_'] {
+  return {
+    environment_id: headers['x-environment-id'] ?? '',
+    items,
+    limit: 25,
+    next_cursor: nextCursor,
+    schema_version: 1,
+    trace_id: traceId,
+    workspace_id: headers['x-workspace-id'] ?? '',
+  };
+}
+
+function controlledRevision({
+  kind = 'content',
+  lifecycle = 'current',
+  observedAt = '2026-01-02T03:00:00Z',
+  predecessorRevisionId = null,
+  sourceRevisionId = secondDocument,
+  supersededByRevisionId = null,
+}: {
+  kind?: components['schemas']['RevisionKind'];
+  lifecycle?: components['schemas']['RevisionLifecycle'];
+  observedAt?: string;
+  predecessorRevisionId?: string | null;
+  sourceRevisionId?: string;
+  supersededByRevisionId?: string | null;
+} = {}): components['schemas']['RevisionSnapshot'] {
+  return {
+    accepted_at: '2026-01-02T04:00:00Z',
+    accepted_generation: 2,
+    admission_status: 'admitted',
+    content: null,
+    deletion_reason: kind === 'tombstone' ? 'source_deleted' : null,
+    kind,
+    lifecycle,
+    observed_at: observedAt,
+    predecessor_revision_id: predecessorRevisionId,
+    processing_references: [],
+    projection_references: [],
+    schema_version: 1,
+    source_revision_id: sourceRevisionId,
+    superseded_by_revision_id: supersededByRevisionId,
+  };
+}
+
 async function installControlledDocumentDetail(page: Page) {
   const requests: Array<{ url: string; headers: Record<string, string> }> = [];
-  await page.route(`**/api/v1/documents/${firstDocument}`, async (route) => {
+  const fixtures = [
+    { environmentId: stagingEnvironment, sourceObjectId: firstDocument, sourceRevisionId: secondDocument, workspaceId: salesWorkspace },
+    { environmentId: localEnvironment, sourceObjectId: primaryDocument, sourceRevisionId: primaryRevision, workspaceId: primaryWorkspace },
+  ] as const;
+  for (const fixture of fixtures) {
+  await page.route(`**/api/v1/documents/${fixture.sourceObjectId}`, async (route) => {
     const request = route.request();
     requests.push({ url: request.url(), headers: request.headers() });
     const headers = request.headers();
+    if (!isOwnedScope(headers, fixture.workspaceId, fixture.environmentId)) {
+      await fulfillForeignScopeDenied(route);
+      return;
+    }
     const snapshot = {
       created_at: '2026-01-02T03:04:05Z',
       current_revision: {
@@ -897,15 +1256,15 @@ async function installControlledDocumentDetail(page: Page) {
         processing_references: [
           {
             coverage: 'complete' as const,
-            ingestion_item_id: secondDocument,
-            ingestion_run_id: firstDocument,
-            processing_receipt_id: firstDocument,
+            ingestion_item_id: fixture.sourceRevisionId,
+            ingestion_run_id: fixture.sourceObjectId,
+            processing_receipt_id: fixture.sourceObjectId,
             state: 'processed' as const,
           },
         ],
         projection_references: [],
         schema_version: 1 as const,
-        source_revision_id: secondDocument,
+        source_revision_id: fixture.sourceRevisionId,
         predecessor_revision_id: null,
         superseded_by_revision_id: null,
       },
@@ -922,8 +1281,8 @@ async function installControlledDocumentDetail(page: Page) {
         processing_state: 'processed' as const,
         publication_status: 'published' as const,
         schema_version: 1 as const,
-        source_object_id: firstDocument,
-        source_revision_id: secondDocument,
+        source_object_id: fixture.sourceObjectId,
+        source_revision_id: fixture.sourceRevisionId,
         status: 'available' as const,
         security_domain: {
           binding_version: 1,
@@ -940,7 +1299,7 @@ async function installControlledDocumentDetail(page: Page) {
       },
       schema_version: 1 as const,
       source_kind: 'document',
-      source_object_id: firstDocument,
+      source_object_id: fixture.sourceObjectId,
     } satisfies components['schemas']['DocumentSnapshot'];
     const response = {
       data: snapshot,
@@ -951,10 +1310,14 @@ async function installControlledDocumentDetail(page: Page) {
     } satisfies components['schemas']['ApiResponseEnvelope_DocumentSnapshot_'];
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(response), status: 200 });
   });
-  await page.route(`**/api/v1/documents/${firstDocument}/revisions*`, async (route) => {
+  await page.route(`**/api/v1/documents/${fixture.sourceObjectId}/revisions*`, async (route) => {
     const request = route.request();
     requests.push({ url: request.url(), headers: request.headers() });
     const headers = request.headers();
+    if (!isOwnedScope(headers, fixture.workspaceId, fixture.environmentId)) {
+      await fulfillForeignScopeDenied(route);
+      return;
+    }
     const revision = {
       accepted_at: '2026-01-02T04:00:00Z',
       accepted_generation: 2,
@@ -967,14 +1330,14 @@ async function installControlledDocumentDetail(page: Page) {
       predecessor_revision_id: null,
       processing_references: [{
         coverage: 'complete' as const,
-        ingestion_item_id: secondDocument,
-        ingestion_run_id: firstDocument,
-        processing_receipt_id: firstDocument,
+        ingestion_item_id: fixture.sourceRevisionId,
+        ingestion_run_id: fixture.sourceObjectId,
+        processing_receipt_id: fixture.sourceObjectId,
         state: 'processed' as const,
       }],
       projection_references: [],
       schema_version: 1 as const,
-      source_revision_id: secondDocument,
+      source_revision_id: fixture.sourceRevisionId,
       superseded_by_revision_id: null,
     } satisfies components['schemas']['RevisionSnapshot'];
     const response = {
@@ -988,14 +1351,18 @@ async function installControlledDocumentDetail(page: Page) {
     } satisfies components['schemas']['ApiCollectionEnvelope_RevisionSnapshot_'];
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(response), status: 200 });
   });
-  await page.route(`**/api/v1/knowledge/documents/${firstDocument}/revisions/${secondDocument}/parsed-content*`, async (route) => {
+  await page.route(`**/api/v1/knowledge/documents/${fixture.sourceObjectId}/revisions/${fixture.sourceRevisionId}/parsed-content*`, async (route) => {
     const request = route.request();
     requests.push({ url: request.url(), headers: request.headers() });
     const headers = request.headers();
+    if (!isOwnedScope(headers, fixture.workspaceId, fixture.environmentId)) {
+      await fulfillForeignScopeDenied(route);
+      return;
+    }
     const response = {
       data: {
         artifact_digest: 'controlled-artifact-digest',
-        artifact_id: firstDocument,
+        artifact_id: fixture.sourceObjectId,
         items: [{
           heading_path: ['Controlled section'],
           locator: {
@@ -1005,10 +1372,10 @@ async function installControlledDocumentDetail(page: Page) {
             start_codepoint: 0,
           },
           segment_digest: 'controlled-segment-digest',
-          segment_id: firstDocument,
-          source_object_id: firstDocument,
+          segment_id: fixture.sourceObjectId,
+          source_object_id: fixture.sourceObjectId,
           source_revision_digest: 'controlled-revision-digest',
-          source_revision_id: secondDocument,
+          source_revision_id: fixture.sourceRevisionId,
           text: 'Synthetic protected content',
           text_digest: 'controlled-text-digest',
         }],
@@ -1018,11 +1385,11 @@ async function installControlledDocumentDetail(page: Page) {
         parser_config_reference: 'controlled-parser-config',
         parser_name: 'controlled-parser',
         parser_version: 'controlled-parser-v1',
-        processing_receipt_id: firstDocument,
+        processing_receipt_id: fixture.sourceObjectId,
         schema_version: 'knowledge-parsed-content-inspection:v1' as const,
-        source_object_id: firstDocument,
+        source_object_id: fixture.sourceObjectId,
         source_revision_digest: 'controlled-revision-digest',
-        source_revision_id: secondDocument,
+        source_revision_id: fixture.sourceRevisionId,
         status: 'ready' as const,
       },
       environment_id: headers['x-environment-id'] ?? '',
@@ -1032,30 +1399,33 @@ async function installControlledDocumentDetail(page: Page) {
     } satisfies components['schemas']['ApiResponseEnvelope_ParsedContentInspectionResponse_'];
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(response), status: 200 });
   });
+  }
   return requests;
 }
 
 function controlledLifecycleReceipt(
   operationKind: 'replacement' | 'tombstone',
   status: 'accepted_processing_pending' | 'processing_dispatched' | 'completed' = 'completed',
+  sourceObjectId = firstDocument,
+  acceptedRevisionId = secondDocument,
 ) {
   return {
     accepted_at: '2026-01-02T04:05:00Z',
-    accepted_revision_id: secondDocument,
-    canonical_acceptance_id: firstDocument,
+    accepted_revision_id: acceptedRevisionId,
+    canonical_acceptance_id: sourceObjectId,
     completed_at: status === 'completed' ? '2026-01-02T04:06:00Z' : null,
-    expected_current_revision_id: secondDocument,
-    idempotency_receipt_id: firstDocument,
-    operation_id: firstDocument,
+    expected_current_revision_id: acceptedRevisionId,
+    idempotency_receipt_id: sourceObjectId,
+    operation_id: sourceObjectId,
     operation_kind: operationKind,
-    processing_run_id: firstDocument,
+    processing_run_id: sourceObjectId,
     replay: false,
     retryable: false,
     safe_failure_code: null,
     schema_version: 1,
-    source_object_id: firstDocument,
+    source_object_id: sourceObjectId,
     status,
-    status_url: `/api/v1/documents/lifecycle/operations/${firstDocument}`,
+    status_url: `/api/v1/documents/lifecycle/operations/${sourceObjectId}`,
   } satisfies components['schemas']['SourceLifecycleOperationResponse'];
 }
 
@@ -1259,4 +1629,27 @@ function processingCommandReceipt(input: {
     status_url: `/api/v1/documents/processing/operations/${input.operationId}`,
     trigger_kind: input.triggerKind ?? 'retry',
   };
+}
+
+function isOwnedScope(
+  headers: Record<string, string>,
+  workspaceId: string,
+  environmentId: string,
+): boolean {
+  return headers['x-workspace-id'] === workspaceId
+    && headers['x-environment-id'] === environmentId;
+}
+
+async function fulfillForeignScopeDenied(route: Route): Promise<void> {
+  await route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({
+      code: 'spine.authorization.denied',
+      retryability: 'never',
+      safe_message: 'Authorization is denied.',
+      schema_version: 1,
+      trace_id: traceId,
+    }),
+    status: 403,
+  });
 }
