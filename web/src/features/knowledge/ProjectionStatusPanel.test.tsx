@@ -98,47 +98,21 @@ describe('document projection operations panel', () => {
     expect(globalThis.document.body).not.toHaveTextContent(/namespace|provider diagnostics/i);
   });
 
-  it.each([
-    {
-      name: 'current and healthy remain separate from indexing readiness',
-      status: publishedStatus({ freshness: 'current', health: 'healthy' }),
-      processing: 'processed' as const,
-      labels: ['Актуальна', 'Здоров', 'Опубликован', 'Индексация завершена'],
-    },
-    {
-      name: 'stale and healthy remain separate while indexing is pending',
-      status: publishedStatus({ freshness: 'stale', health: 'healthy', drift_count: 2 }),
-      processing: 'projection_requested' as const,
-      labels: ['Устарела', 'Здоров', 'Опубликован', 'Индексируется'],
-    },
-    {
-      name: 'stale and degraded remain separate from indexing failure',
-      status: publishedStatus({ freshness: 'stale', health: 'degraded', drift_count: 2 }),
-      processing: 'processing_failed' as const,
-      labels: ['Устарела', 'Ограничен', 'Опубликован', 'Ошибка обработки'],
-    },
-    {
-      name: 'current and degraded remain separate after indexing',
-      status: publishedStatus({ freshness: 'current', health: 'degraded' }),
-      processing: 'processed' as const,
-      labels: ['Актуальна', 'Ограничен', 'Опубликован', 'Индексация завершена'],
-    },
-    {
-      name: 'unpublished remains separate from pending indexing',
-      status: emptyStatus('unpublished'),
-      processing: 'processing' as const,
-      labels: ['Не опубликован', 'Не указано', 'Индексируется'],
-    },
-    {
-      name: 'unavailable remains separate from indexing not ready',
-      status: emptyStatus('unavailable'),
-      processing: 'accepted' as const,
-      labels: ['Недоступен', 'Не указано', 'Индексация ещё не готова'],
-    },
-  ])('test_projection_status_dimensions_remain_independent: $name', async ({ status, processing, labels }) => {
+  it.each(projectionStateMatrix())('test_projection_status_dimensions_remain_independent: $name', async ({ status, processing, labels }) => {
     installControlledPanel({ status, processing });
     renderPanel(`/knowledge/documents/${documentId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}&tab=projection&projection_kind=qa`);
     for (const label of labels) expect(await screen.findAllByText(label)).not.toHaveLength(0);
+  });
+
+  it('test_projection_optional_provenance_omits_null_values', async () => {
+    installControlledPanel({
+      status: publishedStatus({ activation_generation: null, projection_config_version: null, projection_config_version_id: null }),
+      processing: 'processed',
+    });
+    renderPanel(`/knowledge/documents/${documentId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}&tab=projection&projection_kind=qa`);
+    expect(await screen.findByText('Поколение активации')).toBeVisible();
+    expect(screen.getByText('Версия конфигурации проекции')).toBeVisible();
+    expect(globalThis.document.body).not.toHaveTextContent(/\bnull\b/);
   });
 
   it('test_projection_status_denial_hides_protected_diagnostics', async () => {
@@ -238,6 +212,46 @@ function publishedStatus(overrides: Partial<components['schemas']['ProjectionSta
     snapshot_id: '60000000-0000-4000-8000-000000000001',
     ...overrides,
   };
+}
+
+function projectionStateMatrix() {
+  const publications = ['published', 'unpublished', 'unavailable'] as const;
+  const freshnessValues = ['current', 'stale', null] as const;
+  const healthValues = ['healthy', 'degraded', null] as const;
+  const processingValues = [
+    'received', 'processing_ready', 'stored', 'observed', 'admission_pending', 'quarantined',
+    'rejected', 'accepted', 'processing', 'processed', 'processing_failed', 'projection_requested',
+  ] as const;
+  const publicationLabels = { published: 'Опубликован', unpublished: 'Не опубликован', unavailable: 'Недоступен' };
+  const freshnessLabels = { current: 'Актуальна', stale: 'Устарела' };
+  const healthLabels = { healthy: 'Здоров', degraded: 'Ограничен' };
+  const processingLabels: Record<(typeof processingValues)[number], string> = {
+    received: 'Индексация ещё не готова',
+    processing_ready: 'Индексация ещё не готова',
+    stored: 'Индексация ещё не готова',
+    observed: 'Индексация ещё не готова',
+    admission_pending: 'Индексация ещё не готова',
+    quarantined: 'Индексация ещё не готова',
+    rejected: 'Индексация ещё не готова',
+    accepted: 'Индексация ещё не готова',
+    processing: 'Индексируется',
+    processed: 'Индексация завершена',
+    processing_failed: 'Ошибка обработки',
+    projection_requested: 'Индексируется',
+  };
+  return publications.flatMap((publication) => freshnessValues.flatMap((freshness) => healthValues.flatMap((health) => processingValues.map((processing) => ({
+    name: `${publication}/${freshness ?? 'unknown'}/${health ?? 'unknown'}/${processing}`,
+    status: publication === 'published'
+      ? publishedStatus({ freshness, health })
+      : { ...emptyStatus(publication), freshness, health },
+    processing,
+    labels: [
+      publicationLabels[publication],
+      freshness ? freshnessLabels[freshness] : 'Не указано',
+      health ? healthLabels[health] : 'Не указано',
+      processingLabels[processing],
+    ],
+  })))));
 }
 
 function emptyStatus(publication_status: components['schemas']['ProjectionPublicationStatus']): components['schemas']['ProjectionStatusResponse'] {

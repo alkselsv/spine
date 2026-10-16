@@ -6,6 +6,7 @@ import { createScopedApiClient } from '../../api/client';
 import { apiQueryOptions } from '../../api/query';
 import { ApiErrorPanel, StatusPanel } from '../../app/status';
 import { ru } from '../../i18n/resources';
+import { formatDate } from './format';
 import styles from './DocumentDetailPage.module.css';
 
 type ProjectionStatus = components['schemas']['ProjectionStatusResponse'];
@@ -13,6 +14,7 @@ type HealthSummary = components['schemas']['HealthSummaryResponse'];
 type RecoveryAction = components['schemas']['ProjectionRecoveryAction'];
 type ReconciliationOutcome = NonNullable<ProjectionStatus['reconciliation']>['outcome'] | undefined;
 type HealthOperation = NonNullable<HealthSummary['last_operation']>;
+type ProjectionOperationStatus = NonNullable<ProjectionStatus['last_operation']>['status'];
 
 export function ProjectionStatusPanel({
   client,
@@ -83,8 +85,8 @@ export function ProjectionStatusPanel({
             <DetailValue label={ru.documents.snapshot} value={statusQuery.data.snapshot_id} code />
             <DetailValue label={ru.documents.canonicalBoundary} value={statusQuery.data.canonical_boundary_id} code />
             <DetailValue label={ru.documents.asOf} value={statusQuery.data.as_of ? `${formatDate(statusQuery.data.as_of.boundary_time)} · ${ru.documents.generation} ${statusQuery.data.as_of.accepted_through_generation}` : null} />
-            <DetailValue label={ru.documents.activationGeneration} value={statusQuery.data.activation_generation === undefined ? null : String(statusQuery.data.activation_generation)} />
-            <DetailValue label={ru.documents.projectionConfigVersion} value={statusQuery.data.projection_config_version === undefined ? null : `${statusQuery.data.projection_config_version} · ${statusQuery.data.projection_config_version_id ?? ''}`} code />
+            <DetailValue label={ru.documents.activationGeneration} value={statusQuery.data.activation_generation == null ? null : String(statusQuery.data.activation_generation)} />
+            <DetailValue label={ru.documents.projectionConfigVersion} value={configVersionLabel(statusQuery.data)} code />
             <DetailValue label={ru.documents.drift} value={statusQuery.data.drift_count === undefined || statusQuery.data.drift_count === null ? null : String(statusQuery.data.drift_count)} />
             <DetailValue label={ru.documents.reconciliation} value={reconciliationLabel(statusQuery.data.reconciliation?.outcome)} />
             <DetailValue label={ru.documents.reconciliationCheckedAt} value={statusQuery.data.reconciliation?.checked_at ? formatDate(statusQuery.data.reconciliation.checked_at) : null} />
@@ -256,11 +258,22 @@ function reconciliationLabel(value: ReconciliationOutcome) {
 function operationLabel(value: ProjectionStatus['last_operation']) {
   if (!value) return null;
   const operation = value.operation === 'reconciliation' ? ru.documents.reconciliation : value.operation === 'rebuild' ? ru.documents.rebuild : value.operation === 'rollback' ? ru.documents.rollback : value.operation === 'catch_up' ? ru.documents.catchUp : value.operation === 'publish' ? ru.documents.publish : ru.documents.build;
-  return `${operation} · ${value.status}${value.retryable ? ` · ${ru.documents.retryable}` : ''}`;
+  return `${operation} · ${operationStatusLabel(value.status)}${value.retryable ? ` · ${ru.documents.retryable}` : ''}`;
 }
 
 function healthOperationLabel(operation: HealthOperation['operation'] | undefined, status: HealthOperation['status'] | undefined) {
-  return operation && status ? `${operation} · ${status}` : null;
+  if (!operation || !status) return null;
+  const name = operation === 'authorization' ? ru.documents.authorization : operation === 'ingestion' ? ru.documents.ingestion : operation === 'publication' ? ru.documents.publication : ru.documents.reconciliation;
+  return `${name} · ${operationStatusLabel(status)}`;
+}
+
+function operationStatusLabel(status: ProjectionOperationStatus | HealthOperation['status']) {
+  if (status === 'accepted') return ru.documents.operationAccepted;
+  if (status === 'running') return ru.documents.operationRunning;
+  if (status === 'completed') return ru.documents.operationCompleted;
+  if (status === 'failed') return ru.documents.operationFailed;
+  if (status === 'stale') return ru.documents.operationStale;
+  return ru.documents.operationUnavailable;
 }
 
 function recoveryStateLabel(value: ProjectionStatus['recovery_state']) {
@@ -280,7 +293,7 @@ function safeReasonLabel(value: ProjectionStatus['reason_code']) {
   return known[value] ?? ru.documents.safeReasonAvailable;
 }
 
-function formatDate(value: string) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? ru.documents.unknown : new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
+function configVersionLabel(data: ProjectionStatus) {
+  const parts = [data.projection_config_version, data.projection_config_version_id].filter((part) => part != null);
+  return parts.length ? parts.join(' · ') : null;
 }

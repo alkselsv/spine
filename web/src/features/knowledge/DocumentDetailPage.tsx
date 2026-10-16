@@ -9,6 +9,7 @@ import { useAuth } from '../../app/auth';
 import { ApiErrorPanel, StatusPanel } from '../../app/status';
 import { useScope } from '../../app/scope';
 import { ru } from '../../i18n/resources';
+import { formatDate } from './format';
 import { ProjectionStatusPanel } from './ProjectionStatusPanel';
 import styles from './DocumentDetailPage.module.css';
 
@@ -664,11 +665,4 @@ function diagnosticAction(value: components['schemas']['OperationalMetadataDiagn
 
 function safeDeletionReason(value: string) {
   return value === 'source_deleted' ? 'Источник удалён' : ru.documents.unknown;
-}
-
-function formatDate(value: string | null | undefined) {
-  if (!value) return ru.documents.unknown;
-  const date = new Date(value);
-  if (Number.isNaN(date.valueOf())) return ru.documents.unknown;
-  return new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
 }
