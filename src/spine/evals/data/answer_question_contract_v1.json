@@ -33,5 +33,16 @@
     "insufficient_evidence": "abstained",
     "unavailable": "failed",
     "failed": "failed"
+  },
+  "context_broker_outcome_mapping": {
+    "allowed": "evidence_available",
+    "partial": "evidence_available",
+    "insufficient": "insufficient_evidence",
+    "abstained": "insufficient_evidence",
+    "denied": "failed",
+    "stale": "unavailable",
+    "degraded": "unavailable",
+    "unavailable": "unavailable",
+    "cancelled": "unavailable"
   }
 }
