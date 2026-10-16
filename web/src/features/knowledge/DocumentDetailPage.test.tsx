@@ -12,6 +12,8 @@ import {
   documentOperationalState,
 } from './DocumentDetailPage';
 
+type DocumentSnapshot = components['schemas']['DocumentSnapshot'];
+
 const scope: Scope = {
   workspaceId: '10000000-0000-4000-8000-000000000002',
   environmentId: '20000000-0000-4000-8000-000000000002',
@@ -240,22 +242,70 @@ describe('Knowledge document operational overview', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Доступ запрещён');
     expect(globalThis.document.body).not.toHaveTextContent('must never be displayed');
   });
+
+  it('test_revision_history_cache_isolated_when_workspace_changes', async () => {
+    const workspaceA: Scope = {
+      workspaceId: '10000000-0000-4000-8000-000000000001',
+      environmentId: '20000000-0000-4000-8000-000000000001',
+    };
+    const workspaceB: Scope = {
+      workspaceId: '10000000-0000-4000-8000-000000000002',
+      environmentId: '20000000-0000-4000-8000-000000000002',
+    };
+    const revisionA = '40000000-0000-4000-8000-000000000010';
+    const revisionB = '40000000-0000-4000-8000-000000000011';
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(Response.json(makeDocumentEnvelope(workspaceA, revisionA)))
+      .mockResolvedValueOnce(Response.json(makeRevisionEnvelope([
+        makeRevision({ source_revision_id: revisionA, lifecycle: 'current' }),
+      ])))
+      .mockResolvedValueOnce(Response.json(makeDocumentEnvelope(workspaceB, revisionB)))
+      .mockResolvedValueOnce(Response.json(makeRevisionEnvelope([
+        makeRevision({ source_revision_id: revisionB, lifecycle: 'current' }),
+      ])));
+    vi.stubGlobal('fetch', fetch);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    renderDetail(
+      `/knowledge/documents/${sourceObjectId}?workspace=${workspaceA.workspaceId}&environment=${workspaceA.environmentId}&tab=revisions`,
+      { scope: workspaceA, queryClient },
+    );
+    expect(await screen.findByRole('link', { name: revisionA })).toBeVisible();
+
+    cleanup();
+    renderDetail(
+      `/knowledge/documents/${sourceObjectId}?workspace=${workspaceB.workspaceId}&environment=${workspaceB.environmentId}&tab=revisions`,
+      { scope: workspaceB, queryClient },
+    );
+
+    expect(await screen.findByRole('link', { name: revisionB })).toBeVisible();
+    expect(globalThis.document.body).not.toHaveTextContent(revisionA);
+    expect(fetch).toHaveBeenCalledTimes(4);
+    expect((fetch.mock.calls[3]?.[0] as Request).headers.get('X-Workspace-ID')).toBe(workspaceB.workspaceId);
+  });
 });
 
-function renderDetail(initialEntry: string) {
+function renderDetail(
+  initialEntry: string,
+  options: { queryClient?: QueryClient; scope?: Scope } = {},
+) {
+  const activeScope = options.scope ?? scope;
   const router = createMemoryRouter([
     { path: '/knowledge/documents/:documentId', element: <DocumentDetailPage /> },
   ], {
     initialEntries: [initialEntry],
   });
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = options.queryClient ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <AuthProvider
       value={{ status: 'authenticated', role: 'administrator', getBearerCredential: () => 'test-token' }}
     >
       <QueryClientProvider client={queryClient}>
         <ScopeContext.Provider
-          value={{ scope, queryKey: (resource) => ['spine', resource, scope.workspaceId, scope.environmentId] }}
+          value={{
+            scope: activeScope,
+            queryKey: (resource) => ['spine', resource, activeScope.workspaceId, activeScope.environmentId],
+          }}
         >
           <RouterProvider router={router} />
         </ScopeContext.Provider>
@@ -327,13 +377,26 @@ function makeDocument(
   };
 }
 
-function makeDocumentEnvelope() {
+function makeDocumentEnvelope(
+  activeScope: Scope = scope,
+  currentRevisionId = revisionId,
+) {
+  const document = makeDocument();
+  const data: DocumentSnapshot = {
+    ...document,
+    current_revision: document.current_revision
+      ? { ...document.current_revision, source_revision_id: currentRevisionId }
+      : null,
+    operational_metadata: document.operational_metadata
+      ? { ...document.operational_metadata, source_revision_id: currentRevisionId }
+      : null,
+  };
   return {
-    data: makeDocument(),
-    environment_id: scope.environmentId,
+    data,
+    environment_id: activeScope.environmentId,
     schema_version: 1,
     trace_id: '70000000-0000-4000-8000-000000000001',
-    workspace_id: scope.workspaceId,
+    workspace_id: activeScope.workspaceId,
   };
 }
 

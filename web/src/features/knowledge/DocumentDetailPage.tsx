@@ -336,7 +336,14 @@ function RevisionTimeline({
   const revisionsQuery = useQuery({
     ...apiQueryOptions({
       load: (signal) => loadRevisionHistory(client, documentId, cursor, signal),
-      queryKey: ['spine', 'document-revisions', documentId, cursor],
+      queryKey: [
+        'spine',
+        'document-revisions',
+        scope.workspaceId,
+        scope.environmentId,
+        documentId,
+        cursor,
+      ],
     }),
     enabled: true,
   });
@@ -455,7 +462,6 @@ function SelectedRevision({ revision }: { revision: RevisionSnapshot }) {
     <section className={styles.selectedRevision} aria-labelledby="selected-revision-heading">
       <h4 id="selected-revision-heading">{ru.documents.selectedRevision}</h4>
       <RevisionDetails revision={revision} />
-      <p className={styles.protectedNotice}>{ru.documents.protectedRevisionDetails}</p>
     </section>
   );
 }
