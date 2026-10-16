@@ -1858,10 +1858,10 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ck_operational_metric_usefulness",
         "pk_operational_correlation_records",
         "uq_operational_correlation_records_deduplication",
-        "ck_operational_correlation_metric_numerator",
-        "ck_operational_correlation_metric_denominator",
-        "ck_operational_correlation_attempt_count",
-        "ck_operational_correlation_currency",
+        "ck_operational_correlation_records_ck_operational_corre_855c",
+        "ck_operational_correlation_records_ck_operational_corre_57b7",
+        "ck_operational_correlation_records_ck_operational_corre_5b37",
+        "ck_operational_correlation_records_ck_operational_corre_93e5",
     }
     expected_final_constraints |= (
         AUTHORIZATION_DIRECTORY_CONSTRAINTS
