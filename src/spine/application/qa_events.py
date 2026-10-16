@@ -415,6 +415,12 @@ class InMemoryQAEventStream:
         self._authorize = disclosure_authorizer
         self._event_id_factory = event_id_factory
         self._virtual_denials: dict[UUID, QAEvent] = {}
+        self._virtual_denials_by_sequence: dict[int, QAEvent] = {}
+        self._heartbeat_events: dict[UUID, QAEvent] = {}
+        self._default_heartbeat_id = uuid5(
+            NAMESPACE_URL,
+            f"spine:qa-heartbeat:{workspace_id}:{environment_id}:{session_id}:{run_id}:{message_id}",
+        )
 
     async def replay(
         self,
@@ -427,6 +433,8 @@ class InMemoryQAEventStream:
         virtual_terminal = (
             self._virtual_denials.get(cursor_id) if cursor_id is not None else None
         )
+        if virtual_terminal is None and last_sequence is not None:
+            virtual_terminal = self._virtual_denials_by_sequence.get(last_sequence)
         if virtual_terminal is not None:
             return QAEventReplay(terminal=virtual_terminal)
 
@@ -482,68 +490,28 @@ class InMemoryQAEventStream:
     async def rehydrate_terminal(self) -> QAEvent | None:
         return (await self.replay()).terminal
 
-    async def heartbeat(self) -> QAEvent:
-        terminal = await self.log.terminal(
-            workspace_id=self.workspace_id,
-            environment_id=self.environment_id,
-            session_id=self.session_id,
-            run_id=self.run_id,
-            message_id=self.message_id,
-        )
+    async def heartbeat(self, *, emission_id: UUID | None = None) -> QAEvent:
+        heartbeat_id = emission_id or self._default_heartbeat_id
+        existing_heartbeat = self._heartbeat_events.get(heartbeat_id)
+        if existing_heartbeat is not None:
+            return existing_heartbeat
+        terminal = await self._stored_terminal()
         if terminal is not None:
             return terminal
-        message_id = await self._effective_message_id()
-        return await self._append(
-            QAEvent(
-                event_id=self._event_id_factory(),
-                sequence=await self.log.next_sequence(
-                    workspace_id=self.workspace_id,
-                    environment_id=self.environment_id,
-                    session_id=self.session_id,
-                    run_id=self.run_id,
-                    message_id=message_id,
-                ),
-                type=QAEventType.HEARTBEAT,
-                session_id=self.session_id,
-                workspace_id=self.workspace_id,
-                environment_id=self.environment_id,
-                message_id=message_id,
-                run_id=self.run_id,
-                trace_id=self.trace_id,
-                payload=HeartbeatPayload(),
-            )
+        emitted = await self._emit_generated(
+            event_type=QAEventType.HEARTBEAT,
+            payload=HeartbeatPayload(),
         )
+        self._heartbeat_events[heartbeat_id] = emitted
+        return emitted
 
     async def cancel(self) -> QAEvent:
-        terminal = await self.log.terminal(
-            workspace_id=self.workspace_id,
-            environment_id=self.environment_id,
-            session_id=self.session_id,
-            run_id=self.run_id,
-            message_id=self.message_id,
-        )
+        terminal = await self._stored_terminal()
         if terminal is not None:
             return terminal
-        message_id = await self._effective_message_id()
-        return await self._append(
-            QAEvent(
-                event_id=self._event_id_factory(),
-                sequence=await self.log.next_sequence(
-                    workspace_id=self.workspace_id,
-                    environment_id=self.environment_id,
-                    session_id=self.session_id,
-                    run_id=self.run_id,
-                    message_id=message_id,
-                ),
-                type=QAEventType.CANCELLED,
-                session_id=self.session_id,
-                workspace_id=self.workspace_id,
-                environment_id=self.environment_id,
-                message_id=message_id,
-                run_id=self.run_id,
-                trace_id=self.trace_id,
-                payload=CancelledPayload(reason="request_cancelled"),
-            )
+        return await self._emit_generated(
+            event_type=QAEventType.CANCELLED,
+            payload=CancelledPayload(reason="request_cancelled"),
         )
 
     async def append(self, event: QAEvent) -> QAEvent:
@@ -580,6 +548,38 @@ class InMemoryQAEventStream:
 
     async def _append(self, event: QAEvent) -> QAEvent:
         return await self.log.append(event)
+
+    async def _stored_terminal(self) -> QAEvent | None:
+        return await self.log.terminal(
+            workspace_id=self.workspace_id,
+            environment_id=self.environment_id,
+            session_id=self.session_id,
+            run_id=self.run_id,
+            message_id=self.message_id,
+        )
+
+    async def _emit_generated(self, *, event_type: QAEventType, payload: object) -> QAEvent:
+        message_id = await self._effective_message_id()
+        return await self._append(
+            QAEvent(
+                event_id=self._event_id_factory(),
+                sequence=await self.log.next_sequence(
+                    workspace_id=self.workspace_id,
+                    environment_id=self.environment_id,
+                    session_id=self.session_id,
+                    run_id=self.run_id,
+                    message_id=message_id,
+                ),
+                type=event_type,
+                session_id=self.session_id,
+                workspace_id=self.workspace_id,
+                environment_id=self.environment_id,
+                message_id=message_id,
+                run_id=self.run_id,
+                trace_id=self.trace_id,
+                payload=payload,
+            )
+        )
 
     async def _effective_message_id(self) -> UUID | None:
         if self.message_id is not None:
@@ -627,6 +627,8 @@ class InMemoryQAEventStream:
             payload=DeniedPayload(reason="authorization_denied"),
         )
         self._virtual_denials[event.event_id] = denial
+        self._virtual_denials[denial.event_id] = denial
+        self._virtual_denials_by_sequence[denial.sequence] = denial
         return denial
 
 

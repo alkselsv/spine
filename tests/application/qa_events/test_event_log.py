@@ -53,7 +53,7 @@ def event(
 
 
 @pytest.mark.asyncio
-async def test_event_log_is_ordered_idempotent_and_duplicate_free() -> None:
+async def test_event_log_appends_events_in_sequence() -> None:
     log = InMemoryQAEventLog()
     started = event(QAEventType.RUN_STARTED, 1)
     completed = event(
@@ -64,7 +64,6 @@ async def test_event_log_is_ordered_idempotent_and_duplicate_free() -> None:
 
     assert await log.append(started) == started
     assert await log.append(completed) == completed
-    assert await log.append(completed) == completed
     assert await log.read(
         workspace_id=uid(2), environment_id=uid(3), session_id=uid(1), run_id=uid(5)
     ) == (
@@ -74,21 +73,41 @@ async def test_event_log_is_ordered_idempotent_and_duplicate_free() -> None:
 
 
 @pytest.mark.asyncio
-async def test_event_log_rejects_sequence_gaps_and_reuses() -> None:
+async def test_event_log_replays_an_identical_emission_without_a_second_effect() -> None:
+    log = InMemoryQAEventLog()
+    started = event(QAEventType.RUN_STARTED, 1)
+
+    first = await log.append(started)
+    replay = await log.append(started)
+
+    assert replay == first
+    assert await log.read(
+        workspace_id=uid(2), environment_id=uid(3), session_id=uid(1), run_id=uid(5)
+    ) == (started,)
+
+
+@pytest.mark.asyncio
+async def test_event_log_rejects_sequence_gaps() -> None:
     log = InMemoryQAEventLog()
     await log.append(event(QAEventType.RUN_STARTED, 1))
 
     with pytest.raises(ResumeCursorError, match="sequence"):
         await log.append(event(QAEventType.STAGE_CHANGED, 3))
 
-    conflicting = event(QAEventType.STAGE_CHANGED, 2, event_id=101)
+
+@pytest.mark.asyncio
+async def test_event_log_rejects_event_identity_reuse() -> None:
+    log = InMemoryQAEventLog()
+    await log.append(event(QAEventType.RUN_STARTED, 1))
     await log.append(event(QAEventType.STAGE_CHANGED, 2))
+
+    conflicting = event(QAEventType.STAGE_CHANGED, 2, event_id=101)
     with pytest.raises(ResumeCursorError, match="identity"):
         await log.append(conflicting)
 
 
 @pytest.mark.asyncio
-async def test_resume_is_ordered_bounded_and_accepts_duplicate_cursor() -> None:
+async def test_resume_returns_ordered_events_after_last_event_id() -> None:
     log = InMemoryQAEventLog(max_replay=2)
     events = [event(QAEventType.RUN_STARTED, 1), event(QAEventType.STAGE_CHANGED, 2)]
     for item in events:
@@ -100,18 +119,42 @@ async def test_resume_is_ordered_bounded_and_accepts_duplicate_cursor() -> None:
         session_id=uid(1),
         run_id=uid(5),
         last_event_id=events[0].event_id,
+        last_sequence=events[0].sequence,
     )
-    duplicate_cursor = await log.read_after(
+
+    assert replay == (events[1],)
+
+
+@pytest.mark.asyncio
+async def test_resume_does_not_duplicate_an_identical_cursor() -> None:
+    log = InMemoryQAEventLog()
+    events = [event(QAEventType.RUN_STARTED, 1), event(QAEventType.STAGE_CHANGED, 2)]
+    for item in events:
+        await log.append(item)
+
+    first = await log.read_after(
         workspace_id=uid(2),
         environment_id=uid(3),
         session_id=uid(1),
         run_id=uid(5),
         last_event_id=events[0].event_id,
-        last_sequence=events[0].sequence,
+    )
+    retry = await log.read_after(
+        workspace_id=uid(2),
+        environment_id=uid(3),
+        session_id=uid(1),
+        run_id=uid(5),
+        last_event_id=events[0].event_id,
     )
 
-    assert replay == (events[1],)
-    assert duplicate_cursor == replay
+    assert first == retry == (events[1],)
+
+
+@pytest.mark.asyncio
+async def test_resume_rejects_an_unbounded_limit() -> None:
+    log = InMemoryQAEventLog(max_replay=2)
+    await log.append(event(QAEventType.RUN_STARTED, 1))
+
     with pytest.raises(ResumeCursorError, match="bounded"):
         await log.read_after(
             workspace_id=uid(2),
@@ -174,7 +217,7 @@ async def test_stream_rehydrates_terminal_event_after_disconnect() -> None:
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_and_cancellation_are_idempotent() -> None:
+async def test_heartbeat_retry_is_idempotent() -> None:
     log = InMemoryQAEventLog()
     await log.append(event(QAEventType.RUN_STARTED, 1))
     stream = log.open_stream(
@@ -187,19 +230,81 @@ async def test_heartbeat_and_cancellation_are_idempotent() -> None:
     )
 
     heartbeat = await stream.heartbeat()
+    replayed_heartbeat = await stream.heartbeat()
+
+    assert heartbeat.type is QAEventType.HEARTBEAT
+    assert replayed_heartbeat == heartbeat
+    assert tuple(item.type for item in await log.read(
+        workspace_id=uid(2), environment_id=uid(3), session_id=uid(1), run_id=uid(5)
+    )) == (QAEventType.RUN_STARTED, QAEventType.HEARTBEAT)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_retry_is_idempotent() -> None:
+    log = InMemoryQAEventLog()
+    await log.append(event(QAEventType.RUN_STARTED, 1))
+    stream = log.open_stream(
+        workspace_id=uid(2),
+        environment_id=uid(3),
+        session_id=uid(1),
+        run_id=uid(5),
+        trace_id=uid(6),
+        event_id_factory=iter((uid(201), uid(202))).__next__,
+    )
+
     cancelled = await stream.cancel()
     replayed_cancel = await stream.cancel()
 
-    assert heartbeat.type is QAEventType.HEARTBEAT
     assert cancelled.type is QAEventType.CANCELLED
     assert replayed_cancel == cancelled
-    assert tuple(item.type for item in await log.read(
-        workspace_id=uid(2), environment_id=uid(3), session_id=uid(1), run_id=uid(5)
-    )) == (QAEventType.RUN_STARTED, QAEventType.HEARTBEAT, QAEventType.CANCELLED)
 
 
 @pytest.mark.asyncio
 async def test_authorization_change_replaces_protected_emission_with_safe_denial() -> None:
+    log = InMemoryQAEventLog()
+    started = event(QAEventType.RUN_STARTED, 1)
+    await log.append(started)
+    protected = event(
+        QAEventType.ANSWER_DELTA,
+        2,
+        payload=AnswerDeltaPayload(
+            delta="secret accepted fragment",
+            disclosure=DisclosureReceipt(
+                receipt_id=uid(70),
+                accepted_output_id=uid(71),
+                validation_reference=uid(72),
+            ),
+        ),
+    )
+    await log.append(protected)
+    completed = event(
+        QAEventType.COMPLETED, 3, payload=CompletedPayload(outcome="answered")
+    )
+    await log.append(completed)
+    authorization = {"allowed": True}
+    stream = log.open_stream(
+        workspace_id=uid(2),
+        environment_id=uid(3),
+        session_id=uid(1),
+        run_id=uid(5),
+        trace_id=uid(6),
+        disclosure_authorizer=lambda _receipt: authorization["allowed"],
+    )
+
+    initially_authorized = await stream.replay()
+    authorization["allowed"] = False
+    replay = await stream.replay(last_event_id=started.event_id)
+    rendered = replay.model_dump_json()
+
+    assert initially_authorized.events == (started, protected, completed)
+    assert tuple(item.type for item in replay.events) == (QAEventType.DENIED,)
+    assert replay.terminal is not None and replay.terminal.type is QAEventType.DENIED
+    assert "secret accepted fragment" not in rendered
+    assert "candidate" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_virtual_denial_cursor_replays_the_same_terminal_safely() -> None:
     log = InMemoryQAEventLog()
     await log.append(event(QAEventType.RUN_STARTED, 1))
     protected = event(
@@ -215,9 +320,6 @@ async def test_authorization_change_replaces_protected_emission_with_safe_denial
         ),
     )
     await log.append(protected)
-    await log.append(
-        event(QAEventType.COMPLETED, 3, payload=CompletedPayload(outcome="answered"))
-    )
     stream = log.open_stream(
         workspace_id=uid(2),
         environment_id=uid(3),
@@ -227,16 +329,12 @@ async def test_authorization_change_replaces_protected_emission_with_safe_denial
         disclosure_authorizer=lambda _receipt: False,
     )
 
-    replay = await stream.replay()
-    rendered = replay.model_dump_json()
+    first = await stream.replay()
+    second = await stream.replay(last_event_id=first.events[-1].event_id)
 
-    assert tuple(item.type for item in replay.events) == (
-        QAEventType.RUN_STARTED,
-        QAEventType.DENIED,
-    )
-    assert replay.terminal is not None and replay.terminal.type is QAEventType.DENIED
-    assert "secret accepted fragment" not in rendered
-    assert "candidate" not in rendered
+    assert first.terminal is not None
+    assert second.events == ()
+    assert second.terminal == first.terminal
 
 
 @pytest.mark.asyncio
