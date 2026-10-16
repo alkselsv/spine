@@ -59,6 +59,58 @@ describe('Knowledge document discovery', () => {
     expect(router.state.location.search).toContain('publication_status=published');
   });
 
+  it('test_document_list_shows_compact_server_released_access_metadata', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        Response.json(
+          collection([
+            makeDocument({
+              operational_metadata: {
+                access_policy: {
+                  generation: 9,
+                  policy_version_id: '51000000-0000-0000-0000-000000000025',
+                  schema_version: 1,
+                  version: 4,
+                },
+                freshness: 'current',
+                health: 'healthy',
+                lifecycle: 'current',
+                processing_state: 'processed',
+                publication_status: 'published',
+                schema_version: 1,
+                security_domain: {
+                  binding_version: 2,
+                  reference: 'security-domain:contracts',
+                  schema_version: 1,
+                  version: 'r3',
+                },
+                source_object_id: sourceObjectId,
+                status: 'available',
+              },
+            }),
+          ]),
+        ),
+      ),
+    );
+
+    renderDocuments('/knowledge/documents');
+
+    await screen.findByRole('table');
+    const metadataPanel = screen.getByRole('group', { name: 'Доступ и безопасные метаданные' });
+    expect(metadataPanel).toBeVisible();
+    expect(screen.getByText('security-domain:contracts')).toBeVisible();
+    expect(screen.getByText('r3')).toBeVisible();
+    expect(screen.getByText('51000000-0000-0000-0000-000000000025')).toBeVisible();
+    expect(metadataPanel).toHaveTextContent('Поколение AccessPolicy: 9');
+    expect(screen.getByText('Текущий')).toBeVisible();
+    expect(screen.getByText('Обработан')).toBeVisible();
+    expect(screen.getAllByText('Опубликован').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Актуален').length).toBeGreaterThan(0);
+    expect(screen.getByText('50000000-0000-4000-8000-000000000001')).toBeVisible();
+    expect(globalThis.document.body).not.toHaveTextContent('grants');
+  });
+
   it('test_filter_change_resets_cursor_and_pagination_preserves_scope', async () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()

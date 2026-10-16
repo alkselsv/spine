@@ -9,6 +9,15 @@ import { useAuth } from '../../app/auth';
 import { ApiErrorPanel, StatusPanel } from '../../app/status';
 import { useScope } from '../../app/scope';
 import { ru } from '../../i18n/resources';
+import { DocumentAccessMetadata } from './DocumentAccessMetadata';
+import {
+  diagnosticAction,
+  freshnessLabel,
+  healthLabel,
+  lifecycleLabel,
+  processingStateLabel,
+  publicationStatusLabel,
+} from './documentLabels';
 import { formatDate } from './format';
 import { ProjectionStatusPanel } from './ProjectionStatusPanel';
 import styles from './DocumentDetailPage.module.css';
@@ -77,11 +86,12 @@ export function DocumentDetailPage() {
   return (
     <DocumentOverview
       client={client}
-      document={documentQuery.data}
+      document={documentQuery.data.document}
       documentId={documentId}
       searchParams={scopeSearch}
       scope={scope}
       queryKey={queryKey}
+      traceId={documentQuery.data.traceId}
       tab={tab}
     />
   );
@@ -90,13 +100,13 @@ export async function loadDocument(
   client: ReturnType<typeof createScopedApiClient>,
   sourceObjectId: string,
   signal: AbortSignal,
-): Promise<DocumentSnapshot> {
+): Promise<{ document: DocumentSnapshot; traceId: string }> {
   const result = await client.GET('/api/v1/documents/{source_object_id}', {
     params: { path: { source_object_id: sourceObjectId } },
     signal,
   });
   if (!result.data) throw new Error('The document detail response is unavailable.');
-  return result.data.data;
+  return { document: result.data.data, traceId: result.data.trace_id };
 }
 
 export function parseDocumentDetailTab(value: string | null): DocumentDetailTab {
@@ -149,6 +159,7 @@ function DocumentOverview({
   searchParams,
   scope,
   queryKey,
+  traceId,
   tab,
 }: {
   client: ReturnType<typeof createScopedApiClient>;
@@ -157,6 +168,7 @@ function DocumentOverview({
   searchParams: URLSearchParams;
   scope: { environmentId: string; workspaceId: string };
   queryKey: (resource: string) => readonly unknown[];
+  traceId: string;
   tab: DocumentDetailTab;
 }) {
   const revision = document.current_revision;
@@ -212,6 +224,10 @@ function DocumentOverview({
           {ru.documents.projectionPanel}
         </Link>
       </nav>
+
+      <div className={styles.grid}>
+        <DocumentAccessMetadata metadata={metadata} scope={scope} traceId={traceId} />
+      </div>
 
       {tab === 'revisions' ? (
         <RevisionTimeline
@@ -591,55 +607,10 @@ function sourceKindLabel(value: string) {
   return ru.documents.sourceFallback;
 }
 
-function lifecycleLabel(value: components['schemas']['RevisionLifecycle'] | null | undefined) {
-  if (value === 'observed') return ru.documents.filterOptions.lifecycle.observed;
-  if (value === 'quarantined') return ru.documents.filterOptions.lifecycle.quarantined;
-  if (value === 'rejected') return ru.documents.filterOptions.lifecycle.rejected;
-  if (value === 'superseded') return ru.documents.filterOptions.lifecycle.superseded;
-  if (value === 'current') return ru.documents.filterOptions.lifecycle.current;
-  if (value === 'tombstoned') return ru.documents.filterOptions.lifecycle.tombstoned;
-  if (value === 'processing') return ru.documents.filterOptions.lifecycle.processing;
-  return ru.documents.unknown;
-}
-
 function admissionStatusLabel(value: components['schemas']['AdmissionDisposition'] | null | undefined) {
   if (value === 'admitted') return 'Допущена';
   if (value === 'quarantined') return ru.documents.filterOptions.lifecycle.quarantined;
   if (value === 'rejected') return ru.documents.filterOptions.lifecycle.rejected;
-  return ru.documents.unknown;
-}
-
-function processingStateLabel(value: components['schemas']['IngestionItemState'] | null | undefined) {
-  if (value === 'received') return ru.documents.filterOptions.processing_state.received;
-  if (value === 'stored') return ru.documents.filterOptions.processing_state.stored;
-  if (value === 'observed') return ru.documents.filterOptions.processing_state.observed;
-  if (value === 'admission_pending') return ru.documents.filterOptions.processing_state.admission_pending;
-  if (value === 'quarantined') return ru.documents.filterOptions.processing_state.quarantined;
-  if (value === 'rejected') return ru.documents.filterOptions.processing_state.rejected;
-  if (value === 'accepted') return ru.documents.filterOptions.processing_state.accepted;
-  if (value === 'processing') return ru.documents.filterOptions.processing_state.processing;
-  if (value === 'processed') return ru.documents.filterOptions.processing_state.processed;
-  if (value === 'processing_failed') return ru.documents.filterOptions.processing_state.processing_failed;
-  if (value === 'projection_requested') return ru.documents.filterOptions.processing_state.projection_requested;
-  return ru.documents.unknown;
-}
-
-function publicationStatusLabel(value: components['schemas']['DocumentPublicationStatus'] | null | undefined) {
-  if (value === 'published') return ru.documents.filterOptions.publication_status.published;
-  if (value === 'unpublished') return ru.documents.filterOptions.publication_status.unpublished;
-  if (value === 'unavailable') return ru.documents.filterOptions.publication_status.unavailable;
-  return ru.documents.unknown;
-}
-
-function freshnessLabel(value: components['schemas']['ProjectionFreshness'] | null | undefined) {
-  if (value === 'current') return ru.documents.filterOptions.publication_health.healthy;
-  if (value === 'stale') return ru.documents.states.stale;
-  return ru.documents.unknown;
-}
-
-function healthLabel(value: components['schemas']['ProjectionHealth'] | null | undefined) {
-  if (value === 'healthy') return ru.documents.filterOptions.publication_health.healthy;
-  if (value === 'degraded') return ru.documents.filterOptions.publication_health.degraded;
   return ru.documents.unknown;
 }
 
@@ -654,13 +625,6 @@ function booleanLabel(value: boolean | null | undefined) {
   if (value === true) return ru.documents.yes;
   if (value === false) return ru.documents.no;
   return ru.documents.unknown;
-}
-
-function diagnosticAction(value: components['schemas']['OperationalMetadataDiagnostic']) {
-  if (value === 'current_state_unavailable') return ru.documents.currentStateAction;
-  if (value === 'policy_unavailable') return ru.documents.policyAction;
-  if (value === 'security_domain_unavailable') return ru.documents.securityDomainAction;
-  return ru.documents.noAction;
 }
 
 function safeDeletionReason(value: string) {
