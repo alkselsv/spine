@@ -458,7 +458,7 @@ function RevisionTimeline({
           client={client}
           document={document}
           documentId={documentId}
-          queryKey={queryKey('document-processing-history')}
+          queryKey={queryKey}
           revision={selectedRevision}
           searchParams={safeSearch}
         />
