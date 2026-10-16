@@ -1,0 +1,144 @@
+{
+  "schema_version": "context-adapter-parity-qualification:v1",
+  "ticket": 354,
+  "mode": "offline_deterministic_fake",
+  "release_gate": {
+    "status": "passed",
+    "provider_qualification": "not_approved"
+  },
+  "production_approval": false,
+  "criteria": [
+    {
+      "id": "AC1",
+      "status": "passed",
+      "evidence": [
+        "tests/contracts/memory/test_adapter_parity.py::test_active_context_brokers_have_equivalent_normalized_outcomes",
+        "tests/contracts/memory/test_adapter_parity.py::test_active_legacy_broker_adapter_preserves_normalized_outcomes",
+        "tests/contracts/memory/test_adapter_parity.py::test_active_projection_adapters_normalize_retrieval_failures"
+      ]
+    },
+    {
+      "id": "AC2",
+      "status": "passed",
+      "evidence": [
+        "tests/contracts/memory/test_adapter_parity.py::test_active_context_brokers_have_equivalent_normalized_outcomes",
+        "tests/contracts/memory/test_adapter_parity.py::test_broker_parity_keeps_partial_distinct_from_complete"
+      ]
+    },
+    {
+      "id": "AC3",
+      "status": "passed",
+      "evidence": [
+        "tests/contracts/memory/test_adapter_parity.py::test_authorized_broker_does_not_call_physical_read_after_denial",
+        "tests/contracts/memory/test_acl_leakage_contract.py::test_denied_scope_has_no_content_or_sensitive_diagnostic"
+      ]
+    },
+    {
+      "id": "AC4",
+      "status": "passed",
+      "evidence": [
+        "tests/application/test_authorized_context_broker.py::test_allowed_request_persists_exact_bundle_and_replays_without_second_read",
+        "tests/contracts/memory/test_publication_pin.py::test_broker_resolves_one_immutable_pin_and_passes_same_identity_downstream",
+        "tests/application/test_attempt_revalidation.py::test_pin_mismatch_rejects_even_when_the_provider_reports_a_healthy_state",
+        "tests/application/test_authorized_retrieval_scope.py::test_stale_revision_fails_closed_and_provider_narrowing_is_required_when_declared",
+        "tests/contracts/memory/test_adapter_parity.py::test_active_projection_adapters_preserve_score_presence_and_provenance"
+      ]
+    },
+    {
+      "id": "AC5",
+      "status": "passed",
+      "evidence": [
+        "tests/contracts/memory/test_adapter_parity.py::test_active_context_brokers_have_equivalent_normalized_outcomes",
+        "tests/contracts/memory/test_conformance.py::test_unsafe_evidence_never_leaks_projected_content"
+      ]
+    },
+    {
+      "id": "AC6",
+      "status": "passed",
+      "evidence": [
+        "tests/contracts/memory/test_adapter_parity.py::test_broker_adapters_map_provider_failures_without_diagnostics",
+        "tests/contracts/memory/test_conformance.py::test_unsafe_evidence_never_leaks_projected_content"
+      ]
+    },
+    {
+      "id": "AC7",
+      "status": "passed",
+      "evidence": [
+        "tests/contracts/memory/test_adapter_parity.py::test_active_projection_adapters_preserve_score_presence_and_provenance",
+        "tests/contracts/memory/test_retrieval_contract.py::test_retrieval_score_is_optional_and_round_trips_when_provider_supplies_it"
+      ]
+    },
+    {
+      "id": "AC8",
+      "status": "passed",
+      "evidence": [
+        "tests/qualification/test_issue354_qualification.py::test_issue354_offline_parity_suite_passes",
+        "tests/qualification/test_issue354_qualification.py::test_issue354_report_is_machine_readable"
+      ]
+    }
+  ],
+  "adapters": [
+    {
+      "adapter": "context-broker-v1",
+      "contract_version": "context-broker:v1",
+      "status": "qualified_offline"
+    },
+    {
+      "adapter": "authorized-context-broker",
+      "contract_version": "authorized-context-broker:v1",
+      "status": "qualified_offline"
+    },
+    {
+      "adapter": "legacy-context-broker",
+      "contract_version": "legacy-retrieval-result:v1",
+      "status": "qualified_offline"
+    },
+    {
+      "adapter": "deterministic-context-projection",
+      "contract_version": "context-projection:v1",
+      "status": "qualified_offline"
+    },
+    {
+      "adapter": "cognee-context-projection-composition",
+      "contract_version": "context-projection:v1",
+      "status": "qualified_offline"
+    }
+  ],
+  "parity_results": [
+    {
+      "adapter": "context-broker-v1",
+      "contract_version": "context-broker:v1",
+      "outcomes": ["allowed", "denied", "stale", "insufficient", "partial", "degraded", "unavailable", "cancelled"],
+      "safety_status": "passed"
+    },
+    {
+      "adapter": "authorized-context-broker",
+      "contract_version": "authorized-context-broker:v1",
+      "outcomes": ["allowed", "denied", "stale", "insufficient", "partial", "degraded", "unavailable", "cancelled"],
+      "safety_status": "passed"
+    },
+    {
+      "adapter": "legacy-context-broker",
+      "contract_version": "legacy-retrieval-result:v1",
+      "outcomes": ["allowed", "denied", "stale", "insufficient", "partial", "degraded", "unavailable", "cancelled"],
+      "safety_status": "passed"
+    },
+    {
+      "adapter": "deterministic-context-projection",
+      "contract_version": "context-projection:v1",
+      "outcomes": ["succeeded", "missing", "stale", "tombstoned", "failed"],
+      "safety_status": "passed"
+    },
+    {
+      "adapter": "cognee-context-projection-composition",
+      "contract_version": "context-projection:v1",
+      "outcomes": ["succeeded", "missing", "stale", "tombstoned", "failed"],
+      "safety_status": "passed"
+    }
+  ],
+  "limitations": [
+    "This is fake-backed offline parity evidence, not production approval.",
+    "Real Cognee, PostgreSQL, Neo4j, PGVector and external provider qualification was not run.",
+    "Provider byte equality and ordering are intentionally outside the normalized parity contract."
+  ]
+}
