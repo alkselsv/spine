@@ -16,6 +16,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, PositiveInt, model_validator
 
+from spine.domain.storage.backup_profile import BackupProtectionProfile
+
 
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,255}$")
 _LOWERCASE_SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -113,24 +115,45 @@ class RecoveryComponentEvidence(_Contract):
     component: Literal["postgres", "object_volume"]
     expected_identity: str = Field(min_length=1, max_length=256)
     observed_identity: str = Field(min_length=1, max_length=256)
+    artifact_reference: str = Field(min_length=1, max_length=256)
+    artifact_digest: str = Field(min_length=64, max_length=64)
+    tool_profile: str = Field(min_length=1, max_length=128)
+    tool_version: str = Field(min_length=1, max_length=128)
+    fence_epoch: PositiveInt
+    cutoff_ticket_sequence: NonNegativeInt
+    included_set_digest: str = Field(min_length=64, max_length=64)
+    inclusion_policy: str = Field(min_length=1, max_length=256)
+    excluded_staged_upload_count: NonNegativeInt = 0
     durable: bool
     verified: bool
     verification_reference: str = Field(min_length=1, max_length=256)
+    safe_failure_category: RecoveryFailureCategory | None = None
 
     @model_validator(mode="after")
     def validate_evidence(self) -> "RecoveryComponentEvidence":
         for name in (
             "expected_identity",
             "observed_identity",
+            "artifact_reference",
+            "tool_profile",
+            "tool_version",
+            "inclusion_policy",
             "verification_reference",
         ):
             self._validate_safe_identifier(getattr(self, name), name)
+        for name in ("artifact_digest", "included_set_digest"):
+            if not _LOWERCASE_SHA256.fullmatch(getattr(self, name)):
+                raise ValueError(f"{name} must be lowercase sha256")
         if self.verified and (
             not self.durable or self.expected_identity != self.observed_identity
         ):
             raise ValueError(
                 "verified component evidence must be durable and identity-matched"
             )
+        if self.verified and self.safe_failure_category is not None:
+            raise ValueError("verified component evidence cannot have a failure category")
+        if not self.verified and self.safe_failure_category is None:
+            raise ValueError("unverified component evidence requires a safe failure category")
         return self
 
 
@@ -294,14 +317,20 @@ class QuiescentEvidence(_Contract):
 class StorageRecoveryManifest(_Contract):
     """Immutable recovery evidence; live lease state is intentionally absent."""
 
-    schema_version: PositiveInt = 1
+    schema_version: PositiveInt = 2
+    backup_profile_version: str = "r1-coordinated-backup:v1"
+    staged_state_policy: str = "exclude-staged-restart-or-reconcile-before-use:v1"
+    backup_protection_profile: BackupProtectionProfile | None = None
     recovery_set_id: str = Field(min_length=1, max_length=256)
     deployment_scope_id: str = Field(min_length=1, max_length=256)
     profile: RecoveryManifestProfile
     manifest_status: RecoveryManifestStatus
+    failure_category: RecoveryFailureCategory | None = None
     fence_epoch: PositiveInt
     cutoff_ticket_sequence: NonNegativeInt
     quiescent_evidence: QuiescentEvidence | None
+    postgres_component_evidence: RecoveryComponentEvidence | None = None
+    object_component_evidence: RecoveryComponentEvidence | None = None
     postgres_boundary: str = Field(min_length=1, max_length=256)
     postgres_recovery_watermark: str | None = Field(default=None, min_length=1, max_length=256)
     object_volume_generation: str = Field(min_length=1, max_length=256)
@@ -330,6 +359,8 @@ class StorageRecoveryManifest(_Contract):
         for name in (
             "recovery_set_id",
             "deployment_scope_id",
+            "backup_profile_version",
+            "staged_state_policy",
             "postgres_boundary",
             "object_volume_generation",
             "scope",
@@ -366,6 +397,14 @@ class StorageRecoveryManifest(_Contract):
         if self.profile is RecoveryManifestProfile.BEST_EFFORT and self.manifest_status is RecoveryManifestStatus.COHERENT:
             raise ValueError("best-effort recovery cannot be coherent")
         if self.manifest_status is RecoveryManifestStatus.COHERENT:
+            if self.schema_version >= 2 and (
+                self.backup_profile_version != "r1-coordinated-backup:v1"
+                or self.staged_state_policy
+                != "exclude-staged-restart-or-reconcile-before-use:v1"
+            ):
+                raise ValueError("coherent manifest has an unsupported backup policy")
+            if self.schema_version >= 2 and self.backup_protection_profile is None:
+                raise ValueError("coherent manifest requires destination protection bindings")
             if self.quiescent_evidence is None:
                 raise ValueError("coherent manifest requires quiescent evidence")
             if self.quiescent_evidence.fence_epoch != self.fence_epoch:
@@ -383,6 +422,49 @@ class StorageRecoveryManifest(_Contract):
                 raise ValueError(
                     "quiescent evidence watermark must match manifest watermark"
                 )
+            if self.schema_version >= 2:
+                if (
+                    self.postgres_component_evidence is None
+                    or self.object_component_evidence is None
+                ):
+                    raise ValueError("coherent manifest requires component artifact evidence")
+                postgres_evidence = self.postgres_component_evidence
+                object_evidence = self.object_component_evidence
+                if postgres_evidence.component != "postgres":
+                    raise ValueError("PostgreSQL evidence has the wrong component")
+                if object_evidence.component != "object_volume":
+                    raise ValueError("object-volume evidence has the wrong component")
+                for component_evidence in (postgres_evidence, object_evidence):
+                    if (
+                        component_evidence.fence_epoch != self.fence_epoch
+                        or component_evidence.cutoff_ticket_sequence
+                        != self.cutoff_ticket_sequence
+                    ):
+                        raise ValueError("component evidence fence or cutoff does not match manifest")
+                    if not component_evidence.durable or not component_evidence.verified:
+                        raise ValueError("coherent manifest requires verified component artifacts")
+                if postgres_evidence.included_set_digest != object_evidence.included_set_digest:
+                    raise ValueError("component artifacts have a different included set")
+                if postgres_evidence.inclusion_policy != object_evidence.inclusion_policy:
+                    raise ValueError("component artifacts have a different inclusion policy")
+                if (
+                    postgres_evidence.observed_identity != self.postgres_backup_identity
+                    or object_evidence.observed_identity != self.object_volume_generation
+                ):
+                    raise ValueError("component evidence identities do not match the manifest")
+                if (
+                    self.backup_protection_profile is None
+                    or self.backup_protection_profile.source_volume_id
+                    != object_evidence.observed_identity
+                ):
+                    raise ValueError("backup source volume does not match protection profile")
+                if (
+                    postgres_evidence.verification_reference
+                    != self.postgres_verification_reference
+                    or object_evidence.verification_reference
+                    != self.object_verification_reference
+                ):
+                    raise ValueError("component verification references do not match the manifest")
             if self.postgres_component_state is not ComponentState.VERIFIED:
                 raise ValueError("coherent manifest requires verified PostgreSQL evidence")
             if self.object_component_state is not ComponentState.VERIFIED:
@@ -396,18 +478,32 @@ class StorageRecoveryManifest(_Contract):
                 raise ValueError("coherent manifest cannot contain indeterminate operations")
             if self.completed_at is None:
                 raise ValueError("coherent manifest requires completed_at")
-        if self.manifest_digest != _digest_model(self, exclude={"manifest_digest"}):
+        if self.manifest_digest != _manifest_digest(self):
             raise ValueError("manifest_digest does not match immutable manifest fields")
         return self
 
     @classmethod
     def build(cls, **values: Any) -> "StorageRecoveryManifest":
-        values.setdefault("schema_version", 1)
+        values.setdefault("schema_version", 2)
         values.setdefault("integrity_algorithm", "sha256")
         values["manifest_digest"] = "0" * 64
         draft = cls.model_construct(**values)
-        values["manifest_digest"] = _digest_model(draft, exclude={"manifest_digest"})
+        values["manifest_digest"] = _manifest_digest(draft)
         return cls.model_validate(values)
+
+
+def _manifest_digest(manifest: StorageRecoveryManifest) -> str:
+    excluded = {"manifest_digest"}
+    if manifest.schema_version == 1:
+        excluded.update({
+            "backup_profile_version",
+            "staged_state_policy",
+            "backup_protection_profile",
+            "postgres_component_evidence",
+            "object_component_evidence",
+            "failure_category",
+        })
+    return _digest_model(manifest, exclude=excluded)
 
 
 _ALLOWED_TICKET_TRANSITIONS: dict[FenceOperationState, frozenset[FenceOperationState]] = {
