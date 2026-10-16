@@ -8,9 +8,11 @@ import httpx
 from spine.api.documents import install_document_query_routes
 from spine.application.document_queries import (
     DocumentIdentitySnapshot,
+    DocumentPublicationStatus,
     DocumentPage,
     DocumentPosition,
     DocumentSnapshot,
+    DocumentQueryFilters,
     DocumentQueryRequester,
     OriginalReferenceSnapshot,
     ProcessingReferenceSnapshot,
@@ -22,7 +24,9 @@ from spine.application.document_queries import (
     RevisionSnapshot,
     StableLocatorSnapshot,
 )
-from spine.domain.sources import RevisionKind
+from spine.domain.ingestion import IngestionItemState
+from spine.domain.projections import ProjectionHealth
+from spine.domain.sources import RevisionKind, SourceKind
 from spine.auth import AuthorizationResolution
 from tests.api.test_authorization import (
     CONFIGURATION_VERSION,
@@ -71,6 +75,10 @@ def _current_revision() -> RevisionSnapshot:
 
 class FakeDocumentQueries:
     include_content = False
+    has_more = False
+
+    def __init__(self) -> None:
+        self.last_filters: DocumentQueryFilters | None = None
 
     async def list_documents(
         self,
@@ -79,12 +87,14 @@ class FakeDocumentQueries:
         requester: DocumentQueryRequester,
         limit: int,
         after: DocumentPosition | None,
+        filters: DocumentQueryFilters | None = None,
     ) -> DocumentPage[DocumentSnapshot]:
         assert context.scope.workspace_id == WORKSPACE_ID
         assert context.scope.environment_id == ENVIRONMENT_ID
         assert requester.canonical_human_id.int != 0
         assert limit == 25
         assert after is None
+        self.last_filters = filters
         return DocumentPage(
             items=(
                 DocumentSnapshot(
@@ -94,7 +104,7 @@ class FakeDocumentQueries:
                     current_revision=_current_revision(),
                 ),
             ),
-            has_more=False,
+            has_more=self.has_more,
         )
 
     async def get_document(
@@ -238,6 +248,161 @@ async def test_authorized_document_collection_returns_only_safe_operational_meta
     assert "digest" not in response.text
     assert "locator" not in response.text
     assert "filename" not in response.text
+
+
+async def test_document_collection_accepts_only_bounded_operational_filters() -> None:
+    service = FakeDocumentQueries()
+    application = authorized_app([])
+    install_document_query_routes(
+        application,
+        service=service,
+        cursor_secret=b"issue-339-document-cursor-secret",
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application),
+        base_url="http://test",
+    ) as client:
+        response = await client.get(
+            "/api/v1/documents",
+            params={
+                "limit": 25,
+                "source_kind": "document",
+                "lifecycle": "current",
+                "processing_state": "processed",
+                "publication_status": "published",
+                "publication_health": "healthy",
+            },
+            headers={
+                "Authorization": "Bearer opaque-provider-token",
+                "X-Workspace-ID": str(WORKSPACE_ID),
+                "X-Environment-ID": str(ENVIRONMENT_ID),
+            },
+        )
+
+    assert response.status_code == 200
+    assert service.last_filters == DocumentQueryFilters(
+        source_kind=SourceKind.DOCUMENT,
+        lifecycle=RevisionLifecycle.CURRENT,
+        processing_state=IngestionItemState.PROCESSED,
+        publication_status=DocumentPublicationStatus.PUBLISHED,
+        publication_health=ProjectionHealth.HEALTHY,
+    )
+
+
+async def test_document_cursor_is_bound_to_exact_filters() -> None:
+    service = FakeDocumentQueries()
+    service.has_more = True
+    application = authorized_app([])
+    install_document_query_routes(
+        application,
+        service=service,
+        cursor_secret=b"issue-339-document-cursor-secret",
+    )
+    headers = {
+        "Authorization": "Bearer opaque-provider-token",
+        "X-Workspace-ID": str(WORKSPACE_ID),
+        "X-Environment-ID": str(ENVIRONMENT_ID),
+    }
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application),
+        base_url="http://test",
+    ) as client:
+        first = await client.get(
+            "/api/v1/documents",
+            params={"limit": 25, "source_kind": "document"},
+            headers=headers,
+        )
+        second = await client.get(
+            "/api/v1/documents",
+            params={
+                "limit": 25,
+                "source_kind": "message",
+                "cursor": first.json()["next_cursor"],
+            },
+            headers=headers,
+        )
+
+    assert first.status_code == 200
+    assert first.json()["next_cursor"] is not None
+    assert second.status_code == 400
+    assert second.json()["code"] == "spine.request.invalid_cursor"
+    assert str(SOURCE_ID) not in second.text
+
+
+async def test_document_filter_validation_fails_closed_without_filter_details() -> None:
+    application = authorized_app([])
+    install_document_query_routes(
+        application,
+        service=FakeDocumentQueries(),
+        cursor_secret=b"issue-339-document-cursor-secret",
+    )
+    headers = {
+        "Authorization": "Bearer opaque-provider-token",
+        "X-Workspace-ID": str(WORKSPACE_ID),
+        "X-Environment-ID": str(ENVIRONMENT_ID),
+    }
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application),
+        base_url="http://test",
+    ) as client:
+        unsupported = await client.get(
+            "/api/v1/documents",
+            params={"source_kind": "secret"},
+            headers=headers,
+        )
+        impossible = await client.get(
+            "/api/v1/documents",
+            params={
+                "publication_status": "unpublished",
+                "publication_health": "healthy",
+            },
+            headers=headers,
+        )
+        unknown = await client.get(
+            "/api/v1/documents",
+            params={"title": "protected"},
+            headers=headers,
+        )
+
+    assert unsupported.status_code == 422
+    assert unsupported.json()["code"] == "spine.request.validation"
+    assert impossible.status_code == 422
+    assert impossible.json()["code"] == "spine.request.rejected"
+    assert unknown.status_code == 422
+    assert unknown.json()["code"] == "spine.request.rejected"
+    assert "protected" not in unknown.text
+
+
+def test_document_filter_vocabulary_is_published_in_openapi() -> None:
+    application = authorized_app([])
+    install_document_query_routes(
+        application,
+        service=FakeDocumentQueries(),
+        cursor_secret=b"issue-339-document-cursor-secret",
+    )
+
+    operation = application.openapi()["paths"]["/api/v1/documents"]["get"]
+    parameters = {parameter["name"]: parameter for parameter in operation["parameters"]}
+
+    assert set(
+        (
+            "source_kind",
+            "lifecycle",
+            "processing_state",
+            "publication_status",
+            "publication_health",
+        )
+    ).issubset(parameters)
+    assert application.openapi()["components"]["schemas"]["SourceKind"]["enum"] == [
+        "document",
+        "message",
+        "record",
+    ]
+
+
 async def test_document_detail_omits_protected_fields_without_read_content() -> None:
     application = authorized_app([])
     install_document_query_routes(

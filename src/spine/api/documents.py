@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import cast
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 
 from spine.api.authorization import (
     add_protected_api_route,
@@ -26,12 +26,15 @@ from spine.api.schemas import (
 from spine.application.document_queries import (
     DocumentPage,
     DocumentNotFound,
+    DocumentPublicationStatus,
     DocumentPosition,
+    DocumentQueryFilters,
     DocumentQueryRequester,
     DocumentQueryService,
     DocumentSnapshot,
     RevisionPosition,
     RevisionSnapshot,
+    RevisionLifecycle,
 )
 from spine.application.persistence import PersistenceOperation, PersistencePurpose
 from spine.application.persistence.context import TrustedPersistenceContext
@@ -41,12 +44,14 @@ from spine.auth import (
     AuthorizedRequestContext,
     RouteAuthorizationPolicy,
 )
+from spine.domain.ingestion import IngestionItemState
+from spine.domain.projections import ProjectionHealth
+from spine.domain.sources import SourceKind
 
 
 _COLLECTION_OPERATION = "documents.list"
 _DETAIL_OPERATION = "documents.detail"
 _REVISIONS_OPERATION = "documents.revisions"
-_EMPTY_FILTER_DIGEST = canonical_filter_digest({})
 
 
 def install_document_query_routes(
@@ -64,16 +69,48 @@ def install_document_query_routes(
         request: Request,
         limit: int = Query(DEFAULT_PAGE_LIMIT, ge=1, le=MAX_PAGE_LIMIT),
         cursor: str | None = Query(None, min_length=1, max_length=MAX_CURSOR_LENGTH),
+        source_kind: SourceKind | None = Query(
+            None,
+            description="Restrict results to a supported source kind.",
+        ),
+        lifecycle: RevisionLifecycle | None = Query(
+            None,
+            description="Restrict results to the current revision lifecycle.",
+        ),
+        processing_state: IngestionItemState | None = Query(
+            None,
+            description="Restrict results to documents with this processing state.",
+        ),
+        publication_status: DocumentPublicationStatus | None = Query(
+            None,
+            description="Restrict results to this publication status.",
+        ),
+        publication_health: ProjectionHealth | None = Query(
+            None,
+            description="Restrict published results to this publication health.",
+        ),
         context: TrustedPersistenceContext = Depends(get_authorized_persistence_context),
         request_context: AuthorizedRequestContext[object] = Depends(
             get_authorized_request_context
         ),
     ) -> ApiCollectionEnvelope[DocumentSnapshot]:
+        _reject_unknown_collection_filters(request)
+        try:
+            filters = DocumentQueryFilters(
+                source_kind=source_kind,
+                lifecycle=lifecycle,
+                processing_state=processing_state,
+                publication_status=publication_status,
+                publication_health=publication_health,
+            )
+        except ValueError:
+            raise HTTPException(status_code=422) from None
         after = _decode_cursor(
             cursor,
             codec=codec,
             context=request_context,
             limit=limit,
+            filters=filters,
         )
         page = await _service(request).list_documents(
             context=context,
@@ -84,6 +121,7 @@ def install_document_query_routes(
             ),
             limit=limit,
             after=after,
+            filters=filters,
         )
         return ApiCollectionEnvelope(
             workspace_id=request_context.scope.workspace_id,
@@ -96,6 +134,7 @@ def install_document_query_routes(
                 codec=codec,
                 context=request_context,
                 limit=limit,
+                filters=filters,
             ),
         )
 
@@ -216,6 +255,7 @@ def _decode_cursor(
     codec: CursorCodec,
     context: AuthorizedRequestContext[object],
     limit: int,
+    filters: DocumentQueryFilters,
 ) -> DocumentPosition | None:
     if value is None:
         return None
@@ -225,7 +265,7 @@ def _decode_cursor(
         environment_id=context.scope.environment_id,
         operation_id=_COLLECTION_OPERATION,
         limit=limit,
-        filters_digest=_EMPTY_FILTER_DIGEST,
+        filters_digest=canonical_filter_digest(filters.digest_payload()),
     )
     try:
         timestamp, source_object_id = claims.position.rsplit("|", 1)
@@ -243,6 +283,7 @@ def _next_cursor(
     codec: CursorCodec,
     context: AuthorizedRequestContext[object],
     limit: int,
+    filters: DocumentQueryFilters,
 ) -> str | None:
     if not page.has_more or not page.items:
         return None
@@ -252,7 +293,7 @@ def _next_cursor(
         environment_id=context.scope.environment_id,
         operation_id=_COLLECTION_OPERATION,
         limit=limit,
-        filters_digest=_EMPTY_FILTER_DIGEST,
+        filters_digest=canonical_filter_digest(filters.digest_payload()),
         position=f"{last.created_at.isoformat()}|{last.source_object_id}",
     )
 
@@ -317,6 +358,20 @@ def _policy() -> RouteAuthorizationPolicy:
         purpose=PersistencePurpose("knowledge_control"),
         operation=PersistenceOperation("inspect_documents"),
     )
+
+
+def _reject_unknown_collection_filters(request: Request) -> None:
+    allowed = {
+        "limit",
+        "cursor",
+        "source_kind",
+        "lifecycle",
+        "processing_state",
+        "publication_status",
+        "publication_health",
+    }
+    if any(key not in allowed for key in request.query_params):
+        raise HTTPException(status_code=422)
 
 
 __all__ = ["install_document_query_routes"]

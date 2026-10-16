@@ -31,6 +31,7 @@ from spine.application.ingestion_history import IngestionHistoryService
 from spine.application.document_queries import (
     DocumentPage,
     DocumentPosition,
+    DocumentQueryFilters,
     DocumentQueryRequester,
     DocumentQueryService,
     DocumentSnapshot,
@@ -105,8 +106,9 @@ class _UnavailableDocumentQueryService:
         requester: DocumentQueryRequester,
         limit: int,
         after: DocumentPosition | None,
+        filters: DocumentQueryFilters | None = None,
     ) -> DocumentPage[DocumentSnapshot]:
-        del context, requester, limit, after
+        del context, requester, limit, after, filters
         raise RuntimeError("The OpenAPI composition is not executable.")
 
     async def get_document(
