@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import secrets
-from collections.abc import Sequence
+from collections.abc import AsyncIterable, Sequence
 from typing import cast
 from uuid import UUID
 
@@ -22,6 +22,12 @@ from spine.application.batch_ingestion import (
 from spine.application.batch_ingestion_api import (
     BatchDocumentIngestionService,
     BatchIngestionSnapshot,
+)
+from spine.application.document_ingestion import DocumentUploadCommand
+from spine.application.ingestion_api import (
+    DocumentIngestionService,
+    IngestionStatusSnapshot,
+    IngestionSubmission,
 )
 from spine.application.ingestion_history import (
     IngestionHistoryPage,
@@ -53,6 +59,30 @@ class _ContractAuthorizationComposer:
     def bind_route(self, route_id: str) -> object:
         del route_id
         return object()
+
+
+class _UnavailableDocumentIngestionService:
+    """Expose upload/status routes without making the schema app executable."""
+
+    async def submit(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        command: DocumentUploadCommand,
+        chunks: AsyncIterable[bytes],
+    ) -> IngestionSubmission:
+        del context, command, chunks
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+    async def status(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        run_id: UUID,
+        item_id: UUID,
+    ) -> IngestionStatusSnapshot | None:
+        del context, run_id, item_id
+        raise RuntimeError("The OpenAPI composition is not executable.")
 
 
 class _UnavailableBatchDocumentIngestionService:
@@ -192,6 +222,10 @@ def create_openapi_app() -> FastAPI:
     )
     return create_app(
         authorization_runtime=authorization_runtime,
+        document_ingestion_service=cast(
+            DocumentIngestionService,
+            _UnavailableDocumentIngestionService(),
+        ),
         batch_document_ingestion_service=cast(
             BatchDocumentIngestionService,
             _UnavailableBatchDocumentIngestionService(),

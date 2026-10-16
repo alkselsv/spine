@@ -30,8 +30,44 @@ def test_generation_export_matches_backend_openapi_document(tmp_path: Path) -> N
     assert "/api/v1/documents/{source_object_id}/revisions" in document["paths"]
     assert "/api/v1/ingestion/runs" in document["paths"]
     assert "/api/v1/ingestion/runs/{run_id}" in document["paths"]
+    assert "/api/v1/documents/uploads" in document["paths"]
+    assert "/api/v1/ingestion/runs/{run_id}/items/{item_id}" in document["paths"]
     assert "/api/v1/projections/{projection_kind}/status" in document["paths"]
     assert "/api/v1/projections/{projection_kind}/recovery" in document["paths"]
+
+    upload_operation = document["paths"]["/api/v1/documents/uploads"]["post"]
+    upload_parameter_names = {
+        parameter["name"] for parameter in upload_operation["parameters"]
+    }
+    assert {
+        "Idempotency-Key",
+        "X-Upload-Identity",
+        "X-Filename",
+        "X-Content-SHA256",
+        "X-Workspace-ID",
+        "X-Environment-ID",
+    } <= upload_parameter_names
+    digest_parameter = next(
+        parameter
+        for parameter in upload_operation["parameters"]
+        if parameter["name"] == "X-Content-SHA256"
+    )
+    assert digest_parameter["schema"] == {
+        "type": "string",
+        "minLength": 64,
+        "maxLength": 64,
+        "pattern": "^[0-9a-f]{64}$",
+    }
+    assert upload_operation["responses"]["202"]["content"]["application/json"][
+        "schema"
+    ]["$ref"] == "#/components/schemas/IngestionUploadResponse"
+
+    item_status_operation = document["paths"][
+        "/api/v1/ingestion/runs/{run_id}/items/{item_id}"
+    ]["get"]
+    assert item_status_operation["responses"]["200"]["content"]["application/json"][
+        "schema"
+    ]["$ref"] == "#/components/schemas/IngestionStatusResponse"
 
     status_operation = document["paths"]["/api/v1/projections/{projection_kind}/status"]["get"]
     recovery_operation = document["paths"]["/api/v1/projections/{projection_kind}/recovery"]["post"]

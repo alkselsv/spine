@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator
 from enum import Enum
 from typing import Literal
@@ -45,6 +46,7 @@ _IDEMPOTENCY_KEY = "Idempotency-Key"
 _UPLOAD_IDENTITY = "X-Upload-Identity"
 _FILENAME = "X-Filename"
 _CONTENT_SHA256 = "X-Content-SHA256"
+_SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
 
 class PublicIngestionStatus(str, Enum):
@@ -216,6 +218,8 @@ def _command_from_request(request: Request) -> DocumentUploadCommand:
         upload_identity = f"upload-{_stable_key_suffix(idempotency_key)}"
     filename = _single_header(request, _FILENAME, required=False)
     content_sha256 = _single_header(request, _CONTENT_SHA256, required=False)
+    if content_sha256 is not None and re.fullmatch(_SHA256_PATTERN, content_sha256) is None:
+        raise InvalidIngestionRequest()
     media_type = request.headers.get("content-type", "application/octet-stream")
     media_type = media_type.split(";", 1)[0].strip().lower()
     if not media_type:
@@ -448,7 +452,17 @@ def _upload_openapi_extra() -> dict[str, object]:
             {"name": _IDEMPOTENCY_KEY, "in": "header", "required": True, "schema": {"type": "string", "maxLength": 255}},
             {"name": _UPLOAD_IDENTITY, "in": "header", "required": False, "schema": {"type": "string", "maxLength": 64}},
             {"name": _FILENAME, "in": "header", "required": False, "schema": {"type": "string", "maxLength": 255}},
-            {"name": _CONTENT_SHA256, "in": "header", "required": False, "schema": {"type": "string", "pattern": "[0-9a-f]{64}"}},
+            {
+                "name": _CONTENT_SHA256,
+                "in": "header",
+                "required": False,
+                "schema": {
+                    "type": "string",
+                    "minLength": 64,
+                    "maxLength": 64,
+                    "pattern": _SHA256_PATTERN,
+                },
+            },
         ],
     }
 
