@@ -432,6 +432,20 @@ access_policy_versions = Table(
     Column("version", Integer, nullable=False), Column("predecessor_policy_version_id", PostgreSQLUUID(as_uuid=True)), Column("document_schema_version", Text, nullable=False), Column("document_hash", String(64), nullable=False),
     Column("origin_kind", Text, nullable=False), Column("origin_reference", PostgreSQLUUID(as_uuid=True), nullable=False), Column("origin_version", Integer, nullable=False), Column("origin_hash", String(64), nullable=False),
     Column("created_by_canonical_human_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("security_domain_binding_id", PostgreSQLUUID(as_uuid=True)),
+)
+source_security_domain_bindings = Table(
+    "source_security_domain_bindings", metadata,
+    Column("binding_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_object_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("security_domain_reference", Text, nullable=False),
+    Column("security_domain_version", Text, nullable=False),
+    Column("binding_version", Integer, nullable=False),
+    Column("predecessor_binding_id", PostgreSQLUUID(as_uuid=True)),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("policy_activation_id", PostgreSQLUUID(as_uuid=True), nullable=False),
 )
 access_policy_grants = Table(
     "access_policy_grants", metadata,
@@ -992,6 +1006,7 @@ qa_answer_disclosure_deliveries = Table(
 __all__ = [
     "access_policy_grants",
     "access_policy_versions",
+    "source_security_domain_bindings",
     "audit_events",
     "environments",
     "context_profiles",

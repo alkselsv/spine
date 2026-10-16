@@ -169,6 +169,7 @@ from spine.domain.sources import (
     SourceRevision,
     SourceRevisionProvenance,
     SourceRevisionReceiptAssociation,
+    SourceSecurityDomainBinding,
 )
 from spine.domain.sources.canonicalization import assert_revision_digest
 from spine.domain.sources.errors import RevisionDigestMismatchError as DomainRevisionDigestMismatchError
@@ -237,6 +238,7 @@ from spine.infrastructure.persistence.postgresql_errors import (
 from spine.infrastructure.persistence.postgresql_mappings import (
     access_policy_grants as _ACCESS_POLICY_GRANTS,
     access_policy_versions as _ACCESS_POLICY_VERSIONS,
+    source_security_domain_bindings as _SOURCE_SECURITY_DOMAIN_BINDINGS,
     admission_decisions as _ADMISSION_DECISIONS,
     audit_events as _AUDIT_EVENTS,
     environments as _ENVIRONMENTS,
@@ -3457,6 +3459,14 @@ class _PostgreSQLAccessPolicyRepository:
         ):
             raise InvalidPersistenceContextError("Persistence context is invalid.")
 
+    def _require_binding_scope(self, binding: SourceSecurityDomainBinding) -> None:
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope) or (
+            scope.workspace_id != binding.workspace_id
+            or scope.environment_id != binding.environment_id
+        ):
+            raise InvalidPersistenceContextError("Persistence context is invalid.")
+
     @staticmethod
     def _current(row: Mapping[str, Any]) -> CurrentAccessPolicy:
         return CurrentAccessPolicy.model_validate(dict(row))
@@ -3491,6 +3501,98 @@ class _PostgreSQLAccessPolicyRepository:
             .one_or_none()
         )
         return self._current(row) if row is not None else None
+
+    async def resolve_security_domain_binding(
+        self,
+        binding_id: UUID,
+        *,
+        workspace_id: UUID | None = None,
+        environment_id: UUID | None = None,
+    ) -> SourceSecurityDomainBinding | None:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return None
+        row = (
+            await self._uow._execute(
+                select(_SOURCE_SECURITY_DOMAIN_BINDINGS).where(
+                    _SOURCE_SECURITY_DOMAIN_BINDINGS.c.binding_id == binding_id,
+                    _SOURCE_SECURITY_DOMAIN_BINDINGS.c.workspace_id
+                    == scope.workspace_id,
+                    _SOURCE_SECURITY_DOMAIN_BINDINGS.c.environment_id
+                    == scope.environment_id,
+                )
+            )
+        ).mappings().one_or_none()
+        return (
+            SourceSecurityDomainBinding.model_validate(dict(row))
+            if row is not None
+            else None
+        )
+
+    async def persist_security_domain_binding(
+        self, binding: SourceSecurityDomainBinding
+    ) -> SourceSecurityDomainBinding:
+        self._uow._guard_active()
+        self._require_binding_scope(binding)
+        existing = await self.resolve_security_domain_binding(binding.binding_id)
+        if existing is not None:
+            if existing != binding:
+                raise ConstraintConflictError(
+                    "Security Domain binding identity conflicts."
+                )
+            return existing
+        version_row = (
+            await self._uow._execute(
+                select(_SOURCE_SECURITY_DOMAIN_BINDINGS.c.binding_id).where(
+                    _SOURCE_SECURITY_DOMAIN_BINDINGS.c.workspace_id
+                    == binding.workspace_id,
+                    _SOURCE_SECURITY_DOMAIN_BINDINGS.c.environment_id
+                    == binding.environment_id,
+                    _SOURCE_SECURITY_DOMAIN_BINDINGS.c.source_object_id
+                    == binding.source_object_id,
+                    _SOURCE_SECURITY_DOMAIN_BINDINGS.c.binding_version
+                    == binding.binding_version,
+                )
+            )
+        ).first()
+        if version_row is not None:
+            raise ConstraintConflictError("Security Domain binding version conflicts.")
+        activation_row = (
+            await self._uow._execute(
+                select(_POLICY_ACTIVATIONS.c.policy_activation_id).where(
+                    _POLICY_ACTIVATIONS.c.policy_activation_id
+                    == binding.policy_activation_id,
+                    _POLICY_ACTIVATIONS.c.workspace_id == binding.workspace_id,
+                    _POLICY_ACTIVATIONS.c.environment_id == binding.environment_id,
+                    _POLICY_ACTIVATIONS.c.source_object_id == binding.source_object_id,
+                )
+            )
+        ).first()
+        if activation_row is None:
+            raise ConstraintConflictError(
+                "Security Domain binding activation is unavailable."
+            )
+        if binding.binding_version > 1:
+            predecessor = await self.resolve_security_domain_binding(
+                binding.predecessor_binding_id,
+                workspace_id=binding.workspace_id,
+                environment_id=binding.environment_id,
+            )
+            if (
+                predecessor is None
+                or predecessor.source_object_id != binding.source_object_id
+                or predecessor.binding_version != binding.binding_version - 1
+            ):
+                raise ConstraintConflictError(
+                    "Security Domain binding predecessor is unavailable."
+                )
+        await self._uow._execute(
+            insert(_SOURCE_SECURITY_DOMAIN_BINDINGS).values(
+                **binding.model_dump(mode="python")
+            )
+        )
+        return binding
 
     async def resolve_policy(
         self,
@@ -3763,6 +3865,8 @@ class _PostgreSQLAccessPolicyRepository:
         await self._uow._execute(
             insert(_POLICY_ACTIVATIONS).values(**activation_values)
         )
+        if command.security_domain_binding is not None:
+            await self.persist_security_domain_binding(command.security_domain_binding)
         current = CurrentAccessPolicy(
             workspace_id=policy.workspace_id,
             environment_id=policy.environment_id,

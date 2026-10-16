@@ -31,6 +31,7 @@ from spine.domain.sources.access_policy import (
     PolicyApprovalDecision,
     PolicyBenefitClassification,
     PolicyProposal,
+    SourceSecurityDomainBinding,
 )
 
 
@@ -135,52 +136,58 @@ class AccessPolicyActivationCommand:
     activated_at: datetime
     audit_event: AuditEvent | None = None
     outbox_intent: OutboxIntent | None = None
+    security_domain_binding: SourceSecurityDomainBinding | None = None
     proposal: PolicyProposal | None = None
     approval: PolicyApproval | None = None
     eligibility: InitialPolicyEligibilityDecision | None = None
 
     def expected_digest(self, operation: PersistenceOperation) -> CommandDigest:
+        payload = {
+            "policy": self.policy.model_dump(mode="json"),
+            "requester_canonical_human_id": self.requester_canonical_human_id,
+            "activator_canonical_human_id": self.activator_canonical_human_id,
+            "expected_policy_version_id": self.expected_policy_version_id,
+            "expected_policy_generation": self.expected_policy_generation,
+            "expected_cas_version": self.expected_cas_version,
+            "activation_id": self.activation_id,
+            "audit_event_id": self.audit_event_id,
+            "outbox_event_id": self.outbox_event_id,
+            "audit_event": (
+                self.audit_event.model_dump(
+                    mode="json", exclude={"payload_snapshot"}
+                )
+                if self.audit_event
+                else None
+            ),
+            "outbox_intent": (
+                self.outbox_intent.model_dump(
+                    mode="json", exclude={"payload_snapshot"}
+                )
+                if self.outbox_intent
+                else None
+            ),
+            "activated_at": self.activated_at,
+            "proposal": (
+                self.proposal.model_dump(mode="json") if self.proposal else None
+            ),
+            "approval": (
+                self.approval.model_dump(mode="json") if self.approval else None
+            ),
+            "eligibility": (
+                self.eligibility.model_dump(mode="json")
+                if self.eligibility
+                else None
+            ),
+            "idempotency_key": self.idempotency_key.value,
+        }
+        if self.security_domain_binding is not None:
+            payload["security_domain_binding"] = self.security_domain_binding.model_dump(
+                mode="json"
+            )
         return digest_command(
             operation=operation,
             operation_schema_version=1,
-            payload={
-                "policy": self.policy.model_dump(mode="json"),
-                "requester_canonical_human_id": self.requester_canonical_human_id,
-                "activator_canonical_human_id": self.activator_canonical_human_id,
-                "expected_policy_version_id": self.expected_policy_version_id,
-                "expected_policy_generation": self.expected_policy_generation,
-                "expected_cas_version": self.expected_cas_version,
-                "activation_id": self.activation_id,
-                "audit_event_id": self.audit_event_id,
-                "outbox_event_id": self.outbox_event_id,
-                "audit_event": (
-                    self.audit_event.model_dump(
-                        mode="json", exclude={"payload_snapshot"}
-                    )
-                    if self.audit_event
-                    else None
-                ),
-                "outbox_intent": (
-                    self.outbox_intent.model_dump(
-                        mode="json", exclude={"payload_snapshot"}
-                    )
-                    if self.outbox_intent
-                    else None
-                ),
-                "activated_at": self.activated_at,
-                "proposal": (
-                    self.proposal.model_dump(mode="json") if self.proposal else None
-                ),
-                "approval": (
-                    self.approval.model_dump(mode="json") if self.approval else None
-                ),
-                "eligibility": (
-                    self.eligibility.model_dump(mode="json")
-                    if self.eligibility
-                    else None
-                ),
-                "idempotency_key": self.idempotency_key.value,
-            },
+            payload=payload,
         )
 
 
@@ -219,6 +226,18 @@ class AccessPolicyRepository(Protocol):
         environment_id: UUID | None = None,
     ) -> CurrentAccessPolicy | None: ...
 
+    async def resolve_security_domain_binding(
+        self,
+        binding_id: UUID,
+        *,
+        workspace_id: UUID | None = None,
+        environment_id: UUID | None = None,
+    ) -> SourceSecurityDomainBinding | None: ...
+
+    async def persist_security_domain_binding(
+        self, binding: SourceSecurityDomainBinding
+    ) -> SourceSecurityDomainBinding: ...
+
     async def resolve_activation_result(
         self, command: AccessPolicyActivationCommand
     ) -> AccessPolicyActivationResult | None: ...
@@ -243,6 +262,29 @@ def _same_scope(policy: AccessPolicyVersion, snapshot: PolicyAuthoritySnapshot) 
         and policy.environment_id == snapshot.environment_id
         and snapshot.is_policy_administrator
     )
+
+
+def _validate_security_domain_binding(
+    command: AccessPolicyActivationCommand,
+) -> None:
+    policy = command.policy
+    binding = command.security_domain_binding
+    if (policy.security_domain_binding_id is None) != (binding is None):
+        raise StalePolicyAuthorityError(
+            "Security Domain binding evidence is absent or mismatched."
+        )
+    if binding is None:
+        return
+    if (
+        binding.binding_id != policy.security_domain_binding_id
+        or binding.workspace_id != policy.workspace_id
+        or binding.environment_id != policy.environment_id
+        or binding.source_object_id != policy.source_object_id
+        or binding.policy_activation_id != command.activation_id
+    ):
+        raise StalePolicyAuthorityError(
+            "Security Domain binding evidence is absent or mismatched."
+        )
 
 
 def _current_generations(
@@ -284,6 +326,10 @@ def access_policy_document_hash(policy: AccessPolicyVersion) -> str:
         "origin_hash": policy.origin_hash,
         "grants": grants,
     }
+    if policy.security_domain_binding_id is not None:
+        payload["security_domain_binding_id"] = str(
+            policy.security_domain_binding_id
+        )
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(canonical).hexdigest()
 
@@ -333,6 +379,7 @@ class AccessPolicyActivationService:
 
         if policy.document_hash != access_policy_document_hash(policy):
             raise StalePolicyAuthorityError("Policy document hash is invalid.")
+        _validate_security_domain_binding(command)
 
         current = await self._repository.resolve_current(
             policy.source_object_id,

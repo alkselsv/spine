@@ -440,6 +440,18 @@ Evidence
 
 Все definitions версионируются неизменно. Существующий run продолжает выполняться на закреплённых версиях workflow, agents, prompts, context profiles, tools и evaluators. `AuditEvent` append-only фиксирует значимые переходы, решения и изменения deployment.
 
+Safe Knowledge operational metadata is a separate, content-free projection. It
+may expose the current AccessPolicy version identity and generation, lifecycle,
+processing/publication/freshness/health and safe diagnostic codes, but never
+grants, principal membership, protected titles, filenames, checksums, text,
+chunks or excerpts. A `SourceSecurityDomainBinding` is immutable,
+workspace/environment/SourceObject scoped and deny-only: it can narrow an
+already-authorized decision but can never grant `read_content` or
+`process_content`. Binding changes are policy successors committed through the
+existing proposal/approval, activation and CAS transaction. Binding-bearing
+policies use `access-policy.v2`; historical `access-policy.v1` hashes remain
+unchanged, and missing bindings have no inferred default.
+
 ## 8. Ingestion pipeline
 
 ### Последовательность

@@ -10,6 +10,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from spine.domain.common import VersionIdentifier
 from spine.application.persistence.context import EnvironmentScope, TrustedPersistenceContext
 from spine.application.persistence.unit_of_work import UnitOfWorkFactory
 from spine.domain.ingestion import IngestionItemState, ProcessingCoverage
@@ -49,6 +50,59 @@ class DocumentPublicationStatus(str, Enum):
     PUBLISHED = "published"
     UNPUBLISHED = "unpublished"
     UNAVAILABLE = "unavailable"
+
+
+class OperationalMetadataStatus(str, Enum):
+    AVAILABLE = "available"
+    DEGRADED = "degraded"
+    UNAVAILABLE = "unavailable"
+
+
+class OperationalMetadataDiagnostic(str, Enum):
+    CURRENT_STATE_UNAVAILABLE = "current_state_unavailable"
+    POLICY_UNAVAILABLE = "policy_unavailable"
+    SECURITY_DOMAIN_UNAVAILABLE = "security_domain_unavailable"
+
+
+class AccessPolicyMetadata(BaseModel):
+    """Safe identity of the current policy, never its grants."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    policy_version_id: UUID
+    version: int = Field(ge=1)
+    generation: int = Field(ge=1)
+
+
+class SecurityDomainMetadata(BaseModel):
+    """Canonical Security Domain reference exposed as deny-only metadata."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    reference: str = Field(min_length=1, max_length=256)
+    version: VersionIdentifier
+    binding_version: int = Field(ge=1)
+
+
+class DocumentOperationalMetadata(BaseModel):
+    """Closed, content-free metadata for the Knowledge operational shell."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    source_object_id: UUID
+    source_revision_id: UUID | None = None
+    status: OperationalMetadataStatus
+    diagnostic_code: OperationalMetadataDiagnostic | None = None
+    lifecycle: RevisionLifecycle | None = None
+    processing_state: IngestionItemState | None = None
+    publication_status: DocumentPublicationStatus | None = None
+    freshness: ProjectionFreshness | None = None
+    health: ProjectionHealth | None = None
+    access_policy: AccessPolicyMetadata | None = None
+    security_domain: SecurityDomainMetadata | None = None
 
 
 class StableLocatorSnapshot(BaseModel):
@@ -162,6 +216,10 @@ class DocumentSnapshot(BaseModel):
     current_revision: RevisionSnapshot | None = None
     publication: PublicationSnapshot | None = None
     identity: DocumentIdentitySnapshot | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    operational_metadata: DocumentOperationalMetadata | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
     )
@@ -439,6 +497,11 @@ class CanonicalDocumentQueryService:
             if revision is not None and head is not None
             else None
         )
+        publication = await self._publication_snapshot(
+            uow,
+            source.source_object_id,
+            head.current_revision_id if head else None,
+        )
         return DocumentSnapshot(
             source_object_id=source.source_object_id,
             source_kind=str(source.source_kind),
@@ -449,11 +512,125 @@ class CanonicalDocumentQueryService:
                 if authorized_revision_id is not None
                 else None
             ),
-            publication=await self._publication_snapshot(
+            publication=publication,
+            operational_metadata=await self._operational_metadata(
                 uow,
-                source.source_object_id,
-                head.current_revision_id if head else None,
+                source=source,
+                head=head,
+                revision_snapshot=revision_snapshot,
+                publication=publication,
             ),
+        )
+
+    async def _operational_metadata(
+        self,
+        uow,
+        *,
+        source: SourceObject,
+        head,
+        revision_snapshot: RevisionSnapshot | None,
+        publication: PublicationSnapshot | None,
+    ) -> DocumentOperationalMetadata:
+        if head is None or revision_snapshot is None:
+            return DocumentOperationalMetadata(
+                source_object_id=source.source_object_id,
+                status=OperationalMetadataStatus.UNAVAILABLE,
+                diagnostic_code=OperationalMetadataDiagnostic.CURRENT_STATE_UNAVAILABLE,
+                publication_status=(publication.status if publication else None),
+                freshness=(publication.freshness if publication else None),
+                health=(publication.health if publication else None),
+            )
+
+        base = {
+            "source_object_id": source.source_object_id,
+            "source_revision_id": revision_snapshot.source_revision_id,
+            "lifecycle": revision_snapshot.lifecycle,
+            "processing_state": (
+                revision_snapshot.processing_references[-1].state
+                if revision_snapshot.processing_references
+                else None
+            ),
+            "publication_status": publication.status if publication else None,
+            "freshness": publication.freshness if publication else None,
+            "health": publication.health if publication else None,
+        }
+        try:
+            current = await uow.access_policies.resolve_current(
+                source.source_object_id,
+                workspace_id=source.workspace_id,
+                environment_id=source.environment_id,
+            )
+            policy = (
+                await uow.access_policies.resolve_policy(
+                    current.access_policy_version_id,
+                    workspace_id=source.workspace_id,
+                    environment_id=source.environment_id,
+                )
+                if current is not None
+                else None
+            )
+        except Exception:
+            current = None
+            policy = None
+
+        if (
+            current is None
+            or policy is None
+            or current.source_object_id != source.source_object_id
+            or current.workspace_id != source.workspace_id
+            or current.environment_id != source.environment_id
+            or policy.source_object_id != source.source_object_id
+            or policy.workspace_id != source.workspace_id
+            or policy.environment_id != source.environment_id
+            or policy.access_policy_version_id != current.access_policy_version_id
+        ):
+            return DocumentOperationalMetadata(
+                **base,
+                status=OperationalMetadataStatus.UNAVAILABLE,
+                diagnostic_code=OperationalMetadataDiagnostic.POLICY_UNAVAILABLE,
+            )
+
+        access_policy = AccessPolicyMetadata(
+            policy_version_id=policy.access_policy_version_id,
+            version=policy.version,
+            generation=current.policy_generation,
+        )
+        security_domain = None
+        status = OperationalMetadataStatus.AVAILABLE
+        diagnostic_code = None
+        binding_id = policy.security_domain_binding_id
+        if binding_id is not None:
+            try:
+                binding = await uow.access_policies.resolve_security_domain_binding(
+                    binding_id,
+                    workspace_id=source.workspace_id,
+                    environment_id=source.environment_id,
+                )
+            except Exception:
+                binding = None
+            if (
+                binding is None
+                or binding.binding_id != binding_id
+                or binding.workspace_id != source.workspace_id
+                or binding.environment_id != source.environment_id
+                or binding.source_object_id != source.source_object_id
+                or binding.policy_activation_id != current.policy_activation_id
+            ):
+                status = OperationalMetadataStatus.DEGRADED
+                diagnostic_code = OperationalMetadataDiagnostic.SECURITY_DOMAIN_UNAVAILABLE
+            else:
+                security_domain = SecurityDomainMetadata(
+                    reference=binding.security_domain_reference,
+                    version=binding.security_domain_version,
+                    binding_version=binding.binding_version,
+                )
+
+        return DocumentOperationalMetadata(
+            **base,
+            status=status,
+            diagnostic_code=diagnostic_code,
+            access_policy=access_policy,
+            security_domain=security_domain,
         )
 
     async def _authorized_revision_id(self, uow, source, head, requester) -> UUID | None:
@@ -760,6 +937,7 @@ __all__ = [
     "DocumentQueryRequester",
     "DocumentQueryService",
     "DocumentIdentitySnapshot",
+    "DocumentOperationalMetadata",
     "DocumentSnapshot",
     "OriginalReferenceSnapshot",
     "ProcessingReferenceSnapshot",
@@ -769,5 +947,9 @@ __all__ = [
     "RevisionLifecycle",
     "RevisionSnapshot",
     "RevisionPosition",
+    "AccessPolicyMetadata",
+    "OperationalMetadataDiagnostic",
+    "OperationalMetadataStatus",
+    "SecurityDomainMetadata",
     "StableLocatorSnapshot",
 ]

@@ -34,6 +34,7 @@ from spine.domain.sources.access_policy import (
     PolicyOriginKind,
     PolicyProposal,
     PrincipalKind,
+    SourceSecurityDomainBinding,
 )
 from spine.infrastructure.persistence.access_policies import (
     InMemoryAccessPolicyRepository,
@@ -189,6 +190,61 @@ def _eligibility(policy: AccessPolicyVersion) -> InitialPolicyEligibilityDecisio
         audit_event_id=_id(31),
         decided_at=NOW,
     )
+
+
+def test_v1_policy_digest_remains_byte_compatible() -> None:
+    assert access_policy_document_hash(_policy()) == (
+        "2d94425c244b88a99377d450aae6d5283cfa5b15e5ea3d443b322d2e1845eea5"
+    )
+
+
+def test_v2_policy_digest_includes_security_domain_binding_reference() -> None:
+    values = _policy().model_dump()
+    first = AccessPolicyVersion.model_validate(
+        {
+            **values,
+            "document_schema_version": "access-policy.v2",
+            "security_domain_binding_id": _id(40),
+        }
+    )
+    second = first.model_copy(update={"security_domain_binding_id": _id(41)})
+
+    assert access_policy_document_hash(first) != access_policy_document_hash(second)
+
+
+@pytest.mark.asyncio
+async def test_v2_binding_is_persisted_with_its_policy_activation() -> None:
+    authority = Authority()
+    repository = InMemoryAccessPolicyRepository()
+    service = AccessPolicyActivationService(repository, authority)
+    binding = SourceSecurityDomainBinding(
+        binding_id=_id(40),
+        workspace_id=_id(2),
+        environment_id=_id(3),
+        source_object_id=_id(4),
+        security_domain_reference="legal/eu",
+        security_domain_version="security-domain.v1",
+        binding_version=1,
+        created_at=NOW,
+        policy_activation_id=_id(40),
+    )
+    policy = _policy().model_copy(
+        update={
+            "document_schema_version": "access-policy.v2",
+            "security_domain_binding_id": binding.binding_id,
+        }
+    )
+    policy = policy.model_copy(
+        update={"document_hash": access_policy_document_hash(policy)}
+    )
+    command = replace(
+        _command(policy, _eligibility(policy)), security_domain_binding=binding
+    )
+
+    result = await service.activate(command)
+
+    assert result.activation.policy_activation_id == binding.policy_activation_id
+    assert await repository.resolve_security_domain_binding(binding.binding_id) == binding
 
 
 def _command(

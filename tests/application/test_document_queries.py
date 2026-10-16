@@ -31,6 +31,7 @@ from spine.domain.sources import (
     CurrentSourceHead,
     PolicyOriginKind,
     PrincipalKind,
+    SourceSecurityDomainBinding,
 )
 from tests.application.persistence.test_source_observation import (
     provenance,
@@ -124,9 +125,10 @@ class FakeProjections:
 
 
 class FakePolicies:
-    def __init__(self, current, policy) -> None:
+    def __init__(self, current, policy, binding=None) -> None:
         self.current = current
         self.policy = policy
+        self.binding = binding
 
     async def resolve_current(self, source_object_id, **scope):
         del scope
@@ -135,6 +137,10 @@ class FakePolicies:
     async def resolve_policy(self, policy_version_id, **scope):
         del scope
         return self.policy if policy_version_id == self.policy.access_policy_version_id else None
+
+    async def resolve_security_domain_binding(self, binding_id, **scope):
+        del scope
+        return self.binding if self.binding and binding_id == self.binding.binding_id else None
 
 
 class FakeUnitOfWork:
@@ -263,6 +269,108 @@ async def test_current_policy_controls_protected_document_fields() -> None:
     assert allowed.current_revision.content.embedded_title == "Title"
     assert allowed.publication is not None
     assert allowed.publication.status == "unpublished"
+
+
+async def test_document_detail_exposes_safe_policy_metadata_without_content_grant() -> None:
+    uow = FakeUnitOfWork(allow_content=False)
+
+    snapshot = await CanonicalDocumentQueryService(lambda context: uow).get_document(
+        context=SimpleNamespace(
+            scope=EnvironmentScope(
+                workspace_id=uow.source.workspace_id,
+                environment_id=uow.source.environment_id,
+            )
+        ),
+        requester=DocumentQueryRequester(
+            canonical_human_id=HUMAN_ID,
+            authorization_generation=1,
+        ),
+        source_object_id=uow.source.source_object_id,
+    )
+
+    assert snapshot is not None
+    assert snapshot.operational_metadata is not None
+    metadata = snapshot.operational_metadata
+    assert metadata.access_policy is not None
+    assert metadata.access_policy.policy_version_id.int != 0
+    assert metadata.access_policy.version == 1
+    assert metadata.access_policy.generation == 1
+    assert metadata.security_domain is None
+    assert snapshot.identity is None
+    assert snapshot.current_revision is not None
+    assert snapshot.current_revision.content is None
+    assert "grants" not in metadata.model_dump()
+
+
+async def test_document_detail_resolves_canonical_security_domain_binding() -> None:
+    uow = FakeUnitOfWork(allow_content=False)
+    binding = SourceSecurityDomainBinding(
+        binding_id=UUID("52000000-0000-0000-0000-000000000040"),
+        workspace_id=uow.source.workspace_id,
+        environment_id=uow.source.environment_id,
+        source_object_id=uow.source.source_object_id,
+        security_domain_reference="legal/eu",
+        security_domain_version="security-domain.v1",
+        binding_version=1,
+        predecessor_binding_id=None,
+        created_at=NOW,
+        policy_activation_id=uow.access_policies.current.policy_activation_id,
+    )
+    policy = uow.access_policies.policy.model_copy(
+        update={
+            "document_schema_version": "access-policy.v2",
+            "security_domain_binding_id": binding.binding_id,
+        }
+    )
+    uow.access_policies.policy = policy
+    uow.access_policies.binding = binding
+
+    snapshot = await CanonicalDocumentQueryService(lambda context: uow).get_document(
+        context=SimpleNamespace(
+            scope=EnvironmentScope(
+                workspace_id=uow.source.workspace_id,
+                environment_id=uow.source.environment_id,
+            )
+        ),
+        requester=DocumentQueryRequester(
+            canonical_human_id=HUMAN_ID,
+            authorization_generation=1,
+        ),
+        source_object_id=uow.source.source_object_id,
+    )
+
+    assert snapshot is not None and snapshot.operational_metadata is not None
+    metadata = snapshot.operational_metadata
+    assert metadata.status.value == "available"
+    assert metadata.security_domain is not None
+    assert metadata.security_domain.reference == "legal/eu"
+    assert metadata.security_domain.version == "security-domain.v1"
+    assert metadata.security_domain.binding_version == 1
+
+
+async def test_missing_canonical_policy_returns_safe_unavailable_metadata() -> None:
+    uow = FakeUnitOfWork(allow_content=False)
+    uow.access_policies.current = None
+
+    snapshot = await CanonicalDocumentQueryService(lambda context: uow).get_document(
+        context=SimpleNamespace(
+            scope=EnvironmentScope(
+                workspace_id=uow.source.workspace_id,
+                environment_id=uow.source.environment_id,
+            )
+        ),
+        requester=DocumentQueryRequester(
+            canonical_human_id=HUMAN_ID,
+            authorization_generation=1,
+        ),
+        source_object_id=uow.source.source_object_id,
+    )
+
+    assert snapshot is not None and snapshot.operational_metadata is not None
+    assert snapshot.operational_metadata.status.value == "unavailable"
+    assert snapshot.operational_metadata.diagnostic_code.value == "policy_unavailable"
+    assert snapshot.operational_metadata.access_policy is None
+    assert "provider" not in snapshot.model_dump_json()
 
 
 async def test_current_policy_accepts_effective_team_grant_for_exact_document_detail() -> None:

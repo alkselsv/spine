@@ -385,6 +385,27 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * AccessPolicyMetadata
+         * @description Safe identity of the current policy, never its grants.
+         */
+        AccessPolicyMetadata: {
+            /** Generation */
+            generation: number;
+            /**
+             * Policy Version Id
+             * Format: uuid
+             */
+            policy_version_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Version */
+            version: number;
+        };
+        /**
          * AdmissionDisposition
          * @enum {string}
          */
@@ -987,6 +1008,34 @@ export interface components {
             /** Upload Identity */
             upload_identity?: string | null;
         };
+        /**
+         * DocumentOperationalMetadata
+         * @description Closed, content-free metadata for the Knowledge operational shell.
+         */
+        DocumentOperationalMetadata: {
+            access_policy?: components["schemas"]["AccessPolicyMetadata"] | null;
+            diagnostic_code?: components["schemas"]["OperationalMetadataDiagnostic"] | null;
+            freshness?: components["schemas"]["ProjectionFreshness"] | null;
+            health?: components["schemas"]["ProjectionHealth"] | null;
+            lifecycle?: components["schemas"]["RevisionLifecycle"] | null;
+            processing_state?: components["schemas"]["IngestionItemState"] | null;
+            publication_status?: components["schemas"]["DocumentPublicationStatus"] | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            security_domain?: components["schemas"]["SecurityDomainMetadata"] | null;
+            /**
+             * Source Object Id
+             * Format: uuid
+             */
+            source_object_id: string;
+            /** Source Revision Id */
+            source_revision_id?: string | null;
+            status: components["schemas"]["OperationalMetadataStatus"];
+        };
         /** DocumentProcessingHistoryResponse */
         DocumentProcessingHistoryResponse: {
             acceptance: components["schemas"]["PublicAcceptanceStatus"];
@@ -1062,6 +1111,7 @@ export interface components {
             created_at: string;
             current_revision?: components["schemas"]["RevisionSnapshot"] | null;
             identity?: components["schemas"]["DocumentIdentitySnapshot"] | null;
+            operational_metadata?: components["schemas"]["DocumentOperationalMetadata"] | null;
             publication?: components["schemas"]["PublicationSnapshot"] | null;
             /**
              * Schema Version
@@ -1319,6 +1369,16 @@ export interface components {
              */
             status: "ok";
         };
+        /**
+         * OperationalMetadataDiagnostic
+         * @enum {string}
+         */
+        OperationalMetadataDiagnostic: "current_state_unavailable" | "policy_unavailable" | "security_domain_unavailable";
+        /**
+         * OperationalMetadataStatus
+         * @enum {string}
+         */
+        OperationalMetadataStatus: "available" | "degraded" | "unavailable";
         /** OriginalReferenceSnapshot */
         OriginalReferenceSnapshot: {
             /** Byte Length */
@@ -1787,6 +1847,24 @@ export interface components {
             source_revision_id: string;
             /** Superseded By Revision Id */
             superseded_by_revision_id?: string | null;
+        };
+        /**
+         * SecurityDomainMetadata
+         * @description Canonical Security Domain reference exposed as deny-only metadata.
+         */
+        SecurityDomainMetadata: {
+            /** Binding Version */
+            binding_version: number;
+            /** Reference */
+            reference: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Version */
+            version: string;
         };
         /**
          * SourceKind

@@ -39,5 +39,22 @@ These choices trade some operational convenience and availability for explicit
 least privilege, immediate revocation, auditable separation of duties and a
 single canonical enforcement boundary. Detailed bootstrap, proposal, admission,
 metadata, concurrency, recovery and non-leakage semantics are part of the R1
-architecture contract in
+architecture contract. The following safe-metadata decision applies: Access
+Policy version identity and
+generation may be exposed without grants, principal membership or protected
+source fields. Security Domain is represented only by an immutable,
+source-owned `SourceSecurityDomainBinding` resolved through the canonical policy
+authority. Its reference, version and binding version are deny-only metadata;
+they never grant `read_content` or `process_content` and are never read from
+Cognee, projection partitions or provider payloads.
+
+Binding-bearing policy documents use `access-policy.v2` and include the binding
+reference in their canonical digest. Existing `access-policy.v1` documents and
+hashes remain unchanged, and the binding reference is nullable with no
+backfill. Missing or unavailable bindings are rendered as absent/null with a
+safe status; no inferred default or provider diagnostic is published. The
+metadata response remains independently authorized from protected content, so
+an administrator without an explicit read grant cannot receive title, filename,
+checksum, text, chunks or excerpts.
+See the architecture contract in
 [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md#workspace-и-доступ).
