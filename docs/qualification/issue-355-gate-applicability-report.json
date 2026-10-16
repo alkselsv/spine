@@ -13,21 +13,379 @@
   "provider_quality_confirmation": "not-confirmed",
   "production_approval": false,
   "coverage": {
-    "parser_locator": ["issue-194-ingestion"],
-    "source_revision": ["issue-194-ingestion"],
-    "projection_publication": ["issue-90-projection-lifecycle", "issue-211-context-projection"],
-    "retrieval": ["g02-retrieval-acl-safety", "g06-adapter-parity"],
-    "acl": ["g02-retrieval-acl-safety", "g06-adapter-parity"],
-    "prompt": ["r1-offline-safety"],
-    "model": ["r1-offline-safety"],
-    "capability": ["g03-answer-groundedness", "g06-adapter-parity"],
-    "evaluator": ["r1-evaluator-contract", "r1-offline-safety"],
-    "dataset": ["r1-dataset-contract", "r1-offline-safety"],
-    "gate_report": ["r1-gate-applicability", "r1-offline-safety"]
+    "parser_locator": [
+      "issue-194-ingestion"
+    ],
+    "source_revision": [
+      "issue-194-ingestion"
+    ],
+    "projection_publication": [
+      "issue-90-projection-lifecycle",
+      "issue-211-context-projection"
+    ],
+    "retrieval": [
+      "g02-retrieval-acl-safety",
+      "g06-adapter-parity"
+    ],
+    "acl": [
+      "g02-retrieval-acl-safety",
+      "g06-adapter-parity"
+    ],
+    "prompt": [
+      "r1-offline-safety"
+    ],
+    "model": [
+      "r1-offline-safety"
+    ],
+    "capability": [
+      "g03-answer-groundedness",
+      "g06-adapter-parity"
+    ],
+    "evaluator": [
+      "r1-evaluator-contract",
+      "r1-offline-safety"
+    ],
+    "dataset": [
+      "r1-dataset-contract",
+      "r1-offline-safety"
+    ],
+    "gate_report": [
+      "r1-gate-applicability",
+      "r1-offline-safety"
+    ]
   },
   "limitations": [
     "Real provider evaluation is not part of this offline applicability policy.",
     "Product quality thresholds remain owned by Issue #17.",
     "G02/G03/G06 execution evidence is required when the corresponding change class is selected."
-  ]
+  ],
+  "manifest": {
+    "schema_version": "r1-gate-applicability:v1",
+    "manifest_id": "r1-gate-applicability-default",
+    "component_versions": [
+      {
+        "key": "parser",
+        "version": "issue-194:v1"
+      },
+      {
+        "key": "source-revision",
+        "version": "source-revision:v1"
+      },
+      {
+        "key": "projection",
+        "version": "context-projection:v1"
+      },
+      {
+        "key": "retrieval",
+        "version": "context-broker:v1"
+      },
+      {
+        "key": "acl",
+        "version": "access-policy:v1"
+      },
+      {
+        "key": "prompt",
+        "version": "prompt-version:v1"
+      },
+      {
+        "key": "model",
+        "version": "model-profile:v1"
+      },
+      {
+        "key": "capability",
+        "version": "answer-question:v1"
+      },
+      {
+        "key": "evaluator",
+        "version": "r1-evaluator-catalog:v1"
+      },
+      {
+        "key": "dataset",
+        "version": "qa-r1-synthetic:1.0.0"
+      },
+      {
+        "key": "gate",
+        "version": "r1-gate-applicability:v1"
+      }
+    ],
+    "evaluator_versions": [
+      {
+        "evaluator_key": "qa.answer_outcome",
+        "evaluator_version": "v1"
+      },
+      {
+        "evaluator_key": "qa.citation_precision",
+        "evaluator_version": "v1"
+      },
+      {
+        "evaluator_key": "qa.citation_recall",
+        "evaluator_version": "v1"
+      },
+      {
+        "evaluator_key": "qa.citations",
+        "evaluator_version": "v1"
+      },
+      {
+        "evaluator_key": "qa.groundedness",
+        "evaluator_version": "v1"
+      },
+      {
+        "evaluator_key": "qa.locator_validity",
+        "evaluator_version": "v1"
+      },
+      {
+        "evaluator_key": "retrieval.mrr",
+        "evaluator_version": "v1"
+      },
+      {
+        "evaluator_key": "retrieval.recall_at_k",
+        "evaluator_version": "v1"
+      }
+    ],
+    "dataset_versions": [
+      {
+        "dataset_id": "qa-r1-synthetic",
+        "version": "1.0.0",
+        "digest": "4f8ccc5202ea3471c0ffbc06dd2b534ecdc38cb498724e2da801181543778141",
+        "schema_version": "qa-manifest:v1",
+        "case_schema_version": "qa-case:v1"
+      }
+    ],
+    "suites": [
+      {
+        "suite_id": "r1-offline-safety",
+        "suite_version": "v1",
+        "mandatory": true,
+        "evidence_ids": [
+          "offline-regression-gate:v1"
+        ]
+      },
+      {
+        "suite_id": "issue-194-ingestion",
+        "suite_version": "v1",
+        "mandatory": true,
+        "evidence_ids": [
+          "issue-194:qualification:v1"
+        ]
+      },
+      {
+        "suite_id": "issue-90-projection-lifecycle",
+        "suite_version": "v1",
+        "mandatory": true,
+        "evidence_ids": [
+          "issue-90:qualification:v1"
+        ]
+      },
+      {
+        "suite_id": "issue-211-context-projection",
+        "suite_version": "v1",
+        "mandatory": true,
+        "evidence_ids": [
+          "issue-211:qualification:v1"
+        ]
+      },
+      {
+        "suite_id": "g02-retrieval-acl-safety",
+        "suite_version": "v1",
+        "mandatory": true,
+        "evidence_ids": [
+          "g02:execution:v1"
+        ]
+      },
+      {
+        "suite_id": "g03-answer-groundedness",
+        "suite_version": "v1",
+        "mandatory": true,
+        "evidence_ids": [
+          "g03:execution:v1"
+        ]
+      },
+      {
+        "suite_id": "g06-adapter-parity",
+        "suite_version": "v1",
+        "mandatory": true,
+        "evidence_ids": [
+          "g06:execution:v1"
+        ]
+      },
+      {
+        "suite_id": "r1-evaluator-contract",
+        "suite_version": "v1",
+        "mandatory": true,
+        "evidence_ids": [
+          "r1-evaluator-catalog:v1"
+        ]
+      },
+      {
+        "suite_id": "r1-dataset-contract",
+        "suite_version": "v1",
+        "mandatory": true,
+        "evidence_ids": [
+          "qa-r1-dataset:v1"
+        ]
+      },
+      {
+        "suite_id": "r1-gate-applicability",
+        "suite_version": "v1",
+        "mandatory": true,
+        "evidence_ids": [
+          "r1-gate-applicability:v1"
+        ]
+      }
+    ],
+    "change_classes": [
+      {
+        "change_class": "parser_locator",
+        "component_key": "parser",
+        "suite_ids": [
+          "issue-194-ingestion"
+        ],
+        "path_prefixes": [
+          "src/spine/ingest/",
+          "src/spine/ingestion/",
+          "tests/ingest/",
+          "tests/ingestion/"
+        ]
+      },
+      {
+        "change_class": "source_revision",
+        "component_key": "source-revision",
+        "suite_ids": [
+          "issue-194-ingestion"
+        ],
+        "path_prefixes": [
+          "src/spine/domain/source",
+          "src/spine/application/canonical",
+          "tests/domain/source",
+          "tests/application/canonical"
+        ]
+      },
+      {
+        "change_class": "projection_publication",
+        "component_key": "projection",
+        "suite_ids": [
+          "issue-90-projection-lifecycle",
+          "issue-211-context-projection"
+        ],
+        "path_prefixes": [
+          "src/spine/memory/",
+          "src/spine/application/projection",
+          "tests/memory/",
+          "tests/application/projection",
+          "tests/contracts/memory/"
+        ]
+      },
+      {
+        "change_class": "retrieval",
+        "component_key": "retrieval",
+        "suite_ids": [
+          "g02-retrieval-acl-safety",
+          "g06-adapter-parity"
+        ],
+        "path_prefixes": [
+          "src/spine/memory/retrieval",
+          "src/spine/application/retrieval",
+          "tests/memory/retrieval",
+          "tests/application/retrieval"
+        ]
+      },
+      {
+        "change_class": "acl",
+        "component_key": "acl",
+        "suite_ids": [
+          "g02-retrieval-acl-safety",
+          "g06-adapter-parity"
+        ],
+        "path_prefixes": [
+          "src/spine/auth/",
+          "src/spine/application/authorized",
+          "src/spine/application/access",
+          "tests/auth/",
+          "tests/application/authorized"
+        ]
+      },
+      {
+        "change_class": "prompt",
+        "component_key": "prompt",
+        "suite_ids": [
+          "r1-offline-safety"
+        ],
+        "path_prefixes": [
+          "src/spine/agents/prompts/",
+          "src/spine/agents/prompt",
+          "tests/agents/prompt"
+        ]
+      },
+      {
+        "change_class": "model",
+        "component_key": "model",
+        "suite_ids": [
+          "r1-offline-safety"
+        ],
+        "path_prefixes": [
+          "src/spine/agents/runtime/model",
+          "src/spine/models/",
+          "tests/agents/runtime/model"
+        ]
+      },
+      {
+        "change_class": "capability",
+        "component_key": "capability",
+        "suite_ids": [
+          "g03-answer-groundedness",
+          "g06-adapter-parity"
+        ],
+        "path_prefixes": [
+          "src/spine/domain/capabilities/",
+          "src/spine/application/answer",
+          "tests/domain/capabilities/",
+          "tests/application/answer"
+        ]
+      },
+      {
+        "change_class": "evaluator",
+        "component_key": "evaluator",
+        "suite_ids": [
+          "r1-evaluator-contract",
+          "r1-offline-safety"
+        ],
+        "path_prefixes": [
+          "src/spine/evaluations/",
+          "src/spine/evals/",
+          "tests/evaluations/",
+          "tests/evals/"
+        ]
+      },
+      {
+        "change_class": "dataset",
+        "component_key": "dataset",
+        "suite_ids": [
+          "r1-dataset-contract",
+          "r1-offline-safety"
+        ],
+        "path_prefixes": [
+          "src/spine/evals/data/",
+          "tests/evals/data/",
+          "docs/evals/"
+        ]
+      },
+      {
+        "change_class": "gate_report",
+        "component_key": "gate",
+        "suite_ids": [
+          "r1-gate-applicability",
+          "r1-offline-safety"
+        ],
+        "path_prefixes": [
+          ".github/",
+          "docs/qualification/",
+          "src/spine/evals/regression_gate.py",
+          "src/spine/evals/applicability.py",
+          "src/spine/evaluations/release_gates/",
+          "tests/qualification/"
+        ]
+      }
+    ],
+    "mandatory_suite_id": "r1-offline-safety"
+  }
 }

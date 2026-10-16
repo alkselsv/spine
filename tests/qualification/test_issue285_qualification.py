@@ -343,7 +343,9 @@ def test_issue285_regression_gate_input_contract_is_versioned() -> None:
 
     gate = run_offline_regression_gate()
 
-    assert gate.passed is True
+    assert gate.passed is False
+    assert gate.status == "not-qualified"
+    assert gate.repository_pytest_status == "unavailable"
     assert gate.report is not None
     assert gate.report.qualification_scope == "offline-contract-only"
     assert gate.report.dataset is not None

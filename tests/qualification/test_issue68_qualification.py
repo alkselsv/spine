@@ -269,6 +269,37 @@ def test_issue68_gate_runner_classifies_repository_gate_results() -> None:
     assert "secret raw output" not in failed.safe_summary
 
 
+@pytest.mark.parametrize(
+    "message",
+    (
+        "mandatory PostgreSQL gate requires SPINE_TEST_DATABASE_URL or a working container runtime",
+        "mandatory PostgreSQL gate cannot import Testcontainers",
+        "mandatory PostgreSQL gate could not start container runtime image postgres:17.6-bookworm",
+    ),
+)
+def test_issue68_gate_runner_marks_only_postgresql_prerequisite_errors_unavailable(
+    message: str,
+) -> None:
+    blocked = classify_result(
+        ("uv", "run", "pytest", "-q"),
+        returncode=1,
+        output=f"10 passed, 1 error\n_ ERROR at setup of test_postgresql _\n{message}",
+    )
+    mixed_failure = classify_result(
+        ("uv", "run", "pytest", "-q"),
+        returncode=1,
+        output=(
+            "1 failed, 10 passed, 1 error\n"
+            "_ ERROR at setup of test_postgresql _\n"
+            f"{message}\n"
+            "_ FAILED test_offline_contract _\nAssertionError"
+        ),
+    )
+
+    assert blocked.status == "blocked-infrastructure"
+    assert mixed_failure.status == "failed"
+
+
 def test_issue68_gate_runner_executes_every_declared_command_in_order() -> None:
     calls: list[tuple[tuple[str, ...], Path]] = []
 

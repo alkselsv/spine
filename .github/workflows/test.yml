@@ -56,7 +56,7 @@ jobs:
       - run: pnpm web:test:e2e
       - run: git diff --check
 
-  offline-regression-gate:
+  r1-regression-gate:
     runs-on: ubuntu-latest
 
     steps:
@@ -69,11 +69,30 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv sync --extra dev --locked
-      - name: Run deterministic offline regression gate
-        run: uv run spine-eval-gate --output offline-regression-gate.json
-      - name: Upload offline regression artifact
+      - name: Run mandatory repository and PostgreSQL suite
+        id: repository-tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          pytest_log="$RUNNER_TEMP/r1-gate-pytest.log"
+          uv run pytest -q > "$pytest_log" 2>&1
+          pytest_status=$?
+          cat "$pytest_log"
+          gate_status=$(PYTEST_STATUS="$pytest_status" PYTEST_LOG="$pytest_log" uv run python -c 'import os; from pathlib import Path; from tests.qualification.gate_runner import classify_result; result = classify_result(("uv", "run", "pytest", "-q"), returncode=int(os.environ["PYTEST_STATUS"]), output=Path(os.environ["PYTEST_LOG"]).read_text()); print(result.status)')
+          if [ "$gate_status" = "passed" ]; then
+            echo "gate_flag=--repository-tests-passed" >> "$GITHUB_OUTPUT"
+          elif [ "$gate_status" = "blocked-infrastructure" ]; then
+            echo "gate_flag=--repository-tests-unavailable" >> "$GITHUB_OUTPUT"
+          else
+            echo "gate_flag=--repository-tests-failed" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Run deterministic offline R1 regression gate
+        if: always()
+        run: uv run spine-eval-gate "${{ steps.repository-tests.outputs.gate_flag }}" --output r1-gate-status.json
+      - name: Upload versioned R1 gate report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: offline-regression-gate
-          path: offline-regression-gate.json
+          name: r1-gate-status
+          path: r1-gate-status.json
