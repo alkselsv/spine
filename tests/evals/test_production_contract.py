@@ -13,6 +13,7 @@ from spine.domain.capabilities import (
     AnswerQuestionSafeReason,
     AnswerQuestionSafeReasonCode,
     AnswerQuestionScope,
+    LineageReference,
     QuestionSubject,
     RunAttemptCorrelation,
 )
@@ -27,7 +28,7 @@ from spine.evals.production_contract import (
     ProductionContractObservationBridge,
     ProductionContractObservationError,
 )
-from spine.evals.qa_r1 import QACase, load_r1_dataset
+from spine.evals.qa_r1 import ExpectedClaim, QACase, load_r1_dataset
 from spine.memory.contracts import (
     ContextOutcome,
     ContextReasonCode,
@@ -139,7 +140,45 @@ async def test_production_contract_mode_uses_observed_output_without_expected_an
     assert observed["absent-evidence-abstention"] == "abstained"
     assert len(report.safety_results) == 12
     assert all(result.status == "passed" for result in report.safety_results)
+    grounded_safety = {result.case_id: result for result in report.grounded_answer_safety_results}
+    assert len(grounded_safety) == 12
+    assert grounded_safety["allowed-acl"].status == "failed"
+    assert grounded_safety["allowed-acl"].violation_codes == (
+        "answer_outcome_mismatch",
+    )
     assert all("protected" not in failure.model_dump_json() for failure in report.failures)
+
+
+@pytest.mark.asyncio
+async def test_production_contract_grounded_safety_fails_independently_of_quality_evaluators() -> None:
+    class PassingEvaluator:
+        def evaluate(self, *, context: object) -> tuple[object, ...]:
+            del context
+            return ()
+
+    case = next(
+        case for case in load_r1_dataset().cases if case.case_id == "absent-evidence-abstention"
+    )
+    dataset = load_r1_dataset().model_copy(update={"cases": (case,)})
+
+    class WrongOutcomeFlow(ProductionContractApplicationFlow):
+        async def execute(
+            self, request: ProductionContractCaseRequest
+        ) -> ProductionContractObservation:
+            del request
+            return _safe_observation(case, denied=True)
+
+    report = await OfflineEvaluationRunner(
+        dataset=dataset,
+        execution_mode="production-contract",
+        production_observer=ProductionContractObservationBridge(WrongOutcomeFlow()),
+        case_evaluator=PassingEvaluator(),  # type: ignore[arg-type]
+    ).run()
+
+    assert report.evaluations == ()
+    assert report.scenarios[0].status == "failed"
+    assert report.failures[0].component == "grounded-answer-safety"
+    assert report.grounded_answer_safety_results[0].status == "failed"
 
 
 @pytest.mark.asyncio
@@ -161,6 +200,19 @@ async def test_production_contract_observation_rejects_allowed_response_without_
         observation.validate()
 
 
+def test_answered_output_requires_an_accepted_disclosure_record() -> None:
+    from tests.evals.test_unauthorized_retrieval_safety import _allowed_observation
+
+    observation = _allowed_observation()
+    object.__setattr__(observation.answer, "outcome", AnswerQuestionOutcome.ANSWERED)
+    object.__setattr__(observation.answer, "reason", None)
+    object.__setattr__(observation.disclosure, "outcome", AnswerQuestionOutcome.ANSWERED)
+    object.__setattr__(observation.disclosure, "safe_output", observation.answer)
+
+    with pytest.raises(ProductionContractObservationError, match="accepted disclosure"):
+        observation.validate()
+
+
 def test_production_contract_mapping_preserves_non_answer_outcome() -> None:
     case = load_r1_dataset().cases[1]
     question = _question(case)
@@ -176,6 +228,42 @@ def test_production_contract_mapping_preserves_non_answer_outcome() -> None:
     mapped = offline_runner._answer_submission_from_output(output)
 
     assert mapped.outcome == "failed"
+
+
+def test_production_contract_mapping_aligns_opaque_claim_id_to_exact_gold_label() -> None:
+    from tests.domain.capabilities.test_answer_question_candidate import candidate_output
+
+    candidate = candidate_output()
+    answer = AnswerQuestionOutput(
+        correlation=candidate.question.correlation,
+        scope=candidate.question.scope,
+        outcome=AnswerQuestionOutcome.ANSWERED,
+        answer=candidate.answer,
+        lineage=(
+            LineageReference(
+                kind="context_bundle",
+                identifier=candidate.context_bundle.bundle.bundle_id,
+                schema_version="context-bundle:v1",
+            ),
+        ),
+    )
+    base_case = load_r1_dataset().cases[0]
+    case = base_case.model_copy(
+        update={
+            "expected_claims": (
+                ExpectedClaim(
+                    claim_id="known-label",
+                    text=candidate.answer.claims[0].text,
+                    evidence_ids=(base_case.expected_evidence_ids[0],),
+                ),
+            )
+        }
+    )
+
+    mapped = offline_runner._answer_submission_from_output(answer, case=case)
+
+    assert mapped.claims[0].claim_id == "known-label"
+    assert mapped.claims[0].text == candidate.answer.claims[0].text
 
 
 @pytest.mark.asyncio

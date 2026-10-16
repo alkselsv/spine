@@ -165,8 +165,25 @@ class ProductionContractObservation(DefinitionModel):
                     )
             _validate_retrieval_lineage(self.retrieval, bundle)
             if self.answer.outcome is AnswerQuestionOutcome.ANSWERED:
-                if self.answer.answer is None or not self.answer.answer.citations:
-                    raise ProductionContractObservationError("answered output has no citations")
+                accepted = self.disclosure.accepted_answer
+                if (
+                    accepted is None
+                    or self.disclosure.validation is None
+                    or self.answer.answer is None
+                    or not self.answer.answer.citations
+                ):
+                    raise ProductionContractObservationError(
+                        "answered output has no accepted disclosure or citations"
+                    )
+                validation = accepted.validation
+                if (
+                    validation.context_bundle_id != bundle.bundle_id
+                    or validation.context_bundle_version != bundle.bundle_version
+                    or validation.context_bundle_digest != bundle.bundle_digest
+                ):
+                    raise ProductionContractObservationError(
+                        "disclosure validation is not pinned to the observed context bundle"
+                    )
                 evidence_by_id = {
                     reference.evidence_id: reference
                     for reference in bundle.evidence_references
