@@ -8,48 +8,12 @@ import { ru } from '../i18n/resources';
 import { AdministratorBoundary } from './auth';
 import styles from './AppShell.module.css';
 import { AppShell } from './AppShell';
-import { localizeApiError } from './errors';
 import { readBrowserQualificationFixture } from './fixture';
 import { useScope } from './scope';
+import { StatusPanel } from './status';
 
-export type InterfaceState =
-  | 'loading'
-  | 'empty'
-  | 'partial'
-  | 'stale'
-  | 'degraded'
-  | 'permissionDenied'
-  | 'validationFailed'
-  | 'failed'
-  | 'ready';
-
-export function StatusPanel({ state }: { state: InterfaceState }) {
-  const copy = ru.status[state];
-  return (
-    <div
-      aria-label={copy.title}
-      className={`${styles.statusPanel} ${styles[`statusPanel_${state}`]}`}
-      role="region"
-    >
-      <strong>{copy.title}</strong>
-      <span>{copy.description}</span>
-    </div>
-  );
-}
-
-export function ApiErrorPanel({ error }: { error: unknown }) {
-  const copy = localizeApiError(error);
-  return (
-    <div
-      className={`${styles.statusPanel} ${styles[`statusPanel_${copy.state}`]}`}
-      role="alert"
-    >
-      <strong>{copy.title}</strong>
-      <span>{copy.description}</span>
-      {copy.traceId ? <small>Код обращения: {copy.traceId}</small> : null}
-    </div>
-  );
-}
+export { ApiErrorPanel, StatusPanel } from './status';
+export type { InterfaceState } from './status';
 
 function OverviewPage() {
   const [searchParams] = useSearchParams();
@@ -103,6 +67,27 @@ function ChatPage() {
   );
 }
 
+function DocumentDetailPage() {
+  const { documentId } = useParams();
+  const [searchParams] = useSearchParams();
+  return (
+    <section className={styles.pageSection} aria-labelledby="document-detail-heading">
+      <p className={styles.eyebrow}>{ru.page.eyebrow}</p>
+      <h2 id="document-detail-heading">{ru.page.documentDetails}</h2>
+      <p className={styles.lede}>{ru.documents.detailDescription}</p>
+      <p>
+        {ru.documents.detailSourceId}: <code>{documentId}</code>
+      </p>
+      <Link
+        className={styles.textLink}
+        to={{ pathname: '/knowledge/documents', search: searchParams.toString() }}
+      >
+        {ru.documents.backToList}
+      </Link>
+    </section>
+  );
+}
+
 export const appRoutes: RouteObject[] = [
   {
     path: '/',
@@ -115,11 +100,14 @@ export const appRoutes: RouteObject[] = [
       { index: true, element: <OverviewPage /> },
       {
         path: 'knowledge/documents',
-        element: <PlaceholderPage title={ru.page.knowledge} />,
+        lazy: async () => {
+          const module = await import('../features/knowledge/DocumentsPage');
+          return { Component: module.DocumentsPage };
+        },
       },
       {
         path: 'knowledge/documents/:documentId',
-        element: <PlaceholderPage title={ru.page.documentDetails} />,
+        element: <DocumentDetailPage />,
       },
       {
         path: 'chat/:sessionId',
