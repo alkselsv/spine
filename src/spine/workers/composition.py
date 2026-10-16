@@ -19,6 +19,7 @@ from spine.application.outbox import (
     OutboxDispatchRepository,
     OutboxDispatcher,
 )
+from spine.application.telemetry import OperationalObservationEmitter
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +63,7 @@ def create_outbox_worker(
     lease_duration: timedelta,
     handler_timeout: timedelta,
     maximum_attempts: int,
+    operational_observer: OperationalObservationEmitter | None = None,
 ) -> OutboxWorker:
     """Build one worker from explicit consumers and injected runtime services."""
 
@@ -84,6 +86,7 @@ def create_outbox_worker(
         lease_duration=lease_duration,
         handler_timeout=handler_timeout,
         maximum_attempts=maximum_attempts,
+        operational_observer=operational_observer,
     )
     return OutboxWorker(dispatcher)
 

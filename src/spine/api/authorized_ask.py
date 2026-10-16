@@ -30,6 +30,15 @@ from spine.application.authorized_ask import (
 if TYPE_CHECKING:
     from spine.application.qa_streaming import QAResultEventPublisher
 from spine.application.persistence.context import TrustedPersistenceContext
+from spine.application.diagnostics import DiagnosticContext
+from spine.application.telemetry import (
+    OperationalComponent,
+    OperationalObservationEmitter,
+    OperationalObservationOutcome,
+    OperationalOperation,
+    OperationalStage,
+    SafeOperationalFailureCode,
+)
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.auth import (
     AuthorizationRole,
@@ -120,11 +129,13 @@ def install_authorized_ask_routes(
     *,
     service: AuthorizedAskService,
     stream_service: QAResultEventPublisher | None = None,
+    operational_observer: OperationalObservationEmitter | None = None,
 ) -> None:
     """Register the protected ask and cooperative cancellation commands."""
 
     application.state.authorized_ask_service = service
     application.state.qa_stream_service = stream_service
+    application.state.operational_observer = operational_observer
 
     async def ask_endpoint(
         request: Request,
@@ -148,6 +159,8 @@ def install_authorized_ask_routes(
                 idempotency_key=_idempotency(request.headers.getlist("Idempotency-Key")),
             )
         )
+        _validate_result_context(request_context, result)
+        await _observe_result(request, result)
         await _publish_stream_result(request, result)
         return _command(request_context, result, expected_session_id=body.session_id)
 
@@ -173,6 +186,8 @@ def install_authorized_ask_routes(
                 idempotency_key=_idempotency(request.headers.getlist("Idempotency-Key")),
             )
         )
+        _validate_result_context(request_context, result)
+        await _observe_result(request, result)
         await _publish_stream_result(request, result)
         return _command(request_context, result)
 
@@ -213,6 +228,62 @@ async def _publish_stream_result(request: Request, result: AuthorizedAskResult) 
         await publisher.publish_result(result)
 
 
+async def _observe_result(request: Request, result: AuthorizedAskResult) -> None:
+    observer = getattr(request.app.state, "operational_observer", None)
+    if not isinstance(observer, OperationalObservationEmitter):
+        return
+    output = result.output
+    correlation = output.correlation
+    diagnostic_context = DiagnosticContext(
+        trace_id=correlation.trace_id,
+        correlation_id=correlation.correlation_id,
+        causation_id=correlation.causation_id,
+    )
+    failed = output.outcome in {
+        AnswerQuestionOutcome.FAILED,
+        AnswerQuestionOutcome.DENIED,
+    }
+    safe_code = None
+    if output.outcome is AnswerQuestionOutcome.DENIED:
+        safe_code = SafeOperationalFailureCode.ACCESS_DENIED
+    elif output.outcome is AnswerQuestionOutcome.FAILED:
+        safe_code = SafeOperationalFailureCode.GENERATION_UNAVAILABLE
+    for component, stage, operation in (
+        (
+            OperationalComponent.API,
+            OperationalStage.ACCEPTANCE,
+            OperationalOperation.HTTP_REQUEST,
+        ),
+        (
+            OperationalComponent.GENERATION,
+            OperationalStage.GENERATION,
+            OperationalOperation.ANSWER_GENERATION,
+        ),
+        (
+            OperationalComponent.RUN,
+            OperationalStage.PERSISTENCE,
+            OperationalOperation.RUN_PERSISTENCE,
+        ),
+    ):
+        await observer.emit(
+            workspace_id=output.scope.workspace_id,
+            environment_id=output.scope.environment_id,
+            diagnostic_context=diagnostic_context,
+            component=component,
+            stage=stage,
+            operation=operation,
+            outcome=(
+                OperationalObservationOutcome.FAILED
+                if failed
+                else OperationalObservationOutcome.SUCCEEDED
+            ),
+            safe_failure_code=safe_code,
+            run_id=correlation.run_id,
+            attempt_id=correlation.attempt_id,
+            message_id=result.message_id,
+        )
+
+
 def _idempotency(values: list[str]) -> IdempotencyKey:
     try:
         return IdempotencyKey(parse_idempotency_key_header(values).value)
@@ -226,6 +297,7 @@ def _command(
     *,
     expected_session_id: UUID | None = None,
 ) -> ApiCommandResult[AskOutcomeResponse]:
+    _validate_result_context(request_context, result)
     if (
         result.output.scope.workspace_id != request_context.scope.workspace_id
         or result.output.scope.environment_id != request_context.scope.environment_id
@@ -241,6 +313,21 @@ def _command(
         replay=result.replay,
         result=_response(result),
     )
+
+
+def _validate_result_context(
+    request_context: AuthorizedRequestContext[object],
+    result: AuthorizedAskResult,
+) -> None:
+    if (
+        result.output.scope.workspace_id != request_context.scope.workspace_id
+        or result.output.scope.environment_id != request_context.scope.environment_id
+        or result.output.correlation.trace_id
+        != request_context.diagnostic_context.trace_id
+    ):
+        raise InvalidAuthorizedAskRequest(
+            "answer result is outside the trusted request context"
+        )
 
 
 def _response(result: AuthorizedAskResult) -> AskOutcomeResponse:

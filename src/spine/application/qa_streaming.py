@@ -8,6 +8,14 @@ from typing import Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from spine.application.authorized_ask import AuthorizedAskResult
+from spine.application.diagnostics import DiagnosticContext
+from spine.application.telemetry import (
+    OperationalComponent,
+    OperationalObservationEmitter,
+    OperationalObservationOutcome,
+    OperationalOperation,
+    OperationalStage,
+)
 from spine.application.qa_events import (
     DisclosureAuthorizer,
     QAEventLogPort,
@@ -82,6 +90,7 @@ class AuthorizedQAStreamService:
 
     event_log: QAEventLogStore
     disclosure_authorizer: DisclosureAuthorization | None = None
+    operational_observer: OperationalObservationEmitter | None = None
 
     async def publish_result(self, result: AuthorizedAskResult) -> QAEvent | None:
         """Persist one deterministic event sequence, preserving cancellation races."""
@@ -117,6 +126,24 @@ class AuthorizedQAStreamService:
             if winner is not None:
                 return winner
             raise
+        if self.operational_observer is not None and persisted is not None:
+            correlation = output.correlation
+            await self.operational_observer.emit(
+                workspace_id=scope.workspace_id,
+                environment_id=scope.environment_id,
+                diagnostic_context=DiagnosticContext(
+                    trace_id=correlation.trace_id,
+                    correlation_id=correlation.correlation_id,
+                    causation_id=correlation.causation_id,
+                ),
+                component=OperationalComponent.SSE,
+                stage=OperationalStage.DELIVERY,
+                operation=OperationalOperation.SSE_DELIVERY,
+                outcome=OperationalObservationOutcome.SUCCEEDED,
+                run_id=run_id,
+                attempt_id=correlation.attempt_id,
+                message_id=result.message_id,
+            )
         return persisted
 
     def open_stream(

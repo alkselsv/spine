@@ -58,6 +58,13 @@ from spine.application.persistence import (
     OpaqueResultReference,
     OwnedIdempotencyClaim,
 )
+from spine.application.telemetry import (
+    OperationalComponent,
+    OperationalObservationEmitter,
+    OperationalObservationPolicy,
+    OperationalObservationRegistry,
+    RecordingOperationalObservationSink,
+)
 from spine.domain.agents import (
     AgentInvocation,
     AgentResult,
@@ -605,6 +612,7 @@ def local_runtime(
     cancellation_controller: object | None = None,
     retry_scheduler: object | None = None,
     attempt_id_factory: object | None = None,
+    operational_observer: OperationalObservationEmitter | None = None,
 ) -> LocalAgentRuntime:
     selected_context = context or execution_context()
     selected_controller = cancellation_controller or _CANCELLATION_CONTROLLERS.get(
@@ -628,6 +636,7 @@ def local_runtime(
         cancellation_controller=selected_controller,
         retry_scheduler=retry_scheduler,
         attempt_id_factory=attempt_id_factory,
+        operational_observer=operational_observer,
     )
 
 
@@ -895,6 +904,37 @@ async def test_success_emits_separate_registered_diagnostics_and_audit_events() 
     assert persistence.audit_calls[0].target is not None
     assert persistence.audit_calls[0].target.object_id == uid(33)
     assert "42" not in json.dumps(completed.payload_json())
+
+
+@pytest.mark.asyncio
+async def test_success_emits_generation_observations_with_execution_trace() -> None:
+    registry = OperationalObservationRegistry()
+    sink = RecordingOperationalObservationSink(registry)
+    observer = OperationalObservationEmitter(
+        registry=registry,
+        sink=sink,
+        policy=OperationalObservationPolicy(),
+        clock=lambda: datetime(2026, 10, 16, tzinfo=timezone.utc),
+        observation_id_source=iter((uid(361), uid(362))).__next__,
+    )
+    context = execution_context(
+        diagnostic_context=DiagnosticContext(trace_id=uid(1000)),
+    )
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+
+    result = await local_runtime(
+        persistence,
+        RecordingHandler(),
+        context=context,
+        operational_observer=observer,
+    ).invoke(version(), invocation())
+
+    assert result.status is AgentRunStatus.SUCCEEDED
+    assert [item.component for item in sink.observations] == [
+        OperationalComponent.GENERATION,
+        OperationalComponent.GENERATION,
+    ]
+    assert {item.trace_id for item in sink.observations} == {uid(1000)}
 
 
 @pytest.mark.asyncio

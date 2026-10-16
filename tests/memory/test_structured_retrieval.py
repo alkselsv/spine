@@ -2,9 +2,19 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from uuid import UUID
 
 import pytest
+
+from spine.application.diagnostics import DiagnosticContext
+from spine.application.telemetry import (
+    OperationalComponent,
+    OperationalObservationEmitter,
+    OperationalObservationPolicy,
+    OperationalObservationRegistry,
+    RecordingOperationalObservationSink,
+)
 
 from spine.memory.contracts import (
     EvidenceReference,
@@ -135,6 +145,33 @@ async def test_executor_fans_out_and_merges_structured_results_deterministically
     assert all(item.read_context is not None for item in result.chunks)
     assert all(item.score is not None for item in result.chunks)
     assert len(result.read_contexts) == 2
+
+
+@pytest.mark.asyncio
+async def test_executor_emits_retrieval_observation_with_trusted_trace() -> None:
+    registry = OperationalObservationRegistry()
+    sink = RecordingOperationalObservationSink(registry)
+    observer = OperationalObservationEmitter(
+        registry=registry,
+        sink=sink,
+        policy=OperationalObservationPolicy(),
+        clock=lambda: datetime(2026, 10, 16, tzinfo=timezone.utc),
+        observation_id_source=lambda: UUID(int=361),
+    )
+    executor = PhysicalReadPlanExecutor(
+        _Provider(),
+        operational_observer=observer,
+    )
+    diagnostic_context = DiagnosticContext(trace_id=UUID(int=1000))
+
+    await executor.execute(
+        _two_partition_plan(),
+        diagnostic_context=diagnostic_context,
+    )
+
+    assert len(sink.observations) == 1
+    assert sink.observations[0].component is OperationalComponent.RETRIEVAL
+    assert sink.observations[0].trace_id == diagnostic_context.trace_id
 
 
 @pytest.mark.asyncio

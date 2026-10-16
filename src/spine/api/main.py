@@ -39,6 +39,7 @@ from spine.api.qa_stream import (
 )
 from spine.api.parsed_content import install_parsed_content_routes
 from spine.api.processing_commands import install_processing_command_routes
+from spine.api.operational_observations import install_operational_observation_routes
 from spine.api.document_lifecycle_commands import (
     install_document_lifecycle_command_routes,
 )
@@ -76,6 +77,10 @@ from spine.application.feedback import FeedbackService
 from spine.application.qa_run_history import QARunHistoryService
 from spine.application.parsed_content_inspection import ParsedContentInspectionService
 from spine.application.processing_commands import ProcessingCommandService
+from spine.application.telemetry import (
+    OperationalObservationEmitter,
+    OperationalObservationReader,
+)
 from spine.application.document_lifecycle import DocumentLifecycleCommandService
 from spine.config import settings
 from spine.ingest.loaders import documents_to_remember_payloads, load_path
@@ -225,6 +230,8 @@ def create_app(
     parsed_content_cursor_secret: bytes | None = None,
     processing_command_service: ProcessingCommandService | None = None,
     document_lifecycle_command_service: DocumentLifecycleCommandService | None = None,
+    operational_observation_reader: OperationalObservationReader | None = None,
+    operational_observer: OperationalObservationEmitter | None = None,
 ) -> FastAPI:
     """Compose the HTTP API with injectable deterministic diagnostics."""
 
@@ -304,6 +311,11 @@ def create_app(
                 application,
                 status_service=projection_status_service,
                 recovery_service=projection_recovery_service,
+            )
+        if operational_observation_reader is not None:
+            install_operational_observation_routes(
+                application,
+                reader=operational_observation_reader,
             )
     add_public_api_route(
         application,
@@ -389,6 +401,7 @@ def create_app(
             application,
             service=resolved_authorized_ask_service,
             stream_service=qa_stream_service,
+            operational_observer=operational_observer,
         )
     if qa_stream_service is not None:
         if type(authorization_runtime) is not ApiAuthorizationRuntime:

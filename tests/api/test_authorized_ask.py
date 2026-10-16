@@ -14,6 +14,13 @@ from spine.application.authorized_ask import (
     AskCommand,
     AskCancellationCommand,
 )
+from spine.application.telemetry import (
+    OperationalComponent,
+    OperationalObservationEmitter,
+    OperationalObservationPolicy,
+    OperationalObservationRegistry,
+    RecordingOperationalObservationSink,
+)
 from spine.domain.capabilities import (
     AcceptedGroundedAnswer,
     AnswerDisclosureValidation,
@@ -197,6 +204,57 @@ async def test_authorized_ask_returns_only_accepted_answer_and_citation_referenc
     assert "candidate" not in response.text
     assert "chain" not in response.text
     assert service.calls[0].subject_id == UUID("10000000-0000-0000-0000-000000000073")
+
+
+@pytest.mark.asyncio
+async def test_authorized_ask_emits_content_free_failure_observations_with_run_trace() -> None:
+    result = AuthorizedAskResult(
+        command_id=COMMAND_ID,
+        session_id=SESSION_ID,
+        message_id=MESSAGE_ID,
+        output=safe_output(AnswerQuestionOutcome.FAILED),
+        accepted_answer=None,
+    )
+    registry = OperationalObservationRegistry()
+    sink = RecordingOperationalObservationSink(registry)
+    observer = OperationalObservationEmitter(
+        registry=registry,
+        sink=sink,
+        policy=OperationalObservationPolicy(),
+        clock=lambda: NOW,
+        observation_id_source=iter((UUID(int=801), UUID(int=802), UUID(int=803))).__next__,
+    )
+    application = authorized_app([])
+    install_authorized_ask_routes(
+        application,
+        service=FakeAskService(result, []),
+        operational_observer=observer,
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/v1/ask",
+            json={
+                "schema_version": 1,
+                "session_id": str(SESSION_ID),
+                "question": "protected customer question",
+            },
+            headers={**headers(), "Idempotency-Key": "ask-observation"},
+        )
+
+    assert response.status_code == 200
+    assert [item.component for item in sink.observations] == [
+        OperationalComponent.API,
+        OperationalComponent.GENERATION,
+        OperationalComponent.RUN,
+    ]
+    assert {item.trace_id for item in sink.observations} == {TRACE_ID}
+    assert {item.run_id for item in sink.observations} == {RUN_ID}
+    assert "protected customer question" not in "".join(
+        item.model_dump_json() for item in sink.observations
+    )
 
 
 @pytest.mark.asyncio

@@ -42,3 +42,24 @@ surface and preserves the different retention, availability and evidentiary
 semantics of canonical audit, asynchronous delivery and telemetry. It composes
 with ADR 0004 and does not transfer composite lifecycle, long waits, cancellation
 or business retry exhaustion away from Temporal.
+
+## R1 operational observation profile
+
+`OperationalObservation:v1` is the Spine-owned diagnostic contract across API,
+outbox, worker, projection, retrieval, generation, persisted run and SSE
+boundaries. It retains the trusted `DiagnosticContext` identity and exact
+workspace/environment scope while allowing only closed component, stage,
+operation, outcome and safe-failure vocabularies. Run, attempt and message IDs
+are correlation references; metric dimensions are limited to the closed
+low-cardinality vocabulary and never include those identities.
+
+The versioned R1 policy retains observations for 30 days subject to mandatory
+legal holds, keeps 100% of error traces and a deterministic 10% of successful
+traces, and disables external export. Sampling never changes propagation and
+never applies to required Audit Events. Observation sink failure remains
+best-effort; the required Audit Event gate above remains fail-closed.
+
+The in-memory retention/read adapter qualifies the application contract only.
+Production qualification still requires a deployment-owned retention and
+legal-hold binding. No external telemetry backend, credentials or audit
+authority are approved by this profile.

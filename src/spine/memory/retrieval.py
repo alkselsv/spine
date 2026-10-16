@@ -9,6 +9,15 @@ import json
 from typing import Protocol
 from uuid import UUID
 
+from spine.application.diagnostics import DiagnosticContext
+from spine.application.telemetry import (
+    OperationalComponent,
+    OperationalObservationEmitter,
+    OperationalObservationOutcome,
+    OperationalOperation,
+    OperationalStage,
+    SafeOperationalFailureCode,
+)
 from spine.domain.projections import SourceProjectionReference
 
 from .contracts import (
@@ -46,13 +55,21 @@ class StructuredRetrievalProvider(Protocol):
 class PhysicalReadPlanExecutor:
     """Fan out typed reads and merge only structured, pinned results."""
 
-    def __init__(self, provider: StructuredRetrievalProvider | ContextProjection) -> None:
+    def __init__(
+        self,
+        provider: StructuredRetrievalProvider | ContextProjection,
+        *,
+        operational_observer: OperationalObservationEmitter | None = None,
+    ) -> None:
         self._provider = provider
         self._replays: dict[str, ProjectionRetrievalResult] = {}
+        self._operational_observer = operational_observer
 
     async def execute(
         self,
         plan_or_resolution: PhysicalReadPlan | PhysicalReadPlanResolution,
+        *,
+        diagnostic_context: DiagnosticContext | None = None,
     ) -> ProjectionRetrievalResult:
         """Execute a ready plan, or return a safe result for a rejected plan."""
 
@@ -69,7 +86,13 @@ class PhysicalReadPlanExecutor:
         plan_digest = self._digest(plan)
         previous = self._replays.get(plan_digest)
         if previous is not None:
-            return previous.model_copy(update={"outcome": ProjectionOutcome.REPLAYED})
+            replayed = previous.model_copy(update={"outcome": ProjectionOutcome.REPLAYED})
+            await self._observe_retrieval(
+                plan,
+                replayed,
+                diagnostic_context=diagnostic_context,
+            )
+            return replayed
 
         invalid_plan = self._validate_plan(plan)
         if invalid_plan is not None:
@@ -78,6 +101,11 @@ class PhysicalReadPlanExecutor:
                 invalid_plan,
             )
             self._replays[plan_digest] = result
+            await self._observe_retrieval(
+                plan,
+                result,
+                diagnostic_context=diagnostic_context,
+            )
             return result
 
         results: list[ProjectionRetrievalResult] = []
@@ -102,15 +130,63 @@ class PhysicalReadPlanExecutor:
         merged = self._merge(plan, plan_digest, results)
         if merged.outcome is not ProjectionOutcome.PARTIAL:
             self._replays[plan_digest] = merged
+        await self._observe_retrieval(
+            plan,
+            merged,
+            diagnostic_context=diagnostic_context,
+        )
         return merged
 
     async def retrieve(
         self,
         plan_or_resolution: PhysicalReadPlan | PhysicalReadPlanResolution,
+        *,
+        diagnostic_context: DiagnosticContext | None = None,
     ) -> ProjectionRetrievalResult:
         """Compatibility spelling for callers that already use ``retrieve``."""
 
-        return await self.execute(plan_or_resolution)
+        return await self.execute(
+            plan_or_resolution,
+            diagnostic_context=diagnostic_context,
+        )
+
+    async def _observe_retrieval(
+        self,
+        plan: PhysicalReadPlan,
+        result: ProjectionRetrievalResult,
+        *,
+        diagnostic_context: DiagnosticContext | None,
+    ) -> None:
+        if self._operational_observer is None:
+            return
+        if type(diagnostic_context) is not DiagnosticContext:
+            raise ValueError("trusted diagnostic context is required for retrieval telemetry")
+        workspace_ids = {item.workspace_id for item in plan.operations}
+        environment_ids = {item.environment_id for item in plan.operations}
+        if len(workspace_ids) != 1 or len(environment_ids) != 1:
+            raise ValueError("retrieval telemetry scope is invalid")
+        failed = result.outcome not in {
+            ProjectionOutcome.SUCCEEDED,
+            ProjectionOutcome.REPLAYED,
+        }
+        await self._operational_observer.emit(
+            workspace_id=next(iter(workspace_ids)),
+            environment_id=next(iter(environment_ids)),
+            diagnostic_context=diagnostic_context,
+            component=OperationalComponent.RETRIEVAL,
+            stage=OperationalStage.RETRIEVAL,
+            operation=OperationalOperation.CONTEXT_RETRIEVAL,
+            outcome=(
+                OperationalObservationOutcome.FAILED
+                if failed
+                else OperationalObservationOutcome.SUCCEEDED
+            ),
+            safe_failure_code=(
+                SafeOperationalFailureCode.RETRIEVAL_UNAVAILABLE
+                if failed
+                else None
+            ),
+        )
 
     @classmethod
     def _command(

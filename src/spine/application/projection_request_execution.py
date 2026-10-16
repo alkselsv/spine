@@ -15,6 +15,14 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
 from spine.application.diagnostics import DiagnosticContext
+from spine.application.telemetry import (
+    OperationalComponent,
+    OperationalObservationEmitter,
+    OperationalObservationOutcome,
+    OperationalOperation,
+    OperationalStage,
+    SafeOperationalFailureCode,
+)
 from spine.application.document_ingestion import (
     PROJECTION_REQUEST_EVENT_TYPE,
     PROJECTION_REQUEST_SCHEMA_VERSION,
@@ -377,11 +385,13 @@ class ProjectionRequestConsumer:
         projection: ContextProjection,
         receipt_builder: AdapterProjectionReceiptBuilder,
         result_bridge: ProjectionResultRecorder,
+        operational_observer: OperationalObservationEmitter | None = None,
     ) -> None:
         self._canonical_resolver = canonical_resolver
         self._projection = projection
         self._receipt_builder = receipt_builder
         self._result_bridge = result_bridge
+        self._operational_observer = operational_observer
 
     async def consume(
         self,
@@ -449,10 +459,24 @@ class ProjectionRequestConsumer:
         try:
             result = await self._projection.project(command)
         except Exception:
+            await self._observe_projection(
+                request,
+                diagnostic_context,
+                command,
+                outcome=OperationalObservationOutcome.FAILED,
+                failure_code=SafeOperationalFailureCode.PROJECTION_UNAVAILABLE,
+            )
             raise RetryableOutboxConsumerFailure(
                 "projection.request.physical_retryable"
             ) from None
         if result.failure is not None:
+            await self._observe_projection(
+                request,
+                diagnostic_context,
+                command,
+                outcome=OperationalObservationOutcome.FAILED,
+                failure_code=SafeOperationalFailureCode.PROJECTION_UNAVAILABLE,
+            )
             if result.failure.code is ProjectionFailureCode.INTEGRITY_CONFLICT:
                 raise TerminalOutboxConsumerFailure(
                     "projection.request.integrity_conflict"
@@ -479,7 +503,36 @@ class ProjectionRequestConsumer:
             raise RetryableOutboxConsumerFailure(
                 "projection.request.handoff_retryable"
             ) from None
+        await self._observe_projection(
+            request,
+            diagnostic_context,
+            command,
+            outcome=OperationalObservationOutcome.SUCCEEDED,
+        )
         return OutboxConsumerSuccess(diagnostic_context=diagnostic_context)
+
+    async def _observe_projection(
+        self,
+        request: ProjectionRequestEnvelope,
+        diagnostic_context: DiagnosticContext,
+        command: ProjectCommand,
+        *,
+        outcome: OperationalObservationOutcome,
+        failure_code: SafeOperationalFailureCode | None = None,
+    ) -> None:
+        if self._operational_observer is None:
+            return
+        await self._operational_observer.emit(
+            workspace_id=request.workspace_id,
+            environment_id=request.environment_id,
+            diagnostic_context=diagnostic_context,
+            component=OperationalComponent.PROJECTION,
+            stage=OperationalStage.PROJECTION,
+            operation=OperationalOperation.PROJECTION_BUILD,
+            outcome=outcome,
+            safe_failure_code=failure_code,
+            run_id=command.projection_run_id,
+        )
 
     @staticmethod
     def _request_from(

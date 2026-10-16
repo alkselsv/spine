@@ -186,6 +186,16 @@ Audit Event фиксируются атомарно, после чего best-ef
 может переписать канонический результат. Неизвестные event/route/consumer и
 terminal либо exhausted failures переходят в quarantine с безопасным кодом.
 
+Operational telemetry использует Spine-owned `OperationalObservation:v1` на
+границах API → outbox → worker → projection → retrieval → generation →
+persisted run/SSE. Наблюдение сохраняет trusted trace/correlation identity и
+workspace/environment scope, но допускает только закрытые low-cardinality
+component/stage/operation/outcome/failure labels и непрозрачные correlation
+references. R1 отключает внешний exporter, применяет 30-дневный retention с
+legal-hold seam и tail-sampling: 100% error traces, 10% successful traces.
+Sampling не затрагивает propagation или обязательный Audit Event; отказ
+diagnostic sink не меняет успешный business effect.
+
 ## 7. Доменная модель
 
 ### Workspace и доступ

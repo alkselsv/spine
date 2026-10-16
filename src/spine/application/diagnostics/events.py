@@ -528,6 +528,38 @@ class FeedbackDiagnosticPayload(BaseModel):
     message_id: UUID | None = None
 
 
+class OperationalObservationDiagnosticPayload(BaseModel):
+    """Closed v1 payload bridged from Spine OperationalObservation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    observation_id: UUID
+    component: Literal[
+        "api", "outbox", "worker", "projection", "retrieval", "generation", "run", "sse"
+    ]
+    stage: Literal[
+        "acceptance", "enqueue", "dispatch", "projection", "retrieval", "generation", "persistence", "delivery"
+    ]
+    operation: Literal[
+        "http_request", "outbox_enqueue", "outbox_delivery", "projection_build",
+        "context_retrieval", "answer_generation", "run_persistence", "sse_delivery",
+    ]
+    outcome: Literal[
+        "started", "succeeded", "failed", "retry_scheduled", "quarantined", "denied", "cancelled"
+    ]
+    safe_failure_code: Literal[
+        "context_invalid", "context_mismatch", "access_denied", "timeout",
+        "retry_exhausted", "projection_unavailable", "retrieval_unavailable",
+        "generation_unavailable", "persistence_unavailable", "validation_failed",
+        "internal_failure",
+    ] | None = None
+    duration_ms: int | None = Field(default=None, ge=0, le=86_400_000)
+    attempt_number: int | None = Field(default=None, ge=1, le=10_000)
+    run_id: UUID | None = None
+    attempt_id: UUID | None = None
+    message_id: UUID | None = None
+
+
 class UnsupportedDiagnosticEventError(ValueError):
     """An event type, version, or payload is not registered and valid."""
 
@@ -653,6 +685,11 @@ class DiagnosticEventRegistry:
             event_type="feedback.recorded",
             schema_version=1,
             payload_type=FeedbackDiagnosticPayload,
+        )
+        registry.register(
+            event_type="operational.observation",
+            schema_version=1,
+            payload_type=OperationalObservationDiagnosticPayload,
         )
         registry.seal()
         return registry
@@ -875,6 +912,7 @@ __all__ = [
     "FeedbackDiagnosticPayload",
     "OutboxDeliveryDiagnosticPayload",
     "OutboxDeliveryDiagnosticState",
+    "OperationalObservationDiagnosticPayload",
     "StorageOutcomeDiagnosticPayload",
     "UnsupportedDiagnosticEventError",
     "emit_diagnostic_safely",

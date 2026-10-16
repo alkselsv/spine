@@ -21,6 +21,14 @@ from spine.application.diagnostics import (
     DiagnosticSeverity,
     emit_diagnostic_safely,
 )
+from spine.application.telemetry import (
+    OperationalComponent,
+    OperationalObservationEmitter,
+    OperationalObservationOutcome,
+    OperationalOperation,
+    OperationalStage,
+    SafeOperationalFailureCode,
+)
 from spine.domain.common import ContextOrigin
 
 _AGENT_RUN_EVENT_TYPE = "agent.run"
@@ -180,12 +188,14 @@ class AgentRuntimeDiagnosticEmitter:
         audit_registry: AuditEventRegistry,
         audit_writer: AuditWriter,
         clock: Callable[[], datetime],
+        operational_observer: OperationalObservationEmitter | None = None,
     ) -> None:
         self._context = context
         self._diagnostic_registry = diagnostic_registry
         self._audit_registry = audit_registry
         self._audit_writer = audit_writer
         self._clock = clock
+        self._operational_observer = operational_observer
 
     async def observe_run(self, state: AgentRunDiagnosticState) -> None:
         await self.observe_run_diagnostic(state)
@@ -208,6 +218,30 @@ class AgentRuntimeDiagnosticEmitter:
                 else DiagnosticSeverity.INFO
             ),
         )
+        if self._operational_observer is not None:
+            outcome = {
+                AgentRunDiagnosticState.STARTED: OperationalObservationOutcome.STARTED,
+                AgentRunDiagnosticState.COMPLETED: OperationalObservationOutcome.SUCCEEDED,
+                AgentRunDiagnosticState.FAILED: OperationalObservationOutcome.FAILED,
+                AgentRunDiagnosticState.CANCELLATION_REQUESTED: OperationalObservationOutcome.CANCELLED,
+                AgentRunDiagnosticState.CANCELLED: OperationalObservationOutcome.CANCELLED,
+            }[state]
+            await self._operational_observer.emit(
+                workspace_id=self._context.workspace_id,
+                environment_id=self._context.environment_id,
+                diagnostic_context=self._context.diagnostic_context,
+                component=OperationalComponent.GENERATION,
+                stage=OperationalStage.GENERATION,
+                operation=OperationalOperation.ANSWER_GENERATION,
+                outcome=outcome,
+                safe_failure_code=(
+                    SafeOperationalFailureCode.GENERATION_UNAVAILABLE
+                    if state is AgentRunDiagnosticState.FAILED
+                    else None
+                ),
+                run_id=self._context.agent_run_id,
+                attempt_id=self._context.attempt_id,
+            )
 
     async def observe_replay(self) -> None:
         """Record replay without changing the immutable ``agent.run:v1`` schema."""

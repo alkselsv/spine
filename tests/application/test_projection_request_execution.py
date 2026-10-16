@@ -32,6 +32,13 @@ from spine.application.projection_result_mapping import (
     AdapterProjectionReceipt,
     ProjectionResultMappingBridge,
 )
+from spine.application.telemetry import (
+    OperationalComponent,
+    OperationalObservationEmitter,
+    OperationalObservationPolicy,
+    OperationalObservationRegistry,
+    RecordingOperationalObservationSink,
+)
 from spine.application.testing import DeterministicCanonicalProjectionGateway
 from spine.domain.projections import ProjectionCandidateState
 from spine.infrastructure.diagnostics import RecordingDiagnosticSink
@@ -211,6 +218,47 @@ async def test_committed_projection_request_records_canonical_handoff() -> None:
         == command.command_identity
     )
     assert replay.handoff.receipt_command.receipt.command_digest == command.command_digest
+
+
+@pytest.mark.asyncio
+async def test_projection_request_emits_safe_observation_with_worker_trace() -> None:
+    command = _command()
+    registry = OperationalObservationRegistry()
+    sink = RecordingOperationalObservationSink(registry)
+    observer = OperationalObservationEmitter(
+        registry=registry,
+        sink=sink,
+        policy=OperationalObservationPolicy(),
+        clock=lambda: NOW,
+        observation_id_source=lambda: UUID(int=361),
+    )
+    consumer = ProjectionRequestConsumer(
+        canonical_resolver=_CanonicalResolver(command),
+        projection=DeterministicContextProjection(),
+        receipt_builder=_AdapterReceiptBuilder(),
+        result_bridge=ProjectionResultMappingBridge(
+            DeterministicCanonicalProjectionGateway((_context(command),)),
+            id_source=lambda: UUID(int=362),
+        ),
+        operational_observer=observer,
+    )
+    intent = _intent()
+    diagnostic_context = DiagnosticContext(
+        trace_id=intent.trace_id,
+        correlation_id=intent.correlation_id,
+        causation_id=intent.event_id,
+    )
+
+    await consumer.consume(intent, diagnostic_context)
+
+    assert len(sink.observations) == 1
+    observation = sink.observations[0]
+    assert observation.component is OperationalComponent.PROJECTION
+    assert observation.trace_id == intent.trace_id
+    assert observation.correlation_id == intent.correlation_id
+    assert observation.causation_id == intent.event_id
+    assert observation.workspace_id == intent.workspace_id
+    assert observation.environment_id == intent.environment_id
 
 
 @pytest.mark.asyncio

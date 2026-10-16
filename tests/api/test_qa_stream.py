@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
+from datetime import datetime, timezone
 from uuid import UUID
 
 import httpx
@@ -10,6 +12,13 @@ from spine.api.authorized_ask import install_authorized_ask_routes
 from spine.api.qa_stream import install_qa_stream_routes
 from spine.application.qa_events import InMemoryQAEventLog
 from spine.application.qa_streaming import AuthorizedQAStreamService
+from spine.application.telemetry import (
+    OperationalComponent,
+    OperationalObservationEmitter,
+    OperationalObservationPolicy,
+    OperationalObservationRegistry,
+    RecordingOperationalObservationSink,
+)
 from tests.api.test_authorized_ask import (
     FakeAskService,
     SESSION_ID,
@@ -90,6 +99,38 @@ async def test_sse_streams_accepted_ask_events_and_resumes_after_last_event_id()
         "citation_added",
         "completed",
     ]
+
+
+@pytest.mark.asyncio
+async def test_sse_persistence_emits_safe_terminal_observation_with_run_trace() -> None:
+    registry = OperationalObservationRegistry()
+    sink = RecordingOperationalObservationSink(registry)
+    observer = OperationalObservationEmitter(
+        registry=registry,
+        sink=sink,
+        policy=OperationalObservationPolicy(),
+        clock=lambda: datetime(2026, 10, 16, tzinfo=timezone.utc),
+        observation_id_source=lambda: UUID(int=361),
+    )
+    original = answered_result()
+    correlation = original.output.correlation.model_copy(
+        update={"trace_id": UUID(int=1000)}
+    )
+    result = replace(
+        original,
+        output=original.output.model_copy(update={"correlation": correlation}),
+    )
+    service = AuthorizedQAStreamService(
+        event_log=InMemoryQAEventLog(),
+        operational_observer=observer,
+    )
+
+    await service.publish_result(result)
+
+    assert len(sink.observations) == 1
+    assert sink.observations[0].component is OperationalComponent.SSE
+    assert sink.observations[0].trace_id == UUID(int=1000)
+    assert "The policy applies" not in sink.observations[0].model_dump_json()
 
 
 @pytest.mark.asyncio
