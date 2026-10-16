@@ -43,6 +43,9 @@ from spine.application.persistence.delivery import (
 )
 from spine.application.persistence.outbox import OutboxIntent
 from spine.application.persistence.errors import AuditConflictError
+from spine.application.persistence.idempotency import IdempotencyKey
+from spine.application.persistence.projection import ProjectionRecoveryAction
+from spine.application.projection_control import ProjectionRecoveryRequestService
 from spine.domain.common import EnvironmentKind
 from spine.domain.workspaces import Environment, Workspace
 from spine.infrastructure.db.migrations import upgrade_database
@@ -63,6 +66,10 @@ from spine.infrastructure.diagnostics import (
 )
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.persistence.postgresql import PostgreSQLPersistence
+from spine.infrastructure.persistence.projection_composition import (
+    PROJECTION_REQUEST_CONSUMER_NAME,
+    register_projection_delivery_routes,
+)
 from tests.contracts.persistence.adapter import DeliveryPersistenceAdapter
 from tests.contracts.persistence.ids import synthetic_uuid
 from tests.contracts.persistence.outbox_events import create_outbox_event_registry
@@ -210,6 +217,7 @@ async def postgresql_delivery_adapter(
         schema_version=1,
         consumer_name="workspace_projection",
     )
+    register_projection_delivery_routes(routes)
     routes.seal()
     persistence = PostgreSQLPersistence(
         session_factory=runtime_sessions,
@@ -260,6 +268,22 @@ async def postgresql_delivery_adapter(
             trace_id=synthetic_uuid(6546),
         )
 
+    def ingestion_context(
+        workspace_id: UUID,
+        environment_id: UUID,
+        operation: str,
+    ) -> TrustedPersistenceContext:
+        return boundary.worker(
+            scope=EnvironmentScope(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+            ),
+            service_principal_id=synthetic_uuid(6547),
+            purpose=PersistencePurpose("projection_recovery_test"),
+            operation=PersistenceOperation(operation),
+            trace_id=synthetic_uuid(6548),
+        )
+
     @asynccontextmanager
     async def hold_transactions() -> AsyncIterator[None]:
         yield
@@ -269,6 +293,7 @@ async def postgresql_delivery_adapter(
         workspace_context=workspace_context,
         worker_workspace_context=worker_workspace_context,
         environment_context=environment_context,
+        ingestion_context=ingestion_context,
         hold_transactions=hold_transactions,
         outbox_events=outbox_events,
         audit_events=audit_events,
@@ -589,6 +614,81 @@ class _RecordingConsumer(_SuccessfulConsumer):
         assert intent.event_id is not None
         self.event_ids.append(intent.event_id)
         return await super().consume(intent, diagnostic_context)
+
+
+async def test_postgresql_recovery_request_replay_dispatches_one_tenant_scoped_intent(
+    postgresql_delivery_adapter: DeliveryPersistenceAdapter,
+) -> None:
+    adapter = postgresql_delivery_adapter
+    workspace_id = synthetic_uuid(6950)
+    environment_id = synthetic_uuid(6951)
+    async with adapter.uow_factory(adapter.workspace_context(workspace_id)) as uow:
+        await uow.workspaces.add(workspace(workspace_id))
+        await uow.environments.add(
+            Environment(
+                id=environment_id,
+                workspace_id=workspace_id,
+                kind=EnvironmentKind.DEVELOPMENT,
+                display_name="Projection recovery",
+            )
+        )
+        await uow.commit()
+    assert adapter.ingestion_context is not None
+    context = adapter.ingestion_context(
+        workspace_id,
+        environment_id,
+        "request_projection_recovery",
+    )
+    service = ProjectionRecoveryRequestService(
+        uow_factory=adapter.uow_factory,
+        outbox_events=adapter.outbox_events,
+    )
+    first = await service.request(
+        context=context,
+        projection_kind="context",
+        action=ProjectionRecoveryAction.REBUILD,
+        idempotency_key=IdempotencyKey("postgresql-projection-recovery-364"),
+    )
+    replay = await service.request(
+        context=context,
+        projection_kind="context",
+        action=ProjectionRecoveryAction.REBUILD,
+        idempotency_key=IdempotencyKey("postgresql-projection-recovery-364"),
+    )
+    consumer = _RecordingConsumer()
+    consumers = OutboxConsumerRegistry()
+    consumers.register(PROJECTION_REQUEST_CONSUMER_NAME, consumer)
+    diagnostics = DiagnosticEventRegistry.with_default_families()
+    dispatcher = OutboxDispatcher(
+        repository=adapter.delivery_repository,
+        consumers=consumers,
+        audit_events=adapter.audit_events,
+        diagnostic_events=diagnostics,
+        diagnostic_sink=RecordingDiagnosticSink(diagnostics),
+        service_principal_id=synthetic_uuid(6952),
+        clock=iter(
+            (
+                datetime(2026, 10, 16, 13, tzinfo=timezone.utc),
+                datetime(2026, 10, 16, 13, 0, 1, tzinfo=timezone.utc),
+            )
+        ).__next__,
+        audit_event_id_source=lambda: synthetic_uuid(6953),
+        retry_delay=lambda attempt: timedelta(seconds=attempt),
+        maximum_retry_delay=timedelta(minutes=5),
+        lease_duration=timedelta(seconds=30),
+        handler_timeout=timedelta(seconds=5),
+        maximum_attempts=3,
+    )
+
+    report = await dispatcher.dispatch_batch(
+        limit=1,
+        worker_identity="projection_recovery_worker",
+    )
+
+    assert replay.command_id == first.command_id
+    assert replay.replay is True
+    assert report.delivered == 1
+    assert len(consumer.event_ids) == 1
 
 
 class _LeakingConsumer:

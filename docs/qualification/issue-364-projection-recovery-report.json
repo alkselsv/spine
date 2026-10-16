@@ -1,0 +1,110 @@
+{
+  "schema_version": "projection-recovery-qualification:v1",
+  "ticket": 364,
+  "parent_ticket": 18,
+  "generated_at": "2026-10-16T13:00:00Z",
+  "production_approval": false,
+  "readiness": {
+    "deterministic_physical_adapter": "qualified",
+    "postgresql": "qualified_disposable_harness",
+    "configured_cognee": "not_run",
+    "production": "not_approved"
+  },
+  "criteria": [
+    {
+      "id": "AC1",
+      "status": "qualified_postgresql",
+      "evidence": [
+        "tests/application/test_projection_recovery_execution.py::test_recovery_request_dispatch_rebuilds_once_and_records_canonical_result",
+        "tests/integration/postgresql/test_postgresql_outbox_delivery.py::test_postgresql_recovery_request_replay_dispatches_one_tenant_scoped_intent",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_projection_recovery_resolver_satisfies_contract",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_projection_recovery_result_bridge_satisfies_contract"
+      ]
+    },
+    {
+      "id": "AC2",
+      "status": "qualified_postgresql",
+      "evidence": [
+        "tests/application/test_projection_recovery_execution.py::test_retryable_physical_rebuild_redelivery_has_one_canonical_result",
+        "tests/contracts/memory/test_projection_rebuild_contract.py::test_rebuild_replay_is_stable_after_a_lost_response",
+        "tests/contracts/persistence/test_projection_contract.py::test_projection_recovery_resolver_replays_one_shadow_rebuild_plan",
+        "tests/contracts/persistence/test_projection_contract.py::test_projection_recovery_result_bridge_persists_and_replays_canonical_evidence"
+      ]
+    },
+    {
+      "id": "AC3",
+      "status": "qualified_postgresql",
+      "evidence": [
+        "tests/application/test_projection_publication.py::test_publish_from_adapter_result_maps_and_validates_before_activation",
+        "tests/application/test_projection_publication.py::test_publish_runs_physical_gate_before_postgresql_activation",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_projection_publication_satisfies_cas_contract"
+      ]
+    },
+    {
+      "id": "AC4",
+      "status": "qualified_offline",
+      "evidence": [
+        "tests/application/test_projection_request_execution.py::test_non_retryable_physical_rejection_returns_safe_terminal_code",
+        "tests/application/test_physical_projection_validation.py::test_failed_physical_evidence_becomes_failed_validation_and_degraded_reconciliation",
+        "tests/contracts/memory/test_projection_rebuild_contract.py::test_shadow_rebuild_artifacts_require_explicit_namespace_selection"
+      ]
+    },
+    {
+      "id": "AC5",
+      "status": "qualified_postgresql",
+      "evidence": [
+        "tests/application/test_projection_publication.py::test_rollback_command_targets_only_a_validated_successor_snapshot",
+        "tests/application/test_projection_publication.py::test_rollback_command_rejects_historical_snapshot_without_successor_lineage",
+        "tests/application/test_projection_publication.py::test_rollback_delegates_successor_cas_claim_to_publication_repository",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_projection_publication_satisfies_cas_contract"
+      ]
+    },
+    {
+      "id": "AC6",
+      "status": "qualified_postgresql",
+      "evidence": [
+        "tests/application/test_projection_control.py::test_projection_status_marks_stale_degraded_publication_retryable",
+        "tests/application/test_projection_control.py::test_projection_status_exposes_failed_reconciliation_as_bounded_failure",
+        "tests/integration/postgresql/test_postgresql_outbox_delivery.py::test_postgresql_retry_obeys_due_boundary",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_projection_recovery_lifecycle_satisfies_contract"
+      ]
+    },
+    {
+      "id": "AC7",
+      "status": "qualified_postgresql",
+      "evidence": [
+        "tests/application/test_projection_recovery_execution.py::test_foreign_or_changed_recovery_plan_is_rejected_before_physical_work",
+        "tests/integration/postgresql/test_postgresql_outbox_delivery.py::test_postgresql_claim_preserves_tenant_and_trace_scope",
+        "tests/application/test_physical_projection_validation.py::test_physical_evidence_rejects_a_fabricated_scope_before_persistence",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_projection_recovery_resolver_satisfies_contract",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_projection_recovery_result_bridge_satisfies_contract"
+      ]
+    },
+    {
+      "id": "AC8",
+      "status": "qualified_offline",
+      "evidence": [
+        "tests/application/test_projection_recovery_execution.py::test_projection_delivery_routes_include_operator_recovery_requests",
+        "tests/application/test_projection_control.py::test_projection_recovery_request_replays_and_emits_one_typed_outbox_intent"
+      ]
+    }
+  ],
+  "boundaries": {
+    "recovery_api": "issue_296_consumed_not_replaced",
+    "physical_projection": "context_projection_port",
+    "canonical_state": "postgresql_projection_repository",
+    "publication": "existing_validation_seal_and_cas",
+    "rollback": "new_successor_never_pointer_rewind",
+    "telemetry": "operational_observation_not_audit_authority"
+  },
+  "verification": {
+    "focused_offline": "passed",
+    "postgresql_delivery": "passed_disposable_harness",
+    "compile_import": "passed",
+    "repository_suite": "passed_with_canonical_tmpdir"
+  },
+  "unverified_prerequisites": [
+    "Configured Cognee/Neo4j/PGVector provider profile was not selected or exercised.",
+    "Production identities, authorization bindings, and deployment monitoring remain deployment-owned prerequisites."
+  ]
+}

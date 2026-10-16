@@ -27,9 +27,8 @@ from spine.infrastructure.persistence.in_memory import InMemoryPersistence
 from spine.infrastructure.persistence.access_policies import (
     InMemoryAccessPolicyRepository,
 )
-from spine.application.document_ingestion import (
-    PROJECTION_REQUEST_EVENT_TYPE,
-    PROJECTION_REQUEST_SCHEMA_VERSION,
+from spine.infrastructure.persistence.projection_composition import (
+    register_projection_delivery_routes,
 )
 
 from .adapter import (
@@ -58,13 +57,12 @@ async def create_in_memory_adapter() -> DeliveryPersistenceAdapter:
         schema_version=1,
         consumer_name="workspace_projection",
     )
-    delivery_routes.register(
-        event_type=PROJECTION_REQUEST_EVENT_TYPE,
-        schema_version=PROJECTION_REQUEST_SCHEMA_VERSION,
-        consumer_name="projection_request",
-    )
+    register_projection_delivery_routes(delivery_routes)
     delivery_routes.seal()
     audit_events = AuditEventRegistry.with_default_families()
+    audit_event_ids = (
+        synthetic_uuid(value) for value in range(908, 1008)
+    )
     access_policies = InMemoryAccessPolicyRepository()
     persistence = InMemoryPersistence(
         context_verifier=boundary,
@@ -73,7 +71,7 @@ async def create_in_memory_adapter() -> DeliveryPersistenceAdapter:
         bootstrap_authority=bootstrap_authority,
         transaction_lock=transaction_lock,
         audit_clock=lambda: datetime(2026, 2, 3, 4, 5, tzinfo=timezone.utc),
-        audit_event_id_factory=lambda: synthetic_uuid(908),
+        audit_event_id_factory=audit_event_ids.__next__,
         delivery_routes=delivery_routes,
         delivery_lease_token_factory=(
             synthetic_uuid(value) for value in range(6600, 6700)

@@ -8,12 +8,19 @@ from uuid import UUID, uuid4
 
 from spine.application.diagnostics import (
     AuditEventRegistry,
+    DiagnosticContext,
     DiagnosticEventRegistry,
     DiagnosticSink,
 )
-from spine.application.outbox import OutboxDispatchRepository
+from spine.application.outbox import OutboxConsumerSuccess, OutboxDispatchRepository
 from spine.application.persistence.context import TrustedPersistenceContext
+from spine.application.persistence.delivery import OutboxDeliveryRouteRegistry
+from spine.application.persistence.outbox import OutboxIntent
 from spine.application.persistence.parsed_artifacts import ParsedArtifactRepository
+from spine.application.persistence.projection import (
+    PROJECTION_OUTBOX_SCHEMA_VERSION,
+    PROJECTION_RECOVERY_REQUESTED_OUTBOX_EVENT_TYPE,
+)
 from spine.application.persistence.unit_of_work import UnitOfWorkFactory
 from spine.application.projection_request_execution import (
     AdapterProjectionReceiptBuilder,
@@ -26,8 +33,69 @@ from spine.application.projection_result_persistence import (
     ParsedArtifactCanonicalProjectionLocatorResolver,
     build_projection_result_persistence,
 )
+from spine.application.projection_recovery_execution import (
+    PersistenceCanonicalProjectionRecoveryResolver,
+    PersistenceProjectionRecoveryLifecycle,
+    ProjectionRecoveryRequestConsumer,
+    ProjectionRecoveryRequestEnvelope,
+    ProjectionRecoveryResultRecorder,
+)
+from spine.application.telemetry import OperationalObservationEmitter
+from spine.application.document_ingestion import (
+    PROJECTION_REQUEST_EVENT_TYPE,
+    PROJECTION_REQUEST_SCHEMA_VERSION,
+)
 from spine.memory.contracts import ContextProjection, ProjectionCommand
 from spine.workers import OutboxConsumerBinding, OutboxWorker, create_outbox_worker
+
+
+PROJECTION_REQUEST_CONSUMER_NAME = "projection_request"
+
+
+def register_projection_delivery_routes(
+    routes: OutboxDeliveryRouteRegistry,
+) -> None:
+    """Register both ingestion and operator projection handoffs."""
+
+    routes.register(
+        event_type=PROJECTION_REQUEST_EVENT_TYPE,
+        schema_version=PROJECTION_REQUEST_SCHEMA_VERSION,
+        consumer_name=PROJECTION_REQUEST_CONSUMER_NAME,
+    )
+    routes.register(
+        event_type=PROJECTION_RECOVERY_REQUESTED_OUTBOX_EVENT_TYPE,
+        schema_version=PROJECTION_OUTBOX_SCHEMA_VERSION,
+        consumer_name=PROJECTION_REQUEST_CONSUMER_NAME,
+    )
+
+
+class _ProjectionRequestRouteConsumer:
+    """Dispatch both typed projection intents through one worker binding."""
+
+    def __init__(
+        self,
+        *,
+        projection_request_consumer: ProjectionRequestConsumer,
+        recovery_request_consumer: ProjectionRecoveryRequestConsumer,
+    ) -> None:
+        self._projection_request_consumer = projection_request_consumer
+        self._recovery_request_consumer = recovery_request_consumer
+
+    async def consume(
+        self,
+        intent: OutboxIntent,
+        diagnostic_context: DiagnosticContext,
+    ) -> OutboxConsumerSuccess:
+        if (
+            intent.event_type == PROJECTION_RECOVERY_REQUESTED_OUTBOX_EVENT_TYPE
+            and intent.schema_version == PROJECTION_OUTBOX_SCHEMA_VERSION
+        ):
+            return await self._recovery_request_consumer.consume(
+                intent, diagnostic_context
+            )
+        return await self._projection_request_consumer.consume(
+            intent, diagnostic_context
+        )
 
 
 def build_production_projection_request_consumer(
@@ -100,8 +168,63 @@ def build_production_projection_request_binding(
         reference_id_source=reference_id_source,
     )
     return OutboxConsumerBinding(
-        consumer_name="projection_request",
+        consumer_name=PROJECTION_REQUEST_CONSUMER_NAME,
         consumer=consumer,
+    )
+
+
+def build_production_projection_delivery_binding(
+    *,
+    uow_factory: UnitOfWorkFactory,
+    request_context_factory: Callable[
+        [ProjectionRequestEnvelope], TrustedPersistenceContext
+    ],
+    projection_context_factory: Callable[
+        [ProjectionCommand], TrustedPersistenceContext
+    ],
+    parsed_artifacts: ParsedArtifactRepository,
+    projection: ContextProjection,
+    receipt_builder: AdapterProjectionReceiptBuilder,
+    recovery_context_factory: Callable[
+        [ProjectionRecoveryRequestEnvelope], TrustedPersistenceContext
+    ],
+    recovery_result_recorder: ProjectionRecoveryResultRecorder,
+    clock: Callable[[], datetime],
+    operational_observer: OperationalObservationEmitter | None = None,
+    reference_id_source: Callable[[], UUID] = uuid4,
+) -> OutboxConsumerBinding:
+    """Compose ordinary and recovery intents on ``projection_request``."""
+
+    request_consumer = build_production_projection_request_consumer(
+        uow_factory=uow_factory,
+        request_context_factory=request_context_factory,
+        projection_context_factory=projection_context_factory,
+        parsed_artifacts=parsed_artifacts,
+        projection=projection,
+        receipt_builder=receipt_builder,
+        reference_id_source=reference_id_source,
+    )
+    recovery_consumer = ProjectionRecoveryRequestConsumer(
+        canonical_resolver=PersistenceCanonicalProjectionRecoveryResolver(
+            uow_factory=uow_factory,
+            context_factory=recovery_context_factory,
+            clock=clock,
+        ),
+        projection=projection,
+        result_recorder=recovery_result_recorder,
+        lifecycle=PersistenceProjectionRecoveryLifecycle(
+            uow_factory=uow_factory,
+            context_factory=projection_context_factory,
+            clock=clock,
+        ),
+        operational_observer=operational_observer,
+    )
+    return OutboxConsumerBinding(
+        consumer_name=PROJECTION_REQUEST_CONSUMER_NAME,
+        consumer=_ProjectionRequestRouteConsumer(
+            projection_request_consumer=request_consumer,
+            recovery_request_consumer=recovery_consumer,
+        ),
     )
 
 
@@ -130,22 +253,34 @@ def create_production_outbox_worker(
     parsed_artifacts: ParsedArtifactRepository,
     projection: ContextProjection,
     receipt_builder: AdapterProjectionReceiptBuilder,
+    recovery_context_factory: Callable[
+        [ProjectionRecoveryRequestEnvelope], TrustedPersistenceContext
+    ],
+    recovery_result_recorder: ProjectionRecoveryResultRecorder,
+    operational_observer: OperationalObservationEmitter | None = None,
     reference_id_source: Callable[[], UUID] = uuid4,
 ) -> OutboxWorker:
     """Build the existing outbox worker with one production projection route."""
 
-    projection_binding = build_production_projection_request_binding(
+    projection_binding = build_production_projection_delivery_binding(
         uow_factory=uow_factory,
         request_context_factory=request_context_factory,
         projection_context_factory=projection_context_factory,
         parsed_artifacts=parsed_artifacts,
         projection=projection,
         receipt_builder=receipt_builder,
+        recovery_context_factory=recovery_context_factory,
+        recovery_result_recorder=recovery_result_recorder,
+        clock=clock,
+        operational_observer=operational_observer,
         reference_id_source=reference_id_source,
     )
     return create_outbox_worker(
         repository=repository,
-        consumer_bindings=(*consumer_bindings, projection_binding),
+        consumer_bindings=(
+            *consumer_bindings,
+            projection_binding,
+        ),
         audit_events=audit_events,
         diagnostic_events=diagnostic_events,
         diagnostic_sink=diagnostic_sink,
@@ -157,11 +292,15 @@ def create_production_outbox_worker(
         lease_duration=lease_duration,
         handler_timeout=handler_timeout,
         maximum_attempts=maximum_attempts,
+        operational_observer=operational_observer,
     )
 
 
 __all__ = [
+    "PROJECTION_REQUEST_CONSUMER_NAME",
+    "build_production_projection_delivery_binding",
     "build_production_projection_request_binding",
     "build_production_projection_request_consumer",
     "create_production_outbox_worker",
+    "register_projection_delivery_routes",
 ]

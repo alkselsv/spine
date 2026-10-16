@@ -16,6 +16,7 @@ from spine.application.document_ingestion import (
     PROJECTION_REQUEST_SCHEMA_VERSION,
     ProjectionRequestPayload,
 )
+from spine.application.persistence.projection import register_projection_outbox_events
 
 
 class WorkspaceCreatedPayload(BaseModel):
@@ -42,4 +43,5 @@ def create_outbox_event_registry() -> OutboxEventRegistry:
         schema_version=PROJECTION_REQUEST_SCHEMA_VERSION,
         payload_type=ProjectionRequestPayload,
     )
+    register_projection_outbox_events(registry)
     return registry

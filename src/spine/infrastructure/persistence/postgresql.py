@@ -4850,6 +4850,10 @@ class _PostgreSQLProjectionSnapshotMixin:
             producer_deduplication_id=f"projection-activated:{activation_id}",
         )
         audit_id = await self._uow.audit.append(audit)
+        # The activation row has an immediate foreign key to its Audit Event.
+        # Persist the pending event in the same transaction before inserting
+        # the activation; commit still owns atomic visibility of both rows.
+        await self._uow._flush_audit_events()
         activation = ProjectionActivation(
             projection_activation_id=activation_id,
             workspace_id=scope.workspace_id,
@@ -6115,6 +6119,7 @@ class PostgreSQLTenantUnitOfWork:
             await self._run_transaction_probe(
                 PostgreSQLTransactionStage.AFTER_AUDIT_FLUSH
             )
+            self._pending_audit_events.clear()
 
     async def __aenter__(self) -> "PostgreSQLTenantUnitOfWork":
         if self._lifecycle is not _Lifecycle.NEW:

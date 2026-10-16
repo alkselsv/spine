@@ -148,6 +148,12 @@ from tests.contracts.persistence.test_outbox_writer_contract import (
     test_trace_mismatch_is_terminal_and_discards_pending_mutation as contract_outbox_trace_scope,
     workspace as outbox_workspace,
 )
+from tests.contracts.persistence.test_projection_contract import (
+    test_projection_successor_rollback_advances_the_canonical_pointer as contract_projection_publication,
+    test_projection_recovery_resolver_replays_one_shadow_rebuild_plan as contract_projection_recovery_resolver,
+    test_projection_recovery_lifecycle_advances_once_through_complete as contract_projection_recovery_lifecycle,
+    test_projection_recovery_result_bridge_persists_and_replays_canonical_evidence as contract_projection_recovery_result_bridge,
+)
 from tests.contracts.persistence.test_source_observation_contract import (
     prepare as prepare_source_scope,
     provenance as source_contract_provenance,
@@ -777,6 +783,30 @@ async def test_postgresql_adapter_satisfies_outbox_contract(
     contract: ContractTest,
 ) -> None:
     await contract(postgresql_adapter)
+
+
+async def test_postgresql_projection_publication_satisfies_cas_contract(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    await contract_projection_publication(postgresql_adapter)
+
+
+async def test_postgresql_projection_recovery_resolver_satisfies_contract(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    await contract_projection_recovery_resolver(postgresql_adapter)
+
+
+async def test_postgresql_projection_recovery_lifecycle_satisfies_contract(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    await contract_projection_recovery_lifecycle(postgresql_adapter)
+
+
+async def test_postgresql_projection_recovery_result_bridge_satisfies_contract(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    await contract_projection_recovery_result_bridge(postgresql_adapter)
 
 
 @pytest.mark.parametrize(
