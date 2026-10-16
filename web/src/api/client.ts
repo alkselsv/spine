@@ -107,6 +107,22 @@ export type ScopedApiClient = Pick<
   | 'TRACE'
 >;
 
+type PublishedQaPath =
+  | '/api/v1/ask'
+  | '/api/v1/qa/feedback'
+  | '/api/v1/qa/runs'
+  | '/api/v1/qa/runs/{run_id}'
+  | '/api/v1/qa/sessions'
+  | '/api/v1/qa/sessions/{session_id}'
+  | '/api/v1/qa/sessions/{session_id}/messages'
+  | '/api/v1/qa/sessions/{session_id}/messages/{message_id}'
+  | '/api/v1/qa/sessions/{session_id}/messages/{message_id}/events'
+  | '/api/v1/qa/sessions/{session_id}/restore';
+
+type PublishedQaPaths = Pick<ScopedPaths<paths>, PublishedQaPath>;
+
+export type QaApiClient = Pick<Client<PublishedQaPaths>, 'GET' | 'POST'>;
+
 export function createScopedApiClient(
   options: ScopedApiClientOptions,
 ): ScopedApiClient {
@@ -118,6 +134,80 @@ export function createScopedApiClient(
   });
   client.use(createScopeMiddleware(baseUrl, scope, options.getBearerCredential));
   return lockClient(client);
+}
+
+export function createQaApiClient(options: ScopedApiClientOptions): QaApiClient {
+  const client = createScopedApiClient(options);
+  return Object.freeze({
+    GET: qaGet(client.GET, options.scope),
+    POST: qaJsonMethod(client.POST, options.scope) as QaApiClient['POST'],
+  }) as unknown as QaApiClient;
+}
+
+function qaGet(method: ScopedApiClient['GET'], scope: ApiScope): QaApiClient['GET'] {
+  const call = method as (...args: unknown[]) => unknown;
+  return (async (path: unknown, options?: unknown) => {
+    if (path !== '/api/v1/qa/sessions/{session_id}/messages/{message_id}/events') {
+      const result = await call(path, options);
+      assertQaJsonResult(result, scope);
+      return result;
+    }
+    const requestOptions = isRecord(options) ? options : {};
+    return call(path, { ...requestOptions, parseAs: 'text' });
+  }) as QaApiClient['GET'];
+}
+
+function qaJsonMethod<T>(method: T, scope: ApiScope): T {
+  const call = method as (...args: unknown[]) => unknown;
+  return (async (...args: unknown[]) => {
+    const result = await call(...args);
+    assertQaJsonResult(result, scope);
+    return result;
+  }) as T;
+}
+
+function assertQaJsonResult(result: unknown, scope: ApiScope): void {
+  if (
+    !isRecord(result) ||
+    !isRecord(result.data) ||
+    result.data.schema_version !== 1
+  ) {
+    throw clientError(
+      'spine.client.incompatible_response',
+      'unexpected',
+      'The API response version is not supported.',
+    );
+  }
+  if (
+    result.data.workspace_id !== scope.workspaceId ||
+    result.data.environment_id !== scope.environmentId
+  ) {
+    throw scopeMismatchError();
+  }
+  assertNestedQaScope(result.data, scope);
+}
+
+function assertNestedQaScope(value: unknown, scope: ApiScope): void {
+  if (Array.isArray(value)) {
+    value.forEach((item) => assertNestedQaScope(item, scope));
+    return;
+  }
+  if (!isRecord(value)) return;
+  if (
+    (Object.hasOwn(value, 'workspace_id') && value.workspace_id !== scope.workspaceId) ||
+    (Object.hasOwn(value, 'environment_id') && value.environment_id !== scope.environmentId)
+  ) {
+    throw scopeMismatchError();
+  }
+  Object.values(value).forEach((item) => assertNestedQaScope(item, scope));
+}
+
+function scopeMismatchError(): SpineApiError {
+  return clientError(
+    'spine.client.scope_mismatch',
+    'authorization',
+    'The API response scope is invalid.',
+  );
 }
 
 function lockClient(client: Client<paths>): ScopedApiClient {
@@ -373,6 +463,10 @@ function validateScope(scope: ApiScope): ApiScope {
 
 function validUuid(value: unknown): string | null {
   return typeof value === 'string' && uuidPattern.test(value) ? value : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function clientError(
