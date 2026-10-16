@@ -194,7 +194,11 @@ function createScopeMiddleware(
       headers.set('Authorization', `Bearer ${credential}`);
       headers.set('X-Workspace-ID', scope.workspaceId);
       headers.set('X-Environment-ID', scope.environmentId);
-      return new Request(request, { headers, redirect: 'error' });
+      return new Request(request, {
+        headers,
+        redirect: 'error',
+        signal: request.signal,
+      });
     },
     async onResponse({ response }) {
       if (!response.ok) {

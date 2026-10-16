@@ -89,6 +89,34 @@ test('test_documents_discovery_filters_paginates_and_navigates_without_content_i
   expect(documentRequests.every(({ url }) => !url.includes('unsupported'))).toBe(true);
 });
 
+test('test_documents_upload_reviews_batch_polls_processing_and_links_run', async ({ page }) => {
+  await installControlledDocuments(page);
+  const uploadRequests = await installControlledBatchUpload(page);
+
+  await page.goto(
+    `/knowledge/documents?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`,
+  );
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'proposal.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('synthetic upload fixture'),
+  });
+
+  await expect(page.getByRole('region', { name: 'Проверка перед отправкой' })).toBeVisible();
+  await page.getByRole('button', { name: 'Загрузить документы' }).click();
+  await expect(page.getByText('Готов')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Открыть запуск обработки' })).toHaveAttribute(
+    'href',
+    new RegExp(`/runs/${firstDocument}.*workspace=${salesWorkspace}.*environment=${stagingEnvironment}`),
+  );
+
+  expect(uploadRequests).toHaveLength(1);
+  expect(uploadRequests[0]?.headers['x-workspace-id']).toBe(salesWorkspace);
+  expect(uploadRequests[0]?.headers['x-environment-id']).toBe(stagingEnvironment);
+  expect(uploadRequests[0]?.headers['idempotency-key']).toMatch(/^batch-upload-/);
+  expect(uploadRequests[0]?.body).toContain('proposal.txt');
+});
+
 test('test_authentication_denial_hides_administrator_shell_without_api_request', async ({ page }) => {
   let requestCount = 0;
   await page.route('**/api/v1/**', async (route) => {
@@ -228,4 +256,84 @@ async function installControlledDocuments(page: Page) {
     });
   });
   return requests;
+}
+
+async function installControlledBatchUpload(page: Page) {
+  const requests: Array<{
+    body: string;
+    headers: Record<string, string>;
+    url: string;
+  }> = [];
+  let statusRequests = 0;
+  await page.route('**/api/v1/documents/batches', async (route) => {
+    const request = route.request();
+    requests.push({
+      body: request.postData() ?? '',
+      headers: request.headers(),
+      url: request.url(),
+    });
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [controlledUploadItem({ input_identity: 'file-1' })],
+        replay: false,
+        run_id: firstDocument,
+        run_state: 'running',
+        schema_version: 1,
+        status: 'processing',
+        status_url: `/api/v1/ingestion/runs/${firstDocument}`,
+        terminal: false,
+      }),
+      status: 202,
+    });
+  });
+  await page.route(`**/api/v1/ingestion/runs/${firstDocument}`, async (route) => {
+    statusRequests += 1;
+    const processing = statusRequests === 1;
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [
+          controlledUploadItem({
+            input_identity: 'file-1',
+            item_state: processing ? 'processing' : 'processed',
+            processing: processing ? 'processing' : 'succeeded',
+            status: processing ? 'non_terminal' : 'succeeded',
+            terminal: !processing,
+          }),
+        ],
+        run_id: firstDocument,
+        run_state: processing ? 'running' : 'completed',
+        schema_version: 1,
+        status: processing ? 'processing' : 'succeeded',
+        terminal: !processing,
+      }),
+      status: 200,
+    });
+  });
+  return requests;
+}
+
+function controlledUploadItem(overrides: Record<string, unknown> = {}) {
+  return {
+    acceptance: 'accepted',
+    attempt: 1,
+    coverage: null,
+    failure_ids: [],
+    failures: [],
+    input_identity: 'file-1',
+    input_ordinal: 1,
+    item_id: firstDocument,
+    item_state: 'accepted',
+    processing: 'not_started',
+    processing_receipt: null,
+    retryable: false,
+    source_object_id: firstDocument,
+    source_revision_id: null,
+    status: 'non_terminal',
+    terminal: false,
+    warning_ids: [],
+    warnings: [],
+    ...overrides,
+  };
 }

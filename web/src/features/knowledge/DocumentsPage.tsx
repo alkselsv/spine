@@ -10,6 +10,7 @@ import { useAuth } from '../../app/auth';
 import { ApiErrorPanel, StatusPanel, type InterfaceState } from '../../app/status';
 import { useScope } from '../../app/scope';
 import { ru } from '../../i18n/resources';
+import { DocumentUpload } from './DocumentUpload';
 import styles from './DocumentsPage.module.css';
 
 type DocumentSnapshot = components['schemas']['DocumentSnapshot'];
@@ -179,6 +180,8 @@ export function DocumentsPage() {
           </button>
         ) : null}
       </div>
+
+      <DocumentUpload client={client} disabled={!auth.getBearerCredential} scopeSearch={scopeSearch} />
 
       <div className={styles.filters} aria-label={ru.documents.filtersLabel}>
         {FILTER_KEYS.map((key) => (

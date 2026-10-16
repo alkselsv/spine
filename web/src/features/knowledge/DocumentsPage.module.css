@@ -116,6 +116,186 @@
   margin: var(--space-4) 0;
 }
 
+.uploadPanel {
+  display: grid;
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
+  border: 1px solid var(--color-border);
+  border-radius: 0.8rem;
+  padding: var(--space-5);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+}
+
+.uploadHeader,
+.uploadQueueHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.uploadHeader h3,
+.uploadQueueHeader h4 {
+  margin: 0 0 var(--space-2);
+}
+
+.uploadHeader p,
+.uploadQueueHeader p {
+  margin: 0;
+  color: var(--color-muted);
+  line-height: 1.5;
+}
+
+.uploadLimit {
+  max-width: 18rem;
+  color: var(--color-muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  text-align: right;
+}
+
+.dropzone {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-2);
+  border: 1px dashed var(--color-border);
+  border-radius: 0.7rem;
+  padding: var(--space-6);
+  background: var(--color-canvas);
+  color: var(--color-muted);
+  text-align: center;
+}
+
+.dropzone strong {
+  color: var(--color-ink);
+}
+
+.dropzoneActive,
+.dropzone:focus-within {
+  border-color: var(--color-link);
+  background: var(--color-surface-strong);
+}
+
+.uploadQueue {
+  display: grid;
+  gap: var(--space-4);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-4);
+}
+
+.uploadList {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.uploadRow {
+  display: grid;
+  grid-template-columns: minmax(10rem, 0.8fr) minmax(14rem, 1.2fr);
+  gap: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: 0.6rem;
+  padding: var(--space-3);
+  background: var(--color-canvas);
+}
+
+.uploadFileIdentity,
+.uploadFileOutcome {
+  display: grid;
+  align-content: start;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.uploadFileIdentity span,
+.uploadFileOutcome span:not(.uploadState) {
+  color: var(--color-muted);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.uploadFileIdentity strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uploadState {
+  justify-self: start;
+  border-radius: 999px;
+  padding: 0.2rem 0.5rem;
+  background: var(--color-surface-strong);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.uploadState_ready {
+  background: #e4f6e9;
+  color: #1b6a36;
+}
+
+.uploadState_failed,
+.uploadState_rejected {
+  background: #fff0ed;
+  color: #9b3026;
+}
+
+.uploadState_processing,
+.uploadState_uploading,
+.uploadState_accepted {
+  background: #fff7dc;
+  color: #765b00;
+}
+
+.uploadState_cancelled {
+  background: #eef0f3;
+  color: var(--color-muted);
+}
+
+.uploadActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.uploadBatchStatus,
+.uploadCancellation,
+.replayNotice {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 0.82rem;
+}
+
+.uploadCancellation {
+  border-left: 0.25rem solid #e8b949;
+  padding: 0.65rem 0.8rem;
+  background: #fff9e8;
+}
+
+.replayNotice {
+  color: var(--color-link);
+  text-align: right;
+}
+
+.uploadValidation {
+  border-left: 0.25rem solid #dd6b63;
+  padding: 0.8rem 1rem;
+  background: #fff2f0;
+}
+
+.uploadValidation ul {
+  margin: 0.45rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.uploadValidation li {
+  color: var(--color-muted);
+  line-height: 1.5;
+}
+
 .tableFrame {
   overflow-x: auto;
   border: 1px solid var(--color-border);
@@ -228,6 +408,23 @@
   }
 
   .pagination .secondaryButton {
+    margin-top: var(--space-3);
+  }
+
+  .uploadHeader,
+  .uploadQueueHeader,
+  .uploadRow {
+    display: block;
+  }
+
+  .uploadLimit,
+  .replayNotice {
+    display: block;
+    margin-top: var(--space-3);
+    text-align: left;
+  }
+
+  .uploadFileOutcome {
     margin-top: var(--space-3);
   }
 }
