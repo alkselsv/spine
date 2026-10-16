@@ -75,10 +75,11 @@ jobs:
         shell: bash
         run: |
           set +e
-          uv run pytest -q > r1-gate-pytest.log 2>&1
+          pytest_log="$RUNNER_TEMP/r1-gate-pytest.log"
+          uv run pytest -q > "$pytest_log" 2>&1
           pytest_status=$?
-          cat r1-gate-pytest.log
-          gate_status=$(PYTEST_STATUS="$pytest_status" uv run python -c 'import os; from pathlib import Path; from tests.qualification.gate_runner import classify_result; result = classify_result(("uv", "run", "pytest", "-q"), returncode=int(os.environ["PYTEST_STATUS"]), output=Path("r1-gate-pytest.log").read_text()); print(result.status)')
+          cat "$pytest_log"
+          gate_status=$(PYTEST_STATUS="$pytest_status" PYTEST_LOG="$pytest_log" uv run python -c 'import os; from pathlib import Path; from tests.qualification.gate_runner import classify_result; result = classify_result(("uv", "run", "pytest", "-q"), returncode=int(os.environ["PYTEST_STATUS"]), output=Path(os.environ["PYTEST_LOG"]).read_text()); print(result.status)')
           if [ "$gate_status" = "passed" ]; then
             echo "gate_flag=--repository-tests-passed" >> "$GITHUB_OUTPUT"
           elif [ "$gate_status" = "blocked-infrastructure" ]; then
