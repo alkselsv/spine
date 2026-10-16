@@ -1595,15 +1595,15 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ck_processing_receipts_complete_exclusions",
         "ck_processing_receipts_complete_failures",
         "ck_processing_receipts_digests",
-        "pk_process_only_lineages",
+        "pk_process_only_operation_lineages",
         "uq_process_only_lineages_scope_id",
         "uq_process_only_lineages_run",
         "fk_process_only_lineages_run",
         "fk_process_only_lineages_item",
         "fk_process_only_lineages_revision",
         "fk_process_only_lineages_receipt",
-        "ck_process_only_lineages_trigger_kind",
-        "ck_process_only_lineages_digests",
+        "ck_process_only_operation_lineages_ck_process_only_line_b9b7",
+        "ck_process_only_operation_lineages_ck_process_only_line_8f72",
         "pk_source_security_domain_bindings",
         "uq_source_security_domain_bindings_scope_id",
         "uq_source_security_domain_bindings_source_version",
@@ -2200,7 +2200,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "pk_qa_answer_disclosure_deliveries",
         "pk_feedback_records",
         "ix_feedback_records_target",
-        "pk_process_only_lineages",
+        "pk_process_only_operation_lineages",
         "uq_process_only_lineages_scope_id",
         "uq_process_only_lineages_run",
         "ix_qa_session_versions_navigation",
@@ -2539,7 +2539,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "'source_revision_receipt_associations', 'ingestion_runs', "
                         "'ingestion_run_sources', 'ingestion_run_source_bindings', "
                         "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', "
-                            "'processing_receipts', 'source_security_domain_bindings', "
+                            "'processing_receipts', 'process_only_operation_lineages', "
+                            "'source_security_domain_bindings', "
                             "'access_policy_versions', "
                             "'access_policy_grants', 'policy_proposals', 'policy_approvals', "
                             "'policy_activations', 'current_access_policies', "
@@ -3333,6 +3334,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'ingestion_run_sources', 'ingestion_run_source_bindings', "
                         "'ingestion_transitions', 'ingestion_warnings', "
                         "'ingestion_failures', 'processing_receipts', 'source_security_domain_bindings', "
+                        "'process_only_operation_lineages', "
                         "'access_policy_versions', 'access_policy_grants', "
                         "'policy_proposals', 'policy_approvals', "
                         "'policy_activations', 'current_access_policies', "
@@ -3410,6 +3412,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "ingestion_warnings": (True, True),
         "ingestion_failures": (True, True),
             "processing_receipts": (True, True),
+        "process_only_operation_lineages": (True, True),
         "source_security_domain_bindings": (True, True),
             "access_policy_versions": (True, True),
             "access_policy_grants": (True, True),
