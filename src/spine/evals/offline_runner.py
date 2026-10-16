@@ -15,6 +15,13 @@ from pydantic import Field, model_validator
 
 from spine.domain.common import ActorKind, ActorRef, DefinitionModel
 from spine.domain.evaluations import EvaluationResult, EvaluationVerdict
+from spine.evals.production_contract import (
+    PRODUCTION_CONTRACT_INDEX_VERSION,
+    PRODUCTION_CONTRACT_OBSERVATION_SEAM,
+    ProductionContractCaseRequest,
+    ProductionContractObservation,
+    ProductionContractObservationError,
+)
 from spine.evals.qa_r1 import QACase, QADataset, load_r1_dataset
 from spine.evals.retrieval_replay import DeterministicRetrievalReplay
 from spine.evaluations.citation_metrics import (
@@ -45,6 +52,7 @@ SCENARIO_CONFIGURATION_VERSION: Final[str] = "qa-r1-regression:v1"
 REPLAY_CONTEXT_PROFILE: Final[str] = "qa-r1-replay:v1"
 QUALIFICATION_SCOPE: Final[str] = "offline-contract-only"
 _REPORT_NAMESPACE: Final[UUID] = UUID("a5d7ce20-5ed1-4a7a-9c1e-7f1a7ab2bd78")
+ExecutionMode = Literal["synthetic-replay", "production-contract"]
 
 FailureCategory = Literal[
     "evaluator_failure",
@@ -160,6 +168,10 @@ class OfflineEvaluationReport(DefinitionModel):
     schema_version: Literal[OFFLINE_REPORT_SCHEMA_VERSION] = OFFLINE_REPORT_SCHEMA_VERSION
     runner_version: Literal[OFFLINE_RUNNER_VERSION] = OFFLINE_RUNNER_VERSION
     qualification_scope: Literal[QUALIFICATION_SCOPE] = QUALIFICATION_SCOPE
+    execution_mode: ExecutionMode = Field(
+        default="synthetic-replay", exclude_if=lambda value: value == "synthetic-replay"
+    )
+    observation_seam: str | None = Field(default=None, exclude_if=lambda value: value is None)
     dataset: DatasetIdentity
     configuration: EvaluationConfiguration
     evaluator_catalog: tuple[EvaluatorIdentity, ...] = ()
@@ -200,6 +212,16 @@ class CaseEvaluator(Protocol):
         context: CaseEvaluationContext,
     ) -> tuple[EvaluationResult, ...]:
         """Evaluate one case without accessing a network or model provider."""
+
+
+class ProductionContractObservationPort(Protocol):
+    """Execute one case through typed application contracts."""
+
+    index_version: str
+
+    async def observe(
+        self, *, request: ProductionContractCaseRequest
+    ) -> ProductionContractObservation: ...
 
 
 class UnavailableIntegrationError(RuntimeError):
@@ -310,6 +332,8 @@ class OfflineEvaluationRunner:
         case_evaluator: CaseEvaluator | None = None,
         expected_dataset: DatasetIdentity | None = None,
         recall_k_values: tuple[int, ...] = (1,),
+        execution_mode: ExecutionMode = "synthetic-replay",
+        production_observer: ProductionContractObservationPort | None = None,
     ) -> None:
         self.dataset = load_r1_dataset() if dataset is None else dataset
         self.expected_dataset = expected_dataset
@@ -318,6 +342,12 @@ class OfflineEvaluationRunner:
         self.case_evaluator = case_evaluator or _DefaultCaseEvaluator(
             recall_k_values=recall_k_values
         )
+        if execution_mode not in {"synthetic-replay", "production-contract"}:
+            raise ValueError("execution_mode is not supported")
+        if execution_mode == "production-contract" and production_observer is None:
+            raise ValueError("production-contract mode requires a production observer")
+        self.execution_mode = execution_mode
+        self.production_observer = production_observer
         if not recall_k_values or any(k < 1 for k in recall_k_values):
             raise ValueError("recall_k_values must contain positive integers")
         self.recall_k_values = tuple(dict.fromkeys(recall_k_values))
@@ -345,7 +375,7 @@ class OfflineEvaluationRunner:
 
         evaluations_tuple = tuple(evaluations)
         configuration = EvaluationConfiguration(
-            retrieval_index_version=self.replay.index_version,
+            retrieval_index_version=self._index_version(),
             retrieval_strategy_versions=tuple(
                 sorted({case.retrieval_strategy for case in self.dataset.cases})
             ),
@@ -371,12 +401,21 @@ class OfflineEvaluationRunner:
                 )
             ),
         }
+        if self.execution_mode == "production-contract":
+            report_without_id["execution_mode"] = self.execution_mode
+            report_without_id["observation_seam"] = PRODUCTION_CONTRACT_OBSERVATION_SEAM
         report_id = uuid5(
             _REPORT_NAMESPACE,
             json.dumps(report_without_id, ensure_ascii=False, sort_keys=True, default=str),
         )
         return OfflineEvaluationReport(
             report_id=report_id,
+            execution_mode=self.execution_mode,
+            observation_seam=(
+                PRODUCTION_CONTRACT_OBSERVATION_SEAM
+                if self.execution_mode == "production-contract"
+                else None
+            ),
             dataset=dataset_identity,
             configuration=configuration,
             evaluator_catalog=tuple(
@@ -406,12 +445,54 @@ class OfflineEvaluationRunner:
         MeasurementObservation,
         tuple[FailureRecord, ...],
     ]:
-        try:
-            retrieval = await self.replay.retrieve_case(case, _query(case))
-        except UnavailableIntegrationError as error:
-            return self._failed_case(case, "unavailable_integration", "retrieval", error)
-        except Exception as error:  # pragma: no cover - defensive adapter boundary
-            return self._failed_case(case, "scenario_failure", "retrieval", error)
+        observed_answer: AnswerSubmission | None = None
+        if self.execution_mode == "production-contract":
+            assert self.production_observer is not None
+            try:
+                observation = await self.production_observer.observe(
+                    request=ProductionContractCaseRequest.from_case(case)
+                )
+                if not isinstance(observation, ProductionContractObservation):
+                    raise ProductionContractObservationError(
+                        "production observer returned an invalid observation"
+                    )
+                observation.validate()
+                expected_index_version = getattr(
+                    self.production_observer, "index_version", None
+                )
+                if (
+                    not expected_index_version
+                    or observation.retrieval.index_version != expected_index_version
+                ):
+                    raise ProductionContractObservationError(
+                        "observed retrieval index version is not pinned"
+                    )
+                retrieval = observation.retrieval
+                observed_answer = _answer_submission_from_output(observation.answer)
+                context_bundle = _evaluation_bundle_from_domain(
+                    observation.context_bundle, case
+                )
+            except UnavailableIntegrationError as error:
+                return self._failed_case(
+                    case,
+                    "unavailable_integration",
+                    "production-contract-observation",
+                    error,
+                )
+            except Exception as error:
+                return self._failed_case(
+                    case,
+                    "scenario_failure",
+                    "production-contract-observation",
+                    error,
+                )
+        else:
+            try:
+                retrieval = await self.replay.retrieve_case(case, _query(case))
+            except UnavailableIntegrationError as error:
+                return self._failed_case(case, "unavailable_integration", "retrieval", error)
+            except Exception as error:  # pragma: no cover - defensive adapter boundary
+                return self._failed_case(case, "scenario_failure", "retrieval", error)
 
         measurement_failure: FailureRecord | None = None
         try:
@@ -448,18 +529,22 @@ class OfflineEvaluationRunner:
         measurement_data["scenario_id"] = case.case_id
         measurement = MeasurementObservation.model_validate(measurement_data)
 
-        try:
-            answer, context_bundle = _expected_answer(case, retrieval, self.dataset)
-        except _ScenarioFailure as error:
-            return self._failed_case(
-                case,
-                "scenario_failure",
-                "answer-construction",
-                error,
-                measurement=measurement,
-                retrieval=retrieval,
-                additional_failures=(measurement_failure,) if measurement_failure else (),
-            )
+        if self.execution_mode == "synthetic-replay":
+            try:
+                answer, context_bundle = _expected_answer(case, retrieval, self.dataset)
+            except _ScenarioFailure as error:
+                return self._failed_case(
+                    case,
+                    "scenario_failure",
+                    "answer-construction",
+                    error,
+                    measurement=measurement,
+                    retrieval=retrieval,
+                    additional_failures=(measurement_failure,) if measurement_failure else (),
+                )
+        else:
+            assert observed_answer is not None
+            answer = observed_answer
 
         try:
             results: tuple[EvaluationResult, ...] = self.case_evaluator.evaluate(
@@ -525,7 +610,7 @@ class OfflineEvaluationRunner:
                 case_id=case.case_id,
                 scenario_tags=case.scenario_tags,
                 expected_outcome=case.expected_outcome,
-                observed_outcome=case.expected_outcome,
+                observed_outcome=answer.outcome,
                 status="passed",
                 evaluation_ids=tuple(result.id for result in results),
                 expected_evidence_ids=case.expected_evidence_ids,
@@ -590,6 +675,16 @@ class OfflineEvaluationRunner:
             ),
         )
 
+    def _index_version(self) -> str:
+        if self.execution_mode == "production-contract":
+            assert self.production_observer is not None
+            return getattr(
+                self.production_observer,
+                "index_version",
+                PRODUCTION_CONTRACT_INDEX_VERSION,
+            )
+        return self.replay.index_version
+
 
 async def run_r1_evaluation(
     *,
@@ -599,6 +694,8 @@ async def run_r1_evaluation(
     case_evaluator: CaseEvaluator | None = None,
     expected_dataset: DatasetIdentity | None = None,
     recall_k_values: tuple[int, ...] = (1,),
+    execution_mode: ExecutionMode = "synthetic-replay",
+    production_observer: ProductionContractObservationPort | None = None,
 ) -> OfflineEvaluationReport:
     """Run the fixed R1 evaluation set asynchronously for tests and workers."""
 
@@ -609,6 +706,8 @@ async def run_r1_evaluation(
         case_evaluator=case_evaluator,
         expected_dataset=expected_dataset,
         recall_k_values=recall_k_values,
+        execution_mode=execution_mode,
+        production_observer=production_observer,
     ).run()
 
 
@@ -620,6 +719,8 @@ def run_r1_evaluation_sync(
     case_evaluator: CaseEvaluator | None = None,
     expected_dataset: DatasetIdentity | None = None,
     recall_k_values: tuple[int, ...] = (1,),
+    execution_mode: ExecutionMode = "synthetic-replay",
+    production_observer: ProductionContractObservationPort | None = None,
 ) -> OfflineEvaluationReport:
     """Run the fixed R1 evaluation set synchronously for scripts and CI."""
 
@@ -630,7 +731,132 @@ def run_r1_evaluation_sync(
         case_evaluator=case_evaluator,
         expected_dataset=expected_dataset,
         recall_k_values=recall_k_values,
+        execution_mode=execution_mode,
+        production_observer=production_observer,
     ).run_sync()
+
+
+async def run_r1_production_contract_evaluation(
+    *,
+    production_observer: ProductionContractObservationPort,
+    dataset: QADataset | None = None,
+    measurement_source: MeasurementSource | None = None,
+    case_evaluator: CaseEvaluator | None = None,
+    expected_dataset: DatasetIdentity | None = None,
+    recall_k_values: tuple[int, ...] = (1,),
+) -> OfflineEvaluationReport:
+    """Run R1 against observations emitted by an application composition root."""
+
+    return await run_r1_evaluation(
+        dataset=dataset,
+        measurement_source=measurement_source,
+        case_evaluator=case_evaluator,
+        expected_dataset=expected_dataset,
+        recall_k_values=recall_k_values,
+        execution_mode="production-contract",
+        production_observer=production_observer,
+    )
+
+
+def run_r1_production_contract_evaluation_sync(
+    *,
+    production_observer: ProductionContractObservationPort,
+    dataset: QADataset | None = None,
+    measurement_source: MeasurementSource | None = None,
+    case_evaluator: CaseEvaluator | None = None,
+    expected_dataset: DatasetIdentity | None = None,
+    recall_k_values: tuple[int, ...] = (1,),
+) -> OfflineEvaluationReport:
+    """Synchronous entry point for the production-contract evaluation mode."""
+
+    return run_r1_evaluation_sync(
+        dataset=dataset,
+        measurement_source=measurement_source,
+        case_evaluator=case_evaluator,
+        expected_dataset=expected_dataset,
+        recall_k_values=recall_k_values,
+        execution_mode="production-contract",
+        production_observer=production_observer,
+    )
+
+
+def _answer_submission_from_output(output: object) -> AnswerSubmission:
+    from spine.domain.capabilities import AnswerQuestionOutput, AnswerQuestionOutcome
+
+    if type(output) is not AnswerQuestionOutput:
+        raise ProductionContractObservationError("answer output is not a typed contract")
+    answer_content = output.answer
+    if answer_content is None:
+        return AnswerSubmission(outcome=output.outcome.value)
+
+    citation_ids_by_answer_id = {
+        claim.claim_id: tuple(
+            citation_id
+            for relationship in answer_content.relationships
+            if relationship.claim_id == claim.claim_id
+            for citation_id in relationship.citation_ids
+        )
+        for claim in answer_content.claims
+    }
+    return AnswerSubmission(
+        outcome="answered",
+        claims=tuple(
+            AnswerClaim(
+                claim_id=str(claim.claim_id),
+                text=claim.text,
+                citation_ids=tuple(str(item) for item in citation_ids_by_answer_id[claim.claim_id]),
+            )
+            for claim in answer_content.claims
+        ),
+        citations=tuple(
+            Citation(
+                citation_id=str(citation.citation_id),
+                evidence_id=citation.evidence_reference.evidence_id,
+                source_object_id=citation.evidence_reference.source_object_id,
+                source_revision_id=citation.evidence_reference.source_revision_id,
+                workspace_id=citation.evidence_reference.workspace_id,
+                environment_id=citation.evidence_reference.environment_id,
+                revision_digest=citation.evidence_reference.revision_digest,
+                locator=citation.evidence_reference.locator.model_dump(mode="json"),
+                context_bundle_id=str(citation.context_bundle_id),
+            )
+            for citation in answer_content.citations
+        ),
+        semantic_score=None,
+    )
+
+
+def _evaluation_bundle_from_domain(
+    bundle: object | None, case: QACase
+) -> ContextBundle:
+    from spine.domain.context_bundles import ContextBundle as DomainContextBundle
+    from spine.memory.contracts import ContextReference
+
+    if bundle is None:
+        return ContextBundle(
+            bundle_id=f"production:{case.case_id}:none",
+            workspace_id=case.workspace_id,
+            environment_id=case.environment_id,
+            references=(),
+        )
+    if type(bundle) is not DomainContextBundle:
+        raise ProductionContractObservationError("context bundle is not a typed domain contract")
+    return ContextBundle(
+        bundle_id=str(bundle.bundle_id),
+        workspace_id=bundle.workspace_id,
+        environment_id=bundle.environment_id,
+        references=tuple(
+            ContextReference(
+                source_id=str(reference.source_object_id),
+                source_revision_id=reference.source_revision_id,
+                workspace_id=reference.workspace_id,
+                environment_id=reference.environment_id,
+                evidence_id=reference.evidence_id,
+                locator=reference.locator.model_dump(mode="json"),
+            )
+            for reference in bundle.evidence_references
+        ),
+    )
 
 
 def _query(case: QACase) -> RetrievalQuery:
@@ -776,6 +1002,7 @@ __all__ = [
     "CaseEvaluationContext",
     "CaseEvaluator",
     "DatasetIdentity",
+    "ExecutionMode",
     "EvaluationConfiguration",
     "EvaluatorIdentity",
     "FailureRecord",
@@ -786,12 +1013,15 @@ __all__ = [
     "OFFLINE_RUNNER_VERSION",
     "OfflineEvaluationReport",
     "OfflineEvaluationRunner",
+    "ProductionContractObservationPort",
     "QUALIFICATION_SCOPE",
     "SCENARIO_CONFIGURATION_VERSION",
     "ScenarioResult",
     "UnavailableIntegrationError",
     "run_r1_evaluation",
     "run_r1_evaluation_sync",
+    "run_r1_production_contract_evaluation",
+    "run_r1_production_contract_evaluation_sync",
 ]
 
 
