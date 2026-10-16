@@ -28,6 +28,7 @@ from spine.application.qa_sessions import QASessionRepository
 if TYPE_CHECKING:
     from spine.application.diagnostics.audit import AuditWriter
     from spine.application.access_policies import AccessPolicyRepository
+    from spine.application.feedback import FeedbackRepository
 
 
 class TenantUnitOfWork(Protocol):
@@ -54,6 +55,9 @@ class TenantUnitOfWork(Protocol):
 
     @property
     def qa_sessions(self) -> QASessionRepository: ...
+
+    @property
+    def feedback(self) -> "FeedbackRepository": ...
 
     async def __aenter__(self) -> "TenantUnitOfWork": ...
 

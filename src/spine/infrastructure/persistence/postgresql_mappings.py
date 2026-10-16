@@ -949,6 +949,33 @@ qa_message_versions = Table(
     PrimaryKeyConstraint("workspace_id", "environment_id", "message_id", "version", name="pk_qa_message_versions"),
 )
 
+feedback_records = Table(
+    "feedback_records",
+    metadata,
+    Column("feedback_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("subject_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("trace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("run_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("message_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("target_kind", Text, nullable=False),
+    Column("target_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("citation_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("outcome", Text, nullable=False),
+    Column("comment", Text, nullable=True),
+    Column("reason", Text, nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint(
+        "workspace_id",
+        "environment_id",
+        "feedback_id",
+        "version",
+        name="pk_feedback_records",
+    ),
+)
+
 qa_disclosure_validation_results = Table(
     "qa_disclosure_validation_results",
     metadata,
@@ -1057,6 +1084,7 @@ __all__ = [
     "projection_drifts",
     "qa_session_versions",
     "qa_message_versions",
+    "feedback_records",
     "qa_disclosure_validation_results",
     "qa_answer_disclosure_records",
     "qa_answer_disclosure_deliveries",
