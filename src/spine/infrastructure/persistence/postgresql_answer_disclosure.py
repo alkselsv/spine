@@ -44,6 +44,28 @@ class PostgreSQLAnswerDisclosureRepository:
             raise ValueError("answer disclosure record relational identity is inconsistent")
         return payload
 
+    async def resolve_for_attempt(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        run_id: UUID,
+        attempt_id: UUID,
+    ) -> AnswerDisclosureRecord | None:
+        result = await self._uow._execute(
+            select(qa_answer_disclosure_records).where(
+                qa_answer_disclosure_records.c.workspace_id == workspace_id,
+                qa_answer_disclosure_records.c.environment_id == environment_id,
+                qa_answer_disclosure_records.c.payload["run_id"].astext == str(run_id),
+                qa_answer_disclosure_records.c.payload["attempt_id"].astext
+                == str(attempt_id),
+            )
+        )
+        row = result.mappings().first()
+        if row is None:
+            return None
+        return AnswerDisclosureRecord.model_validate(row["payload"])
+
     async def save(self, record: AnswerDisclosureRecord) -> AnswerDisclosureRecord:
         current = await self.resolve(
             workspace_id=record.workspace_id,

@@ -178,6 +178,14 @@ class QASessionRepository(Protocol):
         after: QAMessagePosition | None,
     ) -> QAMessagePage[QAMessage]: ...
 
+    async def resolve_message_link(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        run_id: UUID,
+    ) -> tuple[UUID, UUID] | None: ...
+
     async def link_message_to_run(
         self,
         *,

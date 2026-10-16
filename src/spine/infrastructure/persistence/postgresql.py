@@ -128,6 +128,10 @@ from spine.application.persistence.answer_question_runs import (
     ANSWER_QUESTION_RUN_RESULT_TYPE,
     AnswerQuestionRunCommand,
     AnswerQuestionRunMutationResult,
+    AnswerQuestionRunMessageLink,
+    AnswerQuestionRunPage,
+    AnswerQuestionRunPosition,
+    AnswerQuestionRunQuery,
     validate_answer_question_attempt_completion,
     validate_answer_question_attempt_start,
     validate_answer_question_context_bundle,
@@ -246,6 +250,7 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     context_bundles as _CONTEXT_BUNDLES,
     answer_question_attempts as _ANSWER_QUESTION_ATTEMPTS,
     answer_question_runs as _ANSWER_QUESTION_RUNS,
+    qa_message_versions as _QA_MESSAGE_VERSIONS,
     idempotency_receipts as _IDEMPOTENCY_RECEIPTS,
     outbox_intents as _OUTBOX_INTENTS,
     source_objects as _SOURCE_OBJECTS,
@@ -1169,6 +1174,81 @@ class _PostgreSQLAnswerQuestionRunRepository:
         if row is None:
             await self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
         return self._restore_run(row)
+
+    async def list_runs(
+        self,
+        *,
+        query: AnswerQuestionRunQuery,
+        limit: int,
+        after: AnswerQuestionRunPosition | None,
+    ) -> AnswerQuestionRunPage:
+        self._uow._guard_active()
+        scope = self._scope()
+        if limit < 1 or not isinstance(scope, EnvironmentScope):
+            return AnswerQuestionRunPage((), False)
+        predicates = [
+            _ANSWER_QUESTION_RUNS.c.workspace_id == scope.workspace_id,
+            _ANSWER_QUESTION_RUNS.c.environment_id == scope.environment_id,
+        ]
+        if query.subject_id is not None:
+            predicates.append(_ANSWER_QUESTION_RUNS.c.payload["subject"]["id"].astext == str(query.subject_id))
+        if query.outcome is not None:
+            predicates.append(_ANSWER_QUESTION_RUNS.c.outcome == query.outcome)
+        if query.created_after is not None:
+            predicates.append(_ANSWER_QUESTION_RUNS.c.created_at >= query.created_after)
+        if query.created_before is not None:
+            predicates.append(_ANSWER_QUESTION_RUNS.c.created_at <= query.created_before)
+        if after is not None:
+            predicates.append(
+                or_(
+                    _ANSWER_QUESTION_RUNS.c.created_at < after.created_at,
+                    and_(
+                        _ANSWER_QUESTION_RUNS.c.created_at == after.created_at,
+                        _ANSWER_QUESTION_RUNS.c.run_id < after.run_id,
+                    ),
+                )
+            )
+        if query.session_id is not None or query.message_id is not None:
+            link_predicates = [
+                _QA_MESSAGE_VERSIONS.c.workspace_id == scope.workspace_id,
+                _QA_MESSAGE_VERSIONS.c.environment_id == scope.environment_id,
+                _QA_MESSAGE_VERSIONS.c.run_id == _ANSWER_QUESTION_RUNS.c.run_id,
+            ]
+            if query.session_id is not None:
+                link_predicates.append(_QA_MESSAGE_VERSIONS.c.session_id == query.session_id)
+            if query.message_id is not None:
+                link_predicates.append(_QA_MESSAGE_VERSIONS.c.message_id == query.message_id)
+            predicates.append(select(_QA_MESSAGE_VERSIONS.c.message_id).where(*link_predicates).exists())
+        result = await self._uow._execute(
+            select(_ANSWER_QUESTION_RUNS)
+            .where(*predicates)
+            .order_by(
+                _ANSWER_QUESTION_RUNS.c.created_at.desc(),
+                _ANSWER_QUESTION_RUNS.c.run_id.desc(),
+            )
+            .limit(limit + 1)
+        )
+        rows = result.mappings().all()
+        return AnswerQuestionRunPage(
+            runs=tuple(self._restore_run(row) for row in rows[:limit]),
+            has_more=len(rows) > limit,
+        )
+
+    async def resolve_message_link(self, run_id: UUID) -> AnswerQuestionRunMessageLink | None:
+        self._uow._guard_active()
+        scope = self._scope()
+        result = await self._uow._execute(
+            select(_QA_MESSAGE_VERSIONS.c.session_id, _QA_MESSAGE_VERSIONS.c.message_id)
+            .where(
+                _QA_MESSAGE_VERSIONS.c.workspace_id == scope.workspace_id,
+                _QA_MESSAGE_VERSIONS.c.environment_id == scope.environment_id,
+                _QA_MESSAGE_VERSIONS.c.run_id == run_id,
+            )
+            .order_by(_QA_MESSAGE_VERSIONS.c.version.desc())
+            .limit(1)
+        )
+        row = result.mappings().first()
+        return None if row is None else AnswerQuestionRunMessageLink(row["session_id"], row["message_id"])
 
     async def complete_run(self, run: AnswerQuestionRun) -> AnswerQuestionRun:
         self._uow._guard_active()

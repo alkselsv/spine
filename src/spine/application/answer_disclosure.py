@@ -103,6 +103,24 @@ class InMemoryAnswerDisclosureRepository:
         self._records[key] = record
         return record
 
+    async def resolve_for_attempt(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        run_id: UUID,
+        attempt_id: UUID,
+    ) -> AnswerDisclosureRecord | None:
+        for record in self._records.values():
+            if (
+                record.workspace_id == workspace_id
+                and record.environment_id == environment_id
+                and record.run_id == run_id
+                and record.attempt_id == attempt_id
+            ):
+                return record
+        return None
+
     async def resolve_delivery(
         self, *, workspace_id: UUID, environment_id: UUID, request_id: UUID
     ) -> UUID | None:

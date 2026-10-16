@@ -30,6 +30,7 @@ from spine.api.projection_control import install_projection_control_routes
 from spine.api.qa_sessions import install_qa_session_routes
 from spine.api.citation_inspector import install_citation_inspector_routes
 from spine.api.feedback import install_feedback_routes
+from spine.api.qa_runs import install_qa_run_routes
 from spine.api.authorization import (
     ApiAuthorizationReadiness,
     ApiAuthorizationRuntime,
@@ -56,6 +57,7 @@ from spine.application.projection_control import (
 from spine.application.qa_sessions import QASessionService
 from spine.application.citation_inspector import CitationInspectorService
 from spine.application.feedback import FeedbackService
+from spine.application.qa_run_history import QARunHistoryService
 from spine.config import settings
 from spine.ingest.loaders import documents_to_remember_payloads, load_path
 from spine.infrastructure.diagnostics import JsonLoggingDiagnosticSink
@@ -194,6 +196,8 @@ def create_app(
     qa_session_cursor_secret: bytes | None = None,
     citation_inspector_service: CitationInspectorService | None = None,
     feedback_service: FeedbackService | None = None,
+    qa_run_history_service: QARunHistoryService | None = None,
+    qa_run_history_cursor_secret: bytes | None = None,
 ) -> FastAPI:
     """Compose the HTTP API with injectable deterministic diagnostics."""
 
@@ -356,6 +360,16 @@ def create_app(
         if type(authorization_runtime) is not ApiAuthorizationRuntime:
             raise RuntimeError("Feedback routes require an authorization runtime.")
         install_feedback_routes(application, service=feedback_service)
+    if qa_run_history_service is not None:
+        if type(authorization_runtime) is not ApiAuthorizationRuntime:
+            raise RuntimeError("Q&A run history routes require an authorization runtime.")
+        if qa_run_history_cursor_secret is None:
+            raise RuntimeError("Q&A run history routes require a cursor secret.")
+        install_qa_run_routes(
+            application,
+            service=qa_run_history_service,
+            cursor_secret=qa_run_history_cursor_secret,
+        )
     return application
 
 

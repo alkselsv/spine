@@ -73,6 +73,10 @@ from spine.application.persistence.answer_question_runs import (
     ANSWER_QUESTION_RUN_RESULT_TYPE,
     AnswerQuestionRunCommand,
     AnswerQuestionRunMutationResult,
+    AnswerQuestionRunMessageLink,
+    AnswerQuestionRunPage,
+    AnswerQuestionRunPosition,
+    AnswerQuestionRunQuery,
     validate_answer_question_attempt_completion,
     validate_answer_question_attempt_start,
     validate_answer_question_context_bundle,
@@ -1031,6 +1035,60 @@ class _AnswerQuestionRunRepository:
         if run is None:
             self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
         return run.model_copy(deep=True)
+
+    async def list_runs(
+        self,
+        *,
+        query: AnswerQuestionRunQuery,
+        limit: int,
+        after: AnswerQuestionRunPosition | None,
+    ) -> AnswerQuestionRunPage:
+        self._uow._guard_active()
+        scope = self._scope()
+        values = [
+            item
+            for item in self._runs().values()
+            if item.workspace_id == scope.workspace_id
+            and item.environment_id == scope.environment_id
+            and (query.subject_id is None or item.subject.id == query.subject_id)
+            and (query.outcome is None or item.outcome is not None and item.outcome.value == query.outcome)
+            and (query.created_after is None or item.created_at >= query.created_after)
+            and (query.created_before is None or item.created_at <= query.created_before)
+        ]
+        if query.session_id is not None or query.message_id is not None:
+            linked: list[AnswerQuestionRun] = []
+            for item in values:
+                link = await self.resolve_message_link(item.run_id)
+                if link is None:
+                    continue
+                if query.session_id is not None and link.session_id != query.session_id:
+                    continue
+                if query.message_id is not None and link.message_id != query.message_id:
+                    continue
+                linked.append(item)
+            values = linked
+        values.sort(key=lambda item: (item.created_at, item.run_id), reverse=True)
+        if after is not None:
+            values = [
+                item
+                for item in values
+                if (item.created_at, item.run_id) < (after.created_at, after.run_id)
+            ]
+        selected = values[: limit + 1]
+        return AnswerQuestionRunPage(
+            runs=tuple(item.model_copy(deep=True) for item in selected[:limit]),
+            has_more=len(selected) > limit,
+        )
+
+    async def resolve_message_link(self, run_id: UUID) -> AnswerQuestionRunMessageLink | None:
+        self._uow._guard_active()
+        scope = self._scope()
+        link = await self._uow.qa_sessions.resolve_message_link(
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            run_id=run_id,
+        )
+        return None if link is None else AnswerQuestionRunMessageLink(*link)
 
     async def complete_run(self, run: AnswerQuestionRun) -> AnswerQuestionRun:
         self._uow._guard_active()

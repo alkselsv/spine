@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
@@ -24,6 +25,36 @@ from spine.domain.context_bundles import ContextBundle
 ANSWER_QUESTION_RUN_OPERATION = PersistenceOperation("answer_question_run")
 ANSWER_QUESTION_RUN_OPERATION_SCHEMA_VERSION = 1
 ANSWER_QUESTION_RUN_RESULT_TYPE = "answer_question_run"
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerQuestionRunQuery:
+    """Trusted-scope filters for the persisted Q&A run read model."""
+
+    subject_id: UUID | None = None
+    session_id: UUID | None = None
+    message_id: UUID | None = None
+    outcome: str | None = None
+    created_after: datetime | None = None
+    created_before: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerQuestionRunPosition:
+    created_at: datetime
+    run_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerQuestionRunPage:
+    runs: tuple[AnswerQuestionRun, ...]
+    has_more: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerQuestionRunMessageLink:
+    session_id: UUID
+    message_id: UUID
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +123,18 @@ class AnswerQuestionRunRepository(Protocol):
     async def resolve_attempt(self, attempt_id: UUID) -> AnswerQuestionAttempt: ...
 
     async def list_attempts(self, run_id: UUID) -> tuple[AnswerQuestionAttempt, ...]: ...
+
+    async def list_runs(
+        self,
+        *,
+        query: AnswerQuestionRunQuery,
+        limit: int,
+        after: AnswerQuestionRunPosition | None,
+    ) -> AnswerQuestionRunPage: ...
+
+    async def resolve_message_link(
+        self, run_id: UUID
+    ) -> AnswerQuestionRunMessageLink | None: ...
 
 
 def validate_answer_question_attempt_start(
@@ -200,6 +243,10 @@ __all__ = [
     "ANSWER_QUESTION_RUN_RESULT_TYPE",
     "AnswerQuestionRunCommand",
     "AnswerQuestionRunMutationResult",
+    "AnswerQuestionRunMessageLink",
+    "AnswerQuestionRunPage",
+    "AnswerQuestionRunPosition",
+    "AnswerQuestionRunQuery",
     "AnswerQuestionRunRepository",
     "validate_answer_question_attempt_completion",
     "validate_answer_question_attempt_start",
