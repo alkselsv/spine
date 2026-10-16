@@ -1,0 +1,205 @@
+{
+  "schema_version": "r1-final-qualification:v1",
+  "ticket": 360,
+  "parent_ticket": 19,
+  "gate_schema_version": "r1-gate-status:v1",
+  "qualification": {
+    "offline_regression": "qualified_offline",
+    "full_r1_readiness": "not_qualified",
+    "production_approval": false,
+    "scope": "offline_contract_and_regression_only"
+  },
+  "execution": {
+    "execution_id": "offline-regression-gate:v1",
+    "gate_version": "spine-eval-gate:v1",
+    "report_schema_version": "r1-gate-status:v1",
+    "mode": "offline_deterministic_fake",
+    "runs_completed": 2,
+    "reproducible": true,
+    "network_or_provider_credentials_required": false,
+    "ci_execution_identity_fields": ["ci_run_id", "head_sha"],
+    "ci_result_artifact": "r1-gate-status"
+  },
+  "identities": {
+    "dataset": {
+      "dataset_id": "qa-r1-synthetic",
+      "version": "1.0.0",
+      "digest": "4f8ccc5202ea3471c0ffbc06dd2b534ecdc38cb498724e2da801181543778141",
+      "schema_version": "qa-manifest:v1",
+      "case_schema_version": "qa-case:v1"
+    },
+    "evaluator_catalog": "r1-evaluator-catalog:v1",
+    "evaluators": [
+      {"evaluator_key": "qa.answer_outcome", "evaluator_version": "v1"},
+      {"evaluator_key": "qa.citation_precision", "evaluator_version": "v1"},
+      {"evaluator_key": "qa.citation_recall", "evaluator_version": "v1"},
+      {"evaluator_key": "qa.citations", "evaluator_version": "v1"},
+      {"evaluator_key": "qa.groundedness", "evaluator_version": "v1"},
+      {"evaluator_key": "qa.locator_validity", "evaluator_version": "v1"},
+      {"evaluator_key": "retrieval.mrr", "evaluator_version": "v1"},
+      {"evaluator_key": "retrieval.recall_at_k", "evaluator_version": "v1"}
+    ],
+    "protocol": "r1-production-contract-observation:v1",
+    "applicability": "r1-gate-applicability:v1",
+    "baseline_comparison": "r1-baseline-comparison:v1",
+    "gate": "spine-eval-gate:v1",
+    "profiles": ["offline-deterministic", "cognee", "llm"],
+    "components": [
+      {"key": "parser", "version": "issue-194:v1"},
+      {"key": "source-revision", "version": "source-revision:v1"},
+      {"key": "projection", "version": "context-projection:v1"},
+      {"key": "retrieval", "version": "context-broker:v1"},
+      {"key": "acl", "version": "access-policy:v1"},
+      {"key": "prompt", "version": "prompt-version:v1"},
+      {"key": "model", "version": "model-profile:v1"},
+      {"key": "capability", "version": "answer-question:v1"},
+      {"key": "evaluator", "version": "r1-evaluator-catalog:v1"},
+      {"key": "dataset", "version": "qa-r1-synthetic:1.0.0"},
+      {"key": "gate", "version": "r1-gate-applicability:v1"}
+    ],
+    "execution_evidence_ids": [
+      "offline-regression-gate:v1",
+      "issue-194:qualification:v1",
+      "issue-90:qualification:v1",
+      "issue-211:qualification:v1",
+      "repository-pytest:execution:v1",
+      "postgresql-acceptance:execution:v1",
+      "g01:execution:v1",
+      "g02:execution:v1",
+      "g03:execution:v1",
+      "g06:execution:v1",
+      "r1-evaluator-catalog:v1",
+      "qa-r1-dataset:v1",
+      "r1-gate-applicability:v1",
+      "r1-baseline-comparison:v1"
+    ]
+  },
+  "hard_safety_invariants": {
+    "unauthorized_evidence_leakage_count": 0,
+    "inaccessible_invalid_or_stale_citation_count": 0,
+    "ungrounded_answer_count": 0,
+    "independent_of_product_quality_thresholds": true
+  },
+  "baseline_comparison": {
+    "status": "comparable",
+    "baseline_report_id": "f05c7bcd-5702-5d2c-a9f2-0dd86c2ba7f6",
+    "added_case_ids": [],
+    "removed_case_ids": [],
+    "changed_case_ids": [],
+    "aggregate_metric_deltas": [
+      {"evaluator_key": "qa.answer_outcome", "delta": 0.0},
+      {"evaluator_key": "qa.citation_precision", "delta": 0.0},
+      {"evaluator_key": "qa.citation_recall", "delta": 0.0},
+      {"evaluator_key": "qa.citations", "delta": 0.0},
+      {"evaluator_key": "qa.groundedness", "delta": 0.0},
+      {"evaluator_key": "qa.locator_validity", "delta": 0.0},
+      {"evaluator_key": "retrieval.mrr", "delta": 0.0},
+      {"evaluator_key": "retrieval.recall_at_k", "delta": 0.0}
+    ],
+    "failure_clusters": [],
+    "safety_failures": []
+  },
+  "coverage": [
+    {
+      "id": "G01",
+      "status": "qualified_offline",
+      "evidence": [
+        "docs/qualification/issue-356-unauthorized-retrieval-disclosure-report.json",
+        "tests/evals/test_production_contract.py"
+      ],
+      "observation_seam": "r1-production-contract-observation:v1"
+    },
+    {
+      "id": "G02-G03",
+      "status": "qualified_offline",
+      "evidence": [
+        "docs/qualification/issue-356-unauthorized-retrieval-disclosure-report.json",
+        "docs/qualification/issue-357-grounded-answers-report.json",
+        "tests/evals/test_unauthorized_retrieval_safety.py",
+        "tests/evals/test_grounded_answer_safety.py",
+        "tests/evals/test_production_contract.py"
+      ],
+      "lineage_contracts": [
+        "Current SourceRevision",
+        "AccessPolicy",
+        "ContextBundle",
+        "provenance",
+        "exact citation locator",
+        "projection pin",
+        "disclosure revalidation"
+      ]
+    },
+    {
+      "id": "G06",
+      "status": "qualified_offline",
+      "evidence": [
+        "docs/qualification/issue-354-context-adapter-parity-report.json",
+        "tests/contracts/memory/test_adapter_parity.py"
+      ],
+      "comparison": "normalized typed outcomes, authorization safety, revision/projection consistency and disclosure invariants; byte equality is not required"
+    },
+    {
+      "id": "G07-G08",
+      "status": "qualified_offline",
+      "evidence": [
+        "docs/qualification/issue-355-gate-applicability-report.json",
+        "docs/qualification/issue-358-baseline-comparison.md",
+        "docs/qualification/r1-baseline-report.json",
+        "tests/evals/test_applicability.py",
+        "tests/evals/test_baseline_comparison.py"
+      ],
+      "baseline_outcomes": ["new cases", "removed cases", "changed cases", "comparable cases", "incomparable baseline"],
+      "failure_clusters_exclude_protected_content": true
+    },
+    {
+      "id": "parser-revision-locator",
+      "status": "reused_qualification",
+      "evidence": [
+        "docs/qualification/issue-194-document-ingestion-report.json",
+        "tests/qualification/test_issue194_qualification.py"
+      ]
+    },
+    {
+      "id": "projection-lifecycle",
+      "status": "reused_qualification",
+      "evidence": [
+        "docs/qualification/issue-90-source-projection-lifecycle-report.json",
+        "docs/qualification/issue-211-context-projection-report.json",
+        "tests/qualification/test_issue90_qualification.py",
+        "tests/qualification/test_issue211_qualification.py"
+      ],
+      "lifecycle": ["shadow build", "activation", "update", "delete", "failed rebuild", "recovery", "safe successor rollback"]
+    }
+  ],
+  "mandatory_checks": {
+    "offline_deterministic_gate": {
+      "status": "required",
+      "evidence_id": "offline-regression-gate:v1"
+    },
+    "repository_pytest": {
+      "status": "required",
+      "evidence_id": "repository-pytest:execution:v1",
+      "result_field": "repository_pytest_status",
+      "artifact_name": "r1-gate-status"
+    },
+    "postgresql_acceptance": {
+      "status": "required",
+      "evidence_id": "postgresql-acceptance:execution:v1",
+      "result_field": "postgresql_acceptance_status",
+      "artifact_name": "r1-gate-status"
+    },
+    "ci_workflow": ".github/workflows/test.yml:r1-regression-gate"
+  },
+  "provider_profiles": {
+    "cognee": "skipped",
+    "llm": "skipped",
+    "selected_but_unavailable_status": "unavailable",
+    "skipped_or_unavailable_can_count_as_passed": false
+  },
+  "outstanding": {
+    "issue_17_product_thresholds": "not_owned_by_this_report",
+    "issue_20_anonymized_real_dataset": "not_supplied_or_approved",
+    "issue_16_end_to_end_r1_qualification": "outstanding",
+    "full_r1_production_readiness": "not_claimed"
+  }
+}

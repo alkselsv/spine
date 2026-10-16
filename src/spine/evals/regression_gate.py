@@ -99,6 +99,11 @@ class OfflineRegressionGateReport(DefinitionModel):
     runs_completed: int = Field(ge=0, le=2)
     status: GateStatus
     repository_pytest_status: Literal["passed", "failed", "unavailable"]
+    postgresql_acceptance_status: Literal[
+        "passed", "failed", "unavailable"
+    ] | None = None
+    ci_run_id: str | None = None
+    head_sha: str | None = None
     dataset: DatasetIdentity | None = None
     evaluator_catalog: tuple[EvaluatorIdentity, ...] = ()
     report: OfflineEvaluationReport | None = None
@@ -129,6 +134,8 @@ def run_offline_regression_gate(
     report_factory: ReportFactory | None = None,
     repository_pytest_status: Literal["passed", "failed", "unavailable"] = "unavailable",
     selected_provider_profiles: tuple[str, ...] = (),
+    ci_run_id: str | None = None,
+    head_sha: str | None = None,
 ) -> OfflineRegressionGateReport:
     """Run the offline report twice and enforce hard, non-threshold invariants.
 
@@ -181,7 +188,8 @@ def run_offline_regression_gate(
     failures = _deduplicate_failures(failures)
     mandatory_offline_passed = len(failures) == 0 and len(reports) == 2
     qualification_evidence = _qualification_evidence(
-        mandatory_offline_passed=mandatory_offline_passed
+        mandatory_offline_passed=mandatory_offline_passed,
+        repository_pytest_status=repository_pytest_status,
     )
     evidence_by_id = {item.evidence_id: item for item in qualification_evidence}
     execution_evidence = tuple(
@@ -259,6 +267,11 @@ def run_offline_regression_gate(
         runs_completed=len(reports),
         status=status,
         repository_pytest_status=repository_pytest_status,
+        postgresql_acceptance_status=_postgresql_acceptance_status(
+            repository_pytest_status
+        ),
+        ci_run_id=ci_run_id,
+        head_sha=head_sha,
         dataset=report.dataset if report is not None else None,
         evaluator_catalog=report.evaluator_catalog if report is not None else (),
         report=report,
@@ -271,9 +284,11 @@ def run_offline_regression_gate(
 
 
 def _qualification_evidence(
-    *, mandatory_offline_passed: bool
+    *,
+    mandatory_offline_passed: bool,
+    repository_pytest_status: Literal["passed", "failed", "unavailable"],
 ) -> tuple[QualificationEvidence, ...]:
-    """Read prior parser, projection and R1 safety qualification records."""
+    """Read prior qualification records and mandatory repository gate results."""
 
     root = Path(__file__).parents[3]
     definitions = (
@@ -304,6 +319,21 @@ def _qualification_evidence(
             evidence_id="offline-regression-gate:v1",
             source="spine-eval-gate:offline-r1",
             status="passed" if mandatory_offline_passed else "unavailable",
+        )
+    )
+    evidence.extend(
+        (
+            QualificationEvidence(
+                evidence_id="repository-pytest:execution:v1",
+                source="full_repository_pytest_suite",
+                status=repository_pytest_status,
+            ),
+            QualificationEvidence(
+                evidence_id="postgresql-acceptance:execution:v1",
+                source="full_repository_pytest_suite:tests/integration/postgresql",
+                status=_postgresql_acceptance_status(repository_pytest_status)
+                or "unavailable",
+            ),
         )
     )
     for evidence_id, relative_path, status_path, expected_status in definitions:
@@ -354,6 +384,19 @@ def _qualification_evidence(
             )
         )
     return tuple(evidence)
+
+
+def _postgresql_acceptance_status(
+    repository_pytest_status: Literal["passed", "failed", "unavailable"],
+) -> Literal["passed", "failed", "unavailable"]:
+    """Only a complete repository-suite pass qualifies PostgreSQL acceptance.
+
+    A failed repository suite does not establish which suite failed, so the
+    PostgreSQL result remains unavailable. The repository status independently
+    fails the aggregate gate.
+    """
+
+    return "passed" if repository_pytest_status == "passed" else "unavailable"
 
 
 def _qualification_record_is_valid(
@@ -900,6 +943,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="select an optional provider profile; unavailable profiles fail qualification",
     )
+    parser.add_argument(
+        "--ci-run-id",
+        default=None,
+        help="record the CI workflow run identity that executed mandatory repository checks",
+    )
+    parser.add_argument(
+        "--head-sha",
+        default=None,
+        help="record the source commit SHA for this gate execution",
+    )
     return parser
 
 
@@ -908,6 +961,8 @@ def main(argv: list[str] | None = None) -> None:
     result = run_offline_regression_gate(
         repository_pytest_status=args.repository_pytest_status or "unavailable",
         selected_provider_profiles=tuple(args.provider_profile),
+        ci_run_id=args.ci_run_id,
+        head_sha=args.head_sha,
     )
     payload = result.model_dump_json(indent=2) + "\n"
     if args.output is not None:

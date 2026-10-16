@@ -21,6 +21,8 @@ def test_offline_regression_gate_passes_reproducible_r1_contract() -> None:
     assert result.passed is True
     assert result.reproducible is True
     assert result.failures == ()
+    assert result.repository_pytest_status == "passed"
+    assert result.postgresql_acceptance_status == "passed"
     assert result.report is not None
     assert result.report.qualification_scope == "offline-contract-only"
     assert result.report.dataset.version == "1.0.0"
@@ -198,13 +200,25 @@ def test_offline_regression_gate_cli_writes_machine_readable_artifact(tmp_path: 
     output = tmp_path / "offline-regression-gate.json"
 
     try:
-        main(["--repository-tests-passed", "--output", str(output)])
+        main(
+            [
+                "--repository-tests-passed",
+                "--ci-run-id",
+                "run-360",
+                "--head-sha",
+                "a" * 40,
+                "--output",
+                str(output),
+            ]
+        )
     except SystemExit as error:
         assert error.code == 0
 
     artifact = OfflineRegressionGateReport.model_validate_json(output.read_text())
     assert artifact.passed is True
     assert artifact.runs_completed == 2
+    assert artifact.ci_run_id == "run-360"
+    assert artifact.head_sha == "a" * 40
 
 
 def test_r1_gate_is_not_qualified_without_repository_pytest_evidence() -> None:
@@ -213,6 +227,7 @@ def test_r1_gate_is_not_qualified_without_repository_pytest_evidence() -> None:
     assert result.passed is False
     assert result.status == "not-qualified"
     assert result.repository_pytest_status == "unavailable"
+    assert result.postgresql_acceptance_status == "unavailable"
 
 
 def test_stale_applicability_manifest_evidence_is_not_qualified() -> None:
@@ -260,7 +275,7 @@ def test_reported_retrieval_safety_violation_fails_gate_independently(
     monkeypatch.setattr(
         regression_gate,
         "_qualification_evidence",
-        lambda *, mandatory_offline_passed: (
+        lambda **_: (
             QualificationEvidence(
                 evidence_id="g02:execution:v1",
                 source="synthetic-safety-report",
