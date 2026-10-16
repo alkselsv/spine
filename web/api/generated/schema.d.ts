@@ -72,6 +72,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/documents/lifecycle/operations/{operation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Documents.Lifecycle.Status */
+        get: operations["documents.lifecycle.status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/documents/processing-history": {
         parameters: {
             query?: never;
@@ -174,6 +191,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/documents/{source_object_id}/replacement": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Documents.Lifecycle.Replace */
+        post: operations["documents.lifecycle.replace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/documents/{source_object_id}/revisions": {
         parameters: {
             query?: never;
@@ -185,6 +219,23 @@ export interface paths {
         get: operations["documents.revisions"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/documents/{source_object_id}/tombstone": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Documents.Lifecycle.Tombstone */
+        post: operations["documents.lifecycle.tombstone"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1850,6 +1901,20 @@ export interface components {
             value: string;
         };
         /**
+         * ExistingUploadIntent
+         * @description Bounded browser intent; never authoritative storage evidence.
+         */
+        ExistingUploadIntent: {
+            /** Declared Filename */
+            declared_filename: string;
+            /** Declared Media Type */
+            declared_media_type: string;
+            /** Storage Request Reference */
+            storage_request_reference: string;
+            /** Upload Identity */
+            upload_identity: string;
+        };
+        /**
          * FeedbackOutcome
          * @enum {string}
          */
@@ -2132,6 +2197,21 @@ export interface components {
              */
             warning_ids: string[];
         };
+        /**
+         * LifecycleFailureCode
+         * @enum {string}
+         */
+        LifecycleFailureCode: "storage_unavailable" | "canonical_conflict" | "processing_unavailable" | "authority_unavailable";
+        /**
+         * LifecycleOperationKind
+         * @enum {string}
+         */
+        LifecycleOperationKind: "replacement" | "tombstone";
+        /**
+         * LifecycleOperationStatus
+         * @enum {string}
+         */
+        LifecycleOperationStatus: "accepted_processing_pending" | "processing_dispatched" | "completed" | "reconciliation_required" | "conflict" | "failed";
         /** LivenessResponse */
         LivenessResponse: {
             /**
@@ -3147,6 +3227,15 @@ export interface components {
              */
             status: "ready" | "not_ready";
         };
+        /** ReplaceDocumentRequest */
+        ReplaceDocumentRequest: {
+            /**
+             * Expected Current Revision Id
+             * Format: uuid
+             */
+            expected_current_revision_id: string;
+            upload_intent: components["schemas"]["ExistingUploadIntent"];
+        };
         /** ReprocessProcessingRequest */
         ReprocessProcessingRequest: {
             /**
@@ -3301,6 +3390,54 @@ export interface components {
          * @enum {string}
          */
         SourceKind: "document" | "message" | "record";
+        /** SourceLifecycleOperationResponse */
+        SourceLifecycleOperationResponse: {
+            /** Accepted At */
+            accepted_at?: string | null;
+            /** Accepted Revision Id */
+            accepted_revision_id?: string | null;
+            /** Canonical Acceptance Id */
+            canonical_acceptance_id?: string | null;
+            /** Completed At */
+            completed_at?: string | null;
+            /**
+             * Expected Current Revision Id
+             * Format: uuid
+             */
+            expected_current_revision_id: string;
+            /**
+             * Idempotency Receipt Id
+             * Format: uuid
+             */
+            idempotency_receipt_id: string;
+            /**
+             * Operation Id
+             * Format: uuid
+             */
+            operation_id: string;
+            operation_kind: components["schemas"]["LifecycleOperationKind"];
+            /** Processing Run Id */
+            processing_run_id?: string | null;
+            /** Replay */
+            replay: boolean;
+            /** Retryable */
+            retryable: boolean;
+            safe_failure_code?: components["schemas"]["LifecycleFailureCode"] | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Source Object Id
+             * Format: uuid
+             */
+            source_object_id: string;
+            status: components["schemas"]["LifecycleOperationStatus"];
+            /** Status Url */
+            status_url: string;
+        };
         /** StableLocatorSnapshot */
         StableLocatorSnapshot: {
             /** Locator Kind */
@@ -3358,6 +3495,19 @@ export interface components {
              */
             target_id: string;
             target_kind: components["schemas"]["FeedbackTargetKind"];
+        };
+        /** TombstoneDocumentRequest */
+        TombstoneDocumentRequest: {
+            /**
+             * Deletion Reason
+             * @enum {string}
+             */
+            deletion_reason: "legal_erasure" | "provider_deleted" | "retention_expired" | "source_deleted";
+            /**
+             * Expected Current Revision Id
+             * Format: uuid
+             */
+            expected_current_revision_id: string;
         };
         /** ValidationError */
         ValidationError: {
@@ -3767,6 +3917,112 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BatchIngestionUploadResponse"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "documents.lifecycle.status": {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceLifecycleOperationResponse"];
                 };
             };
             /** @description Safe request error. */
@@ -4503,6 +4759,117 @@ export interface operations {
             };
         };
     };
+    "documents.lifecycle.replace": {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                source_object_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplaceDocumentRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceLifecycleOperationResponse"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
     "documents.revisions": {
         parameters: {
             query?: {
@@ -4527,6 +4894,117 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiCollectionEnvelope_RevisionSnapshot_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "documents.lifecycle.tombstone": {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                source_object_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TombstoneDocumentRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceLifecycleOperationResponse"];
                 };
             };
             /** @description Safe request error. */

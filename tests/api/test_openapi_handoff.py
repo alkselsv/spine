@@ -34,6 +34,9 @@ def test_generation_export_matches_backend_openapi_document(tmp_path: Path) -> N
     assert "/api/v1/documents/processing/retry" in document["paths"]
     assert "/api/v1/documents/processing/reprocess" in document["paths"]
     assert "/api/v1/documents/processing/operations/{operation_id}" in document["paths"]
+    assert "/api/v1/documents/{source_object_id}/replacement" in document["paths"]
+    assert "/api/v1/documents/{source_object_id}/tombstone" in document["paths"]
+    assert "/api/v1/documents/lifecycle/operations/{operation_id}" in document["paths"]
     assert "/api/v1/ingestion/runs/{run_id}/items/{item_id}" in document["paths"]
     assert "/api/v1/projections/{projection_kind}/status" in document["paths"]
     assert "/api/v1/projections/{projection_kind}/recovery" in document["paths"]
@@ -84,6 +87,21 @@ def test_generation_export_matches_backend_openapi_document(tmp_path: Path) -> N
         and parameter["required"] is True
         for parameter in retry_operation["parameters"]
     )
+    replacement_operation = document["paths"][
+        "/api/v1/documents/{source_object_id}/replacement"
+    ]["post"]
+    tombstone_operation = document["paths"][
+        "/api/v1/documents/{source_object_id}/tombstone"
+    ]["post"]
+    assert replacement_operation["operationId"] == "documents.lifecycle.replace"
+    assert tombstone_operation["operationId"] == "documents.lifecycle.tombstone"
+    for operation in (replacement_operation, tombstone_operation):
+        assert any(
+            parameter["name"] == "Idempotency-Key"
+            and parameter["in"] == "header"
+            and parameter["required"] is True
+            for parameter in operation["parameters"]
+        )
 
     status_operation = document["paths"]["/api/v1/projections/{projection_kind}/status"]["get"]
     recovery_operation = document["paths"]["/api/v1/projections/{projection_kind}/recovery"]["post"]
