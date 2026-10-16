@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import traceback
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 from uuid import UUID, uuid4
@@ -298,10 +299,14 @@ async def test_isolated_restore_verifier_reconciles_real_postgres_and_filesystem
                 target=target,
             )
         except IsolatedRestoreFailure as failure:
-            cause_type = type(failure.__context__).__name__
+            cause = failure.__context__
+            cause_type = type(cause).__name__
+            frames = traceback.extract_tb(cause.__traceback__) if cause is not None else []
+            origin = " > ".join(f"{frame.name}:{frame.lineno}" for frame in frames[-4:])
             pytest.fail(
                 "isolated restore failed with "
-                f"{failure.evidence.safe_failure_code}; diagnostic type: {cause_type}"
+                f"{failure.evidence.safe_failure_code}; diagnostic type: {cause_type}; "
+                f"origin: {origin}"
             )
         evidence_file = target.filesystem_root / "restore-evidence.json"
         original = target.filesystem_root / hashlib.sha256(
