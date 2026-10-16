@@ -241,6 +241,7 @@ class CanonicalAcceptanceCommand:
             accepted_at=self.accepted_at,
             audit_event=self.audit_event,
             outbox_intent=self.outbox_intent,
+            operation=self.digest.operation,
         ).digest
 
     @classmethod
@@ -260,6 +261,7 @@ class CanonicalAcceptanceCommand:
         accepted_at: datetime,
         audit_event: AuditEvent | None = None,
         outbox_intent: OutboxIntent | None = None,
+        operation: PersistenceOperation = PersistenceOperation("canonical_acceptance"),
     ) -> "CanonicalAcceptanceCommand":
         payload = {
             "source": source.model_dump(mode="json"),
@@ -287,7 +289,7 @@ class CanonicalAcceptanceCommand:
             "idempotency_key": idempotency_key.value,
         }
         digest = digest_command(
-            operation=PersistenceOperation("canonical_acceptance"),
+            operation=operation,
             operation_schema_version=CANONICAL_ACCEPTANCE_SCHEMA_VERSION,
             payload=payload,
         )

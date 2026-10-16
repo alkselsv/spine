@@ -183,6 +183,7 @@ class SourceLifecycleCoordinator:
                     provenance=command.provenance,
                     idempotency_key=command.observation_idempotency_key,
                     receipt_association=command.receipt_association,
+                    operation=context.operation,
                 )
             )
             if (

@@ -8,6 +8,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 import pytest
 
 from spine.application.persistence.canonical import CanonicalAcceptanceCommand
+from spine.application.persistence.context import PersistenceOperation
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.source_lifecycle import (
     SourceLifecycleCommand,
@@ -35,6 +36,10 @@ ENVIRONMENT = UUID("20000000-0000-4000-8000-000000000001")
 
 def _id(value: str) -> UUID:
     return uuid5(NAMESPACE_URL, f"source-lifecycle-test:{value}")
+
+
+def _context():
+    return SimpleNamespace(operation=PersistenceOperation("canonical_acceptance"))
 
 
 def _source(
@@ -248,7 +253,7 @@ async def test_deletion_records_observation_and_delegates_canonical_transition_a
     uows = []
     coordinator = SourceLifecycleCoordinator(
         lambda _context: uows.append(_Uow(sources, canonical)) or uows[-1],
-        lambda _command: SimpleNamespace(),
+        lambda _command: _context(),
     )
 
     result = await coordinator.apply(
@@ -260,6 +265,33 @@ async def test_deletion_records_observation_and_delegates_canonical_transition_a
     assert canonical.commands[0].revision == revision
     assert uows[0].committed is True
     assert uows[0].rolled_back is False
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_observation_uses_the_atomic_uow_operation_digest():
+    source = _source()
+    revision = _tombstone(source)
+    provenance = _provenance(source, revision.revision_id, "delete-operation")
+    sources = _Sources(source, {revision.revision_id: revision}, [])
+    canonical = _Canonical()
+    context = SimpleNamespace(operation=PersistenceOperation("canonical_acceptance"))
+    uow = _Uow(sources, canonical)
+
+    await SourceLifecycleCoordinator(
+        lambda _context: uow,
+        lambda _command: context,
+    ).apply(
+        _command(
+            source,
+            revision,
+            provenance,
+            key="delete-operation",
+            kind=SourceLifecycleKind.DELETION,
+        )
+    )
+
+    assert sources.recorded[0].digest.operation == context.operation
+    assert canonical.commands[0].digest.operation == context.operation
 
 
 @pytest.mark.asyncio
@@ -298,7 +330,7 @@ async def test_replacement_records_new_content_revision_without_reappearance_sem
     uow = _Uow(sources, canonical)
 
     result = await SourceLifecycleCoordinator(
-        lambda _context: uow, lambda _command: SimpleNamespace()
+        lambda _context: uow, lambda _command: _context()
     ).apply(
         SourceLifecycleCommand(
             kind=SourceLifecycleKind.REPLACEMENT,
@@ -334,7 +366,7 @@ async def test_reappearance_requires_existing_tombstone_and_fresh_canonical_evid
     uow = _Uow(sources, canonical)
 
     result = await SourceLifecycleCoordinator(
-        lambda _context: uow, lambda _command: SimpleNamespace()
+        lambda _context: uow, lambda _command: _context()
     ).apply(
         _command(
             source,
@@ -361,7 +393,7 @@ async def test_repeating_same_lifecycle_command_returns_delegated_replay_without
     uows = []
     coordinator = SourceLifecycleCoordinator(
         lambda _context: uows.append(_Uow(sources, canonical)) or uows[-1],
-        lambda _command: SimpleNamespace(),
+        lambda _command: _context(),
     )
     command = _command(source, revision, provenance, key="delete-replay", kind=SourceLifecycleKind.DELETION)
 
@@ -386,7 +418,7 @@ async def test_missing_source_fails_closed_without_creating_or_recording_deletio
 
     with pytest.raises(SourceLifecycleValidationError):
         await SourceLifecycleCoordinator(
-            lambda _context: uow, lambda _command: SimpleNamespace()
+            lambda _context: uow, lambda _command: _context()
         ).apply(
             _command(source, revision, provenance, key="delete-missing", kind=SourceLifecycleKind.DELETION)
         )
@@ -408,7 +440,7 @@ async def test_cross_workspace_source_identity_fails_closed_without_canonical_ca
 
     with pytest.raises(SourceLifecycleValidationError):
         await SourceLifecycleCoordinator(
-            lambda _context: uow, lambda _command: SimpleNamespace()
+            lambda _context: uow, lambda _command: _context()
         ).apply(
             _command(
                 source,
@@ -435,7 +467,7 @@ async def test_reappearance_with_unknown_predecessor_fails_without_canonical_cal
 
     with pytest.raises(SourceLifecycleValidationError):
         await SourceLifecycleCoordinator(
-            lambda _context: uow, lambda _command: SimpleNamespace()
+            lambda _context: uow, lambda _command: _context()
         ).apply(
             _command(
                 source,
@@ -461,7 +493,7 @@ async def test_canonical_failure_rolls_back_observation_and_never_commits_partia
 
     with pytest.raises(RuntimeError, match="canonical unavailable"):
         await SourceLifecycleCoordinator(
-            lambda _context: uow, lambda _command: SimpleNamespace()
+            lambda _context: uow, lambda _command: _context()
         ).apply(
             _command(source, revision, provenance, key="delete-fails", kind=SourceLifecycleKind.DELETION)
         )

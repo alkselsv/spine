@@ -887,6 +887,7 @@ async def test_postgresql_document_tombstone_preserves_history_and_canonical_eff
             accepted_at=accepted_at,
             audit_event=audit,
             outbox_intent=outbox,
+            operation=case.context.operation,
         )
 
     composer = ServerDocumentLifecycleComposer(
@@ -956,7 +957,10 @@ async def test_postgresql_document_replacement_persists_verified_successor_and_h
     lifecycle_digest = CanonicalDocumentLifecycleCommandService.command_digest(command)
     replacement_revision = source_contract_revision(
         case.source,
-        synthetic_uuid(34402),
+        uuid5(
+            NAMESPACE_URL,
+            f"ticket-343:replacement-revision:{case.source.source_object_id}",
+        ),
     )
     replacement_provenance = source_contract_provenance(
         case.source,
@@ -973,16 +977,31 @@ async def test_postgresql_document_replacement_persists_verified_successor_and_h
     receipt_id = await _original_receipt(
         postgresql_adapter,
         case.context,
-        34400,
+        934400,
     )
     association = _receipt_association(
         case.source,
         replacement_revision,
         replacement_provenance,
         receipt_id=receipt_id,
-        number=34400,
+        number=934400,
     )
-    admission_id = synthetic_uuid(34403)
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        await uow.sources.record_observation(
+            SourceObservationCommand.create(
+                source=case.source,
+                revision=replacement_revision,
+                provenance=replacement_provenance,
+                idempotency_key=IdempotencyKey(
+                    "document-replacement-34400:observation"
+                ),
+                receipt_association=association,
+                operation=case.context.operation,
+            )
+        )
+        await uow.commit()
+
+    admission_id = synthetic_uuid(934403)
     async with postgresql_adapter.uow_factory(case.context) as uow:
         await uow.admissions.append_decision(
             AdmissionDecision(
@@ -998,11 +1017,11 @@ async def test_postgresql_document_replacement_persists_verified_successor_and_h
                 reason_codes=("clean",),
                 authority_reference={
                     "reference_type": "validator",
-                    "reference_id": synthetic_uuid(34404),
+                    "reference_id": synthetic_uuid(934404),
                     "schema_version": 1,
                 },
                 trace_id=case.context.trace_id,
-                audit_event_id=synthetic_uuid(34405),
+                audit_event_id=synthetic_uuid(934405),
                 decided_at=datetime(2026, 10, 16, 12, 0, tzinfo=timezone.utc),
             )
         )
@@ -1072,13 +1091,14 @@ async def test_postgresql_document_replacement_persists_verified_successor_and_h
             accepted_at=accepted_at,
             audit_event=audit,
             outbox_intent=outbox,
+            operation=case.context.operation,
         )
 
     processing_intents: list[object] = []
 
     async def process_replacement(**values: object) -> object:
         processing_intents.append(values["intent"])
-        return SimpleNamespace(run_id=synthetic_uuid(34406))
+        return SimpleNamespace(run_id=synthetic_uuid(934406))
 
     service = CanonicalDocumentLifecycleCommandService(
         composer=ServerDocumentLifecycleComposer(

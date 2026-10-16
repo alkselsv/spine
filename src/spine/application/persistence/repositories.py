@@ -60,6 +60,7 @@ class SourceObservationCommand:
         provenance: SourceRevisionProvenance,
         idempotency_key: IdempotencyKey,
         receipt_association: SourceRevisionReceiptAssociation | None = None,
+        operation: PersistenceOperation = PersistenceOperation("source_observation"),
     ) -> "SourceObservationCommand":
         placeholder = cls(
             source=source,
@@ -67,7 +68,7 @@ class SourceObservationCommand:
             provenance=provenance,
             idempotency_key=idempotency_key,
             digest=digest_command(
-                operation=PersistenceOperation("source_observation"),
+                operation=operation,
                 operation_schema_version=SOURCE_OBSERVATION_SCHEMA_VERSION,
                 payload={"placeholder": True},
             ),
@@ -78,7 +79,7 @@ class SourceObservationCommand:
             revision=revision,
             provenance=provenance,
             idempotency_key=idempotency_key,
-            digest=placeholder.expected_digest(PersistenceOperation("source_observation")),
+            digest=placeholder.expected_digest(operation),
             receipt_association=receipt_association,
         )
 
