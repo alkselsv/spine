@@ -10,6 +10,7 @@ from spine.evals.regression_gate import (
     OfflineRegressionGateReport,
     QualificationEvidence,
     main,
+    _qualification_record_is_valid,
     run_offline_regression_gate,
 )
 
@@ -28,6 +29,8 @@ def test_offline_regression_gate_passes_reproducible_r1_contract() -> None:
     assert result.applicability is not None and result.applicability.passed
     assert result.baseline_comparison is not None
     assert result.baseline_comparison.status == "comparable"
+    assert result.baseline_comparison.baseline_report_id == "f05c7bcd-5702-5d2c-a9f2-0dd86c2ba7f6"
+    assert result.baseline_comparison.baseline_component_versions.prompt_version == "r1-baseline:v1"
     assert result.baseline_comparison.aggregate_deltas
     assert {item.status for item in result.provider_profiles} == {"skipped"}
     assert {item.evidence_id for item in result.qualification_evidence} >= {
@@ -210,6 +213,31 @@ def test_r1_gate_is_not_qualified_without_repository_pytest_evidence() -> None:
     assert result.passed is False
     assert result.status == "not-qualified"
     assert result.repository_pytest_status == "unavailable"
+
+
+def test_stale_applicability_manifest_evidence_is_not_qualified() -> None:
+    from spine.evaluations.release_gates.applicability import (
+        DEFAULT_R1_APPLICABILITY_MANIFEST,
+    )
+
+    record = {
+        "policy_version": DEFAULT_R1_APPLICABILITY_MANIFEST.schema_version,
+        "manifest_id": DEFAULT_R1_APPLICABILITY_MANIFEST.manifest_id,
+        "manifest": DEFAULT_R1_APPLICABILITY_MANIFEST.model_dump(mode="json"),
+        "mandatory_offline_suite": {
+            "always_selected": True,
+            "evidence_id": "offline-regression-gate:v1",
+        },
+        "provider_quality_confirmation": "not-confirmed",
+    }
+
+    assert _qualification_record_is_valid(
+        "docs/qualification/issue-355-gate-applicability-report.json", record
+    )
+    record["manifest"] = {**record["manifest"], "manifest_id": "stale-manifest"}
+    assert not _qualification_record_is_valid(
+        "docs/qualification/issue-355-gate-applicability-report.json", record
+    )
 
 
 def test_selected_unavailable_provider_profile_cannot_be_reported_as_passed() -> None:

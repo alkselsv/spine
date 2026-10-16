@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable
+import hashlib
 import json
 from pathlib import Path
 from typing import Final, Literal
@@ -55,6 +56,11 @@ EXPECTED_EVALUATOR_VERSIONS: Final[dict[str, str]] = {
     "qa.locator_validity": "v1",
     "qa.groundedness": "v1",
 }
+R1_BASELINE_REPORT_PATH: Final[Path] = Path("docs/qualification/r1-baseline-report.json")
+R1_BASELINE_REPORT_SHA256: Final[str] = (
+    "50964e810416fcef6857be1ecf13124fea0d053bbc0511a4980361ff122381e9"
+)
+R1_BASELINE_REPORT_ID: Final[str] = "f05c7bcd-5702-5d2c-a9f2-0dd86c2ba7f6"
 _HARD_EVALUATOR_KEYS = frozenset(
     key for key in EXPECTED_EVALUATOR_VERSIONS if key.startswith("qa.")
 )
@@ -210,9 +216,15 @@ def run_offline_regression_gate(
         ),
         execution_evidence=execution_evidence,
     )
-    comparison = (
-        compare_r1_reports(reports[0], reports[1]) if len(reports) == 2 else None
-    )
+    baseline = _load_r1_baseline()
+    comparison = compare_r1_reports(baseline, report) if baseline and report else None
+    if baseline is None:
+        failures.append(
+            RegressionGateFailure(
+                category="integration",
+                reason="pinned R1 baseline report is unavailable or invalid",
+            )
+        )
     provider_profiles = tuple(
         ProviderProfileStatus(
             profile=profile,
@@ -297,19 +309,21 @@ def _qualification_evidence(
     for evidence_id, relative_path, status_path, expected_status in definitions:
         source = root / relative_path
         observed: object = None
+        record: dict[str, object] | None = None
         try:
             if source.suffix == ".json":
-                observed = json.loads(source.read_text(encoding="utf-8"))
+                parsed = json.loads(source.read_text(encoding="utf-8"))
                 if (
-                    not isinstance(observed, dict)
-                    or observed.get("schema_version") != expected_schemas[relative_path]
+                    not isinstance(parsed, dict)
+                    or parsed.get("schema_version") != expected_schemas[relative_path]
                     or not _qualification_record_is_valid(
-                        relative_path,
-                        observed if isinstance(observed, dict) else {},
+                        relative_path, parsed
                     )
                 ):
-                    observed = None
+                    record = None
                 else:
+                    record = parsed
+                    observed = record
                     for key in status_path.split("."):
                         observed = observed[key]  # type: ignore[index]
             elif status_path == "comparison_policy":
@@ -321,22 +335,13 @@ def _qualification_evidence(
         except (OSError, json.JSONDecodeError, KeyError, TypeError):
             pass
         evidence_status: Literal["passed", "failed", "unavailable"] = "unavailable"
-        try:
-            if source.suffix == ".json":
-                safety_record = json.loads(source.read_text(encoding="utf-8"))
-                if (
-                    relative_path.endswith(
-                        "issue-356-unauthorized-retrieval-disclosure-report.json"
-                    )
-                    and isinstance(safety_record, dict)
-                    and (
-                        safety_record.get("safety_violation_count", 0) > 0
-                        or safety_record.get("protected_payload_disclosure_count", 0) > 0
-                    )
-                ):
-                    evidence_status = "failed"
-        except (OSError, json.JSONDecodeError):
-            pass
+        if record is not None and relative_path.endswith(
+            "issue-356-unauthorized-retrieval-disclosure-report.json"
+        ) and (
+            record.get("safety_violation_count", 0) > 0
+            or record.get("protected_payload_disclosure_count", 0) > 0
+        ):
+            evidence_status = "failed"
         if evidence_status != "failed":
             evidence_status = (
                 "passed" if observed == expected_status else "unavailable"
@@ -381,8 +386,12 @@ def _qualification_record_is_valid(
         )
     if relative_path.endswith("issue-355-gate-applicability-report.json"):
         mandatory = record.get("mandatory_offline_suite")
+        manifest = record.get("manifest")
         return (
-            isinstance(mandatory, dict)
+            record.get("policy_version") == DEFAULT_R1_APPLICABILITY_MANIFEST.schema_version
+            and record.get("manifest_id") == DEFAULT_R1_APPLICABILITY_MANIFEST.manifest_id
+            and manifest == DEFAULT_R1_APPLICABILITY_MANIFEST.model_dump(mode="json")
+            and isinstance(mandatory, dict)
             and mandatory.get("always_selected") is True
             and mandatory.get("evidence_id") == "offline-regression-gate:v1"
             and record.get("provider_quality_confirmation") == "not-confirmed"
@@ -419,6 +428,31 @@ def _qualification_record_is_valid(
             and release_gate.get("provider_qualification") == "not_approved"
         )
     return True
+
+
+def _load_r1_baseline() -> OfflineEvaluationReport | None:
+    """Load the checked-in, versioned synthetic report used as the R1 baseline."""
+
+    path = Path(__file__).parents[3] / R1_BASELINE_REPORT_PATH
+    try:
+        payload = path.read_bytes()
+        if hashlib.sha256(payload).hexdigest() != R1_BASELINE_REPORT_SHA256:
+            return None
+        baseline = OfflineEvaluationReport.model_validate_json(payload)
+    except (OSError, ValidationError):
+        return None
+    if (
+        str(baseline.report_id) != R1_BASELINE_REPORT_ID
+        or baseline.dataset != EXPECTED_R1_DATASET_IDENTITY
+        or baseline.runner_version != OFFLINE_RUNNER_VERSION
+        or baseline.evaluator_catalog
+        != tuple(
+            EvaluatorIdentity(evaluator_key=key, evaluator_version=version)
+            for key, version in sorted(EXPECTED_EVALUATOR_VERSIONS.items())
+        )
+    ):
+        return None
+    return baseline
 
 
 def _aggregate_status(

@@ -78,9 +78,10 @@ jobs:
           uv run pytest -q > r1-gate-pytest.log 2>&1
           pytest_status=$?
           cat r1-gate-pytest.log
-          if [ "$pytest_status" -eq 0 ]; then
+          gate_status=$(PYTEST_STATUS="$pytest_status" uv run python -c 'import os; from pathlib import Path; from tests.qualification.gate_runner import classify_result; result = classify_result(("uv", "run", "pytest", "-q"), returncode=int(os.environ["PYTEST_STATUS"]), output=Path("r1-gate-pytest.log").read_text()); print(result.status)')
+          if [ "$gate_status" = "passed" ]; then
             echo "gate_flag=--repository-tests-passed" >> "$GITHUB_OUTPUT"
-          elif rg -q "mandatory PostgreSQL gate could not start" r1-gate-pytest.log; then
+          elif [ "$gate_status" = "blocked-infrastructure" ]; then
             echo "gate_flag=--repository-tests-unavailable" >> "$GITHUB_OUTPUT"
           else
             echo "gate_flag=--repository-tests-failed" >> "$GITHUB_OUTPUT"
