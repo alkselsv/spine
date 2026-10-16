@@ -8,13 +8,14 @@ from spine.domain.evaluations import EvaluationVerdict
 from spine.evals.offline_runner import run_r1_evaluation_sync
 from spine.evals.regression_gate import (
     OfflineRegressionGateReport,
+    QualificationEvidence,
     main,
     run_offline_regression_gate,
 )
 
 
 def test_offline_regression_gate_passes_reproducible_r1_contract() -> None:
-    result = run_offline_regression_gate()
+    result = run_offline_regression_gate(repository_pytest_status="passed")
 
     assert result.passed is True
     assert result.reproducible is True
@@ -22,6 +23,24 @@ def test_offline_regression_gate_passes_reproducible_r1_contract() -> None:
     assert result.report is not None
     assert result.report.qualification_scope == "offline-contract-only"
     assert result.report.dataset.version == "1.0.0"
+    assert result.schema_version == "r1-gate-status:v1"
+    assert result.status == "passed"
+    assert result.applicability is not None and result.applicability.passed
+    assert result.baseline_comparison is not None
+    assert result.baseline_comparison.status == "comparable"
+    assert result.baseline_comparison.aggregate_deltas
+    assert {item.status for item in result.provider_profiles} == {"skipped"}
+    assert {item.evidence_id for item in result.qualification_evidence} >= {
+        "issue-194:qualification:v1",
+        "issue-90:qualification:v1",
+        "issue-211:qualification:v1",
+        "g01:execution:v1",
+        "g02:execution:v1",
+        "g03:execution:v1",
+        "g06:execution:v1",
+        "r1-gate-applicability:v1",
+        "r1-baseline-comparison:v1",
+    }
 
 
 def test_offline_regression_gate_reports_schema_drift() -> None:
@@ -159,7 +178,7 @@ def test_offline_regression_gate_default_is_provider_free(monkeypatch) -> None:
         raise AssertionError("offline regression gate attempted network access")
 
     monkeypatch.setattr(socket, "create_connection", reject_network)
-    result = run_offline_regression_gate()
+    result = run_offline_regression_gate(repository_pytest_status="passed")
     imported_after = set(sys.modules) - before
 
     assert result.passed is True
@@ -176,10 +195,53 @@ def test_offline_regression_gate_cli_writes_machine_readable_artifact(tmp_path: 
     output = tmp_path / "offline-regression-gate.json"
 
     try:
-        main(["--output", str(output)])
+        main(["--repository-tests-passed", "--output", str(output)])
     except SystemExit as error:
         assert error.code == 0
 
     artifact = OfflineRegressionGateReport.model_validate_json(output.read_text())
     assert artifact.passed is True
     assert artifact.runs_completed == 2
+
+
+def test_r1_gate_is_not_qualified_without_repository_pytest_evidence() -> None:
+    result = run_offline_regression_gate()
+
+    assert result.passed is False
+    assert result.status == "not-qualified"
+    assert result.repository_pytest_status == "unavailable"
+
+
+def test_selected_unavailable_provider_profile_cannot_be_reported_as_passed() -> None:
+    result = run_offline_regression_gate(
+        repository_pytest_status="passed",
+        selected_provider_profiles=("cognee",),
+    )
+
+    profiles = {profile.profile: profile for profile in result.provider_profiles}
+    assert result.status == "not-qualified"
+    assert profiles["cognee"].status == "unavailable"
+    assert profiles["llm"].status == "skipped"
+
+
+def test_reported_retrieval_safety_violation_fails_gate_independently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import spine.evals.regression_gate as regression_gate
+
+    monkeypatch.setattr(
+        regression_gate,
+        "_qualification_evidence",
+        lambda *, mandatory_offline_passed: (
+            QualificationEvidence(
+                evidence_id="g02:execution:v1",
+                source="synthetic-safety-report",
+                status="failed",
+            ),
+        ),
+    )
+
+    result = run_offline_regression_gate(repository_pytest_status="passed")
+
+    assert result.status == "failed"
+    assert result.passed is False
