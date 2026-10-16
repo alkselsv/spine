@@ -1,0 +1,240 @@
+.page {
+  max-width: 90rem;
+}
+
+.pageHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-6);
+  margin-bottom: var(--space-6);
+}
+
+.eyebrow {
+  margin: 0 0 var(--space-2);
+  color: var(--color-muted);
+  font-size: 0.72rem;
+  font-weight: 750;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.page h2 {
+  margin-bottom: var(--space-3);
+  font-size: clamp(1.7rem, 3vw, 2.5rem);
+  letter-spacing: -0.04em;
+}
+
+.lede {
+  max-width: 45rem;
+  margin: 0;
+  color: var(--color-muted);
+  line-height: 1.6;
+}
+
+.filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  align-items: end;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: 0.8rem;
+  padding: var(--space-4);
+  background: var(--color-surface);
+}
+
+.filter {
+  display: grid;
+  gap: 0.35rem;
+  color: var(--color-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.input,
+.filterTrigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-width: 0;
+  min-height: 2.4rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.45rem;
+  padding: 0.55rem 0.6rem;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font: inherit;
+  text-align: left;
+}
+
+.input:focus-visible,
+.filterTrigger:hover,
+.filterTrigger[data-popup-open],
+.filterTrigger:focus-visible {
+  border-color: var(--color-link);
+  background: var(--color-surface-strong);
+  outline: 2px solid transparent;
+}
+
+.filterIcon {
+  color: var(--color-link);
+}
+
+.filterPositioner {
+  z-index: 10;
+}
+
+.filterPopup {
+  min-width: 14rem;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 0.65rem;
+  padding: 0.3rem;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+}
+
+.filterOption {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 0.4rem;
+  padding: 0.55rem 0.65rem;
+  background: transparent;
+  color: var(--color-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.filterOption[data-highlighted],
+.filterOption[data-selected] {
+  background: var(--color-surface-strong);
+}
+
+.primaryButton,
+.secondaryButton {
+  border-radius: 0.5rem;
+  padding: 0.65rem 0.85rem;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primaryButton {
+  border: 0;
+  background: var(--color-link);
+  color: var(--color-header-ink);
+}
+
+.secondaryButton {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-link);
+}
+
+.primaryButton:hover,
+.primaryButton:focus-visible,
+.secondaryButton:hover,
+.secondaryButton:focus-visible {
+  background: var(--color-ink);
+  color: var(--color-header-ink);
+}
+
+.validation {
+  margin: 0 0 var(--space-4);
+  border-left: 0.25rem solid var(--color-link);
+  padding: 0.8rem 1rem;
+  background: var(--color-surface-strong);
+  color: var(--color-ink);
+}
+
+.recovery {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-3);
+}
+
+.tableFrame {
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 0.8rem;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+}
+
+.table {
+  width: 100%;
+  min-width: 68rem;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.table th,
+.table td {
+  border-bottom: 1px solid var(--color-border);
+  padding: 0.85rem 1rem;
+  vertical-align: middle;
+}
+
+.table th {
+  color: var(--color-muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.primaryCell,
+.secondaryCell {
+  display: block;
+}
+
+.primaryCell {
+  font-weight: 700;
+}
+
+.secondaryCell {
+  color: var(--color-muted);
+  font-size: 0.72rem;
+}
+
+.statusPill {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 0.25rem 0.55rem;
+  background: var(--color-surface-strong);
+  color: var(--color-ink);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.rowLink {
+  color: var(--color-link);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .pageHeader {
+    display: block;
+  }
+
+  .pageHeader .secondaryButton {
+    margin-top: var(--space-4);
+  }
+}
