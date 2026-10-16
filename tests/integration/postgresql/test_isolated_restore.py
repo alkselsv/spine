@@ -62,29 +62,29 @@ async def ssl_postgresql_provision() -> TestDatabaseProvision:
     )
     if provision.container is None:
         pytest.skip("isolated restore integration requires an owned PostgreSQL testcontainer")
-    await install_container_marker(provision)
-    parsed = urlsplit(provision.url.get_secret_value())
-    if parsed.scheme != "postgresql+psycopg" or not parsed.hostname:
-        pytest.fail("test harness returned an unsupported PostgreSQL URL")
-    admin_user = unquote(parsed.username or "")
-    admin_password = unquote(parsed.password or "")
-    admin_database = unquote(parsed.path.removeprefix("/"))
-    ssl_kwargs: dict[str, object] = {
-        "user": admin_user,
-        "password": admin_password,
-        "host": parsed.hostname,
-        "port": parsed.port or 5432,
-        "sslmode": "require",
-    }
-    async with await AsyncConnection.connect(
-        dbname=admin_database, **ssl_kwargs
-    ) as ssl_connection:
-        async with ssl_connection.cursor() as cursor:
-            await cursor.execute(
-                "SELECT ssl FROM pg_catalog.pg_stat_ssl WHERE pid = pg_backend_pid()"
-            )
-            assert (await cursor.fetchone())[0] is True
     try:
+        await install_container_marker(provision)
+        parsed = urlsplit(provision.url.get_secret_value())
+        if parsed.scheme != "postgresql+psycopg" or not parsed.hostname:
+            pytest.fail("test harness returned an unsupported PostgreSQL URL")
+        admin_user = unquote(parsed.username or "")
+        admin_password = unquote(parsed.password or "")
+        admin_database = unquote(parsed.path.removeprefix("/"))
+        ssl_kwargs: dict[str, object] = {
+            "user": admin_user,
+            "password": admin_password,
+            "host": parsed.hostname,
+            "port": parsed.port or 5432,
+            "sslmode": "require",
+        }
+        async with await AsyncConnection.connect(
+            dbname=admin_database, **ssl_kwargs
+        ) as ssl_connection:
+            async with ssl_connection.cursor() as cursor:
+                await cursor.execute(
+                    "SELECT ssl FROM pg_catalog.pg_stat_ssl WHERE pid = pg_backend_pid()"
+                )
+                assert (await cursor.fetchone())[0] is True
         yield provision
     finally:
         provision.container.stop()
