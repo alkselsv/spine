@@ -215,6 +215,26 @@ class PostgreSQLQASessionRepository:
         values = tuple(self._message(row) for row in result.mappings())
         return QAMessagePage(values[:limit], len(values) > limit)
 
+    async def resolve_message_link(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        run_id: UUID,
+    ) -> tuple[UUID, UUID] | None:
+        result = await self._uow._execute(
+            select(qa_message_versions)
+            .where(
+                qa_message_versions.c.workspace_id == workspace_id,
+                qa_message_versions.c.environment_id == environment_id,
+                qa_message_versions.c.run_id == run_id,
+            )
+            .order_by(qa_message_versions.c.version.desc())
+            .limit(1)
+        )
+        row = result.mappings().first()
+        return None if row is None else (row["session_id"], row["message_id"])
+
     async def link_message_to_run(
         self,
         *,

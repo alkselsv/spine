@@ -276,6 +276,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/qa/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Qa.Runs.List */
+        get: operations["qa.runs.list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/qa/runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Qa.Runs.Detail */
+        get: operations["qa.runs.detail"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/qa/sessions": {
         parameters: {
             query?: never;
@@ -549,6 +583,36 @@ export interface components {
             environment_id: string;
             /** Items */
             items: components["schemas"]["QAMessageResponse"][];
+            /** Limit */
+            limit: number;
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** ApiCollectionEnvelope[QARunSummaryResponse] */
+        ApiCollectionEnvelope_QARunSummaryResponse_: {
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /** Items */
+            items: components["schemas"]["QARunSummaryResponse"][];
             /** Limit */
             limit: number;
             /** Next Cursor */
@@ -877,6 +941,31 @@ export interface components {
         /** ApiResponseEnvelope[QAMessageResponse] */
         ApiResponseEnvelope_QAMessageResponse_: {
             data: components["schemas"]["QAMessageResponse"];
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** ApiResponseEnvelope[QARunDetailResponse] */
+        ApiResponseEnvelope_QARunDetailResponse_: {
+            data: components["schemas"]["QARunDetailResponse"];
             /**
              * Environment Id
              * Format: uuid
@@ -2075,6 +2164,414 @@ export interface components {
          * @enum {string}
          */
         QAMessageState: "pending" | "running" | "terminal";
+        /** QARunAgentVersionResponse */
+        QARunAgentVersionResponse: {
+            /**
+             * Agent Id
+             * Format: uuid
+             */
+            agent_id: string;
+            /**
+             * Agent Version Id
+             * Format: uuid
+             */
+            agent_version_id: string;
+            /** Configuration Generation */
+            configuration_generation: number;
+            /** Digest */
+            digest: string;
+            /**
+             * Identity Id
+             * Format: uuid
+             */
+            identity_id: string;
+            /** Version */
+            version: string;
+        };
+        /** QARunAttemptResponse */
+        QARunAttemptResponse: {
+            /** Agent Result Id */
+            agent_result_id: string | null;
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            /** Attempt Number */
+            attempt_number: number;
+            /** Completed At */
+            completed_at: string | null;
+            context: components["schemas"]["QARunContextResponse"] | null;
+            /** Context Bundle Digest */
+            context_bundle_digest: string | null;
+            /** Context Bundle Id */
+            context_bundle_id: string | null;
+            /** Context Bundle Version */
+            context_bundle_version: number | null;
+            execution_pin: components["schemas"]["QARunExecutionPinResponse"];
+            /** Input Artifact Ids */
+            input_artifact_ids: string[];
+            /** Latency Ms */
+            latency_ms?: number | null;
+            outcome: components["schemas"]["AnswerQuestionOutcome"] | null;
+            /** Output Artifact Ids */
+            output_artifact_ids: string[];
+            /** Reason */
+            reason: string | null;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Schema Version */
+            schema_version: string;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** State */
+            state: string;
+            /** Timeline */
+            timeline: components["schemas"]["QARunTimelineEventResponse"][];
+            usage: components["schemas"]["QARunUsageResponse"];
+        };
+        /** QARunContextResponse */
+        QARunContextResponse: {
+            /** Activation Generation */
+            activation_generation: number;
+            /** Bundle Digest */
+            bundle_digest: string;
+            /**
+             * Bundle Id
+             * Format: uuid
+             */
+            bundle_id: string;
+            /** Bundle Version */
+            bundle_version: number;
+            /** Canonical As Of Generation */
+            canonical_as_of_generation: number;
+            /**
+             * Canonical As Of Time
+             * Format: date-time
+             */
+            canonical_as_of_time: string;
+            /** Canonical Boundary Digest */
+            canonical_boundary_digest: string;
+            /**
+             * Canonical Boundary Id
+             * Format: uuid
+             */
+            canonical_boundary_id: string;
+            /** Evidence Count */
+            evidence_count: number;
+            /** Freshness */
+            freshness: string;
+            /** Health */
+            health: string;
+            /** Outcome */
+            outcome: string;
+            /**
+             * Projection Activation Id
+             * Format: uuid
+             */
+            projection_activation_id: string;
+            /**
+             * Projection Snapshot Id
+             * Format: uuid
+             */
+            projection_snapshot_id: string;
+            /** Reason Code */
+            reason_code: string;
+            /** Retrieval Strategy */
+            retrieval_strategy: string;
+            /** State */
+            state: string;
+        };
+        /** QARunDetailResponse */
+        QARunDetailResponse: {
+            /** Accepted Evidence */
+            accepted_evidence: components["schemas"]["QARunEvidenceResponse"][];
+            /** Attempts */
+            attempts: components["schemas"]["QARunAttemptResponse"][];
+            /** Causation Id */
+            causation_id: string | null;
+            /** Command Digest */
+            command_digest: string;
+            /** Completed At */
+            completed_at: string | null;
+            /** Correlation Id */
+            correlation_id: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Diagnostic Events */
+            diagnostic_events: components["schemas"]["QARunTimelineEventResponse"][];
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /** Evidence Eligible */
+            evidence_eligible: boolean;
+            /** Final Attempt Id */
+            final_attempt_id: string | null;
+            /** Input Artifact Ids */
+            input_artifact_ids: string[];
+            /** Message Id */
+            message_id: string | null;
+            outcome: components["schemas"]["AnswerQuestionOutcome"] | null;
+            /** Output Artifact Ids */
+            output_artifact_ids: string[];
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Session Id */
+            session_id: string | null;
+            /** State */
+            state: string;
+            /**
+             * Subject Id
+             * Format: uuid
+             */
+            subject_id: string;
+            /** Subject Kind */
+            subject_kind: string;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /** Warnings */
+            warnings: string[];
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** QARunEvidenceResponse */
+        QARunEvidenceResponse: {
+            /** Activation Generation */
+            activation_generation: number;
+            /**
+             * Citation Id
+             * Format: uuid
+             */
+            citation_id: string;
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /** Evidence Digest */
+            evidence_digest: string;
+            /** Evidence Id */
+            evidence_id: string;
+            /** Locator Kind */
+            locator_kind: string;
+            /** Locator Schema */
+            locator_schema: string | null;
+            /** Locator Value */
+            locator_value: string;
+            /**
+             * Projection Snapshot Id
+             * Format: uuid
+             */
+            projection_snapshot_id: string;
+            /** Revision Number */
+            revision_number?: number | null;
+            /**
+             * Source Object Id
+             * Format: uuid
+             */
+            source_object_id: string;
+            /**
+             * Source Revision Id
+             * Format: uuid
+             */
+            source_revision_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** QARunExecutionPinResponse */
+        QARunExecutionPinResponse: {
+            agent_version: components["schemas"]["QARunAgentVersionResponse"];
+            /**
+             * Capability Id
+             * Format: uuid
+             */
+            capability_id: string;
+            /** Configuration Generation */
+            configuration_generation: number;
+            /** Context Profile Binding */
+            context_profile_binding: string;
+            /** Context Profile Digest */
+            context_profile_digest: string;
+            /**
+             * Context Profile Id
+             * Format: uuid
+             */
+            context_profile_id: string;
+            /** Context Profile Version */
+            context_profile_version: number;
+            /** Input Schema */
+            input_schema: string;
+            model_profile: components["schemas"]["QARunVersionResponse"];
+            /** Output Schema */
+            output_schema: string;
+            /** Pin Digest */
+            pin_digest: string;
+            projection: components["schemas"]["QARunProjectionResponse"];
+            prompt_version: components["schemas"]["QARunVersionResponse"];
+            /** Schema Version */
+            schema_version: string;
+            semantic_support_policy: components["schemas"]["QARunVersionResponse"];
+        };
+        /** QARunProjectionResponse */
+        QARunProjectionResponse: {
+            /** Activation Generation */
+            activation_generation: number;
+            /** Canonical Boundary Digest */
+            canonical_boundary_digest: string;
+            /**
+             * Canonical Boundary Id
+             * Format: uuid
+             */
+            canonical_boundary_id: string;
+            /**
+             * Projection Activation Id
+             * Format: uuid
+             */
+            projection_activation_id: string;
+            /** Projection Config Digest */
+            projection_config_digest: string;
+            /**
+             * Projection Config Version Id
+             * Format: uuid
+             */
+            projection_config_version_id: string;
+            /**
+             * Projection Snapshot Id
+             * Format: uuid
+             */
+            projection_snapshot_id: string;
+            /** Snapshot Manifest Digest */
+            snapshot_manifest_digest: string;
+        };
+        /** QARunSummaryResponse */
+        QARunSummaryResponse: {
+            /** Attempt Count */
+            attempt_count: number;
+            /** Completed At */
+            completed_at: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /** Final Attempt Id */
+            final_attempt_id: string | null;
+            /** Message Id */
+            message_id?: string | null;
+            outcome: components["schemas"]["AnswerQuestionOutcome"] | null;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Session Id */
+            session_id?: string | null;
+            /** State */
+            state: string;
+            /**
+             * Subject Id
+             * Format: uuid
+             */
+            subject_id: string;
+            /** Subject Kind */
+            subject_kind: string;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** QARunTimelineEventResponse */
+        QARunTimelineEventResponse: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id: string;
+            /** Kind */
+            kind: string;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Reason */
+            reason?: string | null;
+        };
+        /** QARunUsageResponse */
+        QARunUsageResponse: {
+            /** Cached Input Tokens */
+            cached_input_tokens: number;
+            /** Cost */
+            cost: string;
+            /** Currency */
+            currency?: string | null;
+            /** Input Tokens */
+            input_tokens: number;
+            /** Model Invocations */
+            model_invocations: number;
+            /** Output Tokens */
+            output_tokens: number;
+        };
+        /** QARunVersionResponse */
+        QARunVersionResponse: {
+            /** Configuration Generation */
+            configuration_generation: number;
+            /** Digest */
+            digest: string;
+            /**
+             * Identity Id
+             * Format: uuid
+             */
+            identity_id: string;
+            /** Version */
+            version: string;
+        };
         /** QASessionResponse */
         QASessionResponse: {
             /**
@@ -3814,6 +4311,225 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiCommandResult_FeedbackResponse_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "qa.runs.list": {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+                subject_id?: string | null;
+                session_id?: string | null;
+                message_id?: string | null;
+                outcome?: components["schemas"]["AnswerQuestionOutcome"] | null;
+                created_after?: string | null;
+                created_before?: string | null;
+            };
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiCollectionEnvelope_QARunSummaryResponse_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "qa.runs.detail": {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope_QARunDetailResponse_"];
                 };
             };
             /** @description Safe request error. */

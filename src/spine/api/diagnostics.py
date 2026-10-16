@@ -282,6 +282,7 @@ def _status_for_structured_error(error: StructuredError) -> int:
         "spine.qa_sessions.not_found",
         "spine.qa_sessions.message_not_found",
         "spine.qa.citations.unavailable",
+        "spine.qa_runs.not_found",
     }:
         return 404
     if error.code == "spine.qa_feedback.target_not_found":
@@ -289,6 +290,8 @@ def _status_for_structured_error(error: StructuredError) -> int:
     if error.code == "spine.qa_sessions.conflict":
         return 409
     if error.code == "spine.qa_sessions.invalid_request":
+        return 400
+    if error.code == "spine.qa_runs.invalid_request":
         return 400
     if error.code == "spine.qa_feedback.invalid_request":
         return 400

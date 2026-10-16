@@ -194,6 +194,26 @@ class InMemoryQASessionRepository(QASessionRepository):
                 values = [item for item in values if (item.ordinal, item.message_id) > (after.ordinal, after.message_id)]
             return QAMessagePage(tuple(values[:limit]), len(values) > limit)
 
+    async def resolve_message_link(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        run_id: UUID,
+    ) -> tuple[UUID, UUID] | None:
+        async with self._lock:
+            matches = tuple(
+                item
+                for (workspace, environment, _), item in self._messages.items()
+                if workspace == workspace_id
+                and environment == environment_id
+                and item.run_id == run_id
+            )
+            if not matches:
+                return None
+            selected = max(matches, key=lambda item: (item.version, item.message_id))
+            return selected.session_id, selected.message_id
+
     async def link_message_to_run(
         self,
         *,

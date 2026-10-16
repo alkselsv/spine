@@ -14,6 +14,15 @@ class AnswerDisclosureRepository(Protocol):
         self, *, workspace_id: UUID, environment_id: UUID, request_id: UUID
     ) -> AnswerDisclosureRecord | None: ...
 
+    async def resolve_for_attempt(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        run_id: UUID,
+        attempt_id: UUID,
+    ) -> AnswerDisclosureRecord | None: ...
+
     async def save(self, record: AnswerDisclosureRecord) -> AnswerDisclosureRecord: ...
 
     async def resolve_delivery(
