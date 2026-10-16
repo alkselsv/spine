@@ -20,6 +20,7 @@ test('test_control_plane_navigation_preserves_scope_and_generated_client_context
   await expect(page.getByRole('heading', { name: 'Control Plane Spine' })).toBeVisible();
   await page.getByRole('button', { name: 'Проверить соединение' }).click();
   await expect(page.getByRole('status')).toContainText('Соединение проверено');
+  await expect(page.getByRole('status')).toHaveAttribute('data-state', 'checked');
 
   await choose(page, 'Рабочая область', 'Продажи');
   await choose(page, 'Среда', 'Staging');
@@ -39,6 +40,7 @@ test('test_control_plane_navigation_preserves_scope_and_generated_client_context
 
   await page.getByRole('button', { name: 'Проверить соединение' }).click();
   await expect(page.getByRole('alert')).toHaveText(/Доступ запрещён/);
+  await expect(page.getByRole('status')).toHaveAttribute('data-state', 'failed');
   expect(healthRequests).toHaveLength(2);
   expect(healthRequests[0]?.headers.authorization).toBe('Bearer controlled-browser-token');
   expect(healthRequests[0]?.headers['x-workspace-id']).toBe(primaryWorkspace);
@@ -49,6 +51,21 @@ test('test_control_plane_navigation_preserves_scope_and_generated_client_context
   expect(documentRequests[0]?.headers['x-environment-id']).toBe(stagingEnvironment);
   expect(healthRequests.every(({ url }) => !url.includes('controlled-browser-token'))).toBe(true);
   await expect(page.getByRole('alert')).not.toContainText(/customer|protected|resource_exists/i);
+});
+
+test('test_shared_shell_keeps_navigation_and_scope_controls_usable_on_mobile', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/?fixture=controlled');
+
+  await expect(page.getByRole('navigation', { name: 'Разделы workspace' })).toBeVisible();
+  await expect(page.getByRole('group', { name: 'Рабочая область и среда' })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: 'Рабочая область' })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: 'Среда' })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+  await page.getByRole('link', { name: 'Чат', exact: true }).click();
+  await expect(page).toHaveURL(/\/chat\/demo-session/);
+  await expect(page.getByRole('heading', { name: 'Диагностический чат' })).toBeVisible();
 });
 
 test('test_documents_discovery_filters_paginates_and_navigates_without_content_identity', async ({ page }) => {

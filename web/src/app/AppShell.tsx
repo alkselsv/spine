@@ -26,13 +26,21 @@ const navigation = [
   { label: ru.navigation.settings, to: '/settings' },
 ] as const;
 
+type ConnectionStatus = 'connected' | 'checking' | 'checked' | 'failed';
+
+const connectionCopy: Record<ConnectionStatus, string> = {
+  connected: ru.connection.connected,
+  checking: ru.connection.checking,
+  checked: ru.connection.checked,
+  failed: ru.connection.failed,
+};
+
 export function AppShell() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const auth = useAuth();
-  const [statusMessage, setStatusMessage] = useState<string>(ru.connection.connected);
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connected');
   const [connectionError, setConnectionError] = useState<SpineApiError | null>(null);
-  const [isCheckingConnection, setIsCheckingConnection] = useState(false);
   const scope = parseScopeSearch(`?${searchParams.toString()}`);
 
   function changeScope(next: Partial<Scope>) {
@@ -49,15 +57,16 @@ export function AppShell() {
       replace: true,
     });
     setConnectionError(null);
+    setConnectionStatus('connected');
   }
 
   async function checkConnection() {
     if (!auth.getBearerCredential) {
-      setStatusMessage(ru.connection.checked);
+      setConnectionStatus('checked');
       return;
     }
 
-    setIsCheckingConnection(true);
+    setConnectionStatus('checking');
     setConnectionError(null);
     try {
       const client = createScopedApiClient({
@@ -66,12 +75,10 @@ export function AppShell() {
         scope,
       });
       await client.GET('/api/v1/health/ready');
-      setStatusMessage(ru.connection.checked);
+      setConnectionStatus('checked');
     } catch (error) {
       setConnectionError(error instanceof Error ? (error as SpineApiError) : null);
-      setStatusMessage(ru.connection.failed);
-    } finally {
-      setIsCheckingConnection(false);
+      setConnectionStatus('failed');
     }
   }
 
@@ -79,35 +86,48 @@ export function AppShell() {
     <ScopeContext.Provider value={{ scope, queryKey: (resource) => scopeQueryKey(resource, scope) }}>
       <div className={styles.shell}>
         <header className={styles.header}>
-          <div>
+          <div className={styles.brandBlock}>
             <p className={styles.brand}>{ru.brand}</p>
             <h1>{ru.shellTitle}</h1>
           </div>
           <div className={styles.context}>
-            <ScopeSelector
-              ariaLabel={ru.scope.workspaceLabel}
-              options={workspaceOptions}
-              value={scope.workspaceId}
-              onValueChange={(value) => changeScope({ workspaceId: value as WorkspaceId })}
-            />
-            <ScopeSelector
-              ariaLabel={ru.scope.environmentLabel}
-              options={environmentOptions}
-              value={scope.environmentId}
-              onValueChange={(value) => changeScope({ environmentId: value as EnvironmentId })}
-            />
-            <span className={styles.status} role="status" aria-live="polite">
-              <span className={styles.statusDot} aria-hidden="true" />
-              {isCheckingConnection ? ru.connection.checking : statusMessage}
-            </span>
-            <Button
-              className={styles.refreshButton}
-              disabled={isCheckingConnection}
-              onClick={() => void checkConnection()}
-              type="button"
+            <div
+              aria-label="Рабочая область и среда"
+              className={styles.scopeControls}
+              role="group"
             >
-              {isCheckingConnection ? ru.connection.checking : ru.connection.check}
-            </Button>
+              <ScopeSelector
+                ariaLabel={ru.scope.workspaceLabel}
+                options={workspaceOptions}
+                value={scope.workspaceId}
+                onValueChange={(value) => changeScope({ workspaceId: value as WorkspaceId })}
+              />
+              <ScopeSelector
+                ariaLabel={ru.scope.environmentLabel}
+                options={environmentOptions}
+                value={scope.environmentId}
+                onValueChange={(value) => changeScope({ environmentId: value as EnvironmentId })}
+              />
+            </div>
+            <div aria-label="Состояние соединения" className={styles.connectionControls} role="group">
+              <span
+                className={styles.status}
+                data-state={connectionStatus}
+                role="status"
+                aria-live="polite"
+              >
+                <span className={styles.statusDot} aria-hidden="true" />
+                {connectionCopy[connectionStatus]}
+              </span>
+              <Button
+                className={styles.refreshButton}
+                disabled={connectionStatus === 'checking'}
+                onClick={() => void checkConnection()}
+                type="button"
+              >
+                {connectionStatus === 'checking' ? ru.connection.checking : ru.connection.check}
+              </Button>
+            </div>
           </div>
         </header>
 
