@@ -4,6 +4,40 @@
  */
 
 export interface paths {
+    "/api/v1/ask": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Qa.Ask */
+        post: operations["qa.ask"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ask/{run_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Qa.Ask.Cancel */
+        post: operations["qa.ask.cancel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/documents": {
         parameters: {
             query?: never;
@@ -484,6 +518,12 @@ export interface components {
          * @enum {string}
          */
         AnswerQuestionOutcome: "answered" | "clarification_required" | "abstained" | "denied" | "failed" | "cancelled";
+        /**
+         * AnswerQuestionSafeReasonCode
+         * @description Disclosure-safe, non-content-bearing terminal reason categories.
+         * @enum {string}
+         */
+        AnswerQuestionSafeReasonCode: "ambiguous_question" | "no_usable_evidence" | "insufficient_support" | "unresolved_conflict" | "incomplete_authorized_coverage" | "unmet_freshness" | "evidence_invalidated" | "rejected_candidate" | "authorization_denied" | "mandatory_processing_failed" | "cancelled";
         /** ApiCollectionEnvelope[DocumentProcessingHistoryResponse] */
         ApiCollectionEnvelope_DocumentProcessingHistoryResponse_: {
             /**
@@ -683,6 +723,42 @@ export interface components {
              * @constant
              */
             schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** ApiCommandResult[AskOutcomeResponse] */
+        ApiCommandResult_AskOutcomeResponse_: {
+            /**
+             * Command Id
+             * Format: uuid
+             */
+            command_id: string;
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Replay
+             * @default false
+             */
+            replay: boolean;
+            result?: components["schemas"]["AskOutcomeResponse"] | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            status: components["schemas"]["CommandStatus"];
             /**
              * Trace Id
              * Format: uuid
@@ -1013,6 +1089,104 @@ export interface components {
              */
             workspace_id: string;
         };
+        /** AskAnswerResponse */
+        AskAnswerResponse: {
+            /**
+             * Answer Id
+             * Format: uuid
+             */
+            answer_id: string;
+            /** Citations */
+            citations: components["schemas"]["AskCitationResponse"][];
+            /** Text */
+            text: string;
+        };
+        /** AskAsOfResponse */
+        AskAsOfResponse: {
+            /** Activation Generation */
+            activation_generation: number;
+            /** Context Bundle Digest */
+            context_bundle_digest: string;
+            /**
+             * Context Bundle Id
+             * Format: uuid
+             */
+            context_bundle_id: string;
+            /** Context Bundle Version */
+            context_bundle_version: number;
+            /**
+             * Projection Snapshot Id
+             * Format: uuid
+             */
+            projection_snapshot_id: string;
+        };
+        /** AskCitationResponse */
+        AskCitationResponse: {
+            /**
+             * Citation Id
+             * Format: uuid
+             */
+            citation_id: string;
+            /** Evidence Id */
+            evidence_id: string;
+            /** Locator Contract Version */
+            locator_contract_version: string | null;
+            /** Locator Digest */
+            locator_digest: string | null;
+            /** Locator Kind */
+            locator_kind: string;
+            /** Locator Value */
+            locator_value: string;
+            /** Processing Receipt Id */
+            processing_receipt_id: string | null;
+            /** Revision Digest */
+            revision_digest: string | null;
+            /**
+             * Source Object Id
+             * Format: uuid
+             */
+            source_object_id: string;
+            /**
+             * Source Revision Id
+             * Format: uuid
+             */
+            source_revision_id: string;
+        };
+        /** AskOutcomeResponse */
+        AskOutcomeResponse: {
+            answer?: components["schemas"]["AskAnswerResponse"] | null;
+            as_of?: components["schemas"]["AskAsOfResponse"] | null;
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            /** Clarification */
+            clarification?: string | null;
+            /**
+             * Message Id
+             * Format: uuid
+             */
+            message_id: string;
+            outcome: components["schemas"]["AnswerQuestionOutcome"];
+            reason?: components["schemas"]["AnswerQuestionSafeReasonCode"] | null;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+        };
         /** AskRequest */
         AskRequest: {
             /** Dataset */
@@ -1030,6 +1204,24 @@ export interface components {
             question: string;
             /** Raw Count */
             raw_count: number;
+        };
+        /** AuthorizedAskRequest */
+        AuthorizedAskRequest: {
+            /** Clarification Of Message Id */
+            clarification_of_message_id?: string | null;
+            /** Question */
+            question: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
         };
         /** BatchIngestionFailureResponse */
         BatchIngestionFailureResponse: {
@@ -1158,6 +1350,15 @@ export interface components {
              * Format: uuid
              */
             warning_id: string;
+        };
+        /** CancelAskRequest */
+        CancelAskRequest: {
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
         };
         /**
          * CitationInspectionEvidence
@@ -2824,6 +3025,226 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    "qa.ask": {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AuthorizedAskRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiCommandResult_AskOutcomeResponse_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "qa.ask.cancel": {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CancelAskRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiCommandResult_AskOutcomeResponse_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
     "documents.list": {
         parameters: {
             query?: {

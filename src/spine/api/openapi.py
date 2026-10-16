@@ -49,6 +49,7 @@ from spine.application.projection_control import (
     UnavailableProjectionStatusService,
 )
 from spine.application.qa_sessions import QASessionService
+from spine.application.authorized_ask import AuthorizedAskService
 from spine.application.citation_inspector import CitationInspectorService
 from spine.application.feedback import FeedbackService
 from spine.application.qa_run_history import QARunHistoryService
@@ -172,6 +173,7 @@ class _UnavailableQASessionService:
         del context, requester, idempotency_key
         raise RuntimeError("The OpenAPI composition is not executable.")
 
+
     async def list_sessions(self, *, context, limit, after):
         del context, limit, after
         raise RuntimeError("The OpenAPI composition is not executable.")
@@ -202,6 +204,16 @@ class _UnavailableQASessionService:
 
     async def complete_message(self, *, context, session_id, message_id, answer, outcome, cancelled, idempotency_key):
         del context, session_id, message_id, answer, outcome, cancelled, idempotency_key
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+
+class _UnavailableAuthorizedAskService:
+    async def ask(self, command):
+        del command
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+    async def cancel(self, command):
+        del command
         raise RuntimeError("The OpenAPI composition is not executable.")
 
 
@@ -269,6 +281,9 @@ def create_openapi_app() -> FastAPI:
         projection_recovery_service=UnavailableProjectionRecoveryService(),
         qa_session_service=cast(QASessionService, _UnavailableQASessionService()),
         qa_session_cursor_secret=secrets.token_bytes(32),
+        authorized_ask_service=cast(
+            AuthorizedAskService, _UnavailableAuthorizedAskService()
+        ),
         citation_inspector_service=cast(
             CitationInspectorService, _UnavailableCitationInspectorService()
         ),
