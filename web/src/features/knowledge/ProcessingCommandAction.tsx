@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 
 import type { components } from '../../../api/generated/schema';
@@ -36,7 +36,8 @@ export function ProcessingCommandAction(props: ProcessingCommandActionProps) {
   const queryClient = useQueryClient();
   const storageKey = idempotencyStorageKey(props);
   const idempotencyKey = useRef<string | null>(readIdempotencyKey(storageKey));
-  const [receipt, setReceipt] = useState<ProcessingCommand | null>(null);
+  const receiptStorageKey = `${storageKey}:receipt`;
+  const [receipt, setReceipt] = useState<ProcessingCommand | null>(() => readReceipt(receiptStorageKey));
   const commandMutation = useMutation({
     mutationFn: (key: string) => {
       const signal = new AbortController().signal;
@@ -71,6 +72,7 @@ export function ProcessingCommandAction(props: ProcessingCommandActionProps) {
       idempotencyKey.current = null;
       clearIdempotencyKey(storageKey, key);
       setReceipt(command);
+      storeReceipt(receiptStorageKey, command);
       void queryClient.invalidateQueries({ queryKey: props.queryKey });
       void queryClient.invalidateQueries({ queryKey: ['spine'] });
     },
@@ -85,6 +87,13 @@ export function ProcessingCommandAction(props: ProcessingCommandActionProps) {
       query.state.data && ACTIVE_STATUSES.includes(query.state.data.status) ? 750 : false,
     refetchOnMount: true,
   });
+
+  useEffect(() => {
+    if (statusQuery.data) {
+      setReceipt(statusQuery.data);
+      storeReceipt(receiptStorageKey, statusQuery.data);
+    }
+  }, [receiptStorageKey, statusQuery.data]);
 
   if (props.mode.kind === 'retry' && !props.mode.retryable) return null;
 
@@ -191,6 +200,41 @@ function clearIdempotencyKey(storageKey: string, expectedValue?: string): void {
     window.sessionStorage.removeItem(storageKey);
   } catch {
     // The operation remains safe through the server's idempotency contract.
+  }
+}
+
+function readReceipt(storageKey: string): ProcessingCommand | null {
+  try {
+    const value: unknown = JSON.parse(window.sessionStorage.getItem(storageKey) ?? 'null');
+    if (!value || typeof value !== 'object') return null;
+    const command = value as Partial<ProcessingCommand>;
+    return command.schema_version === 1 &&
+      typeof command.operation_id === 'string' &&
+      typeof command.run_id === 'string' &&
+      typeof command.item_id === 'string' &&
+      typeof command.source_object_id === 'string' &&
+      typeof command.source_revision_id === 'string' &&
+      typeof command.status_url === 'string' &&
+      Array.isArray(command.failure_ids) &&
+      command.failure_ids.every((id) => typeof id === 'string') &&
+      typeof command.replay === 'boolean' &&
+      (command.processing_receipt_id === undefined || command.processing_receipt_id === null ||
+        typeof command.processing_receipt_id === 'string') &&
+      ['accepted', 'ready', 'processing', 'partial', 'failed', 'cancelled', 'unavailable'].includes(command.status ?? '') &&
+      ['poll', 'retry', 'review', 'none'].includes(command.next_action ?? '') &&
+      ['retry', 'reprocess', 'replacement'].includes(command.trigger_kind ?? '')
+      ? (command as ProcessingCommand)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeReceipt(storageKey: string, command: ProcessingCommand): void {
+  try {
+    window.sessionStorage.setItem(storageKey, JSON.stringify(command));
+  } catch {
+    // The current page can still poll and show the receipt if browser storage is unavailable.
   }
 }
 

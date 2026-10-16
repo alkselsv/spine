@@ -170,6 +170,7 @@ test('test_document_retry_polls_durable_operation_and_reloads_its_run', async ({
   const retryRevisionId = '80000000-0000-4000-8000-000000000005';
   const failureId = '60000000-0000-0000-0000-000000000002';
   const commandRequests: Array<{ body: string; headers: Record<string, string>; url: string }> = [];
+  let commandReady = false;
   await page.route(`**/api/v1/ingestion/runs/${firstDocument}`, async (route) => {
     const status = controlledPartialRunStatus();
     const failed = status.items[1]!;
@@ -188,7 +189,7 @@ test('test_document_retry_polls_durable_operation_and_reloads_its_run', async ({
   await page.route(`**/api/v1/documents/processing/operations/${operationId}`, async (route) => {
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(processingCommandReceipt({
       failureIds: [], itemId: retryItemId, operationId, runId: retryRunId, sourceObjectId: retrySourceObjectId,
-      sourceRevisionId: retryRevisionId, status: 'ready',
+      sourceRevisionId: retryRevisionId, status: commandReady ? 'ready' : 'accepted',
     })), status: 200 });
   });
   await page.route(`**/api/v1/ingestion/runs/${retryRunId}`, async (route) => {
@@ -205,10 +206,14 @@ test('test_document_retry_polls_durable_operation_and_reloads_its_run', async ({
   await page.goto(`/runs/${firstDocument}?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`);
   const failedFile = page.getByRole('listitem').filter({ hasText: 'failed.txt' });
   await failedFile.getByRole('button', { name: 'Повторить обработку файла' }).click();
-  await expect(failedFile.getByRole('region', { name: 'Результат команды обработки' })).toContainText('Обработка завершена');
-  await expect(failedFile).toContainText('Ошибка');
+  await expect(failedFile).toContainText('Команда в очереди. Обработка ещё не завершена.');
+  commandReady = true;
+  await page.reload();
+  const reloadedFailedFile = page.getByRole('listitem').filter({ hasText: 'failed.txt' });
+  await expect(reloadedFailedFile.getByRole('region', { name: 'Результат команды обработки' })).toContainText('Обработка завершена');
+  await expect(reloadedFailedFile).toContainText('Ошибка');
   await expect(page.locator('body')).not.toContainText(/provider|stack|customer secret/i);
-  await expect(failedFile.getByRole('link', { name: 'Открыть запуск обработки' })).toHaveAttribute(
+  await expect(reloadedFailedFile.getByRole('link', { name: 'Открыть запуск обработки' })).toHaveAttribute(
     'href', new RegExp(`/runs/${retryRunId}.*workspace=${salesWorkspace}.*environment=${stagingEnvironment}`),
   );
 
@@ -225,7 +230,7 @@ test('test_document_retry_polls_durable_operation_and_reloads_its_run', async ({
     source_revision_id: retryRevisionId,
   });
 
-  await failedFile.getByRole('link', { name: 'Открыть запуск обработки' }).click();
+  await reloadedFailedFile.getByRole('link', { name: 'Открыть запуск обработки' }).click();
   await expect(page).toHaveURL(new RegExp(`/runs/${retryRunId}.*workspace=${salesWorkspace}`));
   await page.reload();
   await expect(page.getByRole('list', { name: 'Результаты файлов' })).toContainText('Готов');

@@ -432,13 +432,15 @@ function RunItem({
           <span key={warning.warning_id}>
             {ru.documents.run.warning
               .replace('{code}', warning.code)
-              .replace('{stage}', warning.stage)}
+              .replace('{stage}', warning.stage)}{' '}
+            · {ru.documents.run.warningId}: <code>{warning.warning_id}</code>
           </span>
         ))}
         {item.failures.map((failure) => (
           <span key={failure.failure_id}>
             {ru.documents.run.failure.replace('{code}', failure.code).replace('{stage}', failure.stage)} ·{' '}
-            {failure.retryable ? ru.documents.run.failureRetryable : ru.documents.run.failureFinal}
+            {failure.retryable ? ru.documents.run.failureRetryable : ru.documents.run.failureFinal} ·{' '}
+            {ru.documents.run.failureId}: <code>{failure.failure_id}</code>
           </span>
         ))}
         {item.retryable ? <span>{ru.documents.run.retryable}</span> : null}

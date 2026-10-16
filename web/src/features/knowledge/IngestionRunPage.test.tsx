@@ -65,7 +65,9 @@ describe('Knowledge ingestion run view', () => {
     expect(detailView.getByText(scope.workspaceId)).toBeVisible();
     expect(detailView.getByText('Частично завершён')).toBeVisible();
     expect(detailView.getByText('Частичное')).toBeVisible();
-    expect(detailView.getAllByText('Предупреждение: parser.warning (parse)').length).toBeGreaterThan(0);
+    expect(detailView.getAllByText((_, element) => element?.textContent?.startsWith('Предупреждение: parser.warning (parse)') ?? false).length).toBeGreaterThan(0);
+    expect(detailView.getAllByText('60000000-0000-0000-0000-000000000003').length).toBeGreaterThan(0);
+    expect(detailView.getAllByText('60000000-0000-0000-0000-000000000002').length).toBeGreaterThan(0);
     expect(detailView.getByText(/Ошибка: parser\.invalid \(parse\)/)).toBeVisible();
     expect(detailView.getByText(/Ошибка: parser\.final \(index\).*Повтор этой ошибки запрещён/)).toBeVisible();
     expect(detailView.getByText('Повтор операции разрешён')).toBeVisible();

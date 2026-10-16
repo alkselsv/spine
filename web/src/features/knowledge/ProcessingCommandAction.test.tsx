@@ -109,6 +109,30 @@ describe('document processing command action', () => {
     expect(keys).toEqual(['persisted-logical-command', 'persisted-logical-command']);
   });
 
+  it('test_reload_restores_accepted_command_and_resumes_status_polling', async () => {
+    const requests: Request[] = [];
+    let allowReady = false;
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (input) => {
+      const request = input as Request;
+      requests.push(request);
+      if (request.method === 'POST') return Response.json(command('accepted'));
+      return Response.json(command(allowReady ? 'ready' : 'accepted'));
+    });
+    const mode = { kind: 'retry' as const, failureId: '70000000-0000-4000-8000-000000000001', retryable: true };
+    const firstPage = renderAction(fetch, mode);
+
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Повторить обработку файла' }));
+    expect(await screen.findByText('Команда в очереди. Обработка ещё не завершена.')).toBeVisible();
+    firstPage.unmount();
+    allowReady = true;
+    renderAction(fetch, mode);
+
+    expect(await screen.findByText('Обработка завершена')).toBeVisible();
+    expect(screen.getByText(operationId)).toBeVisible();
+    expect(requests.filter((request) => request.method === 'POST')).toHaveLength(1);
+    expect(requests.some((request) => request.url.includes(`/processing/operations/${operationId}`))).toBe(true);
+  });
+
   it('test_retry_is_hidden_when_failure_is_not_server_marked_retryable', () => {
     renderAction(vi.fn<typeof globalThis.fetch>(), {
       kind: 'retry',
