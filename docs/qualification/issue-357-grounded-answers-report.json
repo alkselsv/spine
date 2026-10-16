@@ -9,6 +9,7 @@
   "coverage": {
     "1": [
       "tests/evals/test_grounded_answer_safety.py::test_grounded_answer_safety_accepts_exact_current_citation_and_claim_support",
+      "tests/evals/test_production_contract.py::test_production_contract_rejects_unattributed_answer_prose",
       "tests/evals/test_grounded_answer_safety.py::test_grounded_answer_safety_rejects_unsupported_answer_claim",
       "tests/application/test_semantic_support.py::test_citation_presence_does_not_substitute_for_semantic_support",
       "tests/domain/capabilities/test_answer_evaluation.py::test_explicit_coverage_gap_without_fallback_rejects_answer"
@@ -16,16 +17,21 @@
     "2": [
       "tests/evals/test_grounded_answer_safety.py::test_grounded_answer_safety_accepts_exact_current_citation_and_claim_support",
       "tests/application/test_citation_validation.py::test_fabricated_or_wrong_generation_citation_fails_closed_without_source_details",
-      "tests/application/test_evidence_lineage_verification.py::test_fabricated_evidence_digest_is_rejected"
+      "tests/application/test_evidence_lineage_verification.py::test_fabricated_evidence_digest_is_rejected",
+      "tests/evals/test_production_contract.py::test_production_contract_observation_rejects_stale_persisted_bundle"
     ],
     "3": [
       "tests/evals/test_grounded_answer_safety.py::test_grounded_answer_safety_rejects_unsupported_answer_claim",
       "tests/application/test_citation_validation.py::test_current_authorization_denial_fails_closed",
       "tests/application/test_citation_validation.py::test_current_source_lifecycle_fails_closed",
-      "tests/evals/test_retrieval_replay.py::test_stale_projection_abstains_until_rebuild_selects_current_revision"
+      "tests/evals/test_retrieval_replay.py::test_stale_projection_abstains_until_rebuild_selects_current_revision",
+      "tests/evals/test_grounded_answer_safety.py::test_grounded_answer_safety_rejects_inaccessible_citation",
+      "tests/evals/test_grounded_answer_safety.py::test_grounded_answer_safety_rejects_wrong_locator",
+      "tests/evals/test_production_contract.py::test_production_contract_observation_rejects_stale_persisted_bundle"
     ],
     "4": [
       "tests/evals/test_grounded_answer_safety.py::test_grounded_answer_safety_preserves_typed_non_answer_outcomes",
+      "tests/evals/test_production_contract.py::test_production_contract_grounded_safety_preserves_unresolved_conflict_abstention",
       "tests/domain/capabilities/test_answer_disclosure.py::test_unsupported_semantics_return_safe_non_content_result",
       "tests/evals/test_production_contract.py::test_production_contract_mapping_preserves_non_answer_outcome"
     ],

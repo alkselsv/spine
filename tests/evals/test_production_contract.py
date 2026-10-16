@@ -7,12 +7,14 @@ import pytest
 
 import spine.evals.offline_runner as offline_runner
 from spine.domain.capabilities import (
+    AcceptedGroundedAnswer,
     AnswerQuestionInput,
     AnswerQuestionOutcome,
     AnswerQuestionOutput,
     AnswerQuestionSafeReason,
     AnswerQuestionSafeReasonCode,
     AnswerQuestionScope,
+    AnswerDisclosureValidation,
     LineageReference,
     QuestionSubject,
     RunAttemptCorrelation,
@@ -36,6 +38,122 @@ from spine.memory.contracts import (
     ProjectionRetrievalResult,
     RetrievalResult,
 )
+from tests.domain.capabilities.test_answer_question_candidate import candidate_output
+
+
+def test_production_contract_rejects_unattributed_answer_prose() -> None:
+    from tests.evals.test_unauthorized_retrieval_safety import _allowed_observation
+
+    observation = _allowed_observation()
+    assert observation.context_bundle is not None
+    bundle = observation.context_bundle
+    candidate = candidate_output().answer
+    claim = candidate.claims[0].model_copy(
+        update={
+            "workspace_id": observation.question.scope.workspace_id,
+            "environment_id": observation.question.scope.environment_id,
+            "run_id": observation.question.correlation.run_id,
+            "attempt_id": observation.question.correlation.attempt_id,
+        }
+    )
+    citation = candidate.citations[0].model_copy(
+        update={
+            "context_bundle": bundle.lineage_reference,
+            "evidence_reference": bundle.evidence_references[0],
+        }
+    )
+    relationship = candidate.relationships[0].model_copy(
+        update={
+            "workspace_id": observation.question.scope.workspace_id,
+            "environment_id": observation.question.scope.environment_id,
+            "run_id": observation.question.correlation.run_id,
+            "attempt_id": observation.question.correlation.attempt_id,
+        }
+    )
+    answer = candidate.model_copy(
+        update={"text": f"{candidate.text} Also, the policy expires tomorrow."}
+    )
+    answer = answer.model_copy(
+        update={
+            "workspace_id": observation.question.scope.workspace_id,
+            "environment_id": observation.question.scope.environment_id,
+            "run_id": observation.question.correlation.run_id,
+            "attempt_id": observation.question.correlation.attempt_id,
+            "claims": (claim,),
+            "citations": (citation,),
+            "relationships": (relationship,),
+        }
+    )
+    validation = AnswerDisclosureValidation(
+        citation_validation_reference=UUID(int=901),
+        semantic_support_validation_reference=UUID(int=902),
+        evaluation_lineage_reference=UUID(int=903),
+        disclosure_eligibility_reference=UUID(int=904),
+        context_bundle_id=bundle.bundle_id,
+        context_bundle_version=bundle.bundle_version,
+        context_bundle_digest=bundle.bundle_digest,
+        claim_ids=(claim.claim_id,),
+        citation_ids=(citation.citation_id,),
+        validation_fact_ids=(UUID(int=905),),
+    )
+    accepted = AcceptedGroundedAnswer(
+        answer=answer,
+        validation=validation,
+        accepted_at=observation.disclosure.created_at,
+    )
+    answered = observation.answer.model_copy(
+        update={
+            "outcome": AnswerQuestionOutcome.ANSWERED,
+            "answer": answer,
+            "reason": None,
+            "lineage": (
+                LineageReference(
+                    kind="context_bundle",
+                    identifier=bundle.bundle_id,
+                    schema_version="context-bundle:v1",
+                ),
+            ),
+        }
+    )
+    disclosure = observation.disclosure.model_copy(
+        update={
+            "outcome": AnswerQuestionOutcome.ANSWERED,
+            "validation": validation,
+            "accepted_answer": accepted,
+            "safe_output": None,
+        }
+    )
+    observation = observation.model_copy(
+        update={"answer": answered, "disclosure": disclosure}
+    )
+
+    with pytest.raises(ProductionContractObservationError, match="outside attributed claims"):
+        observation.validate()
+
+
+def test_production_contract_observation_rejects_stale_persisted_bundle() -> None:
+    from tests.evals.test_unauthorized_retrieval_safety import _allowed_observation
+    from tests.domain.context_bundle.test_context_bundle_models import context_bundle
+    from spine.domain.projections import ProjectionFreshness
+
+    observation = _allowed_observation()
+    assert observation.context_bundle is not None
+    stale_bundle = context_bundle(
+        publication_pin_id=observation.context_bundle.publication_pin_id,
+        run_id=observation.question.correlation.run_id,
+        attempt_id=observation.question.correlation.attempt_id,
+        freshness=ProjectionFreshness.STALE,
+        evidence_references=observation.context_bundle.evidence_references,
+    )
+    stale_response = observation.context_response.model_copy(
+        update={"context_bundle_ref": stale_bundle.reference}
+    )
+    stale_observation = observation.model_copy(
+        update={"context_bundle": stale_bundle, "context_response": stale_response}
+    )
+
+    with pytest.raises(ProductionContractObservationError, match="context bundle is stale"):
+        stale_observation.validate()
 
 
 def _question(case: QACase) -> AnswerQuestionInput:
@@ -179,6 +297,62 @@ async def test_production_contract_grounded_safety_fails_independently_of_qualit
     assert report.scenarios[0].status == "failed"
     assert report.failures[0].component == "grounded-answer-safety"
     assert report.grounded_answer_safety_results[0].status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_production_contract_grounded_safety_preserves_unresolved_conflict_abstention() -> None:
+
+    original = next(
+        case for case in load_r1_dataset().cases if case.case_id == "allowed-acl"
+    )
+    conflict_case = original.model_copy(
+        update={
+            "expected_outcome": "abstained",
+            "expected_answer": None,
+            "expected_claims": (),
+            "expected_evidence_ids": (),
+            "expected_reason": "unresolved_conflict",
+            "scenario_tags": (*original.scenario_tags, "unresolved-conflict"),
+        }
+    )
+    dataset = load_r1_dataset().model_copy(update={"cases": (conflict_case,)})
+
+    class AnsweringFlow(ProductionContractApplicationFlow):
+        observation: ProductionContractObservation | None = None
+
+        async def execute(
+            self, request: ProductionContractCaseRequest
+        ) -> ProductionContractObservation:
+            assert request.case_id == "allowed-acl"
+            observation = _safe_observation(original)
+            conflict_answer = observation.answer.model_copy(
+                update={
+                    "reason": AnswerQuestionSafeReason(
+                        code=AnswerQuestionSafeReasonCode.UNRESOLVED_CONFLICT
+                    )
+                }
+            )
+            conflict_disclosure = observation.disclosure.model_copy(
+                update={"safe_output": conflict_answer}
+            )
+            self.observation = observation.model_copy(
+                update={"answer": conflict_answer, "disclosure": conflict_disclosure}
+            )
+            return self.observation
+
+    flow = AnsweringFlow()
+    report = await OfflineEvaluationRunner(
+        dataset=dataset,
+        execution_mode="production-contract",
+        production_observer=ProductionContractObservationBridge(flow),
+    ).run()
+
+    assert flow.observation is not None
+    assert flow.observation.answer.reason is not None
+    assert flow.observation.answer.reason.code is AnswerQuestionSafeReasonCode.UNRESOLVED_CONFLICT
+    assert report.scenarios[0].status == "passed"
+    assert report.scenarios[0].observed_outcome == "abstained"
+    assert report.grounded_answer_safety_results[0].status == "passed"
 
 
 @pytest.mark.asyncio

@@ -24,7 +24,7 @@ from spine.evals.production_contract import (
 )
 from spine.evals.qa_r1 import QACase, QADataset, load_r1_dataset
 from spine.evals.retrieval_replay import DeterministicRetrievalReplay
-from spine.evals.grounded_answer_safety import (
+from spine.evaluations.grounded_answer_safety import (
     GroundedAnswerSafetyGate,
     GroundedAnswerSafetyResult,
 )

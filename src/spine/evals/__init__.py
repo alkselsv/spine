@@ -30,7 +30,7 @@ from spine.evals.production_contract import (
     ProductionContractObservationBridge,
     ProductionContractObservationError,
 )
-from spine.evals.grounded_answer_safety import (
+from spine.evaluations.grounded_answer_safety import (
     GROUNDED_ANSWER_SAFETY_SEAM,
     GroundedAnswerSafetyGate,
     GroundedAnswerSafetyResult,

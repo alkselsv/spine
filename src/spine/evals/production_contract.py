@@ -120,12 +120,13 @@ class ProductionContractObservation(DefinitionModel):
             or self.disclosure.outcome is not self.answer.outcome
         ):
             raise ProductionContractObservationError("disclosure lineage is inconsistent")
-        disclosed = (
-            self.disclosure.accepted_answer.answer
-            if self.disclosure.accepted_answer is not None
-            else self.disclosure.safe_output
-        )
-        if disclosed != self.answer:
+        if self.disclosure.accepted_answer is not None:
+            disclosed = self.disclosure.accepted_answer.answer
+            observed = self.answer.answer
+        else:
+            disclosed = self.disclosure.safe_output
+            observed = self.answer
+        if disclosed != observed:
             raise ProductionContractObservationError("disclosure output is not the observed answer")
 
         if self.context_response.outcome in {ContextOutcome.ALLOWED, ContextOutcome.PARTIAL}:
@@ -175,6 +176,7 @@ class ProductionContractObservation(DefinitionModel):
                     raise ProductionContractObservationError(
                         "answered output has no accepted disclosure or citations"
                     )
+                _validate_claim_text_coverage(self.answer.answer)
                 validation = accepted.validation
                 if (
                     validation.context_bundle_id != bundle.bundle_id
@@ -275,6 +277,27 @@ def _validate_retrieval_lineage(retrieval: RetrievalResult, bundle: ContextBundl
             raise ProductionContractObservationError(
                 f"retrieval lineage is inconsistent for evidence {evidence_id}"
             )
+
+
+def _validate_claim_text_coverage(answer: object) -> None:
+    """Reject answer prose outside the text ranges attributed to checked claims."""
+
+    from spine.domain.capabilities import AnswerContent
+
+    if type(answer) is not AnswerContent:
+        raise ProductionContractObservationError("answer content is not a typed contract")
+    cursor = 0
+    for claim in sorted(answer.claims, key=lambda item: item.location.start_offset):
+        gap = answer.text[cursor : claim.location.start_offset]
+        if any(character.isalnum() for character in gap):
+            raise ProductionContractObservationError(
+                "answer contains text outside attributed claims"
+            )
+        cursor = max(cursor, claim.location.end_offset)
+    if any(character.isalnum() for character in answer.text[cursor:]):
+        raise ProductionContractObservationError(
+            "answer contains text outside attributed claims"
+        )
 
 
 def _validate_projection_retrieval(

@@ -3,8 +3,8 @@ from __future__ import annotations
 from uuid import UUID
 
 from spine.evals.offline_runner import _evaluation_bundle_from_domain
-from spine.evals.grounded_answer_safety import GroundedAnswerSafetyGate
 from spine.evals.qa_r1 import load_r1_dataset
+from spine.evaluations.grounded_answer_safety import GroundedAnswerSafetyGate
 from spine.evaluations.citation_metrics import (
     AnswerClaim,
     AnswerSubmission,
@@ -82,7 +82,7 @@ def test_grounded_answer_safety_preserves_typed_non_answer_outcomes() -> None:
     assert result.violation_codes == ()
 
 
-def test_grounded_answer_safety_accepts_exact_current_citation_and_claim_support() -> None:
+def _valid_grounded_answer() -> tuple[object, object, AnswerSubmission, ContextBundle]:
     dataset = load_r1_dataset()
     case = next(case for case in dataset.cases if case.case_id == "allowed-acl")
     expected_claim = case.expected_claims[0]
@@ -132,19 +132,32 @@ def test_grounded_answer_safety_accepts_exact_current_citation_and_claim_support
         ),
     )
 
+    return dataset, case, answer, context_bundle
+
+
+def test_grounded_answer_safety_accepts_exact_current_citation_and_claim_support() -> None:
+    dataset, case, answer, context_bundle = _valid_grounded_answer()
     result = GroundedAnswerSafetyGate().evaluate(
         case=case,
         dataset=dataset,
         answer=answer,
         context_bundle=context_bundle,
     )
-
     assert result.status == "passed"
     assert result.violation_codes == ()
 
+
+def test_grounded_answer_safety_rejects_wrong_locator() -> None:
+    dataset, case, answer, context_bundle = _valid_grounded_answer()
     valid_citation = answer.citations[0]
     wrong_locator = valid_citation.model_copy(
-        update={"locator": {"kind": "pdf_page", "schema_version": "locator:pdf-page:v1", "page": 2}}
+        update={
+            "locator": {
+                "kind": "pdf_page",
+                "schema_version": "locator:pdf-page:v1",
+                "page": 2,
+            }
+        }
     )
     wrong_locator_result = GroundedAnswerSafetyGate().evaluate(
         case=case,
@@ -155,6 +168,9 @@ def test_grounded_answer_safety_accepts_exact_current_citation_and_claim_support
     assert wrong_locator_result.status == "failed"
     assert "citation_validation_failed" in wrong_locator_result.violation_codes
 
+
+def test_grounded_answer_safety_rejects_inaccessible_citation() -> None:
+    dataset, case, answer, context_bundle = _valid_grounded_answer()
     inaccessible_case = case.model_copy(
         update={
             "acl": tuple(
