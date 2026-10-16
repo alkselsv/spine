@@ -40,7 +40,7 @@ describe('application bootstrap', () => {
     const user = userEvent.setup();
     const router = createMemoryRouter(appRoutes, {
       initialEntries: [
-        '/knowledge/documents?workspace=10000000-0000-4000-8000-000000000002&environment=20000000-0000-4000-8000-000000000002&cursor=stale-cursor',
+        '/knowledge/documents?workspace=10000000-0000-4000-8000-000000000002&environment=20000000-0000-4000-8000-000000000002&cursor=stale-cursor&processing_cursor=stale-processing-cursor',
       ],
     });
 
@@ -69,7 +69,7 @@ describe('application bootstrap', () => {
     await user.click(screen.getByRole('link', { name: 'Чат' }));
     expect(router.state.location.pathname).toBe('/chat/demo-session');
     await user.click(screen.getByRole('link', { name: 'Запуски' }));
-    await waitFor(() => expect(router.state.location.pathname).toBe('/runs/demo-run'));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/runs'));
     await user.click(screen.getByRole('link', { name: 'Настройки' }));
     expect(router.state.location.pathname).toBe('/settings');
   });

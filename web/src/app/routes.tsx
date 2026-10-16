@@ -114,6 +114,13 @@ export const appRoutes: RouteObject[] = [
         element: <ChatPage />,
       },
       {
+        path: 'runs',
+        lazy: async () => {
+          const module = await import('../features/knowledge/IngestionRunPage');
+          return { Component: module.IngestionRunPage };
+        },
+      },
+      {
         path: 'runs/:runId',
         lazy: async () => {
           const module = await import('../features/knowledge/IngestionRunPage');
