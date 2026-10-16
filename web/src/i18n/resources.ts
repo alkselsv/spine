@@ -117,6 +117,7 @@ export const ru = {
     operationRunning: 'Выполняется',
     operationCompleted: 'Завершена',
     operationFailed: 'Ошибка',
+    operationCancelled: 'Отменена',
     operationUnavailable: 'Недоступна',
     operationStale: 'Устарела',
     retryable: 'можно повторить',
@@ -124,6 +125,10 @@ export const ru = {
     rebuildProjection: 'Запросить пересборку проекции',
     recoverProjection: 'Запросить восстановление проекции',
     recoveryAccepted: 'Запрос принят. Состояние обновится после сверки с источником истины.',
+    recoveryReplayed: 'Команда уже была принята; показана исходная квитанция.',
+    recoveryStatusIsAuthoritative: 'Принятие команды не подтверждает завершение пересборки или активации. Итог показывает состояние проекции.',
+    commandId: 'Идентификатор команды',
+    commandStatus: 'Состояние квитанции',
     recoveryPending: 'Запрос на восстановление выполняется.',
     recoveryNotRequested: 'Не запрашивалось',
     recoverySucceeded: 'Завершено',
@@ -406,6 +411,10 @@ export const ru = {
     validation: {
       title: 'Проверьте данные',
       description: 'Запрос не прошёл проверку.',
+    },
+    conflict: {
+      title: 'Команда конфликтует с текущим состоянием',
+      description: 'Обновите состояние проекции и повторите запрос. Подробности внутренней обработки скрыты.',
     },
     unavailable: {
       title: 'Сервис временно недоступен',
