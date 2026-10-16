@@ -124,6 +124,9 @@ function stateDescription(
   }
   if (state === 'ready') return ru.documents.upload.readyDescription;
   if (state === 'cancelled') return ru.documents.upload.serverCancelledDescription;
+  if (state === 'failed' && (item.status === 'partial' || item.processing === 'partial')) {
+    return ru.documents.upload.partialDescription;
+  }
   if (state === 'failed' || state === 'rejected') return ru.documents.upload.serverFailureDescription;
   return '';
 }

@@ -122,7 +122,7 @@ export function DocumentUpload({
         ? {
             ...current,
             cancelled: true,
-            rows: current.rows.map((row) => (isActiveRow(row) ? { ...row, state: 'cancelled' } : row)),
+            rows: effectiveRows.map((row) => (isActiveRow(row) ? { ...row, state: 'cancelled' } : row)),
           }
         : current,
     );
@@ -184,7 +184,7 @@ export function DocumentUpload({
             ? {
                 ...value,
                 cancelled: true,
-                rows: value.rows.map((row) => (isActiveRow(row) ? { ...row, state: 'cancelled' } : row)),
+                rows: effectiveRows.map((row) => (isActiveRow(row) ? { ...row, state: 'cancelled' } : row)),
               }
             : value,
         );
@@ -377,6 +377,9 @@ function uploadStateLabel(row: UploadRow): string {
   if (row.state === 'processing' && row.serverItem?.item_state === 'processing') {
     return ru.documents.states.parsing;
   }
+  if (row.state === 'failed' && (row.serverItem?.status === 'partial' || row.serverItem?.processing === 'partial')) {
+    return ru.documents.upload.partial;
+  }
   return ru.documents.upload[row.state];
 }
 
@@ -387,6 +390,9 @@ function uploadStateDescription(row: UploadRow): string {
   }
   if (row.state === 'processing') return ru.documents.upload.processingDescription;
   if (row.state === 'ready') return ru.documents.upload.readyDescription;
+  if (row.state === 'failed' && (row.serverItem?.status === 'partial' || row.serverItem?.processing === 'partial')) {
+    return ru.documents.upload.partialDescription;
+  }
   if (row.state === 'failed' || row.state === 'rejected') return ru.documents.upload.serverFailureDescription;
   if (row.state === 'cancelled') {
     return row.serverItem?.status === 'cancelled' || row.serverItem?.processing === 'cancelled'

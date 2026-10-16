@@ -8,6 +8,7 @@ export const DEFAULT_UPLOAD_LIMITS = {
 
 const SUPPORTED_EXTENSIONS = new Set(['.md', '.markdown', '.txt']);
 const SUPPORTED_MEDIA_TYPES = new Set(['text/markdown', 'text/plain']);
+const MULTIPART_OVERHEAD_RESERVE_PER_FILE = 1_024;
 
 export type UploadValidationIssueCode =
   | 'empty_batch'
@@ -55,7 +56,8 @@ export function validateUploadFiles(
   if (files.length > limits.maxFiles) issues.push({ code: 'too_many_files' });
 
   const totalBytes = files.reduce((total, value) => total + value.size, 0);
-  if (totalBytes > limits.maxBatchBytes) issues.push({ code: 'batch_too_large' });
+  const estimatedRequestBytes = totalBytes + files.length * MULTIPART_OVERHEAD_RESERVE_PER_FILE;
+  if (estimatedRequestBytes > limits.maxBatchBytes) issues.push({ code: 'batch_too_large' });
 
   for (const file of files) {
     if (!isSupportedFile(file)) issues.push({ code: 'unsupported_type', filename: file.name });
@@ -88,9 +90,10 @@ export function mapBatchItemState(
   if (item.acceptance === 'rejected' || item.acceptance === 'quarantined' || item.status === 'rejected' || item.status === 'unsupported') {
     return 'rejected';
   }
-  if (item.status === 'failed' || item.processing === 'failed' || item.status === 'partial' || item.processing === 'partial') {
+  if (item.status === 'failed' || item.processing === 'failed') {
     return 'failed';
   }
+  if (item.status === 'partial' || item.processing === 'partial') return 'failed';
   if (item.item_state === 'projection_requested') return 'processing';
   if (item.processing === 'succeeded' && item.status === 'succeeded') return 'ready';
   if (item.processing === 'processing' || item.item_state === 'processing') {
