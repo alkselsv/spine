@@ -3558,6 +3558,35 @@ class _PostgreSQLAccessPolicyRepository:
         ).first()
         if version_row is not None:
             raise ConstraintConflictError("Security Domain binding version conflicts.")
+        activation_row = (
+            await self._uow._execute(
+                select(_POLICY_ACTIVATIONS.c.policy_activation_id).where(
+                    _POLICY_ACTIVATIONS.c.policy_activation_id
+                    == binding.policy_activation_id,
+                    _POLICY_ACTIVATIONS.c.workspace_id == binding.workspace_id,
+                    _POLICY_ACTIVATIONS.c.environment_id == binding.environment_id,
+                    _POLICY_ACTIVATIONS.c.source_object_id == binding.source_object_id,
+                )
+            )
+        ).first()
+        if activation_row is None:
+            raise ConstraintConflictError(
+                "Security Domain binding activation is unavailable."
+            )
+        if binding.binding_version > 1:
+            predecessor = await self.resolve_security_domain_binding(
+                binding.predecessor_binding_id,
+                workspace_id=binding.workspace_id,
+                environment_id=binding.environment_id,
+            )
+            if (
+                predecessor is None
+                or predecessor.source_object_id != binding.source_object_id
+                or predecessor.binding_version != binding.binding_version - 1
+            ):
+                raise ConstraintConflictError(
+                    "Security Domain binding predecessor is unavailable."
+                )
         await self._uow._execute(
             insert(_SOURCE_SECURITY_DOMAIN_BINDINGS).values(
                 **binding.model_dump(mode="python")
@@ -3836,6 +3865,8 @@ class _PostgreSQLAccessPolicyRepository:
         await self._uow._execute(
             insert(_POLICY_ACTIVATIONS).values(**activation_values)
         )
+        if command.security_domain_binding is not None:
+            await self.persist_security_domain_binding(command.security_domain_binding)
         current = CurrentAccessPolicy(
             workspace_id=policy.workspace_id,
             environment_id=policy.environment_id,

@@ -600,20 +600,11 @@ class CanonicalDocumentQueryService:
         diagnostic_code = None
         binding_id = policy.security_domain_binding_id
         if binding_id is not None:
-            resolver = getattr(
-                uow.access_policies,
-                "resolve_security_domain_binding",
-                None,
-            )
             try:
-                binding = (
-                    await resolver(
-                        binding_id,
-                        workspace_id=source.workspace_id,
-                        environment_id=source.environment_id,
-                    )
-                    if callable(resolver)
-                    else None
+                binding = await uow.access_policies.resolve_security_domain_binding(
+                    binding_id,
+                    workspace_id=source.workspace_id,
+                    environment_id=source.environment_id,
                 )
             except Exception:
                 binding = None
