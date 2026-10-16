@@ -208,6 +208,14 @@ The read model excludes protected content, applies the 90-day aggregation
 retention policy, and exposes authorization denial distinctly from unavailable
 or incomplete data.
 
+Operational correlation is a separate, insert-only tenant-scoped read model
+over safe O02 metrics, O06 delivery metadata, canonical Q&A run records and
+immutable usefulness feedback. It follows trusted trace/correlation/run
+references only inside one workspace/environment, preserves source identity and
+schema-version lineage, and reports missing, conflicting or unavailable source
+coverage explicitly. It is never a second run/feedback ledger and never stores
+prompts, answers, citations, comments, provider errors or stack traces.
+
 ## 7. Доменная модель
 
 ### Workspace и доступ

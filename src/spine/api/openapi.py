@@ -58,6 +58,9 @@ from spine.application.qa_events import DisclosureAuthorizer
 from spine.application.authorized_ask import AuthorizedAskResult
 from spine.domain.qa_events import QAEvent
 from spine.application.parsed_content_inspection import ParsedContentInspectionService
+from spine.application.operational_correlation import (
+    UnavailableOperationalCorrelationReader,
+)
 from spine.application.processing_commands import (
     ProcessingCommandResult,
     ProcessingCommandService,
@@ -424,6 +427,7 @@ def create_openapi_app() -> FastAPI:
             DocumentLifecycleCommandService,
             _UnavailableDocumentLifecycleCommandService(),
         ),
+        operational_correlation_reader=UnavailableOperationalCorrelationReader(),
     )
 
 

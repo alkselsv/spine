@@ -12,6 +12,8 @@ def test_operational_metric_event_mapping_preserves_tenant_and_deduplication_key
     }
     assert {column.name for column in operational_metric_events.c} >= {
         "source_identity",
+        "trace_id",
+        "correlation_id",
         "measurement",
         "event_at",
         "deduplication_key",
