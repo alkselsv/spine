@@ -60,14 +60,15 @@ describe('document batch upload contract', () => {
   });
 
   it.each([
-    ['accepted', 'not_started', 'non_terminal', 'accepted'],
-    ['accepted', 'processing', 'non_terminal', 'processing'],
-    ['accepted', 'succeeded', 'succeeded', 'ready'],
-    ['accepted', 'failed', 'failed', 'failed'],
-    ['rejected', 'not_started', 'rejected', 'rejected'],
-    ['accepted', 'cancelled', 'cancelled', 'cancelled'],
-  ] as const)('test_server_item_%s_%s_maps_to_%s', (acceptance, processing, status, expected) => {
-    expect(mapBatchItemState(makeItem({ acceptance, processing, status }))).toBe(expected);
+    ['accepted', 'not_started', 'non_terminal', false, 'accepted'],
+    ['accepted', 'processing', 'non_terminal', false, 'processing'],
+    ['accepted', 'succeeded', 'succeeded', true, 'ready'],
+    ['accepted', 'succeeded', 'succeeded', false, 'accepted'],
+    ['accepted', 'failed', 'failed', true, 'failed'],
+    ['rejected', 'not_started', 'rejected', true, 'rejected'],
+    ['accepted', 'cancelled', 'cancelled', true, 'cancelled'],
+  ] as const)('test_server_item_%s_%s_maps_to_%s', (acceptance, processing, status, terminal, expected) => {
+    expect(mapBatchItemState(makeItem({ acceptance, processing, status, terminal }))).toBe(expected);
   });
 
   it('test_projection_requested_remains_processing_even_when_processing_is_succeeded', () => {
@@ -81,7 +82,7 @@ describe('document batch upload contract', () => {
   it('test_mixed_server_items_preserve_every_local_row_independently', () => {
     const rows = createUploadRows([file('ok.txt', 1), file('bad.txt', 1)]);
     const updated = applyBatchItems(rows, [
-      makeItem({ input_identity: 'file-1', processing: 'succeeded', status: 'succeeded' }),
+      makeItem({ input_identity: 'file-1', processing: 'succeeded', status: 'succeeded', terminal: true }),
       makeItem({ input_identity: 'file-2', processing: 'failed', status: 'failed', retryable: true }),
     ]);
 

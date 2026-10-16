@@ -95,7 +95,7 @@ export function mapBatchItemState(
   }
   if (item.status === 'partial' || item.processing === 'partial') return 'failed';
   if (item.item_state === 'projection_requested') return 'processing';
-  if (item.processing === 'succeeded' && item.status === 'succeeded') return 'ready';
+  if (item.terminal && item.processing === 'succeeded' && item.status === 'succeeded') return 'ready';
   if (item.processing === 'processing' || item.item_state === 'processing') {
     return 'processing';
   }

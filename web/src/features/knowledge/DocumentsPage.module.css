@@ -188,6 +188,51 @@
   max-width: 64rem;
 }
 
+.runSection {
+  display: grid;
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
+  border: 1px solid var(--color-border);
+  border-radius: 0.8rem;
+  padding: var(--space-5);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+}
+
+.runSection h3 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.runMeta,
+.runItemMeta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.runMeta > div,
+.runItemMeta > div {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.runMeta dt,
+.runItemMeta dt {
+  color: var(--color-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.runMeta dd,
+.runItemMeta dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .runItemList {
   display: grid;
   gap: var(--space-3);
@@ -198,7 +243,6 @@
 
 .runItem {
   display: grid;
-  grid-template-columns: minmax(10rem, 0.8fr) minmax(14rem, 1.2fr);
   gap: var(--space-4);
   border: 1px solid var(--color-border);
   border-radius: 0.6rem;
@@ -206,14 +250,39 @@
   background: var(--color-surface);
 }
 
-.runItem > div {
+.runItemHeader,
+.runDiagnostics {
   display: grid;
-  gap: 0.25rem;
+  gap: var(--space-2);
+}
+
+.runItemHeader {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
 }
 
 .runItem span {
   color: var(--color-muted);
   font-size: 0.82rem;
+}
+
+.runDiagnostics {
+  border-left: 0.25rem solid var(--color-accent);
+  padding-left: var(--space-3);
+}
+
+.runDiagnostics span {
+  overflow-wrap: anywhere;
+}
+
+.statusPill {
+  justify-self: start;
+  border-radius: 999px;
+  padding: 0.2rem 0.5rem;
+  background: var(--color-surface-strong);
+  color: var(--color-ink) !important;
+  font-size: 0.78rem;
+  font-weight: 700;
 }
 
 .uploadList {

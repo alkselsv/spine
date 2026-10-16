@@ -22,7 +22,7 @@ import styles from './AppShell.module.css';
 const navigation = [
   { label: ru.navigation.knowledge, to: '/knowledge/documents' },
   { label: ru.navigation.chat, to: '/chat/demo-session' },
-  { label: ru.navigation.runs, to: '/runs/demo-run' },
+  { label: ru.navigation.runs, to: '/runs' },
   { label: ru.navigation.settings, to: '/settings' },
 ] as const;
 
@@ -43,6 +43,7 @@ export function AppShell() {
       nextScope.environmentId !== scope.environmentId
     ) {
       nextSearch.delete('cursor');
+      nextSearch.delete('processing_cursor');
     }
     navigate({ search: `?${nextSearch.toString()}` }, {
       replace: true,

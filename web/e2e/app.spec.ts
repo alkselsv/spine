@@ -92,6 +92,7 @@ test('test_documents_discovery_filters_paginates_and_navigates_without_content_i
 test('test_documents_upload_reviews_batch_polls_processing_and_links_run', async ({ page }) => {
   await installControlledDocuments(page);
   const uploadRequests = await installControlledBatchUpload(page);
+  await installControlledRunReadModels(page);
 
   await page.goto(
     `/knowledge/documents?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`,
@@ -113,8 +114,13 @@ test('test_documents_upload_reviews_batch_polls_processing_and_links_run', async
   );
   await page.getByRole('link', { name: 'Открыть запуск обработки' }).click();
   await expect(page.getByRole('heading', { name: 'Запуск', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Запуски обработки' })).toBeVisible();
+  await expect(page.getByRole('list', { name: 'Результаты файлов' }).getByText('Готов')).toHaveCount(2);
+  await expect(page.getByRole('heading', { name: 'История запусков' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'История обработки файлов' })).toBeVisible();
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Запуск', exact: true })).toBeVisible();
+  await expect(page.getByRole('list', { name: 'Результаты файлов' }).getByText('Готов')).toHaveCount(2);
 
   expect(uploadRequests).toHaveLength(1);
   expect(uploadRequests[0]?.headers['x-workspace-id']).toBe(salesWorkspace);
@@ -123,6 +129,78 @@ test('test_documents_upload_reviews_batch_polls_processing_and_links_run', async
   expect(uploadRequests[0]?.body).toContain('proposal.txt');
   expect(uploadRequests[0]?.body).toContain('context.md');
 });
+
+test('test_ingestion_run_displays_partial_outcomes_retryability_and_safe_diagnostics', async ({ page }) => {
+  await installControlledRunReadModels(page);
+  await page.route(`**/api/v1/ingestion/runs/${firstDocument}`, async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(controlledPartialRunStatus()),
+      status: 200,
+    });
+  });
+
+  await page.goto(
+    `/runs/${firstDocument}?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`,
+  );
+
+  await expect(page.getByRole('heading', { name: 'Запуск', exact: true })).toBeVisible();
+  await expect(page.getByText('Готов')).toBeVisible();
+  await expect(page.getByText('Ошибка')).toBeVisible();
+  await expect(page.getByText('Ошибка: parser.invalid (parse)')).toBeVisible();
+  await expect(page.getByText('Повтор операции разрешён')).toBeVisible();
+  await expect(page.getByText('Следующее действие: Повтор операции разрешён.')).toBeVisible();
+  await expect(page.locator('body')).not.toContainText(/provider|secret|stack|customer/i);
+});
+
+async function installControlledRunReadModels(page: Page) {
+  await page.route('**/api/v1/ingestion/runs', async (route) => {
+    const request = route.request();
+    const headers = request.headers();
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        environment_id: headers['x-environment-id'],
+        items: [
+          {
+            acceptance: 'accepted',
+            items: [controlledHistoryItem()],
+            processing: 'succeeded',
+            requested_at: '2026-01-02T03:04:05Z',
+            run_id: firstDocument,
+            run_state: 'completed',
+            status: 'succeeded',
+            status_url: `/api/v1/ingestion/runs/${firstDocument}`,
+            terminal: true,
+          },
+        ],
+        limit: 25,
+        next_cursor: null,
+        schema_version: 1,
+        trace_id: traceId,
+        workspace_id: headers['x-workspace-id'],
+      }),
+      status: 200,
+    });
+  });
+  await page.route('**/api/v1/documents/processing-history', async (route) => {
+    const request = route.request();
+    const headers = request.headers();
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        environment_id: headers['x-environment-id'],
+        items: [controlledHistoryItem()],
+        limit: 25,
+        next_cursor: null,
+        schema_version: 1,
+        trace_id: traceId,
+        workspace_id: headers['x-workspace-id'],
+      }),
+      status: 200,
+    });
+  });
+}
 
 test('test_documents_upload_rejects_invalid_file_before_network_submission', async ({ page }) => {
   await installControlledDocuments(page);
@@ -375,5 +453,83 @@ function controlledUploadItem(
     warning_ids: [],
     warnings: [],
     ...overrides,
+  };
+}
+
+function controlledHistoryItem(
+  overrides: Partial<components['schemas']['DocumentProcessingHistoryResponse']> = {},
+): components['schemas']['DocumentProcessingHistoryResponse'] {
+  return {
+    ...controlledUploadItem({
+      input_identity: 'file-1',
+      input_ordinal: 1,
+      item_state: 'processed',
+      processing: 'succeeded',
+      status: 'succeeded',
+      terminal: true,
+    }),
+    run_id: firstDocument,
+    run_state: 'completed',
+    status_url: `/api/v1/ingestion/runs/${firstDocument}`,
+    ...overrides,
+  };
+}
+
+function controlledPartialRunStatus(): components['schemas']['BatchIngestionStatusResponse'] {
+  return {
+    items: [
+      controlledUploadItem({
+        coverage: 'complete',
+        input_identity: 'ready.txt',
+        item_state: 'processed',
+        processing: 'succeeded',
+        status: 'succeeded',
+        terminal: true,
+      }),
+      controlledUploadItem({
+        acceptance: 'accepted',
+        attempt: 2,
+        coverage: 'failed',
+        failure_ids: ['60000000-0000-0000-0000-000000000002'],
+        failures: [
+          {
+            attempt: 2,
+            code: 'parser.invalid',
+            failure_id: '60000000-0000-0000-0000-000000000002',
+            retryable: true,
+            stage: 'parse',
+          },
+        ],
+        input_identity: 'failed.txt',
+        input_ordinal: 2,
+        item_id: secondDocument,
+        item_state: 'processing_failed',
+        processing: 'failed',
+        processing_receipt: {
+          artifact_digest: null,
+          artifact_id: null,
+          coverage: 'failed',
+          parser_name: 'markdown-v2',
+          receipt_id: '60000000-0000-4000-8000-000000000003',
+        },
+        retryable: true,
+        status: 'failed',
+        terminal: true,
+        warning_ids: ['60000000-0000-0000-0000-000000000004'],
+        warnings: [
+          {
+            attempt: 2,
+            code: 'parser.warning',
+            stage: 'parse',
+            warning_id: '60000000-0000-0000-0000-000000000004',
+          },
+        ],
+      }),
+    ],
+    run_id: firstDocument,
+    run_state: 'completed',
+    schema_version: 1,
+    status: 'partial',
+    terminal: true,
   };
 }
