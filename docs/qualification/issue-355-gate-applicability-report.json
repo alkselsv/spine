@@ -1,0 +1,33 @@
+{
+  "schema_version": "r1-gate-applicability-qualification:v1",
+  "ticket": 355,
+  "policy_version": "r1-gate-applicability:v1",
+  "manifest_id": "r1-gate-applicability-default",
+  "status": "qualified_offline",
+  "mandatory_offline_suite": {
+    "suite_id": "r1-offline-safety",
+    "suite_version": "v1",
+    "always_selected": true,
+    "evidence_id": "offline-regression-gate:v1"
+  },
+  "provider_quality_confirmation": "not-confirmed",
+  "production_approval": false,
+  "coverage": {
+    "parser_locator": ["issue-194-ingestion"],
+    "source_revision": ["issue-194-ingestion"],
+    "projection_publication": ["issue-90-projection-lifecycle", "issue-211-context-projection"],
+    "retrieval": ["g02-retrieval-acl-safety", "g06-adapter-parity"],
+    "acl": ["g02-retrieval-acl-safety", "g06-adapter-parity"],
+    "prompt": ["r1-offline-safety"],
+    "model": ["r1-offline-safety"],
+    "capability": ["g03-answer-groundedness", "g06-adapter-parity"],
+    "evaluator": ["r1-evaluator-contract", "r1-offline-safety"],
+    "dataset": ["r1-dataset-contract", "r1-offline-safety"],
+    "gate_report": ["r1-gate-applicability", "r1-offline-safety"]
+  },
+  "limitations": [
+    "Real provider evaluation is not part of this offline applicability policy.",
+    "Product quality thresholds remain owned by Issue #17.",
+    "G02/G03/G06 execution evidence is required when the corresponding change class is selected."
+  ]
+}
