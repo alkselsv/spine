@@ -111,9 +111,9 @@ async def test_r1_runner_produces_reproducible_golden_report() -> None:
         version="1.0.0",
         digest=load_r1_dataset().dataset_digest,
     )
-    assert first.schema_version == "offline-evaluation-report:v1"
-    assert first.runner_version == "v1"
-    assert first.report_id == UUID("ad54606f-a579-52d0-b0bb-9fa72e915a67")
+    assert first.schema_version == "offline-evaluation-report:v2"
+    assert first.runner_version == "v2"
+    assert first.report_id == UUID("51ac612a-74e5-5a95-8c79-5021a04d6811")
     assert first.qualification_scope == "offline-contract-only"
     assert len(first.scenarios) == 12
     assert len(first.evaluations) == 96

@@ -7,6 +7,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+import hashlib
 import json
 from typing import Any, Final, Literal, Protocol
 from uuid import UUID, uuid5
@@ -22,7 +23,13 @@ from spine.evals.production_contract import (
     ProductionContractObservation,
     ProductionContractObservationError,
 )
-from spine.evals.qa_r1 import QACase, QADataset, load_r1_dataset
+from spine.evals.qa_r1 import (
+    QA_R1_CASE_SCHEMA_VERSION,
+    QA_R1_SCHEMA_VERSION,
+    QACase,
+    QADataset,
+    load_r1_dataset,
+)
 from spine.evals.retrieval_replay import DeterministicRetrievalReplay
 from spine.evaluations.grounded_answer_safety import (
     GroundedAnswerSafetyGate,
@@ -53,8 +60,8 @@ from spine.evaluations.retrieval_metrics import (
 from spine.memory.contracts import RetrievalQuery, RetrievalResult
 
 
-OFFLINE_REPORT_SCHEMA_VERSION: Final[str] = "offline-evaluation-report:v1"
-OFFLINE_RUNNER_VERSION: Final[str] = "v1"
+OFFLINE_REPORT_SCHEMA_VERSION: Final[str] = "offline-evaluation-report:v2"
+OFFLINE_RUNNER_VERSION: Final[str] = "v2"
 ANSWER_CONFIGURATION_VERSION: Final[str] = "qa-r1-expected-answer:v1"
 SCENARIO_CONFIGURATION_VERSION: Final[str] = "qa-r1-regression:v1"
 REPLAY_CONTEXT_PROFILE: Final[str] = "qa-r1-replay:v1"
@@ -75,7 +82,9 @@ class DatasetIdentity(DefinitionModel):
 
     dataset_id: str = Field(min_length=1, max_length=128)
     version: str = Field(min_length=1, max_length=128)
-    digest: str = Field(min_length=64, max_length=64)
+    digest: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    schema_version: str = QA_R1_SCHEMA_VERSION
+    case_schema_version: str = QA_R1_CASE_SCHEMA_VERSION
 
 
 class EvaluatorIdentity(DefinitionModel):
@@ -93,6 +102,27 @@ class EvaluationConfiguration(DefinitionModel):
     citation_evaluator_version: str = CITATION_METRICS_EVALUATOR_VERSION
     scenario_configuration_version: str = SCENARIO_CONFIGURATION_VERSION
     recall_k_values: tuple[int, ...] = (1,)
+
+
+class ComponentVersions(DefinitionModel):
+    """Version pins for candidate components; differences remain comparable."""
+
+    prompt_version: str | None = Field(
+        default=None, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    )
+    model_profile_version: str | None = Field(
+        default=None, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    )
+    retrieval_implementation_version: str | None = Field(
+        default=None, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    )
+
+
+class CaseDefinitionIdentity(DefinitionModel):
+    """Opaque fingerprint of a case definition, without its protected content."""
+
+    case_id: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_.:-]{0,63}$")
+    definition_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class MeasurementObservation(DefinitionModel):
@@ -154,8 +184,16 @@ class ScenarioResult(DefinitionModel):
 class FailureRecord(DefinitionModel):
     scenario_id: str = Field(min_length=1, max_length=128)
     category: FailureCategory
-    component: str = Field(min_length=1, max_length=128)
-    error_type: str = Field(min_length=1, max_length=128)
+    component: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+    )
+    error_type: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$",
+    )
 
 
 class MetricAggregate(DefinitionModel):
@@ -173,8 +211,18 @@ class OfflineEvaluationReport(DefinitionModel):
     """Complete deterministic output of one synthetic offline run."""
 
     report_id: UUID
-    schema_version: Literal[OFFLINE_REPORT_SCHEMA_VERSION] = OFFLINE_REPORT_SCHEMA_VERSION
-    runner_version: Literal[OFFLINE_RUNNER_VERSION] = OFFLINE_RUNNER_VERSION
+    schema_version: str = Field(
+        default=OFFLINE_REPORT_SCHEMA_VERSION,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+    )
+    runner_version: str = Field(
+        default=OFFLINE_RUNNER_VERSION,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+    )
     qualification_scope: Literal[QUALIFICATION_SCOPE] = QUALIFICATION_SCOPE
     execution_mode: ExecutionMode = Field(
         default="synthetic-replay", exclude_if=lambda value: value == "synthetic-replay"
@@ -182,6 +230,8 @@ class OfflineEvaluationReport(DefinitionModel):
     observation_seam: str | None = Field(default=None, exclude_if=lambda value: value is None)
     dataset: DatasetIdentity
     configuration: EvaluationConfiguration
+    component_versions: ComponentVersions = Field(default_factory=ComponentVersions)
+    case_definitions: tuple[CaseDefinitionIdentity, ...] = ()
     evaluator_catalog: tuple[EvaluatorIdentity, ...] = ()
     scenarios: tuple[ScenarioResult, ...] = ()
     measurements: tuple[MeasurementObservation, ...] = ()
@@ -193,6 +243,13 @@ class OfflineEvaluationReport(DefinitionModel):
         default=(), exclude_if=lambda value: value == ()
     )
     unavailable_integrations: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_report_case_identities(self) -> "OfflineEvaluationReport":
+        case_ids = tuple(item.case_id for item in self.case_definitions)
+        if len(case_ids) != len(set(case_ids)):
+            raise ValueError("report case definition identities must be unique")
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,12 +400,14 @@ class OfflineEvaluationRunner:
         measurement_source: MeasurementSource | None = None,
         case_evaluator: CaseEvaluator | None = None,
         expected_dataset: DatasetIdentity | None = None,
+        component_versions: ComponentVersions | None = None,
         recall_k_values: tuple[int, ...] = (1,),
         execution_mode: ExecutionMode = "synthetic-replay",
         production_observer: ProductionContractObservationPort | None = None,
     ) -> None:
         self.dataset = load_r1_dataset() if dataset is None else dataset
         self.expected_dataset = expected_dataset
+        self.component_versions = component_versions or ComponentVersions()
         self.replay = replay or DeterministicRetrievalReplay(self.dataset)
         self.measurement_source = measurement_source or _UnavailableMeasurementSource()
         self.case_evaluator = case_evaluator or _DefaultCaseEvaluator(
@@ -371,6 +430,8 @@ class OfflineEvaluationRunner:
             dataset_id=self.dataset.dataset_id,
             version=self.dataset.version,
             digest=self.dataset.dataset_digest,
+            schema_version=self.dataset.schema_version,
+            case_schema_version=self.dataset.fixture_schema_version,
         )
         if self.expected_dataset is not None and self.expected_dataset != dataset_identity:
             raise ValueError("dataset identity mismatch")
@@ -414,6 +475,11 @@ class OfflineEvaluationRunner:
             "qualification_scope": QUALIFICATION_SCOPE,
             "dataset": dataset_identity.model_dump(mode="json"),
             "configuration": configuration.model_dump(mode="json"),
+            "component_versions": self.component_versions.model_dump(mode="json"),
+            "case_definitions": [
+                _case_definition_identity(case).model_dump(mode="json")
+                for case in self.dataset.cases
+            ],
             "evaluator_catalog": _evaluator_catalog(evaluations_tuple),
             "scenarios": [scenario.model_dump(mode="json") for scenario in scenarios],
             "measurements": [measurement.model_dump(mode="json") for measurement in measurements],
@@ -452,6 +518,10 @@ class OfflineEvaluationRunner:
             ),
             dataset=dataset_identity,
             configuration=configuration,
+            component_versions=self.component_versions,
+            case_definitions=tuple(
+                _case_definition_identity(case) for case in self.dataset.cases
+            ),
             evaluator_catalog=tuple(
                 EvaluatorIdentity.model_validate(item)
                 for item in report_without_id["evaluator_catalog"]
@@ -809,6 +879,7 @@ async def run_r1_evaluation(
     measurement_source: MeasurementSource | None = None,
     case_evaluator: CaseEvaluator | None = None,
     expected_dataset: DatasetIdentity | None = None,
+    component_versions: ComponentVersions | None = None,
     recall_k_values: tuple[int, ...] = (1,),
     execution_mode: ExecutionMode = "synthetic-replay",
     production_observer: ProductionContractObservationPort | None = None,
@@ -821,6 +892,7 @@ async def run_r1_evaluation(
         measurement_source=measurement_source,
         case_evaluator=case_evaluator,
         expected_dataset=expected_dataset,
+        component_versions=component_versions,
         recall_k_values=recall_k_values,
         execution_mode=execution_mode,
         production_observer=production_observer,
@@ -834,6 +906,7 @@ def run_r1_evaluation_sync(
     measurement_source: MeasurementSource | None = None,
     case_evaluator: CaseEvaluator | None = None,
     expected_dataset: DatasetIdentity | None = None,
+    component_versions: ComponentVersions | None = None,
     recall_k_values: tuple[int, ...] = (1,),
     execution_mode: ExecutionMode = "synthetic-replay",
     production_observer: ProductionContractObservationPort | None = None,
@@ -846,6 +919,7 @@ def run_r1_evaluation_sync(
         measurement_source=measurement_source,
         case_evaluator=case_evaluator,
         expected_dataset=expected_dataset,
+        component_versions=component_versions,
         recall_k_values=recall_k_values,
         execution_mode=execution_mode,
         production_observer=production_observer,
@@ -859,6 +933,7 @@ async def run_r1_production_contract_evaluation(
     measurement_source: MeasurementSource | None = None,
     case_evaluator: CaseEvaluator | None = None,
     expected_dataset: DatasetIdentity | None = None,
+    component_versions: ComponentVersions | None = None,
     recall_k_values: tuple[int, ...] = (1,),
 ) -> OfflineEvaluationReport:
     """Run R1 against observations emitted by an application composition root."""
@@ -868,6 +943,7 @@ async def run_r1_production_contract_evaluation(
         measurement_source=measurement_source,
         case_evaluator=case_evaluator,
         expected_dataset=expected_dataset,
+        component_versions=component_versions,
         recall_k_values=recall_k_values,
         execution_mode="production-contract",
         production_observer=production_observer,
@@ -881,6 +957,7 @@ def run_r1_production_contract_evaluation_sync(
     measurement_source: MeasurementSource | None = None,
     case_evaluator: CaseEvaluator | None = None,
     expected_dataset: DatasetIdentity | None = None,
+    component_versions: ComponentVersions | None = None,
     recall_k_values: tuple[int, ...] = (1,),
 ) -> OfflineEvaluationReport:
     """Synchronous entry point for the production-contract evaluation mode."""
@@ -890,6 +967,7 @@ def run_r1_production_contract_evaluation_sync(
         measurement_source=measurement_source,
         case_evaluator=case_evaluator,
         expected_dataset=expected_dataset,
+        component_versions=component_versions,
         recall_k_values=recall_k_values,
         execution_mode="production-contract",
         production_observer=production_observer,
@@ -1102,6 +1180,19 @@ def _evaluator_catalog(results: Sequence[EvaluationResult]) -> list[dict[str, st
     ]
 
 
+def _case_definition_identity(case: QACase) -> CaseDefinitionIdentity:
+    canonical = json.dumps(
+        case.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return CaseDefinitionIdentity(
+        case_id=case.case_id,
+        definition_digest=hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    )
+
+
 def _aggregates(results: Sequence[EvaluationResult]) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, str], list[EvaluationResult]] = defaultdict(list)
     for result in results:
@@ -1129,6 +1220,8 @@ __all__ = [
     "ANSWER_CONFIGURATION_VERSION",
     "CaseEvaluationContext",
     "CaseEvaluator",
+    "CaseDefinitionIdentity",
+    "ComponentVersions",
     "DatasetIdentity",
     "ExecutionMode",
     "EvaluationConfiguration",
