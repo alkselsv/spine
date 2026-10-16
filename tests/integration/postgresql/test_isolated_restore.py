@@ -10,7 +10,6 @@ import pytest
 import pytest_asyncio
 from psycopg import AsyncConnection, sql
 from testcontainers.core.container import ExecConfig
-from testcontainers.community.postgres import PostgresContainer
 
 from spine.infrastructure.db.settings import TestDatabaseSettings
 from spine.infrastructure.db.test_harness import (
@@ -28,8 +27,11 @@ from tests.infrastructure.test_isolated_restore import OBJECT, OBJECT_B, make_ma
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def ssl_postgresql_provision() -> TestDatabaseProvision:
-    """Own a PG17 container initialized with a local TLS certificate."""
+    """Own a PG17 container whose init hook enables TLS for the final server."""
     settings = TestDatabaseSettings()
+
+    # PostgreSQL's temporary init server starts without TLS. The hook creates
+    # its certificate there and writes ssl settings for the final server start.
     command = (
         "mkdir -p /docker-entrypoint-initdb.d && "
         "cat > /docker-entrypoint-initdb.d/001-local-tls.sh <<'SPINE_TLS_HOOK'\n"
@@ -37,13 +39,20 @@ async def ssl_postgresql_provision() -> TestDatabaseProvision:
         'openssl req -x509 -newkey rsa:2048 -nodes -keyout "$PGDATA/server.key" '
         '-out "$PGDATA/server.crt" -days 1 -subj "/CN=localhost"\n'
         'chmod 600 "$PGDATA/server.key"\n'
+        "psql --no-psqlrc --set ON_ERROR_STOP=1 --username \"$POSTGRES_USER\" "
+        "--dbname \"$POSTGRES_DB\" --command \"ALTER SYSTEM SET ssl = 'on'\"\n"
+        "psql --no-psqlrc --set ON_ERROR_STOP=1 --username \"$POSTGRES_USER\" "
+        "--dbname \"$POSTGRES_DB\" --command \"ALTER SYSTEM SET ssl_cert_file = 'server.crt'\"\n"
+        "psql --no-psqlrc --set ON_ERROR_STOP=1 --username \"$POSTGRES_USER\" "
+        "--dbname \"$POSTGRES_DB\" --command \"ALTER SYSTEM SET ssl_key_file = 'server.key'\"\n"
         "SPINE_TLS_HOOK\n"
         "chmod 755 /docker-entrypoint-initdb.d/001-local-tls.sh && "
-        'exec /usr/local/bin/docker-entrypoint.sh postgres -c ssl=on '
-        '-c ssl_cert_file="$PGDATA/server.crt" -c ssl_key_file="$PGDATA/server.key"'
+        "exec /usr/local/bin/docker-entrypoint.sh postgres"
     )
 
-    def ssl_container_factory(**kwargs: object) -> PostgresContainer:
+    def ssl_container_factory(**kwargs: object) -> object:
+        from testcontainers.community.postgres import PostgresContainer
+
         return PostgresContainer(**kwargs).with_command(["bash", "-c", command])
 
     provision = provision_test_database(
@@ -54,6 +63,27 @@ async def ssl_postgresql_provision() -> TestDatabaseProvision:
     if provision.container is None:
         pytest.skip("isolated restore integration requires an owned PostgreSQL testcontainer")
     await install_container_marker(provision)
+    parsed = urlsplit(provision.url.get_secret_value())
+    if parsed.scheme != "postgresql+psycopg" or not parsed.hostname:
+        pytest.fail("test harness returned an unsupported PostgreSQL URL")
+    admin_user = unquote(parsed.username or "")
+    admin_password = unquote(parsed.password or "")
+    admin_database = unquote(parsed.path.removeprefix("/"))
+    ssl_kwargs: dict[str, object] = {
+        "user": admin_user,
+        "password": admin_password,
+        "host": parsed.hostname,
+        "port": parsed.port or 5432,
+        "sslmode": "require",
+    }
+    async with await AsyncConnection.connect(
+        dbname=admin_database, **ssl_kwargs
+    ) as ssl_connection:
+        async with ssl_connection.cursor() as cursor:
+            await cursor.execute(
+                "SELECT ssl FROM pg_catalog.pg_stat_ssl WHERE pid = pg_backend_pid()"
+            )
+            assert (await cursor.fetchone())[0] is True
     try:
         yield provision
     finally:
