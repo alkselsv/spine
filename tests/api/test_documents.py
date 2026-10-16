@@ -7,6 +7,8 @@ import httpx
 
 from spine.api.documents import install_document_query_routes
 from spine.application.document_queries import (
+    AccessPolicyMetadata,
+    DocumentOperationalMetadata,
     DocumentIdentitySnapshot,
     DocumentPublicationStatus,
     DocumentPage,
@@ -23,6 +25,7 @@ from spine.application.document_queries import (
     RevisionPosition,
     RevisionSnapshot,
     StableLocatorSnapshot,
+    OperationalMetadataStatus,
 )
 from spine.domain.ingestion import IngestionItemState
 from spine.domain.projections import ProjectionHealth
@@ -637,6 +640,21 @@ class OperationalDocumentQueries(FakeDocumentQueries):
                 manifest_complete=True,
                 source_covered=False,
             ),
+            operational_metadata=DocumentOperationalMetadata(
+                source_object_id=SOURCE_ID,
+                source_revision_id=REVISION_ID,
+                status=OperationalMetadataStatus.DEGRADED,
+                lifecycle=RevisionLifecycle.TOMBSTONED,
+                processing_state=IngestionItemState.PROCESSED,
+                publication_status=DocumentPublicationStatus.PUBLISHED,
+                freshness="stale",
+                health="degraded",
+                access_policy=AccessPolicyMetadata(
+                    policy_version_id=UUID("51000000-0000-0000-0000-000000000025"),
+                    version=4,
+                    generation=7,
+                ),
+            ),
         )
 
 
@@ -674,6 +692,25 @@ async def test_document_detail_represents_tombstone_processing_and_stale_degrade
         "drift_count": 1,
         "manifest_complete": True,
         "source_covered": False,
+    }
+    assert data["operational_metadata"] == {
+        "schema_version": 1,
+        "source_object_id": str(SOURCE_ID),
+        "source_revision_id": str(REVISION_ID),
+        "status": "degraded",
+        "diagnostic_code": None,
+        "lifecycle": "tombstoned",
+        "processing_state": "processed",
+        "publication_status": "published",
+        "freshness": "stale",
+        "health": "degraded",
+        "access_policy": {
+            "schema_version": 1,
+            "policy_version_id": "51000000-0000-0000-0000-000000000025",
+            "version": 4,
+            "generation": 7,
+        },
+        "security_domain": None,
     }
     assert "identity" not in data
     assert "content" not in data["current_revision"]

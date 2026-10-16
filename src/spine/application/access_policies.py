@@ -31,6 +31,7 @@ from spine.domain.sources.access_policy import (
     PolicyApprovalDecision,
     PolicyBenefitClassification,
     PolicyProposal,
+    SourceSecurityDomainBinding,
 )
 
 
@@ -219,6 +220,14 @@ class AccessPolicyRepository(Protocol):
         environment_id: UUID | None = None,
     ) -> CurrentAccessPolicy | None: ...
 
+    async def resolve_security_domain_binding(
+        self,
+        binding_id: UUID,
+        *,
+        workspace_id: UUID | None = None,
+        environment_id: UUID | None = None,
+    ) -> SourceSecurityDomainBinding | None: ...
+
     async def resolve_activation_result(
         self, command: AccessPolicyActivationCommand
     ) -> AccessPolicyActivationResult | None: ...
@@ -284,6 +293,10 @@ def access_policy_document_hash(policy: AccessPolicyVersion) -> str:
         "origin_hash": policy.origin_hash,
         "grants": grants,
     }
+    if policy.security_domain_binding_id is not None:
+        payload["security_domain_binding_id"] = str(
+            policy.security_domain_binding_id
+        )
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(canonical).hexdigest()
 

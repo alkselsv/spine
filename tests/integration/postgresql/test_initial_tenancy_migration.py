@@ -4639,13 +4639,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261027_32_disclosure_revalidation.py",
         "20261028_33_answer_disclosure.py",
         "20261029_34_answer_disclosure_delivery.py",
+        "20261030_35_safe_policy_metadata.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "20261021_26_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
         "revision = '20261021_26'\n"
-        "down_revision = '20261029_34'\n"
+        "down_revision = '20261030_35'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

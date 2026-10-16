@@ -17,6 +17,7 @@ from spine.domain.sources.access_policy import (
     PolicyActivation,
     PolicyApproval,
     PolicyProposal,
+    SourceSecurityDomainBinding,
 )
 from spine.application.persistence.context import PersistenceOperation
 from spine.application.persistence.errors import IdempotencyConflictError
@@ -32,6 +33,9 @@ class InMemoryAccessPolicyRepository:
         self._digests: dict[str, str] = {}
         self._proposals: dict[UUID, PolicyProposal] = {}
         self._approvals: dict[UUID, PolicyApproval] = {}
+        self._security_domain_bindings: dict[
+            tuple[UUID, UUID, UUID], SourceSecurityDomainBinding
+        ] = {}
         self._audit_events: set[UUID] = set()
         self._outbox_events: set[UUID] = set()
 
@@ -64,6 +68,44 @@ class InMemoryAccessPolicyRepository:
             if value.source_object_id == source_object_id
         ]
         return matches[0] if len(matches) == 1 else None
+
+    async def resolve_security_domain_binding(
+        self,
+        binding_id: UUID,
+        *,
+        workspace_id: UUID | None = None,
+        environment_id: UUID | None = None,
+    ) -> SourceSecurityDomainBinding | None:
+        if workspace_id is not None and environment_id is not None:
+            return self._security_domain_bindings.get(
+                (workspace_id, environment_id, binding_id)
+            )
+        matches = [
+            value
+            for value in self._security_domain_bindings.values()
+            if value.binding_id == binding_id
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    async def persist_security_domain_binding(
+        self, binding: SourceSecurityDomainBinding
+    ) -> SourceSecurityDomainBinding:
+        async with self._lock:
+            key = (binding.workspace_id, binding.environment_id, binding.binding_id)
+            existing = self._security_domain_bindings.get(key)
+            if existing is not None and existing != binding:
+                raise StalePolicyBaselineError("Security Domain binding identity conflicts.")
+            for candidate in self._security_domain_bindings.values():
+                if (
+                    candidate.workspace_id == binding.workspace_id
+                    and candidate.environment_id == binding.environment_id
+                    and candidate.source_object_id == binding.source_object_id
+                    and candidate.binding_version == binding.binding_version
+                    and candidate.binding_id != binding.binding_id
+                ):
+                    raise StalePolicyBaselineError("Security Domain binding version conflicts.")
+            self._security_domain_bindings[key] = binding
+            return binding
 
     async def resolve_activation_result(
         self, command: AccessPolicyActivationCommand

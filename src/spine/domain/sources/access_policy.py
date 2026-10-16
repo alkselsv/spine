@@ -120,6 +120,7 @@ class AccessPolicyVersion(DefinitionModel):
     origin_hash: Digest
     created_by_canonical_human_id: UUID
     created_at: datetime
+    security_domain_binding_id: UUID | None = None
     grants: tuple[AccessGrant, ...] = ()
 
     @field_validator("created_at")
@@ -133,6 +134,13 @@ class AccessPolicyVersion(DefinitionModel):
             raise ValueError("only policy version 1 may omit a predecessor")
         if self.predecessor_policy_version_id == self.access_policy_version_id:
             raise ValueError("a policy cannot precede itself")
+        if (
+            self.security_domain_binding_id is not None
+            and self.document_schema_version != "access-policy.v2"
+        ):
+            raise ValueError(
+                "security domain bindings require the access-policy.v2 schema"
+            )
         identities = {grant.access_grant_id for grant in self.grants}
         if len(identities) != len(self.grants):
             raise ValueError("grant identities must be unique")
@@ -178,6 +186,40 @@ class AccessPolicyVersion(DefinitionModel):
             and (grant.valid_until is None or evaluated_at < grant.valid_until)
             for grant in self.grants
         )
+
+
+class SourceSecurityDomainBinding(DefinitionModel):
+    """Immutable source-owned Security Domain assignment.
+
+    The binding narrows an already-authorized result. It is deliberately kept
+    separate from grants so a Security Domain can never become an ACL source.
+    """
+
+    binding_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    source_object_id: UUID
+    security_domain_reference: str = Field(min_length=1, max_length=256)
+    security_domain_version: VersionIdentifier
+    binding_version: int = Field(ge=1)
+    predecessor_binding_id: UUID | None = None
+    created_at: datetime
+    policy_activation_id: UUID
+
+    @field_validator("created_at")
+    @classmethod
+    def validate_created_at(cls, value: datetime) -> datetime:
+        return _aware(value, "created_at")
+
+    @model_validator(mode="after")
+    def validate_chain(self) -> "SourceSecurityDomainBinding":
+        if (self.predecessor_binding_id is None) != (self.binding_version == 1):
+            raise ValueError(
+                "only binding version 1 may omit a predecessor"
+            )
+        if self.predecessor_binding_id == self.binding_id:
+            raise ValueError("a binding cannot precede itself")
+        return self
 
 
 class PolicyProposal(DefinitionModel):
@@ -288,4 +330,5 @@ __all__ = [
     "PolicyOriginKind",
     "PolicyProposal",
     "PrincipalKind",
+    "SourceSecurityDomainBinding",
 ]

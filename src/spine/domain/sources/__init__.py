@@ -20,6 +20,7 @@ from .access_policy import (
     PolicyOriginKind,
     PolicyProposal,
     PrincipalKind,
+    SourceSecurityDomainBinding,
 )
 from .canonical import CanonicalAcceptance, CanonicalOrdering, CurrentSourceHead
 from .boundary import (
@@ -72,6 +73,7 @@ __all__ = [
     "PolicyOriginKind",
     "PolicyProposal",
     "PrincipalKind",
+    "SourceSecurityDomainBinding",
     "AdmissionDecision",
     "AdmissionDisposition",
     "AdmissionReference",

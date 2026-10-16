@@ -1,6 +1,40 @@
 {
   "components": {
     "schemas": {
+      "AccessPolicyMetadata": {
+        "additionalProperties": false,
+        "description": "Safe identity of the current policy, never its grants.",
+        "properties": {
+          "generation": {
+            "minimum": 1.0,
+            "title": "Generation",
+            "type": "integer"
+          },
+          "policy_version_id": {
+            "format": "uuid",
+            "title": "Policy Version Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "policy_version_id",
+          "version",
+          "generation"
+        ],
+        "title": "AccessPolicyMetadata",
+        "type": "object"
+      },
       "AdmissionDisposition": {
         "enum": [
           "admitted",
@@ -1236,6 +1270,124 @@
         "title": "DocumentIdentitySnapshot",
         "type": "object"
       },
+      "DocumentOperationalMetadata": {
+        "additionalProperties": false,
+        "description": "Closed, content-free metadata for the Knowledge operational shell.",
+        "properties": {
+          "access_policy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AccessPolicyMetadata"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "diagnostic_code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OperationalMetadataDiagnostic"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "freshness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectionFreshness"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "health": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectionHealth"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lifecycle": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RevisionLifecycle"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "processing_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IngestionItemState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "publication_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DocumentPublicationStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "security_domain": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SecurityDomainMetadata"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_object_id": {
+            "format": "uuid",
+            "title": "Source Object Id",
+            "type": "string"
+          },
+          "source_revision_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Revision Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/OperationalMetadataStatus"
+          }
+        },
+        "required": [
+          "source_object_id",
+          "status"
+        ],
+        "title": "DocumentOperationalMetadata",
+        "type": "object"
+      },
       "DocumentProcessingHistoryResponse": {
         "additionalProperties": false,
         "properties": {
@@ -1433,6 +1585,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/DocumentIdentitySnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "operational_metadata": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DocumentOperationalMetadata"
               },
               {
                 "type": "null"
@@ -2176,6 +2338,24 @@
         ],
         "title": "LivenessResponse",
         "type": "object"
+      },
+      "OperationalMetadataDiagnostic": {
+        "enum": [
+          "current_state_unavailable",
+          "policy_unavailable",
+          "security_domain_unavailable"
+        ],
+        "title": "OperationalMetadataDiagnostic",
+        "type": "string"
+      },
+      "OperationalMetadataStatus": {
+        "enum": [
+          "available",
+          "degraded",
+          "unavailable"
+        ],
+        "title": "OperationalMetadataStatus",
+        "type": "string"
       },
       "OriginalReferenceSnapshot": {
         "additionalProperties": false,
@@ -3353,6 +3533,43 @@
           "lifecycle"
         ],
         "title": "RevisionSnapshot",
+        "type": "object"
+      },
+      "SecurityDomainMetadata": {
+        "additionalProperties": false,
+        "description": "Canonical Security Domain reference exposed as deny-only metadata.",
+        "properties": {
+          "binding_version": {
+            "minimum": 1.0,
+            "title": "Binding Version",
+            "type": "integer"
+          },
+          "reference": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Reference",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "version": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reference",
+          "version",
+          "binding_version"
+        ],
+        "title": "SecurityDomainMetadata",
         "type": "object"
       },
       "SourceKind": {

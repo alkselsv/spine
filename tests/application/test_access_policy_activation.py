@@ -191,6 +191,26 @@ def _eligibility(policy: AccessPolicyVersion) -> InitialPolicyEligibilityDecisio
     )
 
 
+def test_v1_policy_digest_remains_byte_compatible() -> None:
+    assert access_policy_document_hash(_policy()) == (
+        "2d94425c244b88a99377d450aae6d5283cfa5b15e5ea3d443b322d2e1845eea5"
+    )
+
+
+def test_v2_policy_digest_includes_security_domain_binding_reference() -> None:
+    values = _policy().model_dump()
+    first = AccessPolicyVersion.model_validate(
+        {
+            **values,
+            "document_schema_version": "access-policy.v2",
+            "security_domain_binding_id": _id(40),
+        }
+    )
+    second = first.model_copy(update={"security_domain_binding_id": _id(41)})
+
+    assert access_policy_document_hash(first) != access_policy_document_hash(second)
+
+
 def _command(
     policy: AccessPolicyVersion,
     eligibility: InitialPolicyEligibilityDecision,

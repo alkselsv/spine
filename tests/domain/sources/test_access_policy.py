@@ -12,6 +12,7 @@ from spine.domain.sources.access_policy import (
     AccessPolicyVersion,
     PolicyOriginKind,
     PrincipalKind,
+    SourceSecurityDomainBinding,
 )
 
 
@@ -44,6 +45,53 @@ def _policy(*grants: AccessGrant) -> AccessPolicyVersion:
 
 def test_empty_policy_is_valid_deny_all_successor() -> None:
     assert _policy().grants == ()
+
+
+def test_policy_binding_requires_v2_but_keeps_v1_shape_compatible() -> None:
+    binding_id = _id(40)
+    assert _policy().security_domain_binding_id is None
+
+    policy = AccessPolicyVersion.model_validate(
+        {
+            **_policy().model_dump(),
+            "document_schema_version": "access-policy.v2",
+            "security_domain_binding_id": binding_id,
+        }
+    )
+
+    assert policy.security_domain_binding_id == binding_id
+
+    with pytest.raises(ValidationError, match="access-policy.v2"):
+        AccessPolicyVersion.model_validate(
+            {**_policy().model_dump(), "security_domain_binding_id": binding_id}
+        )
+
+
+def test_security_domain_binding_is_immutable_and_versioned() -> None:
+    binding = SourceSecurityDomainBinding(
+        binding_id=_id(40),
+        workspace_id=_id(2),
+        environment_id=_id(3),
+        source_object_id=_id(4),
+        security_domain_reference="legal/eu",
+        security_domain_version="security-domain.v1",
+        binding_version=1,
+        predecessor_binding_id=None,
+        created_at=NOW,
+        policy_activation_id=_id(41),
+    )
+
+    assert binding.security_domain_reference == "legal/eu"
+    assert binding.model_config["frozen"] is True
+
+    with pytest.raises(ValidationError):
+        SourceSecurityDomainBinding.model_validate(
+            {
+                **binding.model_dump(),
+                "predecessor_binding_id": binding.binding_id,
+                "binding_version": 2,
+            }
+        )
 
 
 @pytest.mark.parametrize(
