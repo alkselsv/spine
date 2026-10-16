@@ -138,10 +138,13 @@ export function DocumentsPage() {
   });
 
   const hasFilters = FILTER_KEYS.some((key) => queryState[key] !== undefined);
-  const scopeSearch = new URLSearchParams({
+  const scopeSearchParameters = new URLSearchParams({
     workspace: scope.workspaceId,
     environment: scope.environmentId,
-  }).toString();
+  });
+  const fixture = searchParams.get('fixture');
+  if (fixture) scopeSearchParameters.set('fixture', fixture);
+  const scopeSearch = scopeSearchParameters.toString();
   const state = documentsState(documentsQuery.data, documentsQuery.error, documentsQuery.isStale);
 
   function changeFilter<Key extends keyof DocumentFilters>(key: Key, value: string) {
