@@ -242,6 +242,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/qa/citations/{citation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Qa.Citations.Inspect */
+        get: operations["qa.citations.inspect"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/qa/sessions": {
         parameters: {
             query?: never;
@@ -704,6 +721,31 @@ export interface components {
              */
             workspace_id: string;
         };
+        /** ApiResponseEnvelope[CitationInspectionResult] */
+        ApiResponseEnvelope_CitationInspectionResult_: {
+            data: components["schemas"]["CitationInspectionResult"];
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
         /** ApiResponseEnvelope[DocumentSnapshot] */
         ApiResponseEnvelope_DocumentSnapshot_: {
             data: components["schemas"]["DocumentSnapshot"];
@@ -976,11 +1018,219 @@ export interface components {
             warning_id: string;
         };
         /**
+         * CitationInspectionEvidence
+         * @description Content released after all citation and current-authority checks pass.
+         */
+        CitationInspectionEvidence: {
+            /**
+             * Answer Id
+             * Format: uuid
+             */
+            answer_id: string;
+            /**
+             * Citation Id
+             * Format: uuid
+             */
+            citation_id: string;
+            context_bundle: components["schemas"]["ContextBundleLineageRef"];
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            evidence_reference: components["schemas"]["ContextBundleEvidenceReference"];
+            /** Excerpt */
+            excerpt: string;
+            /**
+             * Historical
+             * @default false
+             */
+            historical: boolean;
+            /** Locator Digest */
+            locator_digest: string;
+            /** Locator Reference */
+            locator_reference: string;
+            /** Locator Schema */
+            locator_schema: string;
+            /** Original Sha256 */
+            original_sha256: string;
+            /** Revision Digest */
+            revision_digest: string;
+            /** Revision Number */
+            revision_number?: number | null;
+            /**
+             * Schema Version
+             * @default citation-inspection-evidence:v1
+             * @constant
+             */
+            schema_version: "citation-inspection-evidence:v1";
+            /**
+             * Source Object Id
+             * Format: uuid
+             */
+            source_object_id: string;
+            /**
+             * Source Revision Id
+             * Format: uuid
+             */
+            source_revision_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /**
+         * CitationInspectionReason
+         * @enum {string}
+         */
+        CitationInspectionReason: "available" | "citation_unavailable";
+        /**
+         * CitationInspectionResult
+         * @description Safe terminal result; unavailable results contain no source details.
+         */
+        CitationInspectionResult: {
+            evidence?: components["schemas"]["CitationInspectionEvidence"] | null;
+            reason: components["schemas"]["CitationInspectionReason"];
+            /**
+             * Schema Version
+             * @default citation-inspection-result:v1
+             * @constant
+             */
+            schema_version: "citation-inspection-result:v1";
+            status: components["schemas"]["CitationInspectionStatus"];
+        };
+        /**
+         * CitationInspectionStatus
+         * @enum {string}
+         */
+        CitationInspectionStatus: "available" | "unavailable";
+        /**
          * CommandStatus
          * @description Public lifecycle of a requested mutation.
          * @enum {string}
          */
         CommandStatus: "accepted" | "completed" | "failed" | "cancelled";
+        /**
+         * ContextBundleEvidenceReference
+         * @description A stable, source-revision-specific evidence pointer.
+         *
+         *     The reference intentionally contains no excerpt or provider payload.  The
+         *     pinned publication and policy-generation records around it make the
+         *     reference revalidatable without making it a disclosure bypass.
+         */
+        ContextBundleEvidenceReference: {
+            /** Activation Generation */
+            activation_generation: number;
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /** Evidence Digest */
+            evidence_digest: string;
+            /** Evidence Id */
+            evidence_id: string;
+            locator: components["schemas"]["EvidenceLocator"];
+            /** Locator Contract Version */
+            locator_contract_version?: string | null;
+            /** Locator Digest */
+            locator_digest?: string | null;
+            /** Original Sha256 */
+            original_sha256?: string | null;
+            /** Processing Receipt Id */
+            processing_receipt_id?: string | null;
+            /** Projected Kind */
+            projected_kind?: ("chunk" | "entity" | "relation") | null;
+            /**
+             * Projection Snapshot Id
+             * Format: uuid
+             */
+            projection_snapshot_id: string;
+            /** Revision Digest */
+            revision_digest?: string | null;
+            /** Revision Number */
+            revision_number?: number | null;
+            /**
+             * Schema Version
+             * @default context-evidence-reference:v1
+             * @enum {string}
+             */
+            schema_version: "context-evidence-reference:v1" | "context-evidence-reference:v2";
+            /**
+             * Source Object Id
+             * Format: uuid
+             */
+            source_object_id: string;
+            /**
+             * Source Revision Id
+             * Format: uuid
+             */
+            source_revision_id: string;
+            /** @default valid */
+            status: components["schemas"]["ContextBundleEvidenceStatus"];
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /**
+         * ContextBundleEvidenceStatus
+         * @description Safe validation state of one persisted evidence reference.
+         * @enum {string}
+         */
+        ContextBundleEvidenceStatus: "valid" | "missing" | "stale" | "tombstoned" | "ambiguous" | "incomplete" | "inaccessible" | "fabricated" | "corrupt";
+        /**
+         * ContextBundleLineageRef
+         * @description Exact bundle identity together with its owning tenant and attempt.
+         */
+        ContextBundleLineageRef: {
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            bundle: components["schemas"]["ContextBundleRef"];
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /**
+             * Schema Version
+             * @default context-bundle-lineage-ref:v1
+             * @constant
+             */
+            schema_version: "context-bundle-lineage-ref:v1";
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /**
+         * ContextBundleRef
+         * @description The public ContextBundleRef:v1 identity from CB-01.
+         */
+        ContextBundleRef: {
+            /** Bundle Digest */
+            bundle_digest: string;
+            /**
+             * Bundle Id
+             * Format: uuid
+             */
+            bundle_id: string;
+            /** Bundle Version */
+            bundle_version: number;
+            /** Publication Pin Id */
+            publication_pin_id?: string | null;
+        };
         /** CreateQAMessageRequest */
         CreateQAMessageRequest: {
             /** Question */
@@ -1126,6 +1376,25 @@ export interface components {
              * Format: uuid
              */
             source_object_id: string;
+        };
+        /**
+         * EvidenceLocator
+         * @description Closed, content-free locator contract for evidence revalidation.
+         */
+        EvidenceLocator: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "page" | "sheet_row" | "message" | "character_range" | "record_field" | "custom";
+            /**
+             * Schema Version
+             * @default stable-locator:v1
+             * @constant
+             */
+            schema_version: "stable-locator:v1";
+            /** Value */
+            value: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -3197,6 +3466,115 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponseEnvelope_ProjectionStatusResponse_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "qa.citations.inspect": {
+        parameters: {
+            query?: {
+                /** @description Use only the explicitly permitted historical inspection flow. */
+                historical?: boolean;
+            };
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                citation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope_CitationInspectionResult_"];
                 };
             };
             /** @description Safe request error. */

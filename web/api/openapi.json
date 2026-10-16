@@ -597,6 +597,43 @@
         "title": "ApiCommandResult[QASessionResponse]",
         "type": "object"
       },
+      "ApiResponseEnvelope_CitationInspectionResult_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/CitationInspectionResult"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "trace_id": {
+            "format": "uuid",
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "environment_id",
+          "trace_id",
+          "data"
+        ],
+        "title": "ApiResponseEnvelope[CitationInspectionResult]",
+        "type": "object"
+      },
       "ApiResponseEnvelope_DocumentSnapshot_": {
         "additionalProperties": false,
         "properties": {
@@ -1154,6 +1191,172 @@
         "title": "BatchIngestionWarningResponse",
         "type": "object"
       },
+      "CitationInspectionEvidence": {
+        "additionalProperties": false,
+        "description": "Content released after all citation and current-authority checks pass.",
+        "properties": {
+          "answer_id": {
+            "format": "uuid",
+            "title": "Answer Id",
+            "type": "string"
+          },
+          "citation_id": {
+            "format": "uuid",
+            "title": "Citation Id",
+            "type": "string"
+          },
+          "context_bundle": {
+            "$ref": "#/components/schemas/ContextBundleLineageRef"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "evidence_reference": {
+            "$ref": "#/components/schemas/ContextBundleEvidenceReference"
+          },
+          "excerpt": {
+            "maxLength": 32768,
+            "minLength": 1,
+            "title": "Excerpt",
+            "type": "string"
+          },
+          "historical": {
+            "default": false,
+            "title": "Historical",
+            "type": "boolean"
+          },
+          "locator_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Locator Digest",
+            "type": "string"
+          },
+          "locator_reference": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Locator Reference",
+            "type": "string"
+          },
+          "locator_schema": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Locator Schema",
+            "type": "string"
+          },
+          "original_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Original Sha256",
+            "type": "string"
+          },
+          "revision_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Revision Digest",
+            "type": "string"
+          },
+          "revision_number": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Number"
+          },
+          "schema_version": {
+            "const": "citation-inspection-evidence:v1",
+            "default": "citation-inspection-evidence:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source_object_id": {
+            "format": "uuid",
+            "title": "Source Object Id",
+            "type": "string"
+          },
+          "source_revision_id": {
+            "format": "uuid",
+            "title": "Source Revision Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "citation_id",
+          "answer_id",
+          "workspace_id",
+          "environment_id",
+          "source_object_id",
+          "source_revision_id",
+          "original_sha256",
+          "revision_digest",
+          "locator_schema",
+          "locator_reference",
+          "locator_digest",
+          "context_bundle",
+          "evidence_reference",
+          "excerpt"
+        ],
+        "title": "CitationInspectionEvidence",
+        "type": "object"
+      },
+      "CitationInspectionReason": {
+        "enum": [
+          "available",
+          "citation_unavailable"
+        ],
+        "title": "CitationInspectionReason",
+        "type": "string"
+      },
+      "CitationInspectionResult": {
+        "additionalProperties": false,
+        "description": "Safe terminal result; unavailable results contain no source details.",
+        "properties": {
+          "evidence": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CitationInspectionEvidence"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "$ref": "#/components/schemas/CitationInspectionReason"
+          },
+          "schema_version": {
+            "const": "citation-inspection-result:v1",
+            "default": "citation-inspection-result:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CitationInspectionStatus"
+          }
+        },
+        "required": [
+          "status",
+          "reason"
+        ],
+        "title": "CitationInspectionResult",
+        "type": "object"
+      },
+      "CitationInspectionStatus": {
+        "enum": [
+          "available",
+          "unavailable"
+        ],
+        "title": "CitationInspectionStatus",
+        "type": "string"
+      },
       "CommandStatus": {
         "description": "Public lifecycle of a requested mutation.",
         "enum": [
@@ -1164,6 +1367,273 @@
         ],
         "title": "CommandStatus",
         "type": "string"
+      },
+      "ContextBundleEvidenceReference": {
+        "additionalProperties": false,
+        "description": "A stable, source-revision-specific evidence pointer.\n\nThe reference intentionally contains no excerpt or provider payload.  The\npinned publication and policy-generation records around it make the\nreference revalidatable without making it a disclosure bypass.",
+        "properties": {
+          "activation_generation": {
+            "minimum": 1.0,
+            "title": "Activation Generation",
+            "type": "integer"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "evidence_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Evidence Digest",
+            "type": "string"
+          },
+          "evidence_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "locator": {
+            "$ref": "#/components/schemas/EvidenceLocator"
+          },
+          "locator_contract_version": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locator Contract Version"
+          },
+          "locator_digest": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locator Digest"
+          },
+          "original_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Sha256"
+          },
+          "processing_receipt_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processing Receipt Id"
+          },
+          "projected_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "chunk",
+                  "entity",
+                  "relation"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Projected Kind"
+          },
+          "projection_snapshot_id": {
+            "format": "uuid",
+            "title": "Projection Snapshot Id",
+            "type": "string"
+          },
+          "revision_digest": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Digest"
+          },
+          "revision_number": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Number"
+          },
+          "schema_version": {
+            "default": "context-evidence-reference:v1",
+            "enum": [
+              "context-evidence-reference:v1",
+              "context-evidence-reference:v2"
+            ],
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source_object_id": {
+            "format": "uuid",
+            "title": "Source Object Id",
+            "type": "string"
+          },
+          "source_revision_id": {
+            "format": "uuid",
+            "title": "Source Revision Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ContextBundleEvidenceStatus",
+            "default": "valid"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "workspace_id",
+          "environment_id",
+          "projection_snapshot_id",
+          "activation_generation",
+          "source_object_id",
+          "source_revision_id",
+          "locator",
+          "evidence_digest"
+        ],
+        "title": "ContextBundleEvidenceReference",
+        "type": "object"
+      },
+      "ContextBundleEvidenceStatus": {
+        "description": "Safe validation state of one persisted evidence reference.",
+        "enum": [
+          "valid",
+          "missing",
+          "stale",
+          "tombstoned",
+          "ambiguous",
+          "incomplete",
+          "inaccessible",
+          "fabricated",
+          "corrupt"
+        ],
+        "title": "ContextBundleEvidenceStatus",
+        "type": "string"
+      },
+      "ContextBundleLineageRef": {
+        "$id": "spine/context-bundle-lineage-ref:v1",
+        "additionalProperties": false,
+        "description": "Exact bundle identity together with its owning tenant and attempt.",
+        "properties": {
+          "attempt_id": {
+            "format": "uuid",
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "bundle": {
+            "$ref": "#/components/schemas/ContextBundleRef"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "context-bundle-lineage-ref:v1",
+            "default": "context-bundle-lineage-ref:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "bundle",
+          "workspace_id",
+          "environment_id",
+          "run_id",
+          "attempt_id"
+        ],
+        "title": "ContextBundleLineageRef",
+        "type": "object"
+      },
+      "ContextBundleRef": {
+        "$id": "spine/context-bundle-ref:v1",
+        "additionalProperties": false,
+        "description": "The public ContextBundleRef:v1 identity from CB-01.",
+        "properties": {
+          "bundle_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Bundle Digest",
+            "type": "string"
+          },
+          "bundle_id": {
+            "format": "uuid",
+            "title": "Bundle Id",
+            "type": "string"
+          },
+          "bundle_version": {
+            "minimum": 1.0,
+            "title": "Bundle Version",
+            "type": "integer"
+          },
+          "publication_pin_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Pin Id"
+          }
+        },
+        "required": [
+          "bundle_id",
+          "bundle_version",
+          "bundle_digest"
+        ],
+        "title": "ContextBundleRef",
+        "type": "object"
       },
       "CreateQAMessageRequest": {
         "additionalProperties": false,
@@ -1633,6 +2103,42 @@
           "created_at"
         ],
         "title": "DocumentSnapshot",
+        "type": "object"
+      },
+      "EvidenceLocator": {
+        "additionalProperties": false,
+        "description": "Closed, content-free locator contract for evidence revalidation.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "page",
+              "sheet_row",
+              "message",
+              "character_range",
+              "record_field",
+              "custom"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "stable-locator:v1",
+            "default": "stable-locator:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "value": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "value"
+        ],
+        "title": "EvidenceLocator",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -5726,6 +6232,161 @@
           }
         ],
         "summary": "Projection.Status"
+      }
+    },
+    "/api/v1/qa/citations/{citation_id}": {
+      "get": {
+        "operationId": "qa.citations.inspect",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "citation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Citation Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Use only the explicitly permitted historical inspection flow.",
+            "in": "query",
+            "name": "historical",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Use only the explicitly permitted historical inspection flow.",
+              "title": "Historical",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Environment-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseEnvelope_CitationInspectionResult_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Safe request error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authentication is invalid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authorization is denied."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Resource is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Command conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request payload is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Unexpected internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Dependency is unavailable."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Qa.Citations.Inspect"
       }
     },
     "/api/v1/qa/sessions": {

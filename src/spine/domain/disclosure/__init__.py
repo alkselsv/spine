@@ -14,6 +14,14 @@ from .models import (
     DisclosureRevalidationResult,
     DisclosureValidationFact,
 )
+from .citation_inspector import (
+    CitationExcerpt,
+    CitationInspectionEvidence,
+    CitationInspectionMode,
+    CitationInspectionReason,
+    CitationInspectionResult,
+    CitationInspectionStatus,
+)
 
 __all__ = [
     "DisclosureDependency",
@@ -28,4 +36,10 @@ __all__ = [
     "DisclosureRevalidationRequest",
     "DisclosureRevalidationResult",
     "DisclosureValidationFact",
+    "CitationInspectionEvidence",
+    "CitationExcerpt",
+    "CitationInspectionMode",
+    "CitationInspectionReason",
+    "CitationInspectionResult",
+    "CitationInspectionStatus",
 ]

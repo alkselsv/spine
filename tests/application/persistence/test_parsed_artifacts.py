@@ -73,6 +73,21 @@ async def test_resolver_requires_exact_revision_and_parser_identity() -> None:
         locator_contract_version=document.locator_contract_version,
         locator=locator,
     ) is None
+
+    stable = await repository.resolve_stable_segment(
+        workspace_id=document.workspace_id,
+        environment_id=document.environment_id,
+        source_object_id=document.source_object_id,
+        source_revision_id=document.source_revision_id,
+        source_revision_digest=document.source_revision_digest,
+        original_sha256=document.original_sha256,
+        locator_contract_version=document.locator_contract_version,
+        locator_kind="character_range",
+        locator_value="line:1:0-3",
+    )
+    assert stable is not None
+    assert stable[0] == document
+    assert stable[1] == document.segments[0]
     assert await repository.resolve_segment(
         workspace_id=document.workspace_id,
         environment_id=document.environment_id,

@@ -6,6 +6,7 @@ from typing import Protocol
 from uuid import UUID
 
 from spine.domain.capabilities.answer_disclosure import AnswerDisclosureRecord
+from spine.domain.capabilities.answer_disclosure import AcceptedGroundedAnswer
 
 
 class AnswerDisclosureRepository(Protocol):
@@ -27,6 +28,14 @@ class AnswerDisclosureRepository(Protocol):
         request_id: UUID,
         output_reference: UUID,
     ) -> UUID: ...
+
+    async def resolve_citation(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        citation_id: UUID,
+    ) -> AcceptedGroundedAnswer | None: ...
 
 
 __all__ = ["AnswerDisclosureRepository"]

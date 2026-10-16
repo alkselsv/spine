@@ -39,6 +39,7 @@ class DisclosureRevalidationCheckpoint(str, Enum):
 
     BEFORE_STORED_ANSWER_READ = "before_stored_answer_read"
     BEFORE_HISTORY_READ = "before_history_read"
+    BEFORE_CITATION_INSPECTION = "before_citation_inspection"
 
 
 class DisclosureRevalidationDisposition(str, Enum):
@@ -252,10 +253,13 @@ class DisclosureDependencyObservation(DefinitionModel):
     contributor_authorized: bool = False
     current_revision_id: UUID | None = None
     current_revision_digest: str | None = Field(default=None, pattern=_DIGEST)
+    historical_revision_id: UUID | None = None
+    historical_revision_digest: str | None = Field(default=None, pattern=_DIGEST)
     revision_current: bool = False
     superseded: bool = False
     tombstoned: bool = False
     retention_eligible: bool = False
+    historical_revision_available: bool = False
 
     @model_validator(mode="after")
     def validate_observation(self) -> "DisclosureDependencyObservation":
@@ -265,6 +269,8 @@ class DisclosureDependencyObservation(DefinitionModel):
             _id(self.current_policy_version_id, "current_policy_version_id")
         if self.current_revision_id is not None:
             _id(self.current_revision_id, "current_revision_id")
+        if self.historical_revision_id is not None:
+            _id(self.historical_revision_id, "historical_revision_id")
         return self
 
 
@@ -362,6 +368,8 @@ class DisclosureRevalidationRequest(DefinitionModel):
     attempt_id: UUID | None = None
     message_id: UUID | None = None
     cancelled: bool = False
+    historical_inspection: bool = False
+    force_fresh: bool = False
 
     @property
     def idempotency_key(self) -> str:
@@ -369,7 +377,14 @@ class DisclosureRevalidationRequest(DefinitionModel):
 
     @property
     def command_digest(self) -> str:
-        payload = self.model_dump(mode="json")
+        payload = self.model_dump(
+            mode="json",
+            exclude={"historical_inspection", "force_fresh"},
+        )
+        if self.historical_inspection:
+            payload["historical_inspection"] = True
+        if self.force_fresh:
+            payload["force_fresh"] = True
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
 

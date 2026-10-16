@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
 from spine.application.answer_disclosure import AnswerDisclosureIdempotencyConflict
-from spine.domain.capabilities import AnswerDisclosureRecord
+from spine.domain.capabilities import AcceptedGroundedAnswer, AnswerDisclosureRecord
 from spine.infrastructure.persistence.postgresql_mappings import (
     qa_answer_disclosure_deliveries,
     qa_answer_disclosure_records,
@@ -138,6 +138,37 @@ class PostgreSQLAnswerDisclosureRepository:
                 "Disclosure publication was recorded with a different output reference."
             )
         return stored
+
+    async def resolve_citation(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        citation_id: UUID,
+    ) -> AcceptedGroundedAnswer | None:
+        """Resolve one citation from accepted, tenant-scoped answer records.
+
+        Accepted answers are immutable payloads.  The query is intentionally
+        scoped before deserialization so a citation identity cannot probe
+        another workspace's answer records.
+        """
+
+        result = await self._uow._execute(
+            select(qa_answer_disclosure_records.c.payload).where(
+                qa_answer_disclosure_records.c.workspace_id == workspace_id,
+                qa_answer_disclosure_records.c.environment_id == environment_id,
+                qa_answer_disclosure_records.c.outcome == "answered",
+            )
+        )
+        for row in result.mappings().all():
+            payload = AnswerDisclosureRecord.model_validate(row["payload"])
+            accepted = payload.accepted_answer
+            if accepted is not None and any(
+                citation.citation_id == citation_id
+                for citation in accepted.answer.citations
+            ):
+                return accepted
+        return None
 
 
 __all__ = ["PostgreSQLAnswerDisclosureRepository"]

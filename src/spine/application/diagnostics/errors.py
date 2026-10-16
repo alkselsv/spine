@@ -49,6 +49,7 @@ from spine.application.qa_sessions import (
     QASessionNotFound,
     QASessionVersionConflict,
 )
+from spine.application.citation_inspector import CitationInspectionUnavailable
 from spine.auth.errors import (
     AuthenticationUnavailableError,
     AuthorizationDeniedError,
@@ -101,6 +102,7 @@ _SAFE_MESSAGE_BY_CODE = MappingProxyType({
     "spine.qa_sessions.message_not_found": "The Q&A message was not found.",
     "spine.qa_sessions.conflict": "The Q&A session state conflicts with a newer version.",
     "spine.qa_sessions.invalid_request": "The Q&A session request is invalid.",
+    "spine.qa.citations.unavailable": "The citation is unavailable.",
 })
 
 
@@ -325,6 +327,7 @@ def build_default_error_registry() -> StructuredErrorRegistry:
         (QAMessageNotFound, "spine.qa_sessions.message_not_found", "The Q&A message was not found.", Retryability.NEVER),
         (QASessionVersionConflict, "spine.qa_sessions.conflict", "The Q&A session state conflicts with a newer version.", Retryability.NEVER),
         (InvalidQASessionRequest, "spine.qa_sessions.invalid_request", "The Q&A session request is invalid.", Retryability.NEVER),
+        (CitationInspectionUnavailable, "spine.qa.citations.unavailable", "The citation is unavailable.", Retryability.NEVER),
     )
     for exception_type, code, safe_message, retryability in mappings:
         registry.register(exception_type, code, safe_message, retryability)

@@ -68,3 +68,17 @@ class ParsedArtifactRepository(Protocol):
         locator_contract_version: str,
         locator: Locator,
     ) -> ParsedSegment | None: ...
+
+    async def resolve_stable_segment(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        source_object_id: UUID,
+        source_revision_id: UUID,
+        source_revision_digest: str,
+        original_sha256: str,
+        locator_contract_version: str,
+        locator_kind: str,
+        locator_value: str,
+    ) -> tuple[ParsedDocument, ParsedSegment] | None: ...

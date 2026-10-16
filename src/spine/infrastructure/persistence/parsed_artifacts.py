@@ -14,8 +14,19 @@ from spine.application.persistence.errors import ParsedArtifactConflictError
 from spine.application.persistence.parsed_artifacts import (
     ParsedArtifactCommand,
     ParsedArtifactPersistenceResult,
+    ParsedArtifactRepository,
 )
+from spine.application.projection_locator import canonical_projection_locator_digest
+from spine.domain.capabilities import Citation
 from spine.domain.artifacts import Locator, ParseExclusion, ParsedDocument, ParsedSegment
+from spine.domain.artifacts import (
+    OoxmlTextLocator,
+    PageTextLocator,
+    PhysicalLineLocator,
+    XlsxCellLocator,
+)
+from spine.domain.disclosure import CitationExcerpt
+from spine.memory.contracts import StableLocator
 from spine.infrastructure.persistence.postgresql_mappings import (
     parsed_document_segments,
     parsed_documents,
@@ -83,6 +94,29 @@ class InMemoryParsedArtifactRepository:
     async def count(self) -> int:
         async with self._lock:
             return len(self._documents)
+
+    async def resolve_stable_segment(
+        self, *, workspace_id: UUID, environment_id: UUID, source_object_id: UUID,
+        source_revision_id: UUID, source_revision_digest: str, original_sha256: str,
+        locator_contract_version: str, locator_kind: str, locator_value: str,
+    ) -> tuple[ParsedDocument, ParsedSegment] | None:
+        async with self._lock:
+            matches = tuple(
+                (document, segment)
+                for (workspace, environment, _), document in self._documents.items()
+                if workspace == workspace_id and environment == environment_id
+                and document.source_object_id == source_object_id
+                and document.source_revision_id == source_revision_id
+                and document.source_revision_digest == source_revision_digest
+                and document.original_sha256 == original_sha256
+                and document.locator_contract_version == locator_contract_version
+                for segment in document.segments
+                if _stable_locator_key(segment.locator) == (locator_kind, locator_value)
+            )
+            if len(matches) != 1:
+                return None
+            document, segment = matches[0]
+            return document.model_copy(deep=True), segment.model_copy(deep=True)
 
 
 class PostgreSQLParsedArtifactRepository:
@@ -232,6 +266,100 @@ class PostgreSQLParsedArtifactRepository:
                 "text": segments[0]["text"], "text_digest": segments[0]["text_digest"],
                 "locator": segments[0]["locator"], "heading_path": tuple(segments[0]["heading_path"]),
             })
+
+    async def resolve_stable_segment(
+        self, *, workspace_id: UUID, environment_id: UUID, source_object_id: UUID,
+        source_revision_id: UUID, source_revision_digest: str, original_sha256: str,
+        locator_contract_version: str, locator_kind: str, locator_value: str,
+    ) -> tuple[ParsedDocument, ParsedSegment] | None:
+        async with self._session_factory() as session:
+            rows = (await session.execute(select(parsed_documents).where(
+                parsed_documents.c.workspace_id == workspace_id,
+                parsed_documents.c.environment_id == environment_id,
+                parsed_documents.c.source_object_id == source_object_id,
+                parsed_documents.c.source_revision_id == source_revision_id,
+                parsed_documents.c.source_revision_digest == source_revision_digest,
+                parsed_documents.c.original_sha256 == original_sha256,
+                parsed_documents.c.locator_contract_version == locator_contract_version,
+            ))).mappings().all()
+            if len(rows) != 1:
+                return None
+            row = rows[0]
+            segment_rows = (await session.execute(select(parsed_document_segments).where(
+                parsed_document_segments.c.workspace_id == workspace_id,
+                parsed_document_segments.c.environment_id == environment_id,
+                parsed_document_segments.c.artifact_id == row["artifact_id"],
+            ).order_by(parsed_document_segments.c.segment_ordinal))).mappings().all()
+            document = _document_from_rows(row, segment_rows)
+            matches = tuple(
+                segment for segment in document.segments
+                if _stable_locator_key(segment.locator) == (locator_kind, locator_value)
+            )
+            if len(matches) != 1:
+                return None
+            return document, matches[0]
+
+
+class ParsedArtifactCitationExcerptResolver:
+    """Resolve exact citation excerpts from the immutable parsed-artifact store."""
+
+    def __init__(self, repository: ParsedArtifactRepository) -> None:
+        self._repository = repository
+
+    async def resolve(self, citation: Citation, *, historical: bool) -> CitationExcerpt | None:
+        del historical
+        evidence = citation.evidence_reference
+        if (
+            evidence.original_sha256 is None
+            or evidence.revision_digest is None
+            or evidence.locator_contract_version is None
+            or evidence.locator_digest is None
+        ):
+            return None
+        stable = StableLocator(kind=evidence.locator.kind, value=evidence.locator.value)
+        if canonical_projection_locator_digest(
+            locator_contract_version=evidence.locator_contract_version,
+            locator=stable,
+        ) != evidence.locator_digest:
+            return None
+        resolved = await self._repository.resolve_stable_segment(
+            workspace_id=citation.workspace_id,
+            environment_id=citation.environment_id,
+            source_object_id=evidence.source_object_id,
+            source_revision_id=evidence.source_revision_id,
+            source_revision_digest=evidence.revision_digest,
+            original_sha256=evidence.original_sha256,
+            locator_contract_version=evidence.locator_contract_version,
+            locator_kind=evidence.locator.kind,
+            locator_value=evidence.locator.value,
+        )
+        if resolved is None:
+            return None
+        document, segment = resolved
+        return CitationExcerpt(
+            source_object_id=document.source_object_id,
+            source_revision_id=document.source_revision_id,
+            original_sha256=document.original_sha256,
+            revision_digest=document.source_revision_digest,
+            revision_number=evidence.revision_number,
+            locator_schema=document.locator_contract_version,
+            locator_reference=evidence.locator.value,
+            locator_digest=evidence.locator_digest,
+            excerpt=segment.text,
+        )
+
+
+def _stable_locator_key(locator: Locator) -> tuple[str, str]:
+    if isinstance(locator, PhysicalLineLocator):
+        return "character_range", f"line:{locator.line_number}:{locator.start_codepoint}-{locator.end_codepoint}"
+    if isinstance(locator, PageTextLocator):
+        return "page", f"page:{locator.page_number}:{locator.start_codepoint}-{locator.end_codepoint}"
+    if isinstance(locator, XlsxCellLocator):
+        return "sheet_row", f"{locator.sheet}:{locator.row}:{locator.cell_range}"
+    if isinstance(locator, OoxmlTextLocator):
+        path = "/".join(f"{step.kind}:{step.index}" for step in locator.block_path)
+        return "custom", f"ooxml:{path}:{locator.start_codepoint}-{locator.end_codepoint}"
+    raise TypeError("unsupported parsed locator")
 
 
 def _document_values(document: ParsedDocument, command: ParsedArtifactCommand) -> dict[str, Any]:
