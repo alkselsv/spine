@@ -18,6 +18,7 @@ from spine.infrastructure.db.test_harness import (
     provision_test_database,
 )
 from spine.infrastructure.isolated_restore import (
+    IsolatedRestoreFailure,
     IsolatedRestoreTarget,
     IsolatedRestoreVerifier,
 )
@@ -289,12 +290,19 @@ async def test_isolated_restore_verifier_reconciles_real_postgres_and_filesystem
             ),
         )
 
-        evidence = await verifier.verify_and_restore(
-            manifest=manifest,
-            postgres_artifact=pg_archive,
-            filesystem_artifact=filesystem_archive,
-            target=target,
-        )
+        try:
+            evidence = await verifier.verify_and_restore(
+                manifest=manifest,
+                postgres_artifact=pg_archive,
+                filesystem_artifact=filesystem_archive,
+                target=target,
+            )
+        except IsolatedRestoreFailure as failure:
+            cause_type = type(failure.__context__).__name__
+            pytest.fail(
+                "isolated restore failed with "
+                f"{failure.evidence.safe_failure_code}; diagnostic type: {cause_type}"
+            )
         evidence_file = target.filesystem_root / "restore-evidence.json"
         original = target.filesystem_root / hashlib.sha256(
             f"{workspace_a}:{environment_a}".encode()
