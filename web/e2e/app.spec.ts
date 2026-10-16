@@ -238,10 +238,25 @@ test('test_document_retry_polls_durable_operation_and_reloads_its_run', async ({
 
 test('test_document_reprocess_uses_current_revision_and_conflict_requires_refresh', async ({ page }) => {
   const requests: Array<{ body: string; headers: Record<string, string> }> = [];
+  let returnReady = false;
   await installControlledDocumentDetail(page);
   await page.route('**/api/v1/documents/processing/reprocess', async (route) => {
     const request = route.request();
     requests.push({ body: request.postData() ?? '', headers: request.headers() });
+    if (returnReady) {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify(processingCommandReceipt({
+          failureIds: [], itemId: '80000000-0000-4000-8000-000000000003',
+          operationId: '80000000-0000-4000-8000-000000000001',
+          runId: '80000000-0000-4000-8000-000000000002',
+          sourceObjectId: firstDocument, sourceRevisionId: secondDocument, status: 'ready',
+          triggerKind: 'reprocess',
+        })),
+        status: 202,
+      });
+      return;
+    }
     await route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify({
@@ -263,6 +278,12 @@ test('test_document_reprocess_uses_current_revision_and_conflict_requires_refres
   await expect(page.getByRole('button', { name: 'Обновить состояние ревизии' })).toBeVisible();
   await expect(page.locator('body')).not.toContainText('provider failure secret');
   expect(requests).toHaveLength(1);
+
+  returnReady = true;
+  await page.getByRole('button', { name: 'Обновить состояние ревизии' }).click();
+  await page.getByRole('button', { name: 'Обработать текущую ревизию заново' }).click();
+  await expect(page.getByRole('region', { name: 'Результат команды обработки' })).toContainText('Обработка завершена');
+  expect(requests).toHaveLength(2);
   expect(requests[0]?.headers['x-workspace-id']).toBe(salesWorkspace);
   expect(requests[0]?.headers['x-environment-id']).toBe(stagingEnvironment);
   expect(JSON.parse(requests[0]!.body)).toMatchObject({
@@ -271,6 +292,66 @@ test('test_document_reprocess_uses_current_revision_and_conflict_requires_refres
     source_object_id: firstDocument,
     source_revision_id: secondDocument,
   });
+});
+
+test('test_document_retry_replay_failed_cancelled_and_denied_states_are_safe', async ({ page }) => {
+  await installControlledRunReadModels(page);
+  const sourceObjectId = '80000000-0000-4000-8000-000000000004';
+  const sourceRevisionId = '80000000-0000-4000-8000-000000000005';
+  let commandCount = 0;
+  await page.route(`**/api/v1/ingestion/runs/${firstDocument}`, async (route) => {
+    const status = controlledPartialRunStatus();
+    const failed = status.items[1]!;
+    failed.source_object_id = sourceObjectId;
+    failed.source_revision_id = sourceRevisionId;
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(status), status: 200 });
+  });
+  await page.route('**/api/v1/documents/processing/retry', async (route) => {
+    commandCount += 1;
+    if (commandCount === 4) {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          code: 'spine.authorization.denied',
+          retryability: 'never',
+          safe_message: 'Доступ запрещён',
+          schema_version: 1,
+          trace_id: traceId,
+          protected_detail: 'provider failure secret',
+        }),
+        status: 403,
+      });
+      return;
+    }
+    const status = commandCount === 1 ? 'ready' : commandCount === 2 ? 'failed' : 'cancelled';
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(processingCommandReceipt({
+        failureIds: [], itemId: '80000000-0000-4000-8000-000000000003',
+        operationId: `80000000-0000-4000-8000-00000000000${commandCount}`,
+        runId: '80000000-0000-4000-8000-000000000002', sourceObjectId, sourceRevisionId,
+        status, replay: commandCount === 1,
+      })),
+      status: 202,
+    });
+  });
+
+  await page.goto(`/runs/${firstDocument}?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`);
+  const failedFile = page.getByRole('listitem').filter({ hasText: 'failed.txt' });
+  const retry = failedFile.getByRole('button', { name: 'Повторить обработку файла' });
+  await retry.click();
+  await expect(failedFile.getByRole('region', { name: 'Результат команды обработки' })).toContainText('Обработка завершена');
+  await expect(failedFile).toContainText('Показан сохранённый результат этой команды.');
+
+  await retry.click();
+  await expect(failedFile.getByRole('region', { name: 'Результат команды обработки' })).toContainText('Ошибка обработки');
+  await retry.click();
+  await expect(failedFile.getByRole('region', { name: 'Результат команды обработки' })).toContainText('Обработка отменена');
+  await retry.click();
+  await expect(failedFile.getByRole('alert')).toContainText('Доступ запрещён');
+  await expect(page.locator('body')).not.toContainText('provider failure secret');
+  await expect(failedFile.getByRole('button', { name: 'Повторить ту же команду' })).toHaveCount(0);
+  expect(commandCount).toBe(4);
 });
 
 async function installControlledRunReadModels(page: Page) {
@@ -1063,6 +1144,8 @@ function processingCommandReceipt(input: {
   sourceObjectId: string;
   sourceRevisionId: string;
   status: components['schemas']['ProcessingCommandStatus'];
+  triggerKind?: components['schemas']['ProcessingCommandResponse']['trigger_kind'];
+  replay?: boolean;
 }): components['schemas']['ProcessingCommandResponse'] {
   return {
     failure_ids: input.failureIds,
@@ -1070,13 +1153,13 @@ function processingCommandReceipt(input: {
     next_action: input.status === 'ready' ? 'none' : 'poll',
     operation_id: input.operationId,
     processing_receipt_id: input.status === 'ready' ? '80000000-0000-4000-8000-000000000006' : null,
-    replay: false,
+    replay: input.replay ?? false,
     run_id: input.runId,
     schema_version: 1,
     source_object_id: input.sourceObjectId,
     source_revision_id: input.sourceRevisionId,
     status: input.status,
     status_url: `/api/v1/documents/processing/operations/${input.operationId}`,
-    trigger_kind: 'retry',
+    trigger_kind: input.triggerKind ?? 'retry',
   };
 }
