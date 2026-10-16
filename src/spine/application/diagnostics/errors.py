@@ -43,6 +43,7 @@ from spine.application.projection_control import (
     ProjectionControlServiceUnavailable,
 )
 from spine.application.document_queries import DocumentNotFound
+from spine.application.feedback_errors import FeedbackTargetNotFound, InvalidFeedbackRequest
 from spine.application.qa_sessions import (
     InvalidQASessionRequest,
     QAMessageNotFound,
@@ -103,6 +104,8 @@ _SAFE_MESSAGE_BY_CODE = MappingProxyType({
     "spine.qa_sessions.conflict": "The Q&A session state conflicts with a newer version.",
     "spine.qa_sessions.invalid_request": "The Q&A session request is invalid.",
     "spine.qa.citations.unavailable": "The citation is unavailable.",
+    "spine.qa_feedback.target_not_found": "The feedback target was not found.",
+    "spine.qa_feedback.invalid_request": "The feedback request is invalid.",
 })
 
 
@@ -328,6 +331,8 @@ def build_default_error_registry() -> StructuredErrorRegistry:
         (QASessionVersionConflict, "spine.qa_sessions.conflict", "The Q&A session state conflicts with a newer version.", Retryability.NEVER),
         (InvalidQASessionRequest, "spine.qa_sessions.invalid_request", "The Q&A session request is invalid.", Retryability.NEVER),
         (CitationInspectionUnavailable, "spine.qa.citations.unavailable", "The citation is unavailable.", Retryability.NEVER),
+        (FeedbackTargetNotFound, "spine.qa_feedback.target_not_found", "The feedback target was not found.", Retryability.NEVER),
+        (InvalidFeedbackRequest, "spine.qa_feedback.invalid_request", "The feedback request is invalid.", Retryability.NEVER),
     )
     for exception_type, code, safe_message, retryability in mappings:
         registry.register(exception_type, code, safe_message, retryability)

@@ -511,6 +511,23 @@ class HttpRequestDiagnosticPayload(BaseModel):
     response_status_code: int = Field(ge=100, le=599)
 
 
+class FeedbackDiagnosticPayload(BaseModel):
+    """Safe metadata for one recorded feedback observation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    feedback_id: UUID
+    target_kind: Literal["answer", "citation"]
+    outcome: Literal[
+        "answer.helpful",
+        "answer.incorrect",
+        "citation.helpful",
+        "citation.incorrect",
+    ]
+    run_id: UUID
+    message_id: UUID | None = None
+
+
 class UnsupportedDiagnosticEventError(ValueError):
     """An event type, version, or payload is not registered and valid."""
 
@@ -631,6 +648,11 @@ class DiagnosticEventRegistry:
             event_type="http.request",
             schema_version=1,
             payload_type=HttpRequestDiagnosticPayload,
+        )
+        registry.register(
+            event_type="feedback.recorded",
+            schema_version=1,
+            payload_type=FeedbackDiagnosticPayload,
         )
         registry.seal()
         return registry
@@ -850,6 +872,7 @@ __all__ = [
     "DiagnosticSeverity",
     "DiagnosticSink",
     "FailureDiagnosticPayload",
+    "FeedbackDiagnosticPayload",
     "OutboxDeliveryDiagnosticPayload",
     "OutboxDeliveryDiagnosticState",
     "StorageOutcomeDiagnosticPayload",

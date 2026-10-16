@@ -50,6 +50,7 @@ from spine.application.projection_control import (
 )
 from spine.application.qa_sessions import QASessionService
 from spine.application.citation_inspector import CitationInspectorService
+from spine.application.feedback import FeedbackService
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.auth import RoutePolicyRegistry
 
@@ -208,6 +209,12 @@ class _UnavailableCitationInspectorService:
         del kwargs
         raise RuntimeError("The OpenAPI composition is not executable.")
 
+
+class _UnavailableFeedbackService:
+    async def submit(self, **kwargs):
+        del kwargs
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
 async def _contract_readiness() -> ApiAuthorizationReadiness:
     return ApiAuthorizationReadiness(
         ready=False,
@@ -254,6 +261,7 @@ def create_openapi_app() -> FastAPI:
         citation_inspector_service=cast(
             CitationInspectorService, _UnavailableCitationInspectorService()
         ),
+        feedback_service=cast(FeedbackService, _UnavailableFeedbackService()),
     )
 
 

@@ -206,6 +206,7 @@ from spine.domain.capabilities.answer_question_runs import (
 )
 from spine.infrastructure.persistence.projection import InMemoryProjectionRepository
 from spine.infrastructure.persistence.qa_sessions import InMemoryQASessionRepository
+from spine.infrastructure.persistence.feedback import InMemoryFeedbackRepository
 
 
 _ResultT = TypeVar("_ResultT")
@@ -337,6 +338,7 @@ class _Store:
         self.boundary_clock = boundary_clock
         self.outbox_deliveries: dict[UUID, OutboxDelivery] = {}
         self.qa_sessions = InMemoryQASessionRepository()
+        self.feedback = InMemoryFeedbackRepository()
         self.disclosure_validations = InMemoryDisclosureValidationResultRepository()
         self.answer_disclosures = InMemoryAnswerDisclosureRepository()
 
@@ -3277,6 +3279,7 @@ class InMemoryUnitOfWork:
         self._context_bundles = _ContextBundleRepository(self)
         self._answer_question_runs = _AnswerQuestionRunRepository(self)
         self._qa_sessions = store.qa_sessions
+        self._feedback = store.feedback
         self._disclosure_validations = store.disclosure_validations
         self._answer_disclosures = store.answer_disclosures
         self._idempotency = _IdempotencyRepository(self)
@@ -3318,6 +3321,11 @@ class InMemoryUnitOfWork:
     def qa_sessions(self) -> InMemoryQASessionRepository:
         self._guard_active()
         return self._qa_sessions
+
+    @property
+    def feedback(self) -> InMemoryFeedbackRepository:
+        self._guard_active()
+        return self._feedback
 
     @property
     def disclosure_validations(self) -> InMemoryDisclosureValidationResultRepository:

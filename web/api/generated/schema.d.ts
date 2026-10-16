@@ -259,6 +259,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/qa/feedback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Qa.Feedback.Create */
+        post: operations["qa.feedback.create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/qa/sessions": {
         parameters: {
             query?: never;
@@ -602,6 +619,42 @@ export interface components {
              * @constant
              */
             schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** ApiCommandResult[FeedbackResponse] */
+        ApiCommandResult_FeedbackResponse_: {
+            /**
+             * Command Id
+             * Format: uuid
+             */
+            command_id: string;
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Replay
+             * @default false
+             */
+            replay: boolean;
+            result?: components["schemas"]["FeedbackResponse"] | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            status: components["schemas"]["CommandStatus"];
             /**
              * Trace Id
              * Format: uuid
@@ -1396,6 +1449,60 @@ export interface components {
             /** Value */
             value: string;
         };
+        /**
+         * FeedbackOutcome
+         * @enum {string}
+         */
+        FeedbackOutcome: "answer.helpful" | "answer.incorrect" | "citation.helpful" | "citation.incorrect";
+        /** FeedbackResponse */
+        FeedbackResponse: {
+            /** Audit Event Id */
+            audit_event_id?: string | null;
+            /** Citation Id */
+            citation_id?: string | null;
+            /**
+             * Feedback Id
+             * Format: uuid
+             */
+            feedback_id: string;
+            /**
+             * Feedback Version
+             * @default 1
+             * @constant
+             */
+            feedback_version: 1;
+            /** Message Id */
+            message_id?: string | null;
+            outcome: components["schemas"]["FeedbackOutcome"];
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Status
+             * @default recorded
+             * @constant
+             */
+            status: "recorded";
+            /**
+             * Target Id
+             * Format: uuid
+             */
+            target_id: string;
+            target_kind: components["schemas"]["FeedbackTargetKind"];
+        };
+        /**
+         * FeedbackTargetKind
+         * @enum {string}
+         */
+        FeedbackTargetKind: "answer" | "citation";
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -2174,6 +2281,29 @@ export interface components {
              * Format: uuid
              */
             trace_id: string;
+        };
+        /** SubmitFeedbackRequest */
+        SubmitFeedbackRequest: {
+            /** Citation Id */
+            citation_id?: string | null;
+            /** Comment */
+            comment?: string | null;
+            /** Message Id */
+            message_id?: string | null;
+            outcome: components["schemas"]["FeedbackOutcome"];
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /**
+             * Target Id
+             * Format: uuid
+             */
+            target_id: string;
+            target_kind: components["schemas"]["FeedbackTargetKind"];
         };
         /** ValidationError */
         ValidationError: {
@@ -3575,6 +3705,115 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponseEnvelope_CitationInspectionResult_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "qa.feedback.create": {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubmitFeedbackRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiCommandResult_FeedbackResponse_"];
                 };
             };
             /** @description Safe request error. */
