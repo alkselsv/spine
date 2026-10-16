@@ -1423,6 +1423,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ingestion_warnings",
         "ingestion_failures",
         "processing_receipts",
+        "source_security_domain_bindings",
         "backup_fence_leases",
         "fence_operation_tickets",
         "recovery_quiescence_evidence",
@@ -1592,6 +1593,15 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ck_processing_receipts_complete_exclusions",
         "ck_processing_receipts_complete_failures",
         "ck_processing_receipts_digests",
+        "pk_source_security_domain_bindings",
+        "uq_source_security_domain_bindings_scope_id",
+        "uq_source_security_domain_bindings_source_version",
+        "fk_source_security_domain_bindings_source",
+        "fk_source_security_domain_bindings_predecessor",
+        "fk_source_security_domain_bindings_activation",
+        "ck_source_security_domain_bindings_shape",
+        "ck_source_security_domain_bindings_version",
+        "ck_source_security_domain_bindings_chain",
         "pk_backup_fence_leases",
         "ck_backup_fence_leases_scope",
         "ck_backup_fence_leases_state",
@@ -2049,6 +2059,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "uq_processing_receipts_command",
         "ix_processing_receipts_revision",
         "ix_processing_receipts_item",
+        "pk_source_security_domain_bindings",
+        "uq_source_security_domain_bindings_scope_id",
+        "uq_source_security_domain_bindings_source_version",
         "pk_backup_fence_leases",
         "pk_fence_operation_tickets",
         "uq_fence_operation_tickets_scope_sequence",
@@ -2195,6 +2208,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ingestion_warnings": (True, True),
         "ingestion_failures": (True, True),
         "processing_receipts": (True, True),
+        "source_security_domain_bindings": (True, True),
         "backup_fence_leases": (True, True),
         "fence_operation_tickets": (True, True),
         "recovery_quiescence_evidence": (True, True),
@@ -2318,6 +2332,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ingestion_warnings": (True, True, False, False),
         "ingestion_failures": (True, True, False, False),
         "processing_receipts": (True, True, False, False),
+        "source_security_domain_bindings": (True, True, False, False),
         "backup_fence_leases": (True, True, True, False),
         "fence_operation_tickets": (True, True, True, False),
         "recovery_quiescence_evidence": (True, True, False, False),
@@ -3337,6 +3352,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "ingestion_warnings": (True, True),
         "ingestion_failures": (True, True),
             "processing_receipts": (True, True),
+        "source_security_domain_bindings": (True, True),
             "access_policy_versions": (True, True),
             "access_policy_grants": (True, True),
             "policy_proposals": (True, True),
@@ -3537,6 +3553,7 @@ async def test_access_policy_catalog_enforces_lineage_immutability_and_receipt_s
         "ck_access_policy_versions_hashes",
         "ck_access_policy_versions_schema",
         "ck_access_policy_versions_origin",
+        "ck_access_policy_versions_security_domain_schema",
         "pk_access_policy_grants",
         "fk_access_policy_grants_policy",
         "ck_access_policy_grants_authority_shape",
@@ -3575,6 +3592,15 @@ async def test_access_policy_catalog_enforces_lineage_immutability_and_receipt_s
         "fk_current_access_policies_source",
         "fk_current_access_policies_activation",
         "ck_current_access_policies_positive_versions",
+        "pk_source_security_domain_bindings",
+        "uq_source_security_domain_bindings_scope_id",
+        "uq_source_security_domain_bindings_source_version",
+        "fk_source_security_domain_bindings_source",
+        "fk_source_security_domain_bindings_predecessor",
+        "fk_source_security_domain_bindings_activation",
+        "ck_source_security_domain_bindings_shape",
+        "ck_source_security_domain_bindings_version",
+        "ck_source_security_domain_bindings_chain",
     }
     missing_constraints = {
         expected
@@ -3789,6 +3815,7 @@ async def test_runtime_cannot_mutate_immutable_canonical_evidence(
         "policy_proposals",
         "policy_approvals",
         "policy_activations",
+        "source_security_domain_bindings",
     )
     async with _connection(migrated_database.migration.url) as connection:
         privileges = {
@@ -3816,7 +3843,8 @@ async def test_runtime_cannot_mutate_immutable_canonical_evidence(
                         ":source_revision_receipt_associations, "
                         ":admission_decisions, :access_policy_versions, "
                         ":access_policy_grants, :policy_proposals, "
-                        ":policy_approvals, :policy_activations)"
+                        ":policy_approvals, :policy_activations, "
+                        ":source_security_domain_bindings)"
                     ),
                     {
                         "role": RUNTIME_ROLE,
