@@ -113,7 +113,13 @@ export const appRoutes: RouteObject[] = [
         path: 'chat/:sessionId',
         element: <ChatPage />,
       },
-      { path: 'runs/:runId', element: <PlaceholderPage title={ru.page.runDetails} /> },
+      {
+        path: 'runs/:runId',
+        lazy: async () => {
+          const module = await import('../features/knowledge/IngestionRunPage');
+          return { Component: module.IngestionRunPage };
+        },
+      },
       { path: 'settings', element: <PlaceholderPage title={ru.page.settings} /> },
     ],
   },

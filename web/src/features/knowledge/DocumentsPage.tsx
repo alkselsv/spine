@@ -10,6 +10,7 @@ import { useAuth } from '../../app/auth';
 import { ApiErrorPanel, StatusPanel, type InterfaceState } from '../../app/status';
 import { useScope } from '../../app/scope';
 import { ru } from '../../i18n/resources';
+import { DocumentUpload } from './DocumentUpload';
 import styles from './DocumentsPage.module.css';
 
 type DocumentSnapshot = components['schemas']['DocumentSnapshot'];
@@ -137,10 +138,13 @@ export function DocumentsPage() {
   });
 
   const hasFilters = FILTER_KEYS.some((key) => queryState[key] !== undefined);
-  const scopeSearch = new URLSearchParams({
+  const scopeSearchParameters = new URLSearchParams({
     workspace: scope.workspaceId,
     environment: scope.environmentId,
-  }).toString();
+  });
+  const fixture = searchParams.get('fixture');
+  if (fixture) scopeSearchParameters.set('fixture', fixture);
+  const scopeSearch = scopeSearchParameters.toString();
   const state = documentsState(documentsQuery.data, documentsQuery.error, documentsQuery.isStale);
 
   function changeFilter<Key extends keyof DocumentFilters>(key: Key, value: string) {
@@ -179,6 +183,13 @@ export function DocumentsPage() {
           </button>
         ) : null}
       </div>
+
+      <DocumentUpload
+        key={`${scope.workspaceId}:${scope.environmentId}`}
+        client={client}
+        disabled={!auth.getBearerCredential}
+        scopeSearch={scopeSearch}
+      />
 
       <div className={styles.filters} aria-label={ru.documents.filtersLabel}>
         {FILTER_KEYS.map((key) => (
