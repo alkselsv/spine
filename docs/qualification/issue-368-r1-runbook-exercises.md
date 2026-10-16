@@ -9,9 +9,9 @@ index is [`issue-368-r1-runbook-exercises.json`](issue-368-r1-runbook-exercises.
 | Operator flow | Procedure | Positive evidence | Negative/rejected evidence |
 |---|---|---|---|
 | O03 coordinated backup | [Backup and evidence review](../runbooks/r1-backup-evidence.md) | Matching independently verified components and immutable artifact replay | Mixed component evidence, lost fence, missing finalized object |
-| O04 isolated restore | [Restore and reconciliation](../runbooks/r1-isolated-restore.md) | Immutable verified result replay and real disposable PostgreSQL/filesystem restore | Mixed evidence is rejected before restore; corrupt/incomplete paths fail closed |
-| O05 projection recovery | [Rebuild, recovery, successor rollback](../runbooks/r1-projection-recovery.md) | Actual request/outbox/worker bridge and canonical publication CAS | Bounded terminal rejection, invalid validation and historical pointer rewind rejection |
-| O06 quarantine | [Read-only inspection](../runbooks/r1-quarantine-inspection.md) | Bounded scoped pages and runtime-role read-only inspection | Denied, unavailable, cross-scope cursor and RLS isolation |
+| O04 isolated restore | [Restore and reconciliation](../runbooks/r1-isolated-restore.md) | Offline immutable verified-result replay; disposable PostgreSQL/filesystem restore **not run locally** | Mixed evidence is rejected before restore; corrupt/incomplete paths fail closed |
+| O05 projection recovery | [Rebuild, recovery, successor rollback](../runbooks/r1-projection-recovery.md) | Application request/worker recovery and successor rollback; PostgreSQL handoff/publication CAS **not run locally** | Bounded terminal rejection, invalid validation and historical pointer rewind rejection |
+| O06 quarantine | [Read-only inspection](../runbooks/r1-quarantine-inspection.md) | Bounded scoped API pages; runtime-role PostgreSQL read-only/RLS inspection **not run locally** | Denied, unavailable and cross-scope cursor checks; PostgreSQL RLS isolation **not run locally** |
 | O01/O02/O07 diagnosis | [Telemetry and metrics](../runbooks/r1-telemetry-metrics-diagnosis.md) | Deduplicated metrics and safe trusted-reference correlation | Denied, stale, degraded, unavailable, missing or version-mismatched evidence |
 
 Each listed exercise uses synthetic fixtures or an owned disposable test target.
