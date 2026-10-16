@@ -9,6 +9,8 @@ from spine.evals.qa_r1 import (
 )
 from spine.evals.offline_runner import (
     CaseEvaluationContext,
+    CaseDefinitionIdentity,
+    ComponentVersions,
     DatasetIdentity,
     ExecutionMode,
     MeasurementObservation,
@@ -19,6 +21,15 @@ from spine.evals.offline_runner import (
     run_r1_evaluation_sync,
     run_r1_production_contract_evaluation,
     run_r1_production_contract_evaluation_sync,
+)
+from spine.evals.baseline_comparison import (
+    R1_BASELINE_COMPARISON_VERSION,
+    BaselineComparisonReport,
+    FailureCluster,
+    MetricAggregateDelta,
+    MetricDelta,
+    SafetyFailure,
+    compare_r1_reports,
 )
 from spine.evals.production_contract import (
     PRODUCTION_CONTRACT_CASE_REQUEST_SCHEMA,
@@ -53,6 +64,8 @@ __all__ = [
     "load_r1_dataset",
     "serialize_dataset",
     "DatasetIdentity",
+    "CaseDefinitionIdentity",
+    "ComponentVersions",
     "ExecutionMode",
     "CaseEvaluationContext",
     "MeasurementObservation",
@@ -82,4 +95,11 @@ __all__ = [
     "run_r1_evaluation_sync",
     "run_r1_production_contract_evaluation",
     "run_r1_production_contract_evaluation_sync",
+    "R1_BASELINE_COMPARISON_VERSION",
+    "BaselineComparisonReport",
+    "FailureCluster",
+    "MetricAggregateDelta",
+    "MetricDelta",
+    "SafetyFailure",
+    "compare_r1_reports",
 ]
