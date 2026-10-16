@@ -140,11 +140,21 @@ def test_missing_baseline_and_incompatible_protocol_are_explicit() -> None:
             "configuration": report.configuration.model_copy(update={"recall_k_values": (1, 2)})
         }),
     )
+    different_index = compare_r1_reports(
+        report,
+        report.model_copy(update={
+            "configuration": report.configuration.model_copy(
+                update={"retrieval_index_version": "qa-r1-index:v2"}
+            )
+        }),
+    )
 
     assert missing.status == "missing_baseline"
     assert incompatible.status == "incomparable"
     assert "evaluation_configuration_mismatch" in incompatible.incompatibilities
     assert incompatible.per_case_deltas == ()
+    assert different_index.status == "incomparable"
+    assert "evaluation_configuration_mismatch" in different_index.incompatibilities
 
 
 def test_dataset_and_evaluator_semantic_changes_are_incomparable() -> None:

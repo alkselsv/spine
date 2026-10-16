@@ -125,10 +125,7 @@ def compare_r1_reports(
             candidate_component_versions=candidate.component_versions,
             failure_clusters=_failure_clusters(candidate),
             safety_failures=_safety_failures(candidate),
-            safety_gate_failed=any(
-                item.status == "failed"
-                for item in (*candidate.safety_results, *candidate.grounded_answer_safety_results)
-            ),
+            safety_gate_failed=_safety_gate_failed(candidate),
         )
 
     incompatibilities = _incompatibilities(baseline, candidate)
@@ -159,10 +156,7 @@ def compare_r1_reports(
             changed_case_ids=changed,
             failure_clusters=_failure_clusters(candidate),
             safety_failures=_safety_failures(candidate),
-            safety_gate_failed=any(
-                item.status == "failed"
-                for item in (*candidate.safety_results, *candidate.grounded_answer_safety_results)
-            ),
+            safety_gate_failed=_safety_gate_failed(candidate),
         )
 
     per_case = _per_case_deltas(
@@ -188,10 +182,7 @@ def compare_r1_reports(
         aggregate_deltas=aggregates,
         failure_clusters=_failure_clusters(candidate),
         safety_failures=_safety_failures(candidate),
-        safety_gate_failed=any(
-            item.status == "failed"
-            for item in (*candidate.safety_results, *candidate.grounded_answer_safety_results)
-        ),
+        safety_gate_failed=_safety_gate_failed(candidate),
     )
 
 
@@ -235,12 +226,20 @@ def _incompatibilities(
 def _protocol_configuration(report: OfflineEvaluationReport) -> tuple[object, ...]:
     config = report.configuration
     return (
+        config.retrieval_index_version,
         config.retrieval_strategy_versions,
         config.retrieval_evaluator_version,
         config.answer_configuration_version,
         config.citation_evaluator_version,
         config.scenario_configuration_version,
         config.recall_k_values,
+    )
+
+
+def _safety_gate_failed(report: OfflineEvaluationReport) -> bool:
+    return any(
+        item.status == "failed"
+        for item in (*report.safety_results, *report.grounded_answer_safety_results)
     )
 
 
