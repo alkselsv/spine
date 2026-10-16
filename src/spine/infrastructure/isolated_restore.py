@@ -555,15 +555,28 @@ async def _harden_restored_schemas(target: IsolatedRestoreTarget) -> None:
                         continue
                     role = sql.SQL("PUBLIC") if role_name == "PUBLIC" else sql.Identifier(role_name)
                     schema = sql.Identifier(schema_name)
-                    await cursor.execute(
-                        sql.SQL("REVOKE ALL PRIVILEGES ON SCHEMA {} FROM {}").format(schema, role)
-                    )
                     for object_kind in ("TABLES", "SEQUENCES", "FUNCTIONS"):
                         await cursor.execute(
                             sql.SQL("REVOKE ALL PRIVILEGES ON ALL {} IN SCHEMA {} FROM {}").format(
                                 sql.SQL(object_kind), schema, role
                             )
                         )
+            # Revoke schema access only after object ACLs. In PostgreSQL 15+
+            # the public schema is owned by pg_database_owner and PUBLIC has
+            # USAGE by default; removing that first makes later object ACL
+            # commands fail with "permission denied for schema public".
+            for schema_name in schemas:
+                schema = sql.Identifier(schema_name)
+                for role_name in ("PUBLIC", *all_roles):
+                    if role_name in {
+                        connection_settings.username,
+                        *verifier_roles,
+                    }:
+                        continue
+                    role = sql.SQL("PUBLIC") if role_name == "PUBLIC" else sql.Identifier(role_name)
+                    await cursor.execute(
+                        sql.SQL("REVOKE ALL PRIVILEGES ON SCHEMA {} FROM {}").format(schema, role)
+                    )
 
 
 async def _assert_no_unapproved_memberships(cursor: object, target: IsolatedRestoreTarget) -> None:
