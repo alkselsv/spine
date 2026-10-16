@@ -71,7 +71,7 @@ test('test_documents_discovery_filters_paginates_and_navigates_without_content_i
   await expect(page).toHaveURL(
     new RegExp(`/knowledge/documents/${secondDocument}\\?.*workspace=${salesWorkspace}.*publication_status=published.*cursor=documents-next`),
   );
-  await expect(page.getByRole('heading', { name: 'Документ', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Операционный обзор документа', exact: true })).toBeVisible();
   await page.getByRole('link', { name: 'Вернуться к документам' }).click();
   await expect(page.getByText(`ID: ${secondDocument}`)).toBeVisible();
   await page.reload();
@@ -139,6 +139,43 @@ test('test_documents_upload_rejects_invalid_file_before_network_submission', asy
 
   await expect(page.getByRole('alert')).toContainText('неподдерживаемый тип');
   expect(uploadRequests).toHaveLength(0);
+});
+
+test('test_document_detail_deep_link_reloads_and_preserves_scope_and_subview_navigation', async ({ page }) => {
+  const documentRequests = await installControlledDocumentDetail(page);
+  await page.goto(
+    `/knowledge/documents/${firstDocument}?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`,
+  );
+
+  await expect(page.getByRole('heading', { name: 'Операционный обзор документа' })).toBeVisible();
+  await expect(page.locator('header').getByText('Идентификатор источника')).toBeVisible();
+  await expect(page.locator('header code')).toHaveText(firstDocument);
+  await expect(page.locator('body')).not.toContainText(/secret\.pdf|protected title|checksum/i);
+  await expect(page.getByRole('link', { name: 'История ревизий' })).toHaveAttribute(
+    'href',
+    new RegExp(`/knowledge/documents/${firstDocument}.*workspace=${salesWorkspace}.*environment=${stagingEnvironment}.*tab=revisions`),
+  );
+
+  await page.getByRole('link', { name: 'История ревизий' }).click();
+  await expect(page).toHaveURL(/tab=revisions/);
+  await expect(page.getByText(/Выбранное представление/)).toBeVisible();
+  await page.reload();
+  await expect(page).toHaveURL(/tab=revisions/);
+  await expect(page.getByRole('link', { name: 'История ревизий' })).toHaveAttribute('aria-current', 'page');
+
+  await expect(page.getByRole('link', { name: 'Открыть запуск обработки' })).toHaveAttribute(
+    'href',
+    new RegExp(`/runs/${firstDocument}.*workspace=${salesWorkspace}.*environment=${stagingEnvironment}.*document=${firstDocument}`),
+  );
+  await expect(page.getByRole('link', { name: 'Панель проекции' })).toHaveAttribute(
+    'href',
+    new RegExp(`/knowledge/documents/${firstDocument}.*tab=projection`),
+  );
+
+  expect(documentRequests).toHaveLength(2);
+  expect(documentRequests.every(({ headers }) => headers.authorization === 'Bearer controlled-browser-token')).toBe(true);
+  expect(documentRequests.every(({ headers }) => headers['x-workspace-id'] === salesWorkspace)).toBe(true);
+  expect(documentRequests.every(({ headers }) => headers['x-environment-id'] === stagingEnvironment)).toBe(true);
 });
 
 test('test_authentication_denial_hides_administrator_shell_without_api_request', async ({ page }) => {
@@ -278,6 +315,69 @@ async function installControlledDocuments(page: Page) {
       body: JSON.stringify(body),
       status: 200,
     });
+  });
+  return requests;
+}
+
+async function installControlledDocumentDetail(page: Page) {
+  const requests: Array<{ url: string; headers: Record<string, string> }> = [];
+  await page.route(`**/api/v1/documents/${firstDocument}`, async (route) => {
+    const request = route.request();
+    requests.push({ url: request.url(), headers: request.headers() });
+    const headers = request.headers();
+    const snapshot = {
+      created_at: '2026-01-02T03:04:05Z',
+      current_revision: {
+        accepted_at: '2026-01-02T04:00:00Z',
+        accepted_generation: 2,
+        admission_status: 'admitted' as const,
+        kind: 'content' as const,
+        lifecycle: 'current' as const,
+        observed_at: '2026-01-02T03:00:00Z',
+        processing_references: [
+          {
+            coverage: 'complete' as const,
+            ingestion_item_id: secondDocument,
+            ingestion_run_id: firstDocument,
+            processing_receipt_id: null,
+            state: 'processed' as const,
+          },
+        ],
+        projection_references: [],
+        schema_version: 1 as const,
+        source_revision_id: secondDocument,
+        predecessor_revision_id: null,
+        superseded_by_revision_id: null,
+      },
+      operational_metadata: {
+        freshness: 'current' as const,
+        health: 'healthy' as const,
+        lifecycle: 'current' as const,
+        processing_state: 'processed' as const,
+        publication_status: 'published' as const,
+        schema_version: 1 as const,
+        source_object_id: firstDocument,
+        source_revision_id: secondDocument,
+        status: 'available' as const,
+      },
+      publication: {
+        freshness: 'current' as const,
+        health: 'healthy' as const,
+        projection_kind: 'qa',
+        status: 'published' as const,
+      },
+      schema_version: 1 as const,
+      source_kind: 'document',
+      source_object_id: firstDocument,
+    } satisfies components['schemas']['DocumentSnapshot'];
+    const response = {
+      data: snapshot,
+      environment_id: headers['x-environment-id'] ?? '',
+      schema_version: 1 as const,
+      trace_id: traceId,
+      workspace_id: headers['x-workspace-id'] ?? '',
+    } satisfies components['schemas']['ApiResponseEnvelope_DocumentSnapshot_'];
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(response), status: 200 });
   });
   return requests;
 }

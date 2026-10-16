@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 
 import { ChatPanel } from '../features/chat/ChatPanel';
 import { createQualificationChatHarness } from '../features/chat/qualification';
+import { DocumentDetailPage } from '../features/knowledge/DocumentDetailPage';
 import { ru } from '../i18n/resources';
 import { AdministratorBoundary } from './auth';
 import styles from './AppShell.module.css';
@@ -64,27 +65,6 @@ function ChatPage() {
       sessionId={sessionId}
       transport={harness.transport}
     />
-  );
-}
-
-function DocumentDetailPage() {
-  const { documentId } = useParams();
-  const [searchParams] = useSearchParams();
-  return (
-    <section className={styles.pageSection} aria-labelledby="document-detail-heading">
-      <p className={styles.eyebrow}>{ru.page.eyebrow}</p>
-      <h2 id="document-detail-heading">{ru.page.documentDetails}</h2>
-      <p className={styles.lede}>{ru.documents.detailDescription}</p>
-      <p>
-        {ru.documents.detailSourceId}: <code>{documentId}</code>
-      </p>
-      <Link
-        className={styles.textLink}
-        to={{ pathname: '/knowledge/documents', search: searchParams.toString() }}
-      >
-        {ru.documents.backToList}
-      </Link>
-    </section>
   );
 }
 
