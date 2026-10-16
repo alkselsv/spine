@@ -1,0 +1,178 @@
+{
+  "schema_version": "r1-runbook-exercise:v1",
+  "ticket": 368,
+  "parent_ticket": 18,
+  "generated_at": "2026-10-16T22:26:20Z",
+  "production_qualification": false,
+  "fixture_kind": "synthetic",
+  "content_free": true,
+  "evidence": [
+    {
+      "contract": "O03 backup and evidence review",
+      "runbook": "docs/runbooks/r1-backup-evidence.md",
+      "target": "synthetic plus disposable integration target where available",
+      "result": "partial",
+      "command": "python -m pytest -q tests/application/storage/test_backup_profile.py tests/infrastructure/test_backup_artifacts.py tests/integration/object_storage/test_filesystem.py",
+      "outcomes": [
+        "coherent",
+        "mixed_component_rejected",
+        "missing_object_rejected"
+      ],
+      "references": [
+        "tests/application/storage/test_backup_profile.py::test_coordinated_profile_records_matching_verified_components",
+        "tests/application/storage/test_backup_profile.py::test_coordinated_profile_persists_mixed_component_failure_as_incomplete",
+        "tests/infrastructure/test_backup_artifacts.py::test_backup_artifact_store_persists_and_replays_immutable_bytes",
+        "tests/integration/object_storage/test_filesystem.py::test_backup_snapshot_contains_finalized_bytes_and_private_manifest_but_excludes_staged",
+        "tests/integration/object_storage/test_filesystem.py::test_backup_snapshot_fails_closed_when_canonical_object_is_missing",
+        "tests/integration/object_storage/test_filesystem.py::test_corrupt_and_missing_finalized_bytes_fail_closed",
+        "tests/integration/postgresql/test_postgresql_backup_tools.py::test_actual_pg_dump_archive_contains_canonical_reference_data"
+      ],
+      "passed_references": [
+        "tests/application/storage/test_backup_profile.py::test_coordinated_profile_records_matching_verified_components",
+        "tests/application/storage/test_backup_profile.py::test_coordinated_profile_persists_mixed_component_failure_as_incomplete",
+        "tests/infrastructure/test_backup_artifacts.py::test_backup_artifact_store_persists_and_replays_immutable_bytes",
+        "tests/integration/object_storage/test_filesystem.py::test_backup_snapshot_contains_finalized_bytes_and_private_manifest_but_excludes_staged",
+        "tests/integration/object_storage/test_filesystem.py::test_backup_snapshot_fails_closed_when_canonical_object_is_missing",
+        "tests/integration/object_storage/test_filesystem.py::test_corrupt_and_missing_finalized_bytes_fail_closed"
+      ],
+      "not_run_references": [
+        "tests/integration/postgresql/test_postgresql_backup_tools.py::test_actual_pg_dump_archive_contains_canonical_reference_data"
+      ],
+      "unverified_reason": "The local environment has no working container runtime for the disposable PostgreSQL archive test.",
+      "passed_test_count": 32
+    },
+    {
+      "contract": "O04 isolated restore and reconciliation",
+      "runbook": "docs/runbooks/r1-isolated-restore.md",
+      "target": "synthetic plus owned disposable PostgreSQL/filesystem testcontainer",
+      "result": "partial",
+      "command": "python -m pytest -q tests/infrastructure/test_isolated_restore.py tests/application/storage/test_recovery_integrity.py",
+      "outcomes": [
+        "verified_replayed",
+        "mixed_component_rejected",
+        "actual_postgresql_restore"
+      ],
+      "references": [
+        "tests/infrastructure/test_isolated_restore.py::test_successful_restore_evidence_is_read_back_without_rewriting_targets",
+        "tests/infrastructure/test_isolated_restore.py::test_filesystem_archive_digest_mismatch_is_rejected",
+        "tests/infrastructure/test_isolated_restore.py::test_recovery_identifier_path_error_returns_safe_typed_failure",
+        "tests/infrastructure/test_isolated_restore.py::test_verification_rejects_mixed_component_evidence_before_restore",
+        "tests/integration/postgresql/test_isolated_restore.py::test_isolated_restore_verifier_reconciles_real_postgres_and_filesystem_artifacts"
+      ],
+      "passed_references": [
+        "tests/infrastructure/test_isolated_restore.py::test_successful_restore_evidence_is_read_back_without_rewriting_targets",
+        "tests/infrastructure/test_isolated_restore.py::test_filesystem_archive_digest_mismatch_is_rejected",
+        "tests/infrastructure/test_isolated_restore.py::test_recovery_identifier_path_error_returns_safe_typed_failure",
+        "tests/infrastructure/test_isolated_restore.py::test_verification_rejects_mixed_component_evidence_before_restore"
+      ],
+      "not_run_references": [
+        "tests/integration/postgresql/test_isolated_restore.py::test_isolated_restore_verifier_reconciles_real_postgres_and_filesystem_artifacts"
+      ],
+      "unverified_reason": "The local environment has no working container runtime for the isolated PostgreSQL/filesystem restore test.",
+      "passed_test_count": 11
+    },
+    {
+      "contract": "O05 projection recovery and successor rollback",
+      "runbook": "docs/runbooks/r1-projection-recovery.md",
+      "target": "synthetic fixtures and disposable PostgreSQL",
+      "result": "partial",
+      "command": "python -m pytest -q tests/application/test_projection_recovery_execution.py tests/application/test_projection_publication.py",
+      "outcomes": [
+        "worker_success",
+        "terminal_rejection",
+        "successor_rollback",
+        "postgresql_handoff"
+      ],
+      "references": [
+        "tests/application/test_projection_recovery_execution.py::test_recovery_request_dispatch_rebuilds_once_and_records_canonical_result",
+        "tests/application/test_projection_recovery_execution.py::test_rejected_rebuild_emits_only_bounded_failure_evidence",
+        "tests/application/test_projection_publication.py::test_rollback_command_targets_only_a_validated_successor_snapshot",
+        "tests/application/test_projection_publication.py::test_rollback_command_rejects_historical_snapshot_without_successor_lineage",
+        "tests/application/test_projection_publication.py::test_failed_physical_gate_does_not_attempt_activation",
+        "tests/integration/postgresql/test_postgresql_outbox_delivery.py::test_postgresql_recovery_request_replay_dispatches_one_tenant_scoped_intent",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_projection_publication_satisfies_cas_contract"
+      ],
+      "passed_references": [
+        "tests/application/test_projection_recovery_execution.py::test_recovery_request_dispatch_rebuilds_once_and_records_canonical_result",
+        "tests/application/test_projection_recovery_execution.py::test_rejected_rebuild_emits_only_bounded_failure_evidence",
+        "tests/application/test_projection_publication.py::test_rollback_command_targets_only_a_validated_successor_snapshot",
+        "tests/application/test_projection_publication.py::test_rollback_command_rejects_historical_snapshot_without_successor_lineage",
+        "tests/application/test_projection_publication.py::test_failed_physical_gate_does_not_attempt_activation"
+      ],
+      "not_run_references": [
+        "tests/integration/postgresql/test_postgresql_outbox_delivery.py::test_postgresql_recovery_request_replay_dispatches_one_tenant_scoped_intent",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_projection_publication_satisfies_cas_contract"
+      ],
+      "unverified_reason": "The local environment has no working container runtime for PostgreSQL worker-handoff and publication tests.",
+      "passed_test_count": 16
+    },
+    {
+      "contract": "O06 read-only quarantine inspection",
+      "runbook": "docs/runbooks/r1-quarantine-inspection.md",
+      "target": "synthetic ASGI fixtures and disposable PostgreSQL runtime role",
+      "result": "partial",
+      "command": "python -m pytest -q tests/api/test_outbox_inspection.py tests/application/outbox/test_dispatch.py",
+      "outcomes": [
+        "bounded_read",
+        "denied",
+        "unavailable",
+        "runtime_rls_read_only"
+      ],
+      "references": [
+        "tests/api/test_outbox_inspection.py::test_quarantine_inspection_is_bounded_scoped_and_keyset_paginated",
+        "tests/api/test_outbox_inspection.py::test_quarantine_inspection_distinguishes_empty_and_unavailable",
+        "tests/api/test_outbox_inspection.py::test_quarantine_inspection_denies_missing_and_foreign_scope",
+        "tests/integration/postgresql/test_postgresql_outbox_delivery.py::test_runtime_inspection_is_rls_scoped_safe_and_read_only"
+      ],
+      "passed_references": [
+        "tests/api/test_outbox_inspection.py::test_quarantine_inspection_is_bounded_scoped_and_keyset_paginated",
+        "tests/api/test_outbox_inspection.py::test_quarantine_inspection_distinguishes_empty_and_unavailable",
+        "tests/api/test_outbox_inspection.py::test_quarantine_inspection_denies_missing_and_foreign_scope"
+      ],
+      "not_run_references": [
+        "tests/integration/postgresql/test_postgresql_outbox_delivery.py::test_runtime_inspection_is_rls_scoped_safe_and_read_only"
+      ],
+      "unverified_reason": "The local environment has no working container runtime for runtime-role PostgreSQL RLS inspection.",
+      "passed_test_count": 23
+    },
+    {
+      "contract": "O01/O02/O07 content-free telemetry and metrics diagnosis",
+      "runbook": "docs/runbooks/r1-telemetry-metrics-diagnosis.md",
+      "target": "synthetic operational events and read models",
+      "result": "passed",
+      "command": "python -m pytest -q tests/application/telemetry/test_operational_metrics.py tests/application/test_operational_correlation.py tests/api/test_operational_metrics.py tests/api/test_operational_correlation.py tests/application/diagnostics/test_events.py",
+      "outcomes": [
+        "deduplicated_metrics",
+        "stale_degraded_unavailable",
+        "denied",
+        "safe_correlation"
+      ],
+      "references": [
+        "tests/application/telemetry/test_operational_metrics.py::test_metrics_use_half_open_windows_and_deduplicate_replays",
+        "tests/application/telemetry/test_operational_metrics.py::test_metrics_distinguish_stale_degraded_and_unavailable",
+        "tests/application/telemetry/test_operational_metrics.py::test_metrics_denial_does_not_disclose_other_workspace_data",
+        "tests/application/test_operational_correlation.py::test_correlation_connects_safe_operational_sources_without_content",
+        "tests/application/test_operational_correlation.py::test_correlation_denial_does_not_enumerate_other_workspace",
+        "tests/api/test_operational_metrics.py::test_operational_metrics_api_returns_structured_window_and_403_is_safe",
+        "tests/api/test_operational_correlation.py::test_operational_correlation_api_returns_versioned_safe_view"
+      ],
+      "passed_references": [
+        "tests/application/telemetry/test_operational_metrics.py::test_metrics_use_half_open_windows_and_deduplicate_replays",
+        "tests/application/telemetry/test_operational_metrics.py::test_metrics_distinguish_stale_degraded_and_unavailable",
+        "tests/application/telemetry/test_operational_metrics.py::test_metrics_denial_does_not_disclose_other_workspace_data",
+        "tests/application/test_operational_correlation.py::test_correlation_connects_safe_operational_sources_without_content",
+        "tests/application/test_operational_correlation.py::test_correlation_denial_does_not_enumerate_other_workspace",
+        "tests/api/test_operational_metrics.py::test_operational_metrics_api_returns_structured_window_and_403_is_safe",
+        "tests/api/test_operational_correlation.py::test_operational_correlation_api_returns_versioned_safe_view"
+      ],
+      "not_run_references": [],
+      "passed_test_count": 50
+    }
+  ],
+  "unverified_prerequisites": [
+    "No deployment-approved backup or restore operator entry point, destination, credentials, encryption binding, or retention enforcement is recorded in this repository.",
+    "No deployment-specific isolated restore target or verifier access is approved.",
+    "Configured Cognee/provider execution, production identities, and production monitoring are not qualified.",
+    "R1 has no approved external telemetry exporter or backend; deployment refresh/retention enforcement must be verified by its owner."
+  ]
+}
