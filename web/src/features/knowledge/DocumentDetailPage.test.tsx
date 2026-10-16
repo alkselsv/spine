@@ -252,6 +252,64 @@ describe('Knowledge document operational overview', () => {
     expect(request.headers.get('X-Environment-ID')).toBe(scope.environmentId);
   });
 
+  it('test_current_content_revision_can_be_reprocessed_with_exact_revision_and_scope', async () => {
+    const requests: Request[] = [];
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (input) => {
+      const request = input as Request;
+      requests.push(request);
+      const path = new URL(request.url).pathname;
+      if (path === `/api/v1/documents/${sourceObjectId}`) {
+        return Response.json(makeDocumentEnvelope());
+      }
+      if (path === `/api/v1/documents/${sourceObjectId}/revisions`) {
+        return Response.json(makeRevisionEnvelope([makeRevision({ lifecycle: 'current' })]));
+      }
+      return Response.json(processingCommandResponse(new URL(request.url).pathname.includes('/operations/')));
+    });
+    vi.stubGlobal('fetch', fetch);
+    vi.stubGlobal('crypto', { randomUUID: () => 'document-reprocess-command-key' });
+
+    renderDetail(
+      `/knowledge/documents/${sourceObjectId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}&tab=revisions&revision=${revisionId}`,
+    );
+    await userEvent.setup().click(
+      await screen.findByRole('button', { name: 'Обработать текущую ревизию заново' }),
+    );
+
+    expect(await screen.findByText('Обработка завершена')).toBeVisible();
+    const post = requests.find((request) => request.method === 'POST');
+    expect(post?.url).toBe('http://localhost:3000/api/v1/documents/processing/reprocess');
+    expect(post?.headers.get('Idempotency-Key')).toBe('document-reprocess-command-key');
+    expect(post?.headers.get('X-Workspace-ID')).toBe(scope.workspaceId);
+    expect(post?.headers.get('X-Environment-ID')).toBe(scope.environmentId);
+    expect(await post?.json()).toMatchObject({
+      expected_current_revision_id: revisionId,
+      processing_profile_reference: 'document-processing:r1',
+      source_object_id: sourceObjectId,
+      source_revision_id: revisionId,
+    });
+  });
+
+  it('test_tombstoned_revision_does_not_offer_reprocess', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof globalThis.fetch>().mockImplementation(async (input) => {
+        const path = new URL((input as Request).url).pathname;
+        if (path === `/api/v1/documents/${sourceObjectId}`) return Response.json(makeDocumentEnvelope());
+        return Response.json(makeRevisionEnvelope([
+          makeRevision({ kind: 'tombstone', lifecycle: 'tombstoned' }),
+        ]));
+      }),
+    );
+
+    renderDetail(
+      `/knowledge/documents/${sourceObjectId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}&tab=revisions&revision=${revisionId}`,
+    );
+
+    await screen.findByRole('heading', { name: 'История ревизий' });
+    expect(screen.queryByRole('button', { name: 'Обработать текущую ревизию заново' })).not.toBeInTheDocument();
+  });
+
   it('test_revision_history_restores_exact_url_selection_without_rebinding', async () => {
     const selectedRevisionId = '40000000-0000-4000-8000-000000000009';
     vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>()
@@ -527,6 +585,25 @@ function makeRevisionEnvelope(
     schema_version: 1,
     trace_id: '70000000-0000-4000-8000-000000000001',
     workspace_id: scope.workspaceId,
+  };
+}
+
+function processingCommandResponse(ready: boolean) {
+  const operationId = '80000000-0000-4000-8000-000000000001';
+  return {
+    failure_ids: [],
+    item_id: '80000000-0000-4000-8000-000000000002',
+    next_action: ready ? 'none' : 'poll',
+    operation_id: operationId,
+    processing_receipt_id: ready ? processingReceiptId : null,
+    replay: false,
+    run_id: ingestionRunId,
+    schema_version: 1,
+    source_object_id: sourceObjectId,
+    source_revision_id: revisionId,
+    status: ready ? 'ready' : 'accepted',
+    status_url: `/api/v1/documents/processing/operations/${operationId}`,
+    trigger_kind: 'reprocess',
   };
 }
 
