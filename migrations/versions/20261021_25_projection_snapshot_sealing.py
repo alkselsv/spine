@@ -283,15 +283,16 @@ def upgrade() -> None:
                 RAISE EXCEPTION 'Snapshot headers must begin assembling.'
                     USING ERRCODE = '23514', CONSTRAINT = 'ck_projection_snapshot_initial_assembling';
             END IF;
-            SELECT candidate_state, candidate_evidence_digest, projection_kind,
-                   projection_config_version_id, canonical_boundary_id
+            SELECT run.candidate_state, run.candidate_evidence_digest,
+                   run.projection_kind, run.projection_config_version_id,
+                   run.canonical_boundary_id
               INTO candidate_state, candidate_digest, candidate_kind,
                    candidate_config, candidate_boundary
-              FROM {SCHEMA}.projection_runs
-             WHERE projection_run_id = NEW.projection_run_id
-               AND projection_candidate_id = NEW.projection_candidate_id
-               AND workspace_id = NEW.workspace_id
-               AND environment_id = NEW.environment_id
+              FROM {SCHEMA}.projection_runs AS run
+             WHERE run.projection_run_id = NEW.projection_run_id
+               AND run.projection_candidate_id = NEW.projection_candidate_id
+               AND run.workspace_id = NEW.workspace_id
+               AND run.environment_id = NEW.environment_id
              FOR KEY SHARE;
             IF candidate_state IS DISTINCT FROM 'sealed'
                OR candidate_digest IS DISTINCT FROM NEW.candidate_evidence_digest
