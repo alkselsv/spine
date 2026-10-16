@@ -265,7 +265,7 @@ def _decode_cursor(
         environment_id=context.scope.environment_id,
         operation_id=_COLLECTION_OPERATION,
         limit=limit,
-        filters_digest=canonical_filter_digest(filters.digest_payload()),
+        filters_digest=_document_filters_digest(filters),
     )
     try:
         timestamp, source_object_id = claims.position.rsplit("|", 1)
@@ -293,7 +293,7 @@ def _next_cursor(
         environment_id=context.scope.environment_id,
         operation_id=_COLLECTION_OPERATION,
         limit=limit,
-        filters_digest=canonical_filter_digest(filters.digest_payload()),
+        filters_digest=_document_filters_digest(filters),
         position=f"{last.created_at.isoformat()}|{last.source_object_id}",
     )
 
@@ -372,6 +372,10 @@ def _reject_unknown_collection_filters(request: Request) -> None:
     }
     if any(key not in allowed for key in request.query_params):
         raise HTTPException(status_code=422)
+
+
+def _document_filters_digest(filters: DocumentQueryFilters) -> str:
+    return canonical_filter_digest(filters.digest_payload())
 
 
 __all__ = ["install_document_query_routes"]

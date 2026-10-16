@@ -374,6 +374,7 @@ async def test_document_queries_hide_source_from_another_workspace_and_environme
             requester=requester,
             limit=10,
             after=None,
+            filters=DocumentQueryFilters(source_kind=SourceKind.DOCUMENT),
         )
 
         assert detail is None
@@ -412,6 +413,30 @@ async def test_document_query_filters_before_forming_the_bounded_page() -> None:
     assert [item.source_object_id for item in page.items] == [
         matching_source.source_object_id
     ]
+    assert page.has_more is False
+
+
+async def test_document_query_filter_returns_empty_page_without_leaking_other_sources() -> None:
+    uow = FakeUnitOfWork(allow_content=True)
+    service = CanonicalDocumentQueryService(lambda context: uow)
+
+    page = await service.list_documents(
+        context=SimpleNamespace(
+            scope=EnvironmentScope(
+                workspace_id=uow.source.workspace_id,
+                environment_id=uow.source.environment_id,
+            )
+        ),
+        requester=DocumentQueryRequester(
+            canonical_human_id=HUMAN_ID,
+            authorization_generation=1,
+        ),
+        limit=10,
+        after=None,
+        filters=DocumentQueryFilters(source_kind=SourceKind.RECORD),
+    )
+
+    assert page.items == ()
     assert page.has_more is False
 
 

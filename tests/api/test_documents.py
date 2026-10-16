@@ -93,8 +93,10 @@ class FakeDocumentQueries:
         assert context.scope.environment_id == ENVIRONMENT_ID
         assert requester.canonical_human_id.int != 0
         assert limit == 25
-        assert after is None
         self.last_filters = filters
+        if after is not None:
+            assert after.source_object_id == SOURCE_ID
+            return DocumentPage(items=(), has_more=False)
         return DocumentPage(
             items=(
                 DocumentSnapshot(
@@ -323,12 +325,32 @@ async def test_document_cursor_is_bound_to_exact_filters() -> None:
             },
             headers=headers,
         )
+        replay = await client.get(
+            "/api/v1/documents",
+            params={"limit": 25, "source_kind": "document"},
+            headers=headers,
+        )
+        tampered_cursor = first.json()["next_cursor"]
+        tampered = await client.get(
+            "/api/v1/documents",
+            params={
+                "limit": 25,
+                "source_kind": "document",
+                "cursor": tampered_cursor[:-1]
+                + ("x" if tampered_cursor[-1] != "x" else "y"),
+            },
+            headers=headers,
+        )
 
     assert first.status_code == 200
     assert first.json()["next_cursor"] is not None
     assert second.status_code == 400
     assert second.json()["code"] == "spine.request.invalid_cursor"
     assert str(SOURCE_ID) not in second.text
+    assert replay.status_code == 200
+    assert replay.json()["next_cursor"] == first.json()["next_cursor"]
+    assert tampered.status_code == 400
+    assert tampered.json()["code"] == "spine.request.invalid_cursor"
 
 
 async def test_document_filter_validation_fails_closed_without_filter_details() -> None:
