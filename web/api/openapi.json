@@ -2709,6 +2709,46 @@
         "title": "EvidenceLocator",
         "type": "object"
       },
+      "ExistingUploadIntent": {
+        "additionalProperties": false,
+        "description": "Bounded browser intent; never authoritative storage evidence.",
+        "properties": {
+          "declared_filename": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Declared Filename",
+            "type": "string"
+          },
+          "declared_media_type": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Declared Media Type",
+            "type": "string"
+          },
+          "storage_request_reference": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$",
+            "title": "Storage Request Reference",
+            "type": "string"
+          },
+          "upload_identity": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_.:-]{0,63}$",
+            "title": "Upload Identity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "upload_identity",
+          "declared_media_type",
+          "declared_filename",
+          "storage_request_reference"
+        ],
+        "title": "ExistingUploadIntent",
+        "type": "object"
+      },
       "FeedbackOutcome": {
         "enum": [
           "answer.helpful",
@@ -3499,6 +3539,36 @@
         ],
         "title": "IngestionUploadResponse",
         "type": "object"
+      },
+      "LifecycleFailureCode": {
+        "enum": [
+          "storage_unavailable",
+          "canonical_conflict",
+          "processing_unavailable",
+          "authority_unavailable"
+        ],
+        "title": "LifecycleFailureCode",
+        "type": "string"
+      },
+      "LifecycleOperationKind": {
+        "enum": [
+          "replacement",
+          "tombstone"
+        ],
+        "title": "LifecycleOperationKind",
+        "type": "string"
+      },
+      "LifecycleOperationStatus": {
+        "enum": [
+          "accepted_processing_pending",
+          "processing_dispatched",
+          "completed",
+          "reconciliation_required",
+          "conflict",
+          "failed"
+        ],
+        "title": "LifecycleOperationStatus",
+        "type": "string"
       },
       "LivenessResponse": {
         "additionalProperties": false,
@@ -6003,6 +6073,25 @@
         "title": "ReadinessResponse",
         "type": "object"
       },
+      "ReplaceDocumentRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_current_revision_id": {
+            "format": "uuid",
+            "title": "Expected Current Revision Id",
+            "type": "string"
+          },
+          "upload_intent": {
+            "$ref": "#/components/schemas/ExistingUploadIntent"
+          }
+        },
+        "required": [
+          "expected_current_revision_id",
+          "upload_intent"
+        ],
+        "title": "ReplaceDocumentRequest",
+        "type": "object"
+      },
       "ReprocessProcessingRequest": {
         "additionalProperties": false,
         "properties": {
@@ -6384,6 +6473,138 @@
         "title": "SourceKind",
         "type": "string"
       },
+      "SourceLifecycleOperationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepted At"
+          },
+          "accepted_revision_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepted Revision Id"
+          },
+          "canonical_acceptance_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canonical Acceptance Id"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "expected_current_revision_id": {
+            "format": "uuid",
+            "title": "Expected Current Revision Id",
+            "type": "string"
+          },
+          "idempotency_receipt_id": {
+            "format": "uuid",
+            "title": "Idempotency Receipt Id",
+            "type": "string"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "operation_kind": {
+            "$ref": "#/components/schemas/LifecycleOperationKind"
+          },
+          "processing_run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processing Run Id"
+          },
+          "replay": {
+            "title": "Replay",
+            "type": "boolean"
+          },
+          "retryable": {
+            "title": "Retryable",
+            "type": "boolean"
+          },
+          "safe_failure_code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LifecycleFailureCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "source_object_id": {
+            "format": "uuid",
+            "title": "Source Object Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/LifecycleOperationStatus"
+          },
+          "status_url": {
+            "title": "Status Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "operation_kind",
+          "source_object_id",
+          "expected_current_revision_id",
+          "status",
+          "status_url",
+          "idempotency_receipt_id",
+          "retryable",
+          "replay"
+        ],
+        "title": "SourceLifecycleOperationResponse",
+        "type": "object"
+      },
       "StableLocatorSnapshot": {
         "additionalProperties": false,
         "properties": {
@@ -6523,6 +6744,32 @@
           "outcome"
         ],
         "title": "SubmitFeedbackRequest",
+        "type": "object"
+      },
+      "TombstoneDocumentRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "deletion_reason": {
+            "enum": [
+              "legal_erasure",
+              "provider_deleted",
+              "retention_expired",
+              "source_deleted"
+            ],
+            "title": "Deletion Reason",
+            "type": "string"
+          },
+          "expected_current_revision_id": {
+            "format": "uuid",
+            "title": "Expected Current Revision Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_current_revision_id",
+          "deletion_reason"
+        ],
+        "title": "TombstoneDocumentRequest",
         "type": "object"
       },
       "ValidationError": {
@@ -7344,6 +7591,149 @@
           }
         ],
         "summary": "Ingestion.Batch Upload"
+      }
+    },
+    "/api/v1/documents/lifecycle/operations/{operation_id}": {
+      "get": {
+        "operationId": "documents.lifecycle.status",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "operation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Operation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Environment-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceLifecycleOperationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Safe request error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authentication is invalid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authorization is denied."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Resource is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Command conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request payload is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Unexpected internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Dependency is unavailable."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Documents.Lifecycle.Status"
       }
     },
     "/api/v1/documents/processing-history": {
@@ -8295,6 +8685,169 @@
         "summary": "Documents.Detail"
       }
     },
+    "/api/v1/documents/{source_object_id}/replacement": {
+      "post": {
+        "operationId": "documents.lifecycle.replace",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_object_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Source Object Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Environment-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplaceDocumentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceLifecycleOperationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Safe request error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authentication is invalid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authorization is denied."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Resource is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Command conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request payload is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Unexpected internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Dependency is unavailable."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Documents.Lifecycle.Replace"
+      }
+    },
     "/api/v1/documents/{source_object_id}/revisions": {
       "get": {
         "operationId": "documents.revisions",
@@ -8466,6 +9019,169 @@
           }
         ],
         "summary": "Documents.Revisions"
+      }
+    },
+    "/api/v1/documents/{source_object_id}/tombstone": {
+      "post": {
+        "operationId": "documents.lifecycle.tombstone",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_object_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Source Object Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Environment-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TombstoneDocumentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceLifecycleOperationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Safe request error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authentication is invalid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authorization is denied."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Resource is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Command conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request payload is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Unexpected internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Dependency is unavailable."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Documents.Lifecycle.Tombstone"
       }
     },
     "/api/v1/health/live": {

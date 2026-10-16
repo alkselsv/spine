@@ -34,6 +34,7 @@ from spine.domain.sources import (
 
 class SourceLifecycleKind(str, Enum):
     DELETION = "deletion"
+    REPLACEMENT = "replacement"
     REAPPEARANCE = "reappearance"
 
 
@@ -86,21 +87,34 @@ class SourceLifecycleCommand:
                 raise SourceLifecycleValidationError(
                     "Deletion cannot carry content admission or policy evidence."
                 )
-        elif (
+        elif self.kind is SourceLifecycleKind.REAPPEARANCE and (
             self.revision.kind is not RevisionKind.CONTENT
             or self.revision.reappearance_after_tombstone_revision_id is None
         ):
             raise SourceLifecycleValidationError(
                 "Reappearance requires a content revision with tombstone continuity."
             )
-        elif (
+        elif self.kind is SourceLifecycleKind.REPLACEMENT and (
+            self.revision.kind is not RevisionKind.CONTENT
+            or self.revision.reappearance_after_tombstone_revision_id is not None
+        ):
+            raise SourceLifecycleValidationError(
+                "Replacement requires an ordinary immutable content revision."
+            )
+        elif self.kind in {
+            SourceLifecycleKind.REPLACEMENT,
+            SourceLifecycleKind.REAPPEARANCE,
+        } and (
             self.canonical_acceptance.admission_decision_id is None
             or self.canonical_acceptance.access_policy_version_id is None
         ):
             raise SourceLifecycleValidationError(
-                "Reappearance requires fresh admission and policy evidence."
+                "Content lifecycle requires fresh admission and policy evidence."
             )
-        elif self.receipt_association is None or (
+        elif self.kind in {
+            SourceLifecycleKind.REPLACEMENT,
+            SourceLifecycleKind.REAPPEARANCE,
+        } and (self.receipt_association is None or (
             self.receipt_association.source_object_id != self.source.source_object_id
             or self.receipt_association.revision_id != self.revision.revision_id
             or self.receipt_association.provenance_id != self.provenance.provenance_id
@@ -112,9 +126,9 @@ class SourceLifecycleCommand:
             or self.receipt_association.original_reference != self.revision.original_reference
             or self.receipt_association.original_sha256 != self.revision.original_sha256
             or self.receipt_association.byte_length != self.revision.byte_length
-        ):
+        )):
             raise SourceLifecycleValidationError(
-                "Reappearance requires verified finalized content evidence."
+                "Content lifecycle requires verified finalized content evidence."
             )
 
 

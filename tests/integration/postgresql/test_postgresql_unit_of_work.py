@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from dataclasses import dataclass, replace
 import hashlib
 import json
+from types import SimpleNamespace
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 import pytest
@@ -29,6 +30,17 @@ from spine.application.persistence.context import (
     TrustedPersistenceContext,
     WorkspaceScope,
 )
+from spine.application.document_lifecycle import (
+    CanonicalDocumentLifecycleCommandService,
+    ExistingUploadIntent,
+    LifecycleOperationStatus,
+    ReplaceDocumentCommand,
+    ReplacementLifecycleEvidence,
+    ServerDocumentLifecycleComposer,
+    TombstoneDocumentCommand,
+)
+from spine.application.source_lifecycle import SourceLifecycleCoordinator
+from spine.application.persistence.canonical import CanonicalAcceptanceCommand
 from spine.application.persistence.errors import (
     CanonicalEligibilityError,
     ConstraintConflictError,
@@ -59,8 +71,13 @@ from spine.application.access_policies import (
     access_policy_document_hash,
 )
 from spine.application.diagnostics.audit import AuditEventRegistry
-from spine.domain.audit import AuditOutcome, CommandAuditPayload
-from spine.domain.common import EnvironmentKind
+from spine.domain.audit import (
+    AuditObjectReference,
+    AuditOutcome,
+    CanonicalTransitionAuditPayload,
+    CommandAuditPayload,
+)
+from spine.domain.common import ContextOrigin, EnvironmentKind
 from spine.domain.context_bundles import (
     ContextBundle,
     ContextBundleEvidenceReference,
@@ -141,6 +158,9 @@ from tests.contracts.persistence.test_source_observation_contract import (
     test_source_queries_are_bounded_ordered_and_tenant_isolated as contract_source_queries,
 )
 from tests.contracts.persistence.test_canonical_acceptance_contract import (
+    _canonical_outbox,
+    _original_receipt,
+    _receipt_association,
     _activate_policy as activate_canonical_policy,
     prepare_case as prepare_canonical_case,
     test_canonical_happy_path_and_exact_replay as contract_canonical_happy_replay,
@@ -794,6 +814,306 @@ async def test_postgresql_adapter_satisfies_canonical_acceptance_contract(
     contract: ContractTest,
 ) -> None:
     await contract(postgresql_adapter)
+
+
+async def test_postgresql_document_tombstone_preserves_history_and_canonical_effects(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    case = await prepare_canonical_case(postgresql_adapter, 34300)
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        initial = await uow.canonical.accept(case.command)
+        await uow.commit()
+    assert initial.acceptance is not None
+
+    command = TombstoneDocumentCommand(
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        source_object_id=case.source.source_object_id,
+        expected_current_revision_id=case.revision.revision_id,
+        deletion_reason="source_deleted",
+        idempotency_key="document-tombstone-34300",
+    )
+
+    def canonical_factory(**values: object) -> CanonicalAcceptanceCommand:
+        acceptance_id = values["canonical_acceptance_id"]
+        revision = values["revision"]
+        accepted_at = values["accepted_at"]
+        assert isinstance(acceptance_id, UUID)
+        audit_event_id = uuid5(NAMESPACE_URL, f"ticket-343:audit:{acceptance_id}")
+        outbox_event_id = uuid5(NAMESPACE_URL, f"ticket-343:outbox:{acceptance_id}")
+        audit = AuditEventRegistry.with_default_families().build_event(
+            workspace_id=case.source.workspace_id,
+            environment_id=case.source.environment_id,
+            event_type="canonical.transition",
+            schema_version=1,
+            payload=CanonicalTransitionAuditPayload(transition="source.tombstoned"),
+            origin=ContextOrigin.WORKER,
+            acting_subject_id=None,
+            service_principal_id=case.context.service_principal_id,
+            trace_id=case.context.trace_id,
+            occurred_at=accepted_at,
+            outcome=AuditOutcome.COMMITTED,
+            reason="source_tombstoned",
+            target=AuditObjectReference(
+                object_type="source_revision",
+                object_id=revision.revision_id,
+                schema_version=1,
+            ),
+            producer_deduplication_id=f"document-tombstone:{acceptance_id}",
+            audit_event_id=audit_event_id,
+        )
+        outbox = _canonical_outbox(
+            postgresql_adapter,
+            context=case.context,
+            source_object_id=case.source.source_object_id,
+            source_revision_id=revision.revision_id,
+            acceptance_id=acceptance_id,
+            generation=2,
+            audit_event_id=audit_event_id,
+            event_id=outbox_event_id,
+            transition="source.tombstoned",
+        )
+        return CanonicalAcceptanceCommand.create(
+            source=values["source"],
+            revision=revision,
+            provenance=values["provenance"],
+            admission_decision_id=None,
+            access_policy_version_id=None,
+            expected_current_revision_id=values["expected_current_revision_id"],
+            idempotency_key=values["idempotency_key"],
+            canonical_acceptance_id=acceptance_id,
+            audit_event_id=audit_event_id,
+            outbox_event_id=outbox_event_id,
+            accepted_at=accepted_at,
+            audit_event=audit,
+            outbox_intent=outbox,
+        )
+
+    composer = ServerDocumentLifecycleComposer(
+        uow_factory=postgresql_adapter.uow_factory,
+        replacement_evidence=object(),
+        canonical_command_factory=canonical_factory,
+    )
+    service = CanonicalDocumentLifecycleCommandService(
+        composer=composer,
+        coordinator=SourceLifecycleCoordinator(
+            uow_factory=postgresql_adapter.uow_factory,
+            context_factory=lambda lifecycle: case.context,
+        ),
+        processing=object(),
+        uow_factory=postgresql_adapter.uow_factory,
+        clock=lambda: datetime(2026, 10, 16, 12, 0, tzinfo=timezone.utc),
+    )
+
+    receipt = await service.tombstone(context=case.context, command=command)
+
+    assert receipt.status is LifecycleOperationStatus.COMPLETED
+    assert receipt.processing_run_id is None
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        current = await uow.canonical.resolve_current(case.source.source_object_id)
+        revisions = await uow.sources.list_revisions(
+            case.source.source_object_id,
+            limit=10,
+        )
+        acceptances = await uow.canonical.list_acceptances(
+            case.source.source_object_id
+        )
+        await uow.commit()
+    assert current is not None
+    assert current.current_revision_id == receipt.accepted_revision_id
+    assert len(revisions) == 2
+    assert {revision.revision_id for revision in revisions} == {
+        case.revision.revision_id,
+        receipt.accepted_revision_id,
+    }
+    assert len(acceptances) == 2
+    assert acceptances[-1].audit_event_id.int != 0
+    assert acceptances[-1].outbox_event_id.int != 0
+
+
+async def test_postgresql_document_replacement_persists_verified_successor_and_handoff(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    case = await prepare_canonical_case(postgresql_adapter, 34400)
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        initial = await uow.canonical.accept(case.command)
+        await uow.commit()
+    assert initial.acceptance is not None
+
+    command = ReplaceDocumentCommand(
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        source_object_id=case.source.source_object_id,
+        expected_current_revision_id=case.revision.revision_id,
+        upload_intent=ExistingUploadIntent(
+            upload_identity="replacement-34400",
+            declared_media_type="text/plain",
+            declared_filename="replacement.txt",
+            storage_request_reference="finalized:replacement-34400",
+        ),
+        idempotency_key="document-replacement-34400",
+    )
+    lifecycle_digest = CanonicalDocumentLifecycleCommandService.command_digest(command)
+    replacement_revision = source_contract_revision(
+        case.source,
+        synthetic_uuid(34402),
+    )
+    replacement_provenance = source_contract_provenance(
+        case.source,
+        replacement_revision.revision_id,
+        "event-2",
+    ).model_copy(
+        update={
+            "producer_kind": "lifecycle",
+            "producer_reference": "document-lifecycle",
+            "event_digest": lifecycle_digest.value,
+            "observer_service": "document-lifecycle",
+        }
+    )
+    receipt_id = await _original_receipt(
+        postgresql_adapter,
+        case.context,
+        34400,
+    )
+    association = _receipt_association(
+        case.source,
+        replacement_revision,
+        replacement_provenance,
+        receipt_id=receipt_id,
+        number=34400,
+    )
+    admission_id = synthetic_uuid(34403)
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        await uow.admissions.append_decision(
+            AdmissionDecision(
+                decision_id=admission_id,
+                source_object_id=case.source.source_object_id,
+                revision_id=replacement_revision.revision_id,
+                workspace_id=case.source.workspace_id,
+                environment_id=case.source.environment_id,
+                decision_version=1,
+                disposition=AdmissionDisposition.ADMITTED,
+                validator_profile_version="admission:r1",
+                reason_schema_version="reason.v1",
+                reason_codes=("clean",),
+                authority_reference={
+                    "reference_type": "validator",
+                    "reference_id": synthetic_uuid(34404),
+                    "schema_version": 1,
+                },
+                trace_id=case.context.trace_id,
+                audit_event_id=synthetic_uuid(34405),
+                decided_at=datetime(2026, 10, 16, 12, 0, tzinfo=timezone.utc),
+            )
+        )
+        await uow.commit()
+
+    class EvidenceProvider:
+        async def prepare(self, **values: object) -> ReplacementLifecycleEvidence:
+            assert values["command_digest"] == lifecycle_digest
+            return ReplacementLifecycleEvidence(
+                source=case.source,
+                revision=replacement_revision,
+                provenance=replacement_provenance,
+                receipt_association=association,
+                admission_decision_id=admission_id,
+                access_policy_version_id=case.policy_id,
+            )
+
+    def canonical_factory(**values: object) -> CanonicalAcceptanceCommand:
+        acceptance_id = values["canonical_acceptance_id"]
+        accepted_at = values["accepted_at"]
+        assert isinstance(acceptance_id, UUID)
+        audit_event_id = uuid5(NAMESPACE_URL, f"ticket-343:audit:{acceptance_id}")
+        outbox_event_id = uuid5(NAMESPACE_URL, f"ticket-343:outbox:{acceptance_id}")
+        audit = AuditEventRegistry.with_default_families().build_event(
+            workspace_id=case.source.workspace_id,
+            environment_id=case.source.environment_id,
+            event_type="canonical.transition",
+            schema_version=1,
+            payload=CanonicalTransitionAuditPayload(transition="source.accepted"),
+            origin=ContextOrigin.WORKER,
+            acting_subject_id=None,
+            service_principal_id=case.context.service_principal_id,
+            trace_id=case.context.trace_id,
+            occurred_at=accepted_at,
+            outcome=AuditOutcome.COMMITTED,
+            reason="source_accepted",
+            target=AuditObjectReference(
+                object_type="source_revision",
+                object_id=replacement_revision.revision_id,
+                schema_version=1,
+            ),
+            producer_deduplication_id=f"document-replacement:{acceptance_id}",
+            audit_event_id=audit_event_id,
+        )
+        outbox = _canonical_outbox(
+            postgresql_adapter,
+            context=case.context,
+            source_object_id=case.source.source_object_id,
+            source_revision_id=replacement_revision.revision_id,
+            acceptance_id=acceptance_id,
+            generation=2,
+            audit_event_id=audit_event_id,
+            event_id=outbox_event_id,
+            transition="source.accepted",
+        )
+        return CanonicalAcceptanceCommand.create(
+            source=case.source,
+            revision=replacement_revision,
+            provenance=replacement_provenance,
+            admission_decision_id=admission_id,
+            access_policy_version_id=case.policy_id,
+            expected_current_revision_id=case.revision.revision_id,
+            idempotency_key=values["idempotency_key"],
+            canonical_acceptance_id=acceptance_id,
+            audit_event_id=audit_event_id,
+            outbox_event_id=outbox_event_id,
+            accepted_at=accepted_at,
+            audit_event=audit,
+            outbox_intent=outbox,
+        )
+
+    processing_intents: list[object] = []
+
+    async def process_replacement(**values: object) -> object:
+        processing_intents.append(values["intent"])
+        return SimpleNamespace(run_id=synthetic_uuid(34406))
+
+    service = CanonicalDocumentLifecycleCommandService(
+        composer=ServerDocumentLifecycleComposer(
+            uow_factory=postgresql_adapter.uow_factory,
+            replacement_evidence=EvidenceProvider(),
+            canonical_command_factory=canonical_factory,
+        ),
+        coordinator=SourceLifecycleCoordinator(
+            uow_factory=postgresql_adapter.uow_factory,
+            context_factory=lambda lifecycle: case.context,
+        ),
+        processing=SimpleNamespace(replacement=process_replacement),
+        uow_factory=postgresql_adapter.uow_factory,
+        clock=lambda: datetime(2026, 10, 16, 12, 0, tzinfo=timezone.utc),
+    )
+
+    receipt = await service.replace(context=case.context, command=command)
+
+    assert receipt.status is LifecycleOperationStatus.PROCESSING_DISPATCHED
+    assert len(processing_intents) == 1
+    assert processing_intents[0].source_revision_id == replacement_revision.revision_id
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        current = await uow.canonical.resolve_current(case.source.source_object_id)
+        revisions = await uow.sources.list_revisions(
+            case.source.source_object_id,
+            limit=10,
+        )
+        associations = await uow.sources.resolve_receipt_associations(
+            replacement_revision.revision_id
+        )
+        await uow.commit()
+    assert current is not None
+    assert current.current_revision_id == replacement_revision.revision_id
+    assert len(revisions) == 2
+    assert associations == (association,)
 
 
 async def test_postgresql_boundary_capture_fences_acceptance_at_counter_lock(

@@ -39,6 +39,9 @@ from spine.api.qa_stream import (
 )
 from spine.api.parsed_content import install_parsed_content_routes
 from spine.api.processing_commands import install_processing_command_routes
+from spine.api.document_lifecycle_commands import (
+    install_document_lifecycle_command_routes,
+)
 from spine.api.authorization import (
     ApiAuthorizationReadiness,
     ApiAuthorizationRuntime,
@@ -73,6 +76,7 @@ from spine.application.feedback import FeedbackService
 from spine.application.qa_run_history import QARunHistoryService
 from spine.application.parsed_content_inspection import ParsedContentInspectionService
 from spine.application.processing_commands import ProcessingCommandService
+from spine.application.document_lifecycle import DocumentLifecycleCommandService
 from spine.config import settings
 from spine.ingest.loaders import documents_to_remember_payloads, load_path
 from spine.infrastructure.diagnostics import JsonLoggingDiagnosticSink
@@ -220,6 +224,7 @@ def create_app(
     parsed_content_inspection_service: ParsedContentInspectionService | None = None,
     parsed_content_cursor_secret: bytes | None = None,
     processing_command_service: ProcessingCommandService | None = None,
+    document_lifecycle_command_service: DocumentLifecycleCommandService | None = None,
 ) -> FastAPI:
     """Compose the HTTP API with injectable deterministic diagnostics."""
 
@@ -436,6 +441,15 @@ def create_app(
         install_processing_command_routes(
             application,
             service=processing_command_service,
+        )
+    if document_lifecycle_command_service is not None:
+        if type(authorization_runtime) is not ApiAuthorizationRuntime:
+            raise RuntimeError(
+                "Document lifecycle routes require an authorization runtime."
+            )
+        install_document_lifecycle_command_routes(
+            application,
+            service=document_lifecycle_command_service,
         )
     return application
 

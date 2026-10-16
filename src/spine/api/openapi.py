@@ -64,6 +64,13 @@ from spine.application.processing_commands import (
     ReprocessProcessingCommand,
     RetryProcessingCommand,
 )
+from spine.application.document_lifecycle import (
+    DocumentLifecycleCommandService,
+    ReplaceDocumentCommand,
+    ReplacementProcessingIntent,
+    SourceLifecycleOperationReceipt,
+    TombstoneDocumentCommand,
+)
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.auth import RoutePolicyRegistry
 
@@ -119,12 +126,50 @@ class _UnavailableProcessingCommandService:
         del context, command
         raise RuntimeError("The OpenAPI composition is not executable.")
 
+    async def replacement(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        intent: ReplacementProcessingIntent,
+    ) -> ProcessingCommandResult:
+        del context, intent
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
     async def status(
         self,
         *,
         context: TrustedPersistenceContext,
         operation_id: UUID,
     ) -> ProcessingCommandResult | None:
+        del context, operation_id
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+
+class _UnavailableDocumentLifecycleCommandService:
+    async def replace(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        command: ReplaceDocumentCommand,
+    ) -> SourceLifecycleOperationReceipt:
+        del context, command
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+    async def tombstone(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        command: TombstoneDocumentCommand,
+    ) -> SourceLifecycleOperationReceipt:
+        del context, command
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+    async def status(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        operation_id: UUID,
+    ) -> SourceLifecycleOperationReceipt | None:
         del context, operation_id
         raise RuntimeError("The OpenAPI composition is not executable.")
 
@@ -374,6 +419,10 @@ def create_openapi_app() -> FastAPI:
         processing_command_service=cast(
             ProcessingCommandService,
             _UnavailableProcessingCommandService(),
+        ),
+        document_lifecycle_command_service=cast(
+            DocumentLifecycleCommandService,
+            _UnavailableDocumentLifecycleCommandService(),
         ),
     )
 

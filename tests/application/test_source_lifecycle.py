@@ -263,6 +263,62 @@ async def test_deletion_records_observation_and_delegates_canonical_transition_a
 
 
 @pytest.mark.asyncio
+async def test_replacement_records_new_content_revision_without_reappearance_semantics():
+    source = _source()
+    previous = _content(source)
+    revision = _content(source)
+    revision = revision.model_copy(
+        update={
+            "revision_id": _id("replacement-revision"),
+            "reappearance_after_tombstone_revision_id": None,
+        }
+    )
+    provenance = _provenance(source, revision.revision_id, "replace-1")
+    receipt_association = _receipt(source, revision, provenance)
+    canonical_command = _canonical(source, revision, provenance, key="canonical-replace-1")
+    canonical_command = CanonicalAcceptanceCommand.create(
+        source=source,
+        revision=revision,
+        provenance=provenance,
+        expected_current_revision_id=previous.revision_id,
+        idempotency_key=canonical_command.idempotency_key,
+        canonical_acceptance_id=canonical_command.canonical_acceptance_id,
+        admission_decision_id=canonical_command.admission_decision_id,
+        access_policy_version_id=canonical_command.access_policy_version_id,
+        audit_event_id=canonical_command.audit_event_id,
+        outbox_event_id=canonical_command.outbox_event_id,
+        accepted_at=NOW,
+    )
+    sources = _Sources(
+        source,
+        {previous.revision_id: previous, revision.revision_id: revision},
+        [],
+    )
+    canonical = _Canonical()
+    uow = _Uow(sources, canonical)
+
+    result = await SourceLifecycleCoordinator(
+        lambda _context: uow, lambda _command: SimpleNamespace()
+    ).apply(
+        SourceLifecycleCommand(
+            kind=SourceLifecycleKind.REPLACEMENT,
+            source=source,
+            revision=revision,
+            provenance=provenance,
+            observation_idempotency_key=IdempotencyKey("observation-replace-1"),
+            canonical_acceptance=canonical_command,
+            receipt_association=receipt_association,
+        )
+    )
+
+    assert result.acceptance.advanced is True
+    assert sources.recorded[0].revision.revision_id == revision.revision_id
+    assert sources.recorded[0].receipt_association == receipt_association
+    assert canonical.commands[0].expected_current_revision_id == previous.revision_id
+    assert revision.reappearance_after_tombstone_revision_id is None
+
+
+@pytest.mark.asyncio
 async def test_reappearance_requires_existing_tombstone_and_fresh_canonical_evidence():
     source = _source()
     tombstone = _tombstone(source)
