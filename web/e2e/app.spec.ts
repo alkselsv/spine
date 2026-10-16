@@ -463,6 +463,79 @@ test('test_document_detail_deep_link_reloads_and_preserves_scope_and_subview_nav
   expect(documentRequests.every(({ headers }) => headers['x-environment-id'] === stagingEnvironment)).toBe(true);
 });
 
+test('test_document_lifecycle_actions_send_safe_commands_and_show_terminal_receipts', async ({ page }) => {
+  await installControlledDocumentDetail(page);
+  const lifecycleRequests: Array<{ body: string; headers: Record<string, string>; method: string; url: string }> = [];
+  const statusRequests: Array<{ headers: Record<string, string>; url: string }> = [];
+  let statusRequestCount = 0;
+  await page.route(`**/api/v1/documents/lifecycle/operations/${firstDocument}`, async (route) => {
+    const request = route.request();
+    statusRequests.push({ headers: request.headers(), url: request.url() });
+    statusRequestCount += 1;
+    const operationKind = statusRequestCount <= 2 ? 'replacement' : 'tombstone';
+    const status = statusRequestCount % 2 === 1 ? 'processing_dispatched' : 'completed';
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(controlledLifecycleReceipt(operationKind, status)),
+      status: 200,
+    });
+  });
+  await page.route(`**/api/v1/documents/${firstDocument}/replacement`, async (route) => {
+    const request = route.request();
+    lifecycleRequests.push({ body: request.postData() ?? '', headers: request.headers(), method: request.method(), url: request.url() });
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(controlledLifecycleReceipt('replacement', 'accepted_processing_pending')),
+      status: 202,
+    });
+  });
+  await page.route(`**/api/v1/documents/${firstDocument}/tombstone`, async (route) => {
+    const request = route.request();
+    lifecycleRequests.push({ body: request.postData() ?? '', headers: request.headers(), method: request.method(), url: request.url() });
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(controlledLifecycleReceipt('tombstone', 'accepted_processing_pending')),
+      status: 202,
+    });
+  });
+
+  await page.goto(
+    `/knowledge/documents/${firstDocument}?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`,
+  );
+  await page.getByLabel('Ссылка на подготовленную загрузку').fill('staged-upload:controlled-001');
+  await page.getByLabel('Имя файла новой ревизии').fill('handbook.md');
+  await page.getByLabel('Идентичность загрузки').fill('handbook');
+  await page.getByLabel('Тип содержимого').selectOption('text/markdown');
+  await page.getByRole('button', { name: 'Заменить документ' }).click();
+  await expect(page.locator('[aria-labelledby="document-actions-heading"]').getByRole('status')).toContainText('Операция завершена');
+  await expect(page.locator('[aria-labelledby="document-actions-heading"]')).toContainText('Каноническая приёмка');
+  await expect(page.locator('[aria-labelledby="document-actions-heading"]')).toContainText(firstDocument);
+  await expect(page.locator('[aria-labelledby="document-actions-heading"]')).toContainText('Запуск обработки');
+  await expect(page.getByRole('button', { name: 'Проверить статус операции' })).toBeVisible();
+
+  await page.getByLabel('Причина логического удаления').selectOption('source_deleted');
+  await page.getByRole('button', { name: 'Создать tombstone' }).click();
+  await expect(page.getByText('Новая неизменяемая tombstone-ревизия сохранена в истории.')).toBeVisible();
+  await expect(page.getByText('Причина tombstone: source_deleted')).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Действия с документом' })).toBeVisible();
+
+  expect(lifecycleRequests).toHaveLength(2);
+  expect(lifecycleRequests[0]?.method).toBe('POST');
+  expect(lifecycleRequests[0]?.headers['x-workspace-id']).toBe(salesWorkspace);
+  expect(lifecycleRequests[0]?.headers['x-environment-id']).toBe(stagingEnvironment);
+  expect(lifecycleRequests[0]?.headers['idempotency-key']).toMatch(/^document-replacement-/);
+  expect(lifecycleRequests[0]?.body).toContain(secondDocument);
+  expect(lifecycleRequests[0]?.body).toContain('staged-upload:controlled-001');
+  expect(lifecycleRequests[1]?.headers['idempotency-key']).toMatch(/^document-tombstone-/);
+  expect(lifecycleRequests[1]?.body).toContain('source_deleted');
+  expect(lifecycleRequests.every(({ body }) => !body.includes('physical') && !body.includes('canonical_acceptance'))).toBe(true);
+  expect(statusRequests).toHaveLength(4);
+  expect(statusRequests.every(({ headers }) => headers.authorization === 'Bearer controlled-browser-token')).toBe(true);
+  expect(statusRequests.every(({ headers }) => headers['x-workspace-id'] === salesWorkspace)).toBe(true);
+  expect(statusRequests.every(({ headers }) => headers['x-environment-id'] === stagingEnvironment)).toBe(true);
+});
+
 test('test_projection_status_scope_switch_reload_and_safe_degradation', async ({ page }) => {
   await installControlledDocumentDetail(page);
   const projectionRequests: Array<{ headers: Record<string, string>; url: string }> = [];
@@ -960,6 +1033,30 @@ async function installControlledDocumentDetail(page: Page) {
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(response), status: 200 });
   });
   return requests;
+}
+
+function controlledLifecycleReceipt(
+  operationKind: 'replacement' | 'tombstone',
+  status: 'accepted_processing_pending' | 'processing_dispatched' | 'completed' = 'completed',
+) {
+  return {
+    accepted_at: '2026-01-02T04:05:00Z',
+    accepted_revision_id: secondDocument,
+    canonical_acceptance_id: firstDocument,
+    completed_at: status === 'completed' ? '2026-01-02T04:06:00Z' : null,
+    expected_current_revision_id: secondDocument,
+    idempotency_receipt_id: firstDocument,
+    operation_id: firstDocument,
+    operation_kind: operationKind,
+    processing_run_id: firstDocument,
+    replay: false,
+    retryable: false,
+    safe_failure_code: null,
+    schema_version: 1,
+    source_object_id: firstDocument,
+    status,
+    status_url: `/api/v1/documents/lifecycle/operations/${firstDocument}`,
+  } satisfies components['schemas']['SourceLifecycleOperationResponse'];
 }
 
 async function installControlledBatchUpload(page: Page) {
