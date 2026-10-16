@@ -100,6 +100,7 @@ from spine.domain.projections import (
     ProjectionRun,
 )
 from spine.domain.sources import AdmissionDecision, AdmissionDisposition
+from spine.domain.sources.canonicalization import content_revision
 from spine.domain.sources.access_policy import (
     AccessGrant,
     AccessPermission,
@@ -955,13 +956,26 @@ async def test_postgresql_document_replacement_persists_verified_successor_and_h
         idempotency_key="document-replacement-34400",
     )
     lifecycle_digest = CanonicalDocumentLifecycleCommandService.command_digest(command)
-    replacement_revision = source_contract_revision(
+    replacement_template = source_contract_revision(
         case.source,
         uuid5(
             NAMESPACE_URL,
             f"ticket-343:replacement-revision:{case.source.source_object_id}",
         ),
     )
+    replacement_values = replacement_template.model_dump(
+        mode="python",
+        exclude={"revision_digest"},
+    )
+    replacement_values.update(
+        original_reference=replacement_template.original_reference.model_copy(
+            update={"digest_hex": "e" * 64, "byte_length": 11}
+        ),
+        original_sha256="e" * 64,
+        byte_length=11,
+    )
+    replacement_revision = content_revision(**replacement_values)
+    assert replacement_revision.revision_digest != case.revision.revision_digest
     replacement_provenance = source_contract_provenance(
         case.source,
         replacement_revision.revision_id,
