@@ -137,6 +137,9 @@ class InMemoryQAEventLog:
         self.max_replay = max_replay
         self._streams: dict[_StreamKey, list[QAEvent]] = {}
         self._events_by_id: dict[UUID, QAEvent] = {}
+        self._delivery_denials: dict[UUID, tuple[_StreamKey, QAEvent]] = {}
+        self._delivery_denials_by_sequence: dict[tuple[_StreamKey, int], QAEvent] = {}
+        self._heartbeat_emissions: dict[tuple[_StreamKey, UUID], QAEvent] = {}
 
     async def append(self, event: QAEvent) -> QAEvent:
         if type(event) is not QAEvent:
@@ -233,6 +236,8 @@ class InMemoryQAEventLog:
                 None,
             )
             if cursor_index is None:
+                if cursor_id in self._events_by_id:
+                    raise CursorScopeError("resume cursor belongs to another scope")
                 raise ResumeCursorError("resume cursor is not available")
             cursor_event = events[cursor_index]
             if last_sequence is not None and last_sequence != cursor_event.sequence:
@@ -343,6 +348,98 @@ class InMemoryQAEventLog:
             event_id_factory=event_id_factory,
         )
 
+    def resolve_delivery_denial(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        session_id: UUID,
+        run_id: UUID | None,
+        message_id: UUID | None,
+        event_id: UUID | None,
+        sequence: int | None,
+    ) -> QAEvent | None:
+        """Resolve safe delivery state without adding it to canonical emissions."""
+
+        candidate: tuple[_StreamKey, QAEvent] | None = None
+        if event_id is not None:
+            candidate = self._delivery_denials.get(event_id)
+        if candidate is None and sequence is not None:
+            key, _ = self._resolve_stream(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                session_id=session_id,
+                run_id=run_id,
+                message_id=message_id,
+            )
+            denial = self._delivery_denials_by_sequence.get((key, sequence))
+            if denial is not None:
+                candidate = (key, denial)
+        if candidate is None:
+            return None
+        key, denial = candidate
+        if (
+            key.workspace_id != workspace_id
+            or key.environment_id != environment_id
+            or key.session_id != session_id
+            or (run_id is not None and key.run_id != run_id)
+            or (message_id is not None and key.message_id != message_id)
+        ):
+            raise CursorScopeError("resume cursor belongs to another scope")
+        return denial
+
+    def record_delivery_denial(
+        self, *, protected_event: QAEvent, denial: QAEvent
+    ) -> QAEvent:
+        key = _StreamKey(
+            workspace_id=protected_event.workspace_id,
+            environment_id=protected_event.environment_id,
+            session_id=protected_event.session_id,
+            message_id=protected_event.message_id,
+            run_id=protected_event.run_id,
+        )
+        existing = self._delivery_denials.get(denial.event_id)
+        if existing is not None:
+            return existing[1]
+        self._delivery_denials[denial.event_id] = (key, denial)
+        self._delivery_denials_by_sequence[(key, denial.sequence)] = denial
+        return denial
+
+    def resolve_heartbeat(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        session_id: UUID,
+        run_id: UUID | None,
+        message_id: UUID | None,
+        emission_id: UUID,
+    ) -> QAEvent | None:
+        key, _ = self._resolve_stream(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            session_id=session_id,
+            run_id=run_id,
+            message_id=message_id,
+        )
+        return self._heartbeat_emissions.get((key, emission_id))
+
+    def record_heartbeat(
+        self, *, event: QAEvent, emission_id: UUID
+    ) -> QAEvent:
+        key = _StreamKey(
+            workspace_id=event.workspace_id,
+            environment_id=event.environment_id,
+            session_id=event.session_id,
+            message_id=event.message_id,
+            run_id=event.run_id,
+        )
+        existing = self._heartbeat_emissions.get((key, emission_id))
+        if existing is not None:
+            return existing
+        self._heartbeat_emissions[(key, emission_id)] = event
+        return event
+
     def _resolve_stream(
         self,
         *,
@@ -433,6 +530,16 @@ class InMemoryQAEventStream:
         virtual_terminal = (
             self._virtual_denials.get(cursor_id) if cursor_id is not None else None
         )
+        if virtual_terminal is None:
+            virtual_terminal = self.log.resolve_delivery_denial(
+                workspace_id=self.workspace_id,
+                environment_id=self.environment_id,
+                session_id=self.session_id,
+                run_id=self.run_id,
+                message_id=self.message_id,
+                event_id=cursor_id,
+                sequence=last_sequence,
+            )
         if virtual_terminal is None and last_sequence is not None:
             virtual_terminal = self._virtual_denials_by_sequence.get(last_sequence)
         if virtual_terminal is not None:
@@ -495,6 +602,18 @@ class InMemoryQAEventStream:
         existing_heartbeat = self._heartbeat_events.get(heartbeat_id)
         if existing_heartbeat is not None:
             return existing_heartbeat
+        message_id = await self._effective_message_id()
+        persisted_heartbeat = self.log.resolve_heartbeat(
+            workspace_id=self.workspace_id,
+            environment_id=self.environment_id,
+            session_id=self.session_id,
+            run_id=self.run_id,
+            message_id=message_id,
+            emission_id=heartbeat_id,
+        )
+        if persisted_heartbeat is not None:
+            self._heartbeat_events[heartbeat_id] = persisted_heartbeat
+            return persisted_heartbeat
         terminal = await self._stored_terminal()
         if terminal is not None:
             return terminal
@@ -502,6 +621,7 @@ class InMemoryQAEventStream:
             event_type=QAEventType.HEARTBEAT,
             payload=HeartbeatPayload(),
         )
+        emitted = self.log.record_heartbeat(event=emitted, emission_id=heartbeat_id)
         self._heartbeat_events[heartbeat_id] = emitted
         return emitted
 
@@ -629,7 +749,7 @@ class InMemoryQAEventStream:
         self._virtual_denials[event.event_id] = denial
         self._virtual_denials[denial.event_id] = denial
         self._virtual_denials_by_sequence[denial.sequence] = denial
-        return denial
+        return self.log.record_delivery_denial(protected_event=event, denial=denial)
 
 
 QAEventLog = QAEventLogPort

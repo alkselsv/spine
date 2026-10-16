@@ -22,6 +22,21 @@ from spine.domain.qa_events import (
 )
 
 
+class FailAfterFirstPersistLog(InMemoryQAEventLog):
+    """Simulate a lost response after the emission is durably recorded."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_next = True
+
+    async def append(self, event: QAEvent) -> QAEvent:
+        persisted = await super().append(event)
+        if self.fail_next:
+            self.fail_next = False
+            raise RuntimeError("synthetic lost append response")
+        return persisted
+
+
 def uid(value: int) -> UUID:
     return UUID(int=value)
 
@@ -81,6 +96,20 @@ async def test_event_log_replays_an_identical_emission_without_a_second_effect()
     replay = await log.append(started)
 
     assert replay == first
+    assert await log.read(
+        workspace_id=uid(2), environment_id=uid(3), session_id=uid(1), run_id=uid(5)
+    ) == (started,)
+
+
+@pytest.mark.asyncio
+async def test_event_log_retry_after_a_lost_response_replays_one_emission() -> None:
+    log = FailAfterFirstPersistLog()
+    started = event(QAEventType.RUN_STARTED, 1)
+
+    with pytest.raises(RuntimeError, match="lost append response"):
+        await log.append(started)
+
+    assert await log.append(started) == started
     assert await log.read(
         workspace_id=uid(2), environment_id=uid(3), session_id=uid(1), run_id=uid(5)
     ) == (started,)
@@ -179,6 +208,14 @@ async def test_resume_rejects_unknown_and_cross_scope_cursors_safely() -> None:
             run_id=uid(5),
             last_event_id=uid(999),
         )
+
+
+@pytest.mark.asyncio
+async def test_resume_rejects_a_cursor_from_another_workspace() -> None:
+    log = InMemoryQAEventLog()
+    started = event(QAEventType.RUN_STARTED, 1)
+    await log.append(started)
+
     with pytest.raises(CursorScopeError, match="cursor"):
         await log.read_after(
             workspace_id=uid(99),
@@ -330,11 +367,46 @@ async def test_virtual_denial_cursor_replays_the_same_terminal_safely() -> None:
     )
 
     first = await stream.replay()
-    second = await stream.replay(last_event_id=first.events[-1].event_id)
+    reconnected = log.open_stream(
+        workspace_id=uid(2),
+        environment_id=uid(3),
+        session_id=uid(1),
+        run_id=uid(5),
+        trace_id=uid(6),
+        disclosure_authorizer=lambda _receipt: False,
+    )
+    second = await reconnected.replay(last_event_id=first.events[-1].event_id)
 
     assert first.terminal is not None
     assert second.events == ()
     assert second.terminal == first.terminal
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_retry_is_idempotent_after_reconnect() -> None:
+    log = InMemoryQAEventLog()
+    await log.append(event(QAEventType.RUN_STARTED, 1))
+    first_stream = log.open_stream(
+        workspace_id=uid(2),
+        environment_id=uid(3),
+        session_id=uid(1),
+        run_id=uid(5),
+        trace_id=uid(6),
+        event_id_factory=iter((uid(200), uid(201))).__next__,
+    )
+    second_stream = log.open_stream(
+        workspace_id=uid(2),
+        environment_id=uid(3),
+        session_id=uid(1),
+        run_id=uid(5),
+        trace_id=uid(6),
+        event_id_factory=iter((uid(202), uid(203))).__next__,
+    )
+
+    first = await first_stream.heartbeat(emission_id=uid(800))
+    retry = await second_stream.heartbeat(emission_id=uid(800))
+
+    assert retry == first
 
 
 @pytest.mark.asyncio
