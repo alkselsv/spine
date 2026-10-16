@@ -91,7 +91,6 @@ def upgrade() -> None:
             "deduplication_key",
             name="uq_operational_metric_events_deduplication",
         ),
-        sa.CheckConstraint("attempt_number IS NULL OR attempt_number > 0", name="ck_operational_metric_attempt_number"),
         sa.CheckConstraint("duration_ms IS NULL OR duration_ms >= 0", name="ck_operational_metric_duration"),
         sa.CheckConstraint("sequence_number IS NULL OR sequence_number >= 0", name="ck_operational_metric_sequence"),
         sa.CheckConstraint("currency IS NULL OR currency ~ '^[A-Z]{3}$'", name="ck_operational_metric_currency"),
@@ -119,6 +118,12 @@ def upgrade() -> None:
         "ix_operational_metric_events_operation",
         "operational_metric_events",
         ["workspace_id", "environment_id", "logical_operation_id", "event_at"],
+        schema=SCHEMA,
+    )
+    op.create_check_constraint(
+        "ck_operational_metric_attempt_number",
+        "operational_metric_events",
+        "attempt_number IS NULL OR attempt_number > 0",
         schema=SCHEMA,
     )
     _tenant("operational_metric_events")
