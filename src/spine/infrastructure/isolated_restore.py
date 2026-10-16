@@ -132,6 +132,18 @@ class IsolatedPostgreSQLRestorePort(Protocol):
     ) -> tuple[ObjectReference, ...]: ...
 
 
+class PostgreSQLRestoreCommand(Protocol):
+    """Run one compatible custom-format restore using an isolated target."""
+
+    async def restore(
+        self,
+        archive: Path,
+        target: IsolatedRestoreTarget,
+        *,
+        expected_component_version: str,
+    ) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class RestoredOriginal:
     reference: ObjectReference
@@ -144,18 +156,26 @@ class IsolatedRestoreVerifier:
     def __init__(
         self,
         *,
-        pg_restore_executable: str | os.PathLike[str],
+        pg_restore_executable: str | os.PathLike[str] | None = None,
         command_timeout_seconds: float = 900,
         postgres_restore_port: IsolatedPostgreSQLRestorePort | None = None,
+        postgres_restore_command: PostgreSQLRestoreCommand | None = None,
     ) -> None:
-        executable = Path(pg_restore_executable)
-        if not executable.is_absolute() or executable.is_symlink() or not executable.is_file():
-            raise ValueError("pg_restore executable must be an absolute regular file")
         if command_timeout_seconds <= 0:
             raise ValueError("restore command timeout must be positive")
-        self._pg_restore = executable
-        self._timeout = command_timeout_seconds
-        self._postgres_restore_port = postgres_restore_port or _DefaultIsolatedPostgreSQLRestorePort(self)
+        if postgres_restore_command is None:
+            if pg_restore_executable is None:
+                raise ValueError("pg_restore executable or command adapter is required")
+            executable = Path(pg_restore_executable)
+            if not executable.is_absolute() or executable.is_symlink() or not executable.is_file():
+                raise ValueError("pg_restore executable must be an absolute regular file")
+            postgres_restore_command = _SubprocessPostgreSQLRestoreCommand(
+                executable=executable,
+                timeout_seconds=command_timeout_seconds,
+            )
+        self._postgres_restore_port = postgres_restore_port or _DefaultIsolatedPostgreSQLRestorePort(
+            postgres_restore_command
+        )
 
     async def verify_and_restore(
         self,
@@ -258,67 +278,6 @@ class IsolatedRestoreVerifier:
             _remove_isolated_tree(staging_root)
             raise self._failure(manifest, target, "rejected", "restore.metadata_mismatch") from None
 
-    async def _restore_postgres(
-        self,
-        archive: Path,
-        target: IsolatedRestoreTarget,
-        *,
-        expected_component_version: str,
-    ) -> None:
-        connection = target.restore_connection
-        actual_version = await self._tool_version(connection)
-        if actual_version.split(".", maxsplit=1)[0] != expected_component_version.split(".", maxsplit=1)[0]:
-            raise RuntimeError("restore tool is incompatible with the archived component")
-        arguments = [
-            os.fspath(self._pg_restore),
-            "--exit-on-error",
-            "--no-owner",
-            "--no-acl",
-            "--single-transaction",
-            "--dbname",
-            target.database,
-        ]
-        arguments.append(os.fspath(archive))
-        env = connection.process_environment()
-        env["PGUSER"] = connection.username
-        process = await asyncio.create_subprocess_exec(
-            *arguments,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-            env=env,
-        )
-        try:
-            await asyncio.wait_for(process.wait(), timeout=self._timeout)
-        except TimeoutError:
-            process.kill()
-            await process.wait()
-            raise
-        if process.returncode != 0:
-            raise RuntimeError("isolated restore command failed")
-
-    async def _tool_version(self, connection: PostgreSQLBackupConnection) -> str:
-        process = await asyncio.create_subprocess_exec(
-            os.fspath(self._pg_restore),
-            "--version",
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            env=connection.process_environment(),
-        )
-        try:
-            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=self._timeout)
-        except TimeoutError:
-            process.kill()
-            await process.wait()
-            raise
-        if process.returncode != 0 or stdout is None:
-            raise RuntimeError("restore tool is unavailable")
-        match = re.search(rb"PostgreSQL\)\s+(\d+(?:\.\d+){1,2})\b", stdout)
-        if match is None:
-            raise RuntimeError("restore tool version is unavailable")
-        return match.group(1).decode("ascii")
-
     def _failure(
         self,
         manifest: StorageRecoveryManifest,
@@ -359,8 +318,8 @@ class IsolatedRestoreVerifier:
 class _DefaultIsolatedPostgreSQLRestorePort:
     """Bind the PostgreSQL lifecycle to the production restore implementation."""
 
-    def __init__(self, verifier: IsolatedRestoreVerifier) -> None:
-        self._verifier = verifier
+    def __init__(self, command: PostgreSQLRestoreCommand) -> None:
+        self._command = command
 
     async def restore_and_read(
         self,
@@ -371,7 +330,7 @@ class _DefaultIsolatedPostgreSQLRestorePort:
     ) -> tuple[ObjectReference, ...]:
         await _assert_empty_restore_database(target)
         await _seal_restore_database(target)
-        await self._verifier._restore_postgres(
+        await self._command.restore(
             archive,
             target,
             expected_component_version=expected_component_version,
@@ -379,6 +338,73 @@ class _DefaultIsolatedPostgreSQLRestorePort:
         await _harden_restored_schemas(target)
         await _grant_verifier_read(target)
         return await _read_restored_references(target)
+
+
+class _SubprocessPostgreSQLRestoreCommand:
+    def __init__(self, *, executable: Path, timeout_seconds: float) -> None:
+        self._executable = executable
+        self._timeout = timeout_seconds
+
+    async def restore(
+        self,
+        archive: Path,
+        target: IsolatedRestoreTarget,
+        *,
+        expected_component_version: str,
+    ) -> None:
+        connection = target.restore_connection
+        actual_version = await self._tool_version(connection)
+        if actual_version.split(".", maxsplit=1)[0] != expected_component_version.split(".", maxsplit=1)[0]:
+            raise RuntimeError("restore tool is incompatible with the archived component")
+        arguments = [
+            os.fspath(self._executable),
+            "--exit-on-error",
+            "--no-owner",
+            "--no-acl",
+            "--single-transaction",
+            "--dbname",
+            target.database,
+            os.fspath(archive),
+        ]
+        env = connection.process_environment()
+        env["PGUSER"] = connection.username
+        process = await asyncio.create_subprocess_exec(
+            *arguments,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            env=env,
+        )
+        try:
+            await asyncio.wait_for(process.wait(), timeout=self._timeout)
+        except TimeoutError:
+            process.kill()
+            await process.wait()
+            raise
+        if process.returncode != 0:
+            raise RuntimeError("isolated restore command failed")
+
+    async def _tool_version(self, connection: PostgreSQLBackupConnection) -> str:
+        process = await asyncio.create_subprocess_exec(
+            os.fspath(self._executable),
+            "--version",
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            env=connection.process_environment(),
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=self._timeout)
+        except TimeoutError:
+            process.kill()
+            await process.wait()
+            raise
+        if process.returncode != 0 or stdout is None:
+            raise RuntimeError("restore tool is unavailable")
+        match = re.search(rb"PostgreSQL\)\s+(\d+(?:\.\d+){1,2})\b", stdout)
+        if match is None:
+            raise RuntimeError("restore tool version is unavailable")
+        return match.group(1).decode("ascii")
 
 
 async def _read_restored_references(
@@ -735,6 +761,7 @@ __all__ = [
     "IsolatedRestoreEvidence",
     "IsolatedRestoreFailure",
     "IsolatedPostgreSQLRestorePort",
+    "PostgreSQLRestoreCommand",
     "IsolatedRestoreTarget",
     "IsolatedRestoreVerifier",
     "RestoredOriginal",

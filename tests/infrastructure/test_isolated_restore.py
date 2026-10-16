@@ -44,9 +44,21 @@ OBJECT = ObjectReference(
     digest_hex=hashlib.sha256(b"synthetic source bytes").hexdigest(),
     byte_length=len(b"synthetic source bytes"),
 )
+OBJECT_B = ObjectReference(
+    schema_version=1,
+    object_id=UUID("30000000-0000-4000-8000-000000000002"),
+    storage_generation=UUID("50000000-0000-4000-8000-000000000002"),
+    digest_algorithm="sha256",
+    digest_hex=hashlib.sha256(b"synthetic source bytes B").hexdigest(),
+    byte_length=len(b"synthetic source bytes B"),
+)
 
 
-def make_manifest(pg_digest: str, fs_digest: str) -> StorageRecoveryManifest:
+def make_manifest(
+    pg_digest: str,
+    fs_digest: str,
+    references: tuple[ObjectReference, ...] = (OBJECT,),
+) -> StorageRecoveryManifest:
     protection = BackupProtectionProfile(
         source_volume_id="volume:originals",
         destination_id="volume:backups",
@@ -65,7 +77,7 @@ def make_manifest(pg_digest: str, fs_digest: str) -> StorageRecoveryManifest:
         tool_version="postgres-17.2.1",
         fence_epoch=1,
         cutoff_ticket_sequence=0,
-        included_set_digest=canonical_included_set_digest((OBJECT,)),
+        included_set_digest=canonical_included_set_digest(references),
         inclusion_policy="r1-finalized-originals-and-canonical-metadata:v1",
         durable=True,
         verified=True,
@@ -81,7 +93,7 @@ def make_manifest(pg_digest: str, fs_digest: str) -> StorageRecoveryManifest:
         tool_version="python-3.12.0",
         fence_epoch=1,
         cutoff_ticket_sequence=0,
-        included_set_digest=canonical_included_set_digest((OBJECT,)),
+        included_set_digest=canonical_included_set_digest(references),
         inclusion_policy="r1-finalized-originals-and-canonical-metadata:v1",
         durable=True,
         verified=True,
@@ -148,36 +160,50 @@ def target(tmp_path: Path) -> IsolatedRestoreTarget:
     )
 
 
-def write_archive(path: Path, *, payload: bytes = b"synthetic source bytes") -> None:
-    receipt = WriteReceipt.model_construct(
-        schema_version=1,
-        object_reference=OBJECT,
-        upload_id=UUID("40000000-0000-4000-8000-000000000001"),
-        observed_content=ObservedContentIdentity(
-            observed_sha256=OBJECT.digest_hex,
-            observed_byte_length=OBJECT.byte_length,
+def write_archive(
+    path: Path,
+    *,
+    payload: bytes = b"synthetic source bytes",
+    tenant_objects: tuple[tuple[ObjectReference, UUID, UUID, bytes], ...] | None = None,
+) -> None:
+    objects = tenant_objects or (
+        (
+            OBJECT,
+            UUID("10000000-0000-4000-8000-000000000001"),
+            UUID("20000000-0000-4000-8000-000000000001"),
+            payload,
         ),
-        verification=IntegrityResult(
-            status=IntegrityStatus.VERIFIED,
-            algorithm="sha256",
-            observed_digest=OBJECT.digest_hex,
-            observed_length=OBJECT.byte_length,
-        ),
-        storage_status="finalized_verified",
-        finalized_at=NOW,
     )
-    private = json.dumps({"receipt": receipt.model_dump(mode="json")}, separators=(",", ":")).encode()
-    scope = hashlib.sha256(
-        f"{UUID('10000000-0000-4000-8000-000000000001')}:{UUID('20000000-0000-4000-8000-000000000001')}".encode()
-    ).hexdigest()
     with tarfile.open(path, "w") as archive:
-        for name, content in (
-            (f"objects/{scope}/{OBJECT.object_id.hex}.private", private),
-            (f"objects/{scope}/{OBJECT.object_id.hex}", payload),
-        ):
-            info = tarfile.TarInfo(name)
-            info.size = len(content)
-            archive.addfile(info, __import__("io").BytesIO(content))
+        for index, (reference, workspace_id, environment_id, content) in enumerate(objects, start=1):
+            receipt = WriteReceipt.model_construct(
+                schema_version=1,
+                object_reference=reference,
+                upload_id=UUID(f"40000000-0000-4000-8000-{index:012d}"),
+                observed_content=ObservedContentIdentity(
+                    observed_sha256=reference.digest_hex,
+                    observed_byte_length=reference.byte_length,
+                ),
+                verification=IntegrityResult(
+                    status=IntegrityStatus.VERIFIED,
+                    algorithm="sha256",
+                    observed_digest=reference.digest_hex,
+                    observed_length=reference.byte_length,
+                ),
+                storage_status="finalized_verified",
+                finalized_at=NOW,
+            )
+            private = json.dumps(
+                {"receipt": receipt.model_dump(mode="json")}, separators=(",", ":")
+            ).encode()
+            scope = hashlib.sha256(f"{workspace_id}:{environment_id}".encode()).hexdigest()
+            for name, member_content in (
+                (f"objects/{scope}/{reference.object_id.hex}.private", private),
+                (f"objects/{scope}/{reference.object_id.hex}", content),
+            ):
+                info = tarfile.TarInfo(name)
+                info.size = len(member_content)
+                archive.addfile(info, __import__("io").BytesIO(member_content))
 
 
 def test_isolated_restore_target_requires_dedicated_database_and_absent_root(tmp_path: Path) -> None:
