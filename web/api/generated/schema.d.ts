@@ -6021,6 +6021,7 @@ export interface operations {
                 run_id?: string | null;
                 last_sequence?: number | null;
                 limit?: number;
+                poll?: boolean;
             };
             header: {
                 "Last-Event-ID"?: string | null;

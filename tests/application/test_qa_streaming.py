@@ -8,6 +8,7 @@ from spine.application.authorized_ask import AuthorizedAskResult
 from spine.application.qa_events import InMemoryQAEventLog
 from spine.application.qa_streaming import AuthorizedQAStreamService
 from spine.domain.capabilities import AnswerQuestionOutcome
+from spine.domain.qa_events import QAEvent
 from tests.api.test_authorized_ask import (
     COMMAND_ID,
     MESSAGE_ID,
@@ -17,6 +18,19 @@ from tests.api.test_authorized_ask import (
 
 
 RUN_ID = UUID("40000000-0000-0000-0000-000000000001")
+
+
+class FailAfterFirstPersistLog(InMemoryQAEventLog):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_next = True
+
+    async def append(self, event: QAEvent) -> QAEvent:
+        persisted = await super().append(event)
+        if self.fail_next:
+            self.fail_next = False
+            raise RuntimeError("synthetic lost response")
+        return persisted
 
 
 @pytest.mark.asyncio
@@ -79,6 +93,36 @@ async def test_publishing_same_ask_result_is_idempotent_and_does_not_duplicate_t
         "run_started",
         "stage_changed",
         "cancelled",
+    )
+
+
+@pytest.mark.asyncio
+async def test_retry_after_partial_event_persistence_has_one_logical_effect() -> None:
+    log = FailAfterFirstPersistLog()
+    service = AuthorizedQAStreamService(event_log=log)
+    result = AuthorizedAskResult(
+        command_id=COMMAND_ID,
+        session_id=SESSION_ID,
+        message_id=MESSAGE_ID,
+        output=safe_output(AnswerQuestionOutcome.ABSTAINED),
+        accepted_answer=None,
+    )
+
+    with pytest.raises(RuntimeError, match="lost response"):
+        await service.publish_result(result)
+    await service.publish_result(result)
+
+    events = await log.read(
+        workspace_id=result.output.scope.workspace_id,
+        environment_id=result.output.scope.environment_id,
+        session_id=result.session_id,
+        message_id=result.message_id,
+        run_id=RUN_ID,
+    )
+    assert tuple(event.type.value for event in events) == (
+        "run_started",
+        "stage_changed",
+        "abstained",
     )
 
 

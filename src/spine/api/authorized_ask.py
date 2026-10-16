@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 from uuid import UUID
 
 from fastapi import Body, Depends, FastAPI, Request
@@ -26,6 +26,9 @@ from spine.application.authorized_ask import (
     AuthorizedAskService,
     InvalidAuthorizedAskRequest,
 )
+
+if TYPE_CHECKING:
+    from spine.application.qa_streaming import QAResultEventPublisher
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.auth import (
@@ -116,7 +119,7 @@ def install_authorized_ask_routes(
     application: FastAPI,
     *,
     service: AuthorizedAskService,
-    stream_service: object | None = None,
+    stream_service: QAResultEventPublisher | None = None,
 ) -> None:
     """Register the protected ask and cooperative cancellation commands."""
 
@@ -205,9 +208,9 @@ def _service(request: Request) -> AuthorizedAskService:
 
 async def _publish_stream_result(request: Request, result: AuthorizedAskResult) -> None:
     stream_service = getattr(request.app.state, "qa_stream_service", None)
-    publisher = getattr(stream_service, "publish_result", None)
-    if publisher is not None:
-        await publisher(result)
+    if stream_service is not None:
+        publisher = cast("QAResultEventPublisher", stream_service)
+        await publisher.publish_result(result)
 
 
 def _idempotency(values: list[str]) -> IdempotencyKey:

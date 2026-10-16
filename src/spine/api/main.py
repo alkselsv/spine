@@ -34,6 +34,7 @@ from spine.api.feedback import install_feedback_routes
 from spine.api.qa_runs import install_qa_run_routes
 from spine.api.qa_stream import (
     QAStreamDisclosureAuthorizer,
+    QAStreamReader,
     install_qa_stream_routes,
 )
 from spine.api.parsed_content import install_parsed_content_routes
@@ -212,7 +213,7 @@ def create_app(
     feedback_service: FeedbackService | None = None,
     qa_run_history_service: QARunHistoryService | None = None,
     qa_run_history_cursor_secret: bytes | None = None,
-    qa_stream_service: object | None = None,
+    qa_stream_service: QAStreamReader | None = None,
     qa_stream_disclosure_authorizer: QAStreamDisclosureAuthorizer | None = None,
     parsed_content_inspection_service: ParsedContentInspectionService | None = None,
     parsed_content_cursor_secret: bytes | None = None,

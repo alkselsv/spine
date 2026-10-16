@@ -65,6 +65,7 @@ def install_qa_stream_routes(
         run_id: UUID | None = Query(None),
         last_sequence: int | None = Query(None, ge=0),
         limit: int = Query(100, ge=1, le=100),
+        poll: bool = Query(False),
         last_event_id: str | None = Header(None, alias="Last-Event-ID"),
         request_context: AuthorizedRequestContext[object] = Depends(
             get_authorized_request_context
@@ -87,7 +88,8 @@ def install_qa_stream_routes(
             disclosure_authorizer=stream_authorizer,
         )
         try:
-            replay = await stream.replay(
+            replay_method = stream.poll if poll else stream.replay
+            replay = await replay_method(
                 last_event_id=last_event_id,
                 last_sequence=last_sequence,
                 limit=limit,
@@ -96,7 +98,13 @@ def install_qa_stream_routes(
             raise InvalidAuthorizedAskRequest() from exc
 
         events = replay.events
-        if not events and replay.terminal is None:
+        if not events and replay.terminal is not None:
+            terminal = replay.terminal
+            if last_event_id != str(terminal.event_id) and last_sequence != terminal.sequence:
+                events = (terminal,)
+        elif not events and replay.terminal is None and (
+            last_event_id is not None or last_sequence not in (None, 0)
+        ):
             events = (await stream.heartbeat(),)
 
         async def body() -> AsyncIterator[str]:

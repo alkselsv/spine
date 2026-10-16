@@ -54,6 +54,9 @@ from spine.application.citation_inspector import CitationInspectorService
 from spine.application.feedback import FeedbackService
 from spine.application.qa_run_history import QARunHistoryService
 from spine.application.qa_events import QAEventStream
+from spine.application.qa_events import DisclosureAuthorizer
+from spine.application.authorized_ask import AuthorizedAskResult
+from spine.domain.qa_events import QAEvent
 from spine.application.parsed_content_inspection import ParsedContentInspectionService
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.auth import RoutePolicyRegistry
@@ -242,12 +245,30 @@ class _UnavailableQARunHistoryService:
 
 
 class _UnavailableQAStreamService:
-    async def publish_result(self, result):
+    async def publish_result(self, result: AuthorizedAskResult) -> QAEvent | None:
         del result
         raise RuntimeError("The OpenAPI composition is not executable.")
 
-    def open_stream(self, **kwargs) -> QAEventStream:
-        del kwargs
+    def open_stream(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        session_id: UUID,
+        trace_id: UUID,
+        run_id: UUID | None = None,
+        message_id: UUID | None = None,
+        disclosure_authorizer: DisclosureAuthorizer | None = None,
+    ) -> QAEventStream:
+        del (
+            workspace_id,
+            environment_id,
+            session_id,
+            trace_id,
+            run_id,
+            message_id,
+            disclosure_authorizer,
+        )
         raise RuntimeError("The OpenAPI composition is not executable.")
 
 
