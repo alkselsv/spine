@@ -3,7 +3,6 @@ import { Link, useParams, useSearchParams } from 'react-router';
 import { useMemo, useState } from 'react';
 
 import { ChatPanel } from '../features/chat/ChatPanel';
-import { IngestionRunPage } from '../features/knowledge/IngestionRunPage';
 import { createQualificationChatHarness } from '../features/chat/qualification';
 import { ru } from '../i18n/resources';
 import { AdministratorBoundary } from './auth';
@@ -114,7 +113,13 @@ export const appRoutes: RouteObject[] = [
         path: 'chat/:sessionId',
         element: <ChatPage />,
       },
-      { path: 'runs/:runId', element: <IngestionRunPage /> },
+      {
+        path: 'runs/:runId',
+        lazy: async () => {
+          const module = await import('../features/knowledge/IngestionRunPage');
+          return { Component: module.IngestionRunPage };
+        },
+      },
       { path: 'settings', element: <PlaceholderPage title={ru.page.settings} /> },
     ],
   },

@@ -63,7 +63,6 @@ describe('document batch upload contract', () => {
     ['accepted', 'not_started', 'non_terminal', 'accepted'],
     ['accepted', 'processing', 'non_terminal', 'processing'],
     ['accepted', 'succeeded', 'succeeded', 'ready'],
-    ['accepted', 'not_started', 'non_terminal', 'accepted'],
     ['accepted', 'failed', 'failed', 'failed'],
     ['rejected', 'not_started', 'rejected', 'rejected'],
     ['accepted', 'cancelled', 'cancelled', 'cancelled'],

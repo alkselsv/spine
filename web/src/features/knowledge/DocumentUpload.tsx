@@ -17,7 +17,7 @@ import {
   type UploadValidationIssue,
   type UploadValidationResult,
 } from './upload';
-import { loadBatchStatus, submitDocumentBatch } from './upload-api';
+import { loadBatchStatus, submitDocumentBatch, type BatchStatusResponse } from './upload-api';
 import styles from './DocumentsPage.module.css';
 
 const POLL_INTERVAL_MS = 750;
@@ -28,7 +28,6 @@ interface UploadSession {
   submitted: boolean;
   replay: boolean;
   runId?: string;
-  status?: components['schemas']['PublicBatchStatus'];
   cancelled: boolean;
   error?: unknown;
 }
@@ -50,20 +49,19 @@ export function DocumentUpload({
   const queryClient = useQueryClient();
   const { queryKey } = useScope();
   const runQueryKey = [...queryKey('ingestion-run'), session?.runId];
-  const isRunQueryActive = Boolean(
+  const hasRunSession = Boolean(
     session?.runId &&
       session.submitted &&
-      !session.cancelled &&
-      session.status === 'processing',
+      !session.cancelled,
   );
+  const cachedRun = queryClient.getQueryData<BatchStatusResponse>(runQueryKey);
   const runQuery = useQuery({
     queryKey: runQueryKey,
     queryFn: ({ signal }) => loadBatchStatus(client, session!.runId!, signal),
-    enabled: Boolean(
-      isRunQueryActive,
-    ),
+    enabled: hasRunSession && !cachedRun?.terminal,
     refetchInterval: (query) =>
       query.state.error || query.state.data?.terminal ? false : POLL_INTERVAL_MS,
+    refetchOnMount: (query) => !query.state.data?.terminal,
     retry: false,
   });
 
@@ -132,6 +130,7 @@ export function DocumentUpload({
 
   function resumeObservation() {
     if (!session?.runId || busy) return;
+    void queryClient.invalidateQueries({ queryKey: runQueryKey });
     setSession((current) => (current ? { ...current, cancelled: false, error: undefined } : current));
   }
 
@@ -156,14 +155,24 @@ export function DocumentUpload({
     try {
       const response = await submitDocumentBatch(client, current.rows, current.idempotencyKey, controller.signal);
       if (controller.signal.aborted) return;
+      const statusResponse: BatchStatusResponse = {
+        items: response.items,
+        run_id: response.run_id,
+        run_state: response.run_state,
+        schema_version: response.schema_version,
+        status: response.status,
+        terminal: response.terminal,
+      };
+      queryClient.setQueryData(
+        [...queryKey('ingestion-run'), response.run_id],
+        statusResponse,
+      );
       setSession((value) =>
         value && value.idempotencyKey === current.idempotencyKey
           ? {
               ...value,
-              rows: applyBatchItems(value.rows, response.items),
               replay: response.replay,
               runId: response.run_id,
-              status: response.status,
               cancelled: false,
             }
           : value,
@@ -196,19 +205,23 @@ export function DocumentUpload({
     }
   }
 
-  const effectiveRows = session && runQuery.data ? applyBatchItems(session.rows, runQuery.data.items) : session?.rows ?? [];
-  const effectiveStatus = runQuery.data?.status ?? session?.status;
+  const effectiveRows = session?.cancelled
+    ? session.rows
+    : session && runQuery.data
+      ? applyBatchItems(session.rows, runQuery.data.items)
+      : session?.rows ?? [];
+  const effectiveStatus = runQuery.data?.status;
   const requestError = session?.error ?? runQuery.error;
   const retryable = effectiveRows.some((row) => row.retryable);
-  const retryRequest = isRetryableRequestError(requestError);
+  const retryRequest = isRetryableRequestError(session?.error);
+  const isRunQueryActive = Boolean(hasRunSession && !runQuery.data?.terminal && !runQuery.error);
   const isObserving = Boolean(
-    session?.runId &&
-      session.submitted &&
-      !session.cancelled &&
+      hasRunSession &&
       !runQuery.data?.terminal &&
       !runQuery.error &&
-      session.status === 'processing',
+      runQuery.data,
   );
+  const observationError = Boolean(runQuery.error);
   const busy = isBusy || isObserving || (isRunQueryActive && runQuery.isPending);
   const canSubmit = Boolean(session && !session.submitted && !disabled);
 
@@ -279,7 +292,7 @@ export function DocumentUpload({
                 {retryRequest ? ru.documents.upload.retryRequest : ru.documents.upload.retry}
               </button>
             ) : null}
-            {session.cancelled && session.runId && !busy ? (
+            {(session.cancelled || observationError) && session.runId && !busy ? (
               <button className={styles.secondaryButton} onClick={resumeObservation} type="button">
                 {ru.documents.upload.resumeObservation}
               </button>
@@ -299,7 +312,11 @@ export function DocumentUpload({
           {requestError ? (
             <>
               <ApiErrorPanel error={requestError} />
-              {!retryRequest ? <p className={styles.uploadBatchStatus}>{ru.documents.upload.errorNextAction}</p> : null}
+              {!retryRequest ? (
+                <p className={styles.uploadBatchStatus}>
+                  {observationError ? ru.documents.upload.observationNextAction : ru.documents.upload.errorNextAction}
+                </p>
+              ) : null}
             </>
           ) : null}
         </div>
@@ -323,11 +340,7 @@ function UploadRowView({ row }: { row: UploadRow }) {
       </div>
       <div className={styles.uploadFileOutcome}>
         <span className={`${styles.uploadState} ${stateClass}`}>{label}</span>
-        {progress !== null ? (
-          <progress aria-label={label} className={styles.uploadProgress} max={100} value={progress} />
-        ) : row.state === 'uploading' ? (
-          <progress aria-label={label} className={styles.uploadProgress} max={100} />
-        ) : null}
+        {progress ? <progress aria-label={`${row.file.name}: ${label}`} className={styles.uploadProgress} max={100} /> : null}
         <span>{description}</span>
         {warnings > 0 ? <span>{ru.documents.upload.warning}</span> : null}
         {row.retryable ? <span>{ru.documents.upload.retryable}</span> : null}
@@ -383,18 +396,14 @@ function uploadStateDescription(row: UploadRow): string {
   return '';
 }
 
-function uploadProgress(state: UploadRow['state']): number | null {
-  if (state === 'queued') return 0;
-  if (state === 'accepted') return 25;
-  if (state === 'processing') return 70;
-  if (state === 'ready') return 100;
-  return null;
+function uploadProgress(state: UploadRow['state']): boolean {
+  return state === 'uploading' || state === 'accepted' || state === 'processing';
 }
 
 function batchStatusLabel(status: components['schemas']['PublicBatchStatus']): string {
   if (status === 'processing') return ru.documents.upload.processing;
   if (status === 'succeeded') return ru.documents.upload.ready;
-  if (status === 'partial') return ru.documents.upload.failed;
+  if (status === 'partial') return ru.documents.upload.partial;
   if (status === 'failed') return ru.documents.upload.failed;
   return ru.documents.upload.cancelled;
 }

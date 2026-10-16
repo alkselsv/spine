@@ -43,7 +43,19 @@ export function IngestionRunPage() {
 
   if (!auth.getBearerCredential) return <StatusPanel state="degraded" />;
   if (runQuery.isPending) return <StatusPanel state="loading" />;
-  if (runQuery.error) return <ApiErrorPanel error={runQuery.error} />;
+  if (runQuery.error) {
+    return (
+      <section className={styles.runPage} aria-labelledby="ingestion-run-heading">
+        <h2 id="ingestion-run-heading">{ru.page.runDetails}</h2>
+        <ApiErrorPanel error={runQuery.error} />
+        <div className={styles.uploadActions}>
+          <button className={styles.secondaryButton} onClick={() => void runQuery.refetch()} type="button">
+            {ru.documents.upload.resumeObservation}
+          </button>
+        </div>
+      </section>
+    );
+  }
   if (!runQuery.data) return <StatusPanel state="failed" />;
 
   return (
@@ -119,6 +131,7 @@ function stateDescription(
 function batchStatusLabel(status: components['schemas']['PublicBatchStatus']): string {
   if (status === 'processing') return ru.documents.upload.processing;
   if (status === 'succeeded') return ru.documents.upload.ready;
-  if (status === 'partial' || status === 'failed') return ru.documents.upload.failed;
+  if (status === 'partial') return ru.documents.upload.partial;
+  if (status === 'failed') return ru.documents.upload.failed;
   return ru.documents.upload.cancelled;
 }

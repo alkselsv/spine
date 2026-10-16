@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -69,7 +69,7 @@ describe('application bootstrap', () => {
     await user.click(screen.getByRole('link', { name: 'Чат' }));
     expect(router.state.location.pathname).toBe('/chat/demo-session');
     await user.click(screen.getByRole('link', { name: 'Запуски' }));
-    expect(router.state.location.pathname).toBe('/runs/demo-run');
+    await waitFor(() => expect(router.state.location.pathname).toBe('/runs/demo-run'));
     await user.click(screen.getByRole('link', { name: 'Настройки' }));
     expect(router.state.location.pathname).toBe('/settings');
   });
