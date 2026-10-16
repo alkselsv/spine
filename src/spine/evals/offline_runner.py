@@ -24,6 +24,10 @@ from spine.evals.production_contract import (
 )
 from spine.evals.qa_r1 import QACase, QADataset, load_r1_dataset
 from spine.evals.retrieval_replay import DeterministicRetrievalReplay
+from spine.evals.unauthorized_retrieval import (
+    ProductionContractSafetyGate,
+    ProductionContractSafetyResult,
+)
 from spine.evaluations.citation_metrics import (
     AnswerClaim,
     AnswerSubmission,
@@ -180,6 +184,7 @@ class OfflineEvaluationReport(DefinitionModel):
     evaluations: tuple[EvaluationResult, ...] = ()
     aggregates: tuple[MetricAggregate, ...] = ()
     failures: tuple[FailureRecord, ...] = ()
+    safety_results: tuple[ProductionContractSafetyResult, ...] = ()
     unavailable_integrations: tuple[str, ...] = ()
 
 
@@ -348,6 +353,7 @@ class OfflineEvaluationRunner:
             raise ValueError("production-contract mode requires a production observer")
         self.execution_mode = execution_mode
         self.production_observer = production_observer
+        self.safety_gate = ProductionContractSafetyGate()
         if not recall_k_values or any(k < 1 for k in recall_k_values):
             raise ValueError("recall_k_values must contain positive integers")
         self.recall_k_values = tuple(dict.fromkeys(recall_k_values))
@@ -365,13 +371,22 @@ class OfflineEvaluationRunner:
         scenarios: list[ScenarioResult] = []
         measurements: list[MeasurementObservation] = []
         failures: list[FailureRecord] = []
+        safety_results: list[ProductionContractSafetyResult] = []
 
         for case in self.dataset.cases:
-            scenario, case_evaluations, measurement, case_failures = await self._run_case(case)
+            (
+                scenario,
+                case_evaluations,
+                measurement,
+                case_failures,
+                case_safety_result,
+            ) = await self._run_case(case)
             scenarios.append(scenario)
             evaluations.extend(case_evaluations)
             measurements.append(measurement)
             failures.extend(case_failures)
+            if case_safety_result is not None:
+                safety_results.append(case_safety_result)
 
         evaluations_tuple = tuple(evaluations)
         configuration = EvaluationConfiguration(
@@ -402,6 +417,9 @@ class OfflineEvaluationRunner:
             ),
         }
         if self.execution_mode == "production-contract":
+            report_without_id["safety_results"] = [
+                result.model_dump(mode="json") for result in safety_results
+            ]
             report_without_id["execution_mode"] = self.execution_mode
             report_without_id["observation_seam"] = PRODUCTION_CONTRACT_OBSERVATION_SEAM
         report_id = uuid5(
@@ -430,6 +448,7 @@ class OfflineEvaluationRunner:
                 for item in report_without_id["aggregates"]
             ),
             failures=tuple(failures),
+            safety_results=tuple(safety_results),
             unavailable_integrations=tuple(report_without_id["unavailable_integrations"]),
         )
 
@@ -444,13 +463,16 @@ class OfflineEvaluationRunner:
         tuple[EvaluationResult, ...],
         MeasurementObservation,
         tuple[FailureRecord, ...],
+        ProductionContractSafetyResult | None,
     ]:
         observed_answer: AnswerSubmission | None = None
+        safety_result: ProductionContractSafetyResult | None = None
         if self.execution_mode == "production-contract":
             assert self.production_observer is not None
+            request = ProductionContractCaseRequest.from_case(case)
             try:
                 observation = await self.production_observer.observe(
-                    request=ProductionContractCaseRequest.from_case(case)
+                    request=request
                 )
                 if not isinstance(observation, ProductionContractObservation):
                     raise ProductionContractObservationError(
@@ -467,24 +489,41 @@ class OfflineEvaluationRunner:
                     raise ProductionContractObservationError(
                         "observed retrieval index version is not pinned"
                     )
+                safety_result = self.safety_gate.evaluate(
+                    request=request, observation=observation
+                )
+                if safety_result.status == "failed":
+                    return self._failed_case(
+                        case,
+                        "scenario_failure",
+                        "unauthorized-retrieval-disclosure",
+                        ProductionContractObservationError(
+                            "safety gate rejected observation"
+                        ),
+                        safety_result=safety_result,
+                    )
                 retrieval = observation.retrieval
                 observed_answer = _answer_submission_from_output(observation.answer)
                 context_bundle = _evaluation_bundle_from_domain(
                     observation.context_bundle, case
                 )
             except UnavailableIntegrationError as error:
+                safety_result = self.safety_gate.failed_without_observation(case.case_id)
                 return self._failed_case(
                     case,
                     "unavailable_integration",
                     "production-contract-observation",
                     error,
+                    safety_result=safety_result,
                 )
             except Exception as error:
+                safety_result = self.safety_gate.failed_without_observation(case.case_id)
                 return self._failed_case(
                     case,
                     "scenario_failure",
                     "production-contract-observation",
                     error,
+                    safety_result=safety_result,
                 )
         else:
             try:
@@ -541,6 +580,7 @@ class OfflineEvaluationRunner:
                     measurement=measurement,
                     retrieval=retrieval,
                     additional_failures=(measurement_failure,) if measurement_failure else (),
+                    safety_result=safety_result,
                 )
         else:
             assert observed_answer is not None
@@ -570,6 +610,7 @@ class OfflineEvaluationRunner:
                 retrieval=retrieval,
                 evaluations=results,
                 additional_failures=(measurement_failure,) if measurement_failure else (),
+                safety_result=safety_result,
             )
         except UnavailableIntegrationError as error:
             return self._failed_case(
@@ -580,6 +621,7 @@ class OfflineEvaluationRunner:
                 measurement=measurement,
                 retrieval=retrieval,
                 additional_failures=(measurement_failure,) if measurement_failure else (),
+                safety_result=safety_result,
             )
         except Exception as error:
             return self._failed_case(
@@ -590,6 +632,7 @@ class OfflineEvaluationRunner:
                 measurement=measurement,
                 retrieval=retrieval,
                 additional_failures=(measurement_failure,) if measurement_failure else (),
+                safety_result=safety_result,
             )
 
         scenario_failure = _scenario_failure(case, retrieval, results)
@@ -603,6 +646,7 @@ class OfflineEvaluationRunner:
                 retrieval=retrieval,
                 evaluations=results,
                 additional_failures=(measurement_failure,) if measurement_failure else (),
+                safety_result=safety_result,
             )
         return (
             ScenarioResult(
@@ -621,6 +665,7 @@ class OfflineEvaluationRunner:
             tuple(results),
             measurement,
             (measurement_failure,) if measurement_failure else (),
+            safety_result,
         )
 
     @staticmethod
@@ -634,11 +679,13 @@ class OfflineEvaluationRunner:
         retrieval: RetrievalResult | None = None,
         evaluations: Sequence[EvaluationResult] = (),
         additional_failures: Sequence[FailureRecord] = (),
+        safety_result: ProductionContractSafetyResult | None = None,
     ) -> tuple[
         ScenarioResult,
         tuple[EvaluationResult, ...],
         MeasurementObservation,
         tuple[FailureRecord, ...],
+        ProductionContractSafetyResult | None,
     ]:
         status: ScenarioStatus = "unavailable" if category == "unavailable_integration" else "failed"
         return (
@@ -673,6 +720,7 @@ class OfflineEvaluationRunner:
                     error_type=type(error).__name__,
                 ),
             ),
+            safety_result,
         )
 
     def _index_version(self) -> str:

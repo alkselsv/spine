@@ -137,6 +137,8 @@ async def test_production_contract_mode_uses_observed_output_without_expected_an
     observed = {item.case_id: item.observed_outcome for item in report.scenarios}
     assert observed["denied-acl"] == "denied"
     assert observed["absent-evidence-abstention"] == "abstained"
+    assert len(report.safety_results) == 12
+    assert all(result.status == "passed" for result in report.safety_results)
     assert all("protected" not in failure.model_dump_json() for failure in report.failures)
 
 

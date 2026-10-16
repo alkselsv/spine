@@ -294,7 +294,8 @@ def _validate_projection_retrieval(
             or observed.revision_number != reference.revision_number
             or observed.processing_receipt_id != reference.processing_receipt_id
             or observed.locator_contract_version != reference.locator_contract_version
-            or observed.locator != reference.locator
+            or observed.locator.model_dump(mode="json")
+            != reference.locator.model_dump(mode="json")
             or observed.evidence_digest != reference.evidence_digest
             or observed.status != "valid"
         ):
