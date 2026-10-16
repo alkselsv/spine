@@ -57,6 +57,24 @@
         "title": "AnswerQuestionOutcome",
         "type": "string"
       },
+      "AnswerQuestionSafeReasonCode": {
+        "description": "Disclosure-safe, non-content-bearing terminal reason categories.",
+        "enum": [
+          "ambiguous_question",
+          "no_usable_evidence",
+          "insufficient_support",
+          "unresolved_conflict",
+          "incomplete_authorized_coverage",
+          "unmet_freshness",
+          "evidence_invalidated",
+          "rejected_candidate",
+          "authorization_denied",
+          "mandatory_processing_failed",
+          "cancelled"
+        ],
+        "title": "AnswerQuestionSafeReasonCode",
+        "type": "string"
+      },
       "ApiCollectionEnvelope_DocumentProcessingHistoryResponse_": {
         "additionalProperties": false,
         "properties": {
@@ -482,6 +500,64 @@
           "limit"
         ],
         "title": "ApiCollectionEnvelope[RevisionSnapshot]",
+        "type": "object"
+      },
+      "ApiCommandResult_AskOutcomeResponse_": {
+        "additionalProperties": false,
+        "properties": {
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "replay": {
+            "default": false,
+            "title": "Replay",
+            "type": "boolean"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskOutcomeResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CommandStatus"
+          },
+          "trace_id": {
+            "format": "uuid",
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "environment_id",
+          "trace_id",
+          "command_id",
+          "status"
+        ],
+        "title": "ApiCommandResult[AskOutcomeResponse]",
         "type": "object"
       },
       "ApiCommandResult_FeedbackResponse_": {
@@ -975,6 +1051,252 @@
         "title": "ApiResponseEnvelope[QASessionResponse]",
         "type": "object"
       },
+      "AskAnswerResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "answer_id": {
+            "format": "uuid",
+            "title": "Answer Id",
+            "type": "string"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/AskCitationResponse"
+            },
+            "minItems": 1,
+            "title": "Citations",
+            "type": "array"
+          },
+          "text": {
+            "maxLength": 32768,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "answer_id",
+          "text",
+          "citations"
+        ],
+        "title": "AskAnswerResponse",
+        "type": "object"
+      },
+      "AskAsOfResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "activation_generation": {
+            "minimum": 1.0,
+            "title": "Activation Generation",
+            "type": "integer"
+          },
+          "context_bundle_digest": {
+            "title": "Context Bundle Digest",
+            "type": "string"
+          },
+          "context_bundle_id": {
+            "format": "uuid",
+            "title": "Context Bundle Id",
+            "type": "string"
+          },
+          "context_bundle_version": {
+            "minimum": 1.0,
+            "title": "Context Bundle Version",
+            "type": "integer"
+          },
+          "projection_snapshot_id": {
+            "format": "uuid",
+            "title": "Projection Snapshot Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "context_bundle_id",
+          "context_bundle_version",
+          "context_bundle_digest",
+          "projection_snapshot_id",
+          "activation_generation"
+        ],
+        "title": "AskAsOfResponse",
+        "type": "object"
+      },
+      "AskCitationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "citation_id": {
+            "format": "uuid",
+            "title": "Citation Id",
+            "type": "string"
+          },
+          "evidence_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "locator_contract_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locator Contract Version"
+          },
+          "locator_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locator Digest"
+          },
+          "locator_kind": {
+            "title": "Locator Kind",
+            "type": "string"
+          },
+          "locator_value": {
+            "title": "Locator Value",
+            "type": "string"
+          },
+          "processing_receipt_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processing Receipt Id"
+          },
+          "revision_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Digest"
+          },
+          "source_object_id": {
+            "format": "uuid",
+            "title": "Source Object Id",
+            "type": "string"
+          },
+          "source_revision_id": {
+            "format": "uuid",
+            "title": "Source Revision Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "citation_id",
+          "evidence_id",
+          "source_object_id",
+          "source_revision_id",
+          "revision_digest",
+          "locator_contract_version",
+          "locator_kind",
+          "locator_value",
+          "locator_digest",
+          "processing_receipt_id"
+        ],
+        "title": "AskCitationResponse",
+        "type": "object"
+      },
+      "AskOutcomeResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "answer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskAnswerResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "as_of": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskAsOfResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "attempt_id": {
+            "format": "uuid",
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "clarification": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clarification"
+          },
+          "message_id": {
+            "format": "uuid",
+            "title": "Message Id",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/AnswerQuestionOutcome"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnswerQuestionSafeReasonCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "message_id",
+          "run_id",
+          "attempt_id",
+          "outcome"
+        ],
+        "title": "AskOutcomeResponse",
+        "type": "object"
+      },
       "AskRequest": {
         "properties": {
           "dataset": {
@@ -1032,6 +1354,46 @@
           "raw_count"
         ],
         "title": "AskResponse",
+        "type": "object"
+      },
+      "AuthorizedAskRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "clarification_of_message_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clarification Of Message Id"
+          },
+          "question": {
+            "maxLength": 32768,
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "question"
+        ],
+        "title": "AuthorizedAskRequest",
         "type": "object"
       },
       "BatchIngestionFailureResponse": {
@@ -1345,6 +1707,19 @@
           "code"
         ],
         "title": "BatchIngestionWarningResponse",
+        "type": "object"
+      },
+      "CancelAskRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "title": "CancelAskRequest",
         "type": "object"
       },
       "CitationInspectionEvidence": {
@@ -5566,6 +5941,320 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/ask": {
+      "post": {
+        "operationId": "qa.ask",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Environment-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthorizedAskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCommandResult_AskOutcomeResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Safe request error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authentication is invalid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authorization is denied."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Resource is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Command conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request payload is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Unexpected internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Dependency is unavailable."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Qa.Ask"
+      }
+    },
+    "/api/v1/ask/{run_id}/cancel": {
+      "post": {
+        "operationId": "qa.ask.cancel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Environment-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelAskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCommandResult_AskOutcomeResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Safe request error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authentication is invalid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authorization is denied."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Resource is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Command conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request payload is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Unexpected internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Dependency is unavailable."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Qa.Ask.Cancel"
+      }
+    },
     "/api/v1/documents": {
       "get": {
         "operationId": "documents.list",

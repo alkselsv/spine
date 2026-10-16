@@ -28,6 +28,7 @@ from spine.api.ingestion_history import install_ingestion_history_routes
 from spine.api.documents import install_document_query_routes
 from spine.api.projection_control import install_projection_control_routes
 from spine.api.qa_sessions import install_qa_session_routes
+from spine.api.authorized_ask import install_authorized_ask_routes
 from spine.api.citation_inspector import install_citation_inspector_routes
 from spine.api.feedback import install_feedback_routes
 from spine.api.qa_runs import install_qa_run_routes
@@ -55,6 +56,11 @@ from spine.application.projection_control import (
     ProjectionStatusService,
 )
 from spine.application.qa_sessions import QASessionService
+from spine.application.authorized_ask import (
+    AnswerQuestionCapability,
+    AuthorizedAskService,
+    PersistedAuthorizedAskService,
+)
 from spine.application.citation_inspector import CitationInspectorService
 from spine.application.feedback import FeedbackService
 from spine.application.qa_run_history import QARunHistoryService
@@ -194,6 +200,8 @@ def create_app(
     projection_recovery_service: ProjectionRecoveryCommandService | None = None,
     qa_session_service: QASessionService | None = None,
     qa_session_cursor_secret: bytes | None = None,
+    authorized_ask_service: AuthorizedAskService | None = None,
+    answer_question_capability: AnswerQuestionCapability | None = None,
     citation_inspector_service: CitationInspectorService | None = None,
     feedback_service: FeedbackService | None = None,
     qa_run_history_service: QARunHistoryService | None = None,
@@ -346,6 +354,21 @@ def create_app(
             application,
             service=qa_session_service,
             cursor_secret=qa_session_cursor_secret,
+        )
+    resolved_authorized_ask_service = authorized_ask_service
+    if resolved_authorized_ask_service is None and (
+        answer_question_capability is not None and qa_session_service is not None
+    ):
+        resolved_authorized_ask_service = PersistedAuthorizedAskService(
+            capability=answer_question_capability,
+            sessions=qa_session_service,
+        )
+    if resolved_authorized_ask_service is not None:
+        if type(authorization_runtime) is not ApiAuthorizationRuntime:
+            raise RuntimeError("Authorized ask routes require an authorization runtime.")
+        install_authorized_ask_routes(
+            application,
+            service=resolved_authorized_ask_service,
         )
     if citation_inspector_service is not None:
         if type(authorization_runtime) is not ApiAuthorizationRuntime:
