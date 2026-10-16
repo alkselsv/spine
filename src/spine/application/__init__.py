@@ -57,6 +57,16 @@ __all__ = [
     "SavedContextBundlePort",
     "context_bundle_id_for_request",
     "request_command_digest",
+    "CandidateOutputStreamingError",
+    "CursorScopeError",
+    "InMemoryQAEventLog",
+    "InMemoryQAEventStream",
+    "QAEventLog",
+    "QAEventLogError",
+    "QAEventLogPort",
+    "QAEventReplay",
+    "QAEventStream",
+    "ResumeCursorError",
 ]
 
 
@@ -76,6 +86,23 @@ def __getattr__(name: str) -> object:
         module = import_module("spine.application.answer_question_context")
         return getattr(module, name)
     if name in __all__:
-        module = import_module("spine.application.authorized_context_broker")
+        module_name = (
+            "spine.application.qa_events"
+            if name
+            in {
+                "CandidateOutputStreamingError",
+                "CursorScopeError",
+                "InMemoryQAEventLog",
+                "InMemoryQAEventStream",
+                "QAEventLog",
+                "QAEventLogError",
+                "QAEventLogPort",
+                "QAEventReplay",
+                "QAEventStream",
+                "ResumeCursorError",
+            }
+            else "spine.application.authorized_context_broker"
+        )
+        module = import_module(module_name)
         return getattr(module, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
