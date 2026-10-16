@@ -9,6 +9,7 @@ import { useAuth } from '../../app/auth';
 import { ApiErrorPanel, StatusPanel } from '../../app/status';
 import { useScope } from '../../app/scope';
 import { ru } from '../../i18n/resources';
+import { ProjectionStatusPanel } from './ProjectionStatusPanel';
 import styles from './DocumentDetailPage.module.css';
 
 type DocumentSnapshot = components['schemas']['DocumentSnapshot'];
@@ -79,6 +80,7 @@ export function DocumentDetailPage() {
       documentId={documentId}
       searchParams={scopeSearch}
       scope={scope}
+      queryKey={queryKey}
       tab={tab}
     />
   );
@@ -100,6 +102,10 @@ export function parseDocumentDetailTab(value: string | null): DocumentDetailTab 
   return value && DETAIL_TABS.includes(value as DocumentDetailTab)
     ? (value as DocumentDetailTab)
     : 'overview';
+}
+
+function parseProjectionKind(value: string | null): string | null {
+  return value && /^[a-z][a-z0-9_-]{0,63}$/.test(value) ? value : null;
 }
 
 export function documentOperationalState(document: DocumentSnapshot): string {
@@ -141,6 +147,7 @@ function DocumentOverview({
   documentId,
   searchParams,
   scope,
+  queryKey,
   tab,
 }: {
   client: ReturnType<typeof createScopedApiClient>;
@@ -148,6 +155,7 @@ function DocumentOverview({
   documentId: string;
   searchParams: URLSearchParams;
   scope: { environmentId: string; workspaceId: string };
+  queryKey: (resource: string) => readonly unknown[];
   tab: DocumentDetailTab;
 }) {
   const revision = document.current_revision;
@@ -161,9 +169,10 @@ function DocumentOverview({
   runSearch.delete('tab');
   runSearch.delete('cursor');
   runSearch.set('document', documentId);
+  const projectionKind = parseProjectionKind(searchParams.get('projection_kind')) ?? publication?.projection_kind ?? 'qa';
   const overviewLink = detailLink(documentId, searchParams, 'overview');
   const historyLink = detailLink(documentId, searchParams, 'revisions');
-  const projectionLink = detailLink(documentId, searchParams, 'projection');
+  const projectionLink = detailLink(documentId, searchParams, 'projection', projectionKind);
 
   return (
     <section className={styles.page} aria-labelledby="document-detail-heading">
@@ -203,13 +212,6 @@ function DocumentOverview({
         </Link>
       </nav>
 
-      {tab !== 'overview' && tab !== 'revisions' ? (
-        <p className={styles.subviewNotice} role="status">
-          <strong>{ru.documents.selectedSubview}: {ru.documents.projectionPanel}</strong>
-          {ru.documents.selectedSubviewDescription}
-        </p>
-      ) : null}
-
       {tab === 'revisions' ? (
         <RevisionTimeline
           client={client}
@@ -220,7 +222,14 @@ function DocumentOverview({
         />
       ) : null}
 
-      <div className={styles.grid}>
+      {tab === 'projection' ? (
+        <ProjectionStatusPanel
+          client={client}
+          indexingState={metadata?.processing_state ?? latestProcessingState(revision)}
+          projectionKind={projectionKind}
+          queryKey={queryKey}
+        />
+      ) : <div className={styles.grid}>
         <section className={styles.card} aria-labelledby="source-object-heading">
           <h3 id="source-object-heading">{ru.documents.sourceObject}</h3>
           <dl className={styles.details}>
@@ -304,7 +313,7 @@ function DocumentOverview({
             </dl>
           </section>
         ) : null}
-      </div>
+      </div>}
 
       <div className={styles.actionRow}>
         <Link className={styles.buttonLink} to={{ pathname: '/knowledge/documents', search: `?${detailSearch.toString()}` }}>
@@ -549,9 +558,10 @@ function DetailValue({
   );
 }
 
-function detailLink(documentId: string, searchParams: URLSearchParams, tab: DocumentDetailTab) {
+function detailLink(documentId: string, searchParams: URLSearchParams, tab: DocumentDetailTab, projectionKind?: string) {
   const search = new URLSearchParams(searchParams);
   search.set('tab', tab);
+  if (projectionKind) search.set('projection_kind', projectionKind);
   return { pathname: `/knowledge/documents/${documentId}`, search: `?${search.toString()}` };
 }
 
