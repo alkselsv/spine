@@ -53,6 +53,43 @@ environment inventory scope source must also cover every active tenant in the
 deployment; an incomplete scope set makes the physical/canonical set comparison
 fail closed.
 
+## O04 isolated restore verification
+
+`IsolatedRestoreVerifier` consumes a coherent v1 recovery manifest and both
+verified component artifacts. It requires a dedicated empty PostgreSQL database
+named with the `spine_restore_` prefix, distinct restore and verifier identities,
+trusted workspace/environment scopes, the complete set of serving identities,
+and an absent filesystem target. The restore, verifier and serving roles must
+exist without superuser or RLS bypass, and protected roles cannot inherit
+restore-owner or verifier privileges. The
+restore tool major version must match the PostgreSQL component version.
+
+The verifier runs `pg_restore` with errors enabled and one transaction, then
+reads canonical finalized original references under tenant-scoped RLS context.
+Restore removes archived ACLs, revokes the database's default `PUBLIC CONNECT`,
+revokes database privileges from all other roles, and grants connection and the
+narrow reference read only to the isolated restore/verifier identities. Restored
+schema and object privileges are also cleared for `PUBLIC` and serving roles.
+It materializes only regular files from the filesystem archive into a private
+staging directory, verifies each finalized receipt and byte digest, and
+reconciles the restored database reference set with the restored private
+manifests and payloads. The staging directory is promoted only after this
+reconciliation passes. A content-free `IsolatedRestoreEvidence` record is
+written into the promoted target and read back on replay; repeated verification
+returns that immutable record without restoring over an existing target.
+
+Rejected, unavailable and indeterminate attempts produce a safe typed result
+through `IsolatedRestoreFailure`. Failed staged files are removed. A restored
+database remains a separate isolated target and must not be connected to serving
+services before reconciliation and validation. This verifier does not change
+live PostgreSQL, original storage, active projections or live recovery evidence.
+
+This code and its integration tests prove behavior against disposable local
+targets only. A deployment owner must still provision and authorize its isolated
+database and filesystem target, configure least-privilege credentials and
+compatible tool bindings, and independently review retained evidence before any
+production qualification claim.
+
 Tests use synthetic data and disposable test targets. The normal PostgreSQL
 integration test exercises real `pg_dump` and `pg_restore` when client tools
 matching the pinned test server are available; otherwise it skips with the
