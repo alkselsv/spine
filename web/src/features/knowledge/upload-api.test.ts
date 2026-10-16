@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, it, vi } from 'vitest';
 
 import type { components } from '../../../api/generated/schema';
@@ -11,7 +13,11 @@ const runId = '30000000-0000-4000-8000-000000000001';
 
 describe('document batch upload API adapter', () => {
   it('test_batch_submission_sends_multipart_files_and_stable_idempotency_key', async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(uploadResponse()));
+    let submittedForm: FormData | undefined;
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (input) => {
+      submittedForm = await (input as Request).formData();
+      return Response.json(uploadResponse());
+    });
     const client = createScopedApiClient({
       baseUrl: 'https://spine.test',
       fetch,
@@ -30,9 +36,12 @@ describe('document batch upload API adapter', () => {
     expect(request.headers.get('Idempotency-Key')).toBe('batch-upload-stable-key');
     expect(request.headers.get('X-Workspace-ID')).toBe(workspaceId);
     expect(request.headers.get('X-Environment-ID')).toBe(environmentId);
-    const body = await request.text();
-    expect(body).toContain('name="file-1"');
-    expect(body).toContain('name="file-2"');
+    expect(request.headers.get('Content-Type')).toMatch(
+      /^multipart\/form-data; boundary=/,
+    );
+    expect([...submittedForm!.keys()]).toEqual(['file-1', 'file-2']);
+    expect((submittedForm!.get('file-1') as File).name).toBe('notes.txt');
+    expect((submittedForm!.get('file-2') as File).name).toBe('readme.md');
   });
 
   it('test_batch_status_reads_the_published_run_endpoint', async () => {
