@@ -52,6 +52,7 @@ from spine.application.qa_sessions import QASessionService
 from spine.application.citation_inspector import CitationInspectorService
 from spine.application.feedback import FeedbackService
 from spine.application.qa_run_history import QARunHistoryService
+from spine.application.parsed_content_inspection import ParsedContentInspectionService
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.auth import RoutePolicyRegistry
 
@@ -226,6 +227,12 @@ class _UnavailableQARunHistoryService:
         del kwargs
         raise RuntimeError("The OpenAPI composition is not executable.")
 
+
+class _UnavailableParsedContentInspectionService:
+    async def inspect(self, **kwargs):
+        del kwargs
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
 async def _contract_readiness() -> ApiAuthorizationReadiness:
     return ApiAuthorizationReadiness(
         ready=False,
@@ -277,6 +284,11 @@ def create_openapi_app() -> FastAPI:
             QARunHistoryService, _UnavailableQARunHistoryService()
         ),
         qa_run_history_cursor_secret=secrets.token_bytes(32),
+        parsed_content_inspection_service=cast(
+            ParsedContentInspectionService,
+            _UnavailableParsedContentInspectionService(),
+        ),
+        parsed_content_cursor_secret=secrets.token_bytes(32),
     )
 
 

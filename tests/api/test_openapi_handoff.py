@@ -35,6 +35,7 @@ def test_generation_export_matches_backend_openapi_document(tmp_path: Path) -> N
     assert "/api/v1/projections/{projection_kind}/status" in document["paths"]
     assert "/api/v1/projections/{projection_kind}/recovery" in document["paths"]
     assert "/api/v1/qa/citations/{citation_id}" in document["paths"]
+    assert "/api/v1/knowledge/documents/{source_object_id}/revisions/{source_revision_id}/parsed-content" in document["paths"]
 
     upload_operation = document["paths"]["/api/v1/documents/uploads"]["post"]
     upload_parameter_names = {
@@ -79,6 +80,11 @@ def test_generation_export_matches_backend_openapi_document(tmp_path: Path) -> N
     assert citation_operation["responses"]["200"]["content"]["application/json"][
         "schema"
     ]["$ref"] == "#/components/schemas/ApiResponseEnvelope_CitationInspectionResult_"
+    parsed_content_operation = document["paths"][
+        "/api/v1/knowledge/documents/{source_object_id}/revisions/{source_revision_id}/parsed-content"
+    ]["get"]
+    assert parsed_content_operation["operationId"] == "knowledge.parsed_content.inspect"
+    assert parsed_content_operation["parameters"]
     assert document["paths"]["/api/v1/documents"]["get"]["operationId"] == "documents.list"
     assert document["paths"]["/api/v1/documents/{source_object_id}"]["get"]["operationId"] == "documents.detail"
     assert document["paths"]["/api/v1/documents/{source_object_id}/revisions"]["get"]["operationId"] == "documents.revisions"

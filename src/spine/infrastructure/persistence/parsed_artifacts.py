@@ -13,12 +13,20 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from spine.application.persistence.errors import ParsedArtifactConflictError
 from spine.application.persistence.parsed_artifacts import (
     ParsedArtifactCommand,
+    ParsedArtifactMetadata,
     ParsedArtifactPersistenceResult,
     ParsedArtifactRepository,
+    ParsedArtifactSegmentPage,
 )
 from spine.application.projection_locator import canonical_projection_locator_digest
 from spine.domain.capabilities import Citation
-from spine.domain.artifacts import Locator, ParseExclusion, ParsedDocument, ParsedSegment
+from spine.domain.artifacts import (
+    Locator,
+    ParseCoverage,
+    ParseExclusion,
+    ParsedDocument,
+    ParsedSegment,
+)
 from spine.domain.artifacts import (
     OoxmlTextLocator,
     PageTextLocator,
@@ -117,6 +125,50 @@ class InMemoryParsedArtifactRepository:
                 return None
             document, segment = matches[0]
             return document.model_copy(deep=True), segment.model_copy(deep=True)
+
+    async def list_segments(
+        self, *, workspace_id: UUID, environment_id: UUID, source_object_id: UUID,
+        source_revision_id: UUID, source_revision_digest: str, original_sha256: str,
+        artifact_id: UUID, artifact_digest: str, parser_name: str, parser_version: str,
+        parser_config_reference: str, locator_contract_version: str,
+        selector: Locator | None, after_segment_id: UUID | None, limit: int,
+    ) -> ParsedArtifactSegmentPage | None:
+        async with self._lock:
+            document = self._documents.get((workspace_id, environment_id, artifact_id))
+            if document is None or not _document_matches_identity(
+                document,
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                source_object_id=source_object_id,
+                source_revision_id=source_revision_id,
+                source_revision_digest=source_revision_digest,
+                original_sha256=original_sha256,
+                artifact_digest=artifact_digest,
+                parser_name=parser_name,
+                parser_version=parser_version,
+                parser_config_reference=parser_config_reference,
+                locator_contract_version=locator_contract_version,
+            ):
+                return None
+            segments = tuple(
+                segment for segment in document.segments
+                if selector is None or segment.locator == selector
+            )
+            start = 0
+            if after_segment_id is not None:
+                positions = [
+                    index for index, segment in enumerate(segments)
+                    if segment.segment_id == after_segment_id
+                ]
+                if len(positions) != 1:
+                    return None
+                start = positions[0] + 1
+            page = segments[start : start + limit + 1]
+            return ParsedArtifactSegmentPage(
+                metadata=ParsedArtifactMetadata.from_document(document),
+                segments=tuple(segment.model_copy(deep=True) for segment in page[:limit]),
+                has_more=len(page) > limit,
+            )
 
 
 class PostgreSQLParsedArtifactRepository:
@@ -299,6 +351,93 @@ class PostgreSQLParsedArtifactRepository:
                 return None
             return document, matches[0]
 
+    async def list_segments(
+        self, *, workspace_id: UUID, environment_id: UUID, source_object_id: UUID,
+        source_revision_id: UUID, source_revision_digest: str, original_sha256: str,
+        artifact_id: UUID, artifact_digest: str, parser_name: str, parser_version: str,
+        parser_config_reference: str, locator_contract_version: str,
+        selector: Locator | None, after_segment_id: UUID | None, limit: int,
+    ) -> ParsedArtifactSegmentPage | None:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(parsed_documents).where(
+                    parsed_documents.c.workspace_id == workspace_id,
+                    parsed_documents.c.environment_id == environment_id,
+                    parsed_documents.c.source_object_id == source_object_id,
+                    parsed_documents.c.source_revision_id == source_revision_id,
+                    parsed_documents.c.source_revision_digest == source_revision_digest,
+                    parsed_documents.c.original_sha256 == original_sha256,
+                    parsed_documents.c.artifact_id == artifact_id,
+                    parsed_documents.c.artifact_digest == artifact_digest,
+                    parsed_documents.c.parser_name == parser_name,
+                    parsed_documents.c.parser_version == parser_version,
+                    parsed_documents.c.parser_config_reference == parser_config_reference,
+                    parsed_documents.c.locator_contract_version == locator_contract_version,
+                )
+            )
+            row = result.mappings().one_or_none()
+            if row is None:
+                return None
+            after_ordinal = None
+            if after_segment_id is not None:
+                ordinal = await session.execute(
+                    select(parsed_document_segments.c.segment_ordinal).where(
+                        parsed_document_segments.c.workspace_id == workspace_id,
+                        parsed_document_segments.c.environment_id == environment_id,
+                        parsed_document_segments.c.artifact_id == artifact_id,
+                        parsed_document_segments.c.segment_id == after_segment_id,
+                    )
+                )
+                after_ordinal = ordinal.scalar_one_or_none()
+                if after_ordinal is None:
+                    return None
+            predicates = [
+                parsed_document_segments.c.workspace_id == workspace_id,
+                parsed_document_segments.c.environment_id == environment_id,
+                parsed_document_segments.c.artifact_id == artifact_id,
+            ]
+            if selector is not None:
+                predicates.append(
+                    parsed_document_segments.c.locator == selector.model_dump(mode="json")
+                )
+            if after_ordinal is not None:
+                predicates.append(parsed_document_segments.c.segment_ordinal > after_ordinal)
+            rows = (
+                await session.execute(
+                    select(parsed_document_segments)
+                    .where(*predicates)
+                    .order_by(parsed_document_segments.c.segment_ordinal)
+                    .limit(limit + 1)
+                )
+            ).mappings().all()
+            segments = tuple(
+                ParsedSegment.model_validate({
+                    "schema_version": item["schema_version"],
+                    "segment_id": item["segment_id"],
+                    "segment_digest": item["segment_digest"],
+                    "artifact_digest": row["artifact_digest"],
+                    "text": item["text"],
+                    "text_digest": item["text_digest"],
+                    "locator": item["locator"],
+                    "heading_path": tuple(item["heading_path"]),
+                })
+                for item in rows[:limit]
+            )
+            return ParsedArtifactSegmentPage(
+                metadata=ParsedArtifactMetadata(
+                    artifact_id=row["artifact_id"], artifact_digest=row["artifact_digest"],
+                    workspace_id=row["workspace_id"], environment_id=row["environment_id"],
+                    source_object_id=row["source_object_id"], source_revision_id=row["source_revision_id"],
+                    source_revision_digest=row["source_revision_digest"], original_sha256=row["original_sha256"],
+                    parser_name=row["parser_name"], parser_version=row["parser_version"],
+                    parser_config_reference=row["parser_config_reference"],
+                    locator_contract_version=row["locator_contract_version"], media_type=row["media_type"],
+                    coverage=ParseCoverage(row["coverage"]),
+                ),
+                segments=segments,
+                has_more=len(rows) > limit,
+            )
+
 
 class ParsedArtifactCitationExcerptResolver:
     """Resolve exact citation excerpts from the immutable parsed-artifact store."""
@@ -360,6 +499,10 @@ def _stable_locator_key(locator: Locator) -> tuple[str, str]:
         path = "/".join(f"{step.kind}:{step.index}" for step in locator.block_path)
         return "custom", f"ooxml:{path}:{locator.start_codepoint}-{locator.end_codepoint}"
     raise TypeError("unsupported parsed locator")
+
+
+def _document_matches_identity(document: ParsedDocument, **expected: object) -> bool:
+    return all(getattr(document, name) == value for name, value in expected.items())
 
 
 def _document_values(document: ParsedDocument, command: ParsedArtifactCommand) -> dict[str, Any]:

@@ -208,6 +208,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/knowledge/documents/{source_object_id}/revisions/{source_revision_id}/parsed-content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Knowledge.Parsed Content.Inspect */
+        get: operations["knowledge.parsed_content.inspect"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projections/{projection_kind}/recovery": {
         parameters: {
             query?: never;
@@ -891,6 +908,31 @@ export interface components {
         /** ApiResponseEnvelope[HealthSummaryResponse] */
         ApiResponseEnvelope_HealthSummaryResponse_: {
             data: components["schemas"]["HealthSummaryResponse"];
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** ApiResponseEnvelope[ParsedContentInspectionResponse] */
+        ApiResponseEnvelope_ParsedContentInspectionResponse_: {
+            data: components["schemas"]["ParsedContentInspectionResponse"];
             /**
              * Environment Id
              * Format: uuid
@@ -1835,6 +1877,36 @@ export interface components {
             status: "ok";
         };
         /**
+         * OoxmlBlockPathStep
+         * @description One ordered step through a WordprocessingML body or table hierarchy.
+         */
+        OoxmlBlockPathStep: {
+            /** Index */
+            index: number;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "paragraph" | "table" | "row" | "cell";
+        };
+        /**
+         * OoxmlTextLocator
+         * @description A half-open code-point range in one structurally addressed DOCX paragraph.
+         */
+        OoxmlTextLocator: {
+            /** Block Path */
+            block_path: components["schemas"]["OoxmlBlockPathStep"][];
+            /** End Codepoint */
+            end_codepoint: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "ooxml_text";
+            /** Start Codepoint */
+            start_codepoint: number;
+        };
+        /**
          * OperationalMetadataDiagnostic
          * @enum {string}
          */
@@ -1862,6 +1934,114 @@ export interface components {
              * Format: uuid
              */
             storage_generation: string;
+        };
+        /**
+         * PageTextLocator
+         * @description A half-open code-point range in text extracted from one PDF page.
+         */
+        PageTextLocator: {
+            /** End Codepoint */
+            end_codepoint: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "page_text";
+            /** Page Number */
+            page_number: number;
+            /** Start Codepoint */
+            start_codepoint: number;
+        };
+        /** ParsedContentInspectionResponse */
+        ParsedContentInspectionResponse: {
+            /** Artifact Digest */
+            artifact_digest?: string | null;
+            /** Artifact Id */
+            artifact_id?: string | null;
+            /**
+             * Items
+             * @default []
+             */
+            items: components["schemas"]["ParsedContentSegmentResponse"][];
+            /** Locator Contract Version */
+            locator_contract_version?: string | null;
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /** Original Sha256 */
+            original_sha256?: string | null;
+            /** Parser Config Reference */
+            parser_config_reference?: string | null;
+            /** Parser Name */
+            parser_name?: string | null;
+            /** Parser Version */
+            parser_version?: string | null;
+            /** Processing Receipt Id */
+            processing_receipt_id?: string | null;
+            /**
+             * Schema Version
+             * @default knowledge-parsed-content-inspection:v1
+             * @constant
+             */
+            schema_version: "knowledge-parsed-content-inspection:v1";
+            /** Source Object Id */
+            source_object_id?: string | null;
+            /** Source Revision Digest */
+            source_revision_digest?: string | null;
+            /** Source Revision Id */
+            source_revision_id?: string | null;
+            status: components["schemas"]["ParsedContentInspectionStatus"];
+        };
+        /**
+         * ParsedContentInspectionStatus
+         * @enum {string}
+         */
+        ParsedContentInspectionStatus: "ready" | "content_unavailable" | "revision_not_current" | "artifact_unavailable" | "processing_incomplete" | "locator_invalid" | "integrity_mismatch" | "limit_exceeded" | "service_unavailable";
+        /** ParsedContentSegmentResponse */
+        ParsedContentSegmentResponse: {
+            /** Heading Path */
+            heading_path: string[];
+            /** Locator */
+            locator: components["schemas"]["PhysicalLineLocator"] | components["schemas"]["PageTextLocator"] | components["schemas"]["OoxmlTextLocator"] | components["schemas"]["XlsxCellLocator"];
+            /** Segment Digest */
+            segment_digest: string;
+            /**
+             * Segment Id
+             * Format: uuid
+             */
+            segment_id: string;
+            /**
+             * Source Object Id
+             * Format: uuid
+             */
+            source_object_id: string;
+            /** Source Revision Digest */
+            source_revision_digest: string;
+            /**
+             * Source Revision Id
+             * Format: uuid
+             */
+            source_revision_id: string;
+            /** Text */
+            text: string;
+            /** Text Digest */
+            text_digest: string;
+        };
+        /**
+         * PhysicalLineLocator
+         * @description A half-open raw Unicode code-point range on one physical line.
+         */
+        PhysicalLineLocator: {
+            /** End Codepoint */
+            end_codepoint: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "physical_line";
+            /** Line Number */
+            line_number: number;
+            /** Start Codepoint */
+            start_codepoint: number;
         };
         /**
          * ProcessingCoverage
@@ -2814,6 +2994,29 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /**
+         * XlsxCellLocator
+         * @description A physical worksheet cell or merged range in an XLSX revision.
+         */
+        XlsxCellLocator: {
+            /** Cell Range */
+            cell_range: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "xlsx_cell";
+            /** Row */
+            row: number;
+            /**
+             * Schema Version
+             * @default locator:xlsx-cell:v1
+             * @constant
+             */
+            schema_version: "locator:xlsx-cell:v1";
+            /** Sheet */
+            sheet: string;
         };
     };
     responses: never;
@@ -3876,6 +4079,118 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["IngestionStatusResponse"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "knowledge.parsed_content.inspect": {
+        parameters: {
+            query: {
+                processing_receipt_id: string;
+                page_size?: number;
+                cursor?: string | null;
+                locator?: string | null;
+            };
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                source_object_id: string;
+                source_revision_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope_ParsedContentInspectionResponse_"];
                 };
             };
             /** @description Safe request error. */
