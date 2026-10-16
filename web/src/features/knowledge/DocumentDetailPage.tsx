@@ -5,7 +5,7 @@ import { Link, useParams, useSearchParams } from 'react-router';
 import type { components } from '../../../api/generated/schema';
 import { createScopedApiClient, SpineApiError } from '../../api/client';
 import { apiQueryOptions } from '../../api/query';
-import { useAuth } from '../../app/auth';
+import { type AuthState, useAuth } from '../../app/auth';
 import { ApiErrorPanel, StatusPanel } from '../../app/status';
 import { useScope } from '../../app/scope';
 import { ru } from '../../i18n/resources';
@@ -19,14 +19,16 @@ import {
   publicationStatusLabel,
 } from './documentLabels';
 import { formatDate } from './format';
+import { ContentInspectionTab } from './ParsedContentInspector';
 import { ProjectionStatusPanel } from './ProjectionStatusPanel';
+import { loadRevisionHistory } from './revision-api';
 import styles from './DocumentDetailPage.module.css';
 
 type DocumentSnapshot = components['schemas']['DocumentSnapshot'];
 type RevisionSnapshot = components['schemas']['RevisionSnapshot'];
-type DocumentDetailTab = 'overview' | 'revisions' | 'projection';
+type DocumentDetailTab = 'overview' | 'revisions' | 'content' | 'projection';
 
-const DETAIL_TABS: readonly DocumentDetailTab[] = ['overview', 'revisions', 'projection'];
+const DETAIL_TABS: readonly DocumentDetailTab[] = ['overview', 'revisions', 'content', 'projection'];
 
 export function DocumentDetailPage() {
   const auth = useAuth();
@@ -43,6 +45,7 @@ export function DocumentDetailPage() {
       }),
     [auth.getBearerCredential, scope],
   );
+  const authorizationKey = `${getCredentialKey(auth.getBearerCredential)}:${auth.status}:${auth.role ?? ''}`;
   const documentQuery = useQuery({
     ...apiQueryOptions({
       load: (signal) => loadDocument(client, documentId ?? '', signal),
@@ -88,6 +91,7 @@ export function DocumentDetailPage() {
       client={client}
       document={documentQuery.data.document}
       documentId={documentId}
+      authorizationKey={authorizationKey}
       searchParams={scopeSearch}
       scope={scope}
       queryKey={queryKey}
@@ -156,6 +160,7 @@ function DocumentOverview({
   client,
   document,
   documentId,
+  authorizationKey,
   searchParams,
   scope,
   queryKey,
@@ -165,6 +170,7 @@ function DocumentOverview({
   client: ReturnType<typeof createScopedApiClient>;
   document: DocumentSnapshot;
   documentId: string;
+  authorizationKey: string;
   searchParams: URLSearchParams;
   scope: { environmentId: string; workspaceId: string };
   queryKey: (resource: string) => readonly unknown[];
@@ -185,6 +191,7 @@ function DocumentOverview({
   const projectionKind = parseProjectionKind(searchParams.get('projection_kind')) ?? publication?.projection_kind ?? 'qa';
   const overviewLink = detailLink(documentId, searchParams, 'overview');
   const historyLink = detailLink(documentId, searchParams, 'revisions');
+  const contentLink = detailLink(documentId, searchParams, 'content');
   const projectionLink = detailLink(documentId, searchParams, 'projection', projectionKind);
 
   return (
@@ -217,6 +224,13 @@ function DocumentOverview({
           {ru.documents.revisionTimeline}
         </Link>
         <Link
+          aria-current={tab === 'content' ? 'page' : undefined}
+          className={tab === 'content' ? `${styles.navLink} ${styles.navLinkActive}` : styles.navLink}
+          to={contentLink}
+        >
+          {ru.documents.contentInspectionTab}
+        </Link>
+        <Link
           aria-current={tab === 'projection' ? 'page' : undefined}
           className={tab === 'projection' ? `${styles.navLink} ${styles.navLinkActive}` : styles.navLink}
           to={projectionLink}
@@ -239,6 +253,16 @@ function DocumentOverview({
         />
       ) : null}
 
+      {tab === 'content' ? (
+        <ContentInspectionTab
+          authorizationKey={authorizationKey}
+          client={client}
+          document={document}
+          documentId={documentId}
+          scope={scope}
+        />
+      ) : null}
+
       {tab === 'projection' ? (
         <ProjectionStatusPanel
           client={client}
@@ -246,7 +270,7 @@ function DocumentOverview({
           projectionKind={projectionKind}
           queryKey={queryKey}
         />
-      ) : <div className={styles.grid}>
+      ) : tab === 'overview' ? <div className={styles.grid}>
         <section className={styles.card} aria-labelledby="source-object-heading">
           <h3 id="source-object-heading">{ru.documents.sourceObject}</h3>
           <dl className={styles.details}>
@@ -330,7 +354,7 @@ function DocumentOverview({
             </dl>
           </section>
         ) : null}
-      </div>}
+      </div> : null}
 
       <div className={styles.actionRow}>
         <Link className={styles.buttonLink} to={{ pathname: '/knowledge/documents', search: `?${detailSearch.toString()}` }}>
@@ -340,8 +364,6 @@ function DocumentOverview({
     </section>
   );
 }
-
-const REVISION_PAGE_LIMIT = 25;
 
 function RevisionTimeline({
   client,
@@ -428,7 +450,11 @@ function RevisionTimeline({
       </header>
       <p className={styles.protectedNotice} role="note">{ru.documents.protectedRevisionDetails}</p>
       {selectedRevision ? (
-        <SelectedRevision revision={selectedRevision} />
+        <SelectedRevision
+          documentId={documentId}
+          revision={selectedRevision}
+          searchParams={safeSearch}
+        />
       ) : selectedRevisionId ? (
         <p className={styles.subviewNotice} role="status">{ru.documents.selectedRevisionUnavailable}</p>
       ) : null}
@@ -483,11 +509,43 @@ function RevisionTimeline({
   );
 }
 
-function SelectedRevision({ revision }: { revision: RevisionSnapshot }) {
+function SelectedRevision({
+  documentId,
+  revision,
+  searchParams,
+}: {
+  documentId: string;
+  revision: RevisionSnapshot;
+  searchParams: URLSearchParams;
+}) {
+  const contentSearch = new URLSearchParams(searchParams);
+  contentSearch.set('tab', 'content');
+  contentSearch.set('revision', revision.source_revision_id);
+  const runSearch = new URLSearchParams(searchParams);
+  runSearch.delete('tab');
+  runSearch.delete('cursor');
+  runSearch.set('document', documentId);
   return (
     <section className={styles.selectedRevision} aria-labelledby="selected-revision-heading">
       <h4 id="selected-revision-heading">{ru.documents.selectedRevision}</h4>
       <RevisionDetails revision={revision} />
+      <div className={styles.actionRow}>
+        <Link
+          className={styles.buttonLink}
+          to={{ pathname: `/knowledge/documents/${documentId}`, search: `?${contentSearch.toString()}` }}
+        >
+          {ru.documents.inspectContent}
+        </Link>
+        {revision.processing_references.map((reference) => (
+          <Link
+            className={styles.buttonLink}
+            key={`${reference.ingestion_run_id}-${reference.ingestion_item_id}`}
+            to={{ pathname: `/runs/${reference.ingestion_run_id}`, search: `?${runSearch.toString()}` }}
+          >
+            {ru.documents.processingRun}
+          </Link>
+        ))}
+      </div>
     </section>
   );
 }
@@ -508,23 +566,6 @@ function RevisionReferences({ revision }: { revision: RevisionSnapshot }) {
       ))}
     </div>
   );
-}
-
-export async function loadRevisionHistory(
-  client: ReturnType<typeof createScopedApiClient>,
-  sourceObjectId: string,
-  cursor: string | undefined,
-  signal: AbortSignal,
-): Promise<components['schemas']['ApiCollectionEnvelope_RevisionSnapshot_']> {
-  const result = await client.GET('/api/v1/documents/{source_object_id}/revisions', {
-    params: {
-      path: { source_object_id: sourceObjectId },
-      query: cursor ? { limit: REVISION_PAGE_LIMIT, cursor } : { limit: REVISION_PAGE_LIMIT },
-    },
-    signal,
-  });
-  if (!result.data) throw new Error('The document revision history response is unavailable.');
-  return result.data;
 }
 
 function nextRevisionPageSearch(searchParams: URLSearchParams, cursor: string, selectedRevisionId: string | null) {
@@ -587,6 +628,18 @@ function withScope(searchParams: URLSearchParams, scope: { environmentId: string
   next.set('workspace', scope.workspaceId);
   next.set('environment', scope.environmentId);
   return next;
+}
+
+const credentialKeys = new WeakMap<NonNullable<AuthState['getBearerCredential']>, number>();
+let nextCredentialKey = 1;
+
+function getCredentialKey(credential: AuthState['getBearerCredential']) {
+  if (!credential) return 0;
+  const existingKey = credentialKeys.get(credential);
+  if (existingKey) return existingKey;
+  const newKey = nextCredentialKey++;
+  credentialKeys.set(credential, newKey);
+  return newKey;
 }
 
 function latestProcessingState(revision: RevisionSnapshot | null | undefined) {
