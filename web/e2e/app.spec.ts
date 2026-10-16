@@ -236,10 +236,13 @@ test('test_document_detail_deep_link_reloads_and_preserves_scope_and_subview_nav
 
   await page.getByRole('link', { name: 'История ревизий' }).click();
   await expect(page).toHaveURL(/tab=revisions/);
-  await expect(page.getByText(/Выбранное представление/)).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'История ревизий' })).toBeVisible();
+  await expect(page.getByRole('link', { name: secondDocument })).toHaveAttribute('aria-current', 'true');
   await page.reload();
   await expect(page).toHaveURL(/tab=revisions/);
   await expect(page.getByRole('link', { name: 'История ревизий' })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByRole('heading', { name: 'История ревизий' })).toBeVisible();
+  await expect(page.getByRole('link', { name: secondDocument })).toHaveAttribute('aria-current', 'true');
 
   await expect(page.getByRole('link', { name: 'Открыть запуск обработки' })).toHaveAttribute(
     'href',
@@ -250,10 +253,30 @@ test('test_document_detail_deep_link_reloads_and_preserves_scope_and_subview_nav
     new RegExp(`/knowledge/documents/${firstDocument}.*tab=projection`),
   );
 
-  expect(documentRequests).toHaveLength(2);
+  expect(documentRequests).toHaveLength(4);
   expect(documentRequests.every(({ headers }) => headers.authorization === 'Bearer controlled-browser-token')).toBe(true);
   expect(documentRequests.every(({ headers }) => headers['x-workspace-id'] === salesWorkspace)).toBe(true);
   expect(documentRequests.every(({ headers }) => headers['x-environment-id'] === stagingEnvironment)).toBe(true);
+});
+
+test('test_document_revision_history_direct_url_reloads_exact_selected_revision', async ({ page }) => {
+  const requests = await installControlledDocumentDetail(page);
+  const historyResponse = page.waitForResponse((response) => response.url().includes('/revisions'));
+  await page.goto(
+    `/knowledge/documents/${firstDocument}?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}&tab=revisions&revision=${secondDocument}`,
+  );
+
+  await expect(page.getByRole('heading', { name: 'История ревизий' })).toBeVisible();
+  expect((await historyResponse).status()).toBe(200);
+  await expect(page.getByRole('link', { name: secondDocument })).toHaveAttribute('aria-current', 'true');
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'История ревизий' })).toBeVisible();
+  await expect(page.getByRole('link', { name: secondDocument })).toHaveAttribute('aria-current', 'true');
+  await expect(page).toHaveURL(new RegExp(`tab=revisions.*revision=${secondDocument}`));
+
+  expect(requests).toHaveLength(4);
+  expect(requests.every(({ headers }) => headers['x-workspace-id'] === salesWorkspace)).toBe(true);
+  expect(requests.every(({ headers }) => headers['x-environment-id'] === stagingEnvironment)).toBe(true);
 });
 
 test('test_authentication_denial_hides_administrator_shell_without_api_request', async ({ page }) => {
@@ -455,6 +478,37 @@ async function installControlledDocumentDetail(page: Page) {
       trace_id: traceId,
       workspace_id: headers['x-workspace-id'] ?? '',
     } satisfies components['schemas']['ApiResponseEnvelope_DocumentSnapshot_'];
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(response), status: 200 });
+  });
+  await page.route(`**/api/v1/documents/${firstDocument}/revisions*`, async (route) => {
+    const request = route.request();
+    requests.push({ url: request.url(), headers: request.headers() });
+    const headers = request.headers();
+    const revision = {
+      accepted_at: '2026-01-02T04:00:00Z',
+      accepted_generation: 2,
+      admission_status: 'admitted' as const,
+      content: null,
+      deletion_reason: null,
+      kind: 'content' as const,
+      lifecycle: 'current' as const,
+      observed_at: '2026-01-02T03:00:00Z',
+      predecessor_revision_id: null,
+      processing_references: [],
+      projection_references: [],
+      schema_version: 1 as const,
+      source_revision_id: secondDocument,
+      superseded_by_revision_id: null,
+    } satisfies components['schemas']['RevisionSnapshot'];
+    const response = {
+      environment_id: headers['x-environment-id'] ?? '',
+      items: [revision],
+      limit: 25,
+      next_cursor: null,
+      schema_version: 1 as const,
+      trace_id: traceId,
+      workspace_id: headers['x-workspace-id'] ?? '',
+    } satisfies components['schemas']['ApiCollectionEnvelope_RevisionSnapshot_'];
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(response), status: 200 });
   });
   return requests;

@@ -1,9 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router';
 
 import type { components } from '../../../api/generated/schema';
-import { createScopedApiClient } from '../../api/client';
+import { createScopedApiClient, SpineApiError } from '../../api/client';
 import { apiQueryOptions } from '../../api/query';
 import { useAuth } from '../../app/auth';
 import { ApiErrorPanel, StatusPanel } from '../../app/status';
@@ -74,9 +74,11 @@ export function DocumentDetailPage() {
 
   return (
     <DocumentOverview
+      client={client}
       document={documentQuery.data}
       documentId={documentId}
       searchParams={scopeSearch}
+      scope={scope}
       tab={tab}
     />
   );
@@ -134,14 +136,18 @@ export function documentOperationalState(document: DocumentSnapshot): string {
 }
 
 function DocumentOverview({
+  client,
   document,
   documentId,
   searchParams,
+  scope,
   tab,
 }: {
+  client: ReturnType<typeof createScopedApiClient>;
   document: DocumentSnapshot;
   documentId: string;
   searchParams: URLSearchParams;
+  scope: { environmentId: string; workspaceId: string };
   tab: DocumentDetailTab;
 }) {
   const revision = document.current_revision;
@@ -149,8 +155,11 @@ function DocumentOverview({
   const publication = document.publication;
   const detailSearch = new URLSearchParams(searchParams);
   detailSearch.delete('tab');
+  detailSearch.delete('revision');
+  detailSearch.delete('cursor');
   const runSearch = new URLSearchParams(searchParams);
   runSearch.delete('tab');
+  runSearch.delete('cursor');
   runSearch.set('document', documentId);
   const overviewLink = detailLink(documentId, searchParams, 'overview');
   const historyLink = detailLink(documentId, searchParams, 'revisions');
@@ -194,11 +203,21 @@ function DocumentOverview({
         </Link>
       </nav>
 
-      {tab !== 'overview' ? (
+      {tab !== 'overview' && tab !== 'revisions' ? (
         <p className={styles.subviewNotice} role="status">
-          <strong>{ru.documents.selectedSubview}: {tab === 'revisions' ? ru.documents.revisionTimeline : ru.documents.projectionPanel}</strong>
+          <strong>{ru.documents.selectedSubview}: {ru.documents.projectionPanel}</strong>
           {ru.documents.selectedSubviewDescription}
         </p>
+      ) : null}
+
+      {tab === 'revisions' ? (
+        <RevisionTimeline
+          client={client}
+          document={document}
+          documentId={documentId}
+          searchParams={searchParams}
+          scope={scope}
+        />
       ) : null}
 
       <div className={styles.grid}>
@@ -294,6 +313,207 @@ function DocumentOverview({
       </div>
     </section>
   );
+}
+
+const REVISION_PAGE_LIMIT = 25;
+
+function RevisionTimeline({
+  client,
+  document,
+  documentId,
+  searchParams,
+  scope,
+}: {
+  client: ReturnType<typeof createScopedApiClient>;
+  document: DocumentSnapshot;
+  documentId: string;
+  searchParams: URLSearchParams;
+  scope: { environmentId: string; workspaceId: string };
+}) {
+  const [currentSearch, setSearchParams] = useSearchParams();
+  const cursor = currentSearch.get('cursor') ?? undefined;
+  const selectedRevisionId = currentSearch.get('revision') ?? document.current_revision?.source_revision_id ?? null;
+  const revisionsQuery = useQuery({
+    ...apiQueryOptions({
+      load: (signal) => loadRevisionHistory(client, documentId, cursor, signal),
+      queryKey: [
+        'spine',
+        'document-revisions',
+        scope.workspaceId,
+        scope.environmentId,
+        documentId,
+        cursor,
+      ],
+    }),
+    enabled: true,
+  });
+
+  useEffect(() => {
+    if (!currentSearch.has('revision') && document.current_revision?.source_revision_id) {
+      const next = new URLSearchParams(currentSearch);
+      next.set('tab', 'revisions');
+      next.set('revision', document.current_revision.source_revision_id);
+      setSearchParams(next, { replace: true });
+    }
+  }, [currentSearch, document.current_revision?.source_revision_id, setSearchParams]);
+
+  const resetCursor = () => {
+    const next = new URLSearchParams(currentSearch);
+    next.delete('cursor');
+    setSearchParams(next);
+  };
+
+  if (revisionsQuery.isPending) return <StatusPanel state="loading" />;
+  if (revisionsQuery.error) {
+    return (
+      <section className={styles.card} aria-labelledby="revision-history-heading">
+        <h3 id="revision-history-heading">{ru.documents.revisionTimeline}</h3>
+        <ApiErrorPanel error={revisionsQuery.error} />
+        {cursor && revisionsQuery.error instanceof SpineApiError && revisionsQuery.error.kind === 'validation' ? (
+          <button className={styles.buttonLink} onClick={resetCursor} type="button">
+            {ru.documents.resetRevisionCursor}
+          </button>
+        ) : (
+          <button className={styles.buttonLink} onClick={() => void revisionsQuery.refetch()} type="button">
+            {ru.documents.retry}
+          </button>
+        )}
+      </section>
+    );
+  }
+  if (!revisionsQuery.data) return <StatusPanel state="failed" />;
+
+  const revisions = [...revisionsQuery.data.items].sort((left, right) =>
+    right.observed_at.localeCompare(left.observed_at) ||
+    right.source_revision_id.localeCompare(left.source_revision_id),
+  );
+  const selectedRevision = revisions.find((revision) => revision.source_revision_id === selectedRevisionId);
+  const safeSearch = withScope(searchParams, scope);
+  safeSearch.set('tab', 'revisions');
+
+  return (
+    <section className={`${styles.card} ${styles.cardWide}`} aria-labelledby="revision-history-heading">
+      <header className={styles.statusHeader}>
+        <div>
+          <h3 id="revision-history-heading">{ru.documents.revisionTimeline}</h3>
+          <p className={styles.cardDescription}>{ru.documents.immutableRevision}</p>
+        </div>
+        <span className={styles.statusPill}>{ru.documents.selectedRevision}: {selectedRevisionId ?? ru.documents.unknown}</span>
+      </header>
+      <p className={styles.protectedNotice} role="note">{ru.documents.protectedRevisionDetails}</p>
+      {selectedRevision ? (
+        <SelectedRevision revision={selectedRevision} />
+      ) : selectedRevisionId ? (
+        <p className={styles.subviewNotice} role="status">{ru.documents.selectedRevisionUnavailable}</p>
+      ) : null}
+      {revisions.length === 0 ? (
+        <StatusPanel state="empty" />
+      ) : (
+        <ol className={styles.revisionList} aria-label={ru.documents.revisionTimeline}>
+          {revisions.map((revision) => {
+            const rowSearch = new URLSearchParams(safeSearch);
+            rowSearch.set('revision', revision.source_revision_id);
+            return (
+              <li className={styles.revisionRow} key={revision.source_revision_id}>
+                <div className={styles.revisionHeading}>
+                  <Link
+                    aria-current={revision.source_revision_id === selectedRevisionId ? 'true' : undefined}
+                    className={styles.revisionId}
+                    to={{ pathname: `/knowledge/documents/${documentId}`, search: `?${rowSearch.toString()}` }}
+                  >
+                    <code>{revision.source_revision_id}</code>
+                  </Link>
+                  <span className={`${styles.statusPill} ${revisionStateClass(revision.lifecycle)}`}>
+                    {lifecycleLabel(revision.lifecycle)}
+                  </span>
+                  {revision.kind === 'tombstone' ? <span className={styles.tombstoneMark}>{ru.documents.tombstoneRevision}</span> : null}
+                </div>
+                <dl className={styles.details}>
+                  <DetailValue label={ru.documents.observedAt} value={formatDate(revision.observed_at)} />
+                  <DetailValue label={ru.documents.acceptedAt} value={formatDate(revision.accepted_at)} />
+                  <DetailValue label={ru.documents.admissionStatus} value={admissionStatusLabel(revision.admission_status)} />
+                  <DetailValue label={ru.documents.predecessor} value={revision.predecessor_revision_id ?? ru.documents.unknown} code={Boolean(revision.predecessor_revision_id)} />
+                  <DetailValue label={ru.documents.supersededBy} value={revision.superseded_by_revision_id ?? ru.documents.unknown} code={Boolean(revision.superseded_by_revision_id)} />
+                  {revision.deletion_reason ? <DetailValue label={ru.documents.deletionReason} value={safeDeletionReason(revision.deletion_reason)} /> : null}
+                </dl>
+                <RevisionReferences revision={revision} />
+              </li>
+            );
+          })}
+        </ol>
+      )}
+      {revisionsQuery.data.next_cursor ? (
+        <Link
+          className={styles.buttonLink}
+          to={{
+            pathname: `/knowledge/documents/${documentId}`,
+            search: `?${nextRevisionPageSearch(safeSearch, revisionsQuery.data.next_cursor, selectedRevisionId)}`,
+          }}
+        >
+          {ru.documents.nextPage}
+        </Link>
+      ) : null}
+    </section>
+  );
+}
+
+function SelectedRevision({ revision }: { revision: RevisionSnapshot }) {
+  return (
+    <section className={styles.selectedRevision} aria-labelledby="selected-revision-heading">
+      <h4 id="selected-revision-heading">{ru.documents.selectedRevision}</h4>
+      <RevisionDetails revision={revision} />
+    </section>
+  );
+}
+
+function RevisionReferences({ revision }: { revision: RevisionSnapshot }) {
+  if (revision.processing_references.length === 0 && revision.projection_references.length === 0) return null;
+  return (
+    <div className={styles.revisionReferences}>
+      {revision.processing_references.map((reference) => (
+        <span key={`${reference.ingestion_run_id}-${reference.ingestion_item_id}`}>
+          {ru.documents.processing}: {processingStateLabel(reference.state)} · {ru.documents.processingRunReference}: {reference.ingestion_run_id} · {ru.documents.processingReceipt}: {reference.processing_receipt_id ?? ru.documents.unknown}
+        </span>
+      ))}
+      {revision.projection_references.map((reference) => (
+        <span key={`${reference.projection_run_id}-${reference.projection_candidate_id}`}>
+          {ru.documents.projection}: {reference.projection_kind} · {reference.state} · {ru.documents.projectionRunReference}: {reference.projection_run_id} · {reference.projection_reference_id ?? reference.projection_candidate_id}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+export async function loadRevisionHistory(
+  client: ReturnType<typeof createScopedApiClient>,
+  sourceObjectId: string,
+  cursor: string | undefined,
+  signal: AbortSignal,
+): Promise<components['schemas']['ApiCollectionEnvelope_RevisionSnapshot_']> {
+  const result = await client.GET('/api/v1/documents/{source_object_id}/revisions', {
+    params: {
+      path: { source_object_id: sourceObjectId },
+      query: cursor ? { limit: REVISION_PAGE_LIMIT, cursor } : { limit: REVISION_PAGE_LIMIT },
+    },
+    signal,
+  });
+  if (!result.data) throw new Error('The document revision history response is unavailable.');
+  return result.data;
+}
+
+function nextRevisionPageSearch(searchParams: URLSearchParams, cursor: string, selectedRevisionId: string | null) {
+  const next = new URLSearchParams(searchParams);
+  next.set('cursor', cursor);
+  if (selectedRevisionId) next.set('revision', selectedRevisionId);
+  return next.toString();
+}
+
+function revisionStateClass(lifecycle: components['schemas']['RevisionLifecycle']) {
+  if (lifecycle === 'current') return styles.revisionStateCurrent;
+  if (lifecycle === 'superseded') return styles.revisionStateSuperseded;
+  if (lifecycle === 'tombstoned') return styles.revisionStateTombstoned;
+  if (lifecycle === 'rejected' || lifecycle === 'quarantined') return styles.revisionStateRejected;
+  return styles.revisionStateProcessing;
 }
 
 function RevisionDetails({ revision }: { revision: RevisionSnapshot }) {
