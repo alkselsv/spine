@@ -89,7 +89,10 @@ jobs:
           fi
       - name: Run deterministic offline R1 regression gate
         if: always()
-        run: uv run spine-eval-gate "${{ steps.repository-tests.outputs.gate_flag }}" --output r1-gate-status.json
+        run: >-
+          uv run spine-eval-gate "${{ steps.repository-tests.outputs.gate_flag }}"
+          --ci-run-id "$GITHUB_RUN_ID" --head-sha "$GITHUB_SHA"
+          --output r1-gate-status.json
       - name: Upload versioned R1 gate report
         if: always()
         uses: actions/upload-artifact@v4
