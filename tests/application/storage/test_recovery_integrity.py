@@ -41,6 +41,7 @@ def manifest(
         captured_at=created_at,
     )
     return StorageRecoveryManifest.build(
+        schema_version=1,
         recovery_set_id=recovery_set_id,
         deployment_scope_id="deployment-1",
         profile=RecoveryManifestProfile.COORDINATED,

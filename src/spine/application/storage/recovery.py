@@ -7,6 +7,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Protocol
 
+from pydantic import ValidationError
+
 from spine.domain.storage.recovery import (
     BackupFenceLease,
     ComponentState,
@@ -23,6 +25,7 @@ from spine.domain.storage.recovery import (
     TicketAdmission,
     validate_ticket_transition,
 )
+from spine.domain.storage.backup_profile import BackupProtectionProfile
 
 
 class RecoveryCoordinationError(RuntimeError):
@@ -61,6 +64,8 @@ class RecoveryEvidenceProvider(Protocol):
         fence_epoch: int,
         component: str,
         boundary: str,
+        *,
+        cutoff_ticket_sequence: int,
     ) -> RecoveryComponentEvidence: ...
 
 
@@ -120,6 +125,18 @@ class BackupRecoveryCoordinator:
     async def lease(self, deployment_scope_id: str) -> BackupFenceLease:
         async with self._repository.transaction(deployment_scope_id) as transaction:
             return await self._require_lease(transaction, deployment_scope_id)
+
+    async def manifest(
+        self, deployment_scope_id: str, recovery_set_id: str
+    ) -> StorageRecoveryManifest | None:
+        async with self._repository.transaction(deployment_scope_id) as transaction:
+            manifest = await transaction.get_manifest(recovery_set_id)
+            if (
+                manifest is not None
+                and manifest.deployment_scope_id != deployment_scope_id
+            ):
+                raise RecoveryCoordinationError("recovery set is outside deployment scope")
+            return manifest
 
     async def admit_operation(
         self,
@@ -377,6 +394,9 @@ class BackupRecoveryCoordinator:
         object_boundary: str,
         scope: str,
         recovery_set_id: str | None = None,
+        postgres_component_evidence: RecoveryComponentEvidence | None = None,
+        object_component_evidence: RecoveryComponentEvidence | None = None,
+        backup_protection_profile: BackupProtectionProfile | None = None,
     ) -> StorageRecoveryManifest:
         now = self._now()
         async with self._repository.transaction(deployment_scope_id) as transaction:
@@ -392,18 +412,27 @@ class BackupRecoveryCoordinator:
             assert lease.cutoff_ticket_sequence is not None
             if quiescent_evidence.cutoff_ticket_sequence != lease.cutoff_ticket_sequence:
                 raise RecoveryManifestError("quiescent cutoff does not match live fence")
-            postgres_evidence = await self._evidence_provider.verify_component(
-                deployment_scope_id,
-                fence_epoch,
-                "postgres",
-                postgres_boundary,
-            )
-            object_evidence = await self._evidence_provider.verify_component(
-                deployment_scope_id,
-                fence_epoch,
-                "object_volume",
-                object_boundary,
-            )
+            if (postgres_component_evidence is None) != (
+                object_component_evidence is None
+            ):
+                raise RecoveryManifestError("both component receipts are required")
+            postgres_evidence = postgres_component_evidence
+            object_evidence = object_component_evidence
+            if postgres_evidence is None or object_evidence is None:
+                postgres_evidence = await self._evidence_provider.verify_component(
+                    deployment_scope_id,
+                    fence_epoch,
+                    "postgres",
+                    postgres_boundary,
+                    cutoff_ticket_sequence=lease.cutoff_ticket_sequence,
+                )
+                object_evidence = await self._evidence_provider.verify_component(
+                    deployment_scope_id,
+                    fence_epoch,
+                    "object_volume",
+                    object_boundary,
+                    cutoff_ticket_sequence=lease.cutoff_ticket_sequence,
+                )
             if postgres_evidence.component != "postgres" or object_evidence.component != "object_volume":
                 raise RecoveryManifestError("component evidence has the wrong identity")
             if not postgres_evidence.verified or not object_evidence.verified:
@@ -420,29 +449,35 @@ class BackupRecoveryCoordinator:
             )
             if indeterminate:
                 raise RecoveryManifestError("indeterminate operation prevents coherence")
-            manifest = StorageRecoveryManifest.build(
-                recovery_set_id=recovery_set_id or self._recovery_set_id_factory(),
-                deployment_scope_id=deployment_scope_id,
-                profile=RecoveryManifestProfile.COORDINATED,
-                manifest_status=RecoveryManifestStatus.COHERENT,
-                fence_epoch=fence_epoch,
-                cutoff_ticket_sequence=lease.cutoff_ticket_sequence,
-                quiescent_evidence=quiescent_evidence,
-                postgres_boundary=postgres_boundary,
-                postgres_recovery_watermark=quiescent_evidence.watermark,
-                object_volume_generation=object_evidence.observed_identity,
-                postgres_component_state=ComponentState.VERIFIED,
-                object_component_state=ComponentState.VERIFIED,
-                postgres_backup_identity=postgres_evidence.observed_identity,
-                postgres_verification_reference=postgres_evidence.verification_reference,
-                object_verification_reference=object_evidence.verification_reference,
-                drained_operation_count=len(tickets) - orphaned,
-                orphaned_operation_count=orphaned,
-                indeterminate_operation_count=indeterminate,
-                scope=scope,
-                created_at=now,
-                completed_at=now,
-            )
+            try:
+                manifest = StorageRecoveryManifest.build(
+                    recovery_set_id=recovery_set_id or self._recovery_set_id_factory(),
+                    deployment_scope_id=deployment_scope_id,
+                    profile=RecoveryManifestProfile.COORDINATED,
+                    manifest_status=RecoveryManifestStatus.COHERENT,
+                    fence_epoch=fence_epoch,
+                    cutoff_ticket_sequence=lease.cutoff_ticket_sequence,
+                    quiescent_evidence=quiescent_evidence,
+                    postgres_component_evidence=postgres_evidence,
+                    object_component_evidence=object_evidence,
+                    backup_protection_profile=backup_protection_profile,
+                    postgres_boundary=postgres_boundary,
+                    postgres_recovery_watermark=quiescent_evidence.watermark,
+                    object_volume_generation=object_evidence.observed_identity,
+                    postgres_component_state=ComponentState.VERIFIED,
+                    object_component_state=ComponentState.VERIFIED,
+                    postgres_backup_identity=postgres_evidence.observed_identity,
+                    postgres_verification_reference=postgres_evidence.verification_reference,
+                    object_verification_reference=object_evidence.verification_reference,
+                    drained_operation_count=len(tickets) - orphaned,
+                    orphaned_operation_count=orphaned,
+                    indeterminate_operation_count=indeterminate,
+                    scope=scope,
+                    created_at=now,
+                    completed_at=now,
+                )
+            except ValidationError as error:
+                raise RecoveryManifestError("component recovery evidence is incoherent") from error
             await transaction.add_manifest(manifest)
             await transaction.save_lease(
                 lease.model_copy(
@@ -469,6 +504,10 @@ class BackupRecoveryCoordinator:
         start_watermark: str,
         end_watermark: str,
         recovery_set_id: str | None = None,
+        postgres_component_evidence: RecoveryComponentEvidence | None = None,
+        object_component_evidence: RecoveryComponentEvidence | None = None,
+        backup_protection_profile: BackupProtectionProfile | None = None,
+        failure_category: RecoveryFailureCategory | None = None,
     ) -> StorageRecoveryManifest:
         """Persist an explicit, non-coherent Profile B recovery attempt."""
 
@@ -516,6 +555,9 @@ class BackupRecoveryCoordinator:
                 fence_epoch=fence_epoch,
                 cutoff_ticket_sequence=lease.cutoff_ticket_sequence or 0,
                 quiescent_evidence=quiescent_evidence,
+                postgres_component_evidence=postgres_component_evidence,
+                object_component_evidence=object_component_evidence,
+                backup_protection_profile=backup_protection_profile,
                 postgres_boundary=postgres_boundary,
                 postgres_recovery_watermark=postgres_recovery_watermark,
                 object_volume_generation=object_volume_generation,
@@ -525,6 +567,7 @@ class BackupRecoveryCoordinator:
                 drained_operation_count=len(tickets) - orphaned - indeterminate,
                 orphaned_operation_count=orphaned,
                 indeterminate_operation_count=indeterminate,
+                failure_category=failure_category,
                 scope=scope,
                 start_watermark=start_watermark,
                 end_watermark=end_watermark,

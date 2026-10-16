@@ -110,8 +110,14 @@ payloads and manifests needed by the approved retention and historical-revision
 policy. Staged uploads are non-canonical and may be excluded only under an
 explicit operational rule. A restore is not readable until the restored
 metadata, finalized manifests and payloads have been reconciled and verified.
-This adapter does not implement a coordinated PostgreSQL/filesystem backup
-fence or claim that an ordinary volume snapshot is a coherent recovery point.
+`export_finalized_backup` provides the filesystem component archive used by the
+coordinated profile: it compares the physical finalized set with the canonical
+references supplied by that profile, verifies receipts and payload digests, and
+includes private manifests while excluding staged uploads. It does not coordinate
+the PostgreSQL/filesystem fence by itself or claim that an ordinary volume
+snapshot is a coherent recovery point. See
+[`storage-backup-profile.md`](storage-backup-profile.md) for the coordinator,
+component evidence and deployment requirements.
 
 ## Limits of the guarantee
 

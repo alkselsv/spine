@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import threading
+import tarfile
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -587,3 +588,52 @@ async def test_symlinked_storage_root_is_unsupported(tmp_path: Path) -> None:
             grant_registry=AuthorizedReadGrantRegistry(),
         )
         await store.begin_or_resume_upload(command(), state())
+
+
+async def test_backup_snapshot_contains_finalized_bytes_and_private_manifest_but_excludes_staged(
+    filesystem_store: tuple[FilesystemOriginalObjectStore, AuthorizedReadGrantRegistry],
+    tmp_path: Path,
+) -> None:
+    store, _ = filesystem_store
+    receipt = await finalize(store)
+    staged_command = command().model_copy(update={"idempotency_key": "staged-upload"})
+    staged_state = state().model_copy(
+        update={
+            "upload_id": UUID("20000000-0000-4000-8000-000000000002"),
+            "object_id": UUID("30000000-0000-4000-8000-000000000002"),
+        }
+    )
+    active = await store.begin_or_resume_upload(staged_command, staged_state)
+    await store.write_chunks(active.upload_id, chunks(b"staged-p", b"refix"))
+    target = tmp_path.parent / f"{tmp_path.name}-coordinated-backup.tar"
+
+    snapshot = await store.export_finalized_backup(
+        target, [receipt.object_reference]
+    )
+
+    assert snapshot.verified_object_count == 1
+    assert snapshot.excluded_staged_upload_count >= 1
+    assert snapshot.included_set_digest
+    with tarfile.open(target, "r") as archive:
+        members = archive.getmembers()
+        assert len(members) == 2
+        assert all(member.isfile() for member in members)
+        manifest = next(member for member in members if member.name.endswith(".private"))
+        payload = next(member for member in members if not member.name.endswith(".private"))
+        assert archive.extractfile(payload).read() == CONTENT
+        assert b"synthetic original" not in archive.extractfile(manifest).read()
+        assert "staged" not in " ".join(member.name for member in members)
+
+
+async def test_backup_snapshot_fails_closed_when_canonical_object_is_missing(
+    filesystem_store: tuple[FilesystemOriginalObjectStore, AuthorizedReadGrantRegistry],
+    tmp_path: Path,
+) -> None:
+    store, _ = filesystem_store
+    receipt = await finalize(store)
+    target = tmp_path.parent / f"{tmp_path.name}-missing-reference.tar"
+
+    with pytest.raises(StorageIntegrityIndeterminate):
+        await store.export_finalized_backup(target, [])
+
+    assert not target.exists()

@@ -25,6 +25,7 @@ from spine.domain.storage.recovery import (
     RecoveryManifestStatus,
     TicketAdmission,
 )
+from spine.domain.storage.backup_profile import BackupProtectionProfile
 
 
 class Clock:
@@ -54,16 +55,31 @@ class EvidenceProvider:
         fence_epoch: int,
         component: str,
         boundary: str,
+        *,
+        cutoff_ticket_sequence: int,
     ) -> RecoveryComponentEvidence:
-        del deployment_scope_id, fence_epoch, boundary
+        del deployment_scope_id, boundary
         identity = "backup:pg-1" if component == "postgres" else "volume:1"
         return RecoveryComponentEvidence(
             component=component,
             expected_identity=identity,
             observed_identity=identity,
+            artifact_reference=f"artifact:{component}-1",
+            artifact_digest="2" * 64,
+            tool_profile=(
+                "pg_dump-custom-compatible-restore:v1"
+                if component == "postgres"
+                else "linux-posix-finalized-originals:v1"
+            ),
+            tool_version="tool-17.0",
+            fence_epoch=fence_epoch,
+            cutoff_ticket_sequence=cutoff_ticket_sequence,
+            included_set_digest="1" * 64,
+            inclusion_policy="r1-finalized-originals-and-canonical-metadata:v1",
             durable=self.verified,
             verified=self.verified,
             verification_reference=f"verify:{component}",
+            safe_failure_category=None if self.verified else RecoveryFailureCategory.COMPONENT_FAILURE,
         )
 
 
@@ -213,6 +229,14 @@ async def test_coherent_manifest_is_persisted_before_release_and_stays_immutable
         postgres_boundary="snapshot:pg-1",
         object_boundary="snapshot:volume-1",
         scope="deployment-1",
+        backup_protection_profile=BackupProtectionProfile(
+            source_volume_id="volume:1",
+            destination_id="destination:1",
+            encryption_at_rest_profile="encryption:approved",
+            protected_transfer_profile="transfer:approved",
+            backup_identity="identity:backup",
+            restore_identity="identity:restore",
+        ),
     )
 
     assert manifest.manifest_status is RecoveryManifestStatus.COHERENT
