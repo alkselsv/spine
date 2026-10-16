@@ -3135,6 +3135,15 @@
         "title": "RevisionSnapshot",
         "type": "object"
       },
+      "SourceKind": {
+        "enum": [
+          "document",
+          "message",
+          "record"
+        ],
+        "title": "SourceKind",
+        "type": "string"
+      },
       "StableLocatorSnapshot": {
         "additionalProperties": false,
         "properties": {
@@ -3286,6 +3295,96 @@
                 }
               ],
               "title": "Cursor"
+            }
+          },
+          {
+            "description": "Restrict results to a supported source kind.",
+            "in": "query",
+            "name": "source_kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SourceKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Restrict results to a supported source kind.",
+              "title": "Source Kind"
+            }
+          },
+          {
+            "description": "Restrict results to the current revision lifecycle.",
+            "in": "query",
+            "name": "lifecycle",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RevisionLifecycle"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Restrict results to the current revision lifecycle.",
+              "title": "Lifecycle"
+            }
+          },
+          {
+            "description": "Restrict results to documents with this processing state.",
+            "in": "query",
+            "name": "processing_state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/IngestionItemState"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Restrict results to documents with this processing state.",
+              "title": "Processing State"
+            }
+          },
+          {
+            "description": "Restrict results to this publication status.",
+            "in": "query",
+            "name": "publication_status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/DocumentPublicationStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Restrict results to this publication status.",
+              "title": "Publication Status"
+            }
+          },
+          {
+            "description": "Restrict published results to this publication health.",
+            "in": "query",
+            "name": "publication_health",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ProjectionHealth"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Restrict published results to this publication health.",
+              "title": "Publication Health"
             }
           },
           {

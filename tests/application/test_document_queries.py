@@ -1,16 +1,26 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import UUID
 
+import pytest
+
 from spine.application.document_queries import (
     CanonicalDocumentQueryService,
+    DocumentPublicationStatus,
+    DocumentQueryFilters,
     DocumentQueryRequester,
+    DocumentSnapshot,
+    PublicationSnapshot,
+    ProcessingReferenceSnapshot,
+    RevisionSnapshot,
     RevisionLifecycle,
 )
 from spine.application.persistence.context import EnvironmentScope
-from spine.domain.projections import UnpublishedActivePublication
+from spine.domain.ingestion import IngestionItemState
+from spine.domain.projections import ProjectionHealth, UnpublishedActivePublication
+from spine.domain.sources import RevisionKind, SourceKind
 from spine.domain.sources import (
     AccessGrant,
     AccessPermission,
@@ -36,11 +46,19 @@ HUMAN_ID = UUID("52000000-0000-0000-0000-000000000001")
 class FakeSources:
     def __init__(self, source_object, source_revision, source_provenance) -> None:
         self.source = source_object
+        self.source_objects = (source_object,)
         self.revision = source_revision
         self.provenance = source_provenance
 
     async def resolve_source(self, source_object_id):
-        return self.source if source_object_id == self.source.source_object_id else None
+        return next(
+            (
+                value
+                for value in self.source_objects
+                if value.source_object_id == source_object_id
+            ),
+            None,
+        )
 
     async def resolve_revision(self, revision_id):
         return self.revision if revision_id == self.revision.revision_id else None
@@ -49,8 +67,16 @@ class FakeSources:
         return (self.provenance,) if revision_id == self.revision.revision_id else ()
 
     async def list_sources(self, *, limit, after=None):
-        del after
-        return (self.source,)[:limit]
+        values = sorted(
+            (
+                value
+                for value in self.source_objects
+                if after is None or (value.created_at, value.source_object_id) < after
+            ),
+            key=lambda value: (value.created_at, value.source_object_id),
+            reverse=True,
+        )
+        return tuple(values[:limit])
 
     async def list_revisions(self, source_object_id, *, limit, after=None):
         del after
@@ -348,8 +374,118 @@ async def test_document_queries_hide_source_from_another_workspace_and_environme
             requester=requester,
             limit=10,
             after=None,
+            filters=DocumentQueryFilters(source_kind=SourceKind.DOCUMENT),
         )
 
         assert detail is None
         assert history is None
         assert collection.items == ()
+
+
+async def test_document_query_filters_before_forming_the_bounded_page() -> None:
+    uow = FakeUnitOfWork(allow_content=False)
+    matching_source = uow.source.model_copy(
+        update={
+            "source_object_id": UUID("52000000-0000-0000-0000-000000000020"),
+            "source_kind": "record",
+            "created_at": uow.source.created_at + timedelta(minutes=1),
+        }
+    )
+    uow.sources.source_objects = (uow.source, matching_source)
+    service = CanonicalDocumentQueryService(lambda context: uow)
+
+    page = await service.list_documents(
+        context=SimpleNamespace(
+            scope=EnvironmentScope(
+                workspace_id=uow.source.workspace_id,
+                environment_id=uow.source.environment_id,
+            )
+        ),
+        requester=DocumentQueryRequester(
+            canonical_human_id=HUMAN_ID,
+            authorization_generation=1,
+        ),
+        limit=1,
+        after=None,
+        filters=DocumentQueryFilters(source_kind=SourceKind.RECORD),
+    )
+
+    assert [item.source_object_id for item in page.items] == [
+        matching_source.source_object_id
+    ]
+    assert page.has_more is False
+
+
+async def test_document_query_filter_returns_empty_page_without_leaking_other_sources() -> None:
+    uow = FakeUnitOfWork(allow_content=True)
+    service = CanonicalDocumentQueryService(lambda context: uow)
+
+    page = await service.list_documents(
+        context=SimpleNamespace(
+            scope=EnvironmentScope(
+                workspace_id=uow.source.workspace_id,
+                environment_id=uow.source.environment_id,
+            )
+        ),
+        requester=DocumentQueryRequester(
+            canonical_human_id=HUMAN_ID,
+            authorization_generation=1,
+        ),
+        limit=10,
+        after=None,
+        filters=DocumentQueryFilters(source_kind=SourceKind.RECORD),
+    )
+
+    assert page.items == ()
+    assert page.has_more is False
+
+
+def test_document_filters_match_only_bounded_operational_metadata() -> None:
+    snapshot = DocumentSnapshot(
+        source_object_id=UUID("52000000-0000-0000-0000-000000000030"),
+        source_kind="document",
+        created_at=NOW,
+        current_revision=RevisionSnapshot(
+            source_revision_id=UUID("52000000-0000-0000-0000-000000000031"),
+            kind=RevisionKind.CONTENT,
+            observed_at=NOW,
+            lifecycle=RevisionLifecycle.CURRENT,
+            processing_references=(
+                ProcessingReferenceSnapshot(
+                    ingestion_run_id=UUID("52000000-0000-0000-0000-000000000032"),
+                    ingestion_item_id=UUID("52000000-0000-0000-0000-000000000033"),
+                    state=IngestionItemState.PROCESSED,
+                ),
+            ),
+        ),
+        publication=PublicationSnapshot(
+            projection_kind="qa",
+            status=DocumentPublicationStatus.PUBLISHED,
+            health=ProjectionHealth.HEALTHY,
+        ),
+    )
+
+    filters = DocumentQueryFilters(
+        source_kind=SourceKind.DOCUMENT,
+        lifecycle=RevisionLifecycle.CURRENT,
+        processing_state=IngestionItemState.PROCESSED,
+        publication_status=DocumentPublicationStatus.PUBLISHED,
+        publication_health=ProjectionHealth.HEALTHY,
+    )
+
+    assert filters.matches(snapshot)
+    assert filters.digest_payload() == {
+        "lifecycle": "current",
+        "processing_state": "processed",
+        "publication_health": "healthy",
+        "publication_status": "published",
+        "source_kind": "document",
+    }
+
+
+def test_document_filters_reject_health_for_non_published_documents() -> None:
+    with pytest.raises(ValueError, match="publication_health"):
+        DocumentQueryFilters(
+            publication_status=DocumentPublicationStatus.UNPUBLISHED,
+            publication_health=ProjectionHealth.HEALTHY,
+        )

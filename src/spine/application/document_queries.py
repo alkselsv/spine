@@ -8,12 +8,12 @@ from enum import Enum
 from typing import Generic, Literal, Protocol, TypeVar
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from spine.application.persistence.context import EnvironmentScope, TrustedPersistenceContext
 from spine.application.persistence.unit_of_work import UnitOfWorkFactory
 from spine.domain.ingestion import IngestionItemState, ProcessingCoverage
-from spine.domain.sources import RevisionKind
+from spine.domain.sources import RevisionKind, SourceKind
 from spine.domain.sources import AdmissionDisposition
 from spine.domain.sources import CanonicalAcceptance, SourceObject, SourceRevision
 from spine.domain.projections import (
@@ -167,6 +167,74 @@ class DocumentSnapshot(BaseModel):
     )
 
 
+class DocumentQueryFilters(BaseModel):
+    """Closed, operational-only filters for the document collection."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source_kind: SourceKind | None = None
+    lifecycle: RevisionLifecycle | None = None
+    processing_state: IngestionItemState | None = None
+    publication_status: DocumentPublicationStatus | None = None
+    publication_health: ProjectionHealth | None = None
+
+    @model_validator(mode="after")
+    def validate_combinations(self) -> "DocumentQueryFilters":
+        if (
+            self.publication_health is not None
+            and self.publication_status in {
+                DocumentPublicationStatus.UNPUBLISHED,
+                DocumentPublicationStatus.UNAVAILABLE,
+            }
+        ):
+            raise ValueError(
+                "publication_health requires published publication_status"
+            )
+        return self
+
+    def digest_payload(self) -> dict[str, str]:
+        """Return the canonical non-empty filter object used by cursors."""
+
+        return {
+            name: value.value
+            for name, value in (
+                ("lifecycle", self.lifecycle),
+                ("processing_state", self.processing_state),
+                ("publication_health", self.publication_health),
+                ("publication_status", self.publication_status),
+                ("source_kind", self.source_kind),
+            )
+            if value is not None
+        }
+
+    def matches(self, snapshot: DocumentSnapshot) -> bool:
+        if self.source_kind is not None and snapshot.source_kind != self.source_kind.value:
+            return False
+        revision = snapshot.current_revision
+        if self.lifecycle is not None and (
+            revision is None or revision.lifecycle != self.lifecycle
+        ):
+            return False
+        if self.processing_state is not None and (
+            revision is None
+            or not any(
+                reference.state == self.processing_state
+                for reference in revision.processing_references
+            )
+        ):
+            return False
+        publication = snapshot.publication
+        if self.publication_status is not None and (
+            publication is None or publication.status != self.publication_status
+        ):
+            return False
+        if self.publication_health is not None and (
+            publication is None or publication.health != self.publication_health
+        ):
+            return False
+        return True
+
+
 @dataclass(frozen=True, slots=True)
 class DocumentPosition:
     created_at: datetime
@@ -200,6 +268,7 @@ class DocumentQueryService(Protocol):
         requester: DocumentQueryRequester,
         limit: int,
         after: DocumentPosition | None,
+        filters: DocumentQueryFilters | None = None,
     ) -> DocumentPage[DocumentSnapshot]: ...
 
     async def get_document(
@@ -235,27 +304,45 @@ class CanonicalDocumentQueryService:
         requester: DocumentQueryRequester,
         limit: int,
         after: DocumentPosition | None,
+        filters: DocumentQueryFilters | None = None,
     ) -> DocumentPage[DocumentSnapshot]:
         _validate_query(context, requester, limit)
+        resolved_filters = filters or DocumentQueryFilters()
         async with self.uow_factory(context) as uow:
-            sources = await uow.sources.list_sources(
-                limit=limit + 1,
-                after=(after.created_at, after.source_object_id) if after else None,
+            source_after = (
+                (after.created_at, after.source_object_id) if after else None
             )
-            visible_sources = tuple(
-                source for source in sources if _source_in_context(source, context)
-            )
-            snapshots = tuple([
-                await self._document_snapshot(
-                    uow,
-                    source,
-                    requester,
-                    disclose_protected=False,
+            snapshots: list[DocumentSnapshot] = []
+            has_more = False
+            while True:
+                sources = await uow.sources.list_sources(
+                    limit=limit + 1,
+                    after=source_after,
                 )
-                for source in visible_sources[:limit]
-            ])
+                if not sources:
+                    break
+                previous_source_after = source_after
+                source_after = (sources[-1].created_at, sources[-1].source_object_id)
+                for source in sources:
+                    if not _source_in_context(source, context):
+                        continue
+                    snapshot = await self._document_snapshot(
+                        uow,
+                        source,
+                        requester,
+                        disclose_protected=False,
+                    )
+                    if resolved_filters.matches(snapshot):
+                        snapshots.append(snapshot)
+                        if len(snapshots) > limit:
+                            has_more = True
+                            break
+                if has_more or len(sources) < limit + 1:
+                    break
+                if source_after == previous_source_after:
+                    break
             await uow.commit()
-            return DocumentPage(items=snapshots, has_more=len(sources) > limit)
+            return DocumentPage(items=tuple(snapshots[:limit]), has_more=has_more)
 
     async def get_document(
         self,
@@ -669,6 +756,7 @@ __all__ = [
     "DocumentPublicationStatus",
     "DocumentNotFound",
     "DocumentPosition",
+    "DocumentQueryFilters",
     "DocumentQueryRequester",
     "DocumentQueryService",
     "DocumentIdentitySnapshot",

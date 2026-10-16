@@ -1654,6 +1654,11 @@ export interface components {
             /** Superseded By Revision Id */
             superseded_by_revision_id?: string | null;
         };
+        /**
+         * SourceKind
+         * @enum {string}
+         */
+        SourceKind: "document" | "message" | "record";
         /** StableLocatorSnapshot */
         StableLocatorSnapshot: {
             /** Locator Kind */
@@ -1716,6 +1721,16 @@ export interface operations {
             query?: {
                 limit?: number;
                 cursor?: string | null;
+                /** @description Restrict results to a supported source kind. */
+                source_kind?: components["schemas"]["SourceKind"] | null;
+                /** @description Restrict results to the current revision lifecycle. */
+                lifecycle?: components["schemas"]["RevisionLifecycle"] | null;
+                /** @description Restrict results to documents with this processing state. */
+                processing_state?: components["schemas"]["IngestionItemState"] | null;
+                /** @description Restrict results to this publication status. */
+                publication_status?: components["schemas"]["DocumentPublicationStatus"] | null;
+                /** @description Restrict published results to this publication health. */
+                publication_health?: components["schemas"]["ProjectionHealth"] | null;
             };
             header: {
                 "X-Workspace-ID": string;
