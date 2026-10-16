@@ -25,6 +25,15 @@ from spine.application.telemetry.observations import (
     RecordingOperationalObservationSink,
     SafeOperationalFailureCode,
 )
+from spine.application.telemetry.metrics import (
+    InMemoryOperationalMetricsStore,
+    OperationalMetricsAccessDenied,
+    OperationalMetricsPage,
+    OperationalMetricsProjector,
+    OperationalMetricsQuery,
+    OperationalMetricsReader,
+    OperationalMetricsStore,
+)
 
 __all__ = [
     "DisabledOperationalObservationExporter",
@@ -47,4 +56,11 @@ __all__ = [
     "OperationalTelemetryAccessDenied",
     "RecordingOperationalObservationSink",
     "SafeOperationalFailureCode",
+    "InMemoryOperationalMetricsStore",
+    "OperationalMetricsAccessDenied",
+    "OperationalMetricsPage",
+    "OperationalMetricsProjector",
+    "OperationalMetricsQuery",
+    "OperationalMetricsReader",
+    "OperationalMetricsStore",
 ]

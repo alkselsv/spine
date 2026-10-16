@@ -198,6 +198,16 @@ diagnostic sink не меняет успешный business effect. Подмен
 trusted context отклоняется до handoff; best-effort относится только к записи в
 уже провалидированный diagnostic sink.
 
+Operational metrics are a separate tenant-scoped read model over approved
+operational observations and canonical Q&A run/feedback facts. Measurements
+carry explicit source and measurement identities, UTC half-open windows,
+aggregation and deduplication revisions, and coverage states. Answer rate,
+retry attempts, latency, lag, sequence gaps, costs and usefulness remain
+separate measurements; Decimal costs are never converted across currencies.
+The read model excludes protected content, applies the 90-day aggregation
+retention policy, and exposes authorization denial distinctly from unavailable
+or incomplete data.
+
 ## 7. Доменная модель
 
 ### Workspace и доступ
@@ -2288,6 +2298,8 @@ detectors без специальных обходов в platform core.
 - ADR-007: production graph/vector backends.
 - ADR-008: хранение, редактирование и retention PII.
 - ADR-009: prompt/model versioning и release gates по evals.
+- ADR-036: tenant-scoped operational metrics read model, deterministic
+  aggregation, retention and canonical fact boundaries.
 - [ADR-010](adr/0010-capability-based-agent-runtime.md): capability contracts, local agent runtime seam, bindings и retry/fallback ownership.
 - [ADR-011](adr/0011-canonical-document-access-policy.md): canonical document
   Access Policy, delegated retrieval authority, bootstrap и approval.
