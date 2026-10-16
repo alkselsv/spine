@@ -30,6 +30,12 @@ from spine.evals.production_contract import (
     ProductionContractObservationBridge,
     ProductionContractObservationError,
 )
+from spine.evaluations.grounded_answer_safety import (
+    GROUNDED_ANSWER_SAFETY_SEAM,
+    GroundedAnswerSafetyGate,
+    GroundedAnswerSafetyResult,
+    GroundedAnswerSafetyViolation,
+)
 from spine.evals.unauthorized_retrieval import (
     ProductionContractSafetyGate,
     ProductionContractSafetyResult,
@@ -60,6 +66,10 @@ __all__ = [
     "ProductionContractObservation",
     "ProductionContractObservationBridge",
     "ProductionContractObservationError",
+    "GROUNDED_ANSWER_SAFETY_SEAM",
+    "GroundedAnswerSafetyGate",
+    "GroundedAnswerSafetyResult",
+    "GroundedAnswerSafetyViolation",
     "ProductionContractSafetyGate",
     "ProductionContractSafetyResult",
     "ProductionContractSafetyViolation",

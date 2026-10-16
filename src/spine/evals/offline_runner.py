@@ -24,6 +24,10 @@ from spine.evals.production_contract import (
 )
 from spine.evals.qa_r1 import QACase, QADataset, load_r1_dataset
 from spine.evals.retrieval_replay import DeterministicRetrievalReplay
+from spine.evaluations.grounded_answer_safety import (
+    GroundedAnswerSafetyGate,
+    GroundedAnswerSafetyResult,
+)
 from spine.evals.unauthorized_retrieval import (
     ProductionContractSafetyGate,
     ProductionContractSafetyResult,
@@ -185,6 +189,9 @@ class OfflineEvaluationReport(DefinitionModel):
     aggregates: tuple[MetricAggregate, ...] = ()
     failures: tuple[FailureRecord, ...] = ()
     safety_results: tuple[ProductionContractSafetyResult, ...] = ()
+    grounded_answer_safety_results: tuple[GroundedAnswerSafetyResult, ...] = Field(
+        default=(), exclude_if=lambda value: value == ()
+    )
     unavailable_integrations: tuple[str, ...] = ()
 
 
@@ -354,6 +361,7 @@ class OfflineEvaluationRunner:
         self.execution_mode = execution_mode
         self.production_observer = production_observer
         self.safety_gate = ProductionContractSafetyGate()
+        self.grounded_answer_safety_gate = GroundedAnswerSafetyGate()
         if not recall_k_values or any(k < 1 for k in recall_k_values):
             raise ValueError("recall_k_values must contain positive integers")
         self.recall_k_values = tuple(dict.fromkeys(recall_k_values))
@@ -372,6 +380,7 @@ class OfflineEvaluationRunner:
         measurements: list[MeasurementObservation] = []
         failures: list[FailureRecord] = []
         safety_results: list[ProductionContractSafetyResult] = []
+        grounded_answer_safety_results: list[GroundedAnswerSafetyResult] = []
 
         for case in self.dataset.cases:
             (
@@ -380,6 +389,7 @@ class OfflineEvaluationRunner:
                 measurement,
                 case_failures,
                 case_safety_result,
+                case_grounded_answer_safety_result,
             ) = await self._run_case(case)
             scenarios.append(scenario)
             evaluations.extend(case_evaluations)
@@ -387,6 +397,8 @@ class OfflineEvaluationRunner:
             failures.extend(case_failures)
             if case_safety_result is not None:
                 safety_results.append(case_safety_result)
+            if case_grounded_answer_safety_result is not None:
+                grounded_answer_safety_results.append(case_grounded_answer_safety_result)
 
         evaluations_tuple = tuple(evaluations)
         configuration = EvaluationConfiguration(
@@ -420,6 +432,10 @@ class OfflineEvaluationRunner:
             report_without_id["safety_results"] = [
                 result.model_dump(mode="json") for result in safety_results
             ]
+            report_without_id["grounded_answer_safety_results"] = [
+                result.model_dump(mode="json")
+                for result in grounded_answer_safety_results
+            ]
             report_without_id["execution_mode"] = self.execution_mode
             report_without_id["observation_seam"] = PRODUCTION_CONTRACT_OBSERVATION_SEAM
         report_id = uuid5(
@@ -449,6 +465,7 @@ class OfflineEvaluationRunner:
             ),
             failures=tuple(failures),
             safety_results=tuple(safety_results),
+            grounded_answer_safety_results=tuple(grounded_answer_safety_results),
             unavailable_integrations=tuple(report_without_id["unavailable_integrations"]),
         )
 
@@ -464,9 +481,11 @@ class OfflineEvaluationRunner:
         MeasurementObservation,
         tuple[FailureRecord, ...],
         ProductionContractSafetyResult | None,
+        GroundedAnswerSafetyResult | None,
     ]:
         observed_answer: AnswerSubmission | None = None
         safety_result: ProductionContractSafetyResult | None = None
+        grounded_answer_safety_result: GroundedAnswerSafetyResult | None = None
         if self.execution_mode == "production-contract":
             assert self.production_observer is not None
             request = ProductionContractCaseRequest.from_case(case)
@@ -501,29 +520,51 @@ class OfflineEvaluationRunner:
                             "safety gate rejected observation"
                         ),
                         safety_result=safety_result,
+                        grounded_answer_safety_result=(
+                            self.grounded_answer_safety_gate.failed_without_observation(
+                                case.case_id
+                            )
+                        ),
                     )
                 retrieval = observation.retrieval
-                observed_answer = _answer_submission_from_output(observation.answer)
+                observed_answer = _answer_submission_from_output(
+                    observation.answer,
+                    case=case,
+                )
                 context_bundle = _evaluation_bundle_from_domain(
                     observation.context_bundle, case
                 )
+                grounded_answer_safety_result = self.grounded_answer_safety_gate.evaluate(
+                    case=case,
+                    dataset=self.dataset,
+                    answer=observed_answer,
+                    context_bundle=context_bundle,
+                )
             except UnavailableIntegrationError as error:
                 safety_result = self.safety_gate.failed_without_observation(case.case_id)
+                grounded_answer_safety_result = (
+                    self.grounded_answer_safety_gate.failed_without_observation(case.case_id)
+                )
                 return self._failed_case(
                     case,
                     "unavailable_integration",
                     "production-contract-observation",
                     error,
                     safety_result=safety_result,
+                    grounded_answer_safety_result=grounded_answer_safety_result,
                 )
             except Exception as error:
                 safety_result = self.safety_gate.failed_without_observation(case.case_id)
+                grounded_answer_safety_result = (
+                    self.grounded_answer_safety_gate.failed_without_observation(case.case_id)
+                )
                 return self._failed_case(
                     case,
                     "scenario_failure",
                     "production-contract-observation",
                     error,
                     safety_result=safety_result,
+                    grounded_answer_safety_result=grounded_answer_safety_result,
                 )
         else:
             try:
@@ -581,6 +622,7 @@ class OfflineEvaluationRunner:
                     retrieval=retrieval,
                     additional_failures=(measurement_failure,) if measurement_failure else (),
                     safety_result=safety_result,
+                    grounded_answer_safety_result=grounded_answer_safety_result,
                 )
         else:
             assert observed_answer is not None
@@ -611,6 +653,7 @@ class OfflineEvaluationRunner:
                 evaluations=results,
                 additional_failures=(measurement_failure,) if measurement_failure else (),
                 safety_result=safety_result,
+                grounded_answer_safety_result=grounded_answer_safety_result,
             )
         except UnavailableIntegrationError as error:
             return self._failed_case(
@@ -622,6 +665,7 @@ class OfflineEvaluationRunner:
                 retrieval=retrieval,
                 additional_failures=(measurement_failure,) if measurement_failure else (),
                 safety_result=safety_result,
+                grounded_answer_safety_result=grounded_answer_safety_result,
             )
         except Exception as error:
             return self._failed_case(
@@ -633,6 +677,7 @@ class OfflineEvaluationRunner:
                 retrieval=retrieval,
                 additional_failures=(measurement_failure,) if measurement_failure else (),
                 safety_result=safety_result,
+                grounded_answer_safety_result=grounded_answer_safety_result,
             )
 
         scenario_failure = _scenario_failure(case, retrieval, results)
@@ -647,6 +692,25 @@ class OfflineEvaluationRunner:
                 evaluations=results,
                 additional_failures=(measurement_failure,) if measurement_failure else (),
                 safety_result=safety_result,
+                grounded_answer_safety_result=grounded_answer_safety_result,
+            )
+        if (
+            grounded_answer_safety_result is not None
+            and grounded_answer_safety_result.status == "failed"
+        ):
+            return self._failed_case(
+                case,
+                "scenario_failure",
+                "grounded-answer-safety",
+                ProductionContractObservationError(
+                    "grounded answer safety gate rejected observation"
+                ),
+                measurement=measurement,
+                retrieval=retrieval,
+                evaluations=results,
+                additional_failures=(measurement_failure,) if measurement_failure else (),
+                safety_result=safety_result,
+                grounded_answer_safety_result=grounded_answer_safety_result,
             )
         return (
             ScenarioResult(
@@ -666,6 +730,7 @@ class OfflineEvaluationRunner:
             measurement,
             (measurement_failure,) if measurement_failure else (),
             safety_result,
+            grounded_answer_safety_result,
         )
 
     @staticmethod
@@ -680,12 +745,14 @@ class OfflineEvaluationRunner:
         evaluations: Sequence[EvaluationResult] = (),
         additional_failures: Sequence[FailureRecord] = (),
         safety_result: ProductionContractSafetyResult | None = None,
+        grounded_answer_safety_result: GroundedAnswerSafetyResult | None = None,
     ) -> tuple[
         ScenarioResult,
         tuple[EvaluationResult, ...],
         MeasurementObservation,
         tuple[FailureRecord, ...],
         ProductionContractSafetyResult | None,
+        GroundedAnswerSafetyResult | None,
     ]:
         status: ScenarioStatus = "unavailable" if category == "unavailable_integration" else "failed"
         return (
@@ -721,6 +788,7 @@ class OfflineEvaluationRunner:
                 ),
             ),
             safety_result,
+            grounded_answer_safety_result,
         )
 
     def _index_version(self) -> str:
@@ -828,7 +896,11 @@ def run_r1_production_contract_evaluation_sync(
     )
 
 
-def _answer_submission_from_output(output: object) -> AnswerSubmission:
+def _answer_submission_from_output(
+    output: object,
+    *,
+    case: QACase | None = None,
+) -> AnswerSubmission:
     from spine.domain.capabilities import AnswerQuestionOutput, AnswerQuestionOutcome
 
     if type(output) is not AnswerQuestionOutput:
@@ -846,11 +918,19 @@ def _answer_submission_from_output(output: object) -> AnswerSubmission:
         )
         for claim in answer_content.claims
     }
+    # Capability claim IDs are opaque UUIDs. Align labels by exact observed
+    # claim text only for evaluation; the answer text and citations remain the
+    # values emitted by the application flow.
+    evaluation_claim_ids = (
+        {claim.text: claim.claim_id for claim in case.expected_claims}
+        if case is not None
+        else {}
+    )
     return AnswerSubmission(
         outcome="answered",
         claims=tuple(
             AnswerClaim(
-                claim_id=str(claim.claim_id),
+                claim_id=evaluation_claim_ids.get(claim.text, str(claim.claim_id)),
                 text=claim.text,
                 citation_ids=tuple(str(item) for item in citation_ids_by_answer_id[claim.claim_id]),
             )
