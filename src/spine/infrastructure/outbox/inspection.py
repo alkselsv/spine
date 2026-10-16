@@ -11,6 +11,7 @@ from sqlalchemy import text
 from spine.application.outbox_inspection import (
     OutboxDeliveryInspectionItem,
     OutboxDeliveryInspectionPage,
+    OutboxDeliveryInspectionUnavailableError,
 )
 from spine.application.persistence.context import (
     ContextOrigin,
@@ -31,26 +32,15 @@ _BIND_CONTEXT = text(
     "set_config('spine.operation', :operation, true), "
     "set_config('spine.trace_id', :trace_id, true)"
 )
-_LIST_QUARANTINED = text(
+_LIST_QUARANTINED = (
     "SELECT event_id, workspace_id, environment_id, status, attempt_count, "
     "created_at, updated_at, quarantined_at, last_error_code, correlation_id "
     "FROM spine.outbox_deliveries "
     "WHERE workspace_id = :workspace_id "
     "AND environment_id = :environment_id "
     "AND status = 'quarantined' "
-    "ORDER BY quarantined_at DESC, event_id ASC LIMIT :fetch_limit"
 )
-_LIST_QUARANTINED_AFTER = text(
-    "SELECT event_id, workspace_id, environment_id, status, attempt_count, "
-    "created_at, updated_at, quarantined_at, last_error_code, correlation_id "
-    "FROM spine.outbox_deliveries "
-    "WHERE workspace_id = :workspace_id "
-    "AND environment_id = :environment_id "
-    "AND status = 'quarantined' "
-    "AND (quarantined_at < :after_time "
-    "OR (quarantined_at = :after_time AND event_id > :after_event_id)) "
-    "ORDER BY quarantined_at DESC, event_id ASC LIMIT :fetch_limit"
-)
+_LIST_QUARANTINED_ORDER = "ORDER BY quarantined_at DESC, event_id ASC LIMIT :fetch_limit"
 
 
 class PostgreSQLOutboxDeliveryInspection:
@@ -108,12 +98,19 @@ class PostgreSQLOutboxDeliveryInspection:
                     "environment_id": str(snapshot.scope.environment_id),
                     "fetch_limit": limit + 1,
                 }
-                query = _LIST_QUARANTINED
+                seek_predicate = ""
                 if after is not None:
-                    query = _LIST_QUARANTINED_AFTER
+                    seek_predicate = (
+                        "AND (quarantined_at < :after_time "
+                        "OR (quarantined_at = :after_time "
+                        "AND event_id > :after_event_id)) "
+                    )
                     parameters.update(
                         {"after_time": after[0], "after_event_id": after[1]}
                     )
+                query = text(
+                    _LIST_QUARANTINED + seek_predicate + _LIST_QUARANTINED_ORDER
+                )
                 result = await session.execute(query, parameters)
                 rows = result.mappings().all()
             has_more = len(rows) > limit
@@ -132,7 +129,7 @@ class PostgreSQLOutboxDeliveryInspection:
         except PermissionError:
             raise
         except Exception:
-            return OutboxDeliveryInspectionPage(state="unavailable")
+            raise OutboxDeliveryInspectionUnavailableError() from None
         finally:
             if session is not None:
                 try:

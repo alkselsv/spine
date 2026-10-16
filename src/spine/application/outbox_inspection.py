@@ -11,6 +11,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from spine.application.persistence.context import TrustedPersistenceContext
 
 
+class OutboxDeliveryInspectionUnavailableError(RuntimeError):
+    """Safe failure when the runtime inspection store cannot be read."""
+
+    def __init__(self) -> None:
+        super().__init__("Outbox delivery inspection is unavailable.")
+
+
 class OutboxDeliveryInspectionItem(BaseModel):
     """Allowlisted operational metadata for one quarantined delivery."""
 
@@ -77,6 +84,7 @@ class UnavailableOutboxDeliveryInspectionService:
 
 
 __all__ = [
+    "OutboxDeliveryInspectionUnavailableError",
     "OutboxDeliveryInspectionItem",
     "OutboxDeliveryInspectionPage",
     "OutboxDeliveryInspectionService",

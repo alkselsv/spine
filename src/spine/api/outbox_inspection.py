@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 from datetime import datetime
 from typing import Literal
@@ -12,8 +13,16 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from spine.api.authorization import (
     add_protected_api_route,
+    get_authorization_audit_event_id,
     get_authorized_persistence_context,
     get_authorized_request_context,
+)
+from spine.application.diagnostics import (
+    DiagnosticEventRegistry,
+    DiagnosticFailureCode,
+    DiagnosticSeverity,
+    FailureDiagnosticPayload,
+    emit_diagnostic_safely,
 )
 from spine.api.schemas import (
     CursorCodec,
@@ -54,6 +63,7 @@ class OutboxDeliveryInspectionResponse(BaseModel):
     workspace_id: UUID
     environment_id: UUID
     trace_id: UUID
+    authorization_audit_event_id: UUID
     state: Literal["empty", "complete", "partial", "unavailable"]
     items: tuple[OutboxDeliveryInspectionItem, ...]
     limit: int = Field(ge=1, le=MAX_PAGE_LIMIT)
@@ -83,6 +93,9 @@ def install_outbox_inspection_route(
         request_context: AuthorizedRequestContext[object] = Depends(
             get_authorized_request_context
         ),
+        authorization_audit_event_id: UUID = Depends(
+            get_authorization_audit_event_id
+        ),
     ) -> OutboxDeliveryInspectionResponse:
         after = _decode_cursor(
             cursor,
@@ -91,11 +104,17 @@ def install_outbox_inspection_route(
             environment_id=request_context.scope.environment_id,
             limit=limit,
         )
-        page = await _service(request).list_quarantined(
-            context=context,
-            limit=limit,
-            after=after,
-        )
+        try:
+            page = await _service(request).list_quarantined(
+                context=context,
+                limit=limit,
+                after=after,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            await _emit_unavailable_diagnostic(request, request_context)
+            page = OutboxDeliveryInspectionPage(state="unavailable")
         next_cursor = None
         if page.has_more and page.items:
             last = page.items[-1]
@@ -111,6 +130,7 @@ def install_outbox_inspection_route(
             workspace_id=request_context.scope.workspace_id,
             environment_id=request_context.scope.environment_id,
             trace_id=request_context.diagnostic_context.trace_id,
+            authorization_audit_event_id=authorization_audit_event_id,
             state=page.state,
             items=page.items,
             limit=limit,
@@ -167,6 +187,33 @@ def _service(request: Request) -> OutboxDeliveryInspectionService:
     if not callable(getattr(service, "list_quarantined", None)):
         return UnavailableOutboxDeliveryInspectionService()
     return service
+
+
+async def _emit_unavailable_diagnostic(
+    request: Request,
+    request_context: AuthorizedRequestContext[object],
+) -> None:
+    registry = getattr(request.app.state, "diagnostic_registry", None)
+    sink = getattr(request.app.state, "diagnostic_sink", None)
+    clock = getattr(request.app.state, "diagnostic_clock", None)
+    if not isinstance(registry, DiagnosticEventRegistry) or not callable(clock):
+        return
+    try:
+        event = registry.build_event(
+            event_type="failure.observed",
+            schema_version=1,
+            severity=DiagnosticSeverity.WARNING,
+            occurred_at=clock(),
+            diagnostic_context=request_context.diagnostic_context,
+            workspace_id=request_context.scope.workspace_id,
+            environment_id=request_context.scope.environment_id,
+            payload=FailureDiagnosticPayload(
+                failure_code=DiagnosticFailureCode.PERSISTENCE_UNAVAILABLE,
+            ),
+        )
+        await emit_diagnostic_safely(sink, event)
+    except Exception:
+        return
 
 
 __all__ = [

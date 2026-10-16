@@ -106,6 +106,9 @@ async def test_quarantine_inspection_is_bounded_scoped_and_keyset_paginated() ->
     assert first.json()["workspace_id"] == str(WORKSPACE_ID)
     assert first.json()["environment_id"] == str(ENVIRONMENT_ID)
     assert first.json()["trace_id"] == "50000000-0000-0000-0000-000000000073"
+    assert first.json()["authorization_audit_event_id"] == (
+        "80000000-0000-0000-0000-000000000073"
+    )
     assert first.json()["state"] == "partial"
     assert first.json()["has_more"] is True
     assert first.json()["items"][0]["event_id"] == str(EVENT_ID)
@@ -185,3 +188,35 @@ async def test_quarantine_inspection_cursor_rejects_another_workspace() -> None:
 
     assert first.status_code == 200
     assert other_scope.status_code == 403
+
+
+async def test_quarantine_inspection_does_not_disclose_service_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class FailingInspectionService:
+        async def list_quarantined(self, **kwargs: object) -> OutboxDeliveryInspectionPage:
+            del kwargs
+            raise RuntimeError("protected customer payload and provider secret")
+
+    application = inspection_app(FailingInspectionService())
+    transport = httpx.ASGITransport(app=application, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/v1/admin/outbox/deliveries/quarantined",
+            headers=headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["state"] == "unavailable"
+    assert "protected customer payload" not in response.text
+    assert "provider secret" not in response.text
+    assert "protected customer payload" not in caplog.text
+    assert "provider secret" not in caplog.text
+    diagnostic_events = application.state.diagnostic_sink.events
+    diagnostic_text = " ".join(
+        repr((event.model_dump(mode="json"), event.payload_json()))
+        for event in diagnostic_events
+    )
+    assert "persistence.unavailable" in diagnostic_text
+    assert "protected customer payload" not in diagnostic_text
+    assert "provider secret" not in diagnostic_text
