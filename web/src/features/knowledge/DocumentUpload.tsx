@@ -1,9 +1,11 @@
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRef, useState } from 'react';
 import { Link } from 'react-router';
 
 import type { components } from '../../../api/generated/schema';
 import { SpineApiError, type ScopedApiClient } from '../../api/client';
 import { ApiErrorPanel } from '../../app/status';
+import { useScope } from '../../app/scope';
 import { ru } from '../../i18n/resources';
 import {
   applyBatchItems,
@@ -14,7 +16,7 @@ import {
   type UploadValidationIssue,
   type UploadValidationResult,
 } from './upload';
-import { loadBatchStatus, submitDocumentBatch, type BatchStatusResponse } from './upload-api';
+import { loadBatchStatus, submitDocumentBatch } from './upload-api';
 import styles from './DocumentsPage.module.css';
 
 const POLL_INTERVAL_MS = 750;
@@ -44,6 +46,25 @@ export function DocumentUpload({
   const [isDragging, setIsDragging] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
   const controllerRef = useRef<AbortController | null>(null);
+  const queryClient = useQueryClient();
+  const { queryKey } = useScope();
+  const runQueryKey = [...queryKey('ingestion-run'), session?.runId];
+  const isRunQueryActive = Boolean(
+    session?.runId &&
+      session.submitted &&
+      !session.cancelled &&
+      session.status === 'processing',
+  );
+  const runQuery = useQuery({
+    queryKey: runQueryKey,
+    queryFn: ({ signal }) => loadBatchStatus(client, session!.runId!, signal),
+    enabled: Boolean(
+      isRunQueryActive,
+    ),
+    refetchInterval: (query) =>
+      query.state.error || query.state.data?.terminal ? false : POLL_INTERVAL_MS,
+    retry: false,
+  });
 
   function selectFiles(files: readonly File[]) {
     const result = validateUploadFiles(files);
@@ -70,12 +91,12 @@ export function DocumentUpload({
   function handleDrop(event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault();
     setIsDragging(false);
-    if (!disabled && !isBusy) selectFiles(Array.from(event.dataTransfer.files));
+    if (!disabled && !busy) selectFiles(Array.from(event.dataTransfer.files));
   }
 
   function handleDragOver(event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault();
-    if (!disabled && !isBusy) setIsDragging(true);
+    if (!disabled && !busy) setIsDragging(true);
   }
 
   function handleDragLeave(event: React.DragEvent<HTMLDivElement>) {
@@ -83,16 +104,17 @@ export function DocumentUpload({
   }
 
   function submit() {
-    if (!session || isBusy || disabled) return;
+    if (!session || busy || disabled) return;
     void runUpload(session);
   }
 
   function retry() {
-    if (!session || isBusy || disabled || (!session.rows.some((row) => row.retryable) && !isRetryableRequestError(session.error))) return;
-    void runUpload(session);
+    if (!session || busy || disabled || (!retryable && !retryRequest)) return;
+    void runUpload({ ...session, rows: effectiveRows });
   }
 
   function cancel() {
+    if (session?.runId) void queryClient.cancelQueries({ queryKey: runQueryKey });
     controllerRef.current?.abort();
     setSession((current) =>
       current
@@ -106,8 +128,8 @@ export function DocumentUpload({
   }
 
   function resumeObservation() {
-    if (!session?.runId || isBusy) return;
-    void observe(session, session.runId);
+    if (!session?.runId || busy) return;
+    setSession((current) => (current ? { ...current, cancelled: false, error: undefined } : current));
   }
 
   async function runUpload(current: UploadSession) {
@@ -143,7 +165,6 @@ export function DocumentUpload({
             }
           : value,
       );
-      if (!response.terminal) await observe(current, response.run_id, controller);
     } catch (error) {
       if (controller.signal.aborted || isAbortError(error)) {
         setSession((value) =>
@@ -172,63 +193,20 @@ export function DocumentUpload({
     }
   }
 
-  async function observe(current: UploadSession, runId: string, existingController?: AbortController) {
-    const controller = existingController ?? new AbortController();
-    if (!existingController) controllerRef.current = controller;
-    setIsBusy(true);
-    setSession((value) =>
-      value && value.idempotencyKey === current.idempotencyKey
-        ? { ...value, cancelled: false, error: undefined, runId }
-        : value,
-    );
-
-    try {
-      let response = await loadBatchStatus(client, runId, controller.signal);
-      while (true) {
-        if (controller.signal.aborted) return;
-        applyStatus(current.idempotencyKey, response);
-        if (response.terminal) return;
-        await waitForPoll(controller.signal);
-        response = await loadBatchStatus(client, runId, controller.signal);
-      }
-    } catch (error) {
-      if (controller.signal.aborted || isAbortError(error)) {
-        setSession((value) =>
-          value && value.idempotencyKey === current.idempotencyKey
-            ? {
-                ...value,
-                cancelled: true,
-                rows: value.rows.map((row) => (isActiveRow(row) ? { ...row, state: 'cancelled' } : row)),
-              }
-            : value,
-        );
-      } else {
-        setSession((value) =>
-          value && value.idempotencyKey === current.idempotencyKey ? { ...value, error } : value,
-        );
-      }
-    } finally {
-      if (controllerRef.current === controller) controllerRef.current = null;
-      setIsBusy(false);
-    }
-  }
-
-  function applyStatus(idempotencyKey: string, response: BatchStatusResponse) {
-    setSession((value) =>
-      value && value.idempotencyKey === idempotencyKey
-        ? {
-            ...value,
-            rows: applyBatchItems(value.rows, response.items),
-            runId: response.run_id,
-            status: response.status,
-            cancelled: false,
-          }
-        : value,
-    );
-  }
-
-  const retryable = session?.rows.some((row) => row.retryable) ?? false;
-  const retryRequest = isRetryableRequestError(session?.error);
+  const effectiveRows = session && runQuery.data ? applyBatchItems(session.rows, runQuery.data.items) : session?.rows ?? [];
+  const effectiveStatus = runQuery.data?.status ?? session?.status;
+  const requestError = session?.error ?? runQuery.error;
+  const retryable = effectiveRows.some((row) => row.retryable);
+  const retryRequest = isRetryableRequestError(requestError);
+  const isObserving = Boolean(
+    session?.runId &&
+      session.submitted &&
+      !session.cancelled &&
+      !runQuery.data?.terminal &&
+      !runQuery.error &&
+      session.status === 'processing',
+  );
+  const busy = isBusy || isObserving || (isRunQueryActive && runQuery.isPending);
   const canSubmit = Boolean(session && !session.submitted && !disabled);
 
   return (
@@ -249,14 +227,14 @@ export function DocumentUpload({
         onDrop={handleDrop}
       >
         <strong>{ru.documents.upload.dropzone}</strong>
-        <span>или</span>
+        <span>{ru.documents.upload.or}</span>
         <label className={styles.primaryButton} htmlFor="document-upload-input">
           {ru.documents.upload.chooseFiles}
         </label>
         <input
           accept=".txt,.md,.markdown,text/plain,text/markdown"
           className={styles.visuallyHidden}
-          disabled={disabled || isBusy}
+          disabled={disabled || busy}
           id="document-upload-input"
           multiple
           onChange={handleInputChange}
@@ -267,7 +245,7 @@ export function DocumentUpload({
       {validation && !validation.valid ? <ValidationErrors result={validation} /> : null}
 
       {session ? (
-        <div className={styles.uploadQueue} aria-label={ru.documents.upload.review}>
+        <div className={styles.uploadQueue} aria-label={ru.documents.upload.review} role="region">
           <div className={styles.uploadQueueHeader}>
             <div>
               <h4>{ru.documents.upload.review}</h4>
@@ -277,7 +255,7 @@ export function DocumentUpload({
           </div>
 
           <ul className={styles.uploadList}>
-            {session.rows.map((row) => (
+            {effectiveRows.map((row) => (
               <UploadRowView key={row.id} row={row} />
             ))}
           </ul>
@@ -288,17 +266,17 @@ export function DocumentUpload({
                 {ru.documents.upload.submit}
               </button>
             ) : null}
-            {isBusy ? (
+            {busy ? (
               <button className={styles.secondaryButton} onClick={cancel} type="button">
                 {ru.documents.upload.cancel}
               </button>
             ) : null}
-            {(retryable || retryRequest) && !isBusy ? (
+            {(retryable || retryRequest) && !busy ? (
               <button className={styles.secondaryButton} onClick={retry} type="button">
                 {retryRequest ? ru.documents.upload.retryRequest : ru.documents.upload.retry}
               </button>
             ) : null}
-            {session.cancelled && session.runId && !isBusy ? (
+            {session.cancelled && session.runId && !busy ? (
               <button className={styles.secondaryButton} onClick={resumeObservation} type="button">
                 {ru.documents.upload.resumeObservation}
               </button>
@@ -313,11 +291,11 @@ export function DocumentUpload({
             ) : null}
           </div>
 
-          {session.status ? <p className={styles.uploadBatchStatus}>{batchStatusLabel(session.status)}</p> : null}
+          {effectiveStatus ? <p className={styles.uploadBatchStatus}>{batchStatusLabel(effectiveStatus)}</p> : null}
           {session.cancelled ? <p className={styles.uploadCancellation}>{ru.documents.upload.cancelledDescription}</p> : null}
-          {session.error ? (
+          {requestError ? (
             <>
-              <ApiErrorPanel error={session.error} />
+              <ApiErrorPanel error={requestError} />
               {!retryRequest ? <p className={styles.uploadBatchStatus}>{ru.documents.upload.errorNextAction}</p> : null}
             </>
           ) : null}
@@ -331,6 +309,7 @@ function UploadRowView({ row }: { row: UploadRow }) {
   const label = uploadStateLabel(row);
   const description = uploadStateDescription(row);
   const warnings = row.serverItem?.warnings.length ?? 0;
+  const stateClass = styles[`uploadState_${row.state}`] ?? '';
 
   return (
     <li className={styles.uploadRow}>
@@ -339,7 +318,7 @@ function UploadRowView({ row }: { row: UploadRow }) {
         <span>{formatBytes(row.file.size)}</span>
       </div>
       <div className={styles.uploadFileOutcome}>
-        <span className={`${styles.uploadState} ${styles[`uploadState_${row.state}`]}`}>{label}</span>
+        <span className={`${styles.uploadState} ${stateClass}`}>{label}</span>
         <span>{description}</span>
         {warnings > 0 ? <span>{ru.documents.upload.warning}</span> : null}
         {row.retryable ? <span>{ru.documents.upload.retryable}</span> : null}
@@ -367,6 +346,9 @@ function validationMessage(issue: UploadValidationIssue): string {
 }
 
 function uploadStateLabel(row: UploadRow): string {
+  if (row.state === 'cancelled' && (row.serverItem?.status === 'cancelled' || row.serverItem?.processing === 'cancelled')) {
+    return ru.documents.upload.serverCancelled;
+  }
   if (row.state === 'processing' && row.serverItem?.item_state === 'projection_requested') {
     return ru.documents.states.indexing;
   }
@@ -383,7 +365,11 @@ function uploadStateDescription(row: UploadRow): string {
   }
   if (row.state === 'processing') return ru.documents.upload.processingDescription;
   if (row.state === 'ready') return ru.documents.upload.readyDescription;
-  if (row.state === 'cancelled') return ru.documents.upload.cancelledDescription;
+  if (row.state === 'cancelled') {
+    return row.serverItem?.status === 'cancelled' || row.serverItem?.processing === 'cancelled'
+      ? ru.documents.upload.serverCancelledDescription
+      : ru.documents.upload.cancelledDescription;
+  }
   return '';
 }
 
@@ -414,24 +400,4 @@ function isRetryableRequestError(error: unknown): boolean {
     error instanceof SpineApiError &&
     (error.retryability === 'same_command' || error.retryability === 'after_delay')
   );
-}
-
-function waitForPoll(signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let timeout = 0;
-    const abort = () => {
-      window.clearTimeout(timeout);
-      signal.removeEventListener('abort', abort);
-      const error = new Error('The operation was aborted.');
-      error.name = 'AbortError';
-      reject(error);
-    };
-    const finish = () => {
-      signal.removeEventListener('abort', abort);
-      resolve();
-    };
-    timeout = window.setTimeout(finish, POLL_INTERVAL_MS);
-    signal.addEventListener('abort', abort, { once: true });
-    if (signal.aborted) abort();
-  });
 }

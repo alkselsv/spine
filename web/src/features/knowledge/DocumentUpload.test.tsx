@@ -1,12 +1,15 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 
+import type { components } from '../../../api/generated/schema';
 import { createScopedApiClient } from '../../api/client';
+import { ScopeContext, type Scope } from '../../app/scope';
 import { DocumentUpload } from './DocumentUpload';
 
-const scope = {
+const scope: Scope = {
   workspaceId: '10000000-0000-4000-8000-000000000001',
   environmentId: '20000000-0000-4000-8000-000000000001',
 };
@@ -160,14 +163,21 @@ function renderUpload(fetch: typeof globalThis.fetch) {
     getBearerCredential: () => 'test-token',
     scope,
   });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <MemoryRouter>
-      <DocumentUpload client={client} scopeSearch={`workspace=${scope.workspaceId}&environment=${scope.environmentId}`} />
+      <QueryClientProvider client={queryClient}>
+        <ScopeContext.Provider value={{ scope, queryKey: (resource) => ['spine', resource, scope.workspaceId, scope.environmentId] }}>
+          <DocumentUpload client={client} scopeSearch={`workspace=${scope.workspaceId}&environment=${scope.environmentId}`} />
+        </ScopeContext.Provider>
+      </QueryClientProvider>
     </MemoryRouter>,
   );
 }
 
-function uploadResponse(overrides: Record<string, unknown> = {}) {
+function uploadResponse(
+  overrides: Partial<components['schemas']['BatchIngestionUploadResponse']> = {},
+): components['schemas']['BatchIngestionUploadResponse'] {
   return {
     items: [],
     replay: false,
@@ -182,15 +192,8 @@ function uploadResponse(overrides: Record<string, unknown> = {}) {
 }
 
 function item(
-  overrides: Partial<{
-    acceptance: 'pending' | 'accepted' | 'rejected' | 'quarantined';
-    input_identity: string;
-    processing: 'not_started' | 'processing' | 'succeeded' | 'partial' | 'failed' | 'unsupported' | 'cancelled';
-    retryable: boolean;
-    status: 'non_terminal' | 'succeeded' | 'partial' | 'failed' | 'rejected' | 'quarantined' | 'unsupported' | 'cancelled';
-    terminal: boolean;
-  }> = {},
-) {
+  overrides: Partial<components['schemas']['BatchIngestionItemResponse']> = {},
+): components['schemas']['BatchIngestionItemResponse'] {
   return {
     acceptance: 'accepted' as const,
     attempt: 1,

@@ -96,10 +96,10 @@ test('test_documents_upload_reviews_batch_polls_processing_and_links_run', async
   await page.goto(
     `/knowledge/documents?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`,
   );
-  await page.locator('input[type="file"]').setInputFiles({
-    name: 'proposal.txt',
-    mimeType: 'text/plain',
-    buffer: Buffer.from('synthetic upload fixture'),
+  await page.locator('[aria-label="Перетащите файлы сюда"]').evaluate((element) => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(new File(['synthetic upload fixture'], 'proposal.txt', { type: 'text/plain' }));
+    element.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer }));
   });
 
   await expect(page.getByRole('region', { name: 'Проверка перед отправкой' })).toBeVisible();
@@ -109,6 +109,10 @@ test('test_documents_upload_reviews_batch_polls_processing_and_links_run', async
     'href',
     new RegExp(`/runs/${firstDocument}.*workspace=${salesWorkspace}.*environment=${stagingEnvironment}`),
   );
+  await page.getByRole('link', { name: 'Открыть запуск обработки' }).click();
+  await expect(page.getByRole('heading', { name: 'Запуск обработки' })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Запуск обработки' })).toBeVisible();
 
   expect(uploadRequests).toHaveLength(1);
   expect(uploadRequests[0]?.headers['x-workspace-id']).toBe(salesWorkspace);
@@ -314,7 +318,9 @@ async function installControlledBatchUpload(page: Page) {
   return requests;
 }
 
-function controlledUploadItem(overrides: Record<string, unknown> = {}) {
+function controlledUploadItem(
+  overrides: Partial<components['schemas']['BatchIngestionItemResponse']> = {},
+): components['schemas']['BatchIngestionItemResponse'] {
   return {
     acceptance: 'accepted',
     attempt: 1,

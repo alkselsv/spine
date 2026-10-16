@@ -233,21 +233,21 @@
 }
 
 .uploadState_ready {
-  background: #e4f6e9;
-  color: #1b6a36;
+  background: var(--color-surface-strong);
+  color: var(--color-ink);
 }
 
 .uploadState_failed,
 .uploadState_rejected {
-  background: #fff0ed;
-  color: #9b3026;
+  background: var(--color-surface-strong);
+  color: var(--color-link);
 }
 
 .uploadState_processing,
 .uploadState_uploading,
 .uploadState_accepted {
-  background: #fff7dc;
-  color: #765b00;
+  background: var(--color-surface-strong);
+  color: var(--color-ink);
 }
 
 .uploadState_cancelled {
@@ -261,6 +261,28 @@
   gap: var(--space-3);
 }
 
+.primaryButton {
+  border: 0;
+  border-radius: 0.5rem;
+  padding: 0.7rem 1rem;
+  background: var(--color-link);
+  color: white;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primaryButton:hover,
+.primaryButton:focus-visible {
+  background: var(--color-ink);
+}
+
+.primaryButton:disabled,
+.secondaryButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .uploadBatchStatus,
 .uploadCancellation,
 .replayNotice {
@@ -270,9 +292,9 @@
 }
 
 .uploadCancellation {
-  border-left: 0.25rem solid #e8b949;
+  border-left: 0.25rem solid var(--color-accent);
   padding: 0.65rem 0.8rem;
-  background: #fff9e8;
+  background: var(--color-surface-strong);
 }
 
 .replayNotice {
@@ -281,9 +303,9 @@
 }
 
 .uploadValidation {
-  border-left: 0.25rem solid #dd6b63;
+  border-left: 0.25rem solid var(--color-link);
   padding: 0.8rem 1rem;
-  background: #fff2f0;
+  background: var(--color-surface-strong);
 }
 
 .uploadValidation ul {

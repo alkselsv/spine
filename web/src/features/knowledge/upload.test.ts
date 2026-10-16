@@ -65,6 +65,7 @@ describe('document batch upload contract', () => {
     ['accepted', 'succeeded', 'succeeded', 'ready'],
     ['accepted', 'failed', 'failed', 'failed'],
     ['rejected', 'not_started', 'rejected', 'rejected'],
+    ['accepted', 'cancelled', 'cancelled', 'cancelled'],
   ] as const)('test_server_item_%s_%s_maps_to_%s', (acceptance, processing, status, expected) => {
     expect(mapBatchItemState(makeItem({ acceptance, processing, status }))).toBe(expected);
   });

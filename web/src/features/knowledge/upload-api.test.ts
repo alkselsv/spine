@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { components } from '../../../api/generated/schema';
 import { createScopedApiClient } from '../../api/client';
 import { createUploadRows } from './upload';
 import { loadBatchStatus, submitDocumentBatch } from './upload-api';
@@ -51,7 +52,7 @@ describe('document batch upload API adapter', () => {
   });
 });
 
-function uploadResponse() {
+function uploadResponse(): components['schemas']['BatchIngestionUploadResponse'] {
   return {
     items: [],
     replay: false,
@@ -64,6 +65,7 @@ function uploadResponse() {
   };
 }
 
-function statusResponse() {
-  return { ...uploadResponse(), status_url: undefined };
+function statusResponse(): components['schemas']['BatchIngestionStatusResponse'] {
+  const { status_url: _statusUrl, ...response } = uploadResponse();
+  return response;
 }

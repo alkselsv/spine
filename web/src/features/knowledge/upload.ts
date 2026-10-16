@@ -84,6 +84,7 @@ export function createIdempotencyKey(): string {
 export function mapBatchItemState(
   item: components['schemas']['BatchIngestionItemResponse'],
 ): UploadRowState {
+  if (item.status === 'cancelled' || item.processing === 'cancelled') return 'cancelled';
   if (item.acceptance === 'rejected' || item.acceptance === 'quarantined' || item.status === 'rejected' || item.status === 'unsupported') {
     return 'rejected';
   }
@@ -91,7 +92,9 @@ export function mapBatchItemState(
     return 'failed';
   }
   if (item.processing === 'succeeded' && item.status === 'succeeded') return 'ready';
-  if (item.processing === 'processing') return 'processing';
+  if (item.processing === 'processing' || item.item_state === 'processing' || item.item_state === 'projection_requested') {
+    return 'processing';
+  }
   if (item.acceptance === 'accepted') return 'accepted';
   return 'queued';
 }
