@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 
 import { ChatPanel } from '../features/chat/ChatPanel';
 import { createQualificationChatHarness } from '../features/chat/qualification';
+import { SessionBrowserPage } from '../features/chat/SessionBrowserPage';
 import { DocumentDetailPage } from '../features/knowledge/DocumentDetailPage';
 import { ru } from '../i18n/resources';
 import { AdministratorBoundary } from './auth';
@@ -46,7 +47,7 @@ function PlaceholderPage({ title }: { title: string }) {
 }
 
 function ChatPage() {
-  const { sessionId = 'demo-session' } = useParams();
+  const { sessionId } = useParams();
   const { scope } = useScope();
   const [reconnectCount, setReconnectCount] = useState(0);
   const fixture = readBrowserQualificationFixture();
@@ -58,14 +59,16 @@ function ChatPage() {
     [fixture, scope],
   );
 
-  if (!harness) return <PlaceholderPage title={ru.page.chatSession} />;
-  return (
-    <ChatPanel
-      reconnectCount={reconnectCount}
-      sessionId={sessionId}
-      transport={harness.transport}
-    />
-  );
+  if (fixture === 'controlled' && harness) {
+    return (
+      <ChatPanel
+        reconnectCount={reconnectCount}
+        sessionId={sessionId ?? 'demo-session'}
+        transport={harness.transport}
+      />
+    );
+  }
+  return <SessionBrowserPage />;
 }
 
 export const appRoutes: RouteObject[] = [
@@ -90,9 +93,10 @@ export const appRoutes: RouteObject[] = [
         element: <DocumentDetailPage />,
       },
       {
-        path: 'chat/:sessionId',
+        path: 'chat',
         element: <ChatPage />,
       },
+      { path: 'chat/:sessionId', element: <ChatPage /> },
       {
         path: 'runs',
         lazy: async () => {

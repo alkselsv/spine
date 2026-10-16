@@ -6984,6 +6984,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
+                "Idempotency-Key": string;
                 "X-Workspace-ID": string;
                 "X-Environment-ID": string;
             };
@@ -7307,6 +7308,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
+                "Idempotency-Key": string;
                 "X-Workspace-ID": string;
                 "X-Environment-ID": string;
             };
@@ -7637,6 +7639,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
+                "Idempotency-Key": string;
                 "X-Workspace-ID": string;
                 "X-Environment-ID": string;
             };
