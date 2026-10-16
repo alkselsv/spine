@@ -1,0 +1,218 @@
+{
+  "schema_version": "answer-question-qualification:v1",
+  "ticket": 285,
+  "parent_ticket": 25,
+  "mode": "deterministic_offline_with_mandatory_postgresql_and_opt_in_provider_gates",
+  "release_gate": {
+    "status": "qualified_offline",
+    "postgresql": "passed_disposable_harness",
+    "provider_qualification": "not_approved"
+  },
+  "readiness": {
+    "deterministic_offline": "qualified",
+    "postgresql": "qualified_disposable_harness",
+    "integration_prerequisites": "not_run",
+    "native_dependency": "not_run",
+    "production": "not_approved"
+  },
+  "production_approval": false,
+  "verification": {
+    "offline": {
+      "status": "passed",
+      "command": "uv run pytest -q tests/qualification/test_issue285_qualification.py",
+      "evidence": "Deterministic provider-fake qualification is the release artifact for this ticket."
+    },
+    "compile_import": {
+      "status": "passed",
+      "command": "uv run python -m compileall -q src tests"
+    },
+    "postgresql": {
+      "status": "passed",
+      "command": "uv run pytest -q tests/integration/postgresql/test_postgresql_unit_of_work.py tests/integration/postgresql/test_initial_tenancy_migration.py",
+      "required_nodes": "postgresql_prerequisite.tests",
+      "observed": "10 passed in 109.65s against disposable Docker PostgreSQL",
+      "failures": [],
+      "skipped": [],
+      "note": "This verifies the disposable PostgreSQL persistence/tenancy harness, not the configured production Context Broker or disclosure revalidator."
+    },
+    "web_compatibility": {
+      "status": "ci_required",
+      "commands": [
+        "pnpm web:api:check",
+        "pnpm web:typecheck",
+        "pnpm web:build",
+        "pnpm web:test",
+        "pnpm web:test:e2e"
+      ],
+      "skipped_opt_in": [],
+      "note": "The controlled fixture is compatibility evidence only; Issue #26 API/SSE and Issue #22 Chat/Citation Inspector remain outside this ticket."
+    },
+    "web_evidence": [
+      "web/src/features/chat/protocol.test.ts::test_protocol_rejects_candidate_output_and_provider_details",
+      "web/src/features/chat/transport.test.ts::test_transport_rechecks_disclosure_and_denies_before_protected_event"
+    ],
+    "opt_in_integrations": {
+      "status": "skipped",
+      "skipped_opt_in": [
+        "configured Context Broker PostgreSQL/Neo4j/PGVector projection",
+        "real model/provider qualification"
+      ],
+      "failures": [],
+      "reason": "No production credentials or configured external provider profile are part of the deterministic offline gate."
+    },
+    "failures": []
+  },
+  "criteria": [
+    {
+      "id": "AC1",
+      "status": "qualified_offline",
+      "evidence": [
+        "tests/domain/capabilities/test_answer_question_contracts.py::test_fake_handler_covers_every_terminal_outcome_without_a_provider",
+        "tests/application/test_answer_question_context.py::test_allowed_context_consumes_exact_bundle_and_pin_without_caller_selectors",
+        "tests/application/test_answer_question_candidate.py::test_candidate_generation_delegates_to_pinned_runtime_as_repeatable_call",
+        "tests/application/test_answer_question_candidate.py::test_candidate_generation_returns_a_persisted_result_not_a_token_stream",
+        "tests/agents/test_answer_question_candidate_runtime.py::test_local_runtime_persists_a_valid_typed_candidate_once",
+        "tests/evals/test_answer_question_contract_evaluation.py::test_answer_question_contract_evaluation_fixture_covers_closed_outcome_sets"
+      ]
+    },
+    {
+      "id": "AC2",
+      "status": "qualified_postgresql",
+      "evidence": [
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_answer_question_run_create_and_replay_contract",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_answer_question_run_conflicting_key_contract",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_answer_question_attempt_immutability_contract",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_answer_question_context_bundle_reference_contract",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_answer_question_concurrent_completion_contract",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_answer_question_run_isolation_contract",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_answer_question_retry_cancellation_contract",
+        "tests/integration/postgresql/test_initial_tenancy_migration.py::test_initial_schema_has_named_tenancy_constraints_and_postgresql_types",
+        "tests/integration/postgresql/test_initial_tenancy_migration.py::test_workspace_rls_hides_and_rejects_another_workspace_rows",
+        "tests/integration/postgresql/test_initial_tenancy_migration.py::test_environment_rls_isolates_two_environments_in_one_workspace"
+      ]
+    },
+    {
+      "id": "AC3",
+      "status": "qualified_offline",
+      "evidence": [
+        "tests/application/test_citation_validation.py::test_fabricated_or_wrong_generation_citation_fails_closed_without_source_details",
+        "tests/application/test_evidence_lineage_verification.py::test_fabricated_evidence_digest_is_rejected",
+        "tests/application/test_evidence_lineage_verification.py::test_mixed_access_multi_source_entity_is_withheld_as_a_whole",
+        "tests/application/test_evidence_lineage_verification.py::test_all_authorized_multi_source_entity_is_verified_without_dropping_contributors",
+        "tests/evals/test_retrieval_replay.py::test_stale_projection_abstains_until_rebuild_selects_current_revision",
+        "tests/evals/test_retrieval_replay.py::test_unsafe_fixture_case_returns_no_protected_evidence[tombstone]",
+        "tests/evals/test_retrieval_replay.py::test_cross_workspace_query_returns_empty_without_leaking_other_workspace",
+        "tests/application/test_semantic_support.py::test_citation_presence_does_not_substitute_for_semantic_support",
+        "tests/application/test_semantic_support.py::test_validator_failure_is_fail_closed",
+        "tests/domain/capabilities/test_answer_evaluation.py::test_proven_exhaustive_coverage_produces_complete_answer",
+        "tests/domain/capabilities/test_answer_evaluation.py::test_incomplete_coverage_with_current_fallback_produces_partial_answer",
+        "tests/domain/capabilities/test_answer_evaluation.py::test_current_grounded_conflict_is_presented_without_selecting_a_winner",
+        "tests/domain/capabilities/test_answer_evaluation.py::test_explicit_coverage_gap_without_fallback_rejects_answer"
+      ]
+    },
+    {
+      "id": "AC4",
+      "status": "qualified_offline",
+      "evidence": [
+        "tests/application/test_disclosure_revalidation.py::test_current_ineligible_dependency_suppresses_whole_answer",
+        "tests/application/test_disclosure_revalidation.py::test_revision_replacement_requires_revalidation_without_disclosing_old_answer",
+        "tests/application/test_disclosure_revalidation.py::test_material_later_publication_requires_revalidation",
+        "tests/application/test_disclosure_revalidation.py::test_authority_generation_change_requires_revalidation",
+        "tests/application/test_disclosure_revalidation.py::test_current_requester_revocation_suppresses_history_without_content_reason",
+        "tests/application/test_disclosure_revalidation.py::test_superseded_dependency_suppresses_whole_answer",
+        "tests/application/test_disclosure_revalidation.py::test_cancelled_revalidation_fails_closed_without_stored_answer",
+        "tests/application/test_disclosure_revalidation.py::test_interrupted_revalidation_fails_closed_without_stored_answer",
+        "tests/application/test_disclosure_revalidation.py::test_missing_dependency_fails_closed_and_does_not_reuse_stored_answer",
+        "tests/application/test_attempt_revalidation.py::test_activation_change_alone_replays_the_pinned_bundle",
+        "tests/application/test_attempt_revalidation.py::test_tombstoned_source_fails_closed_even_when_the_old_evidence_is_present",
+        "tests/application/test_attempt_revalidation.py::test_retryable_observation_is_not_cached_and_later_retry_can_replay",
+        "tests/application/test_answer_disclosure.py::test_gate_suppresses_replay_after_current_authority_revocation",
+        "tests/application/test_answer_question_context.py::test_revalidation_failure_blocks_pre_disclosure_and_never_returns_answered"
+      ]
+    },
+    {
+      "id": "AC5",
+      "status": "qualified_offline",
+      "evidence": [
+        "tests/agents/test_answer_question_candidate_runtime.py::test_local_runtime_rejects_candidate_before_output_checkpoint",
+        "tests/agents/test_answer_question_candidate_runtime.py::test_local_runtime_rejects_untyped_or_source_free_candidate_output",
+        "tests/domain/capabilities/test_answer_disclosure.py::test_cancellation_never_reaches_accepted_output",
+        "tests/application/test_answer_outcomes.py::test_application_resolver_maps_typed_validator_fake_without_diagnostic_detail",
+        "tests/application/diagnostics/test_errors.py::test_unknown_error_is_generic_without_inspecting_or_leaking_exception",
+        "tests/contracts/memory/test_context_broker_v1.py::test_port_errors_map_to_safe_typed_responses[validator_error]",
+        "tests/application/test_answer_question_context.py::test_denied_context_returns_safe_denial_without_loading_bundle",
+        "tests/agents/test_local_runtime.py::test_failure_diagnostics_reject_negative_disclosure_corpus",
+        "tests/application/test_semantic_support.py::test_citation_presence_does_not_substitute_for_semantic_support",
+        "tests/application/test_semantic_support.py::test_validator_unavailable_is_a_mandatory_qna_failure",
+        "tests/application/test_semantic_support.py::test_validator_failure_is_fail_closed"
+      ]
+    },
+    {
+      "id": "AC6",
+      "status": "qualified_offline",
+      "evidence": [
+        "tests/domain/capabilities/test_answer_question_runs.py::test_answer_question_attempt_completion_pins_context_versions_usage_and_safe_events",
+        "tests/application/test_answer_question_context.py::test_context_outcome_mapping_keeps_broker_and_answer_outcomes_distinct",
+        "tests/evals/test_answer_question_contract_evaluation.py::test_answer_question_contract_evaluation_fixture_covers_closed_outcome_sets",
+        "tests/api/test_qa_sessions.py::test_session_create_replay_and_message_read_use_stable_scoped_contracts",
+        "tests/qualification/test_issue285_qualification.py::test_issue285_downstream_web_boundary_is_explicitly_compatibility_only"
+      ]
+    },
+    {
+      "id": "AC7",
+      "status": "qualified_offline",
+      "evidence": [
+        "tests/evals/test_qa_r1_dataset.py::test_r1_dataset_manifest_is_ordered_for_replay",
+        "tests/evals/test_qa_r1_dataset.py::test_r1_dataset_is_synthetic_and_does_not_define_release_thresholds",
+        "tests/evals/test_answer_question_contract_evaluation.py::test_answer_question_contract_evaluation_fixture_covers_closed_outcome_sets",
+        "tests/evals/test_regression_gate.py::test_offline_regression_gate_passes_reproducible_r1_contract",
+        "tests/qualification/test_issue285_qualification.py::test_issue285_regression_gate_input_contract_is_versioned"
+      ]
+    },
+    {
+      "id": "AC8",
+      "status": "qualified_offline",
+      "evidence": [
+        "tests/qualification/test_issue285_qualification.py::test_issue285_report_is_machine_readable_and_separates_readiness_claims",
+        "tests/qualification/test_issue285_qualification.py::test_issue285_report_names_unverified_external_prerequisites"
+      ]
+    }
+  ],
+  "boundaries": {
+    "context_broker": "consumed_not_owned",
+    "api_sse_issue_26": "compatibility_only",
+    "chat_citation_inspector_issue_22": "compatibility_only",
+    "regression_gate_issue_19": "inputs_only",
+    "quality_thresholds_issue_17": "out_of_scope"
+  },
+  "postgresql_prerequisite": {
+    "status": "passed_disposable_harness",
+    "requirement": "Run the real PostgreSQL Q&A persistence and tenant-isolation suite with SPINE_TEST_DATABASE_URL pointing at the exact disposable test database and marker, or with Docker/Testcontainers available.",
+    "offline_status": "passed_with_docker",
+    "tests": [
+      "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_answer_question_run_create_and_replay_contract",
+      "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_answer_question_run_conflicting_key_contract",
+      "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_answer_question_attempt_immutability_contract",
+      "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_answer_question_context_bundle_reference_contract",
+      "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_answer_question_concurrent_completion_contract",
+      "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_answer_question_run_isolation_contract",
+      "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_answer_question_retry_cancellation_contract",
+      "tests/integration/postgresql/test_initial_tenancy_migration.py::test_initial_schema_has_named_tenancy_constraints_and_postgresql_types",
+      "tests/integration/postgresql/test_initial_tenancy_migration.py::test_workspace_rls_hides_and_rejects_another_workspace_rows",
+      "tests/integration/postgresql/test_initial_tenancy_migration.py::test_environment_rls_isolates_two_environments_in_one_workspace"
+    ]
+  },
+  "external_prerequisites": [
+    "Configure a PostgreSQL-backed Context Broker bundle store and typed revalidator against canonical authorization and source-lifecycle tables.",
+    "Provide active publication and as_of authority in the target workspace and environment.",
+    "Run the configured Cognee Context Projection provider profile (PostgreSQL + Neo4j + PGVector) through its opt-in integration gate.",
+    "Persist disclosure validation facts through the production disclosure dependency revalidator before accepting an answer.",
+    "Run opt-in qualification with a real provider; deterministic fake success is not real provider evidence."
+  ],
+  "limitations": [
+    "The offline result is deterministic fake-backed qualification, not production approval.",
+    "Issue #26 API/SSE and Issue #22 Chat/Citation Inspector are compatibility boundaries only.",
+    "Issue #19 regression gates and Issue #17 numeric quality thresholds are not implemented by this ticket.",
+    "Real model providers, Cognee, Neo4j, PGVector and deployment configuration remain outside the mandatory offline gate."
+  ]
+}

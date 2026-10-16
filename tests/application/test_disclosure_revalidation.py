@@ -92,9 +92,18 @@ class FakeStateProvider:
         self.value = value
         self.calls = 0
 
-    async def resolve(self, _request: DisclosureRevalidationRequest):
+    async def resolve(
+        self, _request: DisclosureRevalidationRequest
+    ) -> DisclosureRevalidationObservation:
         self.calls += 1
         return self.value
+
+
+class InterruptedStateProvider:
+    async def resolve(
+        self, _request: DisclosureRevalidationRequest
+    ) -> DisclosureRevalidationObservation:
+        raise RuntimeError("validation interrupted")
 
 
 @pytest.mark.asyncio
@@ -133,6 +142,46 @@ async def test_current_ineligible_dependency_suppresses_whole_answer(
 
     assert result.disposition is DisclosureRevalidationDisposition.INELIGIBLE
     assert failure in result.failure_codes
+    assert not result.can_disclose_content
+
+
+@pytest.mark.asyncio
+async def test_superseded_dependency_suppresses_whole_answer() -> None:
+    result = await DisclosureRevalidationService(
+        FakeStateProvider(observation(superseded=True)),
+        InMemoryDisclosureValidationResultRepository(),
+        clock=lambda: NOW,
+    ).revalidate(request(request_id=UUID(int=42)))
+
+    assert result.disposition is DisclosureRevalidationDisposition.REVALIDATION_REQUIRED
+    assert DisclosureRevalidationFailureCode.SOURCE_SUPERSEDED in result.failure_codes
+    assert not result.can_disclose_content
+
+
+@pytest.mark.asyncio
+async def test_cancelled_revalidation_fails_closed_without_stored_answer() -> None:
+    result = await DisclosureRevalidationService(
+        FakeStateProvider(observation()),
+        InMemoryDisclosureValidationResultRepository(),
+        clock=lambda: NOW,
+    ).revalidate(request(request_id=UUID(int=43), cancelled=True))
+
+    assert result.disposition is DisclosureRevalidationDisposition.CANCELLED
+    assert result.safe_reason == "stored_answer_disclosure_cancelled"
+    assert not result.can_disclose_content
+
+
+@pytest.mark.asyncio
+async def test_interrupted_revalidation_fails_closed_without_stored_answer() -> None:
+    result = await DisclosureRevalidationService(
+        InterruptedStateProvider(),
+        InMemoryDisclosureValidationResultRepository(),
+        clock=lambda: NOW,
+    ).revalidate(request(request_id=UUID(int=44)))
+
+    assert result.disposition is DisclosureRevalidationDisposition.RETRYABLE_FAILURE
+    assert DisclosureRevalidationFailureCode.REVALIDATION_UNAVAILABLE in result.failure_codes
+    assert result.safe_reason == "stored_answer_disclosure_unavailable"
     assert not result.can_disclose_content
 
 
