@@ -107,3 +107,19 @@ async def test_candidate_generation_delegates_to_pinned_runtime_as_repeatable_ca
 
     assert result.result.status is AgentRunStatus.SUCCEEDED
     assert runtime.calls[0][1].retry_safety is AgentRetrySafety.SAFE_TO_REPEAT
+
+
+@pytest.mark.asyncio
+async def test_candidate_generation_returns_a_persisted_result_not_a_token_stream() -> None:
+    from tests.application.test_answer_question_execution import (
+        boundary,
+        invocation,
+        request,
+    )
+
+    execution, _, _ = boundary()
+
+    result = await generate_answer_question_candidate(execution, request(), invocation())
+
+    assert not hasattr(result, "__aiter__")
+    assert result.result.status is AgentRunStatus.SUCCEEDED
