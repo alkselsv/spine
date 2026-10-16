@@ -155,6 +155,8 @@ def _events_for_result(result: AuthorizedAskResult) -> tuple[QAEvent, ...]:
         "message_id": result.message_id,
         "run_id": correlation.run_id,
         "trace_id": correlation.trace_id,
+        "correlation_id": correlation.correlation_id,
+        "causation_id": correlation.causation_id,
     }
     events: list[QAEvent] = [
         _event(
@@ -288,6 +290,8 @@ def _event(
     message_id: UUID,
     run_id: UUID,
     trace_id: UUID,
+    correlation_id: UUID | None,
+    causation_id: UUID | None,
 ) -> QAEvent:
     del result
     event_id = uuid5(
@@ -304,6 +308,8 @@ def _event(
         message_id=message_id,
         run_id=run_id,
         trace_id=trace_id,
+        correlation_id=correlation_id,
+        causation_id=causation_id,
         payload=payload,
     )
 

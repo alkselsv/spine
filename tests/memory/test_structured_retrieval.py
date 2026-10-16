@@ -2,9 +2,19 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from uuid import UUID
 
 import pytest
+
+from spine.application.diagnostics import DiagnosticContext
+from spine.application.telemetry import (
+    OperationalComponent,
+    OperationalObservationEmitter,
+    OperationalObservationPolicy,
+    OperationalObservationRegistry,
+    RecordingOperationalObservationSink,
+)
 
 from spine.memory.contracts import (
     EvidenceReference,
@@ -138,6 +148,33 @@ async def test_executor_fans_out_and_merges_structured_results_deterministically
 
 
 @pytest.mark.asyncio
+async def test_executor_emits_retrieval_observation_with_trusted_trace() -> None:
+    registry = OperationalObservationRegistry()
+    sink = RecordingOperationalObservationSink(registry)
+    observer = OperationalObservationEmitter(
+        registry=registry,
+        sink=sink,
+        policy=OperationalObservationPolicy(),
+        clock=lambda: datetime(2026, 10, 16, tzinfo=timezone.utc),
+        observation_id_source=lambda: UUID(int=361),
+    )
+    executor = PhysicalReadPlanExecutor(
+        _Provider(),
+        operational_observer=observer,
+    )
+    diagnostic_context = DiagnosticContext(trace_id=UUID(int=1000))
+
+    await executor.execute(
+        _two_partition_plan(),
+        diagnostic_context=diagnostic_context,
+    )
+
+    assert len(sink.observations) == 1
+    assert sink.observations[0].component is OperationalComponent.RETRIEVAL
+    assert sink.observations[0].trace_id == diagnostic_context.trace_id
+
+
+@pytest.mark.asyncio
 async def test_executor_rejects_unsafe_resolution_without_provider_call() -> None:
     context, registry = _context()
     unsafe_context = context.model_copy(
@@ -151,13 +188,51 @@ async def test_executor_rejects_unsafe_resolution_without_provider_call() -> Non
         namespace_registry=registry
     ).build(unsafe_context)
     provider = _Provider()
+    observation_registry = OperationalObservationRegistry()
+    observation_sink = RecordingOperationalObservationSink(observation_registry)
+    observer = OperationalObservationEmitter(
+        registry=observation_registry,
+        sink=observation_sink,
+        policy=OperationalObservationPolicy(),
+        clock=lambda: datetime(2026, 10, 16, tzinfo=timezone.utc),
+        observation_id_source=lambda: UUID(int=362),
+    )
 
-    result = await PhysicalReadPlanExecutor(provider).execute(resolution)
+    result = await PhysicalReadPlanExecutor(
+        provider, operational_observer=observer
+    ).execute(resolution)
 
     assert result.outcome is ProjectionOutcome.FAILED
     assert provider.calls == []
     assert result.failure is not None
     assert result.failure.code.value == "source_isolation_unproven"
+    assert len(observation_sink.observations) == 1
+    assert observation_sink.observations[0].trace_id == context.diagnostic_context.trace_id
+
+
+@pytest.mark.asyncio
+async def test_executor_rejects_substituted_diagnostic_context_before_provider_read() -> None:
+    provider = _Provider()
+    executor = PhysicalReadPlanExecutor(
+        provider,
+        operational_observer=OperationalObservationEmitter(
+            registry=OperationalObservationRegistry(),
+            sink=RecordingOperationalObservationSink(
+                OperationalObservationRegistry()
+            ),
+            policy=OperationalObservationPolicy(),
+            clock=lambda: datetime(2026, 10, 16, tzinfo=timezone.utc),
+            observation_id_source=lambda: UUID(int=363),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="substituted"):
+        await executor.execute(
+            _two_partition_plan(),
+            diagnostic_context=DiagnosticContext(trace_id=UUID(int=999)),
+        )
+
+    assert provider.calls == []
 
 
 @pytest.mark.asyncio

@@ -46,6 +46,7 @@ from spine.application.diagnostics import (
     Retryability,
     StructuredError,
 )
+from spine.application.telemetry import OperationalObservationEmitter
 from spine.application.persistence import (
     IdempotencyConflictError,
     IdempotencyKey,
@@ -95,6 +96,7 @@ class LocalAgentRuntime:
         cancellation_controller: CancellationController,
         retry_scheduler: RetryScheduler | None = None,
         attempt_id_factory: Callable[[int], UUID] | None = None,
+        operational_observer: OperationalObservationEmitter | None = None,
     ) -> None:
         if not isinstance(context, AgentExecutionContext):
             raise TypeError("local runtime context is invalid")
@@ -141,6 +143,7 @@ class LocalAgentRuntime:
             audit_registry=audit_registry,
             audit_writer=audit_writer,
             clock=clock,
+            operational_observer=operational_observer,
         )
 
     async def invoke(

@@ -21,6 +21,13 @@ from spine.application.outbox.dispatch import (
     RetryableOutboxConsumerFailure,
     TerminalOutboxConsumerFailure,
 )
+from spine.application.telemetry import (
+    OperationalComponent,
+    OperationalObservationEmitter,
+    OperationalObservationPolicy,
+    OperationalObservationRegistry,
+    RecordingOperationalObservationSink,
+)
 from spine.application.persistence.delivery import OutboxDeliveryStatus
 from spine.application.persistence.errors import UnexpectedPersistenceError
 from spine.application.persistence.outbox import OutboxIntent
@@ -132,6 +139,7 @@ def _build_dispatcher(
     retry_delay: Callable[[int], timedelta] = lambda attempt: timedelta(seconds=5),
     maximum_retry_delay: timedelta = timedelta(minutes=5),
     handler_timeout: timedelta = timedelta(seconds=5),
+    operational_observer: OperationalObservationEmitter | None = None,
 ) -> tuple[OutboxDispatcher, RecordingDiagnosticSink, list[UUID]]:
     diagnostics = DiagnosticEventRegistry.with_default_families()
     diagnostic_sink = RecordingDiagnosticSink(diagnostics)
@@ -157,6 +165,7 @@ def _build_dispatcher(
             lease_duration=timedelta(seconds=30),
             handler_timeout=handler_timeout,
             maximum_attempts=3,
+            operational_observer=operational_observer,
         ),
         diagnostic_sink,
         audit_event_ids,
@@ -675,6 +684,15 @@ async def test_projection_request_redelivery_has_one_logical_consumer_effect() -
     consumers = OutboxConsumerRegistry()
     consumers.register("projection_request", consumer)
     repository = FailBeforeFirstFinalization(adapter.delivery_repository)
+    operational_registry = OperationalObservationRegistry()
+    operational_sink = RecordingOperationalObservationSink(operational_registry)
+    operational_observer = OperationalObservationEmitter(
+        registry=operational_registry,
+        sink=operational_sink,
+        policy=OperationalObservationPolicy(),
+        clock=lambda: base + timedelta(seconds=31),
+        observation_id_source=lambda: UUID(int=6729),
+    )
     base = datetime(2026, 10, 12, 17, tzinfo=timezone.utc)
     dispatcher, _, _ = _build_dispatcher(
         adapter,
@@ -689,6 +707,7 @@ async def test_projection_request_redelivery_has_one_logical_consumer_effect() -
             )
         ).__next__,
         audit_id_start=6728,
+        operational_observer=operational_observer,
     )
 
     with pytest.raises(UnexpectedPersistenceError):
@@ -698,6 +717,15 @@ async def test_projection_request_redelivery_has_one_logical_consumer_effect() -
     assert report.delivered == 1
     assert consumer.effects == {event_id}
     assert len(consumer.contexts) == 2
+    assert [item.component for item in operational_sink.observations] == [
+        OperationalComponent.OUTBOX,
+        OperationalComponent.WORKER,
+        OperationalComponent.OUTBOX,
+        OperationalComponent.WORKER,
+    ]
+    assert {item.trace_id for item in operational_sink.observations} == {
+        context.trace_id
+    }
 
 
 @pytest.mark.asyncio

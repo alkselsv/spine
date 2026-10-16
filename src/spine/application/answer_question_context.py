@@ -26,6 +26,7 @@ from spine.application.authorized_context_broker import (
     ContextBundleRevalidator,
     SavedContextBundlePort,
 )
+from spine.application.diagnostics import DiagnosticContext
 from spine.domain.capabilities import (
     AnswerAuthorizationOutcome,
     AnswerQuestionCandidateInput,
@@ -202,6 +203,11 @@ class AnswerQuestionContextService:
             run_id=request.question.correlation.run_id,
             attempt_id=request.question.correlation.attempt_id,
             idempotency_key=request.idempotency_key,
+            diagnostic_context=DiagnosticContext(
+                trace_id=request.question.correlation.trace_id,
+                correlation_id=request.question.correlation.correlation_id,
+                causation_id=request.question.correlation.causation_id,
+            ),
             cancelled=request.cancelled,
         )
         try:

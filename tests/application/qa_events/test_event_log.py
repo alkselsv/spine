@@ -256,7 +256,10 @@ async def test_stream_rehydrates_terminal_event_after_disconnect() -> None:
 @pytest.mark.asyncio
 async def test_heartbeat_retry_is_idempotent() -> None:
     log = InMemoryQAEventLog()
-    await log.append(event(QAEventType.RUN_STARTED, 1))
+    started = event(QAEventType.RUN_STARTED, 1).model_copy(
+        update={"correlation_id": uid(60), "causation_id": uid(61)}
+    )
+    await log.append(started)
     stream = log.open_stream(
         workspace_id=uid(2),
         environment_id=uid(3),
@@ -270,6 +273,9 @@ async def test_heartbeat_retry_is_idempotent() -> None:
     replayed_heartbeat = await stream.heartbeat()
 
     assert heartbeat.type is QAEventType.HEARTBEAT
+    assert heartbeat.trace_id == started.trace_id
+    assert heartbeat.correlation_id == started.correlation_id
+    assert heartbeat.causation_id == started.causation_id
     assert replayed_heartbeat == heartbeat
     assert tuple(item.type for item in await log.read(
         workspace_id=uid(2), environment_id=uid(3), session_id=uid(1), run_id=uid(5)

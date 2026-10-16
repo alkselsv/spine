@@ -34,6 +34,14 @@ from spine.application.persistence.errors import (
     UnexpectedPersistenceError,
 )
 from spine.application.persistence.outbox import OutboxIntent
+from spine.application.telemetry import (
+    OperationalComponent,
+    OperationalObservationEmitter,
+    OperationalObservationOutcome,
+    OperationalOperation,
+    OperationalStage,
+    SafeOperationalFailureCode,
+)
 from spine.domain.audit import AuditEvent, AuditOutcome, OutboxDeliveryAuditPayload
 from spine.domain.common import ContextOrigin
 
@@ -252,6 +260,7 @@ class OutboxDispatcher:
         lease_duration: timedelta,
         handler_timeout: timedelta,
         maximum_attempts: int,
+        operational_observer: OperationalObservationEmitter | None = None,
     ) -> None:
         if service_principal_id.int == 0:
             raise ValueError("service_principal_id must be a non-zero UUID.")
@@ -276,6 +285,7 @@ class OutboxDispatcher:
         self._lease_duration = lease_duration
         self._handler_timeout = handler_timeout
         self._maximum_attempts = maximum_attempts
+        self._operational_observer = operational_observer
 
     async def dispatch_batch(
         self,
@@ -320,6 +330,17 @@ class OutboxDispatcher:
             correlation_id=intent.correlation_id,
             causation_id=event_id,
         )
+        if self._operational_observer is not None and intent.environment_id is not None:
+            await self._operational_observer.emit(
+                workspace_id=intent.workspace_id,
+                environment_id=intent.environment_id,
+                diagnostic_context=diagnostic_context,
+                component=OperationalComponent.OUTBOX,
+                stage=OperationalStage.DISPATCH,
+                operation=OperationalOperation.OUTBOX_DELIVERY,
+                outcome=OperationalObservationOutcome.STARTED,
+                attempt_number=claim.attempt_number,
+            )
         if type(intent) is UnresolvedOutboxIntent:
             finalization = OutboxDeliveryFinalization(
                 status=OutboxDeliveryStatus.QUARANTINED,
@@ -482,8 +503,14 @@ class OutboxDispatcher:
                 audit_event=audit_event,
             )
         except PersistenceError:
+            await self._observe_persistence_failure(
+                claim, diagnostic_context=diagnostic_context
+            )
             raise
         except Exception:
+            await self._observe_persistence_failure(
+                claim, diagnostic_context=diagnostic_context
+            )
             raise UnexpectedPersistenceError(
                 "Outbox dispatch persistence failed."
             ) from None
@@ -502,7 +529,64 @@ class OutboxDispatcher:
             ),
         )
         await emit_diagnostic_safely(self._diagnostic_sink, diagnostic)
+        if self._operational_observer is not None and intent.environment_id is not None:
+            operational_outcome = {
+                OutboxDeliveryStatus.DELIVERED: OperationalObservationOutcome.SUCCEEDED,
+                OutboxDeliveryStatus.RETRY_SCHEDULED: OperationalObservationOutcome.RETRY_SCHEDULED,
+                OutboxDeliveryStatus.QUARANTINED: OperationalObservationOutcome.QUARANTINED,
+            }[finalization.status]
+            failure_code = None
+            if finalization.error_code is not None:
+                failure_code = _operational_failure_code(finalization.error_code)
+            await self._operational_observer.emit(
+                workspace_id=intent.workspace_id,
+                environment_id=intent.environment_id,
+                diagnostic_context=diagnostic_context,
+                component=OperationalComponent.WORKER,
+                stage=OperationalStage.DISPATCH,
+                operation=OperationalOperation.OUTBOX_DELIVERY,
+                outcome=operational_outcome,
+                safe_failure_code=failure_code,
+                attempt_number=claim.attempt_number,
+            )
         return report_code
+
+    async def _observe_persistence_failure(
+        self,
+        claim: ClaimedOutboxDelivery,
+        *,
+        diagnostic_context: DiagnosticContext,
+    ) -> None:
+        intent = claim.intent
+        if self._operational_observer is None or intent.environment_id is None:
+            return
+        await self._operational_observer.emit(
+            workspace_id=intent.workspace_id,
+            environment_id=intent.environment_id,
+            diagnostic_context=diagnostic_context,
+            component=OperationalComponent.WORKER,
+            stage=OperationalStage.DISPATCH,
+            operation=OperationalOperation.OUTBOX_DELIVERY,
+            outcome=OperationalObservationOutcome.FAILED,
+            safe_failure_code=SafeOperationalFailureCode.PERSISTENCE_UNAVAILABLE,
+            attempt_number=claim.attempt_number,
+        )
+
+
+def _operational_failure_code(error_code: str) -> SafeOperationalFailureCode:
+    if error_code == "delivery.handler_timeout":
+        return SafeOperationalFailureCode.TIMEOUT
+    if error_code == "delivery.attempts_exhausted":
+        return SafeOperationalFailureCode.RETRY_EXHAUSTED
+    if error_code == "delivery.context_mismatch":
+        return SafeOperationalFailureCode.CONTEXT_MISMATCH
+    if error_code in {
+        "delivery.unknown_event",
+        "delivery.unknown_route",
+        "delivery.unknown_consumer",
+    }:
+        return SafeOperationalFailureCode.CONTEXT_INVALID
+    return SafeOperationalFailureCode.INTERNAL_FAILURE
 
 
 __all__ = [

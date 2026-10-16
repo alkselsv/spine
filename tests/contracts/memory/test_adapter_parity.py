@@ -18,6 +18,8 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 import pytest
 
+from spine.application.diagnostics import DiagnosticContext
+
 from spine.application.authorized_context_broker import (
     AuthorizedContextBrokerApplicationService,
     AuthorizedContextRequest,
@@ -469,6 +471,7 @@ def _authorized_request(profile: ContextProfileVersion, scenario: BrokerScenario
         run_id=UUID("70000000-0000-4000-8000-000000000001"),
         attempt_id=UUID("80000000-0000-4000-8000-000000000001"),
         idempotency_key="parity-attempt",
+        diagnostic_context=DiagnosticContext(trace_id=UUID(int=1000)),
         cancelled=scenario is BrokerScenario.CANCELLED,
     )
 

@@ -289,6 +289,8 @@ class QAEvent(_QAEventModel):
     message_id: UUID | None = None
     run_id: UUID | None = None
     trace_id: UUID
+    correlation_id: UUID | None = None
+    causation_id: UUID | None = None
     payload: QAEventPayload
 
     @model_validator(mode="before")
@@ -316,6 +318,8 @@ class QAEvent(_QAEventModel):
         "message_id",
         "run_id",
         "trace_id",
+        "correlation_id",
+        "causation_id",
     )
     @classmethod
     def validate_identity(cls, value: UUID | None, info: Any) -> UUID | None:

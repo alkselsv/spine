@@ -14,6 +14,13 @@ from spine.application.authorized_ask import (
     AskCommand,
     AskCancellationCommand,
 )
+from spine.application.telemetry import (
+    OperationalComponent,
+    OperationalObservationEmitter,
+    OperationalObservationPolicy,
+    OperationalObservationRegistry,
+    RecordingOperationalObservationSink,
+)
 from spine.domain.capabilities import (
     AcceptedGroundedAnswer,
     AnswerDisclosureValidation,
@@ -46,6 +53,11 @@ MESSAGE_ID = UUID("40000000-0000-0000-0000-000000000003")
 COMMAND_ID = UUID("40000000-0000-0000-0000-000000000004")
 TRACE_ID = UUID("50000000-0000-0000-0000-000000000073")
 SESSION_ID = UUID("60000000-0000-0000-0000-000000000001")
+
+
+class AlwaysRetainPolicy(OperationalObservationPolicy):
+    def retains(self, observation) -> bool:
+        return True
 
 
 def headers(workspace_id: UUID = WORKSPACE_ID, environment_id: UUID = ENVIRONMENT_ID) -> dict[str, str]:
@@ -200,6 +212,54 @@ async def test_authorized_ask_returns_only_accepted_answer_and_citation_referenc
 
 
 @pytest.mark.asyncio
+async def test_authorized_ask_observes_actual_api_acceptance_not_downstream_stages() -> None:
+    result = AuthorizedAskResult(
+        command_id=COMMAND_ID,
+        session_id=SESSION_ID,
+        message_id=MESSAGE_ID,
+        output=safe_output(AnswerQuestionOutcome.FAILED),
+        accepted_answer=None,
+    )
+    registry = OperationalObservationRegistry()
+    sink = RecordingOperationalObservationSink(registry)
+    observer = OperationalObservationEmitter(
+        registry=registry,
+        sink=sink,
+        policy=AlwaysRetainPolicy(),
+        clock=lambda: NOW,
+        observation_id_source=iter((UUID(int=801), UUID(int=802), UUID(int=803))).__next__,
+    )
+    application = authorized_app([])
+    install_authorized_ask_routes(
+        application,
+        service=FakeAskService(result, []),
+        operational_observer=observer,
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/v1/ask",
+            json={
+                "schema_version": 1,
+                "session_id": str(SESSION_ID),
+                "question": "protected customer question",
+            },
+            headers={**headers(), "Idempotency-Key": "ask-observation"},
+        )
+
+    assert response.status_code == 200
+    assert [item.component for item in sink.observations] == [OperationalComponent.API]
+    assert sink.observations[0].outcome.value == "succeeded"
+    assert {item.trace_id for item in sink.observations} == {TRACE_ID}
+    assert {item.run_id for item in sink.observations} == {RUN_ID}
+    assert "protected customer question" not in "".join(
+        item.model_dump_json() for item in sink.observations
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", tuple(AnswerQuestionOutcome))
 async def test_authorized_ask_maps_each_terminal_outcome_without_renaming(outcome: AnswerQuestionOutcome) -> None:
     result = answered_result() if outcome is AnswerQuestionOutcome.ANSWERED else AuthorizedAskResult(
@@ -303,6 +363,38 @@ async def test_authorized_ask_rejects_other_environment_without_calling_service(
 
     assert response.status_code == 403
     assert service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_authorized_ask_rejects_substituted_correlation_context() -> None:
+    original = answered_result()
+    substituted = replace(
+        original,
+        output=original.output.model_copy(
+            update={
+                "correlation": original.output.correlation.model_copy(
+                    update={"correlation_id": UUID(int=999)}
+                )
+            }
+        ),
+    )
+    application = app(FakeAskService(substituted, []))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/v1/ask",
+            json={
+                "schema_version": 1,
+                "session_id": str(SESSION_ID),
+                "question": "Which policy applies?",
+            },
+            headers={**headers(), "Idempotency-Key": "substituted-correlation"},
+        )
+
+    assert response.status_code == 400
+    assert "999" not in response.text
 
 
 @pytest.mark.asyncio

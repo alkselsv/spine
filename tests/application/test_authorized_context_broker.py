@@ -5,6 +5,8 @@ from uuid import UUID
 
 import pytest
 
+from spine.application.diagnostics import DiagnosticContext
+
 from spine.application.authorized_context_broker import (
     AuthorizedContextBrokerApplicationService,
     AuthorizedContextRequest,
@@ -76,6 +78,7 @@ def request(**overrides: object) -> AuthorizedContextRequest:
         "run_id": UUID(int=7),
         "attempt_id": UUID(int=8),
         "idempotency_key": "attempt-1",
+        "diagnostic_context": DiagnosticContext(trace_id=UUID(int=1000)),
     }
     values.update(overrides)
     return AuthorizedContextRequest(**values)
