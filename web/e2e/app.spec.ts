@@ -259,6 +259,112 @@ test('test_document_detail_deep_link_reloads_and_preserves_scope_and_subview_nav
   expect(documentRequests.every(({ headers }) => headers['x-environment-id'] === stagingEnvironment)).toBe(true);
 });
 
+test('test_projection_status_scope_switch_reload_and_safe_degradation', async ({ page }) => {
+  await installControlledDocumentDetail(page);
+  const projectionRequests: Array<{ headers: Record<string, string>; url: string }> = [];
+  await page.route('**/api/v1/projections/*/status', async (route) => {
+    const request = route.request();
+    const headers = request.headers();
+    projectionRequests.push({ headers, url: request.url() });
+    const unavailable = headers['x-workspace-id'] === primaryWorkspace;
+    const status: components['schemas']['ProjectionStatusResponse'] = unavailable
+      ? {
+          projection_kind: 'qa',
+          publication_status: 'unavailable',
+          reason_code: 'projection.publication_unavailable',
+          recovery_state: 'unavailable',
+          retryable: false,
+          schema_version: 1,
+        }
+      : {
+          activation_generation: 12,
+          as_of: {
+            accepted_through_generation: 81,
+            boundary_time: '2026-01-02T03:04:05Z',
+            canonical_boundary_id: secondDocument,
+          },
+          canonical_boundary_id: secondDocument,
+          drift_count: 2,
+          freshness: 'stale',
+          health: 'degraded',
+          last_operation: {
+            operation: 'reconciliation',
+            retryable: false,
+            status: 'failed',
+          },
+          projection_config_version: 4,
+          projection_config_version_id: secondDocument,
+          projection_kind: 'qa',
+          publication_status: 'published',
+          reason_code: 'projection.reconciliation_failed',
+          reconciliation: {
+            checked_at: '2026-01-02T03:04:05Z',
+            outcome: 'failed',
+            result_id: firstDocument,
+          },
+          recovery_state: 'failed',
+          retryable: false,
+          schema_version: 1,
+          snapshot_id: firstDocument,
+        };
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        data: status,
+        environment_id: headers['x-environment-id'],
+        schema_version: 1,
+        trace_id: traceId,
+        workspace_id: headers['x-workspace-id'],
+      }),
+      status: 200,
+    });
+  });
+  await page.route('**/api/v1/health/summary', async (route) => {
+    const headers = route.request().headers();
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        data: {
+          authorization: { code: 'authorization.ready', status: 'ready' },
+          build_version: 'controlled-build',
+          configuration_version: 'controlled-config',
+          ingestion: { code: 'ingestion.ready', status: 'ready' },
+          providers: { database: 'must not be rendered' },
+          publication: { code: 'publication.degraded', status: 'degraded' },
+          status: 'degraded',
+        },
+        environment_id: headers['x-environment-id'],
+        schema_version: 1,
+        trace_id: traceId,
+        workspace_id: headers['x-workspace-id'],
+      }),
+      status: 200,
+    });
+  });
+
+  await page.goto(
+    `/knowledge/documents/${firstDocument}?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}&tab=projection&projection_kind=qa`,
+  );
+  const panel = page.getByRole('region', { name: 'Состояние публикации проекции' });
+  await expect(panel.getByText('Устарела')).toBeVisible();
+  await expect(panel.getByText('Ограничен')).toHaveCount(3);
+  await expect(panel.getByRole('button', { name: 'Запросить пересборку проекции' })).toBeVisible();
+  await expect(page.getByText(/не подтверждает доступ к доказательствам/i)).toBeVisible();
+  await expect(page.locator('body')).not.toContainText('must not be rendered');
+  await expect(page).toHaveURL(/tab=projection.*projection_kind=qa/);
+
+  await choose(page, 'Рабочая область', 'Основная');
+  await expect(page).toHaveURL(new RegExp(`workspace=${primaryWorkspace}.*tab=projection.*projection_kind=qa`));
+  await expect(panel.getByText('Недоступен')).toHaveCount(2);
+  await page.reload();
+  await expect(panel.getByText('Недоступен')).toHaveCount(2);
+  expect(projectionRequests.length).toBeGreaterThanOrEqual(3);
+  expect(projectionRequests.every(({ url }) => url.includes('/projections/qa/status'))).toBe(true);
+  expect(projectionRequests.some(({ headers }) => headers['x-workspace-id'] === salesWorkspace)).toBe(true);
+  expect(projectionRequests.some(({ headers }) => headers['x-workspace-id'] === primaryWorkspace)).toBe(true);
+  expect(projectionRequests.every(({ headers }) => headers['x-environment-id'] === stagingEnvironment)).toBe(true);
+});
+
 test('test_document_revision_history_direct_url_reloads_exact_selected_revision', async ({ page }) => {
   const requests = await installControlledDocumentDetail(page);
   const historyResponse = page.waitForResponse((response) => response.url().includes('/revisions'));
