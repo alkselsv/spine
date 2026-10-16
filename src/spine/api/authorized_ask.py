@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 from uuid import UUID
 
 from fastapi import Body, Depends, FastAPI, Request
@@ -26,6 +26,9 @@ from spine.application.authorized_ask import (
     AuthorizedAskService,
     InvalidAuthorizedAskRequest,
 )
+
+if TYPE_CHECKING:
+    from spine.application.qa_streaming import QAResultEventPublisher
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.auth import (
@@ -116,10 +119,12 @@ def install_authorized_ask_routes(
     application: FastAPI,
     *,
     service: AuthorizedAskService,
+    stream_service: QAResultEventPublisher | None = None,
 ) -> None:
     """Register the protected ask and cooperative cancellation commands."""
 
     application.state.authorized_ask_service = service
+    application.state.qa_stream_service = stream_service
 
     async def ask_endpoint(
         request: Request,
@@ -143,6 +148,7 @@ def install_authorized_ask_routes(
                 idempotency_key=_idempotency(request.headers.getlist("Idempotency-Key")),
             )
         )
+        await _publish_stream_result(request, result)
         return _command(request_context, result, expected_session_id=body.session_id)
 
     async def cancel_endpoint(
@@ -167,6 +173,7 @@ def install_authorized_ask_routes(
                 idempotency_key=_idempotency(request.headers.getlist("Idempotency-Key")),
             )
         )
+        await _publish_stream_result(request, result)
         return _command(request_context, result)
 
     policy = _policy()
@@ -197,6 +204,13 @@ def _service(request: Request) -> AuthorizedAskService:
     if service is None:
         raise RuntimeError("Authorized ask service is unavailable.")
     return cast(AuthorizedAskService, service)
+
+
+async def _publish_stream_result(request: Request, result: AuthorizedAskResult) -> None:
+    stream_service = getattr(request.app.state, "qa_stream_service", None)
+    if stream_service is not None:
+        publisher = cast("QAResultEventPublisher", stream_service)
+        await publisher.publish_result(result)
 
 
 def _idempotency(values: list[str]) -> IdempotencyKey:

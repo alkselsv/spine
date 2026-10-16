@@ -35,6 +35,7 @@ def test_generation_export_matches_backend_openapi_document(tmp_path: Path) -> N
     assert "/api/v1/projections/{projection_kind}/status" in document["paths"]
     assert "/api/v1/projections/{projection_kind}/recovery" in document["paths"]
     assert "/api/v1/qa/citations/{citation_id}" in document["paths"]
+    assert "/api/v1/qa/sessions/{session_id}/messages/{message_id}/events" in document["paths"]
     assert "/api/v1/knowledge/documents/{source_object_id}/revisions/{source_revision_id}/parsed-content" in document["paths"]
 
     upload_operation = document["paths"]["/api/v1/documents/uploads"]["post"]
@@ -88,6 +89,11 @@ def test_generation_export_matches_backend_openapi_document(tmp_path: Path) -> N
     assert document["paths"]["/api/v1/documents"]["get"]["operationId"] == "documents.list"
     assert document["paths"]["/api/v1/documents/{source_object_id}"]["get"]["operationId"] == "documents.detail"
     assert document["paths"]["/api/v1/documents/{source_object_id}/revisions"]["get"]["operationId"] == "documents.revisions"
+    stream_operation = document["paths"][
+        "/api/v1/qa/sessions/{session_id}/messages/{message_id}/events"
+    ]["get"]
+    assert stream_operation["operationId"] == "qa.messages.events"
+    assert "text/event-stream" in stream_operation["responses"]["200"]["content"]
     assert any(
         parameter["name"] == "Idempotency-Key"
         and parameter["in"] == "header"

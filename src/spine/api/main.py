@@ -32,6 +32,11 @@ from spine.api.authorized_ask import install_authorized_ask_routes
 from spine.api.citation_inspector import install_citation_inspector_routes
 from spine.api.feedback import install_feedback_routes
 from spine.api.qa_runs import install_qa_run_routes
+from spine.api.qa_stream import (
+    QAStreamDisclosureAuthorizer,
+    QAStreamReader,
+    install_qa_stream_routes,
+)
 from spine.api.parsed_content import install_parsed_content_routes
 from spine.api.authorization import (
     ApiAuthorizationReadiness,
@@ -208,6 +213,8 @@ def create_app(
     feedback_service: FeedbackService | None = None,
     qa_run_history_service: QARunHistoryService | None = None,
     qa_run_history_cursor_secret: bytes | None = None,
+    qa_stream_service: QAStreamReader | None = None,
+    qa_stream_disclosure_authorizer: QAStreamDisclosureAuthorizer | None = None,
     parsed_content_inspection_service: ParsedContentInspectionService | None = None,
     parsed_content_cursor_secret: bytes | None = None,
 ) -> FastAPI:
@@ -373,6 +380,15 @@ def create_app(
         install_authorized_ask_routes(
             application,
             service=resolved_authorized_ask_service,
+            stream_service=qa_stream_service,
+        )
+    if qa_stream_service is not None:
+        if type(authorization_runtime) is not ApiAuthorizationRuntime:
+            raise RuntimeError("Q&A stream routes require an authorization runtime.")
+        install_qa_stream_routes(
+            application,
+            service=qa_stream_service,
+            disclosure_authorizer=qa_stream_disclosure_authorizer,
         )
     if citation_inspector_service is not None:
         if type(authorization_runtime) is not ApiAuthorizationRuntime:

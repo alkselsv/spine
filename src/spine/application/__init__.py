@@ -66,6 +66,9 @@ __all__ = [
     "QAEventLogPort",
     "QAEventReplay",
     "QAEventStream",
+    "AuthorizedQAStreamService",
+    "QAEventLogStore",
+    "QAResultEventPublisher",
     "ResumeCursorError",
 ]
 
@@ -103,6 +106,12 @@ def __getattr__(name: str) -> object:
             }
             else "spine.application.authorized_context_broker"
         )
+        if name in {
+            "AuthorizedQAStreamService",
+            "QAEventLogStore",
+            "QAResultEventPublisher",
+        }:
+            module_name = "spine.application.qa_streaming"
         module = import_module(module_name)
         return getattr(module, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
