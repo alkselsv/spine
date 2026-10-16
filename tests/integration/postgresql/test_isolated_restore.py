@@ -303,10 +303,11 @@ async def test_isolated_restore_verifier_reconciles_real_postgres_and_filesystem
             cause_type = type(cause).__name__
             frames = traceback.extract_tb(cause.__traceback__) if cause is not None else []
             origin = " > ".join(f"{frame.name}:{frame.lineno}" for frame in frames[-4:])
+            cause_message = str(cause) if cause is not None else "unknown"
             pytest.fail(
                 "isolated restore failed with "
                 f"{failure.evidence.safe_failure_code}; diagnostic type: {cause_type}; "
-                f"origin: {origin}"
+                f"origin: {origin}; postgres message: {cause_message}"
             )
         evidence_file = target.filesystem_root / "restore-evidence.json"
         original = target.filesystem_root / hashlib.sha256(
