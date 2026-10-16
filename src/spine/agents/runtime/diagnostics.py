@@ -218,7 +218,10 @@ class AgentRuntimeDiagnosticEmitter:
                 else DiagnosticSeverity.INFO
             ),
         )
-        if self._operational_observer is not None:
+        if (
+            self._operational_observer is not None
+            and self._context.capability.key == "answer_question"
+        ):
             outcome = {
                 AgentRunDiagnosticState.STARTED: OperationalObservationOutcome.STARTED,
                 AgentRunDiagnosticState.COMPLETED: OperationalObservationOutcome.SUCCEEDED,

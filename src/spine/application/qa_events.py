@@ -680,6 +680,9 @@ class InMemoryQAEventStream:
 
     async def _emit_generated(self, *, event_type: QAEventType, payload: object) -> QAEvent:
         message_id = await self._effective_message_id()
+        trace_id, correlation_id, causation_id = await self._effective_diagnostic_context(
+            message_id=message_id
+        )
         return await self._append(
             QAEvent(
                 event_id=self._event_id_factory(),
@@ -696,10 +699,30 @@ class InMemoryQAEventStream:
                 environment_id=self.environment_id,
                 message_id=message_id,
                 run_id=self.run_id,
-                trace_id=self.trace_id,
+                trace_id=trace_id,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
                 payload=payload,
             )
         )
+
+    async def _effective_diagnostic_context(
+        self,
+        *,
+        message_id: UUID | None,
+    ) -> tuple[UUID, UUID | None, UUID | None]:
+        events = await self.log.read(
+            workspace_id=self.workspace_id,
+            environment_id=self.environment_id,
+            session_id=self.session_id,
+            run_id=self.run_id,
+            message_id=message_id,
+            limit=1,
+        )
+        if not events:
+            return self.trace_id, None, None
+        first = events[0]
+        return first.trace_id, first.correlation_id, first.causation_id
 
     async def _effective_message_id(self) -> UUID | None:
         if self.message_id is not None:
@@ -744,6 +767,8 @@ class InMemoryQAEventStream:
             message_id=event.message_id,
             run_id=event.run_id,
             trace_id=event.trace_id,
+            correlation_id=event.correlation_id,
+            causation_id=event.causation_id,
             payload=DeniedPayload(reason="authorization_denied"),
         )
         self._virtual_denials[event.event_id] = denial

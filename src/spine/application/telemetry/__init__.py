@@ -1,5 +1,10 @@
 """Spine-owned, disclosure-safe operational telemetry contracts."""
 
+from spine.application.telemetry.boundaries import (
+    ObservedAnswerQuestionRunRepository,
+    ObservedOutboxWriter,
+)
+
 from spine.application.telemetry.observations import (
     DisabledOperationalObservationExporter,
     InMemoryOperationalObservationStore,
@@ -24,6 +29,8 @@ from spine.application.telemetry.observations import (
 __all__ = [
     "DisabledOperationalObservationExporter",
     "InMemoryOperationalObservationStore",
+    "ObservedAnswerQuestionRunRepository",
+    "ObservedOutboxWriter",
     "OperationalComponent",
     "OperationalMetricDimensions",
     "OperationalObservation",

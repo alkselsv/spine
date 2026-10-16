@@ -252,7 +252,14 @@ async def test_synthetic_asgi_to_worker_flow_preserves_trace_without_leaks() -> 
         diagnostic_events=diagnostic_events,
         diagnostic_sink=diagnostic_sink,
         service_principal_id=synthetic_uuid(6754),
-        clock=iter((NOW + timedelta(seconds=1), NOW + timedelta(seconds=2))).__next__,
+        clock=iter(
+            (
+                NOW + timedelta(seconds=1),
+                NOW + timedelta(seconds=1),
+                NOW + timedelta(seconds=2),
+                NOW + timedelta(seconds=2),
+            )
+        ).__next__,
         audit_event_id_source=lambda: synthetic_uuid(6755),
         retry_delay=lambda attempt: timedelta(seconds=attempt),
         maximum_retry_delay=timedelta(minutes=5),
@@ -564,7 +571,14 @@ async def test_issue68_composed_path_covers_all_safe_surfaces(
         diagnostic_events=registry,
         diagnostic_sink=sink,
         service_principal_id=synthetic_uuid(6775),
-        clock=iter((NOW + timedelta(seconds=1), NOW + timedelta(seconds=2))).__next__,
+        clock=iter(
+            (
+                NOW + timedelta(seconds=1),
+                NOW + timedelta(seconds=1),
+                NOW + timedelta(seconds=2),
+                NOW + timedelta(seconds=2),
+            )
+        ).__next__,
         audit_event_id_source=lambda: delivery_audit_id,
         retry_delay=lambda attempt: timedelta(seconds=attempt),
         maximum_retry_delay=timedelta(minutes=5),

@@ -503,8 +503,14 @@ class OutboxDispatcher:
                 audit_event=audit_event,
             )
         except PersistenceError:
+            await self._observe_persistence_failure(
+                claim, diagnostic_context=diagnostic_context
+            )
             raise
         except Exception:
+            await self._observe_persistence_failure(
+                claim, diagnostic_context=diagnostic_context
+            )
             raise UnexpectedPersistenceError(
                 "Outbox dispatch persistence failed."
             ) from None
@@ -544,6 +550,27 @@ class OutboxDispatcher:
                 attempt_number=claim.attempt_number,
             )
         return report_code
+
+    async def _observe_persistence_failure(
+        self,
+        claim: ClaimedOutboxDelivery,
+        *,
+        diagnostic_context: DiagnosticContext,
+    ) -> None:
+        intent = claim.intent
+        if self._operational_observer is None or intent.environment_id is None:
+            return
+        await self._operational_observer.emit(
+            workspace_id=intent.workspace_id,
+            environment_id=intent.environment_id,
+            diagnostic_context=diagnostic_context,
+            component=OperationalComponent.WORKER,
+            stage=OperationalStage.DISPATCH,
+            operation=OperationalOperation.OUTBOX_DELIVERY,
+            outcome=OperationalObservationOutcome.FAILED,
+            safe_failure_code=SafeOperationalFailureCode.PERSISTENCE_UNAVAILABLE,
+            attempt_number=claim.attempt_number,
+        )
 
 
 def _operational_failure_code(error_code: str) -> SafeOperationalFailureCode:

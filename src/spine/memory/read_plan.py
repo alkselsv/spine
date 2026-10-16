@@ -15,6 +15,7 @@ from uuid import UUID
 
 from pydantic import Field, model_validator
 
+from spine.application.diagnostics import DiagnosticContext
 from spine.application.authorized_retrieval_scope import (
     AuthorizedRetrievalScope,
     AuthorizedSourceConstraint,
@@ -93,6 +94,7 @@ class PhysicalReadContext(ValidatedDefinitionModel):
 
     schema_version: Literal["physical-read-context:v1"] = "physical-read-context:v1"
     query: str = Field(min_length=1, max_length=16_384)
+    diagnostic_context: DiagnosticContext
     publication_pin: PublicationPin
     authorized_scope: AuthorizedRetrievalScope
     projection_run: ProjectionRun
@@ -198,6 +200,9 @@ class PhysicalReadPlanResolution(ValidatedDefinitionModel):
     outcome: PhysicalReadPlanOutcome
     reason: PhysicalReadPlanReason
     plan: PhysicalReadPlan | None = None
+    workspace_id: UUID | None = None
+    environment_id: UUID | None = None
+    diagnostic_context: DiagnosticContext | None = None
 
     @model_validator(mode="after")
     def validate_outcome(self) -> "PhysicalReadPlanResolution":
@@ -233,14 +238,21 @@ class PhysicalReadPlanBuilder:
         """Return READY only when every pre-retrieval gate has passed."""
 
         try:
-            return self._build(context)
+            resolution = self._build(context)
         except Exception:
             # The physical boundary must not turn a lineage or registry detail
             # into an authorization or provider error.
-            return self._failure(
+            resolution = self._failure(
                 PhysicalReadPlanOutcome.INCOMPLETE,
                 PhysicalReadPlanReason.INCOMPLETE_LINEAGE,
             )
+        return resolution.model_copy(
+            update={
+                "workspace_id": context.authorized_scope.workspace_id,
+                "environment_id": context.authorized_scope.environment_id,
+                "diagnostic_context": context.diagnostic_context,
+            }
+        )
 
     async def resolve(self, context: PhysicalReadContext) -> PhysicalReadPlanResolution:
         """Async alias for application/read-side composition ports."""

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from spine.application.diagnostics import (
     AuditEventRegistry,
@@ -19,7 +19,12 @@ from spine.application.outbox import (
     OutboxDispatchRepository,
     OutboxDispatcher,
 )
-from spine.application.telemetry import OperationalObservationEmitter
+from spine.application.telemetry import (
+    OperationalObservationEmitter,
+    OperationalObservationPolicy,
+    OperationalObservationRegistry,
+)
+from spine.infrastructure.telemetry import DiagnosticOperationalObservationSink
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +71,20 @@ def create_outbox_worker(
     operational_observer: OperationalObservationEmitter | None = None,
 ) -> OutboxWorker:
     """Build one worker from explicit consumers and injected runtime services."""
+
+    if operational_observer is None:
+        observation_registry = OperationalObservationRegistry()
+        operational_observer = OperationalObservationEmitter(
+            registry=observation_registry,
+            sink=DiagnosticOperationalObservationSink(
+                observation_registry=observation_registry,
+                diagnostic_registry=diagnostic_events,
+                diagnostic_sink=diagnostic_sink,
+            ),
+            policy=OperationalObservationPolicy(),
+            clock=clock,
+            observation_id_source=uuid4,
+        )
 
     consumers = OutboxConsumerRegistry()
     for binding in consumer_bindings:

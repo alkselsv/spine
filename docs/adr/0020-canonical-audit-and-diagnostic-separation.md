@@ -63,3 +63,10 @@ The in-memory retention/read adapter qualifies the application contract only.
 Production qualification still requires a deployment-owned retention and
 legal-hold binding. No external telemetry backend, credentials or audit
 authority are approved by this profile.
+
+Operational hooks must sit at the boundary they describe. The API adapter may
+observe HTTP acceptance but cannot synthesize generation or run-persistence
+outcomes; generation, outbox enqueue, run persistence and SSE delivery are
+observed by their runtime or port adapters. Contract and trusted-context
+validation fail closed before the handoff. Only emission to an already
+validated diagnostic sink is isolated as best-effort.

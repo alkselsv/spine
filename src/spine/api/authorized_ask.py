@@ -30,7 +30,6 @@ from spine.application.authorized_ask import (
 if TYPE_CHECKING:
     from spine.application.qa_streaming import QAResultEventPublisher
 from spine.application.persistence.context import TrustedPersistenceContext
-from spine.application.diagnostics import DiagnosticContext
 from spine.application.telemetry import (
     OperationalComponent,
     OperationalObservationEmitter,
@@ -143,24 +142,41 @@ def install_authorized_ask_routes(
         request_context: AuthorizedRequestContext[object] = Depends(get_authorized_request_context),
         persistence_context: TrustedPersistenceContext = Depends(get_authorized_persistence_context),
     ) -> ApiCommandResult[AskOutcomeResponse]:
-        result = await _service(request).ask(
-            AskCommand(
-                persistence_context=persistence_context,
-                request_context=AskRequestContext(
-                    subject_id=request_context.acting_subject_id,
-                    workspace_id=request_context.scope.workspace_id,
-                    environment_id=request_context.scope.environment_id,
-                    trace_id=request_context.diagnostic_context.trace_id,
-                    authorization_generation=request_context.authorization_generation,
-                ),
-                session_id=body.session_id,
-                question=body.question,
-                clarification_of_message_id=body.clarification_of_message_id,
-                idempotency_key=_idempotency(request.headers.getlist("Idempotency-Key")),
+        try:
+            result = await _service(request).ask(
+                AskCommand(
+                    persistence_context=persistence_context,
+                    request_context=_ask_context(request_context),
+                    session_id=body.session_id,
+                    question=body.question,
+                    clarification_of_message_id=body.clarification_of_message_id,
+                    idempotency_key=_idempotency(
+                        request.headers.getlist("Idempotency-Key")
+                    ),
+                )
             )
-        )
-        _validate_result_context(request_context, result)
-        await _observe_result(request, result)
+        except InvalidAuthorizedAskRequest:
+            await _observe_api_failure(
+                request,
+                request_context,
+                SafeOperationalFailureCode.VALIDATION_FAILED,
+            )
+            raise
+        except Exception:
+            await _observe_api_failure(
+                request, request_context, SafeOperationalFailureCode.INTERNAL_FAILURE
+            )
+            raise
+        try:
+            _validate_result_context(request_context, result)
+        except InvalidAuthorizedAskRequest:
+            await _observe_api_failure(
+                request,
+                request_context,
+                SafeOperationalFailureCode.CONTEXT_MISMATCH,
+            )
+            raise
+        await _observe_api_success(request, request_context, result)
         await _publish_stream_result(request, result)
         return _command(request_context, result, expected_session_id=body.session_id)
 
@@ -172,22 +188,39 @@ def install_authorized_ask_routes(
         persistence_context: TrustedPersistenceContext = Depends(get_authorized_persistence_context),
     ) -> ApiCommandResult[AskOutcomeResponse]:
         del body
-        result = await _service(request).cancel(
-            AskCancellationCommand(
-                persistence_context=persistence_context,
-                request_context=AskRequestContext(
-                    subject_id=request_context.acting_subject_id,
-                    workspace_id=request_context.scope.workspace_id,
-                    environment_id=request_context.scope.environment_id,
-                    trace_id=request_context.diagnostic_context.trace_id,
-                    authorization_generation=request_context.authorization_generation,
-                ),
-                run_id=run_id,
-                idempotency_key=_idempotency(request.headers.getlist("Idempotency-Key")),
+        try:
+            result = await _service(request).cancel(
+                AskCancellationCommand(
+                    persistence_context=persistence_context,
+                    request_context=_ask_context(request_context),
+                    run_id=run_id,
+                    idempotency_key=_idempotency(
+                        request.headers.getlist("Idempotency-Key")
+                    ),
+                )
             )
-        )
-        _validate_result_context(request_context, result)
-        await _observe_result(request, result)
+        except InvalidAuthorizedAskRequest:
+            await _observe_api_failure(
+                request,
+                request_context,
+                SafeOperationalFailureCode.VALIDATION_FAILED,
+            )
+            raise
+        except Exception:
+            await _observe_api_failure(
+                request, request_context, SafeOperationalFailureCode.INTERNAL_FAILURE
+            )
+            raise
+        try:
+            _validate_result_context(request_context, result)
+        except InvalidAuthorizedAskRequest:
+            await _observe_api_failure(
+                request,
+                request_context,
+                SafeOperationalFailureCode.CONTEXT_MISMATCH,
+            )
+            raise
+        await _observe_api_success(request, request_context, result)
         await _publish_stream_result(request, result)
         return _command(request_context, result)
 
@@ -228,60 +261,46 @@ async def _publish_stream_result(request: Request, result: AuthorizedAskResult) 
         await publisher.publish_result(result)
 
 
-async def _observe_result(request: Request, result: AuthorizedAskResult) -> None:
+async def _observe_api_success(
+    request: Request,
+    request_context: AuthorizedRequestContext[object],
+    result: AuthorizedAskResult,
+) -> None:
     observer = getattr(request.app.state, "operational_observer", None)
     if not isinstance(observer, OperationalObservationEmitter):
         return
-    output = result.output
-    correlation = output.correlation
-    diagnostic_context = DiagnosticContext(
-        trace_id=correlation.trace_id,
-        correlation_id=correlation.correlation_id,
-        causation_id=correlation.causation_id,
+    await observer.emit(
+        workspace_id=request_context.scope.workspace_id,
+        environment_id=request_context.scope.environment_id,
+        diagnostic_context=request_context.diagnostic_context,
+        component=OperationalComponent.API,
+        stage=OperationalStage.ACCEPTANCE,
+        operation=OperationalOperation.HTTP_REQUEST,
+        outcome=OperationalObservationOutcome.SUCCEEDED,
+        run_id=result.run_id,
+        attempt_id=result.attempt_id,
+        message_id=result.message_id,
     )
-    failed = output.outcome in {
-        AnswerQuestionOutcome.FAILED,
-        AnswerQuestionOutcome.DENIED,
-    }
-    safe_code = None
-    if output.outcome is AnswerQuestionOutcome.DENIED:
-        safe_code = SafeOperationalFailureCode.ACCESS_DENIED
-    elif output.outcome is AnswerQuestionOutcome.FAILED:
-        safe_code = SafeOperationalFailureCode.GENERATION_UNAVAILABLE
-    for component, stage, operation in (
-        (
-            OperationalComponent.API,
-            OperationalStage.ACCEPTANCE,
-            OperationalOperation.HTTP_REQUEST,
-        ),
-        (
-            OperationalComponent.GENERATION,
-            OperationalStage.GENERATION,
-            OperationalOperation.ANSWER_GENERATION,
-        ),
-        (
-            OperationalComponent.RUN,
-            OperationalStage.PERSISTENCE,
-            OperationalOperation.RUN_PERSISTENCE,
-        ),
-    ):
-        await observer.emit(
-            workspace_id=output.scope.workspace_id,
-            environment_id=output.scope.environment_id,
-            diagnostic_context=diagnostic_context,
-            component=component,
-            stage=stage,
-            operation=operation,
-            outcome=(
-                OperationalObservationOutcome.FAILED
-                if failed
-                else OperationalObservationOutcome.SUCCEEDED
-            ),
-            safe_failure_code=safe_code,
-            run_id=correlation.run_id,
-            attempt_id=correlation.attempt_id,
-            message_id=result.message_id,
-        )
+
+
+async def _observe_api_failure(
+    request: Request,
+    request_context: AuthorizedRequestContext[object],
+    failure_code: SafeOperationalFailureCode,
+) -> None:
+    observer = getattr(request.app.state, "operational_observer", None)
+    if not isinstance(observer, OperationalObservationEmitter):
+        return
+    await observer.emit(
+        workspace_id=request_context.scope.workspace_id,
+        environment_id=request_context.scope.environment_id,
+        diagnostic_context=request_context.diagnostic_context,
+        component=OperationalComponent.API,
+        stage=OperationalStage.ACCEPTANCE,
+        operation=OperationalOperation.HTTP_REQUEST,
+        outcome=OperationalObservationOutcome.FAILED,
+        safe_failure_code=failure_code,
+    )
 
 
 def _idempotency(values: list[str]) -> IdempotencyKey:
@@ -289,6 +308,20 @@ def _idempotency(values: list[str]) -> IdempotencyKey:
         return IdempotencyKey(parse_idempotency_key_header(values).value)
     except (TypeError, ValueError):
         raise InvalidAuthorizedAskRequest() from None
+
+
+def _ask_context(
+    request_context: AuthorizedRequestContext[object],
+) -> AskRequestContext:
+    return AskRequestContext(
+        subject_id=request_context.acting_subject_id,
+        workspace_id=request_context.scope.workspace_id,
+        environment_id=request_context.scope.environment_id,
+        trace_id=request_context.diagnostic_context.trace_id,
+        authorization_generation=request_context.authorization_generation,
+        correlation_id=request_context.diagnostic_context.correlation_id,
+        causation_id=request_context.diagnostic_context.causation_id,
+    )
 
 
 def _command(
@@ -324,6 +357,10 @@ def _validate_result_context(
         or result.output.scope.environment_id != request_context.scope.environment_id
         or result.output.correlation.trace_id
         != request_context.diagnostic_context.trace_id
+        or result.output.correlation.correlation_id
+        != request_context.diagnostic_context.correlation_id
+        or result.output.correlation.causation_id
+        != request_context.diagnostic_context.causation_id
     ):
         raise InvalidAuthorizedAskRequest(
             "answer result is outside the trusted request context"

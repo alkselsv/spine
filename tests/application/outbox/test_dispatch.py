@@ -719,6 +719,7 @@ async def test_projection_request_redelivery_has_one_logical_consumer_effect() -
     assert len(consumer.contexts) == 2
     assert [item.component for item in operational_sink.observations] == [
         OperationalComponent.OUTBOX,
+        OperationalComponent.WORKER,
         OperationalComponent.OUTBOX,
         OperationalComponent.WORKER,
     ]

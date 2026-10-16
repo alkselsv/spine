@@ -28,6 +28,7 @@ from spine.application.context_profiles import (
     ContextProfileResolutionPort,
     ContextProfileResolutionRequest,
 )
+from spine.application.diagnostics import DiagnosticContext
 from spine.application.evidence_lineage_verification import (
     EvidenceItem,
     EvidenceLineageVerifier,
@@ -188,6 +189,7 @@ class AuthorizedContextRequest(ContextRequest):
     run_id: UUID
     attempt_id: UUID
     idempotency_key: str
+    diagnostic_context: DiagnosticContext
     max_tokens: int | None = None
     max_relation_hops: int | None = None
     freshness_max_age_seconds: int | None = None
@@ -578,6 +580,7 @@ class AuthorizedContextBrokerApplicationService:
         revision_ids = tuple(item.source_revision_id for item in constraints)
         return PhysicalReadContext(
             query=request.query,
+            diagnostic_context=request.diagnostic_context,
             publication_pin=pin,
             authorized_scope=scope,
             projection_run=read_model.projection_run,

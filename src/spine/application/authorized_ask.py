@@ -44,11 +44,22 @@ class AskRequestContext:
     environment_id: UUID
     trace_id: UUID
     authorization_generation: int
+    correlation_id: UUID | None = None
+    causation_id: UUID | None = None
 
     def __post_init__(self) -> None:
-        if any(identifier.int == 0 for identifier in (
-            self.subject_id, self.workspace_id, self.environment_id, self.trace_id
-        )) or self.authorization_generation < 1:
+        identifiers = (
+            self.subject_id,
+            self.workspace_id,
+            self.environment_id,
+            self.trace_id,
+            self.correlation_id,
+            self.causation_id,
+        )
+        if any(
+            identifier is not None and identifier.int == 0
+            for identifier in identifiers
+        ) or self.authorization_generation < 1:
             raise ValueError("authorized ask request context is invalid")
 
 
@@ -360,8 +371,13 @@ def _validate_capability_scope(
     if (
         result.output.scope.workspace_id != request_context.workspace_id
         or result.output.scope.environment_id != request_context.environment_id
+        or result.output.correlation.trace_id != request_context.trace_id
+        or result.output.correlation.correlation_id != request_context.correlation_id
+        or result.output.correlation.causation_id != request_context.causation_id
     ):
-        raise InvalidAuthorizedAskRequest("answer capability returned an out-of-scope result")
+        raise InvalidAuthorizedAskRequest(
+            "answer capability returned an out-of-context result"
+        )
 
 
 def _derived_key(prefix: str, key: IdempotencyKey) -> IdempotencyKey:

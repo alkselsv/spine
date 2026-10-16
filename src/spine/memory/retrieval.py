@@ -78,10 +78,22 @@ class PhysicalReadPlanExecutor:
                 plan_or_resolution.outcome is not PhysicalReadPlanOutcome.READY
                 or plan_or_resolution.plan is None
             ):
-                return self._plan_failure(plan_or_resolution)
+                result = self._plan_failure(plan_or_resolution)
+                await self._observe_plan_failure(plan_or_resolution)
+                return result
             plan = plan_or_resolution.plan
         else:
             plan = plan_or_resolution
+
+        embedded_context = plan.context.diagnostic_context
+        if diagnostic_context is not None and diagnostic_context != embedded_context:
+            raise ValueError("retrieval diagnostic context was substituted")
+        diagnostic_context = embedded_context
+
+        # A configured telemetry boundary makes diagnostic identity part of
+        # the trusted handoff. Validate it before any provider read occurs.
+        if self._operational_observer is not None:
+            self._validated_observation_scope(plan, diagnostic_context)
 
         plan_digest = self._digest(plan)
         previous = self._replays.get(plan_digest)
@@ -118,6 +130,11 @@ class PhysicalReadPlanExecutor:
                     ProjectionFailureCode.INCOMPLETE_EVIDENCE,
                 )
                 self._replays[plan_digest] = result
+                await self._observe_retrieval(
+                    plan,
+                    result,
+                    diagnostic_context=diagnostic_context,
+                )
                 return result
             try:
                 result = await self._provider.retrieve(command)
@@ -150,6 +167,31 @@ class PhysicalReadPlanExecutor:
             diagnostic_context=diagnostic_context,
         )
 
+    async def _observe_plan_failure(
+        self,
+        resolution: PhysicalReadPlanResolution,
+    ) -> None:
+        if self._operational_observer is None:
+            return
+        if (
+            resolution.workspace_id is None
+            or resolution.environment_id is None
+            or type(resolution.diagnostic_context) is not DiagnosticContext
+        ):
+            raise ValueError(
+                "failed retrieval plan has no trusted observation context"
+            )
+        await self._operational_observer.emit(
+            workspace_id=resolution.workspace_id,
+            environment_id=resolution.environment_id,
+            diagnostic_context=resolution.diagnostic_context,
+            component=OperationalComponent.RETRIEVAL,
+            stage=OperationalStage.RETRIEVAL,
+            operation=OperationalOperation.CONTEXT_RETRIEVAL,
+            outcome=OperationalObservationOutcome.FAILED,
+            safe_failure_code=SafeOperationalFailureCode.RETRIEVAL_UNAVAILABLE,
+        )
+
     async def _observe_retrieval(
         self,
         plan: PhysicalReadPlan,
@@ -159,19 +201,18 @@ class PhysicalReadPlanExecutor:
     ) -> None:
         if self._operational_observer is None:
             return
-        if type(diagnostic_context) is not DiagnosticContext:
-            raise ValueError("trusted diagnostic context is required for retrieval telemetry")
-        workspace_ids = {item.workspace_id for item in plan.operations}
-        environment_ids = {item.environment_id for item in plan.operations}
-        if len(workspace_ids) != 1 or len(environment_ids) != 1:
-            raise ValueError("retrieval telemetry scope is invalid")
+        workspace_id, environment_id = self._validated_observation_scope(
+            plan,
+            diagnostic_context,
+        )
+        assert diagnostic_context is not None
         failed = result.outcome not in {
             ProjectionOutcome.SUCCEEDED,
             ProjectionOutcome.REPLAYED,
         }
         await self._operational_observer.emit(
-            workspace_id=next(iter(workspace_ids)),
-            environment_id=next(iter(environment_ids)),
+            workspace_id=workspace_id,
+            environment_id=environment_id,
             diagnostic_context=diagnostic_context,
             component=OperationalComponent.RETRIEVAL,
             stage=OperationalStage.RETRIEVAL,
@@ -187,6 +228,21 @@ class PhysicalReadPlanExecutor:
                 else None
             ),
         )
+
+    @staticmethod
+    def _validated_observation_scope(
+        plan: PhysicalReadPlan,
+        diagnostic_context: DiagnosticContext | None,
+    ) -> tuple[UUID, UUID]:
+        if type(diagnostic_context) is not DiagnosticContext:
+            raise ValueError(
+                "trusted diagnostic context is required for retrieval telemetry"
+            )
+        workspace_ids = {item.workspace_id for item in plan.operations}
+        environment_ids = {item.environment_id for item in plan.operations}
+        if len(workspace_ids) != 1 or len(environment_ids) != 1:
+            raise ValueError("retrieval telemetry scope is invalid")
+        return next(iter(workspace_ids)), next(iter(environment_ids))
 
     @classmethod
     def _command(

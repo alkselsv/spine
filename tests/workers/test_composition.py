@@ -91,7 +91,7 @@ async def test_worker_factory_reconstructs_trusted_intent_context() -> None:
         diagnostic_events=diagnostic_events,
         diagnostic_sink=diagnostic_sink,
         service_principal_id=synthetic_uuid(6707),
-        clock=iter((claimed_at, completed_at)).__next__,
+        clock=iter((claimed_at, claimed_at, completed_at, completed_at)).__next__,
         audit_event_id_source=lambda: synthetic_uuid(6708),
         retry_delay=lambda attempt: timedelta(seconds=attempt),
         maximum_retry_delay=timedelta(minutes=5),

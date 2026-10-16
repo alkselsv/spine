@@ -14,8 +14,17 @@ from spine.api.authorization import (
     get_authorized_request_context,
 )
 from spine.application.authorized_ask import InvalidAuthorizedAskRequest
+from spine.application.diagnostics import DiagnosticContext
 from spine.application.qa_events import DisclosureAuthorizer, ResumeCursorError
 from spine.application.qa_streaming import QAEventStream, QAResultEventPublisher
+from spine.application.telemetry import (
+    OperationalComponent,
+    OperationalObservationEmitter,
+    OperationalObservationOutcome,
+    OperationalOperation,
+    OperationalStage,
+    SafeOperationalFailureCode,
+)
 from spine.auth import (
     AuthorizationRole,
     AuthorizationScopeRequirement,
@@ -53,6 +62,7 @@ def install_qa_stream_routes(
     *,
     service: QAStreamReader,
     disclosure_authorizer: QAStreamDisclosureAuthorizer | None = None,
+    operational_observer: OperationalObservationEmitter | None = None,
 ) -> None:
     """Register the scope-bound Q&A SSE/polling event route."""
 
@@ -98,6 +108,8 @@ def install_qa_stream_routes(
             raise InvalidAuthorizedAskRequest() from exc
 
         events = replay.events
+        observation_workspace_id = request_context.scope.workspace_id
+        observation_environment_id = request_context.scope.environment_id
         if not events and replay.terminal is not None:
             terminal = replay.terminal
             if last_event_id != str(terminal.event_id) and last_sequence != terminal.sequence:
@@ -106,10 +118,47 @@ def install_qa_stream_routes(
             last_event_id is not None or last_sequence not in (None, 0)
         ):
             events = (await stream.heartbeat(),)
+        event_contexts = {
+            (event.trace_id, event.correlation_id, event.causation_id)
+            for event in events
+        }
+        if len(event_contexts) > 1:
+            raise InvalidAuthorizedAskRequest()
+        if event_contexts:
+            trace_id, correlation_id, causation_id = next(iter(event_contexts))
+            observation_context = DiagnosticContext(
+                trace_id=trace_id,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+        else:
+            observation_context = request_context.diagnostic_context
 
         async def body() -> AsyncIterator[str]:
-            for event in events:
-                yield _encode_sse(event)
+            try:
+                for event in events:
+                    yield _encode_sse(event)
+            except BaseException:
+                await _observe_delivery(
+                    operational_observer,
+                    workspace_id=observation_workspace_id,
+                    environment_id=observation_environment_id,
+                    diagnostic_context=observation_context,
+                    run_id=run_id,
+                    message_id=message_id,
+                    outcome=OperationalObservationOutcome.FAILED,
+                    failure_code=SafeOperationalFailureCode.INTERNAL_FAILURE,
+                )
+                raise
+            await _observe_delivery(
+                operational_observer,
+                workspace_id=observation_workspace_id,
+                environment_id=observation_environment_id,
+                diagnostic_context=observation_context,
+                run_id=run_id,
+                message_id=message_id,
+                outcome=OperationalObservationOutcome.SUCCEEDED,
+            )
 
         return StreamingResponse(
             body(),
@@ -139,6 +188,33 @@ def install_qa_stream_routes(
                 },
             }
         },
+    )
+
+
+async def _observe_delivery(
+    observer: OperationalObservationEmitter | None,
+    *,
+    workspace_id: UUID,
+    environment_id: UUID,
+    diagnostic_context: DiagnosticContext,
+    run_id: UUID | None,
+    message_id: UUID,
+    outcome: OperationalObservationOutcome,
+    failure_code: SafeOperationalFailureCode | None = None,
+) -> None:
+    if observer is None:
+        return
+    await observer.emit(
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        diagnostic_context=diagnostic_context,
+        component=OperationalComponent.SSE,
+        stage=OperationalStage.DELIVERY,
+        operation=OperationalOperation.SSE_DELIVERY,
+        outcome=outcome,
+        safe_failure_code=failure_code,
+        run_id=run_id,
+        message_id=message_id,
     )
 
 

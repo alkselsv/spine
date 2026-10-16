@@ -194,7 +194,9 @@ component/stage/operation/outcome/failure labels и непрозрачные cor
 references. R1 отключает внешний exporter, применяет 30-дневный retention с
 legal-hold seam и tail-sampling: 100% error traces, 10% successful traces.
 Sampling не затрагивает propagation или обязательный Audit Event; отказ
-diagnostic sink не меняет успешный business effect.
+diagnostic sink не меняет успешный business effect. Подмена либо malformed
+trusted context отклоняется до handoff; best-effort относится только к записи в
+уже провалидированный diagnostic sink.
 
 ## 7. Доменная модель
 

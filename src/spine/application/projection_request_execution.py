@@ -402,14 +402,17 @@ class ProjectionRequestConsumer:
         try:
             canonical = await self._canonical_resolver.resolve(request)
         except ProjectionMappingConflictError:
+            await self._observe_projection_failure(request, diagnostic_context)
             raise TerminalOutboxConsumerFailure(
                 "projection.request.integrity_conflict"
             ) from None
         except ProjectionMappingError:
+            await self._observe_projection_failure(request, diagnostic_context)
             raise TerminalOutboxConsumerFailure(
                 "projection.request.canonical_rejected"
             ) from None
         except Exception:
+            await self._observe_projection_failure(request, diagnostic_context)
             raise RetryableOutboxConsumerFailure(
                 "projection.request.resolution_retryable"
             ) from None
@@ -417,6 +420,11 @@ class ProjectionRequestConsumer:
             canonical.workspace_id != request.workspace_id
             or canonical.environment_id != request.environment_id
         ):
+            await self._observe_projection_failure(
+                request,
+                diagnostic_context,
+                failure_code=SafeOperationalFailureCode.CONTEXT_MISMATCH,
+            )
             raise TerminalOutboxConsumerFailure(
                 "projection.request.context_invalid"
             )
@@ -437,14 +445,23 @@ class ProjectionRequestConsumer:
         try:
             replay = await self._result_bridge.prepare(command)
         except ProjectionMappingConflictError:
+            await self._observe_projection_failure(
+                request, diagnostic_context, command=command
+            )
             raise TerminalOutboxConsumerFailure(
                 "projection.request.integrity_conflict"
             ) from None
         except ProjectionMappingError:
+            await self._observe_projection_failure(
+                request, diagnostic_context, command=command
+            )
             raise TerminalOutboxConsumerFailure(
                 "projection.request.canonical_rejected"
             ) from None
         except Exception:
+            await self._observe_projection_failure(
+                request, diagnostic_context, command=command
+            )
             raise RetryableOutboxConsumerFailure(
                 "projection.request.resolution_retryable"
             ) from None
@@ -492,14 +509,23 @@ class ProjectionRequestConsumer:
             receipt = await self._receipt_builder.build(command, result)
             await self._result_bridge.map(command, receipt)
         except ProjectionMappingConflictError:
+            await self._observe_projection_failure(
+                request, diagnostic_context, command=command
+            )
             raise TerminalOutboxConsumerFailure(
                 "projection.request.integrity_conflict"
             ) from None
         except ProjectionMappingError:
+            await self._observe_projection_failure(
+                request, diagnostic_context, command=command
+            )
             raise TerminalOutboxConsumerFailure(
                 "projection.request.canonical_rejected"
             ) from None
         except Exception:
+            await self._observe_projection_failure(
+                request, diagnostic_context, command=command
+            )
             raise RetryableOutboxConsumerFailure(
                 "projection.request.handoff_retryable"
             ) from None
@@ -532,6 +558,30 @@ class ProjectionRequestConsumer:
             outcome=outcome,
             safe_failure_code=failure_code,
             run_id=command.projection_run_id,
+        )
+
+    async def _observe_projection_failure(
+        self,
+        request: ProjectionRequestEnvelope,
+        diagnostic_context: DiagnosticContext,
+        *,
+        command: ProjectCommand | None = None,
+        failure_code: SafeOperationalFailureCode = (
+            SafeOperationalFailureCode.PROJECTION_UNAVAILABLE
+        ),
+    ) -> None:
+        if self._operational_observer is None:
+            return
+        await self._operational_observer.emit(
+            workspace_id=request.workspace_id,
+            environment_id=request.environment_id,
+            diagnostic_context=diagnostic_context,
+            component=OperationalComponent.PROJECTION,
+            stage=OperationalStage.PROJECTION,
+            operation=OperationalOperation.PROJECTION_BUILD,
+            outcome=OperationalObservationOutcome.FAILED,
+            safe_failure_code=failure_code,
+            run_id=command.projection_run_id if command is not None else None,
         )
 
     @staticmethod

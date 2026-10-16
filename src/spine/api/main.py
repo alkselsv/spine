@@ -79,12 +79,15 @@ from spine.application.parsed_content_inspection import ParsedContentInspectionS
 from spine.application.processing_commands import ProcessingCommandService
 from spine.application.telemetry import (
     OperationalObservationEmitter,
+    OperationalObservationPolicy,
     OperationalObservationReader,
+    OperationalObservationRegistry,
 )
 from spine.application.document_lifecycle import DocumentLifecycleCommandService
 from spine.config import settings
 from spine.ingest.loaders import documents_to_remember_payloads, load_path
 from spine.infrastructure.diagnostics import JsonLoggingDiagnosticSink
+from spine.infrastructure.telemetry import DiagnosticOperationalObservationSink
 from spine.memory.cognee_memory import ask, format_answers, remember_texts
 
 
@@ -264,6 +267,19 @@ def create_app(
         logger=logging.getLogger("spine.diagnostics"),
     )
     resolved_clock = clock or (lambda: datetime.now(timezone.utc))
+    if operational_observer is None:
+        observation_registry = OperationalObservationRegistry()
+        operational_observer = OperationalObservationEmitter(
+            registry=observation_registry,
+            sink=DiagnosticOperationalObservationSink(
+                observation_registry=observation_registry,
+                diagnostic_registry=resolved_diagnostic_registry,
+                diagnostic_sink=resolved_diagnostic_sink,
+            ),
+            policy=OperationalObservationPolicy(),
+            clock=resolved_clock,
+            observation_id_source=uuid4,
+        )
     application.state.diagnostic_registry = resolved_diagnostic_registry
     application.state.diagnostic_sink = resolved_diagnostic_sink
     application.state.diagnostic_clock = resolved_clock
@@ -410,6 +426,7 @@ def create_app(
             application,
             service=qa_stream_service,
             disclosure_authorizer=qa_stream_disclosure_authorizer,
+            operational_observer=operational_observer,
         )
     if citation_inspector_service is not None:
         if type(authorization_runtime) is not ApiAuthorizationRuntime:

@@ -6,6 +6,7 @@ from uuid import UUID
 
 import pytest
 
+from spine.application.diagnostics import DiagnosticContext
 from spine.application.authorized_retrieval_scope import (
     AuthorizedRetrievalScope,
     AuthorizedSourceConstraint,
@@ -278,6 +279,7 @@ def _context() -> tuple[PhysicalReadContext, ProjectionNamespaceRegistry]:
     )
     context = PhysicalReadContext(
         query="find the answer",
+        diagnostic_context=DiagnosticContext(trace_id=UUID(int=1000)),
         publication_pin=pin,
         authorized_scope=scope,
         projection_run=run,

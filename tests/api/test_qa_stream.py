@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -15,13 +14,14 @@ from spine.application.qa_streaming import AuthorizedQAStreamService
 from spine.application.telemetry import (
     OperationalComponent,
     OperationalObservationEmitter,
-    OperationalObservationPolicy,
     OperationalObservationRegistry,
     RecordingOperationalObservationSink,
 )
 from tests.api.test_authorized_ask import (
+    AlwaysRetainPolicy,
     FakeAskService,
     SESSION_ID,
+    TRACE_ID,
     answered_result,
     headers,
 )
@@ -42,7 +42,12 @@ def _event_frames(value: str) -> list[dict[str, object]]:
     return frames
 
 
-def _app(*, allowed: dict[str, bool], log: InMemoryQAEventLog) -> httpx.ASGITransport:
+def _app(
+    *,
+    allowed: dict[str, bool],
+    log: InMemoryQAEventLog,
+    operational_observer: OperationalObservationEmitter | None = None,
+) -> httpx.ASGITransport:
     ask_service = FakeAskService(answered_result(), [])
     stream_service = AuthorizedQAStreamService(event_log=log)
     application = authorized_app([])
@@ -55,6 +60,7 @@ def _app(*, allowed: dict[str, bool], log: InMemoryQAEventLog) -> httpx.ASGITran
         application,
         service=stream_service,
         disclosure_authorizer=lambda _receipt, _context: allowed["content"],
+        operational_observer=operational_observer,
     )
     return httpx.ASGITransport(app=application)
 
@@ -102,34 +108,37 @@ async def test_sse_streams_accepted_ask_events_and_resumes_after_last_event_id()
 
 
 @pytest.mark.asyncio
-async def test_sse_persistence_emits_safe_terminal_observation_with_run_trace() -> None:
+async def test_sse_delivery_emits_safe_terminal_observation_after_http_stream() -> None:
     registry = OperationalObservationRegistry()
     sink = RecordingOperationalObservationSink(registry)
     observer = OperationalObservationEmitter(
         registry=registry,
         sink=sink,
-        policy=OperationalObservationPolicy(),
+        policy=AlwaysRetainPolicy(),
         clock=lambda: datetime(2026, 10, 16, tzinfo=timezone.utc),
         observation_id_source=lambda: UUID(int=361),
     )
-    original = answered_result()
-    correlation = original.output.correlation.model_copy(
-        update={"trace_id": UUID(int=1000)}
-    )
-    result = replace(
-        original,
-        output=original.output.model_copy(update={"correlation": correlation}),
-    )
-    service = AuthorizedQAStreamService(
-        event_log=InMemoryQAEventLog(),
+    log = InMemoryQAEventLog()
+    transport = _app(
+        allowed={"content": True},
+        log=log,
         operational_observer=observer,
     )
-
-    await service.publish_result(result)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        ask = await client.post(
+            "/api/v1/ask",
+            json={"schema_version": 1, "session_id": str(SESSION_ID), "question": "Which policy applies?"},
+            headers={**headers(), "Idempotency-Key": "sse-observation"},
+        )
+        await client.get(
+            f"/api/v1/qa/sessions/{SESSION_ID}/messages/{ask.json()['result']['message_id']}/events",
+            params={"run_id": ask.json()["result"]["run_id"]},
+            headers=headers(),
+        )
 
     assert len(sink.observations) == 1
     assert sink.observations[0].component is OperationalComponent.SSE
-    assert sink.observations[0].trace_id == UUID(int=1000)
+    assert sink.observations[0].trace_id == TRACE_ID
     assert "The policy applies" not in sink.observations[0].model_dump_json()
 
 

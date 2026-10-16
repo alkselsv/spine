@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import UUID
@@ -10,6 +11,7 @@ from pydantic import ValidationError
 from spine.application.diagnostics import DiagnosticContext
 from spine.application.telemetry import (
     InMemoryOperationalObservationStore,
+    ObservedOutboxWriter,
     OperationalComponent,
     OperationalObservationEmitter,
     OperationalObservationOutcome,
@@ -23,6 +25,7 @@ from spine.application.telemetry import (
     RecordingOperationalObservationSink,
     SafeOperationalFailureCode,
 )
+from spine.application.persistence.outbox import OutboxIntent
 from spine.auth import AuthorizationRole, RequestedAuthorizationScope
 from spine.application.diagnostics import DiagnosticEventRegistry
 from spine.infrastructure.diagnostics import RecordingDiagnosticSink
@@ -201,6 +204,55 @@ async def test_sink_failure_cannot_fail_the_business_boundary() -> None:
 
 
 @pytest.mark.asyncio
+async def test_emitter_fails_closed_before_sink_for_malformed_trusted_context() -> None:
+    emitter = OperationalObservationEmitter(
+        registry=OperationalObservationRegistry(),
+        sink=RecordingOperationalObservationSink(OperationalObservationRegistry()),
+        policy=OperationalObservationPolicy(),
+        clock=lambda: NOW,
+        observation_id_source=lambda: UUID(int=1),
+    )
+
+    with pytest.raises(ValueError, match="trusted diagnostic context"):
+        await emitter.emit(
+            workspace_id=WORKSPACE_ID,
+            environment_id=ENVIRONMENT_ID,
+            diagnostic_context=object(),  # type: ignore[arg-type]
+            component=OperationalComponent.API,
+            stage=OperationalStage.ACCEPTANCE,
+            operation=OperationalOperation.HTTP_REQUEST,
+            outcome=OperationalObservationOutcome.SUCCEEDED,
+        )
+
+
+@pytest.mark.asyncio
+async def test_emitter_never_swallows_task_cancellation() -> None:
+    class CancelledSink:
+        async def emit(self, observation: object) -> None:
+            del observation
+            raise asyncio.CancelledError
+
+    emitter = OperationalObservationEmitter(
+        registry=OperationalObservationRegistry(),
+        sink=CancelledSink(),
+        policy=OperationalObservationPolicy(),
+        clock=lambda: NOW,
+        observation_id_source=lambda: UUID(int=1),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await emitter.emit(
+            workspace_id=WORKSPACE_ID,
+            environment_id=ENVIRONMENT_ID,
+            diagnostic_context=context(UUID(int=1000)),
+            component=OperationalComponent.API,
+            stage=OperationalStage.ACCEPTANCE,
+            operation=OperationalOperation.HTTP_REQUEST,
+            outcome=OperationalObservationOutcome.SUCCEEDED,
+        )
+
+
+@pytest.mark.asyncio
 async def test_reader_enforces_scope_retention_and_legal_hold() -> None:
     registry = OperationalObservationRegistry()
     store = InMemoryOperationalObservationStore(registry)
@@ -242,7 +294,7 @@ def test_policy_is_explicit_versioned_and_exporter_disabled() -> None:
 
 
 @pytest.mark.asyncio
-async def test_one_trusted_trace_survives_every_runtime_hop_and_safe_diagnostic_bridge() -> None:
+async def test_diagnostic_bridge_preserves_trusted_context_for_each_closed_boundary_label() -> None:
     registry = OperationalObservationRegistry()
     diagnostic_registry = DiagnosticEventRegistry.with_default_families()
     diagnostic_sink = RecordingDiagnosticSink(diagnostic_registry)
@@ -308,3 +360,45 @@ def test_registry_rejects_substituted_trace_context() -> None:
 
     with pytest.raises(ValueError, match="context is invalid"):
         registry.validate(substituted)
+
+
+@pytest.mark.asyncio
+async def test_observed_outbox_writer_records_the_actual_enqueue_handoff() -> None:
+    event_id = UUID(int=900)
+
+    class Writer:
+        async def append(self, intent: OutboxIntent) -> UUID:
+            assert intent.event_id == event_id
+            return event_id
+
+    registry = OperationalObservationRegistry()
+    sink = RecordingOperationalObservationSink(registry)
+    observer = OperationalObservationEmitter(
+        registry=registry,
+        sink=sink,
+        policy=OperationalObservationPolicy(),
+        clock=lambda: NOW,
+        observation_id_source=lambda: UUID(int=901),
+    )
+    intent = OutboxIntent(
+        event_id=event_id,
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        event_type="telemetry.test",
+        schema_version=1,
+        payload=OperationalObservationPolicy(),
+        trace_id=UUID(int=1000),
+        correlation_id=UUID(int=902),
+        causation_id=UUID(int=903),
+    )
+
+    persisted_id = await ObservedOutboxWriter(Writer(), observer).append(intent)
+
+    assert persisted_id == event_id
+    assert len(sink.observations) == 1
+    observation = sink.observations[0]
+    assert observation.component is OperationalComponent.OUTBOX
+    assert observation.operation is OperationalOperation.OUTBOX_ENQUEUE
+    assert observation.trace_id == intent.trace_id
+    assert observation.correlation_id == intent.correlation_id
+    assert observation.causation_id == intent.causation_id

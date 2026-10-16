@@ -16,7 +16,7 @@ from uuid import UUID
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from spine.application.diagnostics import DiagnosticContext
-from spine.auth import AuthorizationRole
+from spine.auth import AuthorizationRole, AuthorizedRequestContext
 from spine.domain.common import ValidatedDefinitionModel
 
 
@@ -350,28 +350,25 @@ class OperationalObservationEmitter:
         attempt_id: UUID | None = None,
         message_id: UUID | None = None,
     ) -> bool:
-        try:
-            observation = self._registry.build(
-                observation_id=self._observation_id_source(),
-                observed_at=self._clock(),
-                workspace_id=workspace_id,
-                environment_id=environment_id,
-                diagnostic_context=diagnostic_context,
-                component=component,
-                stage=stage,
-                operation=operation,
-                outcome=outcome,
-                safe_failure_code=safe_failure_code,
-                duration_ms=duration_ms,
-                attempt_number=attempt_number,
-                run_id=run_id,
-                attempt_id=attempt_id,
-                message_id=message_id,
-            )
-        except (KeyboardInterrupt, SystemExit):
-            raise
-        except BaseException:
-            return False
+        # Contract and trusted-context failures are fail-closed. Only failures
+        # in the diagnostic sink itself are isolated from the business effect.
+        observation = self._registry.build(
+            observation_id=self._observation_id_source(),
+            observed_at=self._clock(),
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            diagnostic_context=diagnostic_context,
+            component=component,
+            stage=stage,
+            operation=operation,
+            outcome=outcome,
+            safe_failure_code=safe_failure_code,
+            duration_ms=duration_ms,
+            attempt_number=attempt_number,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            message_id=message_id,
+        )
         if observation.outcome in _FAILURE_OUTCOMES:
             self._error_traces.add(observation.trace_id)
             pending = self._pending_traces.pop(observation.trace_id, [])
@@ -386,8 +383,7 @@ class OperationalObservationEmitter:
         pending = self._pending_traces.setdefault(observation.trace_id, [])
         pending.append(observation)
         if (
-            observation.operation is OperationalOperation.RUN_PERSISTENCE
-            or observation.operation is OperationalOperation.SSE_DELIVERY
+            observation.operation is OperationalOperation.SSE_DELIVERY
             or (
                 observation.component is OperationalComponent.WORKER
                 and observation.operation is OperationalOperation.OUTBOX_DELIVERY
@@ -403,7 +399,7 @@ class OperationalObservationEmitter:
             await self._sink.emit(observation)
         except (KeyboardInterrupt, SystemExit):
             raise
-        except BaseException:
+        except Exception:
             return False
         return True
 
@@ -534,15 +530,12 @@ class OperationalObservationReader:
         self,
         *,
         query: OperationalObservationQuery,
-        authority: object,
+        authority: AuthorizedRequestContext[object],
     ) -> OperationalObservationPage:
-        roles = getattr(authority, "roles", frozenset())
-        scope = getattr(authority, "scope", None)
         if (
-            roles != frozenset({AuthorizationRole.ADMINISTRATOR})
-            or scope is None
-            or getattr(scope, "workspace_id", None) != query.workspace_id
-            or getattr(scope, "environment_id", None) != query.environment_id
+            authority.roles != frozenset({AuthorizationRole.ADMINISTRATOR})
+            or authority.scope.workspace_id != query.workspace_id
+            or authority.scope.environment_id != query.environment_id
         ):
             raise OperationalTelemetryAccessDenied(
                 "Operational observations are unavailable."
