@@ -116,10 +116,12 @@ def install_authorized_ask_routes(
     application: FastAPI,
     *,
     service: AuthorizedAskService,
+    stream_service: object | None = None,
 ) -> None:
     """Register the protected ask and cooperative cancellation commands."""
 
     application.state.authorized_ask_service = service
+    application.state.qa_stream_service = stream_service
 
     async def ask_endpoint(
         request: Request,
@@ -143,6 +145,7 @@ def install_authorized_ask_routes(
                 idempotency_key=_idempotency(request.headers.getlist("Idempotency-Key")),
             )
         )
+        await _publish_stream_result(request, result)
         return _command(request_context, result, expected_session_id=body.session_id)
 
     async def cancel_endpoint(
@@ -167,6 +170,7 @@ def install_authorized_ask_routes(
                 idempotency_key=_idempotency(request.headers.getlist("Idempotency-Key")),
             )
         )
+        await _publish_stream_result(request, result)
         return _command(request_context, result)
 
     policy = _policy()
@@ -197,6 +201,13 @@ def _service(request: Request) -> AuthorizedAskService:
     if service is None:
         raise RuntimeError("Authorized ask service is unavailable.")
     return cast(AuthorizedAskService, service)
+
+
+async def _publish_stream_result(request: Request, result: AuthorizedAskResult) -> None:
+    stream_service = getattr(request.app.state, "qa_stream_service", None)
+    publisher = getattr(stream_service, "publish_result", None)
+    if publisher is not None:
+        await publisher(result)
 
 
 def _idempotency(values: list[str]) -> IdempotencyKey:
