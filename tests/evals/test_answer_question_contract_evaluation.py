@@ -8,6 +8,8 @@ from spine.domain.capabilities import (
     RetrievalOutcome,
     map_retrieval_outcome,
 )
+from spine.application.answer_question_context import map_context_outcome_to_retrieval_outcome
+from spine.memory.contracts import ContextOutcome
 
 
 FIXTURE = (
@@ -58,4 +60,8 @@ def test_answer_question_contract_evaluation_fixture_covers_closed_outcome_sets(
         ).value,
         "unavailable": map_retrieval_outcome(RetrievalOutcome.UNAVAILABLE).value,
         "failed": map_retrieval_outcome(RetrievalOutcome.FAILED).value,
+    }
+    assert fixture["context_broker_outcome_mapping"] == {
+        outcome.value: map_context_outcome_to_retrieval_outcome(outcome).value
+        for outcome in ContextOutcome
     }

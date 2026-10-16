@@ -1277,6 +1277,20 @@ canonical current revision и что `SourceObject` не tombstoned. Прове�
 context. Projection lag, snapshot activation или rollback не могут сделать
 superseded или tombstoned content current либо вернуть его в ordinary Q&A.
 
+На границе `answer_question` Context Broker возвращает только typed
+`ContextResponse:v1` и ссылку на сохранённый immutable `ContextBundle:v1`.
+`AnswerQuestionContextService` передаёт Broker только server-resolved
+`ContextProfile`, trusted request/authorization references и run/attempt
+identity; projection, namespace, activation, boundary и `as_of` selectors не
+могут прийти от caller. Перед candidate generation service загружает ровно
+этот bundle и сверяет его tenant, provenance, publication и все pinned
+projection identities с execution pin. Перед disclosure тот же bundle и полный
+`DisclosureDependencySet` проходят current-authority revalidation, после чего
+AQ-11 `AnswerDisclosureGate` остаётся единственной границей, через которую
+может пройти accepted answer. Broker outcomes мапятся в AQ retrieval facts, а
+не в финальный answer; denied, stale, degraded, unavailable и cancelled paths
+fail closed и не содержат protected context.
+
 Явный authorized revision-history или citation-inspection flow может раскрыть
 точно запрошенную historical revision, если current `AccessPolicy`, retention и
 deletion policy всё ещё разрешают это disclosure. Он не использует historical
@@ -2256,6 +2270,9 @@ detectors без специальных обходов в platform core.
   operational state для at-least-once outbox delivery.
 - [ADR-029](adr/0029-immutable-context-bundle-handoff.md): immutable,
   evidence-bearing ContextBundle handoff and replay semantics.
+- [ADR-034](adr/0034-answer-question-context-broker-handoff.md): the
+  provider-neutral `answer_question` handoff from Context Broker response to
+  pinned ContextBundle, candidate input and AQ-11 disclosure.
 - [ADR-021](adr/0021-provider-neutral-oidc-and-canonical-request-authorization.md):
   provider-neutral OIDC JWT authentication, canonical human mapping и trusted
   Workspace/Environment request authorization.

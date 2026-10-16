@@ -9,6 +9,18 @@ from importlib import import_module
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from .answer_question_context import (
+        AnswerQuestionAuthorizedContext,
+        AnswerQuestionContextBroker,
+        AnswerQuestionContextRequest,
+        AnswerQuestionContextResolution,
+        AnswerQuestionContextService,
+        AnswerQuestionDisclosureCheckpoint,
+        AnswerQuestionDisclosureGate,
+        AnswerQuestionDisclosureRevalidator,
+        ContextRevalidationFailure,
+        map_context_outcome_to_retrieval_outcome,
+    )
     from .authorized_context_broker import (
         AuthorizedContextBrokerApplicationService,
         AuthorizedContextRequest,
@@ -24,6 +36,16 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
+    "AnswerQuestionAuthorizedContext",
+    "AnswerQuestionContextBroker",
+    "AnswerQuestionContextRequest",
+    "AnswerQuestionContextResolution",
+    "AnswerQuestionContextService",
+    "AnswerQuestionDisclosureCheckpoint",
+    "AnswerQuestionDisclosureGate",
+    "AnswerQuestionDisclosureRevalidator",
+    "ContextRevalidationFailure",
+    "map_context_outcome_to_retrieval_outcome",
     "AuthorizedContextBrokerApplicationService",
     "AuthorizedContextRequest",
     "ContextBrokerReadModel",
@@ -39,6 +61,20 @@ __all__ = [
 
 
 def __getattr__(name: str) -> object:
+    if name in {
+        "AnswerQuestionAuthorizedContext",
+        "AnswerQuestionContextBroker",
+        "AnswerQuestionContextRequest",
+        "AnswerQuestionContextResolution",
+        "AnswerQuestionContextService",
+        "AnswerQuestionDisclosureCheckpoint",
+        "AnswerQuestionDisclosureGate",
+        "AnswerQuestionDisclosureRevalidator",
+        "ContextRevalidationFailure",
+        "map_context_outcome_to_retrieval_outcome",
+    }:
+        module = import_module("spine.application.answer_question_context")
+        return getattr(module, name)
     if name in __all__:
         module = import_module("spine.application.authorized_context_broker")
         return getattr(module, name)
