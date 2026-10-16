@@ -1,13 +1,17 @@
 import { expect, test, type Page } from '@playwright/test';
+import type { components } from '../api/generated/schema';
 
 const primaryWorkspace = '10000000-0000-4000-8000-000000000001';
 const salesWorkspace = '10000000-0000-4000-8000-000000000002';
 const localEnvironment = '20000000-0000-4000-8000-000000000001';
 const stagingEnvironment = '20000000-0000-4000-8000-000000000002';
 const traceId = '50000000-0000-4000-8000-000000000001';
+const firstDocument = '30000000-0000-4000-8000-000000000001';
+const secondDocument = '30000000-0000-4000-8000-000000000002';
 
 test('test_control_plane_navigation_preserves_scope_and_generated_client_context', async ({ page }) => {
   const healthRequests = await installControlledHealth(page);
+  const documentRequests = await installControlledDocuments(page);
 
   await page.goto('/?fixture=controlled');
   await expect(page).toHaveTitle('Spine Control Plane');
@@ -23,6 +27,7 @@ test('test_control_plane_navigation_preserves_scope_and_generated_client_context
 
   await page.getByRole('link', { name: 'Знания', exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/knowledge/documents\\?`));
+  await expect(page.getByRole('heading', { name: 'Документы' })).toBeVisible();
   await expect(page.getByRole('combobox', { name: 'Рабочая область' })).toContainText('Продажи');
   await expect(page.getByRole('combobox', { name: 'Среда' })).toContainText('Staging');
 
@@ -38,8 +43,50 @@ test('test_control_plane_navigation_preserves_scope_and_generated_client_context
   expect(healthRequests[0]?.headers['x-environment-id']).toBe(localEnvironment);
   expect(healthRequests[1]?.headers['x-workspace-id']).toBe(salesWorkspace);
   expect(healthRequests[1]?.headers['x-environment-id']).toBe(stagingEnvironment);
+  expect(documentRequests[0]?.headers['x-workspace-id']).toBe(salesWorkspace);
+  expect(documentRequests[0]?.headers['x-environment-id']).toBe(stagingEnvironment);
   expect(healthRequests.every(({ url }) => !url.includes('controlled-browser-token'))).toBe(true);
   await expect(page.getByRole('alert')).not.toContainText(/customer|protected|resource_exists/i);
+});
+
+test('test_documents_discovery_filters_paginates_and_navigates_without_content_identity', async ({ page }) => {
+  const documentRequests = await installControlledDocuments(page);
+  await page.goto(
+    `/knowledge/documents?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`,
+  );
+
+  await expect(page.getByRole('heading', { name: 'Документы' })).toBeVisible();
+  await expect(page.getByRole('table')).toBeVisible();
+  await expect(page.getByText(`ID: ${firstDocument}`)).toBeVisible();
+  await expect(page.locator('body')).not.toContainText(/secret\.pdf|protected title|checksum/i);
+
+  await page.getByRole('combobox', { name: 'Публикация' }).click();
+  await page.getByRole('option', { name: 'Опубликован', exact: true }).click();
+  await expect(page).toHaveURL(/publication_status=published/);
+  await page.getByRole('button', { name: 'Следующая страница' }).click();
+  await expect(page).toHaveURL(/cursor=documents-next/);
+  await expect(page.getByText(`ID: ${secondDocument}`)).toBeVisible();
+
+  await page.getByRole('link', { name: 'Открыть' }).click();
+  await expect(page).toHaveURL(
+    new RegExp(`/knowledge/documents/${secondDocument}\\?.*workspace=${salesWorkspace}.*publication_status=published.*cursor=documents-next`),
+  );
+  await expect(page.getByRole('heading', { name: 'Документ' })).toBeVisible();
+  await page.getByRole('link', { name: 'Вернуться к документам' }).click();
+  await expect(page.getByText(`ID: ${secondDocument}`)).toBeVisible();
+  await page.reload();
+  await expect(page.getByText(`ID: ${secondDocument}`)).toBeVisible();
+
+  await choose(page, 'Рабочая область', 'Основная');
+  await choose(page, 'Среда', 'Local');
+  await expect(page).toHaveURL(new RegExp(`workspace=${primaryWorkspace}&environment=${localEnvironment}`));
+  await expect(page.getByText(`ID: ${firstDocument}`)).toBeVisible();
+
+  expect(documentRequests.length).toBeGreaterThanOrEqual(2);
+  expect(documentRequests.every(({ headers }) => headers.authorization === 'Bearer controlled-browser-token')).toBe(true);
+  expect(documentRequests.some(({ headers }) => headers['x-workspace-id'] === salesWorkspace && headers['x-environment-id'] === stagingEnvironment)).toBe(true);
+  expect(documentRequests.some(({ headers }) => headers['x-workspace-id'] === primaryWorkspace && headers['x-environment-id'] === localEnvironment)).toBe(true);
+  expect(documentRequests.every(({ url }) => !url.includes('unsupported'))).toBe(true);
 });
 
 test('test_authentication_denial_hides_administrator_shell_without_api_request', async ({ page }) => {
@@ -124,6 +171,60 @@ async function installControlledHealth(page: Page) {
         resource_exists: true,
       }),
       status: 403,
+    });
+  });
+  return requests;
+}
+
+async function installControlledDocuments(page: Page) {
+  const requests: Array<{ url: string; headers: Record<string, string> }> = [];
+  await page.route('**/api/v1/documents*', async (route) => {
+    const request = route.request();
+    const headers = request.headers();
+    requests.push({ url: request.url(), headers });
+    const workspaceHeader = headers['x-workspace-id'];
+    const environmentHeader = headers['x-environment-id'];
+    if (!workspaceHeader || !environmentHeader) throw new Error('Controlled scope headers are missing.');
+    const url = new URL(request.url());
+    const isSecondPage = url.searchParams.get('cursor') === 'documents-next';
+    const sourceObjectId = isSecondPage ? secondDocument : firstDocument;
+    const item = {
+      created_at: '2026-01-02T03:04:05Z',
+      identity: {
+        identity_mode: 'upload',
+        upload_identity: 'secret.pdf',
+      },
+      operational_metadata: {
+        lifecycle: 'current',
+        processing_state: 'processed',
+        publication_status: 'published',
+        schema_version: 1 as const,
+        source_object_id: sourceObjectId,
+        status: 'available',
+      },
+      publication: {
+        freshness: 'current',
+        health: 'healthy',
+        projection_kind: 'qa',
+        status: 'published',
+      },
+      schema_version: 1 as const,
+      source_kind: 'document',
+      source_object_id: sourceObjectId,
+    } satisfies components['schemas']['DocumentSnapshot'];
+    const body = {
+      environment_id: environmentHeader,
+      items: [item],
+      limit: 25,
+      next_cursor: isSecondPage ? null : 'documents-next',
+      schema_version: 1 as const,
+      trace_id: traceId,
+      workspace_id: workspaceHeader,
+    } satisfies components['schemas']['ApiCollectionEnvelope_DocumentSnapshot_'];
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(body),
+      status: 200,
     });
   });
   return requests;

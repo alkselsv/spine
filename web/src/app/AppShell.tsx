@@ -37,7 +37,14 @@ export function AppShell() {
 
   function changeScope(next: Partial<Scope>) {
     const nextScope: Scope = { ...scope, ...next };
-    navigate({ search: `?${updateScopeSearch(searchParams.toString(), nextScope)}` }, {
+    const nextSearch = new URLSearchParams(updateScopeSearch(searchParams.toString(), nextScope));
+    if (
+      nextScope.workspaceId !== scope.workspaceId ||
+      nextScope.environmentId !== scope.environmentId
+    ) {
+      nextSearch.delete('cursor');
+    }
+    navigate({ search: `?${nextSearch.toString()}` }, {
       replace: true,
     });
     setConnectionError(null);

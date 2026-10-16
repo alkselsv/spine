@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryRouter, RouterProvider } from 'react-router';
@@ -7,11 +8,19 @@ import { appRoutes } from './app/routes';
 
 afterEach(cleanup);
 
+function renderApp(router: ReturnType<typeof createMemoryRouter>) {
+  return render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  );
+}
+
 describe('application bootstrap', () => {
   it('test_root_route_renders_control_plane_boundary', () => {
     const router = createMemoryRouter(appRoutes, { initialEntries: ['/'] });
 
-    render(<RouterProvider router={router} />);
+    renderApp(router);
 
     expect(screen.getByRole('heading', { name: 'Control Plane Spine' })).toBeVisible();
     expect(screen.getByRole('status')).toHaveTextContent('Подключено');
@@ -21,7 +30,7 @@ describe('application bootstrap', () => {
     const user = userEvent.setup();
     const router = createMemoryRouter(appRoutes, { initialEntries: ['/'] });
 
-    render(<RouterProvider router={router} />);
+    renderApp(router);
     await user.click(screen.getByRole('button', { name: 'Проверить соединение' }));
 
     expect(screen.getByRole('status')).toHaveTextContent('Соединение проверено');
@@ -31,16 +40,16 @@ describe('application bootstrap', () => {
     const user = userEvent.setup();
     const router = createMemoryRouter(appRoutes, {
       initialEntries: [
-        '/knowledge/documents?workspace=10000000-0000-4000-8000-000000000002&environment=20000000-0000-4000-8000-000000000002',
+        '/knowledge/documents?workspace=10000000-0000-4000-8000-000000000002&environment=20000000-0000-4000-8000-000000000002&cursor=stale-cursor',
       ],
     });
 
-    render(<RouterProvider router={router} />);
+    renderApp(router);
 
-    expect(screen.getByRole('combobox', { name: 'Рабочая область' })).toHaveTextContent(
+    expect(await screen.findByRole('combobox', { name: 'Рабочая область' })).toHaveTextContent(
       'Продажи',
     );
-    expect(screen.getByRole('combobox', { name: 'Среда' })).toHaveTextContent('Staging');
+    expect(await screen.findByRole('combobox', { name: 'Среда' })).toHaveTextContent('Staging');
 
     await user.click(screen.getByRole('combobox', { name: 'Рабочая область' }));
     await user.click(await screen.findByRole('option', { name: 'Основная' }));
@@ -54,7 +63,7 @@ describe('application bootstrap', () => {
     const user = userEvent.setup();
     const router = createMemoryRouter(appRoutes, { initialEntries: ['/'] });
 
-    render(<RouterProvider router={router} />);
+    renderApp(router);
     await user.click(screen.getByRole('link', { name: 'Знания' }));
     expect(router.state.location.pathname).toBe('/knowledge/documents');
     await user.click(screen.getByRole('link', { name: 'Чат' }));
