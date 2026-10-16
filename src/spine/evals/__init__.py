@@ -30,6 +30,15 @@ from spine.evals.production_contract import (
     ProductionContractObservationBridge,
     ProductionContractObservationError,
 )
+from spine.evals.unauthorized_retrieval import (
+    ProductionContractSafetyGate,
+    ProductionContractSafetyResult,
+    ProductionContractSafetyViolation,
+    UNAUTHORIZED_RETRIEVAL_SAFETY_CASE_IDS,
+    UNAUTHORIZED_RETRIEVAL_SAFETY_SEAM,
+    UNAUTHORIZED_RETRIEVAL_SAFETY_VERSION,
+    evaluate_unauthorized_retrieval_disclosure,
+)
 
 __all__ = [
     "QADataset",
@@ -51,6 +60,13 @@ __all__ = [
     "ProductionContractObservation",
     "ProductionContractObservationBridge",
     "ProductionContractObservationError",
+    "ProductionContractSafetyGate",
+    "ProductionContractSafetyResult",
+    "ProductionContractSafetyViolation",
+    "UNAUTHORIZED_RETRIEVAL_SAFETY_CASE_IDS",
+    "UNAUTHORIZED_RETRIEVAL_SAFETY_SEAM",
+    "UNAUTHORIZED_RETRIEVAL_SAFETY_VERSION",
+    "evaluate_unauthorized_retrieval_disclosure",
     "ProductionContractObservationPort",
     "run_r1_evaluation",
     "run_r1_evaluation_sync",

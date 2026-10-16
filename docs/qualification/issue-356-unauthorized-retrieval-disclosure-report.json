@@ -1,0 +1,25 @@
+{
+  "schema_version": "unauthorized-retrieval-disclosure-qualification:v1",
+  "issue": 356,
+  "observation_seam": "r1-production-contract-observation:v1",
+  "safety_seam": "r1-unauthorized-retrieval-disclosure:v1",
+  "qualification_scope": "offline-contract-only",
+  "status": "passed",
+  "safety_violation_count": 0,
+  "protected_payload_disclosure_count": 0,
+  "safety_case_ids": [
+    "authorized-current-evidence",
+    "revoked-access",
+    "stale-access-generation",
+    "mixed-authorized-unauthorized-evidence",
+    "cross-tenant-physical-lookup",
+    "provider-output-before-authorization",
+    "invalid-evidence-lineage",
+    "unauthorized-source-existence-disclosure"
+  ],
+  "external_qualification": {
+    "real_cognee": "not_run",
+    "real_llm": "not_run",
+    "production_provider": "not_run"
+  }
+}
