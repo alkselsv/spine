@@ -31,6 +31,9 @@ def test_generation_export_matches_backend_openapi_document(tmp_path: Path) -> N
     assert "/api/v1/ingestion/runs" in document["paths"]
     assert "/api/v1/ingestion/runs/{run_id}" in document["paths"]
     assert "/api/v1/documents/uploads" in document["paths"]
+    assert "/api/v1/documents/processing/retry" in document["paths"]
+    assert "/api/v1/documents/processing/reprocess" in document["paths"]
+    assert "/api/v1/documents/processing/operations/{operation_id}" in document["paths"]
     assert "/api/v1/ingestion/runs/{run_id}/items/{item_id}" in document["paths"]
     assert "/api/v1/projections/{projection_kind}/status" in document["paths"]
     assert "/api/v1/projections/{projection_kind}/recovery" in document["paths"]
@@ -71,6 +74,16 @@ def test_generation_export_matches_backend_openapi_document(tmp_path: Path) -> N
     assert item_status_operation["responses"]["200"]["content"]["application/json"][
         "schema"
     ]["$ref"] == "#/components/schemas/IngestionStatusResponse"
+
+    retry_operation = document["paths"]["/api/v1/documents/processing/retry"]["post"]
+    reprocess_operation = document["paths"]["/api/v1/documents/processing/reprocess"]["post"]
+    assert retry_operation["operationId"] == "ingestion.processing.retry"
+    assert reprocess_operation["operationId"] == "ingestion.processing.reprocess"
+    assert any(
+        parameter["name"] == "Idempotency-Key"
+        and parameter["required"] is True
+        for parameter in retry_operation["parameters"]
+    )
 
     status_operation = document["paths"]["/api/v1/projections/{projection_kind}/status"]["get"]
     recovery_operation = document["paths"]["/api/v1/projections/{projection_kind}/recovery"]["post"]

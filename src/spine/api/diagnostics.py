@@ -276,6 +276,8 @@ def _status_for_structured_error(error: StructuredError) -> int:
         return 413
     if error.code == "spine.ingestion.not_found":
         return 404
+    if error.code == "spine.ingestion.processing_command_rejected":
+        return 409
     if error.code == "spine.documents.not_found":
         return 404
     if error.code == "spine.qa.unavailable":

@@ -426,7 +426,7 @@ def _is_recoverable_without_work(state: IngestionItemState) -> bool:
 def _batch_status(items: Sequence[BatchItemOutcome], run_state: IngestionRunState) -> BatchIngestionStatus:
     if run_state is IngestionRunState.CANCELLED:
         return BatchIngestionStatus.CANCELLED
-    if not items or any(item.state in {IngestionItemState.RECEIVED, IngestionItemState.STORED, IngestionItemState.OBSERVED, IngestionItemState.ADMISSION_PENDING, IngestionItemState.ACCEPTED, IngestionItemState.PROCESSING} for item in items):
+    if not items or any(item.state in {IngestionItemState.RECEIVED, IngestionItemState.STORED, IngestionItemState.OBSERVED, IngestionItemState.ADMISSION_PENDING, IngestionItemState.ACCEPTED, IngestionItemState.PROCESSING_READY, IngestionItemState.PROCESSING} for item in items):
         return BatchIngestionStatus.PROCESSING
     successful = [item for item in items if item.status in {DocumentIngestionStatus.SUCCEEDED, DocumentIngestionStatus.PARTIAL}]
     unsuccessful = [item for item in items if item.status not in {DocumentIngestionStatus.SUCCEEDED, DocumentIngestionStatus.PARTIAL}]

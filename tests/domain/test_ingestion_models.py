@@ -14,6 +14,7 @@ from spine.domain.ingestion import (
     ProcessingCoverage,
     ProcessingReceipt,
     ProcessingExclusion,
+    ProcessOnlyOperationLineage,
     SafeDiagnosticDetail,
     WarningStage,
 )
@@ -60,6 +61,33 @@ def test_item_processing_transition_uses_item_state_enum() -> None:
     )
 
     assert transition.state is IngestionItemState.PROCESSING
+
+
+def test_process_only_lineage_requires_failure_parent_for_retry() -> None:
+    with pytest.raises(ValueError, match="parent_failure_id"):
+        ProcessOnlyOperationLineage(
+            operation_id=identifier(50), workspace_id=identifier(3),
+            environment_id=identifier(4), ingestion_run_id=identifier(2),
+            ingestion_run_source_id=identifier(1), trigger_kind="retry",
+            source_object_id=identifier(6), source_revision_id=identifier(7),
+            original_receipt_id=identifier(8), original_receipt_digest="a" * 64,
+            pinned_processing_profile_reference="document-processing:r1",
+            command_digest="b" * 64, idempotency_receipt_id=identifier(9),
+        )
+
+
+def test_process_only_lineage_rejects_failure_parent_for_replacement() -> None:
+    with pytest.raises(ValueError, match="replacement lineage"):
+        ProcessOnlyOperationLineage(
+            operation_id=identifier(50), workspace_id=identifier(3),
+            environment_id=identifier(4), ingestion_run_id=identifier(2),
+            ingestion_run_source_id=identifier(1), trigger_kind="replacement",
+            source_object_id=identifier(6), source_revision_id=identifier(7),
+            original_receipt_id=identifier(8), original_receipt_digest="a" * 64,
+            parent_failure_id=identifier(10),
+            pinned_processing_profile_reference="document-processing:r1",
+            command_digest="b" * 64, idempotency_receipt_id=identifier(9),
+        )
 
 
 def test_transition_rejects_run_target_with_item_state() -> None:

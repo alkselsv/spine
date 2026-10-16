@@ -423,7 +423,12 @@ def _snapshot_phases(snapshot: IngestionStatusSnapshot) -> tuple[PublicAcceptanc
         PublicIngestionStatus.FAILED: PublicProcessingStatus.FAILED,
         PublicIngestionStatus.UNSUPPORTED: PublicProcessingStatus.UNSUPPORTED,
         PublicIngestionStatus.CANCELLED: PublicProcessingStatus.CANCELLED,
-    }.get(status, PublicProcessingStatus.PROCESSING if state == "processing" else PublicProcessingStatus.NOT_STARTED)
+    }.get(
+        status,
+        PublicProcessingStatus.PROCESSING
+        if state in {"processing_ready", "processing"}
+        else PublicProcessingStatus.NOT_STARTED,
+    )
     return acceptance, processing
 
 

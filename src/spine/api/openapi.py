@@ -58,6 +58,12 @@ from spine.application.qa_events import DisclosureAuthorizer
 from spine.application.authorized_ask import AuthorizedAskResult
 from spine.domain.qa_events import QAEvent
 from spine.application.parsed_content_inspection import ParsedContentInspectionService
+from spine.application.processing_commands import (
+    ProcessingCommandResult,
+    ProcessingCommandService,
+    ReprocessProcessingCommand,
+    RetryProcessingCommand,
+)
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.auth import RoutePolicyRegistry
 
@@ -93,6 +99,34 @@ class _UnavailableDocumentIngestionService:
         del context, run_id, item_id
         raise RuntimeError("The OpenAPI composition is not executable.")
 
+
+class _UnavailableProcessingCommandService:
+    async def retry(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        command: RetryProcessingCommand,
+    ) -> ProcessingCommandResult:
+        del context, command
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+    async def reprocess(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        command: ReprocessProcessingCommand,
+    ) -> ProcessingCommandResult:
+        del context, command
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
+    async def status(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        operation_id: UUID,
+    ) -> ProcessingCommandResult | None:
+        del context, operation_id
+        raise RuntimeError("The OpenAPI composition is not executable.")
 
 class _UnavailableBatchDocumentIngestionService:
     async def submit(
@@ -337,6 +371,10 @@ def create_openapi_app() -> FastAPI:
             _UnavailableParsedContentInspectionService(),
         ),
         parsed_content_cursor_secret=secrets.token_bytes(32),
+        processing_command_service=cast(
+            ProcessingCommandService,
+            _UnavailableProcessingCommandService(),
+        ),
     )
 
 

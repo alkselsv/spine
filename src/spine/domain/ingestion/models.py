@@ -36,6 +36,7 @@ class IngestionRunState(str, Enum):
 
 class IngestionItemState(str, Enum):
     RECEIVED = "received"
+    PROCESSING_READY = "processing_ready"
     STORED = "stored"
     OBSERVED = "observed"
     ADMISSION_PENDING = "admission_pending"
@@ -124,7 +125,7 @@ class IngestionRun(_FrozenRecord):
     environment_id: UUID
     command_identity: BoundedIdentifier
     command_digest: DigestHex
-    trigger_kind: Literal["upload", "connector", "reprocess", "retry"]
+    trigger_kind: Literal["upload", "connector", "reprocess", "retry", "replacement"]
     trigger_reference: BoundedIdentifier | None = None
     requested_scope_schema: Literal["ingestion-scope:v1"]
     requested_scope_digest: DigestHex
@@ -345,6 +346,51 @@ class ProcessingReceipt(_FrozenRecord):
         return self
 
 
+class ProcessOnlyOperationLineage(_FrozenRecord):
+    """Immutable lineage for a retry, reprocess, or replacement operation."""
+
+    operation_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    ingestion_run_id: UUID
+    ingestion_run_source_id: UUID
+    trigger_kind: Literal["retry", "reprocess", "replacement"]
+    source_object_id: UUID
+    source_revision_id: UUID
+    original_receipt_id: UUID
+    original_receipt_digest: DigestHex
+    parent_failure_id: UUID | None = None
+    parent_processing_receipt_id: UUID | None = None
+    pinned_processing_profile_reference: VersionIdentifier
+    command_digest: DigestHex
+    idempotency_receipt_id: UUID
+
+    @model_validator(mode="after")
+    def validate_lineage(self) -> "ProcessOnlyOperationLineage":
+        _require_ids(
+            self,
+            "operation_id",
+            "workspace_id",
+            "environment_id",
+            "ingestion_run_id",
+            "ingestion_run_source_id",
+            "source_object_id",
+            "source_revision_id",
+            "original_receipt_id",
+            "idempotency_receipt_id",
+        )
+        _require_optional_id(self.parent_failure_id, "parent_failure_id")
+        _require_optional_id(
+            self.parent_processing_receipt_id,
+            "parent_processing_receipt_id",
+        )
+        if self.trigger_kind == "retry" and self.parent_failure_id is None:
+            raise ValueError("retry lineage requires parent_failure_id")
+        if self.trigger_kind == "replacement" and self.parent_failure_id is not None:
+            raise ValueError("replacement lineage cannot contain parent_failure_id")
+        return self
+
+
 def _require_ids(model: object, *names: str) -> None:
     for name in names:
         value = getattr(model, name)
@@ -376,6 +422,7 @@ __all__ = [
     "ProcessingCoverage",
     "ProcessingExclusion",
     "ProcessingReceipt",
+    "ProcessOnlyOperationLineage",
     "SafeDiagnosticDetail",
     "WarningStage",
 ]
