@@ -903,6 +903,43 @@
         "title": "ApiResponseEnvelope[HealthSummaryResponse]",
         "type": "object"
       },
+      "ApiResponseEnvelope_ParsedContentInspectionResponse_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ParsedContentInspectionResponse"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "trace_id": {
+            "format": "uuid",
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "environment_id",
+          "trace_id",
+          "data"
+        ],
+        "title": "ApiResponseEnvelope[ParsedContentInspectionResponse]",
+        "type": "object"
+      },
       "ApiResponseEnvelope_ProjectionStatusResponse_": {
         "additionalProperties": false,
         "properties": {
@@ -3483,6 +3520,70 @@
         "title": "LivenessResponse",
         "type": "object"
       },
+      "OoxmlBlockPathStep": {
+        "additionalProperties": false,
+        "description": "One ordered step through a WordprocessingML body or table hierarchy.",
+        "properties": {
+          "index": {
+            "minimum": 0.0,
+            "title": "Index",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "paragraph",
+              "table",
+              "row",
+              "cell"
+            ],
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "index"
+        ],
+        "title": "OoxmlBlockPathStep",
+        "type": "object"
+      },
+      "OoxmlTextLocator": {
+        "additionalProperties": false,
+        "description": "A half-open code-point range in one structurally addressed DOCX paragraph.",
+        "properties": {
+          "block_path": {
+            "items": {
+              "$ref": "#/components/schemas/OoxmlBlockPathStep"
+            },
+            "minItems": 1,
+            "title": "Block Path",
+            "type": "array"
+          },
+          "end_codepoint": {
+            "minimum": 0.0,
+            "title": "End Codepoint",
+            "type": "integer"
+          },
+          "kind": {
+            "const": "ooxml_text",
+            "default": "ooxml_text",
+            "title": "Kind",
+            "type": "string"
+          },
+          "start_codepoint": {
+            "minimum": 0.0,
+            "title": "Start Codepoint",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start_codepoint",
+          "end_codepoint",
+          "block_path"
+        ],
+        "title": "OoxmlTextLocator",
+        "type": "object"
+      },
       "OperationalMetadataDiagnostic": {
         "enum": [
           "current_state_unavailable",
@@ -3536,6 +3637,337 @@
           "byte_length"
         ],
         "title": "OriginalReferenceSnapshot",
+        "type": "object"
+      },
+      "PageTextLocator": {
+        "additionalProperties": false,
+        "description": "A half-open code-point range in text extracted from one PDF page.",
+        "properties": {
+          "end_codepoint": {
+            "minimum": 0.0,
+            "title": "End Codepoint",
+            "type": "integer"
+          },
+          "kind": {
+            "const": "page_text",
+            "default": "page_text",
+            "title": "Kind",
+            "type": "string"
+          },
+          "page_number": {
+            "exclusiveMinimum": 0.0,
+            "title": "Page Number",
+            "type": "integer"
+          },
+          "start_codepoint": {
+            "minimum": 0.0,
+            "title": "Start Codepoint",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start_codepoint",
+          "end_codepoint",
+          "page_number"
+        ],
+        "title": "PageTextLocator",
+        "type": "object"
+      },
+      "ParsedContentInspectionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Digest"
+          },
+          "artifact_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Id"
+          },
+          "items": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ParsedContentSegmentResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "locator_contract_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locator Contract Version"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "original_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Sha256"
+          },
+          "parser_config_reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parser Config Reference"
+          },
+          "parser_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parser Name"
+          },
+          "parser_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parser Version"
+          },
+          "processing_receipt_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processing Receipt Id"
+          },
+          "schema_version": {
+            "const": "knowledge-parsed-content-inspection:v1",
+            "default": "knowledge-parsed-content-inspection:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source_object_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Object Id"
+          },
+          "source_revision_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Revision Digest"
+          },
+          "source_revision_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Revision Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ParsedContentInspectionStatus"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "ParsedContentInspectionResponse",
+        "type": "object"
+      },
+      "ParsedContentInspectionStatus": {
+        "enum": [
+          "ready",
+          "content_unavailable",
+          "revision_not_current",
+          "artifact_unavailable",
+          "processing_incomplete",
+          "locator_invalid",
+          "integrity_mismatch",
+          "limit_exceeded",
+          "service_unavailable"
+        ],
+        "title": "ParsedContentInspectionStatus",
+        "type": "string"
+      },
+      "ParsedContentSegmentResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "heading_path": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Heading Path",
+            "type": "array"
+          },
+          "locator": {
+            "discriminator": {
+              "mapping": {
+                "ooxml_text": "#/components/schemas/OoxmlTextLocator",
+                "page_text": "#/components/schemas/PageTextLocator",
+                "physical_line": "#/components/schemas/PhysicalLineLocator",
+                "xlsx_cell": "#/components/schemas/XlsxCellLocator"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PhysicalLineLocator"
+              },
+              {
+                "$ref": "#/components/schemas/PageTextLocator"
+              },
+              {
+                "$ref": "#/components/schemas/OoxmlTextLocator"
+              },
+              {
+                "$ref": "#/components/schemas/XlsxCellLocator"
+              }
+            ],
+            "title": "Locator"
+          },
+          "segment_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Segment Digest",
+            "type": "string"
+          },
+          "segment_id": {
+            "format": "uuid",
+            "title": "Segment Id",
+            "type": "string"
+          },
+          "source_object_id": {
+            "format": "uuid",
+            "title": "Source Object Id",
+            "type": "string"
+          },
+          "source_revision_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Source Revision Digest",
+            "type": "string"
+          },
+          "source_revision_id": {
+            "format": "uuid",
+            "title": "Source Revision Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "text_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Text Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "segment_id",
+          "segment_digest",
+          "source_object_id",
+          "source_revision_id",
+          "source_revision_digest",
+          "locator",
+          "text",
+          "text_digest",
+          "heading_path"
+        ],
+        "title": "ParsedContentSegmentResponse",
+        "type": "object"
+      },
+      "PhysicalLineLocator": {
+        "additionalProperties": false,
+        "description": "A half-open raw Unicode code-point range on one physical line.",
+        "properties": {
+          "end_codepoint": {
+            "minimum": 0.0,
+            "title": "End Codepoint",
+            "type": "integer"
+          },
+          "kind": {
+            "const": "physical_line",
+            "default": "physical_line",
+            "title": "Kind",
+            "type": "string"
+          },
+          "line_number": {
+            "exclusiveMinimum": 0.0,
+            "title": "Line Number",
+            "type": "integer"
+          },
+          "start_codepoint": {
+            "minimum": 0.0,
+            "title": "Start Codepoint",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start_codepoint",
+          "end_codepoint",
+          "line_number"
+        ],
+        "title": "PhysicalLineLocator",
         "type": "object"
       },
       "ProcessingCoverage": {
@@ -5925,6 +6357,46 @@
         ],
         "title": "ValidationError",
         "type": "object"
+      },
+      "XlsxCellLocator": {
+        "additionalProperties": false,
+        "description": "A physical worksheet cell or merged range in an XLSX revision.",
+        "properties": {
+          "cell_range": {
+            "pattern": "^[A-Z]+[1-9][0-9]*(?::[A-Z]+[1-9][0-9]*)?$",
+            "title": "Cell Range",
+            "type": "string"
+          },
+          "kind": {
+            "const": "xlsx_cell",
+            "default": "xlsx_cell",
+            "title": "Kind",
+            "type": "string"
+          },
+          "row": {
+            "exclusiveMinimum": 0.0,
+            "title": "Row",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": "locator:xlsx-cell:v1",
+            "default": "locator:xlsx-cell:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "sheet": {
+            "minLength": 1,
+            "title": "Sheet",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sheet",
+          "row",
+          "cell_range"
+        ],
+        "title": "XlsxCellLocator",
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -7976,6 +8448,216 @@
           }
         ],
         "summary": "Ingestion.Status"
+      }
+    },
+    "/api/v1/knowledge/documents/{source_object_id}/revisions/{source_revision_id}/parsed-content": {
+      "get": {
+        "operationId": "knowledge.parsed_content.inspect",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_object_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Source Object Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "source_revision_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Source Revision Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "processing_receipt_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Processing Receipt Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 768,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "locator",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 4096,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Locator"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Environment-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseEnvelope_ParsedContentInspectionResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Safe request error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authentication is invalid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authorization is denied."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Resource is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Command conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request payload is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Unexpected internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Dependency is unavailable."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Knowledge.Parsed Content.Inspect"
       }
     },
     "/api/v1/projections/{projection_kind}/recovery": {

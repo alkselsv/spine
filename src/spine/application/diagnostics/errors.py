@@ -56,6 +56,7 @@ from spine.application.authorized_ask import (
 )
 from spine.application.citation_inspector import CitationInspectionUnavailable
 from spine.application.qa_run_history import InvalidQARunRequest, QARunNotFound
+from spine.application.parsed_content_inspection import InvalidParsedContentRequest
 from spine.auth.errors import (
     AuthenticationUnavailableError,
     AuthorizationDeniedError,
@@ -111,6 +112,7 @@ _SAFE_MESSAGE_BY_CODE = MappingProxyType({
     "spine.qa.citations.unavailable": "The citation is unavailable.",
     "spine.qa_runs.not_found": "The Q&A run was not found.",
     "spine.qa_runs.invalid_request": "The Q&A run request is invalid.",
+    "spine.knowledge.parsed_content.invalid_request": "The parsed content request is invalid.",
     "spine.qa_feedback.target_not_found": "The feedback target was not found.",
     "spine.qa_feedback.invalid_request": "The feedback request is invalid.",
     "spine.qa.unavailable": "The Q&A service is temporarily unavailable.",
@@ -344,6 +346,7 @@ def build_default_error_registry() -> StructuredErrorRegistry:
         (CitationInspectionUnavailable, "spine.qa.citations.unavailable", "The citation is unavailable.", Retryability.NEVER),
         (QARunNotFound, "spine.qa_runs.not_found", "The Q&A run was not found.", Retryability.NEVER),
         (InvalidQARunRequest, "spine.qa_runs.invalid_request", "The Q&A run request is invalid.", Retryability.NEVER),
+        (InvalidParsedContentRequest, "spine.knowledge.parsed_content.invalid_request", "The parsed content request is invalid.", Retryability.NEVER),
         (FeedbackTargetNotFound, "spine.qa_feedback.target_not_found", "The feedback target was not found.", Retryability.NEVER),
         (InvalidFeedbackRequest, "spine.qa_feedback.invalid_request", "The feedback request is invalid.", Retryability.NEVER),
     )

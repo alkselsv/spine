@@ -295,6 +295,8 @@ def _status_for_structured_error(error: StructuredError) -> int:
         return 400
     if error.code == "spine.qa_runs.invalid_request":
         return 400
+    if error.code == "spine.knowledge.parsed_content.invalid_request":
+        return 400
     if error.code == "spine.qa_feedback.invalid_request":
         return 400
     if error.code == "spine.qa.ask.invalid_request":

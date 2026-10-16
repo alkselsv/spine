@@ -32,6 +32,7 @@ from spine.api.authorized_ask import install_authorized_ask_routes
 from spine.api.citation_inspector import install_citation_inspector_routes
 from spine.api.feedback import install_feedback_routes
 from spine.api.qa_runs import install_qa_run_routes
+from spine.api.parsed_content import install_parsed_content_routes
 from spine.api.authorization import (
     ApiAuthorizationReadiness,
     ApiAuthorizationRuntime,
@@ -64,6 +65,7 @@ from spine.application.authorized_ask import (
 from spine.application.citation_inspector import CitationInspectorService
 from spine.application.feedback import FeedbackService
 from spine.application.qa_run_history import QARunHistoryService
+from spine.application.parsed_content_inspection import ParsedContentInspectionService
 from spine.config import settings
 from spine.ingest.loaders import documents_to_remember_payloads, load_path
 from spine.infrastructure.diagnostics import JsonLoggingDiagnosticSink
@@ -206,6 +208,8 @@ def create_app(
     feedback_service: FeedbackService | None = None,
     qa_run_history_service: QARunHistoryService | None = None,
     qa_run_history_cursor_secret: bytes | None = None,
+    parsed_content_inspection_service: ParsedContentInspectionService | None = None,
+    parsed_content_cursor_secret: bytes | None = None,
 ) -> FastAPI:
     """Compose the HTTP API with injectable deterministic diagnostics."""
 
@@ -392,6 +396,18 @@ def create_app(
             application,
             service=qa_run_history_service,
             cursor_secret=qa_run_history_cursor_secret,
+        )
+    if parsed_content_inspection_service is not None:
+        if type(authorization_runtime) is not ApiAuthorizationRuntime:
+            raise RuntimeError(
+                "Parsed content routes require an authorization runtime."
+            )
+        if parsed_content_cursor_secret is None:
+            raise RuntimeError("Parsed content routes require a cursor secret.")
+        install_parsed_content_routes(
+            application,
+            service=parsed_content_inspection_service,
+            cursor_secret=parsed_content_cursor_secret,
         )
     return application
 
