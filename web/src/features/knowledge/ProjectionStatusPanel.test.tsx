@@ -115,6 +115,15 @@ describe('document projection operations panel', () => {
     expect(globalThis.document.body).not.toHaveTextContent(/\bnull\b/);
   });
 
+  it('test_projection_recovery_actions_are_hidden_when_status_advertises_none', async () => {
+    installControlledPanel({ status: publishedStatus(), processing: 'processed' });
+    renderPanel(`/knowledge/documents/${documentId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}&tab=projection&projection_kind=qa`);
+    expect(await screen.findByText(/Дополнительное восстановление не требуется/)).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Повторить операцию проекции' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Запросить пересборку проекции' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Запросить восстановление проекции' })).not.toBeInTheDocument();
+  });
+
   it('test_projection_status_denial_hides_protected_diagnostics', async () => {
     vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>(async (input) => {
       const path = new URL((input as Request).url).pathname;
@@ -157,7 +166,7 @@ describe('document projection operations panel', () => {
         if (attempts === 1) {
           return Response.json({ code: 'spine.projection.unavailable', retryability: 'after_delay', safe_message: 'The service is unavailable.', schema_version: 1, trace_id: traceId }, { status: 503 });
         }
-        return Response.json({ command_id: '70000000-0000-4000-8000-000000000002', environment_id: scope.environmentId, replay: false, schema_version: 1, status: 'accepted', trace_id: traceId, workspace_id: scope.workspaceId }, { status: 202 });
+        return Response.json({ command_id: '70000000-0000-4000-8000-000000000002', environment_id: scope.environmentId, replay: true, result: { action: 'rebuild', command_id: '70000000-0000-4000-8000-000000000002', projection_kind: 'qa', schema_version: 1, state: 'accepted' }, schema_version: 1, status: 'accepted', trace_id: traceId, workspace_id: scope.workspaceId }, { status: 202 });
       }
       throw new Error(`Unexpected request: ${path}`);
     }));
@@ -171,7 +180,67 @@ describe('document projection operations panel', () => {
     await waitFor(() => expect(keys).toHaveLength(2));
     expect(keys[0]).toBe('projection-recovery-fixed-command-id');
     expect(keys[1]).toBe(keys[0]);
-    expect(await screen.findByText(/Запрос принят/)).toBeVisible();
+    expect(await screen.findByText(/Команда уже была принята/)).toBeVisible();
+    expect(screen.getByText(/70000000-0000-4000-8000-000000000002/)).toBeVisible();
+    expect(screen.getByText('Состояние квитанции').parentElement).toHaveTextContent('Принята');
+    expect(screen.getByText(/не подтверждает завершение пересборки или активации/i)).toBeVisible();
+  });
+
+  it('test_projection_recovery_conflict_is_safe_and_allows_a_new_command_after_refresh', async () => {
+    const keys: string[] = [];
+    let attempts = 0;
+    let statusReads = 0;
+    vi.stubGlobal('crypto', { randomUUID: vi.fn().mockReturnValueOnce('first-command').mockReturnValueOnce('next-command') });
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>(async (input, init) => {
+      const request = input as Request;
+      const path = new URL(request.url).pathname;
+      if (path === `/api/v1/documents/${documentId}`) return Response.json(documentEnvelope());
+      if (path === '/api/v1/projections/qa/status') {
+        statusReads += 1;
+        return Response.json({ ...scopeEnvelope(), data: publishedStatus({ freshness: 'stale' }) });
+      }
+      if (path === '/api/v1/health/summary') return Response.json(healthEnvelope());
+      if (path === '/api/v1/projections/qa/recovery') {
+        const command = new Request(request, init);
+        keys.push(command.headers.get('Idempotency-Key') ?? '');
+        attempts += 1;
+        if (attempts === 1) return Response.json({ code: 'spine.persistence.idempotency_conflict', retryability: 'never', safe_message: 'Safe conflict.', schema_version: 1, trace_id: traceId, provider_detail: 'private provider detail' }, { status: 409 });
+        return Response.json({ command_id: '70000000-0000-4000-8000-000000000003', environment_id: scope.environmentId, replay: false, schema_version: 1, status: 'accepted', trace_id: traceId, workspace_id: scope.workspaceId }, { status: 202 });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }));
+    const user = userEvent.setup();
+    renderPanel(`/knowledge/documents/${documentId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}&tab=projection`);
+
+    const rebuild = await screen.findByRole('button', { name: 'Запросить пересборку проекции' });
+    await user.click(rebuild);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Команда конфликтует');
+    expect(globalThis.document.body).not.toHaveTextContent('private provider detail');
+    await user.click(screen.getByRole('button', { name: 'Обновить состояние' }));
+    await waitFor(() => expect(statusReads).toBeGreaterThan(1));
+    await user.click(rebuild);
+    await waitFor(() => expect(keys).toHaveLength(2));
+    expect(keys[0]).not.toBe(keys[1]);
+    expect(await screen.findByText('Идентификатор команды')).toBeVisible();
+  });
+
+  it.each([
+    [403, 'Доступ запрещён', 'private provider detail'],
+    [503, 'Сервис временно недоступен', 'private provider detail'],
+  ])('test_projection_recovery_failure_%s_stays_safe', async (status, expectedMessage, privateDetail) => {
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>(async (input) => {
+      const path = new URL((input as Request).url).pathname;
+      if (path === `/api/v1/documents/${documentId}`) return Response.json(documentEnvelope());
+      if (path === '/api/v1/projections/qa/status') return Response.json({ ...scopeEnvelope(), data: publishedStatus({ freshness: 'stale' }) });
+      if (path === '/api/v1/health/summary') return Response.json(healthEnvelope());
+      if (path === '/api/v1/projections/qa/recovery') return Response.json({ code: status === 403 ? 'spine.authorization.denied' : 'spine.projection.unavailable', retryability: 'after_delay', safe_message: 'Safe message.', schema_version: 1, trace_id: traceId, provider_detail: privateDetail }, { status });
+      throw new Error(`Unexpected request: ${path}`);
+    }));
+    const user = userEvent.setup();
+    renderPanel(`/knowledge/documents/${documentId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}&tab=projection`);
+    await user.click(await screen.findByRole('button', { name: 'Запросить пересборку проекции' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(expectedMessage);
+    expect(globalThis.document.body).not.toHaveTextContent(privateDetail);
   });
 });
 

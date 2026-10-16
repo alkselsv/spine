@@ -260,6 +260,10 @@ h1 {
   border-left-color: #dd6b63;
 }
 
+.statusPanel_conflict {
+  border-left-color: #dd6b63;
+}
+
 .chatMeta {
   display: flex;
   flex-wrap: wrap;

@@ -365,6 +365,54 @@ test('test_projection_status_scope_switch_reload_and_safe_degradation', async ({
   expect(projectionRequests.every(({ headers }) => headers['x-environment-id'] === stagingEnvironment)).toBe(true);
 });
 
+test('test_projection_recovery_receipt_polls_status_until_server_reports_completion', async ({ page }) => {
+  await installControlledDocumentDetail(page);
+  let statusReads = 0;
+  const commandRequests: Array<{ body: string; idempotencyKey: string; headers: Record<string, string> }> = [];
+  await page.route('**/api/v1/projections/qa/status', async (route) => {
+    statusReads += 1;
+    const headers = route.request().headers();
+    const status: components['schemas']['ProjectionStatusResponse'] = statusReads === 1
+      ? { projection_kind: 'qa', publication_status: 'published', freshness: 'stale', health: 'healthy', recovery_state: 'not_requested', retryable: false, schema_version: 1 }
+      : statusReads === 2
+        ? { projection_kind: 'qa', publication_status: 'published', freshness: 'stale', health: 'healthy', recovery_state: 'pending', retryable: false, last_operation: { operation: 'rebuild', status: 'running', retryable: false }, schema_version: 1 }
+        : { projection_kind: 'qa', publication_status: 'published', freshness: 'current', health: 'healthy', recovery_state: 'succeeded', retryable: false, last_operation: { operation: 'rebuild', status: 'completed', retryable: false }, schema_version: 1 };
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ data: status, environment_id: headers['x-environment-id'], schema_version: 1, trace_id: traceId, workspace_id: headers['x-workspace-id'] }), status: 200 });
+  });
+  await page.route('**/api/v1/projections/qa/recovery', async (route) => {
+    const request = route.request();
+    const headers = request.headers();
+    commandRequests.push({ body: request.postData() ?? '', idempotencyKey: headers['idempotency-key'] ?? '', headers });
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ command_id: '70000000-0000-4000-8000-000000000009', environment_id: headers['x-environment-id'], replay: false, result: { action: 'rebuild', command_id: '70000000-0000-4000-8000-000000000009', projection_kind: 'qa', schema_version: 1, state: 'accepted' }, schema_version: 1, status: 'accepted', trace_id: traceId, workspace_id: headers['x-workspace-id'] }),
+      status: 202,
+    });
+  });
+  await page.route('**/api/v1/health/summary', async (route) => {
+    const headers = route.request().headers();
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ data: { authorization: { code: 'authorization.ready', status: 'ready' }, build_version: 'controlled-build', ingestion: { code: 'ingestion.ready', status: 'ready' }, providers: {}, publication: { code: 'publication.ready', status: 'ready' }, status: 'ready' }, environment_id: headers['x-environment-id'], schema_version: 1, trace_id: traceId, workspace_id: headers['x-workspace-id'] }), status: 200 });
+  });
+
+  await page.goto(`/knowledge/documents/${firstDocument}?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}&tab=projection&projection_kind=qa`);
+  const panel = page.getByRole('region', { name: 'Состояние публикации проекции' });
+  await page.getByRole('button', { name: 'Запросить пересборку проекции' }).click();
+  await expect(panel.getByText('Запрос принят.', { exact: false })).toBeVisible();
+  await expect(panel.getByText('70000000-0000-4000-8000-000000000009')).toBeVisible();
+  await expect(panel.getByText('Запрос на восстановление выполняется.')).toHaveCount(2);
+  await expect(panel.getByText('Завершено')).toBeVisible({ timeout: 5000 });
+  await expect(panel.getByText('Актуальна', { exact: true })).toBeVisible();
+  await expect(panel.getByRole('button', { name: 'Запросить пересборку проекции' })).toHaveCount(0);
+
+  expect(commandRequests).toHaveLength(1);
+  expect(commandRequests[0]?.idempotencyKey).toMatch(/^projection-recovery-/);
+  expect(commandRequests[0]?.body).toBe(JSON.stringify({ action: 'rebuild' }));
+  expect(commandRequests[0]?.body).not.toMatch(/snapshot|generation|boundary|candidate|namespace|access.?policy/i);
+  expect(commandRequests[0]?.headers['x-workspace-id']).toBe(salesWorkspace);
+  expect(commandRequests[0]?.headers['x-environment-id']).toBe(stagingEnvironment);
+  expect(statusReads).toBeGreaterThanOrEqual(3);
+});
+
 test('test_document_revision_history_direct_url_reloads_exact_selected_revision', async ({ page }) => {
   const requests = await installControlledDocumentDetail(page);
   const historyResponse = page.waitForResponse((response) => response.url().includes('/revisions'));

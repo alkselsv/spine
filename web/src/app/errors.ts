@@ -4,6 +4,7 @@ import { ru } from '../i18n/resources';
 export type ProductErrorState =
   | 'authentication'
   | 'permissionDenied'
+  | 'conflict'
   | 'validationFailed'
   | 'degraded'
   | 'failed';
@@ -35,6 +36,13 @@ export function localizeApiError(error: unknown): LocalizedApiError {
     return {
       state: 'permissionDenied',
       ...ru.errors.authorization,
+      traceId: error.traceId,
+    };
+  }
+  if (error.status === 409) {
+    return {
+      state: 'conflict',
+      ...ru.errors.conflict,
       traceId: error.traceId,
     };
   }

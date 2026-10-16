@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRef } from 'react';
 import type { components } from '../../../api/generated/schema';
 
-import { createScopedApiClient } from '../../api/client';
+import { createScopedApiClient, SpineApiError } from '../../api/client';
 import { apiQueryOptions } from '../../api/query';
 import { ApiErrorPanel, StatusPanel } from '../../app/status';
 import { ru } from '../../i18n/resources';
@@ -15,6 +15,7 @@ type RecoveryAction = components['schemas']['ProjectionRecoveryAction'];
 type ReconciliationOutcome = NonNullable<ProjectionStatus['reconciliation']>['outcome'] | undefined;
 type HealthOperation = NonNullable<HealthSummary['last_operation']>;
 type ProjectionOperationStatus = NonNullable<ProjectionStatus['last_operation']>['status'];
+type RecoveryReceipt = components['schemas']['ApiCommandResult_ProjectionRecoveryResponse_'];
 
 export function ProjectionStatusPanel({
   client,
@@ -30,18 +31,6 @@ export function ProjectionStatusPanel({
   const queryClient = useQueryClient();
   const commandKeys = useRef(new Map<RecoveryAction, string>());
   const statusKey = [...queryKey('projection-status'), projectionKind];
-  const statusQuery = useQuery({
-    ...apiQueryOptions({
-      load: (signal) => loadProjectionStatus(client, projectionKind, signal),
-      queryKey: statusKey,
-    }),
-  });
-  const healthQuery = useQuery({
-    ...apiQueryOptions({
-      load: (signal) => loadHealthSummary(client, signal),
-      queryKey: queryKey('health-summary'),
-    }),
-  });
   const recoveryMutation = useMutation({
     mutationFn: (action: RecoveryAction) =>
       requestProjectionRecovery(client, projectionKind, action, recoveryKey(commandKeys.current, action)),
@@ -49,6 +38,26 @@ export function ProjectionStatusPanel({
       commandKeys.current.delete(action);
       return queryClient.invalidateQueries({ queryKey: statusKey });
     },
+    onError: (error, action) => {
+      if (error instanceof SpineApiError && error.status === 409) commandKeys.current.delete(action);
+    },
+  });
+  const statusQuery = useQuery({
+    ...apiQueryOptions({
+      load: (signal) => loadProjectionStatus(client, projectionKind, signal),
+      queryKey: statusKey,
+    }),
+    refetchInterval: (query) => {
+      const status = query.state.data;
+      if (status && isProjectionOperationPending(status)) return 1_000;
+      return recoveryMutation.data && status && !isProjectionOperationTerminal(status) ? 1_000 : false;
+    },
+  });
+  const healthQuery = useQuery({
+    ...apiQueryOptions({
+      load: (signal) => loadHealthSummary(client, signal),
+      queryKey: queryKey('health-summary'),
+    }),
   });
 
   return (
@@ -103,7 +112,7 @@ export function ProjectionStatusPanel({
             onRequest={(action) => recoveryMutation.mutate(action)}
           />
           {recoveryMutation.isError ? <ApiErrorPanel error={recoveryMutation.error} /> : null}
-          {recoveryMutation.isSuccess ? <p className={styles.operationalNotice} role="status">{ru.documents.recoveryAccepted}</p> : null}
+          {recoveryMutation.data ? <RecoveryReceiptView receipt={recoveryMutation.data} /> : null}
         </>
       ) : null}
 
@@ -126,6 +135,30 @@ export function ProjectionStatusPanel({
       </section>
     </section>
   );
+}
+
+function RecoveryReceiptView({ receipt }: { receipt: RecoveryReceipt }) {
+  const replayLabel = receipt.replay ? ru.documents.recoveryReplayed : ru.documents.recoveryAccepted;
+  const statusLabel = commandStatusLabel(receipt.status);
+  return (
+    <div className={styles.operationalNotice} role="status" aria-live="polite">
+      <p>{replayLabel}</p>
+      <dl className={styles.details}>
+        <DetailValue label={ru.documents.commandId} value={receipt.command_id} code />
+        <DetailValue label={ru.documents.commandStatus} value={statusLabel} />
+      </dl>
+      <p>{ru.documents.recoveryStatusIsAuthoritative}</p>
+    </div>
+  );
+}
+
+function isProjectionOperationPending(status: ProjectionStatus) {
+  return status.recovery_state === 'pending' || status.last_operation?.status === 'accepted' || status.last_operation?.status === 'running';
+}
+
+function isProjectionOperationTerminal(status: ProjectionStatus) {
+  return status.recovery_state === 'succeeded' || status.recovery_state === 'failed' || status.recovery_state === 'unavailable'
+    || status.last_operation?.status === 'completed' || status.last_operation?.status === 'failed' || status.last_operation?.status === 'unavailable';
 }
 
 export async function loadProjectionStatus(
@@ -282,6 +315,13 @@ function recoveryStateLabel(value: ProjectionStatus['recovery_state']) {
   if (value === 'succeeded') return ru.documents.recoverySucceeded;
   if (value === 'failed') return ru.documents.recoveryFailed;
   return ru.documents.states.unavailable;
+}
+
+function commandStatusLabel(value: RecoveryReceipt['status']) {
+  if (value === 'accepted') return ru.documents.operationAccepted;
+  if (value === 'completed') return ru.documents.operationCompleted;
+  if (value === 'failed') return ru.documents.operationFailed;
+  return ru.documents.operationCancelled;
 }
 
 function safeReasonLabel(value: ProjectionStatus['reason_code']) {
