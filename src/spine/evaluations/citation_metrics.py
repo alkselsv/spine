@@ -30,7 +30,14 @@ CITATION_METRICS_EVALUATOR_VERSION: Final[str] = "v1"
 _SUBJECT_NAMESPACE: Final[UUID] = UUID("2a9d8b5c-6c28-46d7-bd2a-0a664348d171")
 _LOCATOR = TypeAdapter(Locator)
 
-AnswerOutcome = Literal["answered", "abstained", "denied"]
+AnswerOutcome = Literal[
+    "answered",
+    "abstained",
+    "denied",
+    "clarification_required",
+    "failed",
+    "cancelled",
+]
 
 
 class Citation(DefinitionModel):
