@@ -26,6 +26,21 @@ describe('application bootstrap', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Подключено');
   });
 
+  it('test_shell_exposes_scoped_context_as_a_labeled_accessible_group', () => {
+    const router = createMemoryRouter(appRoutes, { initialEntries: ['/chat/demo-session'] });
+
+    renderApp(router);
+
+    expect(screen.getByRole('navigation', { name: 'Разделы workspace' })).toBeVisible();
+    expect(screen.getByRole('main')).toBeVisible();
+    expect(screen.getByRole('group', { name: 'Рабочая область и среда' })).toBeVisible();
+    expect(screen.getByRole('group', { name: 'Состояние соединения' })).toBeVisible();
+    expect(screen.getByRole('combobox', { name: 'Рабочая область' })).toBeVisible();
+    expect(screen.getByRole('combobox', { name: 'Среда' })).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Чат' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('status')).toHaveTextContent('Подключено');
+  });
+
   it('test_connection_check_updates_workspace_status', async () => {
     const user = userEvent.setup();
     const router = createMemoryRouter(appRoutes, { initialEntries: ['/'] });

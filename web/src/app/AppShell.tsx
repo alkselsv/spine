@@ -79,35 +79,56 @@ export function AppShell() {
     <ScopeContext.Provider value={{ scope, queryKey: (resource) => scopeQueryKey(resource, scope) }}>
       <div className={styles.shell}>
         <header className={styles.header}>
-          <div>
+          <div className={styles.brandBlock}>
             <p className={styles.brand}>{ru.brand}</p>
             <h1>{ru.shellTitle}</h1>
           </div>
           <div className={styles.context}>
-            <ScopeSelector
-              ariaLabel={ru.scope.workspaceLabel}
-              options={workspaceOptions}
-              value={scope.workspaceId}
-              onValueChange={(value) => changeScope({ workspaceId: value as WorkspaceId })}
-            />
-            <ScopeSelector
-              ariaLabel={ru.scope.environmentLabel}
-              options={environmentOptions}
-              value={scope.environmentId}
-              onValueChange={(value) => changeScope({ environmentId: value as EnvironmentId })}
-            />
-            <span className={styles.status} role="status" aria-live="polite">
-              <span className={styles.statusDot} aria-hidden="true" />
-              {isCheckingConnection ? ru.connection.checking : statusMessage}
-            </span>
-            <Button
-              className={styles.refreshButton}
-              disabled={isCheckingConnection}
-              onClick={() => void checkConnection()}
-              type="button"
+            <div
+              aria-label="Рабочая область и среда"
+              className={styles.scopeControls}
+              role="group"
             >
-              {isCheckingConnection ? ru.connection.checking : ru.connection.check}
-            </Button>
+              <ScopeSelector
+                ariaLabel={ru.scope.workspaceLabel}
+                options={workspaceOptions}
+                value={scope.workspaceId}
+                onValueChange={(value) => changeScope({ workspaceId: value as WorkspaceId })}
+              />
+              <ScopeSelector
+                ariaLabel={ru.scope.environmentLabel}
+                options={environmentOptions}
+                value={scope.environmentId}
+                onValueChange={(value) => changeScope({ environmentId: value as EnvironmentId })}
+              />
+            </div>
+            <div aria-label="Состояние соединения" className={styles.connectionControls} role="group">
+              <span
+                className={styles.status}
+                data-state={
+                  isCheckingConnection
+                    ? 'checking'
+                    : connectionError
+                      ? 'failed'
+                      : statusMessage === ru.connection.checked
+                        ? 'checked'
+                        : 'connected'
+                }
+                role="status"
+                aria-live="polite"
+              >
+                <span className={styles.statusDot} aria-hidden="true" />
+                {isCheckingConnection ? ru.connection.checking : statusMessage}
+              </span>
+              <Button
+                className={styles.refreshButton}
+                disabled={isCheckingConnection}
+                onClick={() => void checkConnection()}
+                type="button"
+              >
+                {isCheckingConnection ? ru.connection.checking : ru.connection.check}
+              </Button>
+            </div>
           </div>
         </header>
 
