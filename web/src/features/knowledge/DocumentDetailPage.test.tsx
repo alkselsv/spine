@@ -11,6 +11,7 @@ import {
   DocumentDetailPage,
   documentOperationalState,
 } from './DocumentDetailPage';
+import { documentMetadataState } from './DocumentAccessMetadata';
 
 type DocumentSnapshot = components['schemas']['DocumentSnapshot'];
 
@@ -52,7 +53,7 @@ describe('Knowledge document operational overview', () => {
     expect(screen.getAllByText('Текущий').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Опубликован').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Актуален').length).toBeGreaterThan(0);
-    expect(screen.getByText(revisionId)).toBeVisible();
+    expect(screen.getAllByText(revisionId).length).toBeGreaterThan(0);
     expect(screen.getByText(processingReceiptId)).toBeVisible();
     expect(screen.getByText(snapshotId)).toBeVisible();
     expect(screen.getByRole('link', { name: 'Открыть запуск обработки' })).toHaveAttribute(
@@ -77,6 +78,57 @@ describe('Knowledge document operational overview', () => {
     await waitFor(() => expect(router.state.location.search).toContain('tab=revisions'));
     expect(router.state.location.search).toContain(`workspace=${scope.workspaceId}`);
     expect(router.state.location.search).toContain(`environment=${scope.environmentId}`);
+  });
+
+  it('test_detail_renders_only_server_released_policy_metadata_for_metadata_only_response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        Response.json(
+          makeDocumentEnvelope(scope, revisionId, {
+            operational_metadata: {
+              access_policy: {
+                generation: 9,
+                policy_version_id: '51000000-0000-0000-0000-000000000025',
+                schema_version: 1,
+                version: 4,
+              },
+              freshness: 'stale',
+              health: 'degraded',
+              lifecycle: 'current',
+              processing_state: 'processed',
+              publication_status: 'published',
+              schema_version: 1,
+              security_domain: {
+                binding_version: 2,
+                reference: 'security-domain:contracts',
+                schema_version: 1,
+                version: 'r3',
+              },
+              source_object_id: sourceObjectId,
+              source_revision_id: revisionId,
+              status: 'available',
+            },
+            identity: null,
+          }),
+        ),
+      ),
+    );
+
+    renderDetail(
+      `/knowledge/documents/${sourceObjectId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}`,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Доступ и безопасные метаданные' })).toBeVisible();
+    expect(screen.getByText('security-domain:contracts')).toBeVisible();
+    expect(screen.getByText('51000000-0000-0000-0000-000000000025')).toBeVisible();
+    expect(screen.getByText('Устарела')).toBeVisible();
+    expect(screen.getAllByText('Ограничен').length).toBeGreaterThan(0);
+    expect(screen.getByText('Повторите наблюдение после восстановления сервиса.')).toBeVisible();
+    expect(screen.getByText(scope.workspaceId)).toBeVisible();
+    expect(screen.getByText(scope.environmentId)).toBeVisible();
+    expect(globalThis.document.body).not.toHaveTextContent('secret-contract.pdf');
+    expect(globalThis.document.body).not.toHaveTextContent('grants');
   });
 
   it('test_denied_or_missing_detail_exposes_only_non_enumerating_safe_error', async () => {
@@ -104,6 +156,36 @@ describe('Knowledge document operational overview', () => {
     expect(globalThis.document.body).not.toHaveTextContent(sourceObjectId);
   });
 
+  it('test_unavailable_metadata_exposes_safe_next_action_without_policy_or_content', async () => {
+    const metadata = makeDocument().operational_metadata!;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        Response.json(
+          makeDocumentEnvelope(scope, revisionId, {
+            identity: null,
+            operational_metadata: {
+              ...metadata,
+              access_policy: null,
+              diagnostic_code: 'security_domain_unavailable',
+              security_domain: null,
+              status: 'unavailable',
+            },
+          }),
+        ),
+      ),
+    );
+
+    renderDetail(`/knowledge/documents/${sourceObjectId}`);
+
+    expect(await screen.findByRole('heading', { name: 'Доступ и безопасные метаданные' })).toBeVisible();
+    expect(screen.getAllByText('Проверьте привязку Security Domain.').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Недоступен').length).toBeGreaterThan(0);
+    expect(screen.getByText('Недоступен в безопасном ответе')).toBeVisible();
+    expect(globalThis.document.body).not.toHaveTextContent('secret-contract.pdf');
+    expect(globalThis.document.body).not.toHaveTextContent('grants');
+  });
+
   it.each([
     ['current', 'Текущий'],
     ['processing', 'Разбирается'],
@@ -117,6 +199,16 @@ describe('Knowledge document operational overview', () => {
     ['ready', 'Готов'],
   ] as const)('test_%s_operational_fixture_has_distinct_safe_label', (state, label) => {
     expect(documentOperationalState(makeDocumentForState(state))).toContain(label);
+  });
+
+  it.each([
+    ['available', 'available'],
+    ['stale', 'stale'],
+    ['degraded', 'degraded'],
+    ['unavailable', 'unavailable'],
+  ] as const)('test_%s_metadata_fixture_has_distinct_safe_state', (state, expected) => {
+    const metadata = makeDocumentForState(state === 'available' ? 'ready' : state).operational_metadata;
+    expect(documentMetadataState(metadata)).toBe(expected);
   });
 
   it('test_revision_history_loads_scoped_revisions_in_deterministic_order', async () => {
@@ -380,8 +472,9 @@ function makeDocument(
 function makeDocumentEnvelope(
   activeScope: Scope = scope,
   currentRevisionId = revisionId,
+  overrides: Partial<components['schemas']['DocumentSnapshot']> = {},
 ) {
-  const document = makeDocument();
+  const document = makeDocument(overrides);
   const data: DocumentSnapshot = {
     ...document,
     current_revision: document.current_revision

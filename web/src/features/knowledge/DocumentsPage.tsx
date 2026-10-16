@@ -8,8 +8,9 @@ import { createScopedApiClient, type SpineApiError } from '../../api/client';
 import { apiQueryOptions } from '../../api/query';
 import { useAuth } from '../../app/auth';
 import { ApiErrorPanel, StatusPanel, type InterfaceState } from '../../app/status';
-import { useScope } from '../../app/scope';
+import { useScope, type Scope } from '../../app/scope';
 import { ru } from '../../i18n/resources';
+import { DocumentAccessMetadata } from './DocumentAccessMetadata';
 import { DocumentUpload } from './DocumentUpload';
 import styles from './DocumentsPage.module.css';
 
@@ -222,6 +223,7 @@ export function DocumentsPage() {
         <DocumentResults
           data={documentsQuery.data}
           onNextPage={nextPage}
+          scope={scope}
           scopeSearch={scopeSearch}
           state={state}
           onRetry={() => void documentsQuery.refetch()}
@@ -304,6 +306,7 @@ function DocumentResults({
   onNextPage,
   onRetry,
   search,
+  scope,
   scopeSearch,
   state,
 }: {
@@ -311,6 +314,7 @@ function DocumentResults({
   onNextPage: () => void;
   onRetry: () => void;
   search: string;
+  scope: Scope;
   scopeSearch: string;
   state: InterfaceState;
 }) {
@@ -340,13 +344,20 @@ function DocumentResults({
               <th scope="col">{ru.documents.columns.state}</th>
               <th scope="col">{ru.documents.columns.publication}</th>
               <th scope="col">{ru.documents.columns.health}</th>
+              <th scope="col">{ru.documents.columns.access}</th>
               <th scope="col">{ru.documents.columns.updated}</th>
               <th scope="col"><span className={styles.visuallyHidden}>{ru.documents.columns.action}</span></th>
             </tr>
           </thead>
           <tbody>
             {data.items.map((document) => (
-              <DocumentRow document={document} key={document.source_object_id} search={search} />
+              <DocumentRow
+                document={document}
+                key={document.source_object_id}
+                scope={scope}
+                search={search}
+                traceId={data.trace_id}
+              />
             ))}
           </tbody>
         </table>
@@ -363,7 +374,17 @@ function DocumentResults({
   );
 }
 
-function DocumentRow({ document, search }: { document: DocumentSnapshot; search: string }) {
+function DocumentRow({
+  document,
+  scope,
+  search,
+  traceId,
+}: {
+  document: DocumentSnapshot;
+  scope: Scope;
+  search: string;
+  traceId: string;
+}) {
   const metadata = document.operational_metadata;
   const publication = document.publication;
   const lifecycle = metadata?.lifecycle ?? document.current_revision?.lifecycle;
@@ -382,6 +403,15 @@ function DocumentRow({ document, search }: { document: DocumentSnapshot; search:
       <td><span className={styles.statusPill}>{state}</span></td>
       <td>{publicationStatusLabel(publication?.status)}</td>
       <td>{healthLabel(publication?.health ?? metadata?.health, publication?.freshness ?? metadata?.freshness)}</td>
+      <td>
+        <DocumentAccessMetadata
+          compact
+          metadata={metadata}
+          publication={publication}
+          scope={scope}
+          traceId={traceId}
+        />
+      </td>
       <td>{formatDate(document.current_revision?.observed_at ?? document.created_at)}</td>
       <td>
         <Link

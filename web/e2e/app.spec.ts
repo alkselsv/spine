@@ -58,6 +58,14 @@ test('test_documents_discovery_filters_paginates_and_navigates_without_content_i
   await expect(page.getByRole('heading', { name: 'Документы', exact: true })).toBeVisible();
   await expect(page.getByRole('table')).toBeVisible();
   await expect(page.getByText(`ID: ${firstDocument}`)).toBeVisible();
+  await expect(page.getByRole('group', { name: 'Доступ и безопасные метаданные' })).toBeVisible();
+  await expect(page.getByText('security-domain:controlled')).toBeVisible();
+  await expect(page.getByText('r1')).toBeVisible();
+  await expect(page.getByRole('group', { name: 'Доступ и безопасные метаданные' })).toContainText(
+    'Поколение AccessPolicy: 3',
+  );
+  await expect(page.getByText(traceId)).toBeVisible();
+  await expect(page.getByText(salesWorkspace)).toBeVisible();
   await expect(page.locator('body')).not.toContainText(/secret\.pdf|protected title|checksum/i);
 
   await page.getByRole('combobox', { name: 'Публикация' }).click();
@@ -226,6 +234,9 @@ test('test_document_detail_deep_link_reloads_and_preserves_scope_and_subview_nav
   );
 
   await expect(page.getByRole('heading', { name: 'Операционный обзор документа' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Доступ и безопасные метаданные' })).toBeVisible();
+  await expect(page.getByText('security-domain:controlled')).toBeVisible();
+  await expect(page.getByText(traceId)).toBeVisible();
   await expect(page.locator('header').getByText('Идентификатор источника')).toBeVisible();
   await expect(page.locator('header code')).toHaveText(firstDocument);
   await expect(page.locator('body')).not.toContainText(/secret\.pdf|protected title|checksum/i);
@@ -534,17 +545,25 @@ async function installControlledDocuments(page: Page) {
     const sourceObjectId = isSecondPage ? secondDocument : firstDocument;
     const item = {
       created_at: '2026-01-02T03:04:05Z',
-      identity: {
-        identity_mode: 'upload',
-        upload_identity: 'secret.pdf',
-      },
       operational_metadata: {
+        access_policy: {
+          generation: 3,
+          policy_version_id: '51000000-0000-0000-0000-000000000025',
+          schema_version: 1 as const,
+          version: 2,
+        },
         lifecycle: 'current',
         processing_state: 'processed',
         publication_status: 'published',
         schema_version: 1 as const,
         source_object_id: sourceObjectId,
         status: 'available',
+        security_domain: {
+          binding_version: 1,
+          reference: 'security-domain:controlled',
+          schema_version: 1 as const,
+          version: 'r1',
+        },
       },
       publication: {
         freshness: 'current',
@@ -605,6 +624,12 @@ async function installControlledDocumentDetail(page: Page) {
         superseded_by_revision_id: null,
       },
       operational_metadata: {
+        access_policy: {
+          generation: 3,
+          policy_version_id: '51000000-0000-0000-0000-000000000025',
+          schema_version: 1 as const,
+          version: 2,
+        },
         freshness: 'current' as const,
         health: 'healthy' as const,
         lifecycle: 'current' as const,
@@ -614,6 +639,12 @@ async function installControlledDocumentDetail(page: Page) {
         source_object_id: firstDocument,
         source_revision_id: secondDocument,
         status: 'available' as const,
+        security_domain: {
+          binding_version: 1,
+          reference: 'security-domain:controlled',
+          schema_version: 1 as const,
+          version: 'r1',
+        },
       },
       publication: {
         freshness: 'current' as const,
