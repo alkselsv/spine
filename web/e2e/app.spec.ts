@@ -112,9 +112,9 @@ test('test_documents_upload_reviews_batch_polls_processing_and_links_run', async
     new RegExp(`/runs/${firstDocument}.*workspace=${salesWorkspace}.*environment=${stagingEnvironment}`),
   );
   await page.getByRole('link', { name: 'Открыть запуск обработки' }).click();
-  await expect(page.getByRole('heading', { name: 'Запуск обработки' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Запуск', exact: true })).toBeVisible();
   await page.reload();
-  await expect(page.getByRole('heading', { name: 'Запуск обработки' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Запуск', exact: true })).toBeVisible();
 
   expect(uploadRequests).toHaveLength(1);
   expect(uploadRequests[0]?.headers['x-workspace-id']).toBe(salesWorkspace);
