@@ -27,7 +27,7 @@ test('test_control_plane_navigation_preserves_scope_and_generated_client_context
 
   await page.getByRole('link', { name: 'Знания', exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/knowledge/documents\\?`));
-  await expect(page.getByRole('heading', { name: 'Документы' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Документы', exact: true })).toBeVisible();
   await expect(page.getByRole('combobox', { name: 'Рабочая область' })).toContainText('Продажи');
   await expect(page.getByRole('combobox', { name: 'Среда' })).toContainText('Staging');
 
@@ -55,7 +55,7 @@ test('test_documents_discovery_filters_paginates_and_navigates_without_content_i
     `/knowledge/documents?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`,
   );
 
-  await expect(page.getByRole('heading', { name: 'Документы' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Документы', exact: true })).toBeVisible();
   await expect(page.getByRole('table')).toBeVisible();
   await expect(page.getByText(`ID: ${firstDocument}`)).toBeVisible();
   await expect(page.locator('body')).not.toContainText(/secret\.pdf|protected title|checksum/i);
@@ -106,7 +106,7 @@ test('test_documents_upload_reviews_batch_polls_processing_and_links_run', async
   await expect(page.getByRole('region', { name: 'Проверка перед отправкой' })).toBeVisible();
   await expect(page.getByText('Файлов в очереди: 2')).toBeVisible();
   await page.getByRole('button', { name: 'Загрузить документы' }).click();
-  await expect(page.getByText('Готов')).toHaveCount(2);
+  await expect(page.getByRole('listitem').filter({ hasText: 'Готов' })).toHaveCount(2);
   await expect(page.getByRole('link', { name: 'Открыть запуск обработки' })).toHaveAttribute(
     'href',
     new RegExp(`/runs/${firstDocument}.*workspace=${salesWorkspace}.*environment=${stagingEnvironment}`),
