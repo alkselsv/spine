@@ -17,7 +17,7 @@
       "command": "uv run pytest -q",
       "returncode": 0,
       "status": "passed",
-        "summary": "2783 passed"
+      "summary": "3093 passed"
     },
     {
       "command": "uv run python -m compileall -q src tests",

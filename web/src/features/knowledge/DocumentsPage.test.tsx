@@ -79,7 +79,7 @@ describe('Knowledge document discovery', () => {
 
     const user = userEvent.setup();
     await user.click(screen.getByRole('combobox', { name: 'Публикация' }));
-    await user.click(screen.getByRole('option', { name: 'Не опубликован' }));
+    await user.click(await screen.findByRole('option', { name: 'Не опубликован' }));
     await waitFor(() => expect(router.state.location.search).toContain('publication_status=unpublished'));
     expect(router.state.location.search).not.toContain('cursor=');
   });
