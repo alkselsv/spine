@@ -55,6 +55,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/diagnostics/operational-correlation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Insights.Operational-Correlation.Get */
+        get: operations["insights.operational-correlation.get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/documents": {
         parameters: {
             query?: never;
@@ -1752,6 +1769,37 @@ export interface components {
             /** Publication Pin Id */
             publication_pin_id?: string | null;
         };
+        /**
+         * CorrelationCoverageState
+         * @enum {string}
+         */
+        CorrelationCoverageState: "complete" | "incomplete" | "unavailable" | "denied";
+        /**
+         * CorrelationReferenceKind
+         * @enum {string}
+         */
+        CorrelationReferenceKind: "trace" | "correlation" | "run" | "delivery" | "feedback";
+        /**
+         * CorrelationSourceKind
+         * @enum {string}
+         */
+        CorrelationSourceKind: "operational_metric" | "delivery_metadata" | "canonical_run" | "usefulness_feedback";
+        /**
+         * CorrelationSourceLineage
+         * @description Safe lineage identity, without source payloads.
+         */
+        CorrelationSourceLineage: {
+            /** Source Identity */
+            source_identity: string;
+            source_kind: components["schemas"]["CorrelationSourceKind"];
+            /**
+             * Source Record Id
+             * Format: uuid
+             */
+            source_record_id: string;
+            /** Source Schema Version */
+            source_schema_version: string;
+        };
         /** CreateQAMessageRequest */
         CreateQAMessageRequest: {
             /** Question */
@@ -2243,6 +2291,11 @@ export interface components {
             status: "ok";
         };
         /**
+         * MetricCoverageState
+         * @enum {string}
+         */
+        MetricCoverageState: "complete" | "stale" | "degraded" | "unavailable" | "denied";
+        /**
          * OoxmlBlockPathStep
          * @description One ordered step through a WordprocessingML body or table hierarchy.
          */
@@ -2272,6 +2325,180 @@ export interface components {
             /** Start Codepoint */
             start_codepoint: number;
         };
+        /**
+         * OperationalCorrelationRecord
+         * @description One immutable, deduplicated safe source observation.
+         */
+        OperationalCorrelationRecord: {
+            /** Attempt Id */
+            attempt_id?: string | null;
+            /** Correlation Id */
+            correlation_id?: string | null;
+            /** Deduplication Key */
+            deduplication_key: string;
+            /** Delivery Attempt Count */
+            delivery_attempt_count?: number | null;
+            /** Delivery Created At */
+            delivery_created_at?: string | null;
+            /** Delivery Event Id */
+            delivery_event_id?: string | null;
+            /** Delivery Last Error Code */
+            delivery_last_error_code?: string | null;
+            /** Delivery Quarantined At */
+            delivery_quarantined_at?: string | null;
+            /** Delivery Status */
+            delivery_status?: "quarantined" | null;
+            /** Delivery Updated At */
+            delivery_updated_at?: string | null;
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /** Feedback Id */
+            feedback_id?: string | null;
+            feedback_outcome?: components["schemas"]["FeedbackOutcome"] | null;
+            feedback_target_kind?: components["schemas"]["FeedbackTargetKind"] | null;
+            /** Message Id */
+            message_id?: string | null;
+            metric_coverage?: components["schemas"]["MetricCoverageState"] | null;
+            /** Metric Currency */
+            metric_currency?: string | null;
+            /** Metric Denominator */
+            metric_denominator?: number | null;
+            metric_measurement?: components["schemas"]["OperationalMeasurement"] | null;
+            /** Metric Numerator */
+            metric_numerator?: number | null;
+            /** Metric Value */
+            metric_value?: string | null;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Run Id */
+            run_id?: string | null;
+            run_outcome?: components["schemas"]["AnswerQuestionOutcome"] | null;
+            /** Run State */
+            run_state?: string | null;
+            /**
+             * Schema Version
+             * @default operational-correlation-record:v1
+             * @constant
+             */
+            schema_version: "operational-correlation-record:v1";
+            /** Source Identity */
+            source_identity: string;
+            source_kind: components["schemas"]["CorrelationSourceKind"];
+            /**
+             * Source Record Id
+             * Format: uuid
+             */
+            source_record_id: string;
+            /** Source Schema Version */
+            source_schema_version: string;
+            /** Trace Id */
+            trace_id?: string | null;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** OperationalCorrelationResponse */
+        OperationalCorrelationResponse: {
+            /**
+             * Authorization Audit Event Id
+             * Format: uuid
+             */
+            authorization_audit_event_id: string;
+            data: components["schemas"]["OperationalCorrelationView"];
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /**
+         * OperationalCorrelationView
+         * @description Bounded read model returned to an authorized operator.
+         */
+        OperationalCorrelationView: {
+            /**
+             * Conflict Codes
+             * @default []
+             */
+            conflict_codes: string[];
+            /**
+             * Correlation Ids
+             * @default []
+             */
+            correlation_ids: string[];
+            coverage: components["schemas"]["CorrelationCoverageState"];
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Lineage
+             * @default []
+             */
+            lineage: components["schemas"]["CorrelationSourceLineage"][];
+            /**
+             * Missing Sources
+             * @default []
+             */
+            missing_sources: components["schemas"]["CorrelationSourceKind"][];
+            /**
+             * Records
+             * @default []
+             */
+            records: components["schemas"]["OperationalCorrelationRecord"][];
+            /**
+             * Reference Id
+             * Format: uuid
+             */
+            reference_id: string;
+            reference_kind: components["schemas"]["CorrelationReferenceKind"];
+            /**
+             * Schema Version
+             * @default operational-correlation-view:v1
+             * @constant
+             */
+            schema_version: "operational-correlation-view:v1";
+            /**
+             * Trace Ids
+             * @default []
+             */
+            trace_ids: string[];
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /**
+         * OperationalMeasurement
+         * @enum {string}
+         */
+        OperationalMeasurement: "qa.answer_rate" | "api.latency" | "ingestion.processing_latency" | "projection.publication_latency" | "qa.retrieval_latency" | "qa.generation_latency" | "qa.terminal_latency" | "ingestion.processing_lag" | "projection.indexing_lag" | "ingestion.sequence_gap" | "projection.sequence_gap" | "operations.retry_attempts" | "qa.cost" | "qa.usefulness";
         /**
          * OperationalMetadataDiagnostic
          * @enum {string}
@@ -3899,6 +4126,113 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiCommandResult_AskOutcomeResponse_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "insights.operational-correlation.get": {
+        parameters: {
+            query: {
+                reference_kind: components["schemas"]["CorrelationReferenceKind"];
+                reference_id: string;
+            };
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationalCorrelationResponse"];
                 };
             };
             /** @description Safe request error. */

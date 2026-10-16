@@ -5,6 +5,9 @@ from spine.infrastructure.persistence.postgresql import PostgreSQLPersistence
 from spine.infrastructure.persistence.postgresql_operational_metrics import (
     PostgreSQLOperationalMetricsStore,
 )
+from spine.infrastructure.persistence.postgresql_operational_correlation import (
+    PostgreSQLOperationalCorrelationStore,
+)
 from spine.infrastructure.persistence.backup_recovery import (
     PostgreSQLBackupRecoveryRepository,
 )
@@ -26,6 +29,7 @@ __all__ = [
     "InMemoryPersistence",
     "PostgreSQLPersistence",
     "PostgreSQLOperationalMetricsStore",
+    "PostgreSQLOperationalCorrelationStore",
     "PostgreSQLBackupRecoveryRepository",
     "InMemoryRecoveryRepository",
     "InMemoryParsedArtifactRepository",

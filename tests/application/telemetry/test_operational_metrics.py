@@ -213,3 +213,29 @@ def test_metric_contract_rejects_untrusted_events_and_invalid_windows() -> None:
 def test_o01_operation_maps_to_one_approved_latency_boundary() -> None:
     observation = SimpleNamespace(operation=OperationalOperation.CONTEXT_RETRIEVAL)
     assert measurement_for_observation(observation) is OperationalMeasurement.RETRIEVAL_LATENCY
+
+
+def test_metric_event_preserves_trusted_trace_references_without_metric_labels() -> None:
+    trace_id = UUID(int=700)
+    correlation_id = UUID(int=701)
+    observation = SimpleNamespace(
+        observation_id=UUID(int=702),
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        trace_id=trace_id,
+        correlation_id=correlation_id,
+        observed_at=NOW,
+        outcome=SimpleNamespace(value="failed"),
+        run_id=UUID(int=703),
+        attempt_id=UUID(int=704),
+        attempt_number=1,
+        duration_ms=20,
+    )
+
+    event = OperationalMetricEvent.from_observation(
+        observation,
+        measurement=OperationalMeasurement.RETRIEVAL_LATENCY,
+    )
+
+    assert (event.trace_id, event.correlation_id) == (trace_id, correlation_id)
+    assert "labels" not in event.model_dump()

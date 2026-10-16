@@ -59,6 +59,8 @@ class OperationalObservationLike(Protocol):
     workspace_id: UUID
     environment_id: UUID
     observed_at: datetime
+    trace_id: UUID
+    correlation_id: UUID | None
     outcome: _ObservationOutcome
     component: str
     stage: str
@@ -106,6 +108,8 @@ class OperationalMetricEvent(ValidatedDefinitionModel):
     event_id: UUID
     workspace_id: UUID
     environment_id: UUID
+    trace_id: UUID | None = None
+    correlation_id: UUID | None = None
     source_identity: str = Field(min_length=1, max_length=128, pattern=_IDENTIFIER)
     measurement: OperationalMeasurement
     event_at: datetime
@@ -130,7 +134,15 @@ class OperationalMetricEvent(ValidatedDefinitionModel):
     feedback_id: UUID | None = None
     feedback_outcome: FeedbackOutcome | None = None
 
-    @field_validator("event_id", "workspace_id", "environment_id", "logical_operation_id", "attempt_id")
+    @field_validator(
+        "event_id",
+        "workspace_id",
+        "environment_id",
+        "trace_id",
+        "correlation_id",
+        "logical_operation_id",
+        "attempt_id",
+    )
     @classmethod
     def validate_ids(cls, value: UUID | None, info: Any) -> UUID | None:
         return None if value is None else _non_zero(value, info.field_name)
@@ -195,6 +207,8 @@ class OperationalMetricEvent(ValidatedDefinitionModel):
             event_id=observation.observation_id,
             workspace_id=observation.workspace_id,
             environment_id=observation.environment_id,
+            trace_id=observation.trace_id,
+            correlation_id=observation.correlation_id,
             source_identity=source_identity,
             measurement=measurement,
             event_at=observation.observed_at,
@@ -213,6 +227,8 @@ class OperationalMetricEvent(ValidatedDefinitionModel):
             event_id=fact.run_id,
             workspace_id=fact.workspace_id,
             environment_id=fact.environment_id,
+            trace_id=fact.trace_id,
+            correlation_id=fact.correlation_id,
             source_identity="canonical.answer-question-run:v1",
             measurement=OperationalMeasurement.ANSWER_RATE,
             event_at=fact.event_at,
@@ -232,10 +248,12 @@ class OperationalMetricEvent(ValidatedDefinitionModel):
             event_id=feedback.feedback_id,
             workspace_id=feedback.workspace_id,
             environment_id=feedback.environment_id,
+            trace_id=feedback.trace_id,
             source_identity="canonical.qa-feedback:v1",
             measurement=OperationalMeasurement.USEFULNESS,
             event_at=feedback.created_at,
             deduplication_key=f"feedback:{feedback.feedback_id}:{feedback.version}",
+            logical_operation_id=feedback.run_id,
             feedback_id=feedback.feedback_id,
             feedback_outcome=feedback.outcome,
         )
@@ -253,6 +271,8 @@ class OperationalMetricEvent(ValidatedDefinitionModel):
             event_id=attempt.attempt_id,
             workspace_id=attempt.workspace_id,
             environment_id=attempt.environment_id,
+            trace_id=attempt.diagnostic_context.trace_id,
+            correlation_id=attempt.diagnostic_context.correlation_id,
             source_identity="canonical.answer-question-usage:v1",
             measurement=OperationalMeasurement.COST,
             event_at=attempt.completed_at or attempt.started_at,
@@ -277,8 +297,8 @@ class FeedbackMetricFact(ValidatedDefinitionModel):
 
     @field_validator("feedback_id", "workspace_id", "environment_id")
     @classmethod
-    def validate_ids(cls, value: UUID, info: Any) -> UUID:
-        return _non_zero(value, info.field_name)
+    def validate_ids(cls, value: UUID | None, info: Any) -> UUID | None:
+        return None if value is None else _non_zero(value, info.field_name)
 
     @field_validator("event_at")
     @classmethod
@@ -302,6 +322,8 @@ class AnswerRateFact(ValidatedDefinitionModel):
     run_id: UUID
     workspace_id: UUID
     environment_id: UUID
+    trace_id: UUID | None = None
+    correlation_id: UUID | None = None
     event_at: datetime
     outcome: AnswerQuestionOutcome
     accepted: bool
@@ -309,10 +331,10 @@ class AnswerRateFact(ValidatedDefinitionModel):
     accepted_evidence: bool = False
     user_initiated: bool = True
 
-    @field_validator("run_id", "workspace_id", "environment_id")
+    @field_validator("run_id", "workspace_id", "environment_id", "trace_id", "correlation_id")
     @classmethod
-    def validate_ids(cls, value: UUID, info: Any) -> UUID:
-        return _non_zero(value, info.field_name)
+    def validate_ids(cls, value: UUID | None, info: Any) -> UUID | None:
+        return None if value is None else _non_zero(value, info.field_name)
 
     @field_validator("event_at")
     @classmethod
@@ -344,6 +366,8 @@ class AnswerRateFact(ValidatedDefinitionModel):
             run_id=run.run_id,
             workspace_id=run.workspace_id,
             environment_id=run.environment_id,
+            trace_id=run.diagnostic_context.trace_id,
+            correlation_id=run.diagnostic_context.correlation_id,
             event_at=run.completed_at,
             outcome=run.outcome,
             accepted=accepted,

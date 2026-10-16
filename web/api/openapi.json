@@ -2203,6 +2203,71 @@
         "title": "ContextBundleRef",
         "type": "object"
       },
+      "CorrelationCoverageState": {
+        "enum": [
+          "complete",
+          "incomplete",
+          "unavailable",
+          "denied"
+        ],
+        "title": "CorrelationCoverageState",
+        "type": "string"
+      },
+      "CorrelationReferenceKind": {
+        "enum": [
+          "trace",
+          "correlation",
+          "run",
+          "delivery",
+          "feedback"
+        ],
+        "title": "CorrelationReferenceKind",
+        "type": "string"
+      },
+      "CorrelationSourceKind": {
+        "enum": [
+          "operational_metric",
+          "delivery_metadata",
+          "canonical_run",
+          "usefulness_feedback"
+        ],
+        "title": "CorrelationSourceKind",
+        "type": "string"
+      },
+      "CorrelationSourceLineage": {
+        "additionalProperties": false,
+        "description": "Safe lineage identity, without source payloads.",
+        "properties": {
+          "source_identity": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Source Identity",
+            "type": "string"
+          },
+          "source_kind": {
+            "$ref": "#/components/schemas/CorrelationSourceKind"
+          },
+          "source_record_id": {
+            "format": "uuid",
+            "title": "Source Record Id",
+            "type": "string"
+          },
+          "source_schema_version": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Source Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_kind",
+          "source_identity",
+          "source_schema_version",
+          "source_record_id"
+        ],
+        "title": "CorrelationSourceLineage",
+        "type": "object"
+      },
       "CreateQAMessageRequest": {
         "additionalProperties": false,
         "properties": {
@@ -3591,6 +3656,17 @@
         "title": "LivenessResponse",
         "type": "object"
       },
+      "MetricCoverageState": {
+        "enum": [
+          "complete",
+          "stale",
+          "degraded",
+          "unavailable",
+          "denied"
+        ],
+        "title": "MetricCoverageState",
+        "type": "string"
+      },
       "OoxmlBlockPathStep": {
         "additionalProperties": false,
         "description": "One ordered step through a WordprocessingML body or table hierarchy.",
@@ -3654,6 +3730,496 @@
         ],
         "title": "OoxmlTextLocator",
         "type": "object"
+      },
+      "OperationalCorrelationRecord": {
+        "additionalProperties": false,
+        "description": "One immutable, deduplicated safe source observation.",
+        "properties": {
+          "attempt_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Id"
+          },
+          "correlation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlation Id"
+          },
+          "deduplication_key": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Deduplication Key",
+            "type": "string"
+          },
+          "delivery_attempt_count": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Attempt Count"
+          },
+          "delivery_created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Created At"
+          },
+          "delivery_event_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Event Id"
+          },
+          "delivery_last_error_code": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z][a-z0-9_.:-]{0,127}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Last Error Code"
+          },
+          "delivery_quarantined_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Quarantined At"
+          },
+          "delivery_status": {
+            "anyOf": [
+              {
+                "const": "quarantined",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Status"
+          },
+          "delivery_updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Updated At"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "feedback_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feedback Id"
+          },
+          "feedback_outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FeedbackOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "feedback_target_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FeedbackTargetKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Id"
+          },
+          "metric_coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricCoverageState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metric_currency": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Z]{3}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metric Currency"
+          },
+          "metric_denominator": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metric Denominator"
+          },
+          "metric_measurement": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OperationalMeasurement"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metric_numerator": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metric Numerator"
+          },
+          "metric_value": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metric Value"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "run_outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnswerQuestionOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_state": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "minLength": 1,
+                "pattern": "^[a-z][a-z0-9_.:-]{0,31}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run State"
+          },
+          "schema_version": {
+            "const": "operational-correlation-record:v1",
+            "default": "operational-correlation-record:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source_identity": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_.:-]{0,127}$",
+            "title": "Source Identity",
+            "type": "string"
+          },
+          "source_kind": {
+            "$ref": "#/components/schemas/CorrelationSourceKind"
+          },
+          "source_record_id": {
+            "format": "uuid",
+            "title": "Source Record Id",
+            "type": "string"
+          },
+          "source_schema_version": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_.:-]{0,127}$",
+            "title": "Source Schema Version",
+            "type": "string"
+          },
+          "trace_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Id"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "environment_id",
+          "source_kind",
+          "source_identity",
+          "source_schema_version",
+          "source_record_id",
+          "deduplication_key",
+          "observed_at"
+        ],
+        "title": "OperationalCorrelationRecord",
+        "type": "object"
+      },
+      "OperationalCorrelationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "authorization_audit_event_id": {
+            "format": "uuid",
+            "title": "Authorization Audit Event Id",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/OperationalCorrelationView"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "trace_id": {
+            "format": "uuid",
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "environment_id",
+          "trace_id",
+          "authorization_audit_event_id",
+          "data"
+        ],
+        "title": "OperationalCorrelationResponse",
+        "type": "object"
+      },
+      "OperationalCorrelationView": {
+        "additionalProperties": false,
+        "description": "Bounded read model returned to an authorized operator.",
+        "properties": {
+          "conflict_codes": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Conflict Codes",
+            "type": "array"
+          },
+          "correlation_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Correlation Ids",
+            "type": "array"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/CorrelationCoverageState"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "lineage": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/CorrelationSourceLineage"
+            },
+            "title": "Lineage",
+            "type": "array"
+          },
+          "missing_sources": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/CorrelationSourceKind"
+            },
+            "title": "Missing Sources",
+            "type": "array"
+          },
+          "records": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/OperationalCorrelationRecord"
+            },
+            "title": "Records",
+            "type": "array"
+          },
+          "reference_id": {
+            "format": "uuid",
+            "title": "Reference Id",
+            "type": "string"
+          },
+          "reference_kind": {
+            "$ref": "#/components/schemas/CorrelationReferenceKind"
+          },
+          "schema_version": {
+            "const": "operational-correlation-view:v1",
+            "default": "operational-correlation-view:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "trace_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Trace Ids",
+            "type": "array"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "environment_id",
+          "reference_kind",
+          "reference_id",
+          "coverage"
+        ],
+        "title": "OperationalCorrelationView",
+        "type": "object"
+      },
+      "OperationalMeasurement": {
+        "enum": [
+          "qa.answer_rate",
+          "api.latency",
+          "ingestion.processing_latency",
+          "projection.publication_latency",
+          "qa.retrieval_latency",
+          "qa.generation_latency",
+          "qa.terminal_latency",
+          "ingestion.processing_lag",
+          "projection.indexing_lag",
+          "ingestion.sequence_gap",
+          "projection.sequence_gap",
+          "operations.retry_attempts",
+          "qa.cost",
+          "qa.usefulness"
+        ],
+        "title": "OperationalMeasurement",
+        "type": "string"
       },
       "OperationalMetadataDiagnostic": {
         "enum": [
@@ -7507,6 +8073,157 @@
           }
         ],
         "summary": "Qa.Ask.Cancel"
+      }
+    },
+    "/api/v1/diagnostics/operational-correlation": {
+      "get": {
+        "operationId": "insights.operational-correlation.get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "reference_kind",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CorrelationReferenceKind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reference_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Reference Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Environment-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationalCorrelationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Safe request error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authentication is invalid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Authorization is denied."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Resource is unavailable."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Command conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request payload is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Request validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Unexpected internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredError"
+                }
+              }
+            },
+            "description": "Dependency is unavailable."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Insights.Operational-Correlation.Get"
       }
     },
     "/api/v1/documents": {

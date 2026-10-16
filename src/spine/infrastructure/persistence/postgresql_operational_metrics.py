@@ -161,6 +161,8 @@ def _values(event: OperationalMetricEvent) -> dict[str, object]:
         "event_id": event.event_id,
         "workspace_id": event.workspace_id,
         "environment_id": event.environment_id,
+        "trace_id": event.trace_id,
+        "correlation_id": event.correlation_id,
         "source_identity": event.source_identity,
         "measurement": event.measurement.value,
         "event_at": event.event_at,
