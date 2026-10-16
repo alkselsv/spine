@@ -120,11 +120,10 @@ def upgrade() -> None:
         ["workspace_id", "environment_id", "logical_operation_id", "event_at"],
         schema=SCHEMA,
     )
-    op.create_check_constraint(
-        "ck_operational_metric_attempt_number",
-        "operational_metric_events",
-        "attempt_number IS NULL OR attempt_number > 0",
-        schema=SCHEMA,
+    op.execute(
+        f'ALTER TABLE {SCHEMA}."operational_metric_events" '
+        'ADD CONSTRAINT "ck_operational_metric_attempt_number" '
+        "CHECK (attempt_number IS NULL OR attempt_number > 0)"
     )
     _tenant("operational_metric_events")
 
