@@ -10,6 +10,7 @@ from spine.infrastructure.persistence.backup_recovery_in_memory import (
 )
 from spine.infrastructure.persistence.parsed_artifacts import (
     InMemoryParsedArtifactRepository,
+    ParsedArtifactCitationExcerptResolver,
     PostgreSQLParsedArtifactRepository,
 )
 from spine.infrastructure.persistence.projection_composition import (
@@ -24,6 +25,7 @@ __all__ = [
     "PostgreSQLBackupRecoveryRepository",
     "InMemoryRecoveryRepository",
     "InMemoryParsedArtifactRepository",
+    "ParsedArtifactCitationExcerptResolver",
     "PostgreSQLParsedArtifactRepository",
     "build_production_projection_request_binding",
     "build_production_projection_request_consumer",

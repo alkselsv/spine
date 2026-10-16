@@ -323,6 +323,23 @@ async def test_exact_replay_is_idempotent_and_isolated_by_workspace() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fresh_revalidation_rechecks_authority_after_lifecycle_change() -> None:
+    provider = FakeStateProvider(observation())
+    service = DisclosureRevalidationService(
+        provider, InMemoryDisclosureValidationResultRepository(), clock=lambda: NOW
+    )
+
+    first = await service.revalidate(request(force_fresh=True))
+    provider.value = observation(tombstoned=True)
+    second = await service.revalidate(request(force_fresh=True))
+
+    assert first.can_disclose_content
+    assert not second.can_disclose_content
+    assert DisclosureRevalidationFailureCode.SOURCE_TOMBSTONED in second.failure_codes
+    assert provider.calls == 2
+
+
+@pytest.mark.asyncio
 async def test_missing_current_dependency_is_fail_closed() -> None:
     state = observation().model_copy(update={"dependencies": ()})
     result = await DisclosureRevalidationService(

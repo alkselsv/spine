@@ -77,11 +77,13 @@ class DisclosureRevalidationService:
     async def revalidate(
         self, request: DisclosureRevalidationRequest
     ) -> DisclosureRevalidationResult:
-        existing = await self.result_repository.resolve(
-            workspace_id=request.workspace_id,
-            environment_id=request.environment_id,
-            request_id=request.request_id,
-        )
+        existing = None
+        if not request.force_fresh:
+            existing = await self.result_repository.resolve(
+                workspace_id=request.workspace_id,
+                environment_id=request.environment_id,
+                request_id=request.request_id,
+            )
         if existing is not None:
             if existing.request_digest != request.command_digest:
                 return _result(
@@ -103,7 +105,8 @@ class DisclosureRevalidationService:
                     (),
                     "stored_answer_disclosure_cancelled",
                     self.clock(),
-                )
+                ),
+                persist=not request.force_fresh,
             )
 
         try:
@@ -117,7 +120,8 @@ class DisclosureRevalidationService:
                     (),
                     "stored_answer_disclosure_unavailable",
                     self.clock(),
-                )
+                ),
+                persist=not request.force_fresh,
             )
 
         if not observation.available or (
@@ -132,7 +136,8 @@ class DisclosureRevalidationService:
                     (),
                     "stored_answer_disclosure_unavailable",
                     self.clock(),
-                )
+                ),
+                persist=not request.force_fresh,
             )
 
         evaluated_at = self.clock()
@@ -152,7 +157,11 @@ class DisclosureRevalidationService:
             dependency_failures = (
                 [DisclosureRevalidationFailureCode.DEPENDENCY_MISSING]
                 if dependency_observation is None
-                else _dependency_failures(dependency, dependency_observation)
+                else _dependency_failures(
+                    dependency,
+                    dependency_observation,
+                    allow_historical_revision=request.historical_inspection,
+                )
             )
             failures.extend(dependency_failures)
             facts.append(
@@ -169,8 +178,10 @@ class DisclosureRevalidationService:
                 )
             )
 
-        publication_failures = _publication_failures(
-            observation, request.dependencies.dependencies
+        publication_failures = (
+            []
+            if request.historical_inspection
+            else _publication_failures(observation, request.dependencies.dependencies)
         )
         failures.extend(publication_failures)
         if observation.requester_authorized is False:
@@ -211,12 +222,15 @@ class DisclosureRevalidationService:
                 tuple(facts),
                 _safe_reason(disposition),
                 evaluated_at,
-            )
+            ),
+            persist=not request.force_fresh,
         )
 
     async def _store(
-        self, result: DisclosureRevalidationResult
+        self, result: DisclosureRevalidationResult, *, persist: bool = True
     ) -> DisclosureRevalidationResult:
+        if not persist:
+            return result
         return await self.result_repository.save(result)
 
 
@@ -252,13 +266,17 @@ class RevalidatingQAMessageDisclosure:
             dependencies=message.disclosure_dependencies,
             run_id=message.run_id,
             message_id=message.message_id,
+            force_fresh=True,
         )
         result = await self._service.revalidate(request)
         return result.can_disclose_content
 
 
 def _dependency_failures(
-    dependency: DisclosureDependency, observation: object
+    dependency: DisclosureDependency,
+    observation: object,
+    *,
+    allow_historical_revision: bool = False,
 ) -> list[DisclosureRevalidationFailureCode]:
     from spine.domain.disclosure import DisclosureDependencyObservation
 
@@ -298,18 +316,26 @@ def _dependency_failures(
         failures.append(DisclosureRevalidationFailureCode.CONTRIBUTOR_UNAUTHORIZED)
     if observation.tombstoned:
         failures.append(DisclosureRevalidationFailureCode.SOURCE_TOMBSTONED)
-    if observation.superseded:
+    if observation.superseded and not allow_historical_revision:
         failures.append(DisclosureRevalidationFailureCode.SOURCE_SUPERSEDED)
     if not observation.retention_eligible:
         failures.append(DisclosureRevalidationFailureCode.RETENTION_INELIGIBLE)
-    if not observation.revision_current:
-        failures.append(DisclosureRevalidationFailureCode.SOURCE_REVISION_REPLACED)
-    if observation.current_revision_id is None:
-        failures.append(DisclosureRevalidationFailureCode.SOURCE_REVISION_UNAVAILABLE)
-    elif observation.current_revision_id != dependency.source_revision_id:
-        failures.append(DisclosureRevalidationFailureCode.SOURCE_REVISION_REPLACED)
-    if observation.current_revision_digest != dependency.source_revision_digest:
-        failures.append(DisclosureRevalidationFailureCode.SOURCE_REVISION_REPLACED)
+    if allow_historical_revision:
+        if (
+            not observation.historical_revision_available
+            or observation.historical_revision_id != dependency.source_revision_id
+            or observation.historical_revision_digest != dependency.source_revision_digest
+        ):
+            failures.append(DisclosureRevalidationFailureCode.SOURCE_REVISION_UNAVAILABLE)
+    else:
+        if not observation.revision_current:
+            failures.append(DisclosureRevalidationFailureCode.SOURCE_REVISION_REPLACED)
+        if observation.current_revision_id is None:
+            failures.append(DisclosureRevalidationFailureCode.SOURCE_REVISION_UNAVAILABLE)
+        elif observation.current_revision_id != dependency.source_revision_id:
+            failures.append(DisclosureRevalidationFailureCode.SOURCE_REVISION_REPLACED)
+        if observation.current_revision_digest != dependency.source_revision_digest:
+            failures.append(DisclosureRevalidationFailureCode.SOURCE_REVISION_REPLACED)
     return _unique(failures)
 
 

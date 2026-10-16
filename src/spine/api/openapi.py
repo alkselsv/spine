@@ -49,6 +49,7 @@ from spine.application.projection_control import (
     UnavailableProjectionStatusService,
 )
 from spine.application.qa_sessions import QASessionService
+from spine.application.citation_inspector import CitationInspectorService
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.auth import RoutePolicyRegistry
 
@@ -201,6 +202,12 @@ class _UnavailableQASessionService:
         del context, session_id, message_id, answer, outcome, cancelled, idempotency_key
         raise RuntimeError("The OpenAPI composition is not executable.")
 
+
+class _UnavailableCitationInspectorService:
+    async def inspect(self, **kwargs):
+        del kwargs
+        raise RuntimeError("The OpenAPI composition is not executable.")
+
 async def _contract_readiness() -> ApiAuthorizationReadiness:
     return ApiAuthorizationReadiness(
         ready=False,
@@ -244,6 +251,9 @@ def create_openapi_app() -> FastAPI:
         projection_recovery_service=UnavailableProjectionRecoveryService(),
         qa_session_service=cast(QASessionService, _UnavailableQASessionService()),
         qa_session_cursor_secret=secrets.token_bytes(32),
+        citation_inspector_service=cast(
+            CitationInspectorService, _UnavailableCitationInspectorService()
+        ),
     )
 
 

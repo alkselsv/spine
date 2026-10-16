@@ -28,6 +28,7 @@ from spine.api.ingestion_history import install_ingestion_history_routes
 from spine.api.documents import install_document_query_routes
 from spine.api.projection_control import install_projection_control_routes
 from spine.api.qa_sessions import install_qa_session_routes
+from spine.api.citation_inspector import install_citation_inspector_routes
 from spine.api.authorization import (
     ApiAuthorizationReadiness,
     ApiAuthorizationRuntime,
@@ -52,6 +53,7 @@ from spine.application.projection_control import (
     ProjectionStatusService,
 )
 from spine.application.qa_sessions import QASessionService
+from spine.application.citation_inspector import CitationInspectorService
 from spine.config import settings
 from spine.ingest.loaders import documents_to_remember_payloads, load_path
 from spine.infrastructure.diagnostics import JsonLoggingDiagnosticSink
@@ -188,6 +190,7 @@ def create_app(
     projection_recovery_service: ProjectionRecoveryCommandService | None = None,
     qa_session_service: QASessionService | None = None,
     qa_session_cursor_secret: bytes | None = None,
+    citation_inspector_service: CitationInspectorService | None = None,
 ) -> FastAPI:
     """Compose the HTTP API with injectable deterministic diagnostics."""
 
@@ -336,6 +339,15 @@ def create_app(
             application,
             service=qa_session_service,
             cursor_secret=qa_session_cursor_secret,
+        )
+    if citation_inspector_service is not None:
+        if type(authorization_runtime) is not ApiAuthorizationRuntime:
+            raise RuntimeError(
+                "Citation inspector routes require an authorization runtime."
+            )
+        install_citation_inspector_routes(
+            application,
+            service=citation_inspector_service,
         )
     return application
 

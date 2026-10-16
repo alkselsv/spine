@@ -125,6 +125,26 @@ class InMemoryAnswerDisclosureRepository:
         self._deliveries[key] = output_reference
         return output_reference
 
+    async def resolve_citation(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        citation_id: UUID,
+    ) -> AcceptedGroundedAnswer | None:
+        for record in self._records.values():
+            if (
+                record.workspace_id == workspace_id
+                and record.environment_id == environment_id
+                and record.accepted_answer is not None
+                and any(
+                    citation.citation_id == citation_id
+                    for citation in record.accepted_answer.answer.citations
+                )
+            ):
+                return record.accepted_answer
+        return None
+
 
 class InMemoryAcceptedAnswerOutputPort:
     """Small sink fake proving only accepted content crosses the port."""
