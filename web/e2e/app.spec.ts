@@ -99,12 +99,14 @@ test('test_documents_upload_reviews_batch_polls_processing_and_links_run', async
   await page.locator('[aria-label="Перетащите файлы сюда"]').evaluate((element) => {
     const dataTransfer = new DataTransfer();
     dataTransfer.items.add(new File(['synthetic upload fixture'], 'proposal.txt', { type: 'text/plain' }));
+    dataTransfer.items.add(new File(['synthetic markdown fixture'], 'context.md', { type: 'text/markdown' }));
     element.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer }));
   });
 
   await expect(page.getByRole('region', { name: 'Проверка перед отправкой' })).toBeVisible();
+  await expect(page.getByText('Файлов в очереди: 2')).toBeVisible();
   await page.getByRole('button', { name: 'Загрузить документы' }).click();
-  await expect(page.getByText('Готов')).toBeVisible();
+  await expect(page.getByText('Готов')).toHaveCount(2);
   await expect(page.getByRole('link', { name: 'Открыть запуск обработки' })).toHaveAttribute(
     'href',
     new RegExp(`/runs/${firstDocument}.*workspace=${salesWorkspace}.*environment=${stagingEnvironment}`),
@@ -119,6 +121,24 @@ test('test_documents_upload_reviews_batch_polls_processing_and_links_run', async
   expect(uploadRequests[0]?.headers['x-environment-id']).toBe(stagingEnvironment);
   expect(uploadRequests[0]?.headers['idempotency-key']).toMatch(/^batch-upload-/);
   expect(uploadRequests[0]?.body).toContain('proposal.txt');
+  expect(uploadRequests[0]?.body).toContain('context.md');
+});
+
+test('test_documents_upload_rejects_invalid_file_before_network_submission', async ({ page }) => {
+  await installControlledDocuments(page);
+  const uploadRequests = await installControlledBatchUpload(page);
+
+  await page.goto(
+    `/knowledge/documents?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`,
+  );
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'protected.pdf',
+    mimeType: 'application/pdf',
+    buffer: Buffer.from('synthetic invalid fixture'),
+  });
+
+  await expect(page.getByRole('alert')).toContainText('неподдерживаемый тип');
+  expect(uploadRequests).toHaveLength(0);
 });
 
 test('test_authentication_denial_hides_administrator_shell_without_api_request', async ({ page }) => {
@@ -276,42 +296,56 @@ async function installControlledBatchUpload(page: Page) {
       headers: request.headers(),
       url: request.url(),
     });
+    const response = {
+      items: [
+        controlledUploadItem({ input_identity: 'file-1' }),
+        controlledUploadItem({ input_identity: 'file-2', input_ordinal: 2, item_id: secondDocument }),
+      ],
+      replay: false,
+      run_id: firstDocument,
+      run_state: 'running',
+      schema_version: 1 as const,
+      status: 'processing' as const,
+      status_url: `/api/v1/ingestion/runs/${firstDocument}`,
+      terminal: false,
+    } satisfies components['schemas']['BatchIngestionUploadResponse'];
     await route.fulfill({
       contentType: 'application/json',
-      body: JSON.stringify({
-        items: [controlledUploadItem({ input_identity: 'file-1' })],
-        replay: false,
-        run_id: firstDocument,
-        run_state: 'running',
-        schema_version: 1,
-        status: 'processing',
-        status_url: `/api/v1/ingestion/runs/${firstDocument}`,
-        terminal: false,
-      }),
+      body: JSON.stringify(response),
       status: 202,
     });
   });
   await page.route(`**/api/v1/ingestion/runs/${firstDocument}`, async (route) => {
     statusRequests += 1;
     const processing = statusRequests === 1;
+    const response = {
+      items: [
+        controlledUploadItem({
+          input_identity: 'file-1',
+          item_state: processing ? 'processing' : 'processed',
+          processing: processing ? 'processing' : 'succeeded',
+          status: processing ? 'non_terminal' : 'succeeded',
+          terminal: !processing,
+        }),
+        controlledUploadItem({
+          input_identity: 'file-2',
+          input_ordinal: 2,
+          item_id: secondDocument,
+          item_state: processing ? 'processing' : 'processed',
+          processing: processing ? 'processing' : 'succeeded',
+          status: processing ? 'non_terminal' : 'succeeded',
+          terminal: !processing,
+        }),
+      ],
+      run_id: firstDocument,
+      run_state: processing ? 'running' : 'completed',
+      schema_version: 1 as const,
+      status: processing ? 'processing' : 'succeeded',
+      terminal: !processing,
+    } satisfies components['schemas']['BatchIngestionStatusResponse'];
     await route.fulfill({
       contentType: 'application/json',
-      body: JSON.stringify({
-        items: [
-          controlledUploadItem({
-            input_identity: 'file-1',
-            item_state: processing ? 'processing' : 'processed',
-            processing: processing ? 'processing' : 'succeeded',
-            status: processing ? 'non_terminal' : 'succeeded',
-            terminal: !processing,
-          }),
-        ],
-        run_id: firstDocument,
-        run_state: processing ? 'running' : 'completed',
-        schema_version: 1,
-        status: processing ? 'processing' : 'succeeded',
-        terminal: !processing,
-      }),
+      body: JSON.stringify(response),
       status: 200,
     });
   });

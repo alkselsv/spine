@@ -63,11 +63,20 @@ describe('document batch upload contract', () => {
     ['accepted', 'not_started', 'non_terminal', 'accepted'],
     ['accepted', 'processing', 'non_terminal', 'processing'],
     ['accepted', 'succeeded', 'succeeded', 'ready'],
+    ['accepted', 'not_started', 'non_terminal', 'accepted'],
     ['accepted', 'failed', 'failed', 'failed'],
     ['rejected', 'not_started', 'rejected', 'rejected'],
     ['accepted', 'cancelled', 'cancelled', 'cancelled'],
   ] as const)('test_server_item_%s_%s_maps_to_%s', (acceptance, processing, status, expected) => {
     expect(mapBatchItemState(makeItem({ acceptance, processing, status }))).toBe(expected);
+  });
+
+  it('test_projection_requested_remains_processing_even_when_processing_is_succeeded', () => {
+    expect(
+      mapBatchItemState(
+        makeItem({ item_state: 'projection_requested', processing: 'succeeded', status: 'succeeded' }),
+      ),
+    ).toBe('processing');
   });
 
   it('test_mixed_server_items_preserve_every_local_row_independently', () => {

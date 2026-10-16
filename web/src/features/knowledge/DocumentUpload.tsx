@@ -1,11 +1,12 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 
 import type { components } from '../../../api/generated/schema';
 import { SpineApiError, type ScopedApiClient } from '../../api/client';
 import { ApiErrorPanel } from '../../app/status';
 import { useScope } from '../../app/scope';
+import { formatBytes } from '../../i18n/format';
 import { ru } from '../../i18n/resources';
 import {
   applyBatchItems,
@@ -65,6 +66,8 @@ export function DocumentUpload({
       query.state.error || query.state.data?.terminal ? false : POLL_INTERVAL_MS,
     retry: false,
   });
+
+  useEffect(() => () => controllerRef.current?.abort(), []);
 
   function selectFiles(files: readonly File[]) {
     const result = validateUploadFiles(files);
@@ -310,6 +313,7 @@ function UploadRowView({ row }: { row: UploadRow }) {
   const description = uploadStateDescription(row);
   const warnings = row.serverItem?.warnings.length ?? 0;
   const stateClass = styles[`uploadState_${row.state}`] ?? '';
+  const progress = uploadProgress(row.state);
 
   return (
     <li className={styles.uploadRow}>
@@ -319,6 +323,11 @@ function UploadRowView({ row }: { row: UploadRow }) {
       </div>
       <div className={styles.uploadFileOutcome}>
         <span className={`${styles.uploadState} ${stateClass}`}>{label}</span>
+        {progress !== null ? (
+          <progress aria-label={label} className={styles.uploadProgress} max={100} value={progress} />
+        ) : row.state === 'uploading' ? (
+          <progress aria-label={label} className={styles.uploadProgress} max={100} />
+        ) : null}
         <span>{description}</span>
         {warnings > 0 ? <span>{ru.documents.upload.warning}</span> : null}
         {row.retryable ? <span>{ru.documents.upload.retryable}</span> : null}
@@ -365,6 +374,7 @@ function uploadStateDescription(row: UploadRow): string {
   }
   if (row.state === 'processing') return ru.documents.upload.processingDescription;
   if (row.state === 'ready') return ru.documents.upload.readyDescription;
+  if (row.state === 'failed' || row.state === 'rejected') return ru.documents.upload.serverFailureDescription;
   if (row.state === 'cancelled') {
     return row.serverItem?.status === 'cancelled' || row.serverItem?.processing === 'cancelled'
       ? ru.documents.upload.serverCancelledDescription
@@ -373,18 +383,20 @@ function uploadStateDescription(row: UploadRow): string {
   return '';
 }
 
+function uploadProgress(state: UploadRow['state']): number | null {
+  if (state === 'queued') return 0;
+  if (state === 'accepted') return 25;
+  if (state === 'processing') return 70;
+  if (state === 'ready') return 100;
+  return null;
+}
+
 function batchStatusLabel(status: components['schemas']['PublicBatchStatus']): string {
   if (status === 'processing') return ru.documents.upload.processing;
   if (status === 'succeeded') return ru.documents.upload.ready;
   if (status === 'partial') return ru.documents.upload.failed;
   if (status === 'failed') return ru.documents.upload.failed;
   return ru.documents.upload.cancelled;
-}
-
-function formatBytes(value: number): string {
-  if (value < 1024) return `${value} Б`;
-  if (value < 1024 * 1024) return `${Math.round(value / 1024)} КБ`;
-  return `${(value / (1024 * 1024)).toFixed(1)} МБ`;
 }
 
 function isActiveRow(row: UploadRow): boolean {

@@ -116,6 +116,7 @@ export const ru = {
       failed: 'Ошибка обработки',
       cancelled: 'Наблюдение остановлено в браузере',
       serverCancelled: 'Сервер отменил обработку',
+      serverFailureDescription: 'Сервер не завершил обработку. Проверьте предупреждения и повторите позже или обратитесь к администратору.',
       acceptedDescription: 'Запрос принят. Разбор и индексация ещё не завершены.',
       processingDescription: 'Сервер разбирает источник и обновляет проекцию.',
       indexingDescription: 'Разбор завершён. Сервер обновляет индекс проекции.',
@@ -126,6 +127,9 @@ export const ru = {
       retryable: 'Можно безопасно повторить эту команду.',
       errorNextAction: 'Выберите файлы заново и проверьте ограничения batch.',
       retryRequest: 'Повторить ту же команду',
+      runDescription: 'Запуск {runId}',
+      runItems: 'Результаты файлов',
+      runItem: 'Файл {ordinal}',
       validation: {
         empty_batch: 'Выберите хотя бы один файл.',
         too_many_files: 'Можно выбрать не больше 20 файлов за один раз.',

@@ -181,7 +181,12 @@ export function DocumentsPage() {
         ) : null}
       </div>
 
-      <DocumentUpload client={client} disabled={!auth.getBearerCredential} scopeSearch={scopeSearch} />
+      <DocumentUpload
+        key={`${scope.workspaceId}:${scope.environmentId}`}
+        client={client}
+        disabled={!auth.getBearerCredential}
+        scopeSearch={scopeSearch}
+      />
 
       <div className={styles.filters} aria-label={ru.documents.filtersLabel}>
         {FILTER_KEYS.map((key) => (
