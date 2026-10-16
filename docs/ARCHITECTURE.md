@@ -1135,6 +1135,14 @@ Protected reproducibility record сохраняет, в пределах applica
 - server-side protected SSE emission records с event identity, без утверждения,
   что emission доказывает client receipt.
 
+Q&A SSE и polling используют один transport-neutral event contract (ADR-035):
+versioned closed payloads имеют stable emission identity и monotonic sequence,
+а replay принимает bounded workspace/environment-scoped `Last-Event-ID` cursor.
+Terminal events rehydrate after disconnect; heartbeat и cancellation idempotent.
+`answer_delta` и `citation_added` допускаются только с accepted-output/disclosure
+receipt, а current authorization проверяется заново на каждой protected
+delivery boundary. Event persistence не является client receipt.
+
 Questions, prompts, bundles, candidates, diagnostics и audit artifacts подчинены
 content authorization и retention; audit/telemetry backend не является bypass.
 Hidden chain-of-thought не сохраняется. Reproducibility означает reconstruction
@@ -2299,6 +2307,9 @@ detectors без специальных обходов в platform core.
 - [ADR-032](adr/0032-versioned-qa-sessions-and-messages.md): PostgreSQL-canonical,
   immutable and tenant-scoped Q&A session/message history with current disclosure
   checks and no evidentiary authority.
+- [ADR-035](adr/0035-resumable-qa-event-contract.md): versioned Q&A event
+  envelopes, scope-bound resumable replay, terminal rehydration and fresh
+  disclosure checks for protected emissions.
 - ADR-TBD: artifact schemas и handoff evaluation protocol.
 - ADR-012: business outcome attribution и cost accounting.
 - ADR-013: future third-party Agent SDK, package trust и certification после появления подтверждённого внешнего кейса.
