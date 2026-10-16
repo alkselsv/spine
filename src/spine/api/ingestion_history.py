@@ -358,7 +358,10 @@ def _item_phases(
     }.get(
         status,
         PublicProcessingStatus.PROCESSING
-        if item.item_state is IngestionItemState.PROCESSING
+        if item.item_state in {
+            IngestionItemState.PROCESSING_READY,
+            IngestionItemState.PROCESSING,
+        }
         else PublicProcessingStatus.NOT_STARTED,
     )
     return acceptance, processing

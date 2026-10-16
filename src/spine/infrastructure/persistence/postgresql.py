@@ -85,6 +85,7 @@ from spine.application.persistence.repositories import (
 )
 from spine.application.persistence.ingestion import (
     IngestionBindingCommand,
+    ExistingRevisionBindingCommand,
     IngestionMutationResult,
     IngestionRepository,
     IngestionRunCommand,
@@ -188,6 +189,7 @@ from spine.domain.ingestion import (
     IngestionTransition,
     IngestionWarning,
     ProcessingReceipt,
+    ProcessOnlyOperationLineage,
 )
 from spine.domain.projections import (
     ActiveProjection,
@@ -264,6 +266,7 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     ingestion_warnings as _INGESTION_WARNINGS,
     ingestion_failures as _INGESTION_FAILURES,
     processing_receipts as _PROCESSING_RECEIPTS,
+    process_only_operation_lineages as _PROCESS_ONLY_LINEAGES,
     workspaces as _WORKSPACES,
     current_access_policies as _CURRENT_ACCESS_POLICIES,
     policy_activations as _POLICY_ACTIVATIONS,
@@ -3087,6 +3090,171 @@ class _PostgreSQLIngestionRepository:
         await self._uow.idempotency.complete(claim, result)
         return IngestionMutationResult(binding, False, claim, result)
 
+    async def bind_existing_revision(
+        self, command: ExistingRevisionBindingCommand
+    ) -> IngestionMutationResult:
+        """Bind a process-only item without recording a source observation."""
+
+        self._uow._guard_active()
+        self._check_scope(command.item.workspace_id, command.item.environment_id)
+        item_row = (
+            await self._uow._execute(
+                select(_INGESTION_ITEMS).where(
+                    _INGESTION_ITEMS.c.ingestion_run_source_id
+                    == command.item.ingestion_run_source_id,
+                    _INGESTION_ITEMS.c.workspace_id == command.item.workspace_id,
+                    _INGESTION_ITEMS.c.environment_id == command.item.environment_id,
+                )
+            )
+        ).mappings().one_or_none()
+        revision_row = (
+            await self._uow._execute(
+                select(_SOURCE_REVISIONS).where(
+                    _SOURCE_REVISIONS.c.revision_id
+                    == command.binding.source_revision_id,
+                    _SOURCE_REVISIONS.c.source_object_id
+                    == command.binding.source_object_id,
+                    _SOURCE_REVISIONS.c.workspace_id == command.item.workspace_id,
+                    _SOURCE_REVISIONS.c.environment_id == command.item.environment_id,
+                )
+            )
+        ).mappings().one_or_none()
+        binding = command.binding
+        if (
+            item_row is None
+            or IngestionRunSource.model_validate(dict(item_row)) != command.item
+            or revision_row is None
+            or revision_row.kind != RevisionKind.CONTENT.value
+            or binding.original_receipt_id is None
+            or binding.original_reference is None
+            or binding.original_receipt_digest is None
+            or binding.original_reference.digest_hex != revision_row.original_sha256
+            or binding.original_receipt_digest != revision_row.original_sha256
+        ):
+            await self._uow._fail(
+                ConstraintConflictError("Process-only binding evidence is unavailable.")
+            )
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=command.digest.operation_schema_version,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        if isinstance(claim, IdempotencyReplay):
+            row = (
+                await self._uow._execute(
+                    select(_INGESTION_BINDINGS).where(
+                        _INGESTION_BINDINGS.c.binding_id == claim.result.result_id,
+                        _INGESTION_BINDINGS.c.workspace_id == command.item.workspace_id,
+                        _INGESTION_BINDINGS.c.environment_id == command.item.environment_id,
+                    )
+                )
+            ).mappings().one_or_none()
+            if row is None:
+                await self._uow._fail(
+                    ConstraintConflictError("Process-only binding replay is unavailable.")
+                )
+            return IngestionMutationResult(self._binding_from_row(row), True, claim, claim.result)
+        existing_row = (
+            await self._uow._execute(
+                select(_INGESTION_BINDINGS).where(
+                    _INGESTION_BINDINGS.c.ingestion_run_source_id
+                    == command.item.ingestion_run_source_id,
+                    _INGESTION_BINDINGS.c.workspace_id == command.item.workspace_id,
+                    _INGESTION_BINDINGS.c.environment_id == command.item.environment_id,
+                )
+            )
+        ).mappings().one_or_none()
+        if existing_row is not None:
+            existing = self._binding_from_row(existing_row)
+            if existing != binding:
+                await self._uow._fail(
+                    ConstraintConflictError(
+                        "Process-only item is already bound to another source."
+                    )
+                )
+            result = OpaqueResultReference(
+                result_type="ingestion_binding", result_id=existing.binding_id, schema_version=1
+            )
+            await self._uow.idempotency.complete(claim, result)
+            return IngestionMutationResult(existing, True, claim, result)
+        binding = binding.model_copy(update={"idempotency_receipt_id": claim.receipt_id})
+        await self._uow._execute(
+            insert(_INGESTION_BINDINGS).values(
+                binding_id=binding.binding_id,
+                ingestion_run_source_id=binding.ingestion_run_source_id,
+                source_object_id=binding.source_object_id,
+                source_revision_id=binding.source_revision_id,
+                workspace_id=binding.workspace_id,
+                environment_id=binding.environment_id,
+                binding_command_identity=binding.binding_command_identity,
+                binding_command_digest=binding.binding_command_digest,
+                original_reference=binding.original_reference.model_dump(mode="json") if binding.original_reference else None,
+                original_receipt_kind=binding.original_receipt_kind,
+                original_receipt_id=binding.original_receipt_id,
+                original_receipt_digest=binding.original_receipt_digest,
+                idempotency_receipt_id=binding.idempotency_receipt_id,
+                bound_at=binding.bound_at,
+            )
+        )
+        previous = await self._head(
+            run_id=command.item.ingestion_run_id,
+            item_id=command.item.ingestion_run_source_id,
+        )
+        if previous is None:
+            await self._uow._fail(
+                ConstraintConflictError("Ingestion item transition head is unavailable.")
+            )
+        await self.append_transition(
+            IngestionTransition(
+                ingestion_transition_id=uuid5(
+                    NAMESPACE_URL,
+                    f"ingestion-item-processing-ready:{command.item.ingestion_run_source_id}",
+                ),
+                workspace_id=binding.workspace_id,
+                environment_id=binding.environment_id,
+                target_kind=IngestionTargetKind.ITEM,
+                ingestion_run_id=command.item.ingestion_run_id,
+                ingestion_run_source_id=binding.ingestion_run_source_id,
+                predecessor_transition_id=previous.ingestion_transition_id,
+                state=IngestionItemState.PROCESSING_READY,
+                attempt=previous.attempt + 1,
+                actor_or_service="ingestion-process-only",
+                trace_id=self._uow._trace_id_snapshot(),
+                occurred_at=binding.bound_at,
+            )
+        )
+        result = OpaqueResultReference(
+            result_type="ingestion_binding", result_id=binding.binding_id, schema_version=1
+        )
+        await self._uow.idempotency.complete(claim, result)
+        return IngestionMutationResult(binding, False, claim, result)
+
+    async def create_process_only_lineage(
+        self, lineage: ProcessOnlyOperationLineage
+    ) -> ProcessOnlyOperationLineage:
+        self._uow._guard_active()
+        self._check_scope(lineage.workspace_id, lineage.environment_id)
+        existing_row = (
+            await self._uow._execute(
+                select(_PROCESS_ONLY_LINEAGES).where(
+                    _PROCESS_ONLY_LINEAGES.c.operation_id == lineage.operation_id,
+                    _PROCESS_ONLY_LINEAGES.c.workspace_id == lineage.workspace_id,
+                    _PROCESS_ONLY_LINEAGES.c.environment_id == lineage.environment_id,
+                )
+            )
+        ).mappings().one_or_none()
+        if existing_row is not None:
+            existing = ProcessOnlyOperationLineage.model_validate(dict(existing_row))
+            if existing != lineage:
+                await self._uow._fail(
+                    ConstraintConflictError("Process-only lineage identity conflicts.")
+                )
+            return existing
+        await self._uow._execute(
+            insert(_PROCESS_ONLY_LINEAGES).values(**lineage.model_dump(mode="python"))
+        )
+        return lineage
+
     async def append_transition(self, transition: IngestionTransition) -> IngestionTransition:
         self._uow._guard_active()
         self._check_scope(transition.workspace_id, transition.environment_id)
@@ -3414,6 +3582,36 @@ class _PostgreSQLIngestionRepository:
             )
         ).mappings().all()
         return tuple(self._failure_from_row(row) for row in rows)
+
+    async def resolve_failure_by_id(
+        self, failure_id: UUID
+    ) -> IngestionFailure | None:
+        self._uow._guard_active()
+        row = (
+            await self._uow._execute(
+                select(_INGESTION_FAILURES).where(
+                    _INGESTION_FAILURES.c.ingestion_failure_id == failure_id,
+                    _INGESTION_FAILURES.c.workspace_id == self._uow.scope.workspace_id,
+                    _INGESTION_FAILURES.c.environment_id == self._uow.scope.environment_id,
+                )
+            )
+        ).mappings().one_or_none()
+        return self._failure_from_row(row) if row is not None else None
+
+    async def resolve_process_only_lineage(
+        self, operation_id: UUID
+    ) -> ProcessOnlyOperationLineage | None:
+        self._uow._guard_active()
+        row = (
+            await self._uow._execute(
+                select(_PROCESS_ONLY_LINEAGES).where(
+                    _PROCESS_ONLY_LINEAGES.c.operation_id == operation_id,
+                    _PROCESS_ONLY_LINEAGES.c.workspace_id == self._uow.scope.workspace_id,
+                    _PROCESS_ONLY_LINEAGES.c.environment_id == self._uow.scope.environment_id,
+                )
+            )
+        ).mappings().one_or_none()
+        return ProcessOnlyOperationLineage.model_validate(dict(row)) if row is not None else None
 
 
 class _PostgreSQLAdmissionRepository:

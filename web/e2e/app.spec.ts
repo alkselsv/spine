@@ -71,7 +71,7 @@ test('test_documents_discovery_filters_paginates_and_navigates_without_content_i
   await expect(page).toHaveURL(
     new RegExp(`/knowledge/documents/${secondDocument}\\?.*workspace=${salesWorkspace}.*publication_status=published.*cursor=documents-next`),
   );
-  await expect(page.getByRole('heading', { name: 'Документ' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Документ', exact: true })).toBeVisible();
   await page.getByRole('link', { name: 'Вернуться к документам' }).click();
   await expect(page.getByText(`ID: ${secondDocument}`)).toBeVisible();
   await page.reload();

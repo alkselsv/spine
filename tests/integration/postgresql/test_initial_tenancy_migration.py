@@ -1424,6 +1424,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ingestion_warnings",
         "ingestion_failures",
         "processing_receipts",
+        "process_only_operation_lineages",
         "source_security_domain_bindings",
         "backup_fence_leases",
         "fence_operation_tickets",
@@ -1594,6 +1595,15 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ck_processing_receipts_complete_exclusions",
         "ck_processing_receipts_complete_failures",
         "ck_processing_receipts_digests",
+        "pk_process_only_operation_lineages",
+        "uq_process_only_lineages_scope_id",
+        "uq_process_only_lineages_run",
+        "fk_process_only_lineages_run",
+        "fk_process_only_lineages_item",
+        "fk_process_only_lineages_revision",
+        "fk_process_only_lineages_receipt",
+        "ck_process_only_operation_lineages_ck_process_only_line_b9b7",
+        "ck_process_only_operation_lineages_ck_process_only_line_8f72",
         "pk_source_security_domain_bindings",
         "uq_source_security_domain_bindings_scope_id",
         "uq_source_security_domain_bindings_source_version",
@@ -2190,6 +2200,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "pk_qa_answer_disclosure_deliveries",
         "pk_feedback_records",
         "ix_feedback_records_target",
+        "pk_process_only_operation_lineages",
+        "uq_process_only_lineages_scope_id",
+        "uq_process_only_lineages_run",
         "ix_qa_session_versions_navigation",
         "ix_qa_message_versions_navigation",
         "ix_projection_activations_kind_generation",
@@ -2238,6 +2251,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ingestion_warnings": (True, True),
         "ingestion_failures": (True, True),
         "processing_receipts": (True, True),
+        "process_only_operation_lineages": (True, True),
         "source_security_domain_bindings": (True, True),
         "backup_fence_leases": (True, True),
         "fence_operation_tickets": (True, True),
@@ -2363,6 +2377,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ingestion_warnings": (True, True, False, False),
         "ingestion_failures": (True, True, False, False),
         "processing_receipts": (True, True, False, False),
+        "process_only_operation_lineages": (True, True, False, False),
         "source_security_domain_bindings": (True, True, False, False),
         "backup_fence_leases": (True, True, True, False),
         "fence_operation_tickets": (True, True, True, False),
@@ -2442,7 +2457,8 @@ async def test_ingestion_ledger_catalog_has_immutable_and_deferred_integrity_tri
                     "AND relation.relname IN ("
                     "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                     "'ingestion_transitions', 'ingestion_warnings', "
-                    "'ingestion_failures', 'processing_receipts')"
+                    "'ingestion_failures', 'processing_receipts', "
+                    "'process_only_operation_lineages')"
                 )
             )
         ).mappings().all()
@@ -2466,6 +2482,7 @@ async def test_ingestion_ledger_catalog_has_immutable_and_deferred_integrity_tri
         "ingestion_warnings",
         "ingestion_failures",
         "processing_receipts",
+        "process_only_operation_lineages",
     )
     assert {
         f"trg_{table}_immutable" for table in immutable_tables
@@ -2522,7 +2539,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "'source_revision_receipt_associations', 'ingestion_runs', "
                         "'ingestion_run_sources', 'ingestion_run_source_bindings', "
                         "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', "
-                            "'processing_receipts', 'source_security_domain_bindings', "
+                            "'processing_receipts', 'process_only_operation_lineages', "
+                            "'source_security_domain_bindings', "
                             "'access_policy_versions', "
                             "'access_policy_grants', 'policy_proposals', 'policy_approvals', "
                             "'policy_activations', 'current_access_policies', "
@@ -2559,6 +2577,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "'source_revision_receipt_associations', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
+                            "'process_only_operation_lineages', "
                             "'source_security_domain_bindings', "
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
@@ -2589,6 +2608,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "'source_revision_receipt_associations', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
+                            "'process_only_operation_lineages', "
                             "'source_security_domain_bindings', "
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
@@ -2618,6 +2638,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "'source_revision_receipt_associations', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                                 "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
+                                "'process_only_operation_lineages', "
                                 "'source_security_domain_bindings', "
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
@@ -2647,6 +2668,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "'source_revision_receipt_associations', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
+                            "'process_only_operation_lineages', "
                             "'access_policy_versions', 'access_policy_grants', 'policy_proposals', "
                             "'policy_approvals', 'policy_activations', 'current_access_policies', "
                             "'canonical_generation_counters', 'canonical_acceptances', "
@@ -3312,6 +3334,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'ingestion_run_sources', 'ingestion_run_source_bindings', "
                         "'ingestion_transitions', 'ingestion_warnings', "
                         "'ingestion_failures', 'processing_receipts', 'source_security_domain_bindings', "
+                        "'process_only_operation_lineages', "
                         "'access_policy_versions', 'access_policy_grants', "
                         "'policy_proposals', 'policy_approvals', "
                         "'policy_activations', 'current_access_policies', "
@@ -3389,6 +3412,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "ingestion_warnings": (True, True),
         "ingestion_failures": (True, True),
             "processing_receipts": (True, True),
+        "process_only_operation_lineages": (True, True),
         "source_security_domain_bindings": (True, True),
             "access_policy_versions": (True, True),
             "access_policy_grants": (True, True),
@@ -4697,13 +4721,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261029_34_answer_disclosure_delivery.py",
         "20261030_35_safe_policy_metadata.py",
         "20261030_36_feedback_records.py",
+        "20261031_37_processing_commands.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261021_26_injected_failure.py").write_text(
+    (target / "versions" / "20261031_38_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261021_26'\n"
-        "down_revision = '20261030_36'\n"
+        "revision = '20261031_38'\n"
+        "down_revision = '20261031_37'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

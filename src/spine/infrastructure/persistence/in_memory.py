@@ -128,6 +128,7 @@ from spine.infrastructure.persistence.answer_question_audit import (
 )
 from spine.application.persistence.ingestion import (
     IngestionBindingCommand,
+    ExistingRevisionBindingCommand,
     IngestionMutationResult,
     IngestionRepository,
     IngestionRunCommand,
@@ -186,6 +187,7 @@ from spine.domain.ingestion import (
     IngestionTransition,
     IngestionWarning,
     ProcessingReceipt,
+    ProcessOnlyOperationLineage,
 )
 from spine.domain.projections import (
     ActiveProjection,
@@ -240,6 +242,7 @@ class _StoreState:
     ingestion_warnings: dict[UUID, IngestionWarning]
     ingestion_failures: dict[UUID, IngestionFailure]
     processing_receipts: dict[UUID, ProcessingReceipt]
+    process_only_lineages: dict[UUID, ProcessOnlyOperationLineage]
     canonical_acceptances: dict[UUID, CanonicalAcceptance]
     current_source_heads: dict[UUID, CurrentSourceHead]
     canonical_generations: dict[tuple[UUID, UUID], int]
@@ -310,6 +313,7 @@ class _Store:
             ingestion_warnings={},
             ingestion_failures={},
             processing_receipts={},
+            process_only_lineages={},
             canonical_acceptances={},
             current_source_heads={},
             canonical_generations={},
@@ -431,6 +435,10 @@ class _Store:
     @property
     def processing_receipts(self) -> dict[UUID, ProcessingReceipt]:
         return self.state.processing_receipts
+
+    @property
+    def process_only_lineages(self) -> dict[UUID, ProcessOnlyOperationLineage]:
+        return self.state.process_only_lineages
 
     @property
     def canonical_acceptances(self) -> dict[UUID, CanonicalAcceptance]:
@@ -2727,6 +2735,159 @@ class _InMemoryIngestionRepository:
         await self._uow.idempotency.complete(claim, result)
         return IngestionMutationResult(binding.model_copy(deep=True), False, claim, result)
 
+    async def bind_existing_revision(
+        self, command: ExistingRevisionBindingCommand
+    ) -> IngestionMutationResult:
+        """Bind a process-only item without invoking source observation."""
+
+        self._uow._guard_active()
+        self._scope_check(command.item.workspace_id, command.item.environment_id)
+        item = self._items().get(command.item.ingestion_run_source_id)
+        binding = command.binding
+        revision = self._revisions().get(binding.source_revision_id)
+        if (
+            item is None
+            or item != command.item
+            or revision is None
+            or revision.source_object_id != binding.source_object_id
+            or (revision.workspace_id, revision.environment_id)
+            != (item.workspace_id, item.environment_id)
+            or revision.kind.value != "content"
+            or binding.original_receipt_id is None
+            or binding.original_reference is None
+            or binding.original_receipt_digest is None
+            or binding.original_reference.digest_hex != revision.original_sha256
+            or binding.original_receipt_digest != revision.original_sha256
+        ):
+            self._uow._fail(
+                ConstraintConflictError(
+                    "Process-only binding evidence is unavailable."
+                )
+            )
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=command.digest.operation_schema_version,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        if isinstance(claim, IdempotencyReplay):
+            existing = self._bindings().get(claim.result.result_id)
+            if existing is None:
+                self._uow._fail(
+                    ConstraintConflictError(
+                        "Process-only binding replay is unavailable."
+                    )
+                )
+            return IngestionMutationResult(
+                existing.model_copy(deep=True), True, claim, claim.result
+            )
+        existing = next(
+            (
+                value
+                for value in self._bindings().values()
+                if value.ingestion_run_source_id == item.ingestion_run_source_id
+            ),
+            None,
+        )
+        if existing is not None:
+            if existing != binding:
+                self._uow._fail(
+                    ConstraintConflictError(
+                        "Process-only item is already bound to another source."
+                    )
+                )
+            result = OpaqueResultReference(
+                result_type="ingestion_binding",
+                result_id=existing.binding_id,
+                schema_version=1,
+            )
+            await self._uow.idempotency.complete(claim, result)
+            return IngestionMutationResult(
+                existing.model_copy(deep=True), True, claim, result
+            )
+        if any(
+            value.workspace_id == binding.workspace_id
+            and value.environment_id == binding.environment_id
+            and value.binding_command_identity == binding.binding_command_identity
+            and value.binding_id != binding.binding_id
+            for value in self._bindings().values()
+        ):
+            self._uow._fail(
+                ConstraintConflictError(
+                    "Process-only binding command identity conflicts."
+                )
+            )
+        self._uow._pending_ingestion_bindings[binding.binding_id] = binding.model_copy(
+            update={"idempotency_receipt_id": claim.receipt_id}, deep=True
+        )
+        item_head = self._head(
+            item.ingestion_run_source_id, IngestionTargetKind.ITEM
+        )
+        if item_head is None:
+            self._uow._fail(
+                ConstraintConflictError(
+                    "Ingestion item transition head is unavailable."
+                )
+            )
+        await self.append_transition(
+            IngestionTransition(
+                ingestion_transition_id=uuid5(
+                    NAMESPACE_URL,
+                    f"ingestion-item-processing-ready:{item.ingestion_run_source_id}",
+                ),
+                workspace_id=item.workspace_id,
+                environment_id=item.environment_id,
+                target_kind=IngestionTargetKind.ITEM,
+                ingestion_run_id=item.ingestion_run_id,
+                ingestion_run_source_id=item.ingestion_run_source_id,
+                state=IngestionItemState.PROCESSING_READY,
+                predecessor_transition_id=item_head.ingestion_transition_id,
+                attempt=item_head.attempt + 1,
+                actor_or_service="ingestion-process-only",
+                trace_id=self._uow._trace_id_snapshot(),
+                occurred_at=binding.bound_at,
+            )
+        )
+        result = OpaqueResultReference(
+            result_type="ingestion_binding", result_id=binding.binding_id, schema_version=1
+        )
+        await self._uow.idempotency.complete(claim, result)
+        return IngestionMutationResult(
+            binding.model_copy(update={"idempotency_receipt_id": claim.receipt_id}, deep=True),
+            False,
+            claim,
+            result,
+        )
+
+    async def create_process_only_lineage(
+        self, lineage: ProcessOnlyOperationLineage
+    ) -> ProcessOnlyOperationLineage:
+        self._uow._guard_active()
+        self._scope_check(lineage.workspace_id, lineage.environment_id)
+        run = self._runs().get(lineage.ingestion_run_id)
+        item = self._items().get(lineage.ingestion_run_source_id)
+        revision = self._revisions().get(lineage.source_revision_id)
+        if (
+            run is None
+            or item is None
+            or revision is None
+            or run.workspace_id != lineage.workspace_id
+            or run.environment_id != lineage.environment_id
+            or item.ingestion_run_id != lineage.ingestion_run_id
+            or (item.workspace_id, item.environment_id)
+            != (lineage.workspace_id, lineage.environment_id)
+            or revision.source_object_id != lineage.source_object_id
+            or (revision.workspace_id, revision.environment_id)
+            != (lineage.workspace_id, lineage.environment_id)
+        ):
+            self._uow._fail(ConstraintConflictError("Process-only lineage references are invalid."))
+        existing = self._uow._base_process_only_lineages.get(lineage.operation_id) or self._uow._pending_process_only_lineages.get(lineage.operation_id)
+        if existing is not None:
+            if existing != lineage:
+                self._uow._fail(ConstraintConflictError("Process-only lineage identity conflicts."))
+            return existing.model_copy(deep=True)
+        self._uow._pending_process_only_lineages[lineage.operation_id] = lineage.model_copy(deep=True)
+        return lineage.model_copy(deep=True)
+
     def _head(self, target_id: UUID, target_kind: IngestionTargetKind) -> IngestionTransition | None:
         candidates = [
             transition for transition in self._transitions().values()
@@ -3014,9 +3175,13 @@ class _InMemoryIngestionRepository:
 
     async def resolve_processing_receipt(self, item_id: UUID) -> ProcessingReceipt | None:
         self._uow._guard_active()
+        if not isinstance(self._uow.scope, EnvironmentScope):
+            return None
         receipts = tuple(
             value for value in self._processing_receipts().values()
             if value.ingestion_run_source_id == item_id
+            and (value.workspace_id, value.environment_id)
+            == (self._uow.scope.workspace_id, self._uow.scope.environment_id)
         )
         if not receipts:
             return None
@@ -3067,6 +3232,34 @@ class _InMemoryIngestionRepository:
             and value.workspace_id == scope.workspace_id
             and value.environment_id == scope.environment_id
         )
+
+    async def resolve_failure_by_id(
+        self, failure_id: UUID
+    ) -> IngestionFailure | None:
+        self._uow._guard_active()
+        failure = self._failures().get(failure_id)
+        if failure is None or not isinstance(self._uow.scope, EnvironmentScope):
+            return None
+        if (failure.workspace_id, failure.environment_id) != (
+            self._uow.scope.workspace_id,
+            self._uow.scope.environment_id,
+        ):
+            return None
+        return failure.model_copy(deep=True)
+
+    async def resolve_process_only_lineage(
+        self, operation_id: UUID
+    ) -> ProcessOnlyOperationLineage | None:
+        self._uow._guard_active()
+        lineage = self._uow._base_process_only_lineages.get(operation_id) or self._uow._pending_process_only_lineages.get(operation_id)
+        if lineage is None or not isinstance(self._uow.scope, EnvironmentScope):
+            return None
+        if (lineage.workspace_id, lineage.environment_id) != (
+            self._uow.scope.workspace_id,
+            self._uow.scope.environment_id,
+        ):
+            return None
+        return lineage.model_copy(deep=True)
 
 
 class _IdempotencyRepository:
@@ -3267,6 +3460,7 @@ class InMemoryUnitOfWork:
         self._base_ingestion_warnings: dict[UUID, IngestionWarning] = {}
         self._base_ingestion_failures: dict[UUID, IngestionFailure] = {}
         self._base_processing_receipts: dict[UUID, ProcessingReceipt] = {}
+        self._base_process_only_lineages: dict[UUID, ProcessOnlyOperationLineage] = {}
         self._base_canonical_acceptances: dict[UUID, CanonicalAcceptance] = {}
         self._base_current_source_heads: dict[UUID, CurrentSourceHead] = {}
         self._base_canonical_generations: dict[tuple[UUID, UUID], int] = {}
@@ -3309,6 +3503,7 @@ class InMemoryUnitOfWork:
         self._pending_ingestion_warnings: dict[UUID, IngestionWarning] = {}
         self._pending_ingestion_failures: dict[UUID, IngestionFailure] = {}
         self._pending_processing_receipts: dict[UUID, ProcessingReceipt] = {}
+        self._pending_process_only_lineages: dict[UUID, ProcessOnlyOperationLineage] = {}
         self._pending_canonical_acceptances: dict[UUID, CanonicalAcceptance] = {}
         self._pending_current_source_heads: dict[UUID, CurrentSourceHead] = {}
         self._pending_canonical_generations: dict[tuple[UUID, UUID], int] = {}
@@ -3554,6 +3749,7 @@ class InMemoryUnitOfWork:
                 self._base_ingestion_warnings = {key: value.model_copy(deep=True) for key, value in self._store.ingestion_warnings.items()}
                 self._base_ingestion_failures = {key: value.model_copy(deep=True) for key, value in self._store.ingestion_failures.items()}
                 self._base_processing_receipts = {key: value.model_copy(deep=True) for key, value in self._store.processing_receipts.items()}
+                self._base_process_only_lineages = {key: value.model_copy(deep=True) for key, value in self._store.process_only_lineages.items()}
                 self._base_canonical_acceptances = {
                     key: value.model_copy(deep=True)
                     for key, value in self._store.canonical_acceptances.items()
@@ -3792,6 +3988,8 @@ class InMemoryUnitOfWork:
                 prepared_ingestion_failures.update({key: value.model_copy(deep=True) for key, value in self._pending_ingestion_failures.items()})
                 prepared_processing_receipts = {key: value.model_copy(deep=True) for key, value in self._store.processing_receipts.items()}
                 prepared_processing_receipts.update({key: value.model_copy(deep=True) for key, value in self._pending_processing_receipts.items()})
+                prepared_process_only_lineages = {key: value.model_copy(deep=True) for key, value in self._store.process_only_lineages.items()}
+                prepared_process_only_lineages.update({key: value.model_copy(deep=True) for key, value in self._pending_process_only_lineages.items()})
                 prepared_canonical_acceptances = {
                     key: value.model_copy(deep=True)
                     for key, value in self._store.canonical_acceptances.items()
@@ -3996,6 +4194,7 @@ class InMemoryUnitOfWork:
                     ingestion_warnings=prepared_ingestion_warnings,
                     ingestion_failures=prepared_ingestion_failures,
                     processing_receipts=prepared_processing_receipts,
+                    process_only_lineages=prepared_process_only_lineages,
                     canonical_acceptances=prepared_canonical_acceptances,
                     current_source_heads=prepared_current_source_heads,
                     canonical_generations=prepared_canonical_generations,
@@ -4050,6 +4249,7 @@ class InMemoryUnitOfWork:
         self._pending_ingestion_warnings.clear()
         self._pending_ingestion_failures.clear()
         self._pending_processing_receipts.clear()
+        self._pending_process_only_lineages.clear()
         self._pending_canonical_acceptances.clear()
         self._pending_current_source_heads.clear()
         self._pending_canonical_generations.clear()
@@ -4324,9 +4524,22 @@ class InMemoryUnitOfWork:
             (self._pending_ingestion_warnings, self._store.ingestion_warnings),
             (self._pending_ingestion_failures, self._store.ingestion_failures),
             (self._pending_processing_receipts, self._store.processing_receipts),
+            (self._pending_process_only_lineages, self._store.process_only_lineages),
         )
         if any(pending.keys() & stored.keys() for pending, stored in maps):
             raise ConstraintConflictError("Ingestion ledger identity already exists.")
+
+        stored_lineages = tuple(self._store.process_only_lineages.values())
+        for lineage in self._pending_process_only_lineages.values():
+            if any(
+                existing.workspace_id == lineage.workspace_id
+                and existing.environment_id == lineage.environment_id
+                and existing.ingestion_run_id == lineage.ingestion_run_id
+                for existing in stored_lineages
+            ):
+                raise ConstraintConflictError(
+                    "Process-only operation lineage already exists for the run."
+                )
 
         stored_items = tuple(self._store.ingestion_items.values())
         for item in self._pending_ingestion_items.values():
@@ -4514,6 +4727,7 @@ class InMemoryUnitOfWork:
         self._base_ingestion_warnings.clear()
         self._base_ingestion_failures.clear()
         self._base_processing_receipts.clear()
+        self._base_process_only_lineages.clear()
         self._base_canonical_acceptances.clear()
         self._base_current_source_heads.clear()
         self._base_canonical_generations.clear()
@@ -4554,6 +4768,7 @@ class InMemoryUnitOfWork:
         self._pending_ingestion_warnings.clear()
         self._pending_ingestion_failures.clear()
         self._pending_processing_receipts.clear()
+        self._pending_process_only_lineages.clear()
         self._pending_canonical_acceptances.clear()
         self._pending_current_source_heads.clear()
         self._pending_canonical_generations.clear()

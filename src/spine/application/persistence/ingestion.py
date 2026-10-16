@@ -25,6 +25,7 @@ from spine.domain.ingestion import (
     IngestionTransition,
     IngestionWarning,
     ProcessingReceipt,
+    ProcessOnlyOperationLineage,
 )
 
 if TYPE_CHECKING:
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
 
 INGESTION_RUN_SCHEMA_VERSION = 1
 INGESTION_BINDING_SCHEMA_VERSION = 1
+PROCESS_ONLY_BINDING_SCHEMA_VERSION = 1
 PROCESSING_RECEIPT_SCHEMA_VERSION = 1
 
 
@@ -103,6 +105,45 @@ class IngestionBindingCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class ExistingRevisionBindingCommand:
+    """Bind a ledger item to an already observed immutable revision.
+
+    Unlike ``IngestionBindingCommand`` this seam deliberately has no source
+    observation payload and therefore cannot create a new SourceRevision.
+    """
+
+    item: IngestionRunSource
+    binding: IngestionRunSourceBinding
+    idempotency_key: IdempotencyKey
+    digest: CommandDigest
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        item: IngestionRunSource,
+        binding: IngestionRunSourceBinding,
+        idempotency_key: IdempotencyKey,
+    ) -> "ExistingRevisionBindingCommand":
+        digest = digest_command(
+            operation=PersistenceOperation("ingestion_existing_binding"),
+            operation_schema_version=PROCESS_ONLY_BINDING_SCHEMA_VERSION,
+            payload={
+                "item_id": item.ingestion_run_source_id,
+                "source_object_id": binding.source_object_id,
+                "source_revision_id": binding.source_revision_id,
+                "original_receipt_id": binding.original_receipt_id,
+                "original_receipt_digest": binding.original_receipt_digest,
+                "idempotency_key": idempotency_key.value,
+            },
+        )
+        return cls(
+            item=item,
+            binding=binding.model_copy(update={"binding_command_digest": digest.value}),
+            idempotency_key=idempotency_key,
+            digest=digest,
+        )
+@dataclass(frozen=True, slots=True)
 class ProcessingReceiptCommand:
     receipt: ProcessingReceipt
     idempotency_key: IdempotencyKey
@@ -165,6 +206,14 @@ class IngestionRepository(Protocol):
 
     async def bind_source(self, command: IngestionBindingCommand) -> IngestionMutationResult: ...
 
+    async def bind_existing_revision(
+        self, command: ExistingRevisionBindingCommand
+    ) -> IngestionMutationResult: ...
+
+    async def create_process_only_lineage(
+        self, lineage: ProcessOnlyOperationLineage
+    ) -> ProcessOnlyOperationLineage: ...
+
     async def append_transition(self, transition: IngestionTransition) -> IngestionTransition: ...
 
     async def append_warning(self, warning: IngestionWarning) -> IngestionWarning: ...
@@ -205,6 +254,14 @@ class IngestionRepository(Protocol):
 
     async def resolve_failures(self, item_id: UUID) -> tuple[IngestionFailure, ...]: ...
 
+    async def resolve_failure_by_id(
+        self, failure_id: UUID
+    ) -> IngestionFailure | None: ...
+
+    async def resolve_process_only_lineage(
+        self, operation_id: UUID
+    ) -> ProcessOnlyOperationLineage | None: ...
+
     async def resolve_item(self, item_id: UUID) -> IngestionRunSource | None: ...
 
     async def resolve_binding(self, item_id: UUID) -> IngestionRunSourceBinding | None: ...
@@ -222,7 +279,7 @@ def deterministic_receipt_id(*, workspace_id: UUID, environment_id: UUID, operat
 
 
 RUN_TRANSITIONS: dict[IngestionRunState, frozenset[IngestionRunState]] = {
-    IngestionRunState.REQUESTED: frozenset({IngestionRunState.RECEIVING, IngestionRunState.CANCELLED}),
+    IngestionRunState.REQUESTED: frozenset({IngestionRunState.RECEIVING, IngestionRunState.PROCESSING, IngestionRunState.CANCELLED}),
     IngestionRunState.RECEIVING: frozenset({IngestionRunState.PROCESSING, IngestionRunState.CANCELLED}),
     IngestionRunState.PROCESSING: frozenset({IngestionRunState.PARTIALLY_SUCCEEDED, IngestionRunState.SUCCEEDED, IngestionRunState.FAILED, IngestionRunState.CANCELLED}),
     IngestionRunState.PARTIALLY_SUCCEEDED: frozenset(),
@@ -233,13 +290,14 @@ RUN_TRANSITIONS: dict[IngestionRunState, frozenset[IngestionRunState]] = {
 
 
 ITEM_TRANSITIONS: dict[IngestionItemState, frozenset[IngestionItemState]] = {
-    IngestionItemState.RECEIVED: frozenset({IngestionItemState.STORED, IngestionItemState.OBSERVED, IngestionItemState.PROCESSING_FAILED}),
+    IngestionItemState.RECEIVED: frozenset({IngestionItemState.STORED, IngestionItemState.OBSERVED, IngestionItemState.PROCESSING_READY, IngestionItemState.PROCESSING_FAILED}),
     IngestionItemState.STORED: frozenset({IngestionItemState.OBSERVED, IngestionItemState.ADMISSION_PENDING, IngestionItemState.PROCESSING_FAILED}),
     IngestionItemState.OBSERVED: frozenset({IngestionItemState.ADMISSION_PENDING, IngestionItemState.QUARANTINED, IngestionItemState.REJECTED, IngestionItemState.ACCEPTED, IngestionItemState.PROCESSING_FAILED}),
     IngestionItemState.ADMISSION_PENDING: frozenset({IngestionItemState.QUARANTINED, IngestionItemState.REJECTED, IngestionItemState.ACCEPTED, IngestionItemState.PROCESSING_FAILED}),
     IngestionItemState.QUARANTINED: frozenset({IngestionItemState.RECEIVED}),
     IngestionItemState.REJECTED: frozenset(),
     IngestionItemState.ACCEPTED: frozenset({IngestionItemState.PROCESSING, IngestionItemState.PROCESSING_FAILED}),
+    IngestionItemState.PROCESSING_READY: frozenset({IngestionItemState.PROCESSING, IngestionItemState.PROCESSING_FAILED}),
     IngestionItemState.PROCESSING: frozenset({IngestionItemState.PROCESSED, IngestionItemState.PROCESSING_FAILED}),
     IngestionItemState.PROCESSED: frozenset({IngestionItemState.PROJECTION_REQUESTED}),
     IngestionItemState.PROCESSING_FAILED: frozenset({IngestionItemState.PROCESSING}),
@@ -267,6 +325,7 @@ def validate_transition(previous: IngestionTransition | None, current: Ingestion
 __all__ = [
     "INGESTION_BINDING_SCHEMA_VERSION",
     "INGESTION_RUN_SCHEMA_VERSION",
+    "ExistingRevisionBindingCommand",
     "IngestionBindingCommand",
     "IngestionMutationResult",
     "IngestionRepository",
@@ -274,6 +333,7 @@ __all__ = [
     "IngestionRunStateView",
     "ITEM_TRANSITIONS",
     "PROCESSING_RECEIPT_SCHEMA_VERSION",
+    "PROCESS_ONLY_BINDING_SCHEMA_VERSION",
     "ProcessingReceiptCommand",
     "RUN_TRANSITIONS",
     "deterministic_receipt_id",

@@ -526,7 +526,10 @@ def _item_phases(
         status,
         (
             PublicProcessingStatus.PROCESSING
-            if item.item_state is IngestionItemState.PROCESSING
+            if item.item_state in {
+                IngestionItemState.PROCESSING_READY,
+                IngestionItemState.PROCESSING,
+            }
             else PublicProcessingStatus.NOT_STARTED
         ),
     )

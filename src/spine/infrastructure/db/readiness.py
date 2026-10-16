@@ -335,6 +335,9 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "ingestion_warnings": ExpectedTablePrivileges(True, True, True, False, False),
         "ingestion_failures": ExpectedTablePrivileges(True, True, True, False, False),
         "processing_receipts": ExpectedTablePrivileges(True, True, True, False, False),
+        "process_only_operation_lineages": ExpectedTablePrivileges(
+            True, True, True, False, False
+        ),
         "source_security_domain_bindings": ExpectedTablePrivileges(
             True, True, True, False, False
         ),

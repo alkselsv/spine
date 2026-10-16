@@ -14,6 +14,7 @@ from spine.application.persistence.command_digest import digest_command
 from spine.application.persistence.errors import ConstraintConflictError, InvalidPersistenceContextError
 from spine.application.persistence.idempotency import IdempotencyKey, OpaqueResultReference
 from spine.application.persistence.ingestion import (
+    ExistingRevisionBindingCommand,
     IngestionBindingCommand,
     IngestionRunCommand,
     deterministic_receipt_id,
@@ -278,6 +279,71 @@ async def test_content_binding_rejects_unverified_original_receipt(persistence) 
         await uow.rollback()
     assert state is not None
     assert state.item_states == (IngestionItemState.RECEIVED,)
+
+
+@pytest.mark.asyncio
+async def test_process_only_binding_replays_without_recording_source_observation(persistence) -> None:
+    adapter, boundary = persistence
+    source, revision, observation = binding_observation("process-only")
+    async with adapter.uow_factory(context(boundary, "source_observation")) as uow:
+        await uow.sources.record_observation(observation)
+        await uow.commit()
+
+    command = IngestionRunCommand.create(
+        run=run("process-only"), idempotency_key=IdempotencyKey("process-only")
+    )
+    item = IngestionRunSource(
+        ingestion_run_source_id=uuid5(NAMESPACE_URL, "issue86-process-only-item"),
+        ingestion_run_id=command.run.ingestion_run_id,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        input_ordinal=1,
+        input_identity="issue86-process-only-input",
+        input_digest="e" * 64,
+        command_identity="issue86-process-only-item-command",
+        command_digest="f" * 64,
+        created_at=NOW,
+    )
+    binding = IngestionRunSourceBinding(
+        binding_id=uuid5(NAMESPACE_URL, "issue86-process-only-binding"),
+        ingestion_run_source_id=item.ingestion_run_source_id,
+        source_object_id=source.source_object_id,
+        source_revision_id=revision.revision_id,
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        binding_command_identity="issue86-process-only-binding-command",
+        binding_command_digest="0" * 64,
+        original_reference=revision.original_reference,
+        original_receipt_kind="issue6.write_receipt",
+        original_receipt_id=uuid5(NAMESPACE_URL, "issue86-process-only-receipt"),
+        original_receipt_digest=revision.original_sha256,
+        bound_at=NOW,
+    )
+    binding_command = ExistingRevisionBindingCommand.create(
+        item=item,
+        binding=binding,
+        idempotency_key=IdempotencyKey("issue86-process-only-binding"),
+    )
+    async with adapter.uow_factory(context(boundary, "ingestion_run")) as uow:
+        await uow.ingestion.create_run(command)
+        await uow.ingestion.create_item(item)
+        await uow.commit()
+
+    async with adapter.uow_factory(context(boundary, "ingestion_existing_binding")) as uow:
+        first = await uow.ingestion.bind_existing_revision(binding_command)
+        await uow.commit()
+    async with adapter.uow_factory(context(boundary, "ingestion_existing_binding")) as uow:
+        replay = await uow.ingestion.bind_existing_revision(binding_command)
+        state = await uow.ingestion.derive_run_state(command.run.ingestion_run_id)
+        sources = await uow.sources.list_sources(limit=10)
+        await uow.rollback()
+
+    assert first.replay is False
+    assert replay.replay is True
+    assert replay.result_reference == first.result_reference
+    assert state is not None
+    assert state.item_states == (IngestionItemState.PROCESSING_READY,)
+    assert [value.source_object_id for value in sources] == [source.source_object_id]
 
 
 @pytest.mark.asyncio

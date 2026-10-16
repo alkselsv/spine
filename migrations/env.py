@@ -21,6 +21,9 @@ from spine.infrastructure.db.settings import (
 )
 
 
+MIGRATION_ADVISORY_LOCK_KEY = 344037
+
+
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -41,6 +44,13 @@ def run_migrations_offline() -> None:
 
 def _run_migrations(connection: Connection, settings: MigrationDatabaseSettings) -> None:
     with connection.begin():
+        # Serialize concurrent application bootstrap migrations on a shared
+        # database so each runner reads the version table after the prior
+        # runner has committed its upgrade.
+        connection.execute(
+            text("SELECT pg_advisory_xact_lock(:migration_lock_key)"),
+            {"migration_lock_key": MIGRATION_ADVISORY_LOCK_KEY},
+        )
         state = collect_migration_preflight(
             connection,
             migration_role=settings.migration_role,

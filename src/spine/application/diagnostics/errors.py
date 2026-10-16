@@ -38,6 +38,7 @@ from spine.application.ingestion_api_errors import (
     InvalidIngestionRequest,
     UploadPayloadTooLarge,
 )
+from spine.application.processing_commands import ProcessingCommandRejected
 from spine.application.projection_control import (
     InvalidProjectionControlRequest,
     ProjectionControlServiceUnavailable,
@@ -102,6 +103,7 @@ _SAFE_MESSAGE_BY_CODE = MappingProxyType({
     "spine.ingestion.payload_too_large": "Upload exceeds the allowed size.",
     "spine.ingestion.unavailable": "Ingestion is temporarily unavailable.",
     "spine.ingestion.not_found": "The ingestion run was not found.",
+    "spine.ingestion.processing_command_rejected": "The processing command is not eligible.",
     "spine.projection.invalid_request": "The projection request is invalid.",
     "spine.projection.unavailable": "Projection control is temporarily unavailable.",
     "spine.documents.not_found": "The document was not found.",
@@ -334,6 +336,7 @@ def build_default_error_registry() -> StructuredErrorRegistry:
         (UploadPayloadTooLarge, "spine.ingestion.payload_too_large", "Upload exceeds the allowed size.", Retryability.NEVER),
         (IngestionServiceUnavailable, "spine.ingestion.unavailable", "Ingestion is temporarily unavailable.", Retryability.AFTER_DELAY),
         (IngestionRunNotFound, "spine.ingestion.not_found", "The ingestion run was not found.", Retryability.NEVER),
+        (ProcessingCommandRejected, "spine.ingestion.processing_command_rejected", "The processing command is not eligible.", Retryability.NEVER),
         (InvalidProjectionControlRequest, "spine.projection.invalid_request", "The projection request is invalid.", Retryability.NEVER),
         (ProjectionControlServiceUnavailable, "spine.projection.unavailable", "Projection control is temporarily unavailable.", Retryability.AFTER_DELAY),
         (DocumentNotFound, "spine.documents.not_found", "The document was not found.", Retryability.NEVER),
