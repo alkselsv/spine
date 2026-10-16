@@ -2212,6 +2212,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "pk_qa_answer_disclosure_deliveries",
         "pk_feedback_records",
         "ix_feedback_records_target",
+        "pk_operational_metric_events",
+        "uq_operational_metric_events_deduplication",
         "ix_operational_metric_events_window",
         "ix_operational_metric_events_operation",
         "pk_process_only_operation_lineages",
