@@ -148,7 +148,7 @@ test('test_ingestion_run_displays_partial_outcomes_retryability_and_safe_diagnos
   await expect(page.getByText('Готов')).toBeVisible();
   await expect(page.getByRole('listitem').filter({ hasText: 'failed.txt' })).toContainText('Ошибка');
   await expect(page.getByText('Ошибка: parser.invalid (parse)')).toBeVisible();
-  await expect(page.getByText('Повтор операции разрешён')).toBeVisible();
+  await expect(page.getByText('Повтор операции разрешён', { exact: true })).toBeVisible();
   await expect(page.getByText('Следующее действие: Повтор операции разрешён.')).toBeVisible();
   await expect(page.locator('body')).not.toContainText(/provider|secret|stack|customer/i);
 });
