@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterable
+import hashlib
+import json
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -13,6 +15,7 @@ from spine.application.ingestion_api import (
     IngestionStatusSnapshot,
     IngestionSubmission,
 )
+from spine.application.persistence.errors import IdempotencyConflictError
 from spine.domain.ingestion import IngestionItemState, IngestionRunState, ProcessingCoverage
 from spine.auth import RoutePolicyRegistry
 from spine.api.main import create_app
@@ -33,6 +36,8 @@ class FakeIngestionService:
     def __init__(self) -> None:
         self.submission_status = DocumentIngestionStatus.SUCCEEDED
         self.submissions: list[tuple[object, object, bytes]] = []
+        self.status_requests: list[tuple[object, UUID, UUID]] = []
+        self._digests: dict[str, str] = {}
         self.snapshot = IngestionStatusSnapshot(
             run_id=RUN_ID,
             item_id=ITEM_ID,
@@ -51,6 +56,16 @@ class FakeIngestionService:
         )
 
     async def submit(self, *, context: object, command: object, chunks: AsyncIterable[bytes]) -> IngestionSubmission:
+        digest = hashlib.sha256(
+            json.dumps(
+                command.model_dump(mode="json", exclude={"idempotency_key"}),
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        current = self._digests.setdefault(command.idempotency_key, digest)
+        if current != digest:
+            raise IdempotencyConflictError("safe conflict")
         content = b"".join([chunk async for chunk in chunks])
         self.submissions.append((context, command, content))
         return IngestionSubmission(
@@ -68,7 +83,7 @@ class FakeIngestionService:
         )
 
     async def status(self, *, context: object, run_id: UUID, item_id: UUID) -> IngestionStatusSnapshot | None:
-        del context
+        self.status_requests.append((context, run_id, item_id))
         if (run_id, item_id) != (RUN_ID, ITEM_ID):
             return None
         return self.snapshot
@@ -162,6 +177,45 @@ async def test_authorized_upload_returns_stable_status_reference_and_streams_chu
     assert service.submissions[0][2] == b"# hello\n"
 
 
+async def test_same_upload_replays_with_stable_identity() -> None:
+    service = FakeIngestionService()
+    application = _app(service)
+    transport = httpx.ASGITransport(app=application)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.post(
+            "/api/v1/documents/uploads", headers=_headers(), content=b"# hello\n"
+        )
+        replay = await client.post(
+            "/api/v1/documents/uploads", headers=_headers(), content=b"# hello\n"
+        )
+
+    assert first.status_code == 202
+    assert replay.status_code == 202
+    assert replay.json()["run_id"] == first.json()["run_id"]
+    assert replay.json()["item_id"] == first.json()["item_id"]
+    assert replay.json()["replay"] is True
+
+
+async def test_same_upload_key_with_changed_content_returns_safe_conflict() -> None:
+    service = FakeIngestionService()
+    application = _app(service)
+    transport = httpx.ASGITransport(app=application)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.post(
+            "/api/v1/documents/uploads", headers=_headers(), content=b"# hello\n"
+        )
+        conflict = await client.post(
+            "/api/v1/documents/uploads", headers=_headers(), content=b"# changed\n"
+        )
+
+    assert first.status_code == 202
+    assert conflict.status_code == 409
+    assert conflict.json()["code"] == "spine.persistence.idempotency_conflict"
+    assert "safe conflict" not in conflict.text
+
+
 async def test_status_exposes_acceptance_processing_and_receipt_without_content() -> None:
     service = FakeIngestionService()
     application = _app(service)
@@ -244,6 +298,23 @@ async def test_oversized_idempotency_key_is_rejected_before_service_receives_byt
     assert service.submissions == []
 
 
+async def test_invalid_content_digest_is_rejected_before_service_receives_bytes() -> None:
+    service = FakeIngestionService()
+    application = _app(service)
+    transport = httpx.ASGITransport(app=application)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/documents/uploads",
+            headers={**_headers(), "X-Content-SHA256": "a" * 65},
+            content=b"# hello\n",
+        )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "spine.ingestion.invalid_request"
+    assert service.submissions == []
+
+
 async def test_streaming_limit_rejects_without_content_length() -> None:
     service = FakeIngestionService()
     application = _app(service, max_upload_bytes=4)
@@ -297,6 +368,23 @@ async def test_cross_workspace_upload_is_denied_without_leaking_service_or_conte
     assert response.json()["code"] == "spine.authorization.denied"
     assert "protected customer content" not in response.text
     assert service.submissions == []
+
+
+async def test_cross_workspace_status_is_denied_before_service() -> None:
+    service = FakeIngestionService()
+    application = authorized_app([])
+    install_ingestion_routes(application, service=service)
+    transport = httpx.ASGITransport(app=application)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            f"/api/v1/ingestion/runs/{RUN_ID}/items/{ITEM_ID}",
+            headers=_headers(workspace_id=OTHER_WORKSPACE_ID),
+        )
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "spine.authorization.denied"
+    assert service.status_requests == []
 
 
 def test_ingestion_openapi_declares_binary_body_and_stable_headers() -> None:

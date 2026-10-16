@@ -55,6 +55,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/documents/uploads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ingestion.Upload */
+        post: operations["ingestion.upload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/documents/{source_object_id}": {
         parameters: {
             query?: never;
@@ -166,6 +183,23 @@ export interface paths {
         };
         /** Ingestion.Batch Status */
         get: operations["ingestion.batch_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ingestion/runs/{run_id}/items/{item_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Ingestion.Status */
+        get: operations["ingestion.status"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1172,6 +1206,106 @@ export interface components {
             /** Terminal */
             terminal: boolean;
         };
+        /** IngestionStatusResponse */
+        IngestionStatusResponse: {
+            acceptance: components["schemas"]["PublicAcceptanceStatus"];
+            /** Binding Id */
+            binding_id?: string | null;
+            /**
+             * Failure Ids
+             * @default []
+             */
+            failure_ids: string[];
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Item State */
+            item_state: string;
+            processing: components["schemas"]["PublicProcessingStatus"];
+            processing_receipt?: components["schemas"]["IngestionReceiptResponse"] | null;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Run State */
+            run_state: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Source Object Id */
+            source_object_id?: string | null;
+            /** Source Revision Id */
+            source_revision_id?: string | null;
+            status: components["schemas"]["PublicIngestionStatus"];
+            /** Terminal */
+            terminal: boolean;
+            /**
+             * Warning Ids
+             * @default []
+             */
+            warning_ids: string[];
+        };
+        /** IngestionUploadResponse */
+        IngestionUploadResponse: {
+            acceptance: components["schemas"]["PublicAcceptanceStatus"];
+            /**
+             * Binding Id
+             * Format: uuid
+             */
+            binding_id: string;
+            /**
+             * Failure Ids
+             * @default []
+             */
+            failure_ids: string[];
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            processing: components["schemas"]["PublicProcessingStatus"];
+            /** Processing Receipt Id */
+            processing_receipt_id?: string | null;
+            /** Replay */
+            replay: boolean;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Source Object Id
+             * Format: uuid
+             */
+            source_object_id: string;
+            /**
+             * Source Revision Id
+             * Format: uuid
+             */
+            source_revision_id: string;
+            status: components["schemas"]["PublicIngestionStatus"];
+            /** Status Url */
+            status_url: string;
+            /** Terminal */
+            terminal: boolean;
+            /**
+             * Warning Ids
+             * @default []
+             */
+            warning_ids: string[];
+        };
         /** LivenessResponse */
         LivenessResponse: {
             /**
@@ -2051,6 +2185,120 @@ export interface operations {
             };
         };
     };
+    "ingestion.upload": {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                "X-Upload-Identity"?: string;
+                "X-Filename"?: string;
+                "X-Content-SHA256"?: string;
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+                "text/markdown": string;
+                "text/plain": string;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IngestionUploadResponse"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
     "documents.detail": {
         parameters: {
             query?: never;
@@ -2547,6 +2795,113 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BatchIngestionStatusResponse"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "ingestion.status": {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                run_id: string;
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IngestionStatusResponse"];
                 };
             };
             /** @description Safe request error. */
