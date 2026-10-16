@@ -1404,6 +1404,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "qa_answer_disclosure_records",
         "qa_answer_disclosure_deliveries",
         "feedback_records",
+        "operational_metric_events",
         "idempotency_receipts",
         "initial_workspace_bootstrap",
         "outbox_intents",
@@ -1844,6 +1845,15 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "ck_feedback_records_target_kind",
         "ck_feedback_records_outcome",
         "ck_feedback_records_bounded_text",
+        "pk_operational_metric_events",
+        "uq_operational_metric_events_deduplication",
+        "ck_operational_metric_attempt_number",
+        "ck_operational_metric_duration",
+        "ck_operational_metric_sequence",
+        "ck_operational_metric_currency",
+        "ck_operational_metric_cost",
+        "ck_operational_metric_answer_rate",
+        "ck_operational_metric_usefulness",
     }
     expected_final_constraints |= (
         AUTHORIZATION_DIRECTORY_CONSTRAINTS
@@ -2201,6 +2211,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "pk_qa_answer_disclosure_deliveries",
         "pk_feedback_records",
         "ix_feedback_records_target",
+        "ix_operational_metric_events_window",
+        "ix_operational_metric_events_operation",
         "pk_process_only_operation_lineages",
         "uq_process_only_lineages_scope_id",
         "uq_process_only_lineages_run",
@@ -2224,6 +2236,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "qa_answer_disclosure_records": (True, True),
         "qa_answer_disclosure_deliveries": (True, True),
         "feedback_records": (True, True),
+        "operational_metric_events": (True, True),
         "idempotency_receipts": (True, True),
         "initial_workspace_bootstrap": (True, True),
         "outbox_intents": (True, True),
@@ -2356,6 +2369,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "qa_answer_disclosure_records": (True, True, False, False),
         "qa_answer_disclosure_deliveries": (True, True, False, False),
         "feedback_records": (True, True, False, False),
+        "operational_metric_events": (True, True, False, False),
         "idempotency_receipts": (True, True, False, False),
         "initial_workspace_bootstrap": (False, False, False, False),
         "outbox_intents": (False, True, False, False),
@@ -2556,7 +2570,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                                 "'projection_drifts', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records'))"
+                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events'))"
                     )
                 )
             ).scalars()
@@ -2593,7 +2607,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                             "'projection_drifts', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records')"
+                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events')"
                     )
                 )
             ).mappings()
@@ -2624,7 +2638,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                                 "'projection_drifts', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records')"
+                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events')"
                     )
                 )
             ).scalars()
@@ -2654,7 +2668,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                                 "'projection_drifts', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records')"
+                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events')"
                     )
                 )
             ).scalars()
@@ -2683,7 +2697,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
                                 "'projection_drifts', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
-                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records')"
+                                "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events')"
                     )
                 )
             ).scalars()
@@ -3324,6 +3338,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                             "'qa_disclosure_validation_results', "
                         "'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', "
                         "'feedback_records', "
+                        "'operational_metric_events', "
                         "'initial_workspace_bootstrap', 'outbox_intents', "
                         "'outbox_deliveries', "
                         "'workspace_memberships', 'environment_memberships', "
@@ -3394,6 +3409,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "qa_answer_disclosure_records": (True, True),
             "qa_answer_disclosure_deliveries": (True, True),
             "feedback_records": (True, True),
+            "operational_metric_events": (True, True),
         "idempotency_receipts": (True, True),
         "initial_workspace_bootstrap": (True, True),
         "outbox_intents": (True, True),
@@ -4724,13 +4740,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261030_36_feedback_records.py",
         "20261031_37_processing_commands.py",
         "20261101_38_outbox_delivery_correlation_reference.py",
+        "20261102_39_operational_metrics.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "20261101_39_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
         "revision = '20261101_39'\n"
-        "down_revision = '20261101_38'\n"
+        "down_revision = '20261102_39'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

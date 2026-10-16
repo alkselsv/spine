@@ -41,6 +41,7 @@ from spine.api.qa_stream import (
 from spine.api.parsed_content import install_parsed_content_routes
 from spine.api.processing_commands import install_processing_command_routes
 from spine.api.operational_observations import install_operational_observation_routes
+from spine.api.operational_metrics import install_operational_metrics_routes
 from spine.api.document_lifecycle_commands import (
     install_document_lifecycle_command_routes,
 )
@@ -85,6 +86,7 @@ from spine.application.telemetry import (
     OperationalObservationReader,
     OperationalObservationRegistry,
 )
+from spine.application.telemetry import OperationalMetricsReader
 from spine.application.document_lifecycle import DocumentLifecycleCommandService
 from spine.config import settings
 from spine.ingest.loaders import documents_to_remember_payloads, load_path
@@ -239,6 +241,7 @@ def create_app(
     document_lifecycle_command_service: DocumentLifecycleCommandService | None = None,
     operational_observation_reader: OperationalObservationReader | None = None,
     operational_observer: OperationalObservationEmitter | None = None,
+    operational_metrics_reader: OperationalMetricsReader | None = None,
 ) -> FastAPI:
     """Compose the HTTP API with injectable deterministic diagnostics."""
 
@@ -341,6 +344,11 @@ def create_app(
             install_operational_observation_routes(
                 application,
                 reader=operational_observation_reader,
+            )
+        if operational_metrics_reader is not None:
+            install_operational_metrics_routes(
+                application,
+                reader=operational_metrics_reader,
             )
     add_public_api_route(
         application,

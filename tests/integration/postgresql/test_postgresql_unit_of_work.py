@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, replace
 import hashlib
 import json
@@ -124,6 +124,12 @@ from spine.infrastructure.persistence.postgresql import (
     PostgreSQLPersistence,
     PostgreSQLTransactionStage,
 )
+from spine.infrastructure.persistence.postgresql_operational_metrics import (
+    PostgreSQLOperationalMetricsStore,
+)
+from spine.application.telemetry import OperationalMetricsQuery
+from spine.domain.capabilities.answer_question import AnswerQuestionOutcome
+from spine.domain.metrics import AnswerRateFact, MetricWindow, OperationalMetricEvent, OperationalMeasurement
 from tests.contracts.persistence.adapter import PersistenceAdapter
 from tests.contracts.persistence.ids import synthetic_uuid
 from tests.contracts.persistence.outbox_events import (
@@ -3113,3 +3119,98 @@ async def test_postgresql_answer_question_retry_cancellation_contract(
     postgresql_adapter: PersistenceAdapter,
 ) -> None:
     await contract_qa_retry_cancel(postgresql_adapter)
+
+
+async def test_postgresql_operational_metrics_are_idempotent_retained_and_tenant_scoped(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(37001)
+    environment_id = synthetic_uuid(37002)
+    other_workspace_id = synthetic_uuid(37003)
+    other_environment_id = synthetic_uuid(37004)
+    await persist_idempotency_workspace(postgresql_adapter, workspace_id)
+    await persist_idempotency_environment(postgresql_adapter, workspace_id, environment_id)
+    await persist_idempotency_workspace(postgresql_adapter, other_workspace_id)
+    await persist_idempotency_environment(postgresql_adapter, other_workspace_id, other_environment_id)
+
+    now = datetime(2026, 10, 16, 12, tzinfo=timezone.utc)
+    current = OperationalMetricEvent(
+        event_id=synthetic_uuid(37005),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        source_identity="test.metrics:v1",
+        measurement=OperationalMeasurement.RETRIEVAL_LATENCY,
+        event_at=now - timedelta(minutes=1),
+        deduplication_key="metrics-current",
+        logical_operation_id=synthetic_uuid(37006),
+        terminal=True,
+        duration_ms=17,
+    )
+    expired = current.model_copy(
+        update={
+            "event_id": synthetic_uuid(37007),
+            "event_at": now - timedelta(days=91),
+            "deduplication_key": "metrics-expired",
+            "logical_operation_id": synthetic_uuid(37008),
+        }
+    )
+    async with postgresql_adapter.uow_factory(
+        postgresql_adapter.environment_context(workspace_id, environment_id)
+    ) as uow:
+        store = PostgreSQLOperationalMetricsStore(uow)
+        await store.append(current)
+        await store.append(current)
+        await store.append(expired)
+        await uow.commit()
+
+    metrics_query = OperationalMetricsQuery(
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        window=MetricWindow(
+            start=now - timedelta(hours=1),
+            end=now + timedelta(hours=1),
+        ),
+        measurements=(OperationalMeasurement.RETRIEVAL_LATENCY,),
+    )
+    async with postgresql_adapter.uow_factory(
+        postgresql_adapter.environment_context(workspace_id, environment_id)
+    ) as uow:
+        store = PostgreSQLOperationalMetricsStore(uow)
+        answer_fact = AnswerRateFact(
+            run_id=synthetic_uuid(37009),
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            event_at=now - timedelta(minutes=2),
+            outcome=AnswerQuestionOutcome.ANSWERED,
+            accepted=True,
+            execution_started=True,
+            accepted_evidence=True,
+            user_initiated=True,
+        )
+        await store.append_answer_rate_fact(answer_fact)
+        assert await store.answer_rate_facts(
+            metrics_query.model_copy(update={"measurements": (OperationalMeasurement.ANSWER_RATE,)}),
+            now=now,
+            retention=timedelta(days=90),
+        ) == (answer_fact,)
+        events = await store.query_events(
+            metrics_query,
+            now=now,
+            retention=timedelta(days=90),
+        )
+        assert events == (current,)
+
+    other_query = metrics_query.model_copy(
+        update={
+            "workspace_id": other_workspace_id,
+            "environment_id": other_environment_id,
+        }
+    )
+    async with postgresql_adapter.uow_factory(
+        postgresql_adapter.environment_context(other_workspace_id, other_environment_id)
+    ) as uow:
+        assert await PostgreSQLOperationalMetricsStore(uow).query_events(
+            other_query,
+            now=now,
+            retention=timedelta(days=90),
+        ) == ()

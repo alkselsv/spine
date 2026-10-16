@@ -7,11 +7,13 @@ from sqlalchemy import (
     DateTime,
     Integer,
     MetaData,
+    Numeric,
     PrimaryKeyConstraint,
     String,
     Table,
     Text,
     text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
@@ -996,6 +998,49 @@ feedback_records = Table(
     ),
 )
 
+operational_metric_events = Table(
+    "operational_metric_events",
+    metadata,
+    Column("event_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("source_identity", String(128), nullable=False),
+    Column("measurement", String(128), nullable=False),
+    Column("event_at", DateTime(timezone=True), nullable=False),
+    Column("deduplication_key", String(256), nullable=False),
+    Column("logical_operation_id", PostgreSQLUUID(as_uuid=True)),
+    Column("attempt_id", PostgreSQLUUID(as_uuid=True)),
+    Column("attempt_number", Integer),
+    Column("terminal", Boolean, nullable=False),
+    Column("complete_coverage", Boolean, nullable=False),
+    Column("duration_ms", Integer),
+    Column("sequence_number", BigInteger),
+    Column("source_watermark_at", DateTime(timezone=True)),
+    Column("projection_watermark_at", DateTime(timezone=True)),
+    Column("value", Text),
+    Column("currency", String(3)),
+    Column("answer_outcome", String(64)),
+    Column("accepted", Boolean),
+    Column("execution_started", Boolean),
+    Column("accepted_evidence", Boolean),
+    Column("user_initiated", Boolean),
+    Column("feedback_id", PostgreSQLUUID(as_uuid=True)),
+    Column("feedback_outcome", String(64)),
+    PrimaryKeyConstraint(
+        "workspace_id",
+        "environment_id",
+        "event_id",
+        "measurement",
+        name="pk_operational_metric_events",
+    ),
+    UniqueConstraint(
+        "workspace_id",
+        "environment_id",
+        "deduplication_key",
+        name="uq_operational_metric_events_deduplication",
+    ),
+)
+
 qa_disclosure_validation_results = Table(
     "qa_disclosure_validation_results",
     metadata,
@@ -1106,6 +1151,7 @@ __all__ = [
     "qa_session_versions",
     "qa_message_versions",
     "feedback_records",
+    "operational_metric_events",
     "qa_disclosure_validation_results",
     "qa_answer_disclosure_records",
     "qa_answer_disclosure_deliveries",
