@@ -8,6 +8,7 @@ __pycache__/
 .spine/
 data/incoming/**
 !data/incoming/.gitkeep
+data/private/**
 dist/
 build/
 *.egg-info/
