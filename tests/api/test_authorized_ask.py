@@ -21,6 +21,7 @@ from spine.application.persistence.ask_admission import (
 )
 from spine.application.ask_admission import (
     AskCancellationLifecycle,
+    AskCancellationNotFound,
     AskCancellationStatus,
 )
 from spine.application.persistence.errors import IdempotencyConflictError
@@ -51,8 +52,18 @@ from tests.api.test_authorization import (
     OTHER_ENVIRONMENT_ID,
     OTHER_WORKSPACE_ID,
     WORKSPACE_ID,
+    CONFIGURATION_VERSION,
+    AUTHENTICATION_ALIAS,
+    StaticAuthentication,
+    authorization_entry,
     authorized_app,
 )
+from spine.auth import (
+    AuthenticatedAlias,
+    AuthenticationAlias,
+    InMemoryAuthorizationDirectory,
+)
+from spine.auth.in_memory import AuthorizationRecordState
 from tests.domain.capabilities.test_answer_question_candidate import candidate_output
 
 
@@ -805,6 +816,53 @@ async def test_legacy_pending_cancellation_waits_for_temporal_terminal_result() 
 
 
 @pytest.mark.asyncio
+async def test_cancel_response_does_not_disclose_foreign_run_existence() -> None:
+    unknown_run_id = UUID("40000000-0000-0000-0000-000000000050")
+    foreign_run_id = UUID("40000000-0000-0000-0000-000000000051")
+
+    class ScopedCancellationLookup:
+        def __init__(self) -> None:
+            self.lookups: list[UUID] = []
+
+        async def request_cancellation(self, *, context, run_id: UUID) -> None:
+            del context
+            self.lookups.append(run_id)
+            # The scoped repository maps both an absent run and a run outside
+            # the caller's workspace/environment/subject to this same result.
+            raise AskCancellationNotFound()
+
+    admission = ScopedCancellationLookup()
+    application = authorized_app([])
+    install_authorized_ask_routes(
+        application,
+        service=FakeAskService(answered_result(), []),
+        admission_service=admission,
+    )
+    responses: list[httpx.Response] = []
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        for run_id in (unknown_run_id, foreign_run_id):
+            responses.append(
+                await client.post(
+                    f"/api/v1/ask/{run_id}/cancel",
+                    json={"schema_version": 1},
+                    headers={
+                        **headers(),
+                        "Idempotency-Key": "issue-430-cancel-existence-check",
+                        "Accept": "application/vnd.spine.qa-cancel+json;version=1",
+                    },
+                )
+            )
+
+    assert admission.lookups == [unknown_run_id, foreign_run_id]
+    assert [response.status_code for response in responses] == [404, 404]
+    assert responses[0].json() == responses[1].json()
+    assert str(unknown_run_id) not in responses[0].text
+    assert str(foreign_run_id) not in responses[1].text
+
+
+@pytest.mark.asyncio
 async def test_authorized_ask_denies_other_workspace_without_calling_service() -> None:
     service = FakeAskService(answered_result(), [])
     application = app(service)
@@ -819,6 +877,114 @@ async def test_authorized_ask_denies_other_workspace_without_calling_service() -
     assert response.status_code == 403
     assert service.calls == []
     assert "Which policy applies" not in response.text
+
+
+@pytest.mark.parametrize("denied_scope", ("workspace", "environment", "subject"))
+async def test_durable_ask_denial_isolated_by_workspace_environment_and_subject_without_leaks(
+    denied_scope: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    other_alias = AuthenticationAlias(
+        issuer=AUTHENTICATION_ALIAS.issuer,
+        subject="synthetic-unmembered-subject",
+    )
+    authorized_entry = authorization_entry()
+    if denied_scope == "workspace":
+        denied_entry = authorized_entry
+        authenticated_alias = AUTHENTICATION_ALIAS
+        denied_workspace_id = OTHER_WORKSPACE_ID
+        denied_environment_id = OTHER_ENVIRONMENT_ID
+    elif denied_scope == "subject":
+        denied_entry = authorized_entry.model_copy(
+            update={
+                "alias": other_alias,
+                "canonical_human_identity_id": UUID("10000000-0000-0000-0000-000000000099"),
+                "workspace_membership_state": AuthorizationRecordState.MISSING,
+            }
+        )
+        authenticated_alias = other_alias
+    else:
+        denied_entry = authorized_entry.model_copy(
+            update={"environment_membership_state": AuthorizationRecordState.MISSING}
+        )
+        authenticated_alias = AUTHENTICATION_ALIAS
+        denied_workspace_id = WORKSPACE_ID
+        denied_environment_id = OTHER_ENVIRONMENT_ID
+    if denied_scope == "subject":
+        denied_workspace_id = WORKSPACE_ID
+        denied_environment_id = ENVIRONMENT_ID
+
+    authorization_directory = InMemoryAuthorizationDirectory(entries=(denied_entry,))
+    service = FakeAdmissionService(
+        AskAdmissionResult(
+            command_id=COMMAND_ID,
+            session_id=SESSION_ID,
+            message_id=MESSAGE_ID,
+            run_id=RUN_ID,
+            dispatch_event_id=UUID("70000000-0000-0000-0000-000000000005"),
+            replay=False,
+        )
+    )
+    application = authorized_app(
+        [],
+        authentication=StaticAuthentication(
+            AuthenticatedAlias(
+                alias=authenticated_alias,
+                authentication_configuration_version=CONFIGURATION_VERSION,
+            )
+        ),
+        directory=authorization_directory,
+    )
+    observer_registry = OperationalObservationRegistry()
+    observation_sink = RecordingOperationalObservationSink(observer_registry)
+    install_authorized_ask_routes(
+        application,
+        service=FakeAskService(answered_result(), []),
+        admission_service=service,
+        operational_observer=OperationalObservationEmitter(
+            registry=observer_registry,
+            sink=observation_sink,
+            policy=AlwaysRetainPolicy(),
+            clock=lambda: NOW,
+            observation_id_source=lambda: UUID(int=901),
+        ),
+    )
+    protected_question = "confidential subject-specific question"
+    protected_token = "protected-subject-token"
+    request_headers = {
+        **headers(denied_workspace_id, denied_environment_id),
+        "Authorization": f"Bearer {protected_token}",
+        "Idempotency-Key": f"issue-430-denied-{denied_scope}",
+    }
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/v1/ask/admissions",
+            json={
+                "schema_version": 1,
+                "session_id": str(SESSION_ID),
+                "question": protected_question,
+            },
+            headers=request_headers,
+        )
+
+    diagnostic_events = application.state.diagnostic_sink.events
+    captured = "\n".join(
+        [
+            response.text,
+            caplog.text,
+            *(event.model_dump_json() for event in diagnostic_events),
+            *(item.model_dump_json() for item in observation_sink.observations),
+        ]
+    )
+    assert response.status_code == 403
+    assert service.calls == []
+    assert observation_sink.observations == ()
+    assert protected_question not in captured
+    assert protected_token not in captured
+    assert "provider" not in captured.lower()
 
 
 @pytest.mark.asyncio

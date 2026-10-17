@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, replace
 import hashlib
 import json
+import subprocess
+import sys
 from types import SimpleNamespace
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -15,7 +17,7 @@ import pytest_asyncio
 from pydantic import BaseModel, ConfigDict, SecretStr
 from sqlalchemy import event, text
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -57,6 +59,12 @@ from spine.application.persistence.idempotency import (
     IdempotencyReplay,
     OwnedIdempotencyClaim,
 )
+from spine.application.persistence.ask_admission import (
+    AskAdmissionCommand,
+    QA_ASK_ADMISSION_OPERATION,
+    QA_ASK_CANCELLATION_EVENT_TYPE,
+)
+from spine.application.persistence.command_digest import digest_command
 from spine.application.persistence.boundary import CanonicalBoundaryCaptureCommand
 from spine.application.persistence.projection import ProjectionRunCommand
 from spine.application.persistence.outbox import OpaqueObjectReference
@@ -77,7 +85,7 @@ from spine.domain.audit import (
     CanonicalTransitionAuditPayload,
     CommandAuditPayload,
 )
-from spine.domain.common import ContextOrigin, EnvironmentKind
+from spine.domain.common import ActorKind, ActorRef, ContextOrigin, EnvironmentKind
 from spine.domain.context_bundles import (
     ContextBundle,
     ContextBundleEvidenceReference,
@@ -129,7 +137,16 @@ from spine.infrastructure.persistence.postgresql_operational_metrics import (
 )
 from spine.application.telemetry import OperationalMetricsQuery
 from spine.domain.capabilities.answer_question import AnswerQuestionOutcome
+from spine.domain.capabilities.answer_question_runs import (
+    AnswerQuestionAttempt,
+    AnswerQuestionAttemptEvent,
+    AnswerQuestionAttemptEventKind,
+    AnswerQuestionAttemptState,
+    AnswerQuestionUsage,
+)
 from spine.domain.metrics import AnswerRateFact, MetricWindow, OperationalMetricEvent, OperationalMeasurement
+from spine.domain.capabilities import AnswerDisclosureRecord
+from spine.domain.qa_sessions import QAMessage, QAMessageState, QASession, QASessionStatus
 from tests.contracts.persistence.adapter import PersistenceAdapter
 from tests.contracts.persistence.ids import synthetic_uuid
 from tests.contracts.persistence.outbox_events import (
@@ -227,6 +244,12 @@ from tests.contracts.persistence.test_context_profile_repository_contract import
     test_context_profile_repository_retries_after_uncommitted_create_failure as contract_context_profile_retry,
 )
 from tests.contracts.persistence.test_answer_question_run_repository_contract import (
+    exercise_answer_question_run_completion_and_cancellation_cas,
+    _pin as qa_execution_pin,
+    persist_scope as persist_qa_scope,
+    qa_context,
+    run_command as qa_run_command,
+    run_record as qa_run_record,
     test_answer_question_attempt_rejects_unresolvable_context_bundle_reference as contract_qa_context_bundle,
     test_answer_question_attempt_concurrent_completion_has_one_terminal_winner as contract_qa_concurrent_completion,
     test_answer_question_partial_failure_retry_and_cancellation_are_replayable as contract_qa_retry_cancel,
@@ -3154,10 +3177,1006 @@ async def test_postgresql_ask_admission_replays_persisted_run_message_and_reject
     await exercise_ask_admission_contract(postgresql_adapter)
 
 
+async def test_postgresql_ask_admission_replays_after_application_process_recreation(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    assert postgresql_adapter.ingestion_context is not None
+    workspace_id = synthetic_uuid(43200)
+    environment_id = synthetic_uuid(43201)
+    session_id = synthetic_uuid(43202)
+    subject_id = synthetic_uuid(959)
+    now = datetime(2026, 10, 17, tzinfo=timezone.utc)
+
+    async with postgresql_adapter.uow_factory(
+        postgresql_adapter.workspace_context(workspace_id)
+    ) as uow:
+        await uow.workspaces.add(
+            Workspace(id=workspace_id, slug="ask-recovery", display_name="Ask recovery")
+        )
+        await uow.environments.add(
+            Environment(
+                id=environment_id,
+                workspace_id=workspace_id,
+                kind=EnvironmentKind.PRODUCTION,
+                display_name="Production",
+            )
+        )
+        await uow.commit()
+
+    session_context = postgresql_adapter.ingestion_context(
+        workspace_id, environment_id, "qa_sessions"
+    )
+    async with postgresql_adapter.uow_factory(session_context) as uow:
+        await uow.qa_sessions.create_session(
+            QASession(
+                session_id=session_id,
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                subject_id=subject_id,
+                created_at=now,
+                updated_at=now,
+                version=1,
+                status="active",
+            ),
+            command_id=synthetic_uuid(43203),
+            idempotency_key=IdempotencyKey("issue-430-process-restart-session"),
+            digest=digest_command(
+                operation=PersistenceOperation("qa_sessions"),
+                operation_schema_version=1,
+                payload={"session_id": session_id, "subject_id": subject_id},
+            ),
+        )
+        await uow.commit()
+
+    ask_context = postgresql_adapter.ingestion_context(
+        workspace_id, environment_id, QA_ASK_ADMISSION_OPERATION.value
+    )
+    command = AskAdmissionCommand.create(
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        session_id=session_id,
+        subject=ActorRef(kind=ActorKind.SERVICE, id=subject_id),
+        environment=EnvironmentKind.PRODUCTION,
+        question="Restart-safe question",
+        idempotency_key=IdempotencyKey("issue-430-process-restart-admission"),
+    )
+    async with postgresql_adapter.uow_factory(ask_context) as uow:
+        first = await uow.ask_admissions.admit(command)
+        await uow.commit()
+
+    async with postgresql_adapter.uow_factory(ask_context) as uow:
+        admitted_run = await uow.answer_question_runs.resolve_run(first.run_id)
+        assert admitted_run is not None
+        cancellation_intent = await uow.answer_question_runs.request_cancellation(
+            run_id=first.run_id,
+            requested_at=admitted_run.created_at + timedelta(seconds=1),
+        )
+        await uow.commit()
+
+    # A subprocess reconstructs trusted context and persistence from durable
+    # configuration after the admission and cancellation commits.
+    replay_script = r'''
+import asyncio, json, sys
+from uuid import UUID
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from spine.application.persistence.ask_admission import AskAdmissionCommand, QA_ASK_ADMISSION_OPERATION
+from spine.application.persistence.context import EnvironmentScope, PersistenceOperation, PersistencePurpose
+from spine.application.persistence.idempotency import IdempotencyKey
+from spine.domain.common import ActorKind, ActorRef, EnvironmentKind
+from spine.infrastructure.persistence.contexts import TrustedContextBoundary
+from spine.infrastructure.persistence.postgresql import PostgreSQLPersistence
+from tests.contracts.persistence.outbox_events import create_outbox_event_registry
+from tests.contracts.persistence.ids import synthetic_uuid
+
+async def main():
+    url, workspace_id, environment_id, session_id, subject_id = sys.argv[1:]
+    workspace_id, environment_id, session_id, subject_id = map(UUID, (workspace_id, environment_id, session_id, subject_id))
+    engine = create_async_engine(url, pool_pre_ping=True, connect_args={"options": "-csearch_path=spine,public"})
+    boundary = TrustedContextBoundary.for_testing(issuer_id=synthetic_uuid(950), secret=b"issue-45-postgresql-contract-secret")
+    persistence = PostgreSQLPersistence(session_factory=async_sessionmaker(engine, expire_on_commit=False, autoflush=False), context_verifier=boundary, outbox_events=create_outbox_event_registry())
+    context = boundary.worker(scope=EnvironmentScope(workspace_id=workspace_id, environment_id=environment_id), service_principal_id=synthetic_uuid(959), purpose=PersistencePurpose("contract_test"), operation=PersistenceOperation(QA_ASK_ADMISSION_OPERATION.value), trace_id=synthetic_uuid(960))
+    command = AskAdmissionCommand.create(workspace_id=workspace_id, environment_id=environment_id, session_id=session_id, subject=ActorRef(kind=ActorKind.SERVICE, id=subject_id), environment=EnvironmentKind.PRODUCTION, question="Restart-safe question", idempotency_key=IdempotencyKey("issue-430-process-restart-admission"))
+    async with persistence.uow_factory(context) as uow:
+        replay = await uow.ask_admissions.admit(command)
+        run = await uow.answer_question_runs.resolve_run(replay.run_id)
+        await uow.commit()
+    print(json.dumps({"command_id": str(replay.command_id), "message_id": str(replay.message_id), "run_id": str(replay.run_id), "replay": replay.replay, "cancellation_requested_at": run.cancellation_requested_at.isoformat() if run and run.cancellation_requested_at else None}))
+    await engine.dispose()
+
+asyncio.run(main())
+'''
+    child = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            replay_script,
+            postgresql_contract_database.runtime_url.get_secret_value(),
+            str(workspace_id),
+            str(environment_id),
+            str(session_id),
+            str(subject_id),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert child.returncode == 0, child.stderr
+    child_replay = json.loads(child.stdout)
+
+    # This second adapter reconstruction independently checks the message and
+    # outbox rows without relying on the subprocess's in-memory objects.
+    restarted_engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        pool_pre_ping=True,
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    restarted_boundary = TrustedContextBoundary.for_testing(
+        issuer_id=synthetic_uuid(950),
+        secret=b"issue-45-postgresql-contract-secret",
+    )
+    restarted_persistence = PostgreSQLPersistence(
+        session_factory=async_sessionmaker(
+            restarted_engine,
+            expire_on_commit=False,
+            autoflush=False,
+        ),
+        context_verifier=restarted_boundary,
+        outbox_events=create_outbox_event_registry(),
+    )
+    try:
+        async with restarted_persistence.uow_factory(ask_context) as uow:
+            replay = await uow.ask_admissions.admit(command)
+            run = await uow.answer_question_runs.resolve_run(replay.run_id)
+            message = await uow.qa_sessions.resolve_message(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                session_id=session_id,
+                message_id=replay.message_id,
+            )
+            await uow.commit()
+    finally:
+        await restarted_engine.dispose()
+
+    inspection_engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    try:
+        async with inspection_engine.connect() as connection:
+            persisted_payload = await connection.scalar(
+                text(
+                    "SELECT payload::text FROM spine.outbox_intents "
+                    "WHERE event_id = :event_id"
+                ),
+                {"event_id": first.dispatch_event_id},
+            )
+            cancellation_payload = await connection.scalar(
+                text(
+                    "SELECT payload::text FROM spine.outbox_intents "
+                    "WHERE event_type = :event_type "
+                    "AND payload ->> 'run_id' = :run_id"
+                ),
+                {
+                    "event_type": QA_ASK_CANCELLATION_EVENT_TYPE,
+                    "run_id": str(first.run_id),
+                },
+            )
+    finally:
+        await inspection_engine.dispose()
+
+    assert child_replay["replay"] is True
+    assert tuple(UUID(child_replay[name]) for name in ("command_id", "message_id", "run_id")) == (
+        first.command_id,
+        first.message_id,
+        first.run_id,
+    )
+    assert replay.dispatch_event_id == first.dispatch_event_id
+    assert run.state.value == "admitted"
+    assert message is not None
+    assert message.state is QAMessageState.PENDING
+    assert message.question == "Restart-safe question"
+    assert cancellation_intent.cancellation_requested_at == admitted_run.created_at + timedelta(seconds=1)
+    assert run.cancellation_requested_at == cancellation_intent.cancellation_requested_at
+    assert child_replay["cancellation_requested_at"] == cancellation_intent.cancellation_requested_at.isoformat()
+    assert persisted_payload is not None
+    assert "Restart-safe question" not in persisted_payload
+    assert cancellation_payload is not None
+    assert str(first.run_id) in cancellation_payload
+    assert "Restart-safe question" not in cancellation_payload
+
+
+async def test_postgresql_terminal_persistence_retries_after_commit_failure(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    workspace_id = synthetic_uuid(43400)
+    environment_id = synthetic_uuid(43401)
+    run = qa_run_record(
+        workspace_id,
+        environment_id,
+        run_id=synthetic_uuid(43402),
+        created_at=datetime(2026, 10, 17, tzinfo=timezone.utc),
+    )
+    command = qa_run_command(run)
+    context = qa_context(postgresql_adapter, workspace_id, environment_id)
+    await persist_qa_scope(postgresql_adapter, workspace_id, environment_id)
+    started_at = datetime(2026, 10, 17, tzinfo=timezone.utc)
+    attempt = AnswerQuestionAttempt.start(
+        attempt_id=synthetic_uuid(43403),
+        run=run,
+        attempt_number=1,
+        execution_pin=qa_execution_pin(workspace_id, environment_id),
+        input_artifact_ids=run.input_artifact_ids,
+        diagnostic_context=run.diagnostic_context,
+        started_at=started_at,
+    )
+    completed_attempt = attempt.complete(
+        state=AnswerQuestionAttemptState.SUCCEEDED,
+        outcome=AnswerQuestionOutcome.ABSTAINED,
+        usage=AnswerQuestionUsage(),
+        terminal_event=AnswerQuestionAttemptEvent(
+            event_id=synthetic_uuid(43404),
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            environment=EnvironmentKind.PRODUCTION,
+            kind=AnswerQuestionAttemptEventKind.COMPLETED,
+            occurred_at=started_at + timedelta(minutes=1),
+        ),
+    )
+    async with postgresql_adapter.uow_factory(context) as uow:
+        await uow.answer_question_runs.create_run(command)
+        await uow.answer_question_runs.start_attempt(attempt)
+        await uow.answer_question_runs.complete_attempt(completed_attempt)
+        await uow.commit()
+    async with postgresql_adapter.uow_factory(context) as uow:
+        persisted_run = await uow.answer_question_runs.resolve_run(run.run_id)
+        persisted_attempts = await uow.answer_question_runs.list_attempts(run.run_id)
+    assert persisted_run is not None
+    persisted_attempt = persisted_attempts[0]
+    terminal_run = persisted_run.complete(
+        outcome=AnswerQuestionOutcome.ABSTAINED,
+        final_attempt_id=persisted_attempt.attempt_id,
+        completed_at=persisted_attempt.completed_at,
+    )
+
+    failed_engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    failed_session_factory = async_sessionmaker(
+        failed_engine,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+    failed_persistence = PostgreSQLPersistence(
+        session_factory=lambda: FailureInjectingSession(
+            failed_session_factory(), "during_commit"
+        ),  # type: ignore[arg-type]
+        context_verifier=TrustedContextBoundary.for_testing(
+            issuer_id=synthetic_uuid(950),
+            secret=b"issue-45-postgresql-contract-secret",
+        ),
+        outbox_events=create_outbox_event_registry(),
+    )
+    try:
+        with pytest.raises(UnexpectedPersistenceError):
+            async with failed_persistence.uow_factory(context) as uow:
+                await uow.answer_question_runs.complete_run(terminal_run)
+                await uow.commit()
+    finally:
+        await failed_engine.dispose()
+
+    async with postgresql_adapter.uow_factory(context) as uow:
+        after_failed_commit = await uow.answer_question_runs.resolve_run(run.run_id)
+    assert after_failed_commit.state.value == "running"
+
+    restarted_engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        pool_pre_ping=True,
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    restarted_persistence = PostgreSQLPersistence(
+        session_factory=async_sessionmaker(
+            restarted_engine,
+            expire_on_commit=False,
+            autoflush=False,
+        ),
+        context_verifier=TrustedContextBoundary.for_testing(
+            issuer_id=synthetic_uuid(950),
+            secret=b"issue-45-postgresql-contract-secret",
+        ),
+        outbox_events=create_outbox_event_registry(),
+    )
+    try:
+        async with restarted_persistence.uow_factory(context) as uow:
+            first_persist = await uow.answer_question_runs.complete_run(terminal_run)
+            await uow.commit()
+        async with restarted_persistence.uow_factory(context) as uow:
+            replay = await uow.answer_question_runs.complete_run(terminal_run)
+            persisted = await uow.answer_question_runs.resolve_run(run.run_id)
+    finally:
+        await restarted_engine.dispose()
+
+    assert first_persist == terminal_run
+    assert replay == terminal_run
+    assert persisted == terminal_run
+
+
+async def test_postgresql_terminal_retry_keeps_run_message_and_accepted_disclosure_consistent(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    from spine.domain.agents import AgentResult, AgentRunStatus
+    from spine.domain.capabilities import AgentResultRef
+    from spine.domain.context_bundles import ContextBundleRef
+    from tests.api.test_authorized_ask import (
+        ATTEMPT_ID,
+        ENVIRONMENT_ID as ASK_ENVIRONMENT_ID,
+        MESSAGE_ID,
+        RUN_ID,
+        SESSION_ID,
+        WORKSPACE_ID as ASK_WORKSPACE_ID,
+        answered_result,
+    )
+
+    accepted = answered_result().accepted_answer
+    assert accepted is not None
+    workspace_id = ASK_WORKSPACE_ID
+    environment_id = ASK_ENVIRONMENT_ID
+    context = qa_context(postgresql_adapter, workspace_id, environment_id)
+    assert postgresql_adapter.ingestion_context is not None
+    session_context = postgresql_adapter.ingestion_context(
+        workspace_id, environment_id, "qa_sessions"
+    )
+    await persist_qa_scope(postgresql_adapter, workspace_id, environment_id)
+    now = datetime(2026, 10, 17, tzinfo=timezone.utc)
+    profile = context_profile(
+        workspace_id,
+        environment_id,
+        profile_id=synthetic_uuid(43423),
+    )
+    profile_ref = ContextProfileRef(
+        profile_id=profile.profile_id,
+        profile_version=profile.profile_version,
+        profile_digest=profile.profile_digest,
+    )
+    bundle = _scoped_context_bundle(
+        workspace_id,
+        environment_id,
+        profile_ref,
+        run_id=RUN_ID,
+        attempt_id=ATTEMPT_ID,
+        idempotency_key="issue-430-terminal-retry-context",
+        request_id=synthetic_uuid(43424),
+    )
+    run = qa_run_record(
+        workspace_id,
+        environment_id,
+        run_id=RUN_ID,
+        created_at=now,
+    )
+    attempt = AnswerQuestionAttempt.start(
+        attempt_id=ATTEMPT_ID,
+        run=run,
+        attempt_number=1,
+        execution_pin=qa_execution_pin(workspace_id, environment_id),
+        input_artifact_ids=run.input_artifact_ids,
+        diagnostic_context=run.diagnostic_context,
+        started_at=now,
+    )
+    completed_attempt = attempt.complete(
+        state=AnswerQuestionAttemptState.SUCCEEDED,
+        outcome=AnswerQuestionOutcome.ANSWERED,
+        context_bundle_ref=ContextBundleRef(
+            bundle_id=bundle.bundle_id,
+            bundle_version=bundle.bundle_version,
+            bundle_digest=bundle.bundle_digest,
+        ),
+        output_artifact_ids=(synthetic_uuid(43421),),
+        agent_result_ref=AgentResultRef(result_id=synthetic_uuid(43422)),
+        agent_result=AgentResult(
+            status=AgentRunStatus.SUCCEEDED,
+            output_artifact_ids=(synthetic_uuid(43421),),
+        ),
+        usage=AnswerQuestionUsage(),
+        terminal_event=AnswerQuestionAttemptEvent(
+            event_id=synthetic_uuid(43414),
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            environment=EnvironmentKind.PRODUCTION,
+            kind=AnswerQuestionAttemptEventKind.COMPLETED,
+            occurred_at=now + timedelta(minutes=1),
+        ),
+    )
+    terminal_run = run.complete(
+        outcome=AnswerQuestionOutcome.ANSWERED,
+        final_attempt_id=attempt.attempt_id,
+        output_artifact_ids=completed_attempt.output_artifact_ids,
+        completed_at=completed_attempt.completed_at,
+    )
+    session = QASession(
+        session_id=SESSION_ID,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        subject_id=synthetic_uuid(43415),
+        created_at=now,
+        updated_at=now,
+        version=1,
+        status=QASessionStatus.ACTIVE,
+    )
+    message = QAMessage(
+        message_id=MESSAGE_ID,
+        session_id=SESSION_ID,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        version=1,
+        ordinal=1,
+        trace_id=run.diagnostic_context.trace_id,
+        run_id=RUN_ID,
+        question="Which policy applies?",
+        state=QAMessageState.RUNNING,
+        created_at=now,
+        updated_at=now,
+    )
+    disclosure = AnswerDisclosureRecord(
+        request_id=synthetic_uuid(43416),
+        request_digest="a" * 64,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        run_id=RUN_ID,
+        attempt_id=ATTEMPT_ID,
+        outcome=AnswerQuestionOutcome.ANSWERED,
+        validation=accepted.validation,
+        accepted_answer=accepted,
+        created_at=now + timedelta(minutes=1),
+    )
+    session_digest = digest_command(
+        operation=PersistenceOperation("qa_sessions"),
+        operation_schema_version=1,
+        payload={"session_id": SESSION_ID, "subject_id": session.subject_id},
+    )
+    message_digest = digest_command(
+        operation=PersistenceOperation("qa_sessions"),
+        operation_schema_version=1,
+        payload={"session_id": SESSION_ID, "message_id": MESSAGE_ID, "run_id": RUN_ID},
+    )
+    completion_digest = digest_command(
+        operation=PersistenceOperation("qa_sessions"),
+        operation_schema_version=1,
+        payload={
+            "session_id": SESSION_ID,
+            "message_id": MESSAGE_ID,
+            "answer": accepted.answer.text,
+            "outcome": AnswerQuestionOutcome.ANSWERED.value,
+        },
+    )
+
+    async with postgresql_adapter.uow_factory(context) as uow:
+        await uow.context_profiles.create(profile)
+        await uow.context_bundles.create(bundle)
+        await uow.answer_question_runs.create_run(qa_run_command(run))
+        await uow.answer_question_runs.start_attempt(attempt)
+        await uow.answer_question_runs.complete_attempt(completed_attempt)
+        await uow.commit()
+    async with postgresql_adapter.uow_factory(context) as uow:
+        persisted_running_run = await uow.answer_question_runs.resolve_run(RUN_ID)
+        persisted_attempts = await uow.answer_question_runs.list_attempts(RUN_ID)
+    assert persisted_running_run is not None
+    persisted_attempt = persisted_attempts[0]
+    terminal_run = persisted_running_run.complete(
+        outcome=AnswerQuestionOutcome.ANSWERED,
+        final_attempt_id=persisted_attempt.attempt_id,
+        output_artifact_ids=persisted_attempt.output_artifact_ids,
+        completed_at=persisted_attempt.completed_at,
+    )
+    async with postgresql_adapter.uow_factory(session_context) as uow:
+        await uow.qa_sessions.create_session(
+            session,
+            command_id=synthetic_uuid(43417),
+            idempotency_key=IdempotencyKey("issue-430-terminal-session"),
+            digest=session_digest,
+        )
+        await uow.qa_sessions.create_pending_message(
+            message,
+            command_id=synthetic_uuid(43418),
+            idempotency_key=IdempotencyKey("issue-430-terminal-message"),
+            digest=message_digest,
+        )
+        await uow.commit()
+
+    failed_engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    failed_session_factory = async_sessionmaker(
+        failed_engine, expire_on_commit=False, autoflush=False
+    )
+    failed_boundary = TrustedContextBoundary.for_testing(
+        issuer_id=synthetic_uuid(950),
+        secret=b"issue-45-postgresql-contract-secret",
+    )
+    failed_context = failed_boundary.worker(
+        scope=EnvironmentScope(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+        ),
+        service_principal_id=synthetic_uuid(959),
+        purpose=PersistencePurpose("contract_test"),
+        operation=PersistenceOperation("qa_sessions"),
+        trace_id=synthetic_uuid(960),
+    )
+    failed_persistence = PostgreSQLPersistence(
+        session_factory=lambda: FailureInjectingSession(
+            failed_session_factory(), "during_commit"
+        ),  # type: ignore[arg-type]
+        context_verifier=failed_boundary,
+        outbox_events=create_outbox_event_registry(),
+    )
+    try:
+        with pytest.raises(UnexpectedPersistenceError):
+            async with failed_persistence.uow_factory(failed_context) as uow:
+                await uow.answer_question_runs.complete_run(terminal_run)
+                await uow.answer_disclosures.save(disclosure)
+                await uow.qa_sessions.complete_message(
+                    workspace_id=workspace_id,
+                    environment_id=environment_id,
+                    session_id=SESSION_ID,
+                    message_id=MESSAGE_ID,
+                    answer=accepted.answer.text,
+                    outcome=AnswerQuestionOutcome.ANSWERED,
+                    cancelled=False,
+                    completed_at=completed_attempt.completed_at,
+                    command_id=synthetic_uuid(43419),
+                    idempotency_key=IdempotencyKey("issue-430-terminal-message-result"),
+                    disclosure_dependencies=None,
+                    digest=completion_digest,
+                )
+                await uow.commit()
+    finally:
+        await failed_engine.dispose()
+
+    async with postgresql_adapter.uow_factory(session_context) as uow:
+        after_failure_run = await uow.answer_question_runs.resolve_run(RUN_ID)
+        after_failure_message = await uow.qa_sessions.resolve_message(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            session_id=SESSION_ID,
+            message_id=MESSAGE_ID,
+        )
+        after_failure_disclosure = await uow.answer_disclosures.resolve(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            request_id=disclosure.request_id,
+        )
+    receipt_engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    try:
+        async with receipt_engine.connect() as connection:
+            async with connection.begin():
+                await connection.execute(
+                    text("SELECT set_config('spine.workspace_id', :value, true)"),
+                    {"value": str(workspace_id)},
+                )
+                await connection.execute(
+                    text("SELECT set_config('spine.environment_id', :value, true)"),
+                    {"value": str(environment_id)},
+                )
+                failed_receipt = await connection.execute(
+                    text(
+                        "SELECT receipt_id FROM spine.idempotency_receipts "
+                        "WHERE workspace_id = :workspace_id "
+                        "AND environment_id = :environment_id "
+                        "AND operation_name = 'qa_sessions' "
+                        "AND idempotency_key = 'issue-430-terminal-message-result'"
+                    ),
+                    {
+                        "workspace_id": workspace_id,
+                        "environment_id": environment_id,
+                    },
+                )
+                assert failed_receipt.first() is None
+    finally:
+        await receipt_engine.dispose()
+    assert after_failure_run is not None and after_failure_run.state.value == "running"
+    assert after_failure_message is not None and after_failure_message.state is QAMessageState.RUNNING
+    assert after_failure_disclosure is None
+
+    async with postgresql_adapter.uow_factory(session_context) as uow:
+        await uow.answer_question_runs.complete_run(terminal_run)
+        await uow.answer_disclosures.save(disclosure)
+        await uow.qa_sessions.complete_message(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            session_id=SESSION_ID,
+            message_id=MESSAGE_ID,
+            answer=accepted.answer.text,
+            outcome=AnswerQuestionOutcome.ANSWERED,
+            cancelled=False,
+            completed_at=completed_attempt.completed_at,
+            command_id=synthetic_uuid(43419),
+            idempotency_key=IdempotencyKey("issue-430-terminal-message-result"),
+            disclosure_dependencies=None,
+            digest=completion_digest,
+        )
+        await uow.commit()
+    async with postgresql_adapter.uow_factory(session_context) as uow:
+        replay_result = await uow.qa_sessions.complete_message(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            session_id=SESSION_ID,
+            message_id=MESSAGE_ID,
+            answer=accepted.answer.text,
+            outcome=AnswerQuestionOutcome.ANSWERED,
+            cancelled=False,
+            completed_at=completed_attempt.completed_at,
+            command_id=synthetic_uuid(43419),
+            idempotency_key=IdempotencyKey("issue-430-terminal-message-result"),
+            disclosure_dependencies=None,
+            digest=completion_digest,
+        )
+        replay_receipt = await uow.idempotency.claim(
+            operation_schema_version=1,
+            key=IdempotencyKey("issue-430-terminal-message-result"),
+            digest=completion_digest,
+        )
+        await uow.commit()
+    async with postgresql_adapter.uow_factory(session_context) as uow:
+        persisted_run = await uow.answer_question_runs.resolve_run(RUN_ID)
+        persisted_message = await uow.qa_sessions.resolve_message(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            session_id=SESSION_ID,
+            message_id=MESSAGE_ID,
+        )
+        persisted_disclosure = await uow.answer_disclosures.resolve_for_attempt(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            run_id=RUN_ID,
+            attempt_id=ATTEMPT_ID,
+        )
+
+    assert persisted_run == terminal_run
+    assert persisted_message is not None
+    assert persisted_message.state is QAMessageState.TERMINAL
+    assert persisted_message.run_id == persisted_run.run_id
+    assert persisted_message.terminal_outcome is persisted_run.outcome
+    assert persisted_message.answer == accepted.answer.text
+    assert persisted_disclosure == disclosure
+    assert persisted_disclosure.accepted_answer == accepted
+    assert replay_result.value == persisted_message
+    assert replay_result.replay is True
+    assert isinstance(replay_receipt, IdempotencyReplay)
+    assert replay_receipt.result.result_id == MESSAGE_ID
+
+    receipt_engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    try:
+        async with receipt_engine.connect() as connection:
+            async with connection.begin():
+                await connection.execute(
+                    text("SELECT set_config('spine.workspace_id', :value, true)"),
+                    {"value": str(workspace_id)},
+                )
+                await connection.execute(
+                    text("SELECT set_config('spine.environment_id', :value, true)"),
+                    {"value": str(environment_id)},
+                )
+                persisted_receipts = await connection.execute(
+                    text(
+                        "SELECT receipt_id, result_id FROM spine.idempotency_receipts "
+                        "WHERE workspace_id = :workspace_id "
+                        "AND environment_id = :environment_id "
+                        "AND operation_name = 'qa_sessions' "
+                        "AND idempotency_key = 'issue-430-terminal-message-result'"
+                    ),
+                    {
+                        "workspace_id": workspace_id,
+                        "environment_id": environment_id,
+                    },
+                )
+                receipt_rows = persisted_receipts.all()
+    finally:
+        await receipt_engine.dispose()
+    assert len(receipt_rows) == 1
+    assert receipt_rows[0].result_id == MESSAGE_ID
+
+    immutable_engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    try:
+        async with immutable_engine.connect() as connection:
+            with pytest.raises(DBAPIError, match="append-only"):
+                async with connection.begin():
+                    await connection.execute(
+                        text("SELECT set_config('spine.workspace_id', :value, true)"),
+                        {"value": str(workspace_id)},
+                    )
+                    await connection.execute(
+                        text("SELECT set_config('spine.environment_id', :value, true)"),
+                        {"value": str(environment_id)},
+                    )
+                    await connection.execute(
+                        text(
+                            "UPDATE spine.qa_message_versions SET version = version "
+                            "WHERE workspace_id = :workspace_id "
+                            "AND environment_id = :environment_id AND message_id = :message_id"
+                        ),
+                        {
+                            "workspace_id": workspace_id,
+                            "environment_id": environment_id,
+                            "message_id": MESSAGE_ID,
+                        },
+                    )
+    finally:
+        await immutable_engine.dispose()
+
+
 async def test_postgresql_answer_question_retry_cancellation_contract(
     postgresql_adapter: PersistenceAdapter,
 ) -> None:
     await contract_qa_retry_cancel(postgresql_adapter)
+
+
+@pytest.mark.parametrize("first_winner", ("completion", "cancellation"))
+async def test_postgresql_ask_completion_cancellation_cas_keeps_first_terminal_winner(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+    first_winner: str,
+) -> None:
+    inspector = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+    )
+
+    async def wait_until_second_writer_blocked() -> None:
+        try:
+            async with inspector.connect() as connection:
+                for _ in range(200):
+                    blocked_writers = await connection.scalar(
+                        text(
+                            "SELECT count(*) FROM pg_stat_activity AS activity "
+                            "WHERE activity.query ILIKE '%answer_question_runs%' "
+                            "AND cardinality(pg_blocking_pids(activity.pid)) > 0"
+                        )
+                    )
+                    if blocked_writers:
+                        return
+                    await asyncio.sleep(0.025)
+                activity = await connection.execute(
+                    text(
+                        "SELECT pid, usename, state, wait_event_type, wait_event, query "
+                        "FROM pg_stat_activity WHERE datname = current_database()"
+                    )
+                )
+                pytest.fail(
+                    "second PostgreSQL terminal writer never blocked on the run row: "
+                    f"{activity.fetchall()}"
+                )
+        finally:
+            await inspector.dispose()
+
+    await exercise_answer_question_run_completion_and_cancellation_cas(
+        postgresql_adapter,
+        first_winner,
+        wait_until_second_writer_blocked,
+    )
+
+
+async def test_temporal_retry_after_terminal_commit_failure_persists_one_postgresql_winner(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    from temporalio.api.enums.v1 import EventType
+    from temporalio.common import WorkflowIDReusePolicy
+    from temporalio.contrib.pydantic import pydantic_data_converter
+    from temporalio.testing import WorkflowEnvironment
+    from temporalio.worker import Worker
+    from spine.application.authorized_ask import AuthorizedAskResult
+    from spine.application.workflows.ask_admission_dispatch import (
+        ASK_ADMISSION_WORKFLOW_TYPE,
+        AskAdmissionWorkflowInput,
+    )
+    from spine.workflows.temporal.definitions import (
+        AskAdmissionWorkflowDefinition,
+        build_ask_admission_activity_bindings,
+    )
+    from tests.api.test_authorized_ask import (
+        COMMAND_ID,
+        MESSAGE_ID,
+        RUN_ID,
+        SESSION_ID,
+        TRACE_ID,
+        safe_output,
+    )
+
+    workspace_id = synthetic_uuid(43430)
+    environment_id = synthetic_uuid(43431)
+    await persist_qa_scope(postgresql_adapter, workspace_id, environment_id)
+    context = qa_context(postgresql_adapter, workspace_id, environment_id)
+    started_at = datetime(2026, 10, 17, tzinfo=timezone.utc)
+    run = qa_run_record(
+        workspace_id,
+        environment_id,
+        run_id=RUN_ID,
+        created_at=started_at,
+    )
+    attempt = AnswerQuestionAttempt.start(
+        attempt_id=synthetic_uuid(43432),
+        run=run,
+        attempt_number=1,
+        execution_pin=qa_execution_pin(workspace_id, environment_id),
+        input_artifact_ids=run.input_artifact_ids,
+        diagnostic_context=run.diagnostic_context,
+        started_at=started_at,
+    )
+    completed_attempt = attempt.complete(
+        state=AnswerQuestionAttemptState.SUCCEEDED,
+        outcome=AnswerQuestionOutcome.ABSTAINED,
+        usage=AnswerQuestionUsage(),
+        terminal_event=AnswerQuestionAttemptEvent(
+            event_id=synthetic_uuid(43433),
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            environment=EnvironmentKind.PRODUCTION,
+            kind=AnswerQuestionAttemptEventKind.COMPLETED,
+            occurred_at=started_at + timedelta(minutes=1),
+        ),
+    )
+    terminal_run = run.complete(
+        outcome=AnswerQuestionOutcome.ABSTAINED,
+        final_attempt_id=attempt.attempt_id,
+        completed_at=completed_attempt.completed_at,
+    )
+    async with postgresql_adapter.uow_factory(context) as uow:
+        await uow.answer_question_runs.create_run(qa_run_command(run))
+        await uow.answer_question_runs.start_attempt(attempt)
+        await uow.answer_question_runs.complete_attempt(completed_attempt)
+        await uow.commit()
+    async with postgresql_adapter.uow_factory(context) as uow:
+        persisted_run = await uow.answer_question_runs.resolve_run(RUN_ID)
+        persisted_attempts = await uow.answer_question_runs.list_attempts(RUN_ID)
+    assert persisted_run is not None
+    persisted_attempt = persisted_attempts[0]
+    terminal_run = persisted_run.complete(
+        outcome=AnswerQuestionOutcome.ABSTAINED,
+        final_attempt_id=persisted_attempt.attempt_id,
+        output_artifact_ids=persisted_attempt.output_artifact_ids,
+        completed_at=persisted_attempt.completed_at,
+    )
+
+    class PostgreSQLTerminalActivity:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.started = asyncio.Event()
+            self.first_commit_failed = asyncio.Event()
+            self.retried = asyncio.Event()
+            self.last_error: str | None = None
+
+        async def execute(self, workflow_input: AskAdmissionWorkflowInput) -> AuthorizedAskResult:
+            assert workflow_input.run_id == RUN_ID
+            self.calls += 1
+            self.started.set()
+            engine = create_async_engine(
+                postgresql_contract_database.runtime_url.get_secret_value(),
+                pool_pre_ping=True,
+                hide_parameters=True,
+                connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+            )
+            session_factory = async_sessionmaker(
+                engine, expire_on_commit=False, autoflush=False
+            )
+            boundary = TrustedContextBoundary.for_testing(
+                issuer_id=synthetic_uuid(950),
+                secret=b"issue-45-postgresql-contract-secret",
+            )
+            persistence = PostgreSQLPersistence(
+                session_factory=(
+                    lambda: FailureInjectingSession(
+                        session_factory(), "during_commit"
+                    )
+                    if self.calls == 1
+                    else session_factory()
+                ),  # type: ignore[arg-type]
+                context_verifier=boundary,
+                outbox_events=create_outbox_event_registry(),
+            )
+            try:
+                async with persistence.uow_factory(context) as uow:
+                    await uow.answer_question_runs.complete_run(terminal_run)
+                    await uow.commit()
+            except Exception as error:
+                self.last_error = type(error).__name__
+                self.first_commit_failed.set()
+                raise
+            finally:
+                await engine.dispose()
+            self.retried.set()
+            return AuthorizedAskResult(
+                command_id=COMMAND_ID,
+                session_id=SESSION_ID,
+                message_id=MESSAGE_ID,
+                output=safe_output(AnswerQuestionOutcome.ABSTAINED),
+                accepted_answer=None,
+            )
+
+        async def cancel(self, workflow_input: AskAdmissionWorkflowInput) -> AuthorizedAskResult:
+            del workflow_input
+            raise AssertionError("cancellation activity is not expected")
+
+    activity = PostgreSQLTerminalActivity()
+    execute_activity, cancel_activity = build_ask_admission_activity_bindings(activity)
+    task_queue = "issue-430-postgresql-terminal-retry"
+    workflow_input = AskAdmissionWorkflowInput(
+        command_id=COMMAND_ID,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        session_id=SESSION_ID,
+        message_id=MESSAGE_ID,
+        run_id=RUN_ID,
+        trace_id=TRACE_ID,
+    )
+    async with await WorkflowEnvironment.start_time_skipping(
+        data_converter=pydantic_data_converter
+    ) as environment:
+        handle = await environment.client.start_workflow(
+            ASK_ADMISSION_WORKFLOW_TYPE,
+            workflow_input.model_dump(mode="json"),
+            id=str(RUN_ID),
+            task_queue=task_queue,
+            result_type=dict,
+            id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
+        )
+        async with Worker(
+            environment.client,
+            task_queue=task_queue,
+            identity="issue-430-before-terminal-recovery",
+            max_cached_workflows=0,
+            workflows=[AskAdmissionWorkflowDefinition],
+            activities=[],
+        ):
+            for _ in range(100):
+                history = await handle.fetch_history()
+                if any(
+                    event.event_type == EventType.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED
+                    for event in history.events
+                ):
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                pytest.fail("Temporal did not persist its terminal activity before worker restart")
+
+        async with Worker(
+            environment.client,
+            task_queue=task_queue,
+            identity="issue-430-after-terminal-recovery",
+            max_cached_workflows=0,
+            workflows=[AskAdmissionWorkflowDefinition],
+            activities=[execute_activity, cancel_activity],
+        ):
+            await asyncio.wait_for(activity.started.wait(), timeout=10)
+            await asyncio.wait_for(activity.first_commit_failed.wait(), timeout=10)
+            result = await asyncio.wait_for(handle.result(), timeout=30)
+
+    assert activity.calls >= 2
+    assert activity.retried.is_set()
+    assert activity.last_error == "UnexpectedPersistenceError"
+    assert result["output"]["outcome"] == AnswerQuestionOutcome.ABSTAINED.value
+    async with postgresql_adapter.uow_factory(context) as uow:
+        persisted = await uow.answer_question_runs.resolve_run(RUN_ID)
+    assert persisted == terminal_run
 
 
 async def test_postgresql_operational_metrics_are_idempotent_retained_and_tenant_scoped(

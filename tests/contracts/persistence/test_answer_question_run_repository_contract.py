@@ -1,5 +1,6 @@
 import asyncio
-from datetime import datetime, timezone
+from collections.abc import Awaitable, Callable
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 import pytest
@@ -587,3 +588,151 @@ async def test_answer_question_partial_failure_retry_and_cancellation_are_replay
     assert replay == completed_run
     assert cancellation_loser == completed_run
     assert resolved == completed_run
+
+
+async def exercise_answer_question_run_completion_and_cancellation_cas(
+    persistence_adapter: PersistenceAdapter,
+    first_winner: str,
+    wait_until_second_writer_blocked: Callable[[], Awaitable[None]],
+) -> None:
+    id_offset = 0 if first_winner == "completion" else 10
+    workspace_id = synthetic_uuid(4170 + id_offset)
+    environment_id = synthetic_uuid(4171 + id_offset)
+    await persist_scope(persistence_adapter, workspace_id, environment_id)
+    context = qa_context(persistence_adapter, workspace_id, environment_id)
+    command = run_command(
+        run_record(
+            workspace_id,
+            environment_id,
+            run_id=synthetic_uuid(4178 + id_offset),
+            diagnostic_context=DiagnosticContext(
+                trace_id=context.trace_id,
+                correlation_id=synthetic_uuid(4176 + id_offset),
+                causation_id=synthetic_uuid(4177 + id_offset),
+            ),
+        )
+    )
+    started_at = datetime(2026, 10, 15, tzinfo=timezone.utc)
+
+    completion_attempt_running = AnswerQuestionAttempt.start(
+        attempt_id=synthetic_uuid(4172 + id_offset),
+        run=command.run,
+        attempt_number=1,
+        execution_pin=_pin(workspace_id, environment_id),
+        input_artifact_ids=command.run.input_artifact_ids,
+        diagnostic_context=command.run.diagnostic_context,
+        started_at=started_at,
+    )
+    completion_attempt = completion_attempt_running.complete(
+        state=AnswerQuestionAttemptState.SUCCEEDED,
+        outcome=AnswerQuestionOutcome.ABSTAINED,
+        usage=AnswerQuestionUsage(),
+        terminal_event=AnswerQuestionAttemptEvent(
+            event_id=synthetic_uuid(4173 + id_offset),
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            environment=EnvironmentKind.PRODUCTION,
+            kind=AnswerQuestionAttemptEventKind.COMPLETED,
+            occurred_at=started_at + timedelta(minutes=1),
+        ),
+    )
+    cancellation_attempt_running = AnswerQuestionAttempt.start(
+        attempt_id=synthetic_uuid(4174 + id_offset),
+        run=command.run,
+        attempt_number=2,
+        execution_pin=_pin(workspace_id, environment_id),
+        input_artifact_ids=command.run.input_artifact_ids,
+        diagnostic_context=command.run.diagnostic_context,
+        started_at=started_at + timedelta(minutes=2),
+    )
+    cancellation_attempt = cancellation_attempt_running.complete(
+        state=AnswerQuestionAttemptState.CANCELLED,
+        outcome=AnswerQuestionOutcome.CANCELLED,
+        reason=SafeAttemptReason.CANCELLED_BY_REQUEST,
+        usage=AnswerQuestionUsage(),
+        terminal_event=AnswerQuestionAttemptEvent(
+            event_id=synthetic_uuid(4175 + id_offset),
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            environment=EnvironmentKind.PRODUCTION,
+            kind=AnswerQuestionAttemptEventKind.CANCELLED,
+            occurred_at=started_at + timedelta(minutes=3),
+            reason=SafeAttemptReason.CANCELLED_BY_REQUEST,
+        ),
+    )
+
+    async with persistence_adapter.uow_factory(context) as uow:
+        await uow.answer_question_runs.create_run(command)
+        await uow.answer_question_runs.start_attempt(completion_attempt_running)
+        await uow.answer_question_runs.start_attempt(cancellation_attempt_running)
+        await uow.commit()
+
+    async with persistence_adapter.uow_factory(context) as uow:
+        await uow.answer_question_runs.complete_attempt(completion_attempt)
+        await uow.answer_question_runs.complete_attempt(cancellation_attempt)
+        await uow.commit()
+
+    cancellation_requested_at = started_at + timedelta(minutes=4)
+    async with persistence_adapter.uow_factory(context) as uow:
+        requested = await uow.answer_question_runs.request_cancellation(
+            run_id=command.run.run_id,
+            requested_at=cancellation_requested_at,
+        )
+        await uow.commit()
+
+    completion = requested.complete(
+        outcome=AnswerQuestionOutcome.ABSTAINED,
+        final_attempt_id=completion_attempt.attempt_id,
+        completed_at=completion_attempt.completed_at,
+    )
+    cancellation = requested.complete(
+        outcome=AnswerQuestionOutcome.CANCELLED,
+        final_attempt_id=cancellation_attempt.attempt_id,
+        completed_at=cancellation_attempt.completed_at,
+    )
+    first_candidate, second_candidate = (
+        (completion, cancellation)
+        if first_winner == "completion"
+        else (cancellation, completion)
+    )
+    first_prepared = asyncio.Event()
+    second_entered = asyncio.Event()
+    allow_first_commit = asyncio.Event()
+
+    async def first_writer() -> AnswerQuestionRun:
+        async with persistence_adapter.uow_factory(context) as uow:
+            result = await uow.answer_question_runs.complete_run(first_candidate)
+            first_prepared.set()
+            await allow_first_commit.wait()
+            await uow.commit()
+            return result
+
+    async def second_writer() -> AnswerQuestionRun:
+        await first_prepared.wait()
+        async with persistence_adapter.uow_factory(context) as uow:
+            second_entered.set()
+            result = await uow.answer_question_runs.complete_run(second_candidate)
+            await uow.commit()
+            return result
+
+    first_task = asyncio.create_task(first_writer())
+    second_task = asyncio.create_task(second_writer())
+    try:
+        await asyncio.wait_for(second_entered.wait(), timeout=10)
+        await wait_until_second_writer_blocked()
+    except BaseException:
+        allow_first_commit.set()
+        await asyncio.gather(first_task, second_task, return_exceptions=True)
+        raise
+    allow_first_commit.set()
+    first_result, second_result = await asyncio.wait_for(
+        asyncio.gather(first_task, second_task), timeout=10
+    )
+    expected = completion if first_winner == "completion" else cancellation
+
+    async with persistence_adapter.uow_factory(context) as uow:
+        persisted = await uow.answer_question_runs.resolve_run(command.run.run_id)
+
+    assert first_result == expected
+    assert second_result == expected
+    assert persisted == expected

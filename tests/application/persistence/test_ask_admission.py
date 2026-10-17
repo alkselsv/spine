@@ -298,6 +298,65 @@ async def test_cancellation_command_replays_stably_and_hides_unknown_runs() -> N
 
 
 @pytest.mark.asyncio
+async def test_cancellation_scope_hides_existing_foreign_run_like_unknown_run() -> None:
+    persistence, boundary = await _persistence()
+    owner_context = _context(boundary, operation=QA_ASK_ADMISSION_OPERATION)
+    async with persistence.uow_factory(owner_context) as uow:
+        await uow.ask_admissions.admit(_command())
+        await uow.commit()
+    service = PersistedAskAdmissionService(
+        persistence.uow_factory,
+        clock=lambda: NOW.replace(microsecond=1),
+    )
+    foreign_workspace_id = UUID("10000000-0000-0000-0000-000000000427")
+    foreign_environment_id = UUID("20000000-0000-0000-0000-000000000427")
+    foreign_setup_context = boundary.interactive(
+        scope=WorkspaceScope(workspace_id=foreign_workspace_id),
+        acting_subject_id=SUBJECT_ID,
+        purpose=PersistencePurpose("workspace_setup"),
+        operation=PersistenceOperation("workspace_repository"),
+        trace_id=TRACE_ID,
+    )
+    async with persistence.uow_factory(foreign_setup_context) as uow:
+        await uow.workspaces.add(
+            Workspace(
+                id=foreign_workspace_id,
+                slug="ask-427-foreign",
+                display_name="Foreign workspace",
+            )
+        )
+        await uow.environments.add(
+            Environment(
+                id=foreign_environment_id,
+                workspace_id=foreign_workspace_id,
+                kind=EnvironmentKind.PRODUCTION,
+                display_name="Production",
+            )
+        )
+        await uow.commit()
+    foreign_context = boundary.interactive(
+        scope=EnvironmentScope(
+            workspace_id=foreign_workspace_id,
+            environment_id=foreign_environment_id,
+        ),
+        acting_subject_id=SUBJECT_ID,
+        purpose=PersistencePurpose("question_answering"),
+        operation=QA_ASK_ADMISSION_OPERATION,
+        trace_id=TRACE_ID,
+    )
+
+    with pytest.raises(AskCancellationNotFound) as foreign_error:
+        await service.request_cancellation(context=foreign_context, run_id=RUN_ID)
+    with pytest.raises(AskCancellationNotFound) as unknown_error:
+        await service.request_cancellation(
+            context=owner_context,
+            run_id=UUID("a0000000-0000-0000-0000-000000000426"),
+        )
+
+    assert str(foreign_error.value) == str(unknown_error.value)
+
+
+@pytest.mark.asyncio
 async def test_pending_cancellation_wait_has_a_bounded_deadline() -> None:
     persistence, boundary = await _persistence()
     context = _context(boundary, operation=QA_ASK_ADMISSION_OPERATION)
