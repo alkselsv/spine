@@ -840,3 +840,10 @@ async def test_legacy_ask_is_unchanged_and_not_routed_through_authorized_service
     assert response.status_code == 200
     assert response.json() == {"question": "legacy", "answer": "(нет результатов)", "raw_count": 0}
     assert service.calls == []
+
+
+def test_durable_ask_routes_are_published_in_openapi() -> None:
+    schema = app(FakeAskService(answered_result(), [])).openapi()
+
+    assert "post" in schema["paths"]["/api/v1/ask/admissions"]
+    assert "post" in schema["paths"]["/api/v1/ask/{run_id}/cancel"]

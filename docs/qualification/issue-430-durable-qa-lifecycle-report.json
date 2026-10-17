@@ -1,0 +1,120 @@
+{
+  "schema_version": "spine.qa.ask-admission-cancellation:v1",
+  "ticket": 430,
+  "parent_ticket": 407,
+  "generated_at": "2026-10-17T11:00:50Z",
+  "production_approval": false,
+  "exactly_once_physical_execution": false,
+  "external_provider_qualification": false,
+  "readiness": {
+    "postgresql": "qualified_disposable_postgresql_17_harness",
+    "temporal": "qualified_local_test_server",
+    "production_temporal": "not_run",
+    "production": "not_approved"
+  },
+  "criteria": [
+    {
+      "id": "AC1",
+      "status": "qualified_postgresql_and_offline",
+      "evidence": [
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_ask_admission_replays_persisted_run_message_and_rejects_conflicts",
+        "tests/application/persistence/test_ask_admission.py::test_ask_admission_rollback_removes_receipt_run_message_and_intent"
+      ]
+    },
+    {
+      "id": "AC2",
+      "status": "qualified_postgresql_and_offline",
+      "evidence": [
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_ask_admission_replays_persisted_run_message_and_rejects_conflicts",
+        "tests/application/persistence/test_ask_admission.py::test_ask_admission_changed_payload_conflicts_without_aliasing",
+        "tests/api/test_authorized_ask.py::test_authorized_ask_denies_other_workspace_without_calling_service"
+      ]
+    },
+    {
+      "id": "AC3",
+      "status": "qualified_offline",
+      "evidence": [
+        "tests/api/test_authorized_ask.py::test_legacy_ask_is_unchanged_and_not_routed_through_authorized_service",
+        "tests/api/test_authorized_ask.py::test_ask_admission_returns_stable_ids_without_content_before_execution",
+        "tests/api/test_authorized_ask.py::test_ask_admission_payload_conflict_is_safe_409",
+        "tests/api/test_authorized_ask.py::test_legacy_cancellation_suppresses_answer_from_completion_race"
+      ]
+    },
+    {
+      "id": "AC4",
+      "status": "partial_temporal_test_server_and_offline_dispatch",
+      "evidence": [
+        "tests/application/workflows/test_ask_admission_dispatch.py::test_duplicate_admission_delivery_resolves_one_stable_workflow",
+        "tests/application/workflows/test_ask_admission_dispatch.py::test_reconciliation_retries_committed_admission_without_second_start",
+        "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_ask_workflow_cancellation_signal_returns_terminal_result"
+      ]
+    },
+    {
+      "id": "AC5",
+      "status": "partial_postgresql_and_offline_with_race_limit",
+      "evidence": [
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_answer_question_retry_cancellation_contract",
+        "tests/application/workflows/test_ask_admission_dispatch.py::test_workflow_cancel_before_start_runs_only_cancellation_activity",
+        "tests/api/test_authorized_ask.py::test_legacy_cancellation_suppresses_answer_from_completion_race"
+      ]
+    },
+    {
+      "id": "AC6",
+      "status": "qualified_postgresql_and_offline",
+      "evidence": [
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_ask_admission_replays_persisted_run_message_and_rejects_conflicts",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_answer_question_retry_cancellation_contract",
+        "tests/api/test_authorized_ask.py::test_authorized_ask_returns_only_accepted_answer_and_citation_references"
+      ]
+    },
+    {
+      "id": "AC7",
+      "status": "partial_workspace_only_isolation_evidence",
+      "evidence": [
+        "tests/application/workflows/test_ask_admission_dispatch.py::test_scoped_command_loader_rejects_denied_or_mismatched_command",
+        "tests/api/test_authorized_ask.py::test_authorized_ask_denies_other_workspace_without_calling_service",
+        "tests/integration/postgresql/test_postgresql_outbox_delivery.py::test_runtime_delivery_reads_are_isolated_between_workspaces"
+      ]
+    },
+    {
+      "id": "AC8",
+      "status": "partial_openapi_and_generated_client_check",
+      "evidence": [
+        "tests/api/test_authorized_ask.py::test_legacy_ask_is_unchanged_and_not_routed_through_authorized_service",
+        "tests/api/test_authorized_ask.py::test_ask_admission_returns_stable_ids_without_content_before_execution",
+        "tests/api/test_authorized_ask.py::test_durable_ask_routes_are_published_in_openapi",
+        "tests/api/test_openapi_handoff.py::test_generation_export_matches_backend_openapi_document"
+      ],
+      "verified_commands": [
+        "corepack pnpm web:api:check"
+      ]
+    },
+    {
+      "id": "AC9",
+      "status": "partial_postgresql_and_temporal_test_server_with_limits",
+      "evidence": [
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_ask_admission_replays_persisted_run_message_and_rejects_conflicts",
+        "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_ask_workflow_cancellation_signal_returns_terminal_result"
+      ]
+    }
+  ],
+  "integrations": {
+    "postgresql": "Disposable PostgreSQL 17 harness with migrated Spine schema and runtime role.",
+    "temporal": "Temporal Python SDK local time-skipping test server with registered Ask workflow and activities.",
+    "production_temporal": "Not exercised.",
+    "external_model_provider": "Not exercised."
+  },
+  "unverified_prerequisites": [
+    "PostgreSQL server restart and crash injection at each admission/outbox/terminal persistence boundary.",
+    "Production Temporal cluster and worker restart/recovery.",
+    "Concurrent completion/cancellation CAS race with both PostgreSQL winners orchestrated.",
+    "Production authorization configuration and external model provider."
+  ],
+  "boundaries": {
+    "canonical_admission_and_terminal_state": "postgresql",
+    "durable_orchestration": "temporal",
+    "delivery_semantics": "at_least_once_idempotent_logical_effects",
+    "legacy_compatibility": "existing_synchronous_ask_and_cancel_contracts",
+    "physical_execution_claim": "no_exactly_once_claim"
+  }
+}

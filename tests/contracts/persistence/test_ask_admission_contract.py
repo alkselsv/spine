@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
@@ -88,7 +89,7 @@ async def exercise_ask_admission_contract(adapter: PersistenceAdapter) -> None:
         session_id=session_id,
         subject=ActorRef(kind=ActorKind.SERVICE, id=subject_id),
         environment=EnvironmentKind.PRODUCTION,
-        question="What survives admission?",
+        question="Cafe\u0301?",
         idempotency_key=IdempotencyKey("qa-admission-contract-426"),
     )
     async with adapter.uow_factory(context) as uow:
@@ -119,6 +120,21 @@ async def exercise_ask_admission_contract(adapter: PersistenceAdapter) -> None:
     assert message.run_id == first.run_id
     assert message.state is QAMessageState.PENDING
     assert message.question == command.question
+
+    normalized_replay_command = replace(command, question="Café?")
+
+    async def replay_admission() -> object:
+        async with adapter.uow_factory(context) as uow:
+            replay_result = await uow.ask_admissions.admit(normalized_replay_command)
+            await uow.commit()
+            return replay_result
+
+    concurrent_replays = await asyncio.gather(
+        replay_admission(), replay_admission()
+    )
+    assert all(item.replay for item in concurrent_replays)
+    assert {item.run_id for item in concurrent_replays} == {first.run_id}
+    assert {item.message_id for item in concurrent_replays} == {first.message_id}
 
     cancellation_requested_at = run.created_at + timedelta(seconds=1)
     async with adapter.uow_factory(context) as uow:
