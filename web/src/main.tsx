@@ -33,6 +33,12 @@ createRoot(rootElement).render(
               ...(readBrowserQualificationFixture() === 'controlled'
                 ? { getBearerCredential: () => 'controlled-browser-token' }
                 : {}),
+              ...(readBrowserQualificationFixture() === 'chat-api'
+                ? {
+                    getBearerCredential: () => 'controlled-chat-api-token',
+                    identityVersion: 'controlled-chat-api-identity',
+                  }
+                : {}),
             }
       }
     >

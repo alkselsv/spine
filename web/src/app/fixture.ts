@@ -1,4 +1,4 @@
-export type BrowserQualificationFixture = 'controlled' | 'auth-denied';
+export type BrowserQualificationFixture = 'controlled' | 'chat-api' | 'auth-denied';
 
 /**
  * Qualification fixtures are selected only by the browser test harness. They
@@ -7,5 +7,5 @@ export type BrowserQualificationFixture = 'controlled' | 'auth-denied';
 export function readBrowserQualificationFixture(): BrowserQualificationFixture | null {
   if (typeof window === 'undefined') return null;
   const value = new URLSearchParams(window.location.search).get('fixture');
-  return value === 'controlled' || value === 'auth-denied' ? value : null;
+  return value === 'controlled' || value === 'chat-api' || value === 'auth-denied' ? value : null;
 }

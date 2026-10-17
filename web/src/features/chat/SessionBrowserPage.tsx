@@ -1,16 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 
-import { createScopedApiClient } from '../../api/client';
+import { createQaApiClient, createScopedApiClient } from '../../api/client';
 import { apiQueryOptions } from '../../api/query';
 import { useAuth } from '../../app/auth';
 import { ApiErrorPanel, StatusPanel } from '../../app/status';
-import { useScope } from '../../app/scope';
+import { useScope, type Scope } from '../../app/scope';
 import { formatDate } from '../../i18n/format';
 import { ru } from '../../i18n/resources';
 import {
   createQASession,
+  loadQAMessage,
   loadQAMessagePage,
   loadQASession,
   loadQASessionPage,
@@ -18,6 +19,8 @@ import {
   restoreQASession,
   type QAMessage,
 } from './session-api';
+import { AcceptedAnswer } from './AcceptedAnswer';
+import { AskComposer } from './AskComposer';
 import styles from './SessionBrowserPage.module.css';
 
 const SESSION_CURSOR = 'session_cursor';
@@ -48,6 +51,14 @@ export function SessionBrowserPage() {
         getBearerCredential: auth.getBearerCredential ?? (() => ''),
         scope,
       }),
+    [auth.getBearerCredential, scope],
+  );
+  const askClient = useMemo(
+    () => createQaApiClient({
+      baseUrl: window.location.origin,
+      getBearerCredential: auth.getBearerCredential ?? (() => ''),
+      scope,
+    }),
     [auth.getBearerCredential, scope],
   );
 
@@ -93,6 +104,10 @@ export function SessionBrowserPage() {
         sessionQuery.data?.status === 'active' &&
         !scopeChanged,
     ),
+    refetchInterval: (query) =>
+      query.state.status !== 'error' && query.state.data?.items.some((message) => message.state !== 'terminal')
+        ? 2_000
+        : false,
   });
 
   const createKey = useRef<string | null>(null);
@@ -137,6 +152,9 @@ export function SessionBrowserPage() {
     }
     return (
       <SessionDetails
+        key={`${validSessionId}:${identityVersion}`}
+        askClient={askClient}
+        identityVersion={identityVersion}
         messageCursor={messageCursor}
         messageQuery={messagesQuery}
         onBack={() => navigate({ pathname: '/chat', search: `?${scopeSearch}` })}
@@ -154,6 +172,7 @@ export function SessionBrowserPage() {
         }}
         restoreError={restoreMutation.error}
         restorePending={restoreMutation.isPending}
+        scope={scope}
         sessionQuery={sessionQuery}
       />
     );
@@ -256,6 +275,8 @@ function SessionList({
 }
 
 function SessionDetails({
+  askClient,
+  identityVersion,
   messageCursor,
   messageQuery,
   onBack,
@@ -263,8 +284,11 @@ function SessionDetails({
   onRestore,
   restoreError,
   restorePending,
+  scope,
   sessionQuery,
 }: {
+  askClient: ReturnType<typeof createQaApiClient>;
+  identityVersion: string;
   messageCursor: string | null;
   messageQuery: ReturnType<typeof useQuery<Awaited<ReturnType<typeof loadQAMessagePage>>>>;
   onBack: () => void;
@@ -272,10 +296,44 @@ function SessionDetails({
   onRestore: () => void;
   restoreError: unknown;
   restorePending: boolean;
+  scope: Scope;
   sessionQuery: ReturnType<typeof useQuery<Awaited<ReturnType<typeof loadQASession>>>>;
 }) {
+  const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [admittedMessageId, setAdmittedMessageId] = useState<string | null>(null);
+  const [clarificationTarget, setClarificationTarget] = useState<string | null>(null);
   const session = sessionQuery.isStale || sessionQuery.error ? undefined : sessionQuery.data;
-  const messages = messageQuery.isStale || messageQuery.error ? undefined : messageQuery.data?.items;
+  const admittedMessageQuery = useQuery({
+    ...apiQueryOptions({
+      load: (signal) => loadQAMessage(
+        askClient,
+        scope,
+        session?.session_id ?? '',
+        admittedMessageId ?? '',
+        signal,
+      ),
+      queryKey: qaSessionQueryKeys.message(
+        scope,
+        session?.session_id ?? '',
+        admittedMessageId ?? '',
+        identityVersion,
+      ),
+    }),
+    enabled: Boolean(session?.status === 'active' && admittedMessageId),
+    refetchInterval: (query) =>
+      query.state.status !== 'error' && query.state.data?.state !== 'terminal' ? 2_000 : false,
+  });
+  const historyUnavailable =
+    Boolean(messageQuery.error) ||
+    Boolean(admittedMessageQuery.error) ||
+    Boolean((messageQuery.isStale && messageQuery.data) || (admittedMessageQuery.isStale && admittedMessageQuery.data));
+  const messages = historyUnavailable
+    ? undefined
+    : mergeMessages(messageQuery.data?.items ?? [], admittedMessageQuery.data);
+  const clarificationMessage = messages?.find(
+    (message) => message.message_id === clarificationTarget && message.terminal_outcome === 'clarification_required',
+  );
   return (
     <section className={styles.page} aria-labelledby="session-heading">
       <header className={styles.pageHeader}>
@@ -323,33 +381,78 @@ function SessionDetails({
       {session?.status === 'active' ? (
         <section className={styles.messagePanel} aria-labelledby="messages-heading">
           <h3 id="messages-heading">{ru.chat.messagesTitle}</h3>
-          {messageQuery.error && !messages ? <ApiErrorPanel error={messageQuery.error} /> : null}
+          {messageQuery.error ? <ApiErrorPanel error={messageQuery.error} /> : null}
+          {admittedMessageQuery.error ? <ApiErrorPanel error={admittedMessageQuery.error} /> : null}
           {messageQuery.isPending ? <StatusPanel state="loading" /> : null}
-          {messageQuery.isStale && messageQuery.data ? <StatusPanel state="stale" /> : null}
-          {messageQuery.error && messages ? <StatusPanel state="partial" /> : null}
-          {!messageQuery.isStale && messages?.length === 0 ? <StatusPanel state="empty" /> : null}
+          {(messageQuery.isStale && messageQuery.data) || (admittedMessageQuery.isStale && admittedMessageQuery.data) ? <StatusPanel state="stale" /> : null}
+          {!historyUnavailable && messages?.length === 0 ? <StatusPanel state="empty" /> : null}
           {messages?.length ? (
             <div className={styles.messageList} aria-label={ru.chat.messagesTitle}>
-              {messages.map((message) => <MessageCard key={message.message_id} message={message} />)}
+              {messages.map((message) => (
+                <MessageCard
+                  key={message.message_id}
+                  message={message}
+                  onClarify={() => setClarificationTarget(message.message_id)}
+                />
+              ))}
             </div>
           ) : null}
-          {!messageQuery.isStale && !messageQuery.error && messageQuery.data?.next_cursor ? (
+          {!historyUnavailable && messageQuery.data?.next_cursor ? (
             <button className={styles.secondaryButton} onClick={onNextMessages} type="button">
               {ru.chat.nextMessages}
             </button>
           ) : null}
-          {messageQuery.error ? (
-            <button className={styles.secondaryButton} onClick={() => void messageQuery.refetch()} type="button">
+          {messageQuery.error || admittedMessageQuery.error ? (
+            <button
+              className={styles.secondaryButton}
+              onClick={() => {
+                void messageQuery.refetch();
+                if (admittedMessageId) void admittedMessageQuery.refetch();
+              }}
+              type="button"
+            >
               {ru.chat.retryMessages}
             </button>
           ) : null}
-          {messageQuery.isStale && messageQuery.data ? (
-            <button className={styles.secondaryButton} onClick={() => void messageQuery.refetch()} type="button">
+          {!messageQuery.error && !admittedMessageQuery.error && (
+            (messageQuery.isStale && messageQuery.data) ||
+            (admittedMessageQuery.isStale && admittedMessageQuery.data)
+          ) ? (
+            <button
+              className={styles.secondaryButton}
+              onClick={() => {
+                if (messageQuery.isStale) void messageQuery.refetch();
+                if (admittedMessageId && admittedMessageQuery.isStale) void admittedMessageQuery.refetch();
+              }}
+              type="button"
+            >
               {ru.chat.refreshMessages}
             </button>
           ) : null}
           {messageCursor ? <span className={styles.pageHint}>{ru.chat.messagePageLoaded}</span> : null}
         </section>
+      ) : null}
+
+      {session?.status === 'active' && !messageQuery.error && !messageQuery.isStale && messageQuery.data ? (
+        <AskComposer
+          client={askClient}
+          clarificationTarget={clarificationMessage ? clarificationTarget : null}
+          onAccepted={(admission) => {
+            setAdmittedMessageId(admission.message_id);
+            setClarificationTarget(null);
+            void queryClient.invalidateQueries({
+              queryKey: qaSessionQueryKeys.messages(scope, session.session_id, null, identityVersion),
+            });
+            if (searchParams.has(MESSAGE_CURSOR)) {
+              const next = new URLSearchParams(searchParams);
+              next.delete(MESSAGE_CURSOR);
+              setSearchParams(next, { replace: true });
+            }
+          }}
+          onCancelClarification={() => setClarificationTarget(null)}
+          scope={scope}
+          sessionId={session.session_id}
+        />
       ) : null}
 
       {session ? (
@@ -363,7 +466,7 @@ function SessionDetails({
   );
 }
 
-function MessageCard({ message }: { message: QAMessage }) {
+function MessageCard({ message, onClarify }: { message: QAMessage; onClarify: () => void }) {
   return (
     <article className={styles.messageCard}>
       <div className={styles.messageMeta}>
@@ -380,10 +483,24 @@ function MessageCard({ message }: { message: QAMessage }) {
               <p>{message.question}</p>
             </div>
           ) : null}
+          {message.state === 'terminal' && message.terminal_outcome === 'answered' ? (
+            <AcceptedAnswer message={message} />
+          ) : null}
+          {message.state === 'terminal' && message.terminal_outcome === 'clarification_required' ? (
+            <button className={styles.textButton} onClick={onClarify} type="button">
+              {ru.chat.answerClarification}
+            </button>
+          ) : null}
         </>
       )}
     </article>
   );
+}
+
+function mergeMessages(messages: QAMessage[], admittedMessage?: QAMessage): QAMessage[] {
+  const byId = new Map(messages.map((message) => [message.message_id, message]));
+  if (admittedMessage) byId.set(admittedMessage.message_id, admittedMessage);
+  return [...byId.values()].sort((left, right) => left.ordinal - right.ordinal);
 }
 
 function messageStateLabel(message: QAMessage): string {

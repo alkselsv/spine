@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { createHash } from 'node:crypto';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -6,6 +7,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
 
 import { AuthProvider } from '../../app/auth';
 import { ScopeContext, type Scope } from '../../app/scope';
+import { ru } from '../../i18n/resources';
 import { qaSessionQueryKeys } from './session-api';
 import { SessionBrowserPage } from './SessionBrowserPage';
 
@@ -16,7 +18,15 @@ const scope: Scope = {
 const sessionId = '30000000-0000-4000-8000-000000000001';
 const subjectId = '40000000-0000-4000-8000-000000000001';
 const messageId = '50000000-0000-4000-8000-000000000001';
+const admittedMessageId = '50000000-0000-4000-8000-000000000002';
+const askCommandId = 'd0000000-0000-4000-8000-000000000001';
 const traceId = '60000000-0000-4000-8000-000000000001';
+const runId = '70000000-0000-4000-8000-000000000001';
+const answerId = '80000000-0000-4000-8000-000000000001';
+const attemptId = '90000000-0000-4000-8000-000000000001';
+const claimId = 'a0000000-0000-4000-8000-000000000001';
+const relationshipId = 'b0000000-0000-4000-8000-000000000001';
+const citationId = 'c0000000-0000-4000-8000-000000000001';
 
 function session(status: 'active' | 'archived' = 'active', version = 1) {
   return {
@@ -36,7 +46,34 @@ function message(
   question = 'Где находится политика отпуска?',
   answer: string | null = 'В разделе HR.',
   terminalOutcome: 'answered' | 'clarification_required' | 'abstained' | 'denied' | 'failed' | 'cancelled' = 'answered',
+  overrides: Record<string, unknown> = {},
 ) {
+  const acceptedPresentation = answer && terminalOutcome === 'answered'
+    ? {
+        schema_version: 'accepted-answer-presentation:v1',
+        answer_id: answerId,
+        answer_text_sha256: createHash('sha256').update(answer, 'utf8').digest('hex'),
+        attempt_id: attemptId,
+        message_id: messageId,
+        run_id: runId,
+        claims: [{
+          schema_version: 'accepted-answer-claim-presentation:v1',
+          claim_id: claimId,
+          kind: 'factual',
+          start_offset: 0,
+          end_offset: answer.length,
+        }],
+        relationships: [{
+          schema_version: 'accepted-answer-relationship-presentation:v1',
+          relationship_id: relationshipId,
+          claim_id: claimId,
+          kind: 'supported_by',
+          citation_ids: [citationId],
+          related_claim_id: null,
+        }],
+        citation_ids: [citationId],
+      }
+    : null;
   return {
     schema_version: 1,
     message_id: messageId,
@@ -46,15 +83,17 @@ function message(
     version: 1,
     ordinal: 1,
     trace_id: traceId,
-    run_id: null,
+    run_id: runId,
     state: 'terminal',
     terminal_outcome: terminalOutcome,
     cancelled: false,
     disclosure_eligibility: 'eligible',
     question,
     answer,
+    accepted_presentation: acceptedPresentation,
     created_at: '2026-10-17T10:01:00Z',
     updated_at: '2026-10-17T10:01:00Z',
+    ...overrides,
   };
 }
 
@@ -128,6 +167,22 @@ function renderPage(entry: string, currentScope: Scope = scope, seedStaleContent
   };
 }
 
+function renderSessionMessages(messages: unknown[]) {
+  const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+    const request = new Request(input, init);
+    const url = new URL(request.url);
+    if (url.pathname === `/api/v1/qa/sessions/${sessionId}`) {
+      return response({ data: session(), workspace_id: scope.workspaceId, environment_id: scope.environmentId, trace_id: traceId });
+    }
+    if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages`) {
+      return collection(request, messages, null);
+    }
+    return response({ error: 'unexpected request' });
+  });
+  vi.stubGlobal('fetch', fetcher);
+  return renderPage(`/chat/${sessionId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}`);
+}
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
@@ -162,7 +217,7 @@ describe('Q&A session navigation', () => {
     await user.click(await screen.findByRole('button', { name: 'Создать сессию' }));
 
     expect(await screen.findByText('Где находится политика отпуска?')).toBeVisible();
-    expect(screen.queryByText('В разделе HR.')).not.toBeInTheDocument();
+    expect(await screen.findByText('В разделе HR.')).toBeVisible();
     expect(screen.getByText('Ответ подготовлен')).toBeVisible();
     expect(screen.getByLabelText('Текущий адрес')).toHaveTextContent(`/chat/${sessionId}`);
     expect(createHeaders[0]?.get('Idempotency-Key')).toBeTruthy();
@@ -223,6 +278,241 @@ describe('Q&A session navigation', () => {
     expect(await screen.findByText('Завершилось с ошибкой')).toBeVisible();
     expect(screen.queryByText('Ответ подготовлен')).not.toBeInTheDocument();
     expect(screen.queryByText('Нельзя показывать ответ здесь.')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['clarification_required', 'Нужно уточнение'],
+    ['abstained', 'Недостаточно данных для ответа'],
+    ['denied', 'Доступ запрещён'],
+    ['failed', 'Завершилось с ошибкой'],
+    ['cancelled', 'Отменён'],
+  ] as const)(
+    'test_%s_outcome_hides_unaccepted_candidate_text',
+    async (outcome, label) => {
+      renderSessionMessages([message('Вопрос', 'Кандидат ответа не должен появиться.', outcome)]);
+
+      expect(await screen.findByText(label)).toBeVisible();
+      expect(screen.queryByText('Кандидат ответа не должен появиться.')).not.toBeInTheDocument();
+    },
+  );
+
+  it('test_answered_message_hides_answer_when_accepted_digest_does_not_match', async () => {
+    const accepted = message('Вопрос', 'Чужой или изменённый ответ.');
+    accepted.accepted_presentation!.answer_text_sha256 = '0'.repeat(64);
+    renderSessionMessages([accepted]);
+
+    expect(await screen.findByText(ru.chat.answerUnavailable)).toBeVisible();
+    expect(screen.queryByText('Чужой или изменённый ответ.')).not.toBeInTheDocument();
+  });
+
+  it('test_raw_html_in_accepted_answer_is_rejected_without_creating_elements', async () => {
+    renderSessionMessages([message('Вопрос', '<img src=x onerror="alert(1)">')]);
+
+    expect(await screen.findByText(ru.chat.answerUnsafe)).toBeVisible();
+    expect(document.querySelector('img')).toBeNull();
+    expect(screen.queryByText(/alert\(1\)/)).not.toBeInTheDocument();
+  });
+
+  it('test_safe_markdown_formats_text_and_rejects_unsafe_links', async () => {
+    renderSessionMessages([message('Вопрос', '**Принятый факт** и [ссылка](https://example.org), [опасная](javascript:alert(1))')]);
+
+    expect(await screen.findByText('Принятый факт')).toBeVisible();
+    expect(screen.getByText('Принятый факт').tagName).toBe('STRONG');
+    expect(screen.getByRole('link', { name: 'ссылка' })).toHaveAttribute('href', 'https://example.org/');
+    expect(screen.queryByRole('link', { name: 'опасная' })).not.toBeInTheDocument();
+    expect(screen.getByText(/опасная/)).toBeVisible();
+  });
+
+  it('test_ineligible_message_hides_question_and_answer_even_if_payload_contains_them', async () => {
+    renderSessionMessages([message('Защищённый вопрос', 'Защищённый ответ.', 'answered', { disclosure_eligibility: 'ineligible' })]);
+
+    expect(await screen.findByText(ru.chat.messageContentHidden)).toBeVisible();
+    expect(screen.queryByText('Защищённый вопрос')).not.toBeInTheDocument();
+    expect(screen.queryByText('Защищённый ответ.')).not.toBeInTheDocument();
+  });
+
+  it('test_ask_admission_uses_scoped_command_and_hydrates_the_canonical_message', async () => {
+    const user = userEvent.setup();
+    const askRequests: Array<{ body: unknown; headers: Headers }> = [];
+    let hydratedMessageRequested = false;
+    const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}`) {
+        return response({ data: session(), workspace_id: scope.workspaceId, environment_id: scope.environmentId, trace_id: traceId });
+      }
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages`) {
+        return collection(request, [], null);
+      }
+      if (url.pathname === '/api/v1/ask/admissions' && request.method === 'POST') {
+        askRequests.push({ body: await request.json(), headers: request.headers });
+        return response({
+          schema_version: 1,
+          command_id: askCommandId,
+          workspace_id: scope.workspaceId,
+          environment_id: scope.environmentId,
+          trace_id: traceId,
+          status: 'accepted',
+          replay: false,
+          result: {
+            schema_version: 1,
+            command_id: askCommandId,
+            session_id: sessionId,
+            message_id: admittedMessageId,
+            run_id: runId,
+            status: 'admitted',
+          },
+        });
+      }
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages/${admittedMessageId}`) {
+        hydratedMessageRequested = true;
+        return response({
+          data: message('Где лежит отпускная политика?', null, 'answered', {
+            message_id: admittedMessageId,
+            state: 'pending',
+            terminal_outcome: null,
+            accepted_presentation: null,
+          }),
+          schema_version: 1,
+          workspace_id: scope.workspaceId,
+          environment_id: scope.environmentId,
+          trace_id: traceId,
+        });
+      }
+      return response({ error: 'unexpected request' });
+    });
+    vi.stubGlobal('fetch', fetcher);
+    renderPage(`/chat/${sessionId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}`);
+
+    await user.type(await screen.findByRole('textbox', { name: 'Вопрос' }), 'Где лежит отпускная политика?');
+    await user.click(screen.getByRole('button', { name: 'Отправить' }));
+
+    expect(await screen.findByText('Ожидает выполнения')).toBeVisible();
+    expect(screen.getByText('Где лежит отпускная политика?')).toBeVisible();
+    expect(askRequests).toHaveLength(1);
+    expect(askRequests[0]?.body).toEqual({ schema_version: 1, session_id: sessionId, question: 'Где лежит отпускная политика?' });
+    expect(askRequests[0]?.headers.get('Idempotency-Key')).toBeTruthy();
+    expect(askRequests[0]?.headers.get('X-Workspace-ID')).toBe(scope.workspaceId);
+    expect(askRequests[0]?.headers.get('X-Environment-ID')).toBe(scope.environmentId);
+    expect(hydratedMessageRequested).toBe(true);
+  });
+
+  it('test_clarification_reply_links_to_the_canonical_message', async () => {
+    const user = userEvent.setup();
+    let askBody: unknown;
+    const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}`) {
+        return response({ data: session(), workspace_id: scope.workspaceId, environment_id: scope.environmentId, trace_id: traceId });
+      }
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages`) {
+        return collection(request, [message('Какой отпуск?', null, 'clarification_required')], null);
+      }
+      if (url.pathname === '/api/v1/ask/admissions' && request.method === 'POST') {
+        askBody = await request.json();
+        return response({
+          schema_version: 1,
+          command_id: askCommandId,
+          workspace_id: scope.workspaceId,
+          environment_id: scope.environmentId,
+          trace_id: traceId,
+          status: 'accepted',
+          replay: false,
+          result: {
+            schema_version: 1,
+            command_id: askCommandId,
+            session_id: sessionId,
+            message_id: admittedMessageId,
+            run_id: runId,
+            status: 'admitted',
+          },
+        });
+      }
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages/${admittedMessageId}`) {
+        return response({
+          data: message('За какой период?', null, 'answered', {
+            message_id: admittedMessageId,
+            state: 'pending',
+            terminal_outcome: null,
+            accepted_presentation: null,
+          }),
+          schema_version: 1,
+          workspace_id: scope.workspaceId,
+          environment_id: scope.environmentId,
+          trace_id: traceId,
+        });
+      }
+      return response({ error: 'unexpected request' });
+    });
+    vi.stubGlobal('fetch', fetcher);
+    renderPage(`/chat/${sessionId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}`);
+
+    await user.click(await screen.findByRole('button', { name: 'Ответить на уточнение' }));
+    expect(screen.getByText(ru.chat.clarificationReply).closest('[role="status"]')).toHaveTextContent(messageId);
+    await user.type(screen.getByRole('textbox', { name: 'Вопрос' }), 'За какой период?');
+    await user.click(screen.getByRole('button', { name: 'Отправить' }));
+
+    await screen.findByText('Ожидает выполнения');
+    expect(askBody).toEqual({
+      schema_version: 1,
+      session_id: sessionId,
+      question: 'За какой период?',
+      clarification_of_message_id: messageId,
+    });
+  });
+
+  it('test_current_message_disclosure_failure_hides_the_session_history', async () => {
+    const user = userEvent.setup();
+    let admissionAccepted = false;
+    const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}`) {
+        return response({ data: session(), workspace_id: scope.workspaceId, environment_id: scope.environmentId, trace_id: traceId });
+      }
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages`) {
+        return collection(request, [message('Старая защищённая история', 'Старый ответ')], null);
+      }
+      if (url.pathname === '/api/v1/ask/admissions' && request.method === 'POST') {
+        admissionAccepted = true;
+        return response({
+          schema_version: 1,
+          command_id: askCommandId,
+          workspace_id: scope.workspaceId,
+          environment_id: scope.environmentId,
+          trace_id: traceId,
+          status: 'accepted',
+          replay: false,
+          result: {
+            schema_version: 1,
+            command_id: askCommandId,
+            session_id: sessionId,
+            message_id: admittedMessageId,
+            run_id: runId,
+            status: 'admitted',
+          },
+        });
+      }
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages/${admittedMessageId}` && admissionAccepted) {
+        return new Response(JSON.stringify({ code: 'spine.authorization.denied', protected_text: 'customer secret' }), {
+          status: 403,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return response({ error: 'unexpected request' });
+    });
+    vi.stubGlobal('fetch', fetcher);
+    renderPage(`/chat/${sessionId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}`);
+
+    expect(await screen.findByText('Старая защищённая история')).toBeVisible();
+    await user.type(await screen.findByRole('textbox', { name: 'Вопрос' }), 'Новый вопрос');
+    await user.click(screen.getByRole('button', { name: 'Отправить' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Доступ запрещён');
+    expect(screen.queryByText('Старая защищённая история')).not.toBeInTheDocument();
+    expect(screen.queryByText('Старый ответ')).not.toBeInTheDocument();
+    expect(screen.queryByText('customer secret')).not.toBeInTheDocument();
   });
 
   it('test_scope_change_clears_session_url_and_protected_history', async () => {
