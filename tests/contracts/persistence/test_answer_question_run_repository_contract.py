@@ -571,6 +571,11 @@ async def test_answer_question_partial_failure_retry_and_cancellation_are_replay
     async with persistence_adapter.uow_factory(context) as uow:
         first_completion = await uow.answer_question_runs.complete_run(completed_run)
         replay = await uow.answer_question_runs.complete_run(completed_run)
+        cancellation_loser = await uow.answer_question_runs.complete_run(
+            completed_run.model_copy(
+                update={"outcome": AnswerQuestionOutcome.FAILED}
+            )
+        )
         await uow.commit()
 
     async with persistence_adapter.uow_factory(context) as uow:
@@ -580,4 +585,5 @@ async def test_answer_question_partial_failure_retry_and_cancellation_are_replay
     assert attempts == (failed, cancelled)
     assert first_completion == completed_run
     assert replay == completed_run
+    assert cancellation_loser == completed_run
     assert resolved == completed_run

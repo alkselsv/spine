@@ -12,7 +12,7 @@ from enum import Enum
 from typing import Protocol
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from spine.application.persistence.command_digest import CommandDigest, digest_command
 from spine.application.persistence.context import (
@@ -33,7 +33,25 @@ QA_ASK_ADMISSION_SCHEMA_VERSION = 1
 QA_ASK_ADMISSION_RESULT_TYPE = "qa_ask_admission"
 QA_ASK_ADMISSION_EVENT_TYPE = "qa.ask-admitted"
 QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION = 1
+QA_ASK_CANCELLATION_EVENT_TYPE = "qa.ask-cancellation-requested"
+QA_ASK_CANCELLATION_EVENT_SCHEMA_VERSION = 1
 QA_ASK_ADMISSION_REQUEST_SCHEMA = "qa.ask-admission-request:v1"
+
+
+class AskCancellationDispatchPayload(BaseModel):
+    """Minimal, versioned intent to signal cancellation to one Temporal run."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    run_id: UUID
+    schema_version: int = Field(default=1, gt=0)
+
+    @field_validator("run_id")
+    @classmethod
+    def validate_run_id(cls, value: UUID) -> UUID:
+        if value.int == 0:
+            raise ValueError("cancellation run_id must be non-zero")
+        return value
 
 
 class AskAdmissionDispatchPayload(BaseModel):
@@ -179,6 +197,23 @@ class AskAdmissionStatus:
             raise ValueError("non-terminal Ask admission status cannot carry an outcome")
 
 
+class AskCancellationLifecycle(str, Enum):
+    CANCELLATION_REQUESTED = "cancellation_requested"
+    TERMINAL = "terminal"
+
+
+@dataclass(frozen=True, slots=True)
+class AskCancellationStatus:
+    command_id: UUID
+    run_id: UUID
+    status: AskCancellationLifecycle
+    outcome: AnswerQuestionOutcome | None
+    replay: bool
+    session_id: UUID | None = None
+    message_id: UUID | None = None
+    attempt_id: UUID | None = None
+
+
 class AskAdmissionRepository(Protocol):
     async def admit(self, command: AskAdmissionCommand) -> AskAdmissionResult: ...
 
@@ -197,6 +232,22 @@ class AskAdmissionApplication(Protocol):
         context: TrustedPersistenceContext,
         result: AskAdmissionResult,
     ) -> AskAdmissionStatus: ...
+
+    async def request_cancellation(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        run_id: UUID,
+    ) -> AskCancellationStatus: ...
+
+    async def wait_for_cancellation(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        run_id: UUID,
+        poll_interval: float = 0.05,
+        timeout: float = 5.0,
+    ) -> AskCancellationStatus: ...
 
 
 def validate_ask_admission_context(
@@ -217,12 +268,18 @@ def validate_ask_admission_context(
 
 
 def register_ask_admission_outbox_event(registry: object) -> None:
-    """Register the delivery-only event with an adapter-owned registry."""
+    """Register both delivery-only events with an adapter-owned registry."""
 
-    getattr(registry, "register")(
+    register = getattr(registry, "register")
+    register(
         event_type=QA_ASK_ADMISSION_EVENT_TYPE,
         schema_version=QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION,
         payload_type=AskAdmissionDispatchPayload,
+    )
+    register(
+        event_type=QA_ASK_CANCELLATION_EVENT_TYPE,
+        schema_version=QA_ASK_CANCELLATION_EVENT_SCHEMA_VERSION,
+        payload_type=AskCancellationDispatchPayload,
     )
 
 
@@ -232,10 +289,15 @@ __all__ = [
     "AskAdmissionDispatchPayload",
     "AskAdmissionRepository",
     "AskAdmissionResult",
+    "AskCancellationDispatchPayload",
     "AskAdmissionLifecycle",
     "AskAdmissionStatus",
+    "AskCancellationLifecycle",
+    "AskCancellationStatus",
     "QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION",
     "QA_ASK_ADMISSION_EVENT_TYPE",
+    "QA_ASK_CANCELLATION_EVENT_SCHEMA_VERSION",
+    "QA_ASK_CANCELLATION_EVENT_TYPE",
     "QA_ASK_ADMISSION_OPERATION",
     "QA_ASK_LEGACY_OPERATION",
     "QA_ASK_ADMISSION_REQUEST_SCHEMA",

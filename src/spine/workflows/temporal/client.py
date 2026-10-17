@@ -33,6 +33,12 @@ class TemporalSdkClient(Protocol):
     def get_workflow_handle(self, workflow_id: str) -> object: ...
 
 
+class TemporalSdkWorkflowHandle(Protocol):
+    async def signal(self, signal: str, arg: object | None = None) -> None: ...
+
+    async def describe(self) -> object: ...
+
+
 class TemporalSdkWorkflowClient(AskAdmissionWorkflowClient):
     """Adapt the official SDK client without leaking its types inward."""
 
@@ -78,6 +84,17 @@ class TemporalSdkWorkflowClient(AskAdmissionWorkflowClient):
             workflow_id=workflow_id,
             run_id=UUID(workflow_id),
         )
+
+    async def request_cancellation(self, *, workflow_id: str) -> None:
+        """Signal the already-started workflow; outbox retry covers start ordering."""
+
+        handle = self._client.get_workflow_handle(workflow_id)
+        description = await handle.describe()  # type: ignore[attr-defined]
+        status = getattr(description, "status", None)
+        status_name = getattr(status, "name", str(status)).lower()
+        if status_name not in {"running", "workflowexecutionstatus.running"}:
+            return
+        await handle.signal("request_cancellation")  # type: ignore[attr-defined]
 
 
 __all__ = ["TemporalSdkClient", "TemporalSdkWorkflowClient"]

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 import pytest
@@ -119,6 +119,28 @@ async def exercise_ask_admission_contract(adapter: PersistenceAdapter) -> None:
     assert message.run_id == first.run_id
     assert message.state is QAMessageState.PENDING
     assert message.question == command.question
+
+    cancellation_requested_at = run.created_at + timedelta(seconds=1)
+    async with adapter.uow_factory(context) as uow:
+        requested = await uow.answer_question_runs.request_cancellation(
+            run_id=first.run_id,
+            requested_at=cancellation_requested_at,
+        )
+        await uow.commit()
+    async with adapter.uow_factory(context) as uow:
+        replayed_request = await uow.answer_question_runs.request_cancellation(
+            run_id=first.run_id,
+            requested_at=cancellation_requested_at + timedelta(seconds=1),
+        )
+        started = await uow.answer_question_runs.start_run(
+            replayed_request.begin_execution()
+        )
+        await uow.commit()
+
+    assert requested.cancellation_requested_at == cancellation_requested_at
+    assert replayed_request.cancellation_requested_at == cancellation_requested_at
+    assert started.cancellation_requested_at == cancellation_requested_at
+    assert started.state is AnswerQuestionRunState.RUNNING
 
     changed = AskAdmissionCommand.create(
         workspace_id=workspace_id,
