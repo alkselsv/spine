@@ -1163,6 +1163,42 @@ export interface components {
              */
             workspace_id: string;
         };
+        /** ApiCommandResult[QACancelResultV1] */
+        ApiCommandResult_QACancelResultV1_: {
+            /**
+             * Command Id
+             * Format: uuid
+             */
+            command_id: string;
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Replay
+             * @default false
+             */
+            replay: boolean;
+            result?: components["schemas"]["QACancelResultV1"] | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            status: components["schemas"]["CommandStatus"];
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
         /** ApiCommandResult[QAMessageResponse] */
         ApiCommandResult_QAMessageResponse_: {
             /**
@@ -1217,6 +1253,43 @@ export interface components {
              */
             replay: boolean;
             result?: components["schemas"]["QASessionResponse"] | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            status: components["schemas"]["CommandStatus"];
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** ApiCommandResult[Union[AskOutcomeResponse, QACancelResultV1]] */
+        ApiCommandResult_Union_AskOutcomeResponse__QACancelResultV1__: {
+            /**
+             * Command Id
+             * Format: uuid
+             */
+            command_id: string;
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Replay
+             * @default false
+             */
+            replay: boolean;
+            /** Result */
+            result?: components["schemas"]["AskOutcomeResponse"] | components["schemas"]["QACancelResultV1"] | null;
             /**
              * Schema Version
              * @default 1
@@ -3232,6 +3305,34 @@ export interface components {
              */
             status: "admitted" | "running" | "terminal";
         };
+        /**
+         * QACancelResultV1
+         * @description Content-free result of a durable cancellation request.
+         */
+        QACancelResultV1: {
+            /**
+             * Command Id
+             * Format: uuid
+             */
+            command_id: string;
+            outcome?: components["schemas"]["AnswerQuestionOutcome"] | null;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "cancellation_requested" | "terminal";
+        };
         /** QAMessageResponse */
         QAMessageResponse: {
             accepted_presentation: components["schemas"]["AcceptedAnswerPresentation"] | null;
@@ -4440,6 +4541,8 @@ export interface operations {
             query?: never;
             header: {
                 "Idempotency-Key": string;
+                /** @description Send application/vnd.spine.qa-cancel+json;version=1 to receive the content-free cancellation result. */
+                Accept?: string;
                 "X-Workspace-ID": string;
                 "X-Environment-ID": string;
             };
@@ -4460,7 +4563,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiCommandResult_AskOutcomeResponse_"];
+                    "application/json": components["schemas"]["ApiCommandResult_Union_AskOutcomeResponse__QACancelResultV1__"];
+                };
+            };
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiCommandResult_QACancelResultV1_"];
                 };
             };
             /** @description Safe request error. */

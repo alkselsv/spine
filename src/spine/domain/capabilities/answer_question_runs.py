@@ -197,6 +197,7 @@ class AnswerQuestionRun(ValidatedDefinitionModel):
     outcome: AnswerQuestionOutcome | None = None
     final_attempt_id: UUID | None = None
     created_at: datetime
+    cancellation_requested_at: datetime | None = None
     completed_at: datetime | None = None
 
     @classmethod
@@ -283,6 +284,21 @@ class AnswerQuestionRun(ValidatedDefinitionModel):
             }
         )
 
+    def request_cancellation(self, *, requested_at: datetime) -> "AnswerQuestionRun":
+        """Record durable cancellation intent without claiming a terminal result."""
+
+        _aware(requested_at, "requested_at")
+        if requested_at < self.created_at:
+            raise ValueError("Q&A cancellation request precedes creation")
+        if self.state is AnswerQuestionRunState.COMPLETED or self.cancellation_requested_at is not None:
+            return self
+        return type(self).model_validate(
+            {
+                **self.model_dump(mode="python"),
+                "cancellation_requested_at": requested_at,
+            }
+        )
+
     def begin_execution(self) -> "AnswerQuestionRun":
         """Advance an admitted run to the single executable state.
 
@@ -319,7 +335,7 @@ class AnswerQuestionRun(ValidatedDefinitionModel):
     def validate_artifact_ids(cls, value: tuple[UUID, ...], info: Any) -> tuple[UUID, ...]:
         return _unique_ids(value, info.field_name)
 
-    @field_validator("created_at", "completed_at")
+    @field_validator("created_at", "cancellation_requested_at", "completed_at")
     @classmethod
     def validate_time(cls, value: datetime | None, info: Any) -> datetime | None:
         if value is not None:
@@ -336,6 +352,11 @@ class AnswerQuestionRun(ValidatedDefinitionModel):
             raise ValueError("Q&A run terminal fields are inconsistent")
         if self.completed_at is not None and self.completed_at < self.created_at:
             raise ValueError("Q&A run completion precedes creation")
+        if (
+            self.cancellation_requested_at is not None
+            and self.cancellation_requested_at < self.created_at
+        ):
+            raise ValueError("Q&A cancellation request precedes creation")
         if self.outcome is AnswerQuestionOutcome.ANSWERED and not self.output_artifact_ids:
             raise ValueError("answered Q&A run requires output artifacts")
         return self

@@ -11,8 +11,11 @@ from spine.application.outbox.dispatch import TerminalOutboxConsumerFailure
 from spine.application.outbox.dispatch import RetryableOutboxConsumerFailure
 from spine.application.persistence.ask_admission import (
     AskAdmissionDispatchPayload,
+    AskCancellationDispatchPayload,
     QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION,
     QA_ASK_ADMISSION_EVENT_TYPE,
+    QA_ASK_CANCELLATION_EVENT_SCHEMA_VERSION,
+    QA_ASK_CANCELLATION_EVENT_TYPE,
 )
 from spine.domain.common import ActorKind, ActorRef, EnvironmentKind
 from spine.application.persistence.outbox import (
@@ -30,6 +33,7 @@ from spine.application.workflows.ask_admission_dispatch import (
     AskAdmissionWorkflowHandle,
     AskAdmissionWorkflowInput,
     AskAdmissionWorkflowLauncher,
+    AskCancellationDispatchConsumer,
     ScopedAskAdmissionCommandLoader,
     TemporalWorkflowAlreadyStarted,
     reconcile_ask_admissions,
@@ -91,6 +95,7 @@ def admission_intent():
 class FakeTemporal:
     def __init__(self) -> None:
         self.started: list[tuple[str, str, AskAdmissionWorkflowInput]] = []
+        self.cancellation_requests: list[str] = []
 
     async def start_workflow(self, *, workflow_type, workflow_id, input):
         if self.started:
@@ -106,6 +111,9 @@ class FakeTemporal:
                     workflow_id=existing_id, run_id=input.run_id
                 )
         raise LookupError("missing workflow")
+
+    async def request_cancellation(self, *, workflow_id):
+        self.cancellation_requests.append(workflow_id)
 
 
 class FakeCommandSource:
@@ -203,13 +211,61 @@ async def test_temporal_start_failure_is_retryable_and_does_not_ack_intent() -> 
         await consumer.consume(intent, context)
 
 
-def test_workflow_cancellation_seam_is_deterministic_and_non_executing() -> None:
-    workflow = AskAdmissionWorkflow()
+@pytest.mark.asyncio
+async def test_workflow_cancel_before_start_runs_only_cancellation_activity() -> None:
+    result = object()
+
+    class Executor:
+        async def execute(self, workflow_input):
+            pytest.fail("cancellation before start must skip execution")
+
+        async def cancel(self, workflow_input):
+            assert workflow_input.run_id == RUN_ID
+            return result
+
+    workflow = AskAdmissionWorkflow(Executor())
 
     assert workflow.cancellation_requested is False
     workflow.request_cancellation()
     workflow.request_cancellation()
     assert workflow.cancellation_requested is True
+    assert await workflow.execute(workflow_input()) is result
+
+
+@pytest.mark.asyncio
+async def test_cancellation_dispatch_signals_the_stable_temporal_workflow() -> None:
+    registry = OutboxEventRegistry()
+    from spine.application.persistence.ask_admission import (
+        register_ask_admission_outbox_event,
+    )
+
+    register_ask_admission_outbox_event(registry)
+    event_id = UUID("80000000-0000-0000-0000-000000000429")
+    intent = registry.build_intent(
+        event_id=event_id,
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        event_type=QA_ASK_CANCELLATION_EVENT_TYPE,
+        schema_version=QA_ASK_CANCELLATION_EVENT_SCHEMA_VERSION,
+        payload=AskCancellationDispatchPayload(run_id=RUN_ID),
+        aggregate=OpaqueObjectReference(
+            object_type="answer_question_run", object_id=RUN_ID, schema_version=1
+        ),
+        producer_deduplication_id=f"qa-ask-cancellation:{RUN_ID}",
+        trace_id=TRACE_ID,
+    )
+    context = DiagnosticContext(
+        trace_id=TRACE_ID, correlation_id=None, causation_id=event_id
+    )
+    client = FakeTemporal()
+
+    consumer = AskCancellationDispatchConsumer(client)
+    delivered = await consumer.consume(intent, context)
+    replayed = await consumer.consume(intent, context)
+
+    assert delivered.diagnostic_context == context
+    assert replayed.diagnostic_context == context
+    assert client.cancellation_requests == [str(RUN_ID), str(RUN_ID)]
 
 
 @pytest.mark.asyncio

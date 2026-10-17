@@ -19,6 +19,10 @@ from spine.application.persistence.ask_admission import (
     AskAdmissionResult,
     AskAdmissionStatus,
 )
+from spine.application.ask_admission import (
+    AskCancellationLifecycle,
+    AskCancellationStatus,
+)
 from spine.application.persistence.errors import IdempotencyConflictError
 from spine.application.telemetry import (
     OperationalComponent,
@@ -217,6 +221,25 @@ class FakeAdmissionService:
                 if self.lifecycle is AskAdmissionLifecycle.TERMINAL
                 else None
             ),
+        )
+
+    async def request_cancellation(self, *, context, run_id) -> AskCancellationStatus:
+        del context
+        self.calls.append(run_id)
+        terminal = self.lifecycle is AskAdmissionLifecycle.TERMINAL
+        return AskCancellationStatus(
+            command_id=COMMAND_ID,
+            run_id=run_id,
+            status=(
+                AskCancellationLifecycle.TERMINAL
+                if terminal
+                else AskCancellationLifecycle.CANCELLATION_REQUESTED
+            ),
+            outcome=AnswerQuestionOutcome.ABSTAINED if terminal else None,
+            replay=len(self.calls) > 1,
+            session_id=SESSION_ID,
+            message_id=MESSAGE_ID,
+            attempt_id=ATTEMPT_ID if terminal else None,
         )
 
 def app(service: FakeAskService):
@@ -606,6 +629,179 @@ async def test_authorized_ask_cancellation_uses_trusted_scope_and_stable_termina
     assert response.status_code == 200
     assert response.json()["result"]["outcome"] == "cancelled"
     assert service.calls[0].run_id == RUN_ID
+
+
+@pytest.mark.asyncio
+async def test_legacy_cancellation_suppresses_answer_from_completion_race() -> None:
+    service = FakeAskService(answered_result(), [])
+    application = app(service)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/v1/ask/{RUN_ID}/cancel",
+            json={"schema_version": 1},
+            headers={**headers(), "Idempotency-Key": "cancel-race"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["result"]["outcome"] == "answered"
+    assert response.json()["result"]["answer"] is None
+    assert "The policy applies" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_v1_cancellation_returns_content_free_accepted_result() -> None:
+    admission = FakeAdmissionService(
+        AskAdmissionResult(
+            command_id=COMMAND_ID,
+            session_id=SESSION_ID,
+            message_id=MESSAGE_ID,
+            run_id=RUN_ID,
+            dispatch_event_id=UUID("70000000-0000-0000-0000-000000000001"),
+            replay=False,
+        )
+    )
+    application = admission_app(admission)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/v1/ask/{RUN_ID}/cancel",
+            json={"schema_version": 1},
+            headers={
+                **headers(),
+                "Idempotency-Key": "cancel-1",
+                "Accept": "application/vnd.spine.qa-cancel+json;version=1",
+            },
+        )
+
+    assert response.status_code == 202
+    assert response.json()["result"] == {
+        "schema_version": 1,
+        "command_id": str(COMMAND_ID),
+        "run_id": str(RUN_ID),
+        "status": "cancellation_requested",
+        "outcome": None,
+    }
+    assert "question" not in response.text
+    assert "answer" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_v1_late_cancellation_returns_persisted_terminal_outcome() -> None:
+    admission = FakeAdmissionService(
+        AskAdmissionResult(
+            command_id=COMMAND_ID,
+            session_id=SESSION_ID,
+            message_id=MESSAGE_ID,
+            run_id=RUN_ID,
+            dispatch_event_id=UUID("70000000-0000-0000-0000-000000000001"),
+            replay=True,
+        ),
+        lifecycle=AskAdmissionLifecycle.TERMINAL,
+    )
+    application = admission_app(admission)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/v1/ask/{RUN_ID}/cancel",
+            json={"schema_version": 1},
+            headers={
+                **headers(),
+                "Idempotency-Key": "cancel-1",
+                "Accept": "application/vnd.spine.qa-cancel+json;version=1",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["result"]["status"] == "terminal"
+    assert response.json()["result"]["outcome"] == "abstained"
+    assert "question" not in response.text
+    assert "answer" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_legacy_late_cancellation_keeps_response_shape_without_answer_text() -> None:
+    admission = FakeAdmissionService(
+        AskAdmissionResult(
+            command_id=COMMAND_ID,
+            session_id=SESSION_ID,
+            message_id=MESSAGE_ID,
+            run_id=RUN_ID,
+            dispatch_event_id=UUID("70000000-0000-0000-0000-000000000001"),
+            replay=True,
+        ),
+        lifecycle=AskAdmissionLifecycle.TERMINAL,
+    )
+    service = FakeAskService(answered_result(), [])
+    application = authorized_app([])
+    install_authorized_ask_routes(
+        application, service=service, admission_service=admission
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/v1/ask/{RUN_ID}/cancel",
+            json={"schema_version": 1},
+            headers={**headers(), "Idempotency-Key": "cancel-1"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["result"]["outcome"] == "abstained"
+    assert response.json()["result"]["answer"] is None
+    assert "The policy applies" not in response.text
+    assert service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_pending_cancellation_waits_for_temporal_terminal_result() -> None:
+    class WaitingAdmission(FakeAdmissionService):
+        async def wait_for_cancellation(self, *, context, run_id, poll_interval=0.05):
+            del context, poll_interval
+            self.calls.append(("wait", run_id))
+            return AskCancellationStatus(
+                command_id=COMMAND_ID,
+                run_id=run_id,
+                status=AskCancellationLifecycle.TERMINAL,
+                outcome=AnswerQuestionOutcome.CANCELLED,
+                replay=True,
+                session_id=SESSION_ID,
+                message_id=MESSAGE_ID,
+                attempt_id=ATTEMPT_ID,
+            )
+
+    admission = WaitingAdmission(
+        AskAdmissionResult(
+            command_id=COMMAND_ID,
+            session_id=SESSION_ID,
+            message_id=MESSAGE_ID,
+            run_id=RUN_ID,
+            dispatch_event_id=UUID("70000000-0000-0000-0000-000000000001"),
+            replay=False,
+        )
+    )
+    service = FakeAskService(answered_result(), [])
+    application = authorized_app([])
+    install_authorized_ask_routes(
+        application, service=service, admission_service=admission
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/v1/ask/{RUN_ID}/cancel",
+            json={"schema_version": 1},
+            headers={**headers(), "Idempotency-Key": "cancel-wait"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["result"]["outcome"] == "cancelled"
+    assert response.json()["result"]["answer"] is None
+    assert admission.calls[-1] == ("wait", RUN_ID)
+    assert service.calls == []
 
 
 @pytest.mark.asyncio

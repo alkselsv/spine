@@ -908,6 +908,64 @@
         "title": "ApiCommandResult[QAAskAdmissionResultV1]",
         "type": "object"
       },
+      "ApiCommandResult_QACancelResultV1_": {
+        "additionalProperties": false,
+        "properties": {
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "replay": {
+            "default": false,
+            "title": "Replay",
+            "type": "boolean"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QACancelResultV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CommandStatus"
+          },
+          "trace_id": {
+            "format": "uuid",
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "environment_id",
+          "trace_id",
+          "command_id",
+          "status"
+        ],
+        "title": "ApiCommandResult[QACancelResultV1]",
+        "type": "object"
+      },
       "ApiCommandResult_QAMessageResponse_": {
         "additionalProperties": false,
         "properties": {
@@ -1022,6 +1080,68 @@
           "status"
         ],
         "title": "ApiCommandResult[QASessionResponse]",
+        "type": "object"
+      },
+      "ApiCommandResult_Union_AskOutcomeResponse__QACancelResultV1__": {
+        "additionalProperties": false,
+        "properties": {
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "replay": {
+            "default": false,
+            "title": "Replay",
+            "type": "boolean"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskOutcomeResponse"
+              },
+              {
+                "$ref": "#/components/schemas/QACancelResultV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CommandStatus"
+          },
+          "trace_id": {
+            "format": "uuid",
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "environment_id",
+          "trace_id",
+          "command_id",
+          "status"
+        ],
+        "title": "ApiCommandResult[Union[AskOutcomeResponse, QACancelResultV1]]",
         "type": "object"
       },
       "ApiResponseEnvelope_CitationInspectionResult_": {
@@ -5875,6 +5995,53 @@
         "title": "QAAskAdmissionResultV1",
         "type": "object"
       },
+      "QACancelResultV1": {
+        "additionalProperties": false,
+        "description": "Content-free result of a durable cancellation request.",
+        "properties": {
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnswerQuestionOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "cancellation_requested",
+              "terminal"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command_id",
+          "run_id",
+          "status"
+        ],
+        "title": "QACancelResultV1",
+        "type": "object"
+      },
       "QAMessageResponse": {
         "additionalProperties": false,
         "properties": {
@@ -8455,6 +8622,15 @@
             }
           },
           {
+            "description": "Send application/vnd.spine.qa-cancel+json;version=1 to receive the content-free cancellation result.",
+            "in": "header",
+            "name": "Accept",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "in": "header",
             "name": "X-Workspace-ID",
             "required": true,
@@ -8488,11 +8664,21 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiCommandResult_AskOutcomeResponse_"
+                  "$ref": "#/components/schemas/ApiCommandResult_Union_AskOutcomeResponse__QACancelResultV1__"
                 }
               }
             },
             "description": "Successful Response"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCommandResult_QACancelResultV1_"
+                }
+              }
+            },
+            "description": "Accepted"
           },
           "400": {
             "content": {

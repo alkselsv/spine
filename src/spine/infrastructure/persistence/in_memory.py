@@ -83,7 +83,12 @@ from spine.application.persistence.answer_question_runs import (
     validate_answer_question_run_completion,
     validate_answer_question_run_start,
 )
-from spine.application.persistence.ask_admission import register_ask_admission_outbox_event
+from spine.application.persistence.ask_admission import (
+    AskCancellationDispatchPayload,
+    QA_ASK_CANCELLATION_EVENT_SCHEMA_VERSION,
+    QA_ASK_CANCELLATION_EVENT_TYPE,
+    register_ask_admission_outbox_event,
+)
 from spine.application.disclosure_revalidation import (
     InMemoryDisclosureValidationResultRepository,
 )
@@ -1142,9 +1147,25 @@ class _AnswerQuestionRunRepository:
         if existing is None:
             self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
         if existing.state is AnswerQuestionRunState.COMPLETED:
-            if existing != run:
-                self._uow._fail(AnswerQuestionRunConflictError("Q&A run is already terminal."))
+            # A terminal CAS loser observes the canonical winner on replay.
+            immutable_fields = (
+                "workspace_id",
+                "environment_id",
+                "environment",
+                "subject",
+                "idempotency_key",
+                "command_digest",
+                "input_artifact_ids",
+                "diagnostic_context",
+                "created_at",
+            )
+            if any(getattr(existing, field) != getattr(run, field) for field in immutable_fields):
+                self._uow._fail(AnswerQuestionRunConflictError("Q&A run identity is invalid."))
             return existing.model_copy(deep=True)
+        if existing.cancellation_requested_at is not None:
+            run = run.model_copy(
+                update={"cancellation_requested_at": existing.cancellation_requested_at}
+            )
         terminal_attempt = next(
             (
                 attempt
@@ -1193,12 +1214,46 @@ class _AnswerQuestionRunRepository:
             self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
         if existing.state is AnswerQuestionRunState.COMPLETED:
             return existing.model_copy(deep=True)
+        if existing.cancellation_requested_at is not None:
+            run = run.model_copy(
+                update={"cancellation_requested_at": existing.cancellation_requested_at}
+            )
         try:
             validate_answer_question_run_start(existing, run)
         except ValueError:
             self._uow._fail(AnswerQuestionRunConflictError("Q&A run start lineage is invalid."))
         self._uow._pending_answer_question_runs[key] = run.model_copy(deep=True)
         return run.model_copy(deep=True)
+
+    async def request_cancellation(
+        self, *, run_id: UUID, requested_at: datetime
+    ) -> AnswerQuestionRun:
+        self._uow._guard_active()
+        existing = self._runs().get(self._run_key(run_id))
+        if existing is None:
+            self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
+        updated = existing.request_cancellation(requested_at=requested_at)
+        if updated is existing:
+            return existing.model_copy(deep=True)
+        scope = self._scope()
+        event_id = uuid5(NAMESPACE_URL, f"spine.qa.ask-cancellation:v1:{run_id}")
+        await self._uow.outbox.append(
+            self._uow._outbox_events.build_intent(
+                event_id=event_id,
+                workspace_id=scope.workspace_id,
+                environment_id=scope.environment_id,
+                event_type=QA_ASK_CANCELLATION_EVENT_TYPE,
+                schema_version=QA_ASK_CANCELLATION_EVENT_SCHEMA_VERSION,
+                payload=AskCancellationDispatchPayload(run_id=run_id),
+                aggregate=OpaqueObjectReference(
+                    object_type="answer_question_run", object_id=run_id, schema_version=1
+                ),
+                producer_deduplication_id=f"qa-ask-cancellation:{run_id}",
+                trace_id=existing.diagnostic_context.trace_id,
+            )
+        )
+        self._uow._pending_answer_question_runs[self._run_key(run_id)] = updated
+        return updated.model_copy(deep=True)
 
     async def start_attempt(
         self, attempt: AnswerQuestionAttempt

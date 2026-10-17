@@ -21,13 +21,17 @@ from spine.application.outbox.dispatch import (
     TerminalOutboxConsumerFailure,
 )
 from spine.application.persistence.ask_admission import (
+    AskCancellationDispatchPayload,
     AskAdmissionDispatchPayload,
+    QA_ASK_CANCELLATION_EVENT_SCHEMA_VERSION,
+    QA_ASK_CANCELLATION_EVENT_TYPE,
     QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION,
     QA_ASK_ADMISSION_EVENT_TYPE,
 )
 from spine.application.persistence.outbox import OutboxIntent
 from spine.application.diagnostics.context import DiagnosticContext
 from spine.application.authorized_ask import (
+    AskCancellationCommand,
     AskExecutionCommand,
     AskRequestContext,
     AuthorizedAskResult,
@@ -247,6 +251,8 @@ class AskAdmissionWorkflowClient(Protocol):
 
     async def get_workflow(self, *, workflow_id: str) -> AskAdmissionWorkflowHandle: ...
 
+    async def request_cancellation(self, *, workflow_id: str) -> None: ...
+
 
 class AskAdmissionWorkflowLauncher:
     """Start once, then resolve duplicate delivery to the existing workflow."""
@@ -313,6 +319,46 @@ class AskAdmissionDispatchConsumer:
         return OutboxConsumerSuccess(diagnostic_context=diagnostic_context)
 
 
+class AskCancellationDispatchConsumer:
+    """Deliver a committed cancellation intent to the canonical Temporal run."""
+
+    def __init__(self, client: AskAdmissionWorkflowClient) -> None:
+        self._client = client
+
+    async def consume(
+        self,
+        intent: OutboxIntent,
+        diagnostic_context: DiagnosticContext,
+    ) -> OutboxConsumerSuccess:
+        payload = intent.payload
+        if (
+            intent.event_type != QA_ASK_CANCELLATION_EVENT_TYPE
+            or intent.schema_version != QA_ASK_CANCELLATION_EVENT_SCHEMA_VERSION
+            or type(payload) is not AskCancellationDispatchPayload
+            or intent.environment_id is None
+            or intent.aggregate is None
+            or intent.aggregate.object_type != "answer_question_run"
+            or intent.aggregate.object_id != payload.run_id
+        ):
+            raise TerminalOutboxConsumerFailure("qa.ask.invalid_cancellation_intent")
+        expected_context = DiagnosticContext(
+            trace_id=intent.trace_id,
+            correlation_id=intent.correlation_id,
+            causation_id=intent.event_id,
+        )
+        if diagnostic_context != expected_context:
+            raise TerminalOutboxConsumerFailure("qa.ask.invalid_cancellation_intent")
+        try:
+            await self._client.request_cancellation(
+                workflow_id=workflow_id_for_run(payload.run_id)
+            )
+        except Exception:
+            raise RetryableOutboxConsumerFailure(
+                "qa.ask.temporal_unavailable"
+            ) from None
+        return OutboxConsumerSuccess(diagnostic_context=diagnostic_context)
+
+
 class AskAdmissionWorkflowState(str, Enum):
     WAITING_FOR_EXECUTION = "waiting_for_execution"
     CANCELLATION_REQUESTED = "cancellation_requested"
@@ -338,13 +384,13 @@ class AskAdmissionWorkflow:
 
     async def execute(
         self, workflow_input: AskAdmissionWorkflowInput
-    ) -> AuthorizedAskResult | None:
+    ) -> AuthorizedAskResult:
         """Run the admitted capability exactly once through the activity seam."""
 
-        if self.cancellation_requested:
-            return None
         if self._executor is None:
             raise RuntimeError("Ask workflow execution is not composed")
+        if self.cancellation_requested:
+            return await self._executor.cancel(workflow_input)
         return await self._executor.execute(workflow_input)
 
 
@@ -412,6 +458,44 @@ class AskAdmissionWorkflowExecutor:
             raise InvalidAskAdmissionIntent("Ask execution returned mismatched identity.")
         return result
 
+    async def cancel(
+        self, workflow_input: AskAdmissionWorkflowInput
+    ) -> AuthorizedAskResult:
+        """Observe durable cancellation under the workflow's current authorization."""
+
+        command = await self._loader.load(workflow_input)
+        if command.subject is None or command.idempotency_key is None:
+            raise AskAdmissionCommandUnavailable(
+                "Admitted Ask command lacks cancellation identity."
+            )
+        context = self._persistence_context_factory(workflow_input)
+        result = await self._service.cancel(
+            AskCancellationCommand(
+                request_context=AskRequestContext(
+                    subject_id=command.subject.id,
+                    workspace_id=workflow_input.workspace_id,
+                    environment_id=workflow_input.environment_id,
+                    trace_id=workflow_input.trace_id,
+                    authorization_generation=self._authorization_generation,
+                    correlation_id=workflow_input.correlation_id,
+                    causation_id=workflow_input.causation_id,
+                ),
+                persistence_context=context,
+                run_id=workflow_input.run_id,
+                idempotency_key=IdempotencyKey(
+                    f"qa-cancel-{workflow_input.run_id}"
+                ),
+            )
+        )
+        if (
+            result.command_id != workflow_input.command_id
+            or result.session_id != workflow_input.session_id
+            or result.message_id != workflow_input.message_id
+            or result.run_id != workflow_input.run_id
+        ):
+            raise InvalidAskAdmissionIntent("Ask cancellation returned mismatched identity.")
+        return result
+
 
 class AskAdmissionReconciliationSource(Protocol):
     async def list_unstarted_admissions(
@@ -473,6 +557,7 @@ __all__ = [
     "AskAdmissionCommandSource",
     "AskAdmissionCommandUnavailable",
     "AskAdmissionDispatchConsumer",
+    "AskCancellationDispatchConsumer",
     "AskAdmissionReconciliationReport",
     "AskAdmissionReconciliationSource",
     "AskAdmissionWorkflow",

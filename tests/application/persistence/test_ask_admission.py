@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -8,6 +9,11 @@ import pytest
 from spine.application.persistence.ask_admission import (
     AskAdmissionCommand,
     QA_ASK_ADMISSION_OPERATION,
+)
+from spine.application.ask_admission import (
+    AskCancellationLifecycle,
+    AskCancellationNotFound,
+    PersistedAskAdmissionService,
 )
 from spine.application.persistence.command_digest import digest_command
 from spine.application.persistence.context import (
@@ -24,6 +30,7 @@ from spine.application.persistence.errors import (
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.persistence.outbox import OutboxEventRegistry
 from spine.domain.common import ActorKind, ActorRef, EnvironmentKind
+from spine.domain.capabilities.answer_question import AnswerQuestionOutcome
 from spine.domain.qa_sessions import QASession
 from spine.domain.workspaces import Environment, Workspace
 from spine.infrastructure.persistence.contexts import (
@@ -231,6 +238,124 @@ async def test_admitted_run_start_is_idempotent_and_preserves_identity() -> None
 
     assert first.state.value == "running"
     assert second == first
+
+
+@pytest.mark.asyncio
+async def test_cancellation_intent_is_durable_idempotent_and_survives_run_start() -> None:
+    persistence, boundary = await _persistence()
+    context = _context(boundary, operation=QA_ASK_ADMISSION_OPERATION)
+    async with persistence.uow_factory(context) as uow:
+        admission = await uow.ask_admissions.admit(_command())
+        await uow.commit()
+
+    requested_at = NOW.replace(microsecond=1)
+    async with persistence.uow_factory(context) as uow:
+        first = await uow.answer_question_runs.request_cancellation(
+            run_id=admission.run_id,
+            requested_at=requested_at,
+        )
+        await uow.commit()
+    async with persistence.uow_factory(context) as uow:
+        replay = await uow.answer_question_runs.request_cancellation(
+            run_id=admission.run_id,
+            requested_at=NOW.replace(microsecond=2),
+        )
+        started = await uow.answer_question_runs.start_run(replay.begin_execution())
+        await uow.commit()
+
+    assert first.cancellation_requested_at == requested_at
+    assert replay.cancellation_requested_at == requested_at
+    assert replay.state.value == "admitted"
+    assert started.state.value == "running"
+    assert started.cancellation_requested_at == requested_at
+
+
+@pytest.mark.asyncio
+async def test_cancellation_command_replays_stably_and_hides_unknown_runs() -> None:
+    persistence, boundary = await _persistence()
+    context = _context(boundary, operation=QA_ASK_ADMISSION_OPERATION)
+    async with persistence.uow_factory(context) as uow:
+        await uow.ask_admissions.admit(_command())
+        await uow.commit()
+    service = PersistedAskAdmissionService(
+        persistence.uow_factory,
+        clock=lambda: NOW.replace(microsecond=1),
+    )
+
+    first = await service.request_cancellation(context=context, run_id=RUN_ID)
+    replay = await service.request_cancellation(context=context, run_id=RUN_ID)
+
+    assert first.status is AskCancellationLifecycle.CANCELLATION_REQUESTED
+    assert replay.status is AskCancellationLifecycle.CANCELLATION_REQUESTED
+    assert replay.command_id == first.command_id
+    assert replay.run_id == first.run_id
+    assert replay.replay is True
+    with pytest.raises(AskCancellationNotFound):
+        await service.request_cancellation(
+            context=context,
+            run_id=UUID("a0000000-0000-0000-0000-000000000426"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_pending_cancellation_wait_has_a_bounded_deadline() -> None:
+    persistence, boundary = await _persistence()
+    context = _context(boundary, operation=QA_ASK_ADMISSION_OPERATION)
+    async with persistence.uow_factory(context) as uow:
+        await uow.ask_admissions.admit(_command())
+        await uow.commit()
+    service = PersistedAskAdmissionService(persistence.uow_factory, clock=lambda: NOW)
+
+    with pytest.raises(TimeoutError):
+        await service.wait_for_cancellation(
+            context=context,
+            run_id=RUN_ID,
+            poll_interval=0.001,
+            timeout=0.005,
+        )
+@pytest.mark.asyncio
+async def test_cancellation_rehydrates_terminal_message_without_new_intent() -> None:
+    persistence, boundary = await _persistence()
+    context = _context(boundary, operation=QA_ASK_ADMISSION_OPERATION)
+    async with persistence.uow_factory(context) as uow:
+        await uow.ask_admissions.admit(_command())
+        await uow.commit()
+    async with persistence.uow_factory(context) as uow:
+        await uow.qa_sessions.complete_message(
+            workspace_id=WORKSPACE_ID,
+            environment_id=ENVIRONMENT_ID,
+            session_id=SESSION_ID,
+            message_id=MESSAGE_ID,
+            answer=None,
+            outcome=AnswerQuestionOutcome.ABSTAINED,
+            cancelled=False,
+            completed_at=NOW,
+            command_id=UUID("b0000000-0000-0000-0000-000000000426"),
+            idempotency_key=IdempotencyKey("complete-before-cancel"),
+            disclosure_dependencies=None,
+            digest=digest_command(
+                operation=QA_ASK_ADMISSION_OPERATION,
+                operation_schema_version=1,
+                payload={
+                    "session_id": SESSION_ID,
+                    "message_id": MESSAGE_ID,
+                    "answer": None,
+                    "disclosure_dependencies": None,
+                    "outcome": AnswerQuestionOutcome.ABSTAINED,
+                    "cancelled": False,
+                },
+            ),
+        )
+        await uow.commit()
+    service = PersistedAskAdmissionService(persistence.uow_factory, clock=lambda: NOW)
+
+    result = await service.request_cancellation(context=context, run_id=RUN_ID)
+
+    async with persistence.uow_factory(context) as uow:
+        run = await uow.answer_question_runs.resolve_run(RUN_ID)
+    assert result.status is AskCancellationLifecycle.TERMINAL
+    assert result.outcome is AnswerQuestionOutcome.ABSTAINED
+    assert run.cancellation_requested_at is None
 
 
 @pytest.mark.asyncio

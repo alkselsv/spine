@@ -110,6 +110,10 @@ class AnswerQuestionRunRepository(Protocol):
 
     async def start_run(self, run: AnswerQuestionRun) -> AnswerQuestionRun: ...
 
+    async def request_cancellation(
+        self, *, run_id: UUID, requested_at: datetime
+    ) -> AnswerQuestionRun: ...
+
     async def resolve_run(self, run_id: UUID) -> AnswerQuestionRun: ...
 
     async def resolve_run_in_scope(
@@ -214,6 +218,7 @@ def validate_answer_question_run_completion(
         "input_artifact_ids",
         "diagnostic_context",
         "created_at",
+        "cancellation_requested_at",
     }
     if (
         existing.state is not AnswerQuestionRunState.RUNNING
@@ -250,6 +255,7 @@ def validate_answer_question_run_start(
         "created_at",
         "outcome",
         "final_attempt_id",
+        "cancellation_requested_at",
         "completed_at",
     }
     if (

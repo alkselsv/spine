@@ -139,7 +139,12 @@ from spine.application.persistence.answer_question_runs import (
     validate_answer_question_run_completion,
     validate_answer_question_run_start,
 )
-from spine.application.persistence.ask_admission import register_ask_admission_outbox_event
+from spine.application.persistence.ask_admission import (
+    AskCancellationDispatchPayload,
+    QA_ASK_CANCELLATION_EVENT_SCHEMA_VERSION,
+    QA_ASK_CANCELLATION_EVENT_TYPE,
+    register_ask_admission_outbox_event,
+)
 from spine.application.persistence.outbox import (
     OpaqueObjectReference,
     OutboxEventRegistry,
@@ -1083,7 +1088,11 @@ class _PostgreSQLAnswerQuestionRunRepository:
             raise AnswerQuestionAttemptImmutableError("Q&A attempt record is invalid.") from None
 
     async def _find_run(
-        self, *, run_id: UUID | None = None, idempotency_key: str | None = None
+        self,
+        *,
+        run_id: UUID | None = None,
+        idempotency_key: str | None = None,
+        for_update: bool = False,
     ) -> Mapping[str, object] | None:
         scope = self._scope()
         conditions = [
@@ -1094,7 +1103,10 @@ class _PostgreSQLAnswerQuestionRunRepository:
             conditions.append(_ANSWER_QUESTION_RUNS.c.run_id == run_id)
         if idempotency_key is not None:
             conditions.append(_ANSWER_QUESTION_RUNS.c.idempotency_key == idempotency_key)
-        result = await self._uow._execute(select(_ANSWER_QUESTION_RUNS).where(*conditions))
+        query = select(_ANSWER_QUESTION_RUNS).where(*conditions)
+        if for_update:
+            query = query.with_for_update()
+        result = await self._uow._execute(query)
         return result.mappings().one_or_none()
 
     async def _find_attempt(self, attempt_id: UUID) -> Mapping[str, object] | None:
@@ -1285,14 +1297,32 @@ class _PostgreSQLAnswerQuestionRunRepository:
         self._validate_run_scope(run)
         if run.state is not AnswerQuestionRunState.COMPLETED:
             await self._uow._fail(AnswerQuestionRunConflictError("Q&A run completion is invalid."))
-        row = await self._find_run(run_id=run.run_id)
+        row = await self._find_run(run_id=run.run_id, for_update=True)
         if row is None:
             await self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
         existing = self._restore_run(row)
         if existing.state is AnswerQuestionRunState.COMPLETED:
-            if existing != run:
-                await self._uow._fail(AnswerQuestionRunConflictError("Q&A run is already terminal."))
+            # A terminal CAS loser reads the canonical winner on replay.
+            immutable_fields = (
+                "workspace_id",
+                "environment_id",
+                "environment",
+                "subject",
+                "idempotency_key",
+                "command_digest",
+                "input_artifact_ids",
+                "diagnostic_context",
+                "created_at",
+            )
+            if any(getattr(existing, field) != getattr(run, field) for field in immutable_fields):
+                await self._uow._fail(
+                    AnswerQuestionRunConflictError("Q&A run identity is invalid.")
+                )
             return existing
+        if existing.cancellation_requested_at is not None:
+            run = run.model_copy(
+                update={"cancellation_requested_at": existing.cancellation_requested_at}
+            )
         terminal_attempt_row = await self._find_attempt(run.final_attempt_id)  # type: ignore[arg-type]
         if terminal_attempt_row is None:
             await self._uow._fail(AnswerQuestionRunConflictError("Q&A run terminal attempt is unavailable."))
@@ -1342,12 +1372,16 @@ class _PostgreSQLAnswerQuestionRunRepository:
         self._validate_run_scope(run)
         if run.state is not AnswerQuestionRunState.RUNNING:
             await self._uow._fail(AnswerQuestionRunConflictError("Q&A run start is invalid."))
-        row = await self._find_run(run_id=run.run_id)
+        row = await self._find_run(run_id=run.run_id, for_update=True)
         if row is None:
             await self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
         existing = self._restore_run(row)
         if existing.state is AnswerQuestionRunState.COMPLETED:
             return existing
+        if existing.cancellation_requested_at is not None:
+            run = run.model_copy(
+                update={"cancellation_requested_at": existing.cancellation_requested_at}
+            )
         try:
             validate_answer_question_run_start(existing, run)
         except ValueError:
@@ -1369,6 +1403,58 @@ class _PostgreSQLAnswerQuestionRunRepository:
                 await self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
             return self._restore_run(current)
         return run
+
+    async def request_cancellation(
+        self, *, run_id: UUID, requested_at: datetime
+    ) -> AnswerQuestionRun:
+        """Persist cancellation intent and its signal event in this Unit of Work."""
+
+        self._uow._guard_active()
+        scope = self._scope()
+        result = await self._uow._execute(
+            select(_ANSWER_QUESTION_RUNS)
+            .where(
+                _ANSWER_QUESTION_RUNS.c.workspace_id == scope.workspace_id,
+                _ANSWER_QUESTION_RUNS.c.environment_id == scope.environment_id,
+                _ANSWER_QUESTION_RUNS.c.run_id == run_id,
+            )
+            .with_for_update()
+        )
+        row = result.mappings().one_or_none()
+        if row is None:
+            await self._uow._fail(
+                AnswerQuestionRunNotFoundError("Q&A run is unavailable.")
+            )
+        existing = self._restore_run(row)
+        updated = existing.request_cancellation(requested_at=requested_at)
+        if updated is existing:
+            return existing
+        await self._uow._execute(
+            update(_ANSWER_QUESTION_RUNS)
+            .where(
+                _ANSWER_QUESTION_RUNS.c.workspace_id == scope.workspace_id,
+                _ANSWER_QUESTION_RUNS.c.environment_id == scope.environment_id,
+                _ANSWER_QUESTION_RUNS.c.run_id == run_id,
+                _ANSWER_QUESTION_RUNS.c.state == existing.state.value,
+            )
+            .values(self._run_values(updated))
+        )
+        event_id = uuid5(NAMESPACE_URL, f"spine.qa.ask-cancellation:v1:{run_id}")
+        intent = self._uow._outbox_events.build_intent(
+            event_id=event_id,
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            event_type=QA_ASK_CANCELLATION_EVENT_TYPE,
+            schema_version=QA_ASK_CANCELLATION_EVENT_SCHEMA_VERSION,
+            payload=AskCancellationDispatchPayload(run_id=run_id),
+            aggregate=OpaqueObjectReference(
+                object_type="answer_question_run", object_id=run_id, schema_version=1
+            ),
+            producer_deduplication_id=f"qa-ask-cancellation:{run_id}",
+            trace_id=existing.diagnostic_context.trace_id,
+        )
+        await self._uow.outbox.append(intent)
+        return updated
 
     async def start_attempt(self, attempt: AnswerQuestionAttempt) -> AnswerQuestionAttempt:
         self._uow._guard_active()

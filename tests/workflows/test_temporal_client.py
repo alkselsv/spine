@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -30,6 +31,8 @@ class FakeTemporalSdk:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object, dict[str, object]]] = []
         self.handles: list[str] = []
+        self.signals: list[tuple[str, str]] = []
+        self.workflow_status = "RUNNING"
         self.duplicate = False
 
     async def start_workflow(self, workflow, arg, **kwargs):
@@ -41,7 +44,22 @@ class FakeTemporalSdk:
 
     def get_workflow_handle(self, workflow_id):
         self.handles.append(workflow_id)
-        return object()
+        return FakeWorkflowHandle(self, workflow_id)
+
+
+class FakeWorkflowHandle:
+    def __init__(self, sdk, workflow_id):
+        self.sdk = sdk
+        self.workflow_id = workflow_id
+
+    async def signal(self, signal, arg=None):
+        del arg
+        self.sdk.signals.append((self.workflow_id, signal))
+
+    async def describe(self):
+        return SimpleNamespace(
+            status=SimpleNamespace(name=self.sdk.workflow_status)
+        )
 
 
 @pytest.mark.asyncio
@@ -86,3 +104,26 @@ async def test_temporal_sdk_bridge_maps_duplicate_start_to_stable_identity() -> 
         )
 
     assert raised.value.workflow_id == str(RUN_ID)
+
+
+@pytest.mark.asyncio
+async def test_temporal_sdk_bridge_signals_cancellation_by_stable_workflow_id() -> None:
+    sdk = FakeTemporalSdk()
+    client = TemporalSdkWorkflowClient(sdk, task_queue="qa")
+
+    await client.request_cancellation(workflow_id=str(RUN_ID))
+
+    assert sdk.handles == [str(RUN_ID)]
+    assert sdk.signals == [(str(RUN_ID), "request_cancellation")]
+
+
+@pytest.mark.asyncio
+async def test_temporal_sdk_bridge_ignores_signal_for_terminal_workflow() -> None:
+    sdk = FakeTemporalSdk()
+    sdk.workflow_status = "COMPLETED"
+    client = TemporalSdkWorkflowClient(sdk, task_queue="qa")
+
+    await client.request_cancellation(workflow_id=str(RUN_ID))
+
+    assert sdk.handles == [str(RUN_ID)]
+    assert sdk.signals == []
