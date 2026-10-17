@@ -1027,6 +1027,18 @@ class _AnswerQuestionRunRepository:
             self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
         return run.model_copy(deep=True)
 
+    async def resolve_run_in_scope(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        run_id: UUID,
+    ) -> AnswerQuestionRun:
+        scope = self._scope()
+        if (workspace_id, environment_id) != (scope.workspace_id, scope.environment_id):
+            self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
+        return await self.resolve_run(run_id)
+
     async def resolve_run_by_key(self, idempotency_key: str) -> AnswerQuestionRun:
         self._uow._guard_active()
         scope = self._scope()

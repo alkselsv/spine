@@ -289,6 +289,8 @@ def _status_for_structured_error(error: StructuredError) -> int:
         "spine.qa_runs.not_found",
     }:
         return 404
+    if error.code == "spine.qa_sessions.message_unavailable":
+        return 503
     if error.code == "spine.qa_feedback.target_not_found":
         return 404
     if error.code == "spine.qa_sessions.conflict":

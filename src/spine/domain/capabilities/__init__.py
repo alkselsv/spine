@@ -73,6 +73,12 @@ from spine.domain.capabilities.answer_question import (
     parse_answer_question_input,
     parse_answer_question_output,
 )
+from spine.domain.capabilities.accepted_answer_presentation import (
+    ACCEPTED_ANSWER_PRESENTATION_SCHEMA,
+    AcceptedAnswerClaimPresentation,
+    AcceptedAnswerPresentation,
+    AcceptedAnswerRelationshipPresentation,
+)
 from spine.domain.capabilities.answer_question_execution import (
     ANSWER_QUESTION_EXECUTION_PIN_SCHEMA,
     AnswerQuestionExecutionPin,
@@ -171,6 +177,10 @@ __all__ = [
     "CITATION_SCHEMA",
     "CLAIM_EVIDENCE_RELATIONSHIP_SCHEMA",
     "AnswerClaim",
+    "AcceptedAnswerClaimPresentation",
+    "AcceptedAnswerPresentation",
+    "AcceptedAnswerRelationshipPresentation",
+    "ACCEPTED_ANSWER_PRESENTATION_SCHEMA",
     "AnswerCandidateInput",
     "AnswerCandidateOutput",
     "AnswerQuestionCandidateInput",

@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from spine.application.diagnostics import DiagnosticContext
 from spine.application.telemetry import (
     InMemoryOperationalObservationStore,
+    ObservedAnswerQuestionRunRepository,
     ObservedOutboxWriter,
     OperationalComponent,
     OperationalObservationEmitter,
@@ -402,3 +403,31 @@ async def test_observed_outbox_writer_records_the_actual_enqueue_handoff() -> No
     assert observation.trace_id == intent.trace_id
     assert observation.correlation_id == intent.correlation_id
     assert observation.causation_id == intent.causation_id
+
+
+@pytest.mark.asyncio
+async def test_observed_run_repository_forwards_scoped_resolution() -> None:
+    expected = object()
+    calls: dict[str, UUID] = {}
+
+    class Repository:
+        async def resolve_run_in_scope(self, *, workspace_id, environment_id, run_id):
+            calls.update(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                run_id=run_id,
+            )
+            return expected
+
+    result = await ObservedAnswerQuestionRunRepository(Repository(), object()).resolve_run_in_scope(
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        run_id=UUID(int=999),
+    )
+
+    assert result is expected
+    assert calls == {
+        "workspace_id": WORKSPACE_ID,
+        "environment_id": ENVIRONMENT_ID,
+        "run_id": UUID(int=999),
+    }

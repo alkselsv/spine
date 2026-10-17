@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import UUID
 
 import httpx
@@ -6,7 +7,9 @@ import pytest
 
 from spine.api.qa_sessions import install_qa_session_routes
 from spine.application.persistence.idempotency import IdempotencyKey
+from spine.application.persistence.context import EnvironmentScope, PersistenceOperation
 from spine.application.qa_sessions import PersistedQASessionService
+from spine.application.qa_sessions import QASessionRequester
 from spine.domain.capabilities import AnswerQuestionOutcome
 from spine.infrastructure.persistence.qa_sessions import InMemoryQASessionRepository
 from tests.api.test_authorization import (
@@ -27,10 +30,18 @@ class AllowDisclosure:
         del message, requester
         return True
 
+    async def is_accepted_eligible(self, *, message, requester, record):
+        del message, requester, record
+        return True
+
 
 class DenyDisclosure:
     async def is_eligible(self, *, message, requester):
         del message, requester
+        return False
+
+    async def is_accepted_eligible(self, *, message, requester, record):
+        del message, requester, record
         return False
 
 
@@ -165,3 +176,40 @@ async def test_message_route_requires_idempotency_and_safe_not_found():
     assert not_found.status_code == 404
     assert not_found.json()["code"] == "spine.qa_sessions.not_found"
     assert str(missing) not in not_found.text
+
+
+@pytest.mark.asyncio
+async def test_answered_message_with_expected_but_unverifiable_canonical_join_is_content_free_503():
+    application, service = app()
+    context = SimpleNamespace(
+        scope=EnvironmentScope(workspace_id=WORKSPACE_ID, environment_id=ENVIRONMENT_ID),
+        operation=PersistenceOperation("qa_sessions"),
+        trace_id=UUID("50000000-0000-0000-0000-000000000073"),
+        validate_shape=lambda: None,
+    )
+    requester = QASessionRequester(UUID("10000000-0000-0000-0000-000000000073"))
+    session = await service.create_session(
+        context=context, requester=requester, idempotency_key=IdempotencyKey("503-session")
+    )
+    message = await service.create_pending_message(
+        context=context, requester=requester, session_id=session.value.session_id,
+        question="Secret question", run_id=UUID("70000000-0000-0000-0000-000000000001"),
+        idempotency_key=IdempotencyKey("503-message"),
+    )
+    await service.complete_message(
+        context=context, session_id=session.value.session_id,
+        message_id=message.value.message_id, answer="Secret answer",
+        outcome=AnswerQuestionOutcome.ANSWERED, cancelled=False,
+        idempotency_key=IdempotencyKey("503-complete"),
+    )
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=application), base_url="http://test") as client:
+        response = await client.get(
+            f"/api/v1/qa/sessions/{session.value.session_id}/messages/{message.value.message_id}",
+            headers=headers(),
+        )
+
+    assert response.status_code == 503
+    assert "Secret answer" not in response.text
+    assert "Secret question" not in response.text
+    assert str(message.value.message_id) not in response.text

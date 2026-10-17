@@ -1171,6 +1171,28 @@ class _PostgreSQLAnswerQuestionRunRepository:
             await self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
         return self._restore_run(row)
 
+    async def resolve_run_in_scope(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        run_id: UUID,
+    ) -> AnswerQuestionRun:
+        scope = self._scope()
+        if (workspace_id, environment_id) != (scope.workspace_id, scope.environment_id):
+            await self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
+        self._uow._guard_active()
+        conditions = [
+            _ANSWER_QUESTION_RUNS.c.workspace_id == workspace_id,
+            _ANSWER_QUESTION_RUNS.c.environment_id == environment_id,
+            _ANSWER_QUESTION_RUNS.c.run_id == run_id,
+        ]
+        result = await self._uow._execute(select(_ANSWER_QUESTION_RUNS).where(*conditions))
+        row = result.mappings().one_or_none()
+        if row is None:
+            await self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
+        return self._restore_run(row)
+
     async def resolve_run_by_key(self, idempotency_key: str) -> AnswerQuestionRun:
         self._uow._guard_active()
         row = await self._find_run(idempotency_key=idempotency_key)

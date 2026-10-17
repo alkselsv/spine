@@ -47,7 +47,7 @@ from spine.auth import (
     RouteAuthorizationPolicy,
 )
 from spine.domain.qa_sessions import QAMessageState, QASession, QASessionStatus
-from spine.domain.capabilities import AnswerQuestionOutcome
+from spine.domain.capabilities import AcceptedAnswerPresentation, AnswerQuestionOutcome
 
 
 _SESSIONS_OPERATION = "qa.sessions.list"
@@ -87,6 +87,7 @@ class QAMessageResponse(BaseModel):
     disclosure_eligibility: Literal["eligible", "ineligible"]
     question: str | None
     answer: str | None
+    accepted_presentation: AcceptedAnswerPresentation | None
     created_at: datetime
     updated_at: datetime
 
@@ -341,6 +342,7 @@ def _message_response(message: QAMessageRead) -> QAMessageResponse:
         ),
         question=message.question,
         answer=message.answer,
+        accepted_presentation=message.accepted_presentation,
         created_at=message.created_at,
         updated_at=message.updated_at,
     )

@@ -120,6 +120,43 @@ async def test_answer_question_run_create_and_replay_are_canonical_and_idempoten
 
 
 @pytest.mark.asyncio
+async def test_answer_question_run_scoped_resolution_cannot_cross_workspace(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(4112)
+    environment_id = synthetic_uuid(4113)
+    foreign_workspace_id = synthetic_uuid(4114)
+    foreign_environment_id = synthetic_uuid(4117)
+    await persist_scope(persistence_adapter, workspace_id, environment_id)
+    await persist_scope(persistence_adapter, foreign_workspace_id, foreign_environment_id)
+    command = run_command(run_record(workspace_id, environment_id))
+    context = qa_context(persistence_adapter, workspace_id, environment_id)
+    foreign_context = qa_context(
+        persistence_adapter, foreign_workspace_id, foreign_environment_id
+    )
+
+    async with persistence_adapter.uow_factory(context) as uow:
+        await uow.answer_question_runs.create_run(command)
+        await uow.commit()
+
+    async with persistence_adapter.uow_factory(context) as uow:
+        resolved = await uow.answer_question_runs.resolve_run_in_scope(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            run_id=command.run.run_id,
+        )
+    assert resolved == command.run
+
+    with pytest.raises(AnswerQuestionRunNotFoundError):
+        async with persistence_adapter.uow_factory(foreign_context) as uow:
+            await uow.answer_question_runs.resolve_run_in_scope(
+                workspace_id=foreign_workspace_id,
+                environment_id=foreign_environment_id,
+                run_id=command.run.run_id,
+            )
+
+
+@pytest.mark.asyncio
 async def test_answer_question_run_create_commits_required_audit_atomically(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
