@@ -2226,7 +2226,12 @@ composition root.
 
 ### Eval strategy
 
-- Golden dataset из реальных обезличенных кейсов.
+- Private real-world benchmark datasets используют реальные корпоративные
+  документы и кейсы в пределах разрешения; обязательная анонимизация не
+  требуется. Доступ к корпусу ограничен, runtime authorization и AccessPolicy
+  применяются, а приватное содержимое не попадает в Git, CI, логи или
+  публикуемые отчёты.
+- Git и CI используют только безопасные synthetic или anonymized fixtures.
 - Детерминированные проверки evidence и schemas.
 - Offline regression при изменении agent, prompt, model, tool или retrieval.
 - Eval suite для каждого capability и contract tests для каждого handoff.

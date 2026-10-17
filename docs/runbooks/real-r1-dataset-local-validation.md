@@ -23,9 +23,12 @@ uv run spine-eval-dataset-check \
 uv run spine-eval-dataset-check --dataset-kind synthetic
 ```
 
-Команда проверяет pinned version/digest, source file SHA-256, anonymized
-representation SHA-256, revision/evidence/case links, citations, excerpts и
-точные PDF page/character, DOCX paragraph/character и XLSX sheet/cell locators.
+Для утверждённой версии loader проверяет pinned version/digest, source file
+SHA-256, anonymized representation и её SHA-256, revision/evidence/case links,
+citations, excerpts и точные PDF page/character, DOCX paragraph/character и
+XLSX sheet/cell locators. Проверка anonymized representations — часть
+утверждённого контракта существующей версии 0.3.8, а не универсальное требование
+анонимизировать все будущие benchmark datasets.
 JSON остаётся источником кейсов; расхождение CSV явно отражается в отчёте и
 блокирует проверку, не нормализуя ни один файл. Согласуйте export с владельцем
 датасета, не редактируя approved JSON ради прохождения проверки.
