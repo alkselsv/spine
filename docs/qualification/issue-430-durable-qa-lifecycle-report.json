@@ -2,7 +2,7 @@
   "schema_version": "spine.qa.ask-admission-cancellation:v1",
   "ticket": 430,
   "parent_ticket": 407,
-  "generated_at": "2026-10-17T12:15:00Z",
+  "generated_at": "2026-10-17T13:13:44Z",
   "production_approval": false,
   "exactly_once_physical_execution": false,
   "external_provider_qualification": false,

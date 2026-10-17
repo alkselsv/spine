@@ -3352,10 +3352,13 @@ asyncio.run(main())
                 ),
                 {"event_id": first.dispatch_event_id},
             )
-            cancellation_payload = await connection.scalar(
+            cancellation_event_result = await connection.execute(
                 text(
-                    "SELECT payload::text FROM spine.outbox_intents "
-                    "WHERE event_type = :event_type "
+                    "SELECT event_id, workspace_id, environment_id, event_type, "
+                    "event_schema_version, aggregate_type, aggregate_id, "
+                    "aggregate_schema_version, producer_deduplication_id, payload, "
+                    "trace_id, correlation_id, causation_id "
+                    "FROM spine.outbox_intents WHERE event_type = :event_type "
                     "AND payload ->> 'run_id' = :run_id"
                 ),
                 {
@@ -3363,6 +3366,7 @@ asyncio.run(main())
                     "run_id": str(first.run_id),
                 },
             )
+            cancellation_event = cancellation_event_result.mappings().one()
     finally:
         await inspection_engine.dispose()
 
@@ -3382,9 +3386,146 @@ asyncio.run(main())
     assert child_replay["cancellation_requested_at"] == cancellation_intent.cancellation_requested_at.isoformat()
     assert persisted_payload is not None
     assert "Restart-safe question" not in persisted_payload
-    assert cancellation_payload is not None
-    assert str(first.run_id) in cancellation_payload
-    assert "Restart-safe question" not in cancellation_payload
+    assert cancellation_event["payload"] == {
+        "run_id": str(first.run_id),
+        "schema_version": 1,
+    }
+
+    # Recover the exact committed PostgreSQL outbox event after application
+    # process recreation and deliver it only after replacing the Temporal worker.
+    from temporalio.common import WorkflowIDReusePolicy
+    from temporalio.contrib.pydantic import pydantic_data_converter
+    from temporalio.testing import WorkflowEnvironment
+    from temporalio.worker import Worker
+    from spine.application.authorized_ask import AuthorizedAskResult
+    from spine.application.diagnostics import DiagnosticContext
+    from spine.application.persistence.ask_admission import (
+        AskCancellationDispatchPayload,
+        register_ask_admission_outbox_event,
+    )
+    from spine.application.persistence.outbox import OpaqueObjectReference
+    from spine.application.workflows.ask_admission_dispatch import (
+        ASK_ADMISSION_WORKFLOW_TYPE,
+        AskAdmissionWorkflowInput,
+        AskCancellationDispatchConsumer,
+    )
+    from spine.domain.capabilities.answer_question import AnswerQuestionOutcome
+    from spine.workflows.temporal.definitions import (
+        AskAdmissionWorkflowDefinition,
+        build_ask_admission_activity_bindings,
+    )
+    from spine.workflows.temporal.client import TemporalSdkWorkflowClient
+    from tests.api.test_authorized_ask import safe_output
+
+    outbox_registry = create_outbox_event_registry()
+    register_ask_admission_outbox_event(outbox_registry)
+    persisted_intent = outbox_registry.build_intent(
+        event_id=cancellation_event["event_id"],
+        workspace_id=cancellation_event["workspace_id"],
+        environment_id=cancellation_event["environment_id"],
+        event_type=cancellation_event["event_type"],
+        schema_version=cancellation_event["event_schema_version"],
+        payload=AskCancellationDispatchPayload.model_validate(
+            cancellation_event["payload"]
+        ),
+        aggregate=OpaqueObjectReference(
+            object_type=cancellation_event["aggregate_type"],
+            object_id=cancellation_event["aggregate_id"],
+            schema_version=cancellation_event["aggregate_schema_version"],
+        ),
+        producer_deduplication_id=cancellation_event[
+            "producer_deduplication_id"
+        ],
+        trace_id=cancellation_event["trace_id"],
+        correlation_id=cancellation_event["correlation_id"],
+        causation_id=cancellation_event["causation_id"],
+    )
+    workflow_input = AskAdmissionWorkflowInput(
+        command_id=first.command_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        session_id=session_id,
+        message_id=first.message_id,
+        run_id=first.run_id,
+        trace_id=cancellation_event["trace_id"],
+        correlation_id=cancellation_event["correlation_id"],
+        causation_id=first.dispatch_event_id,
+    )
+
+    class RecoveredCancellationActivity:
+        def __init__(self) -> None:
+            self.execution_started = asyncio.Event()
+            self.cancel_calls = 0
+
+        async def execute(
+            self, value: AskAdmissionWorkflowInput
+        ) -> AuthorizedAskResult:
+            assert value.run_id == first.run_id
+            self.execution_started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("cancelled Temporal activity unexpectedly resumed")
+
+        async def cancel(
+            self, value: AskAdmissionWorkflowInput
+        ) -> AuthorizedAskResult:
+            self.cancel_calls += 1
+            return AuthorizedAskResult(
+                command_id=value.command_id,
+                session_id=value.session_id,
+                message_id=value.message_id,
+                output=safe_output(AnswerQuestionOutcome.CANCELLED),
+                accepted_answer=None,
+            )
+
+    recovered_activity = RecoveredCancellationActivity()
+    execute_activity, cancel_activity = build_ask_admission_activity_bindings(
+        recovered_activity
+    )
+    task_queue = "issue-430-persisted-cancellation-recovery"
+    async with await WorkflowEnvironment.start_time_skipping(
+        data_converter=pydantic_data_converter
+    ) as temporal:
+        handle = await temporal.client.start_workflow(
+            ASK_ADMISSION_WORKFLOW_TYPE,
+            workflow_input.model_dump(mode="json"),
+            id=str(first.run_id),
+            task_queue=task_queue,
+            result_type=dict,
+            id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
+        )
+        async with Worker(
+            temporal.client,
+            task_queue=task_queue,
+            identity="issue-430-before-persisted-cancel-recovery",
+            max_cached_workflows=0,
+            workflows=[AskAdmissionWorkflowDefinition],
+            activities=[execute_activity, cancel_activity],
+        ):
+            await asyncio.wait_for(recovered_activity.execution_started.wait(), timeout=10)
+
+        async with Worker(
+            temporal.client,
+            task_queue=task_queue,
+            identity="issue-430-after-persisted-cancel-recovery",
+            max_cached_workflows=0,
+            workflows=[AskAdmissionWorkflowDefinition],
+            activities=[execute_activity, cancel_activity],
+        ):
+            consumer = AskCancellationDispatchConsumer(
+                TemporalSdkWorkflowClient(temporal.client, task_queue=task_queue)
+            )
+            await consumer.consume(
+                persisted_intent,
+                DiagnosticContext(
+                    trace_id=persisted_intent.trace_id,
+                    correlation_id=persisted_intent.correlation_id,
+                    causation_id=persisted_intent.event_id,
+                ),
+            )
+            terminal = await asyncio.wait_for(handle.result(), timeout=15)
+
+    assert terminal["output"]["outcome"] == AnswerQuestionOutcome.CANCELLED.value
+    assert recovered_activity.cancel_calls == 1
 
 
 async def test_postgresql_terminal_persistence_retries_after_commit_failure(

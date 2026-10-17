@@ -442,7 +442,7 @@ def test_issue68_gate_runner_artifact_matches_staged_diff() -> None:
             "command": "uv run pytest -q",
             "returncode": 0,
             "status": "passed",
-                "summary": "3344 passed",
+                "summary": "3360 passed, 4 skipped",
         },
         {
             "command": "uv run python -m compileall -q src tests",

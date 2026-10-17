@@ -20,7 +20,7 @@ report records evidence status and the integration boundaries exercised.
 | AC1 | PostgreSQL admission/replay records; rollback contract |
 | AC2 | PostgreSQL replay, NFC-equivalent and concurrent retries; changed payload and tenant scope rejection |
 | AC3 | Legacy synchronous route and cancellation compatibility; admission and conflict response contracts |
-| AC4 | PostgreSQL child-process replay after persisted cancellation intent, terminal-commit retry, expired outbox lease recovery, duplicate dispatch/reconciliation, and Temporal workflow/cancellation recovery after worker replacement; a Temporal retry after a PostgreSQL terminal commit failure |
+| AC4 | PostgreSQL child-process replay after persisted cancellation intent, including delivery of that exact persisted outbox event to Temporal after worker replacement; terminal-commit retry, expired outbox lease recovery, duplicate dispatch/reconciliation, and Temporal workflow recovery are also covered |
 | AC5 | PostgreSQL CAS tests hold the winning transaction until the competing writer is observed waiting on the same run-row lock; cancel-before-start, in-progress, late, and repeated cancellation contracts are also covered |
 | AC6 | PostgreSQL terminal retry rolls run, linked message, message receipt, and accepted disclosure back together, then persists one consistent winner; accepted-answer API disclosure boundary |
 | AC7 | Durable admission denial for workspace, environment, and subject; identical not-found disclosure for foreign and unknown runs; API response, diagnostic, log, telemetry, and committed outbox payloads remain free of protected content |
@@ -42,7 +42,10 @@ PostgreSQL evidence uses the disposable PostgreSQL 17 test harness with the
 migrated Spine schema and runtime role. The process-recreation test starts a
 separate Python process, reconstructs its trusted context and persistence adapter
 from configuration, and replays the command against the same database after
-cancellation intent commits. The retry test starts a Temporal workflow, records
+cancellation intent commits. It then reads the persisted cancellation event from
+PostgreSQL, starts the matching Temporal run, replaces its worker, and delivers
+that database-backed event through `AskCancellationDispatchConsumer`; the run
+reaches a cancelled terminal result. The retry test starts a Temporal workflow, records
 its activity task before replacing the worker, injects a PostgreSQL terminal
 commit failure on the first activity attempt, then verifies Temporal retries
 the activity and the canonical run reaches one terminal result. A related
