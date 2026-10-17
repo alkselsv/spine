@@ -267,6 +267,43 @@ describe('Q&A session navigation', () => {
     );
   });
 
+  it('test_message_deep_link_retries_exact_message_when_history_is_unavailable', async () => {
+    const user = userEvent.setup();
+    let exactMessageRequests = 0;
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}`) {
+        return response({ data: session(), workspace_id: scope.workspaceId, environment_id: scope.environmentId, trace_id: traceId });
+      }
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages` && request.method === 'GET') {
+        return response({ error: 'history unavailable' });
+      }
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages/${messageId}`) {
+        exactMessageRequests += 1;
+        if (exactMessageRequests === 1) return response({ error: 'temporarily unavailable' });
+        return response({
+          schema_version: 1,
+          trace_id: traceId,
+          workspace_id: scope.workspaceId,
+          environment_id: scope.environmentId,
+          data: message(),
+        });
+      }
+      return response({ error: 'unexpected request' });
+    }));
+
+    renderPage(
+      `/chat/${sessionId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}&message_id=${messageId}&run_id=${runId}`,
+    );
+
+    expect(await screen.findByRole('button', { name: ru.chat.retryMessages })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: ru.chat.retryMessages }));
+
+    expect(await screen.findByText('Где находится политика отпуска?')).toBeVisible();
+    expect(exactMessageRequests).toBe(2);
+  });
+
   it('test_message_deep_link_hides_a_run_mismatch', async () => {
     const otherRunId = '70000000-0000-4000-8000-000000000099';
     const currentMessage = message();

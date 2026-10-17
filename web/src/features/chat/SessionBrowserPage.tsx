@@ -352,9 +352,9 @@ function SessionDetails({
     invalidDeepLink ||
     deepLinkMismatch ||
     deepLinkNeedsActiveSession ||
-    Boolean(messageQuery.error) ||
     Boolean(admittedMessageQuery.error) ||
-    Boolean((messageQuery.isStale && messageQuery.data) || (admittedMessageQuery.isStale && admittedMessageQuery.data));
+    Boolean(admittedMessageQuery.isStale && admittedMessageQuery.data) ||
+    Boolean(!deepLinkMessageId && (messageQuery.error || (messageQuery.isStale && messageQuery.data)));
   const messages = historyUnavailable
     ? undefined
     : deepLinkMessageId
@@ -446,7 +446,7 @@ function SessionDetails({
               className={styles.secondaryButton}
               onClick={() => {
                 void messageQuery.refetch();
-                if (admittedMessageId) void admittedMessageQuery.refetch();
+                if (requestedMessageId) void admittedMessageQuery.refetch();
               }}
               type="button"
             >
@@ -461,7 +461,7 @@ function SessionDetails({
               className={styles.secondaryButton}
               onClick={() => {
                 if (messageQuery.isStale) void messageQuery.refetch();
-                if (admittedMessageId && admittedMessageQuery.isStale) void admittedMessageQuery.refetch();
+                if (requestedMessageId && admittedMessageQuery.isStale) void admittedMessageQuery.refetch();
               }}
               type="button"
             >
@@ -553,8 +553,7 @@ function MessageCard({
           ) : null}
           {message.run_id &&
           UUID_PATTERN.test(message.run_id) &&
-          UUID_PATTERN.test(message.message_id) &&
-          message.run_id !== returnRunId ? (
+          UUID_PATTERN.test(message.message_id) ? (
             <Link
               className={styles.textButton}
               to={{
@@ -567,23 +566,7 @@ function MessageCard({
                 }).toString()}`,
               }}
             >
-              {ru.chat.openRun}
-            </Link>
-          ) : null}
-          {returnRunId && message.run_id === returnRunId ? (
-            <Link
-              className={styles.textButton}
-              to={{
-                pathname: `/qa/runs/${returnRunId}`,
-                search: `?${new URLSearchParams({
-                  workspace: scope.workspaceId,
-                  environment: scope.environmentId,
-                  return_session_id: message.session_id,
-                  return_message_id: message.message_id,
-                }).toString()}`,
-              }}
-            >
-              {ru.chat.backToRun}
+              {returnRunId === message.run_id ? ru.chat.backToRun : ru.chat.openRun}
             </Link>
           ) : null}
         </>
