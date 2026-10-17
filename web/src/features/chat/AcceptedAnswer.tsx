@@ -14,10 +14,12 @@ type AnswerState = 'checking' | 'available' | 'unavailable' | 'unsafe';
 export function AcceptedAnswer({
   client,
   message,
+  targetCitationId = null,
   scope,
 }: {
   client: ScopedApiClient;
   message: QAMessage;
+  targetCitationId?: string | null;
   scope: Scope;
 }) {
   const [state, setState] = useState<AnswerState>('checking');
@@ -26,6 +28,7 @@ export function AcceptedAnswer({
   const [inspectionPending, setInspectionPending] = useState(false);
   const [inspectionAttempted, setInspectionAttempted] = useState(false);
   const request = useRef<AbortController | null>(null);
+  const autoInspection = useRef<string | null>(null);
   const answer = message.answer;
   const presentation = message.accepted_presentation;
   const inlineMarkers = placements.flatMap((claim): InlineMarkdownMarker[] =>
@@ -100,6 +103,19 @@ export function AcceptedAnswer({
       request.current?.abort();
     };
   }, [answer, client, message, scope.environmentId, scope.workspaceId]);
+
+  useEffect(() => {
+    if (!targetCitationId) return;
+    const requestKey = `${message.message_id}:${targetCitationId}`;
+    if (autoInspection.current === requestKey) return;
+    autoInspection.current = requestKey;
+    if (!presentation?.citation_ids.includes(targetCitationId)) {
+      setInspectionAttempted(true);
+      setState('unavailable');
+      return;
+    }
+    void onInspect(targetCitationId);
+  }, [message.message_id, presentation, targetCitationId]);
 
   async function onInspect(citationId: string): Promise<void> {
     if (!presentation || !message.session_id || !message.run_id) return;

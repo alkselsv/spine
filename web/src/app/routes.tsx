@@ -98,6 +98,20 @@ export const appRoutes: RouteObject[] = [
       },
       { path: 'chat/:sessionId', element: <ChatPage /> },
       {
+        path: 'qa/runs',
+        lazy: async () => {
+          const module = await import('../features/runs/QARunsPage');
+          return { Component: module.QARunsPage };
+        },
+      },
+      {
+        path: 'qa/runs/:runId',
+        lazy: async () => {
+          const module = await import('../features/runs/QARunDetailPage');
+          return { Component: module.QARunDetailPage };
+        },
+      },
+      {
         path: 'runs',
         lazy: async () => {
           const module = await import('../features/knowledge/IngestionRunPage');

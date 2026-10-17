@@ -1973,6 +1973,258 @@ function processingCommandReceipt(input: {
   };
 }
 
+test('test_chat_run_citation_navigation_preserves_scope_back_reload_and_denies_other_workspace', async ({ page }) => {
+  const answer = 'Ответ из sales workspace.';
+  const answerDigest = createHash('sha256').update(answer, 'utf8').digest('hex');
+  const runRequests: Array<Record<string, string>> = [];
+  const citationRequests: Array<Record<string, string>> = [];
+  const message = {
+    schema_version: 1,
+    message_id: chatMessage,
+    session_id: chatSession,
+    workspace_id: salesWorkspace,
+    environment_id: stagingEnvironment,
+    version: 1,
+    ordinal: 1,
+    trace_id: traceId,
+    run_id: chatRun,
+    state: 'terminal',
+    terminal_outcome: 'answered',
+    cancelled: false,
+    disclosure_eligibility: 'eligible',
+    question: 'Где опубликована инструкция?',
+    answer,
+    accepted_presentation: {
+      schema_version: 'accepted-answer-presentation:v1',
+      answer_id: chatAnswer,
+      answer_text_sha256: answerDigest,
+      attempt_id: chatAttempt,
+      message_id: chatMessage,
+      run_id: chatRun,
+      claims: [{
+        schema_version: 'accepted-answer-claim-presentation:v1',
+        claim_id: chatClaim,
+        kind: 'factual',
+        start_offset: 0,
+        end_offset: answer.length,
+      }],
+      relationships: [{
+        schema_version: 'accepted-answer-relationship-presentation:v1',
+        relationship_id: chatRelationship,
+        claim_id: chatClaim,
+        kind: 'independent',
+        citation_ids: [chatCitation],
+        related_claim_id: null,
+      }],
+      citation_ids: [chatCitation],
+    },
+    created_at: '2026-10-17T10:01:00Z',
+    updated_at: '2026-10-17T10:01:00Z',
+  };
+  const evidence = {
+    activation_generation: 4,
+    citation_id: chatCitation,
+    environment_id: stagingEnvironment,
+    evidence_digest: 'sha256:evidence',
+    evidence_id: 'evidence-sales-1',
+    locator_kind: 'page',
+    locator_schema: 'page.v1',
+    locator_value: '4',
+    projection_snapshot_id: '90000000-0000-4000-8000-000000000011',
+    revision_number: 2,
+    source_object_id: '90000000-0000-4000-8000-000000000012',
+    source_revision_id: '90000000-0000-4000-8000-000000000013',
+    workspace_id: salesWorkspace,
+  };
+
+  await page.route('**/api/v1/qa/runs**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const headers = request.headers();
+    runRequests.push(headers);
+    if (!isOwnedScope(headers, salesWorkspace, stagingEnvironment)) {
+      await fulfillForeignScopeDenied(route);
+      return;
+    }
+    if (url.pathname === '/api/v1/qa/runs') {
+      await route.fulfill({
+        contentType: 'application/json',
+        status: 200,
+        body: JSON.stringify({
+          schema_version: 1,
+          workspace_id: salesWorkspace,
+          environment_id: stagingEnvironment,
+          trace_id: traceId,
+          limit: 25,
+          next_cursor: null,
+          items: [{
+            attempt_count: 1,
+            completed_at: '2026-10-17T10:01:00Z',
+            created_at: '2026-10-17T10:00:00Z',
+            environment_id: stagingEnvironment,
+            final_attempt_id: chatAttempt,
+            message_id: chatMessage,
+            outcome: 'answered',
+            run_id: chatRun,
+            schema_version: 1,
+            session_id: chatSession,
+            state: 'completed',
+            subject_id: '90000000-0000-4000-8000-000000000010',
+            subject_kind: 'human',
+          }],
+        }),
+      });
+      return;
+    }
+    if (url.pathname === `/api/v1/qa/runs/${chatRun}`) {
+      await route.fulfill({
+        contentType: 'application/json',
+        status: 200,
+        body: JSON.stringify({
+          schema_version: 1,
+          workspace_id: salesWorkspace,
+          environment_id: stagingEnvironment,
+          trace_id: traceId,
+          data: {
+            accepted_evidence: [evidence],
+            attempts: [],
+            causation_id: null,
+            command_digest: 'sha256:command',
+            completed_at: '2026-10-17T10:01:00Z',
+            correlation_id: null,
+            created_at: '2026-10-17T10:00:00Z',
+            diagnostic_events: [],
+            environment_id: stagingEnvironment,
+            evidence_eligible: true,
+            final_attempt_id: chatAttempt,
+            input_artifact_ids: [],
+            message_id: chatMessage,
+            outcome: 'answered',
+            output_artifact_ids: [],
+            run_id: chatRun,
+            schema_version: 1,
+            session_id: chatSession,
+            state: 'completed',
+            subject_id: '90000000-0000-4000-8000-000000000010',
+            subject_kind: 'human',
+            trace_id: traceId,
+            warnings: [],
+            workspace_id: salesWorkspace,
+          },
+        }),
+      });
+      return;
+    }
+    await route.fulfill({ status: 404, body: '{}' });
+  });
+
+  await page.route('**/api/v1/qa/sessions/**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const headers = request.headers();
+    if (!isOwnedScope(headers, salesWorkspace, stagingEnvironment)) {
+      await fulfillForeignScopeDenied(route);
+      return;
+    }
+    if (url.pathname === `/api/v1/qa/sessions/${chatSession}`) {
+      await route.fulfill({
+        contentType: 'application/json',
+        status: 200,
+        body: JSON.stringify({
+          schema_version: 1,
+          workspace_id: salesWorkspace,
+          environment_id: stagingEnvironment,
+          trace_id: traceId,
+          data: {
+            schema_version: 1,
+            session_id: chatSession,
+            workspace_id: salesWorkspace,
+            environment_id: stagingEnvironment,
+            subject_id: '90000000-0000-4000-8000-000000000010',
+            version: 1,
+            status: 'active',
+            created_at: '2026-10-17T10:00:00Z',
+            updated_at: '2026-10-17T10:01:00Z',
+          },
+        }),
+      });
+      return;
+    }
+    if (url.pathname === `/api/v1/qa/sessions/${chatSession}/messages/${chatMessage}`) {
+      await route.fulfill({
+        contentType: 'application/json',
+        status: 200,
+        body: JSON.stringify({
+          schema_version: 1,
+          workspace_id: salesWorkspace,
+          environment_id: stagingEnvironment,
+          trace_id: traceId,
+          data: message,
+        }),
+      });
+      return;
+    }
+    if (url.pathname === `/api/v1/qa/sessions/${chatSession}/messages`) {
+      await route.fulfill({
+        contentType: 'application/json',
+        status: 200,
+        body: JSON.stringify({
+          schema_version: 1,
+          workspace_id: salesWorkspace,
+          environment_id: stagingEnvironment,
+          trace_id: traceId,
+          limit: 25,
+          next_cursor: null,
+          items: [message],
+        }),
+      });
+      return;
+    }
+    await route.fulfill({ status: 404, body: '{}' });
+  });
+  await page.route('**/api/v1/qa/citations/**', async (route) => {
+    citationRequests.push(route.request().headers());
+    await route.fulfill({
+      contentType: 'application/json',
+      status: 200,
+      body: JSON.stringify({
+        schema_version: 1,
+        workspace_id: salesWorkspace,
+        environment_id: stagingEnvironment,
+        trace_id: traceId,
+        data: {
+          schema_version: 'citation-inspection-result:v1',
+          status: 'unavailable',
+          reason: 'citation_unavailable',
+        },
+      }),
+    });
+  });
+
+  await page.goto(`/chat/${chatSession}?fixture=chat-api&workspace=${salesWorkspace}&environment=${stagingEnvironment}`);
+  await page.getByRole('link', { name: 'Открыть запуск Q&A' }).click();
+  await expect(page).toHaveURL(new RegExp(`/qa/runs/${chatRun}.*workspace=${salesWorkspace}.*environment=${stagingEnvironment}`));
+  await expect(page.getByRole('heading', { name: 'Детали запуска Q&A' })).toBeVisible();
+  await page.getByRole('link', { name: 'Открыть источник в чате' }).click();
+  await expect(page).toHaveURL(new RegExp(`/chat/${chatSession}.*message_id=${chatMessage}.*run_id=${chatRun}.*citation_id=${chatCitation}.*return_run_id=${chatRun}`));
+  await expect(page.getByText('Ответ и ссылки скрыты: не удалось подтвердить их актуальность и доступность.')).toBeVisible();
+  await expect(page.locator('body')).not.toContainText(answer);
+  await page.goto(`${page.url()}&fixture=chat-api`);
+  await page.reload();
+  await expect(page.getByText('Ответ и ссылки скрыты: не удалось подтвердить их актуальность и доступность.')).toBeVisible();
+  await expect(page.getByRole('combobox', { name: 'Рабочая область' })).toContainText('Продажи');
+  await expect(page.getByRole('combobox', { name: 'Среда' })).toContainText('Staging');
+  await page.getByRole('link', { name: 'Вернуться к запуску Q&A' }).click();
+  await expect(page).toHaveURL(new RegExp(`/qa/runs/${chatRun}.*workspace=${salesWorkspace}.*environment=${stagingEnvironment}`));
+
+  await choose(page, 'Рабочая область', 'Основная');
+  await expect(page).toHaveURL(new RegExp(`/qa/runs/${chatRun}.*workspace=${primaryWorkspace}.*environment=${stagingEnvironment}`));
+  await expect(page.getByRole('alert')).toContainText('Доступ запрещён');
+  await expect(page.locator('body')).not.toContainText(answer);
+  expect(runRequests.some((headers) => headers['x-workspace-id'] === primaryWorkspace)).toBe(true);
+  expect(citationRequests.every((headers) => headers['x-workspace-id'] === salesWorkspace)).toBe(true);
+});
+
 function isOwnedScope(
   headers: Record<string, string>,
   workspaceId: string,

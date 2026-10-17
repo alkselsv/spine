@@ -158,7 +158,7 @@ describe('accepted citation markers and inspection', () => {
     expect(marker).toBeVisible();
   });
 
-  it('test_exact_unicode_claim_marker_inspects_current_authorized_evidence', async () => {
+  it('test_deep_linked_citation_revalidates_and_opens_current_authorized_evidence', async () => {
     const messageResource = acceptedMessage();
     const fetcher = vi.fn<typeof fetch>(async (input) => {
       const url = new URL(input instanceof Request ? input.url : input.toString());
@@ -194,24 +194,23 @@ describe('accepted citation markers and inspection', () => {
       scope,
     });
 
-    const user = userEvent.setup();
-    const { container } = render(<AcceptedAnswer client={client} message={messageResource} scope={scope} />);
+    const { container } = render(
+      <AcceptedAnswer
+        client={client}
+        message={messageResource}
+        targetCitationId={citationId}
+        scope={scope}
+      />,
+    );
 
-    const markerButton = await screen.findByRole('button', { name: ru.chat.citationMarkerLabel(1, ru.chat.relationshipKinds.independent) });
+    expect(await screen.findByText('Защищённый синтетический фрагмент.')).toBeVisible();
+    expect(screen.getByRole('group', { name: ru.chat.feedbackCitationLabel })).toBeVisible();
     const claimMarker = container.querySelector('[data-claim-id]');
     expect(claimMarker?.getAttribute('data-claim-id')).toBe(claimId);
     expect(claimMarker?.getAttribute('data-start-utf16')).toBe('8');
     expect(claimMarker?.getAttribute('data-end-utf16')).toBe('13');
     expect(claimMarker?.previousSibling?.textContent).toBe(answer.slice(0, 13));
-    expect(markerButton).toBeVisible();
-    expect(screen.getByText(ru.chat.relationshipKinds.independent)).toBeVisible();
-    expect(screen.getByRole('group', { name: ru.chat.feedbackAnswerLabel })).toBeVisible();
-    expect(screen.queryByRole('group', { name: ru.chat.feedbackCitationLabel })).toBeNull();
-
-    await user.click(markerButton);
-
-    expect(await screen.findByText('Защищённый синтетический фрагмент.')).toBeVisible();
-    expect(screen.getByRole('group', { name: ru.chat.feedbackCitationLabel })).toBeVisible();
+    expect(screen.getByRole('button', { name: ru.chat.citationMarkerLabel(1, ru.chat.relationshipKinds.independent) })).toBeVisible();
     expect(fetcher).toHaveBeenCalledTimes(2);
     const citationRequest = fetcher.mock.calls.find(([input]) =>
       String(input instanceof Request ? input.url : input).includes(`/api/v1/qa/citations/${citationId}`),

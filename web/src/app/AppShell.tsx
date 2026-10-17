@@ -22,6 +22,7 @@ import styles from './AppShell.module.css';
 const navigation = [
   { label: ru.navigation.knowledge, to: '/knowledge/documents' },
   { label: ru.navigation.chat, to: '/chat' },
+  { label: ru.navigation.qaRuns, to: '/qa/runs' },
   { label: ru.navigation.runs, to: '/runs' },
   { label: ru.navigation.settings, to: '/settings' },
 ] as const;

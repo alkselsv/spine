@@ -219,6 +219,10 @@ describe('Q&A session navigation', () => {
     expect(await screen.findByText('Где находится политика отпуска?')).toBeVisible();
     expect((await screen.findAllByText('В разделе HR.'))[0]).toBeVisible();
     expect(screen.getByText('Ответ подготовлен')).toBeVisible();
+    expect(screen.getByRole('link', { name: ru.chat.openRun })).toHaveAttribute(
+      'href',
+      `/qa/runs/${runId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}&return_session_id=${sessionId}&return_message_id=${messageId}`,
+    );
     expect(screen.getByLabelText('Текущий адрес')).toHaveTextContent(`/chat/${sessionId}`);
     expect(createHeaders[0]?.get('Idempotency-Key')).toBeTruthy();
     expect(createHeaders[0]?.get('X-Workspace-ID')).toBe(scope.workspaceId);
@@ -227,6 +231,73 @@ describe('Q&A session navigation', () => {
     cleanup();
     renderPage(`/chat/${sessionId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}`);
     expect(await screen.findByText('Где находится политика отпуска?')).toBeVisible();
+  });
+
+  it('test_message_deep_link_reloads_the_exact_scoped_message_and_return_run', async () => {
+    const currentMessage = message();
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}`) {
+        return response({ data: session(), workspace_id: scope.workspaceId, environment_id: scope.environmentId, trace_id: traceId });
+      }
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages` && request.method === 'GET') {
+        return collection(request, [], null);
+      }
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages/${messageId}`) {
+        return response({
+          schema_version: 1,
+          trace_id: traceId,
+          workspace_id: scope.workspaceId,
+          environment_id: scope.environmentId,
+          data: currentMessage,
+        });
+      }
+      return response({ error: 'unexpected request' });
+    }));
+
+    renderPage(
+      `/chat/${sessionId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}&message_id=${messageId}&run_id=${runId}&return_run_id=${runId}`,
+    );
+
+    expect(await screen.findByText('Где находится политика отпуска?')).toBeVisible();
+    expect(screen.getByRole('link', { name: ru.chat.backToRun })).toHaveAttribute(
+      'href',
+      `/qa/runs/${runId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}&return_session_id=${sessionId}&return_message_id=${messageId}`,
+    );
+  });
+
+  it('test_message_deep_link_hides_a_run_mismatch', async () => {
+    const otherRunId = '70000000-0000-4000-8000-000000000099';
+    const currentMessage = message();
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}`) {
+        return response({ data: session(), workspace_id: scope.workspaceId, environment_id: scope.environmentId, trace_id: traceId });
+      }
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages` && request.method === 'GET') {
+        return collection(request, [], null);
+      }
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages/${messageId}`) {
+        return response({
+          schema_version: 1,
+          trace_id: traceId,
+          workspace_id: scope.workspaceId,
+          environment_id: scope.environmentId,
+          data: currentMessage,
+        });
+      }
+      return response({ error: 'unexpected request' });
+    }));
+
+    renderPage(
+      `/chat/${sessionId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}&message_id=${messageId}&run_id=${otherRunId}`,
+    );
+
+    expect(await screen.findByRole('region', { name: ru.status.failed.title })).toBeVisible();
+    expect(screen.queryByText('Где находится политика отпуска?')).toBeNull();
+    expect(screen.queryByText('В разделе HR.')).toBeNull();
   });
 
   it('test_archived_session_requires_restore_before_messages_are_loaded', async () => {
