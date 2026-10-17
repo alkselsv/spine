@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { components } from '../../../api/generated/schema';
 import { createScopedApiClient } from '../../api/client';
 import {
+  loadQARunDetail,
   loadQARuns,
   parseQARunQuery,
   updateQARunQuery,
@@ -160,4 +162,90 @@ describe('Q&A run query boundary', () => {
     expect(request.headers.get('X-Workspace-ID')).toBe(otherScope.workspaceId);
     expect(request.headers.get('X-Environment-ID')).toBe(otherScope.environmentId);
   });
+
+  it('test_load_qa_run_detail_sends_identity_and_scope_headers', async () => {
+    const detail = makeDetail();
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      Response.json({
+        data: detail,
+        environment_id: scope.environmentId,
+        schema_version: 1,
+        trace_id: '50000000-0000-4000-8000-000000000001',
+        workspace_id: scope.workspaceId,
+      }),
+    );
+    const client = createScopedApiClient({
+      baseUrl: 'https://spine.test',
+      fetch,
+      getBearerCredential: () => 'test-token',
+      scope,
+    });
+
+    await expect(
+      loadQARunDetail(client, detail.run_id, new AbortController().signal, scope),
+    ).resolves.toEqual(detail);
+
+    const request = fetch.mock.calls[0]?.[0];
+    expect(request).toBeInstanceOf(Request);
+    expect(new URL((request as Request).url).pathname).toBe(`/api/v1/qa/runs/${detail.run_id}`);
+    expect((request as Request).headers.get('Authorization')).toBe('Bearer test-token');
+    expect((request as Request).headers.get('X-Workspace-ID')).toBe(scope.workspaceId);
+    expect((request as Request).headers.get('X-Environment-ID')).toBe(scope.environmentId);
+  });
+
+  it('test_load_qa_run_detail_rejects_mismatched_identity_or_scope', async () => {
+    const detail = makeDetail();
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      Response.json({
+        data: {
+          ...detail,
+          run_id: 'a0000000-0000-4000-8000-000000000099',
+          workspace_id: '10000000-0000-4000-8000-000000000099',
+        },
+        environment_id: scope.environmentId,
+        schema_version: 1,
+        trace_id: '50000000-0000-4000-8000-000000000001',
+        workspace_id: scope.workspaceId,
+      }),
+    );
+    const client = createScopedApiClient({
+      baseUrl: 'https://spine.test',
+      fetch,
+      getBearerCredential: () => 'test-token',
+      scope,
+    });
+
+    await expect(
+      loadQARunDetail(client, detail.run_id, new AbortController().signal, scope),
+    ).rejects.toThrow('outside the selected scope');
+  });
 });
+
+function makeDetail(): components['schemas']['QARunDetailResponse'] {
+  return {
+    accepted_evidence: [],
+    attempts: [],
+    causation_id: null,
+    command_digest: 'sha256:command',
+    completed_at: null,
+    correlation_id: null,
+    created_at: '2026-10-16T10:00:00Z',
+    diagnostic_events: [],
+    environment_id: scope.environmentId,
+    evidence_eligible: false,
+    final_attempt_id: null,
+    input_artifact_ids: [],
+    message_id: null,
+    outcome: null,
+    output_artifact_ids: [],
+    run_id: 'a0000000-0000-4000-8000-000000000001',
+    schema_version: 1,
+    session_id: null,
+    state: 'running',
+    subject_id: '30000000-0000-4000-8000-000000000001',
+    subject_kind: 'human',
+    trace_id: '50000000-0000-4000-8000-000000000002',
+    warnings: [],
+    workspace_id: scope.workspaceId,
+  };
+}

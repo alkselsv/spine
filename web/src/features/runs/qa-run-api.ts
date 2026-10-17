@@ -4,6 +4,7 @@ import type { ApiScope, ScopedApiClient } from '../../api/client';
 
 export type QARunOutcome = components['schemas']['AnswerQuestionOutcome'];
 export type QARunSummary = components['schemas']['QARunSummaryResponse'];
+export type QARunDetail = components['schemas']['QARunDetailResponse'];
 export type QARunCollection =
   components['schemas']['ApiCollectionEnvelope_QARunSummaryResponse_'];
 
@@ -95,6 +96,33 @@ export async function loadQARuns(
   return result.data;
 }
 
+export async function loadQARunDetail(
+  client: ScopedApiClient,
+  runId: string,
+  signal: AbortSignal,
+  expectedScope?: ApiScope,
+): Promise<QARunDetail> {
+  if (!isValidQARunId(runId)) {
+    throw new Error('The Q&A run identity is invalid.');
+  }
+  const result = await client.GET('/api/v1/qa/runs/{run_id}', {
+    params: { path: { run_id: runId } },
+    signal,
+  });
+  if (!result.data) throw new Error('The Q&A run detail response is unavailable.');
+  const detail = result.data.data;
+  if (
+    expectedScope &&
+    (!isEnvelopeInScope(result.data, expectedScope) || !isDetailInScope(detail, runId, expectedScope))
+  ) {
+    throw new Error('The Q&A run detail response is outside the selected scope.');
+  }
+  if (detail.run_id !== runId) {
+    throw new Error('The Q&A run detail response does not match the selected run.');
+  }
+  return detail;
+}
+
 function toApiQuery(query: QARunQuery) {
   return {
     limit: PAGE_LIMIT,
@@ -111,6 +139,10 @@ function isQARunOutcome(value: string): value is QARunOutcome {
 }
 
 export function isValidQARunSubjectId(value: string): boolean {
+  return isValidQARunId(value);
+}
+
+export function isValidQARunId(value: string): boolean {
   return uuidPattern.test(value);
 }
 
@@ -120,10 +152,34 @@ function isDateTime(value: string): boolean {
 
 function isInScope(collection: QARunCollection, scope: ApiScope): boolean {
   return (
-    collection.workspace_id === scope.workspaceId &&
-    collection.environment_id === scope.environmentId &&
+    isEnvelopeInScope(collection, scope) &&
     collection.items.every(
       (run) => run.workspace_id === scope.workspaceId && run.environment_id === scope.environmentId,
+    )
+  );
+}
+
+function isEnvelopeInScope(
+  value: { workspace_id: string; environment_id: string },
+  scope: ApiScope,
+): boolean {
+  return value.workspace_id === scope.workspaceId && value.environment_id === scope.environmentId;
+}
+
+function isDetailInScope(
+  detail: QARunDetail,
+  runId: string,
+  scope: ApiScope,
+): boolean {
+  return (
+    detail.run_id === runId &&
+    detail.workspace_id === scope.workspaceId &&
+    detail.environment_id === scope.environmentId &&
+    detail.attempts.every((attempt) => attempt.run_id === runId) &&
+    detail.accepted_evidence.every(
+      (evidence) =>
+        evidence.workspace_id === scope.workspaceId &&
+        evidence.environment_id === scope.environmentId,
     )
   );
 }
