@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -39,6 +40,7 @@ from tests.qualification.gate_runner import (
     GATE_ARTIFACT,
     GATE_COMMANDS,
     _worktree_has_unstaged_files,
+    artifact_matches_report,
     classify_result,
     qualified_tree_sha256,
     run_gate_commands,
@@ -86,6 +88,7 @@ TRACEABILITY_MATRIX = (
     TraceabilityRow(28, "architecture", ("tests/auth/test_architecture.py::test_auth_seam_has_only_inward_framework_independent_dependencies", "tests/infrastructure/db/test_import_safety.py::test_importing_configuration_and_persistence_creates_no_engine_or_socket", "tests/test_architecture_scaffold.py::ArchitectureScaffoldTests::test_domain_layer_has_no_application_or_infrastructure_imports", "tests/qualification/test_issue68_qualification.py::test_issue68_domain_import_gate_covers_observability_frameworks")),
     TraceabilityRow(29, "postgresql", ("tests/integration/postgresql/test_initial_tenancy_migration.py::test_every_retained_revision_upgrades_to_one_final_head",)),
     TraceabilityRow(30, "repository gates", ("tests/test_architecture_scaffold.py::ArchitectureScaffoldTests::test_domain_layer_has_no_framework_imports", "tests/qualification/test_issue68_qualification.py::test_issue68_traceability_matrix_covers_exactly_ac1_to_ac30", "tests/qualification/test_issue68_qualification.py::test_issue68_migration_graph_has_one_dynamic_head_and_reaches_base", "tests/qualification/test_issue68_qualification.py::test_issue68_traceability_evidence_nodes_are_collectable", "tests/qualification/test_issue68_qualification.py::test_issue68_compileall_gate", "tests/qualification/test_issue68_qualification.py::test_issue68_full_offline_pytest_gate", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_classifies_repository_gate_results", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_executes_every_declared_command_in_order", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_cli_binds_to_staged_diff", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_rejects_unstaged_or_untracked_files", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_hash_changes_with_staged_diff", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_hashes_qualified_tree", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_rejects_mixed_pytest_failures", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_rejects_mixed_setup_errors_without_failed_summary", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_rejects_marker_outside_setup_blocks", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_artifact_matches_staged_diff_or_qualified_tree", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_validates_artifact_schema"), gate_commands=("uv sync --extra dev", "uv lock --check", "uv run pytest -q", "uv run python -m compileall -q src tests", "git diff --cached --check")),
+    TraceabilityRow(30, "repository gates", ("tests/test_architecture_scaffold.py::ArchitectureScaffoldTests::test_domain_layer_has_no_framework_imports", "tests/qualification/test_issue68_qualification.py::test_issue68_traceability_matrix_covers_exactly_ac1_to_ac30", "tests/qualification/test_issue68_qualification.py::test_issue68_migration_graph_has_one_dynamic_head_and_reaches_base", "tests/qualification/test_issue68_qualification.py::test_issue68_traceability_evidence_nodes_are_collectable", "tests/qualification/test_issue68_qualification.py::test_issue68_compileall_gate", "tests/qualification/test_issue68_qualification.py::test_issue68_full_offline_pytest_gate", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_classifies_repository_gate_results", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_executes_every_declared_command_in_order", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_cli_binds_to_staged_diff", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_rejects_unstaged_or_untracked_files", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_hash_changes_with_staged_diff", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_hashes_qualified_tree", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_matches_artifact_hashes_for_staged_and_clean_trees", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_rejects_mixed_pytest_failures", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_rejects_mixed_setup_errors_without_failed_summary", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_rejects_marker_outside_setup_blocks", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_artifact_matches_staged_diff_or_qualified_tree", "tests/qualification/test_issue68_qualification.py::test_issue68_gate_runner_validates_artifact_schema"), gate_commands=("uv sync --extra dev", "uv lock --check", "uv run pytest -q", "uv run python -m compileall -q src tests", "git diff --cached --check")),
 )
 
 
@@ -438,10 +441,10 @@ def test_issue68_gate_runner_artifact_matches_staged_diff_or_qualified_tree() ->
     artifact_path = repository_root / GATE_ARTIFACT
     artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
     validate_gate_artifact(artifact)
-    assert (
-        artifact["staged_diff_sha256"] == staged_diff_sha256(repository_root)
-        or artifact["qualified_tree_sha256"] == qualified_tree_sha256(repository_root)
-    )
+    assert artifact["qualified_tree_sha256"] == qualified_tree_sha256(repository_root)
+    actual_staged_diff = staged_diff_sha256(repository_root)
+    if actual_staged_diff != hashlib.sha256(b"").hexdigest():
+        assert artifact["staged_diff_sha256"] == actual_staged_diff
     assert artifact["results"] == [
         {
             "command": "uv sync --extra dev",
@@ -459,7 +462,7 @@ def test_issue68_gate_runner_artifact_matches_staged_diff_or_qualified_tree() ->
             "command": "uv run pytest -q",
             "returncode": 0,
             "status": "passed",
-            "summary": "3362 passed, 4 skipped",
+            "summary": "3363 passed, 4 skipped",
         },
         {
             "command": "uv run python -m compileall -q src tests",
@@ -474,6 +477,35 @@ def test_issue68_gate_runner_artifact_matches_staged_diff_or_qualified_tree() ->
             "summary": "completed successfully",
         },
     ]
+
+
+def test_issue68_gate_runner_matches_artifact_hashes_for_staged_and_clean_trees() -> None:
+    repository_root = Path(__file__).parents[2]
+    artifact = json.loads((repository_root / GATE_ARTIFACT).read_text(encoding="utf-8"))
+    report = {
+        "staged_diff_sha256": artifact["staged_diff_sha256"],
+        "qualified_tree_sha256": artifact["qualified_tree_sha256"],
+        "results": artifact["results"],
+    }
+    assert artifact_matches_report(artifact, report)
+
+    clean_checkout_report = {
+        **report,
+        "staged_diff_sha256": hashlib.sha256(b"").hexdigest(),
+    }
+    assert artifact_matches_report(artifact, clean_checkout_report)
+
+    mismatched_nonempty_diff = {
+        **report,
+        "staged_diff_sha256": "f" * 64,
+    }
+    assert not artifact_matches_report(artifact, mismatched_nonempty_diff)
+
+    mismatched_tree = {
+        **report,
+        "qualified_tree_sha256": "e" * 64,
+    }
+    assert not artifact_matches_report(artifact, mismatched_tree)
 
 
 def test_issue68_gate_runner_validates_artifact_schema() -> None:

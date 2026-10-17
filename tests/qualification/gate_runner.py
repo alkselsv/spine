@@ -26,6 +26,7 @@ POSTGRES_BLOCK_MARKERS = (
 )
 GATE_ARTIFACT = Path("docs/qualification/issue-68-gate-results.json")
 _ARTIFACT_STATUSES = {"passed", "failed", "blocked-infrastructure"}
+_EMPTY_STAGED_DIFF_SHA256 = hashlib.sha256(b"").hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,6 +212,24 @@ def qualified_tree_sha256(repository_root: Path) -> str:
     return digest.hexdigest()
 
 
+def artifact_matches_report(artifact: object, report: dict[str, object]) -> bool:
+    """Match a recorded gate to its staged diff or its clean-checkout tree."""
+
+    if not isinstance(artifact, dict):
+        return False
+    staged_hash = report.get("staged_diff_sha256")
+    staged_match = (
+        staged_hash == _EMPTY_STAGED_DIFF_SHA256
+        or artifact.get("staged_diff_sha256") == staged_hash
+    )
+    return (
+        staged_match
+        and artifact.get("qualified_tree_sha256")
+        == report.get("qualified_tree_sha256")
+        and artifact.get("results") == report.get("results")
+    )
+
+
 def _worktree_has_unstaged_files(repository_root: Path) -> bool:
     unstaged = subprocess.run(
         ("git", "diff", "--quiet"),
@@ -269,11 +288,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, json.JSONDecodeError, ValueError):
         print(json.dumps({"status": "failed", "summary": "gate artifact schema is invalid"}))
         return 1
-    report["artifact_match"] = (
-        artifact.get("staged_diff_sha256") == report["staged_diff_sha256"]
-        and artifact.get("qualified_tree_sha256") == report["qualified_tree_sha256"]
-        and artifact.get("results") == report_results
-    )
+    report["artifact_match"] = artifact_matches_report(artifact, report)
     if report["artifact_match"] is not True:
         print(json.dumps(report, indent=2))
         return 1

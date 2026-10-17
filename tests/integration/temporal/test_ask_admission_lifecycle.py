@@ -154,8 +154,22 @@ async def test_temporal_duplicate_admission_delivery_converges_on_one_run() -> N
     async with await WorkflowEnvironment.start_time_skipping(
         data_converter=pydantic_data_converter
     ) as environment:
+        class RecordingTemporalClient:
+            def __init__(self) -> None:
+                self.start_ids: list[str] = []
+                self.lookup_ids: list[str] = []
+
+            async def start_workflow(self, *args, **kwargs):
+                self.start_ids.append(kwargs["id"])
+                return await environment.client.start_workflow(*args, **kwargs)
+
+            def get_workflow_handle(self, workflow_id: str):
+                self.lookup_ids.append(workflow_id)
+                return environment.client.get_workflow_handle(workflow_id)
+
+        recording_client = RecordingTemporalClient()
         temporal_client = TemporalSdkWorkflowClient(
-            environment.client,
+            recording_client,
             task_queue=task_queue,
             id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
         )
@@ -179,6 +193,8 @@ async def test_temporal_duplicate_admission_delivery_converges_on_one_run() -> N
     assert result["output"]["outcome"] == AnswerQuestionOutcome.CANCELLED.value
     assert activity.execute_calls >= 1
     assert activity.cancel_calls == 1
+    assert recording_client.start_ids == [str(RUN_ID), str(RUN_ID)]
+    assert recording_client.lookup_ids == [str(RUN_ID)]
 
 
 @pytest.mark.asyncio
