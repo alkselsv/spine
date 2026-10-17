@@ -683,7 +683,6 @@ export const ru = {
     answerUnsafe: 'Ответ скрыт: в тексте обнаружена неподдерживаемая HTML-разметка.',
     citationChecking: 'Повторно проверяем доступ к ответу и источнику…',
     citationUnavailable: 'Ответ и ссылки скрыты: не удалось подтвердить их актуальность и доступность.',
-    claimCitationsTitle: 'Точные фрагменты ответа и источники',
     citationMarkerLabel: (number: number, relationship: string) =>
       `Открыть источник ${number} · ${relationship}`,
     citationEvidenceTitle: (number: number) => `Источник ${number}`,

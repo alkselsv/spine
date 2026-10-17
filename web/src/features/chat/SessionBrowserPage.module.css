@@ -276,51 +276,6 @@
   gap: var(--space-2);
 }
 
-.acceptedClaim {
-  border-radius: 0.2rem;
-  background: color-mix(in srgb, var(--color-link) 13%, var(--color-surface));
-  box-decoration-break: clone;
-  -webkit-box-decoration-break: clone;
-}
-
-.claimCitations {
-  display: grid;
-  gap: var(--space-2);
-  border-top: 1px solid var(--color-border);
-  padding-top: var(--space-3);
-}
-
-.claimCitations h4 {
-  margin: 0;
-  color: var(--color-muted);
-  font-size: 0.78rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.claimCitations ol {
-  display: grid;
-  gap: var(--space-3);
-  margin: 0;
-  padding-left: 1.4rem;
-}
-
-.claimCitations li {
-  padding-left: var(--space-1);
-}
-
-.claimCitations blockquote {
-  margin: 0;
-  line-height: 1.55;
-}
-
-.claimRelationshipList {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: var(--space-2);
-}
-
 .claimRelationship {
   display: inline;
   margin-left: 0.2rem;

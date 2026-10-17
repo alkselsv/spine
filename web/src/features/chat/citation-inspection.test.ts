@@ -198,4 +198,35 @@ describe('current-authorized citation inspection', () => {
       new AbortController().signal,
     )).rejects.toThrow('The citation is unavailable.');
   });
+
+  it.each(['missing', 'stale', 'tombstoned', 'ambiguous', 'incomplete', 'inaccessible', 'fabricated', 'corrupt'] as const)(
+    'test_%s_evidence_reference_fails_closed_without_excerpt',
+    async (status) => {
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(response({
+        schema_version: 1,
+        trace_id: traceId,
+        workspace_id: scope.workspaceId,
+        environment_id: scope.environmentId,
+        data: {
+          schema_version: 'citation-inspection-result:v1',
+          status: 'available',
+          reason: 'available',
+          evidence: citationEvidence({
+            evidence_reference: {
+              ...citationEvidence().evidence_reference,
+              status,
+            },
+          }),
+        },
+      }));
+
+      await expect(inspectAcceptedCitation(
+        clientFor(fetcher),
+        scope,
+        { answerId, attemptId, runId },
+        citationId,
+        new AbortController().signal,
+      )).rejects.toThrow('The citation is unavailable.');
+    },
+  );
 });

@@ -6,7 +6,7 @@ import { ru } from '../../i18n/resources';
 import { loadQAMessage, type QAMessage } from './session-api';
 import { inspectAcceptedCitation, type CitationInspection } from './citation-inspection';
 import { buildCitationPlacements, type ClaimCitationPlacement } from './citation-presentation';
-import { isSafeMarkdownSource, SafeMarkdown } from './SafeMarkdown';
+import { isSafeMarkdownSource, SafeMarkdown, type InlineMarkdownMarker } from './SafeMarkdown';
 import styles from './SessionBrowserPage.module.css';
 
 type AnswerState = 'checking' | 'available' | 'unavailable' | 'unsafe';
@@ -27,6 +27,49 @@ export function AcceptedAnswer({
   const request = useRef<AbortController | null>(null);
   const answer = message.answer;
   const presentation = message.accepted_presentation;
+  const inlineMarkers = placements.flatMap((claim): InlineMarkdownMarker[] =>
+    claim.relationships.flatMap((relationship) => {
+      const relationLabel = ru.chat.relationshipKinds[relationship.kind];
+      const common = {
+        claimId: claim.claimId,
+        endOffset: claim.utf16EndOffset,
+        key: `${relationship.relationship_id}:${claim.claimId}`,
+        offset: claim.utf16EndOffset,
+        startOffset: claim.utf16StartOffset,
+      };
+      if (relationship.kind === 'contradiction') {
+        const claimNumber = placements.findIndex((item) => item.claimId === relationship.related_claim_id) + 1;
+        return [{
+          ...common,
+          render: () => <span className={styles.claimRelationship}>
+            {ru.chat.relatedClaimRelationship(relationLabel, claimNumber)}
+          </span>,
+        }];
+      }
+      return relationship.citation_ids.map((citationId): InlineMarkdownMarker => {
+        const number = citationNumber(presentation?.citation_ids ?? [], citationId);
+        return {
+          ...common,
+          key: `${common.key}:${citationId}`,
+          render: () => (
+            <span className={styles.claimRelationship}>
+              {relationLabel}{' '}
+              <sup>
+                <button
+                  aria-label={ru.chat.citationMarkerLabel(number, relationLabel)}
+                  className={styles.citationMarker}
+                  onClick={() => onInspect(citationId)}
+                  type="button"
+                >
+                  {number}
+                </button>
+              </sup>
+            </span>
+          ),
+        };
+      });
+    }),
+  );
 
   useEffect(() => {
     request.current?.abort();
@@ -133,12 +176,7 @@ export function AcceptedAnswer({
   return (
     <div className={styles.acceptedAnswer}>
       <span className={styles.messageLabel}>{ru.chat.answerLabel}</span>
-      <SafeMarkdown source={answer} />
-      <ClaimCitations
-        onInspect={onInspect}
-        placements={placements}
-        citationIds={presentation.citation_ids}
-      />
+      <SafeMarkdown markers={inlineMarkers} source={answer} />
       {inspection?.status === 'available' ? (
         <CitationEvidence
           citationNumber={citationNumber(presentation.citation_ids, inspection.evidence.citation_id)}
@@ -147,73 +185,6 @@ export function AcceptedAnswer({
         />
       ) : null}
     </div>
-  );
-}
-
-function ClaimCitations({
-  onInspect,
-  placements,
-  citationIds,
-}: {
-  onInspect: (citationId: string) => void;
-  placements: ClaimCitationPlacement[];
-  citationIds: string[];
-}) {
-  const claimNumberById = new Map(placements.map((claim, index) => [claim.claimId, index + 1]));
-  return (
-    <section aria-label={ru.chat.claimCitationsTitle} className={styles.claimCitations}>
-      <h4>{ru.chat.claimCitationsTitle}</h4>
-      <ol>
-        {placements.map((claim) => (
-          <li key={claim.claimId}>
-            <blockquote>
-              <mark
-                className={styles.acceptedClaim}
-                data-claim-ids={claim.claimId}
-                data-start-utf16={claim.utf16StartOffset}
-                data-end-utf16={claim.utf16EndOffset}
-              >
-                {claim.text}
-              </mark>
-            </blockquote>
-            <div className={styles.claimRelationshipList}>
-              {claim.relationships.map((relationship) => {
-                const relationLabel = ru.chat.relationshipKinds[relationship.kind];
-                if (relationship.kind === 'contradiction') {
-                  const relatedClaimNumber = relationship.related_claim_id
-                    ? claimNumberById.get(relationship.related_claim_id)
-                    : undefined;
-                  return (
-                    <span className={styles.claimRelationship} key={relationship.relationship_id}>
-                      {ru.chat.relatedClaimRelationship(relationLabel, relatedClaimNumber ?? 0)}
-                    </span>
-                  );
-                }
-                return relationship.citation_ids.map((citationId) => {
-                  const number = citationNumber(citationIds, citationId);
-                  if (number === 0) return null;
-                  return (
-                    <span className={styles.claimRelationship} key={`${relationship.relationship_id}-${citationId}`}>
-                      {relationLabel}{' '}
-                      <sup>
-                        <button
-                          aria-label={ru.chat.citationMarkerLabel(number, relationLabel)}
-                          className={styles.citationMarker}
-                          onClick={() => onInspect(citationId)}
-                          type="button"
-                        >
-                          {number}
-                        </button>
-                      </sup>
-                    </span>
-                  );
-                });
-              })}
-            </div>
-          </li>
-        ))}
-      </ol>
-    </section>
   );
 }
 

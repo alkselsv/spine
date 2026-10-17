@@ -1391,8 +1391,8 @@ test('test_chat_places_accepted_claim_and_inspects_current_authorized_citation',
     `/chat/${chatSession}?fixture=chat-api&workspace=${primaryWorkspace}&environment=${localEnvironment}`,
   );
 
-  await expect(page.getByText(answer, { exact: true }).first()).toBeVisible();
-  await expect(page.getByRole('region', { name: 'Точные фрагменты ответа и источники' })).toContainText(answer);
+  await expect(page.locator('[data-accepted-answer-text]')).toContainText(answer);
+  await expect(page.locator('[data-claim-id]')).toHaveAttribute('data-end-utf16', String(answer.length));
   await page.getByRole('button', { name: 'Открыть источник 1 · Независимое подтверждение' }).click();
   await expect(page.getByText('Синтетический фрагмент из разрешённой ревизии.')).toBeVisible();
 

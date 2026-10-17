@@ -87,6 +87,7 @@ function matchesCurrentEvidence(
     context.attempt_id === lineage.attemptId &&
     (reference.schema_version === 'context-evidence-reference:v1' ||
       reference.schema_version === 'context-evidence-reference:v2') &&
+    reference.status === 'valid' &&
     reference.workspace_id === scope.workspaceId &&
     reference.environment_id === scope.environmentId
   );

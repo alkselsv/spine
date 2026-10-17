@@ -23,9 +23,10 @@ controlled diagnostic fixture; C14 owns final ChatPanel wiring after C06 merges.
 terminal and answered, its current disclosure eligibility is `eligible`, and
 the accepted presentation's message/run identities and SHA-256 digest match.
 `SafeMarkdown.tsx` renders a restricted Markdown subset using React elements;
-raw HTML is rejected and links are limited to absolute HTTP(S) URLs. The citation
-panel quotes each claim from its exact accepted-answer code-point span and shows
-only the typed claim-to-citation relationships in the accepted projection.
+raw HTML is rejected and links are limited to absolute HTTP(S) URLs. The answer
+places each typed citation marker immediately after its exact accepted
+claim span. Markdown rendering preserves source offsets so the marker stays at
+the accepted placement even when the answer contains formatted text.
 Inspecting a citation re-reads the canonical message and protected citation
 endpoint with the current workspace/environment scope. The UI does not enable
 historical inspection or reuse cached excerpts; any failed, stale, denied or

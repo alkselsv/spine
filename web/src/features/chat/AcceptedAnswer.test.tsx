@@ -130,6 +130,34 @@ function response(body: unknown, status = 200) {
 afterEach(cleanup);
 
 describe('accepted citation markers and inspection', () => {
+  it('test_markdown_citation_marker_keeps_the_accepted_source_offset', async () => {
+    const messageResource = acceptedMessage();
+    const formattedAnswer = `**${answer}**`;
+    messageResource.answer = formattedAnswer;
+    messageResource.accepted_presentation!.answer_text_sha256 = createHash('sha256')
+      .update(formattedAnswer, 'utf8')
+      .digest('hex');
+    messageResource.accepted_presentation!.claims[0]!.start_offset += 2;
+    messageResource.accepted_presentation!.claims[0]!.end_offset += 2;
+    const client = createScopedApiClient({
+      baseUrl: 'https://spine.test',
+      fetch: vi.fn<typeof fetch>(),
+      getBearerCredential: () => 'test-token',
+      scope,
+    });
+    const { container } = render(<AcceptedAnswer client={client} message={messageResource} scope={scope} />);
+
+    const marker = await screen.findByRole('button', {
+      name: ru.chat.citationMarkerLabel(1, ru.chat.relationshipKinds.independent),
+    });
+    const placement = container.querySelector('[data-claim-id]');
+    expect(placement?.closest('strong')).not.toBeNull();
+    expect(placement?.getAttribute('data-start-utf16')).toBe('10');
+    expect(placement?.getAttribute('data-end-utf16')).toBe('15');
+    expect(placement?.previousSibling?.textContent).toBe(answer.slice(0, 13));
+    expect(marker).toBeVisible();
+  });
+
   it('test_exact_unicode_claim_marker_inspects_current_authorized_evidence', async () => {
     const messageResource = acceptedMessage();
     const fetcher = vi.fn<typeof fetch>(async (input) => {
@@ -170,8 +198,11 @@ describe('accepted citation markers and inspection', () => {
     const { container } = render(<AcceptedAnswer client={client} message={messageResource} scope={scope} />);
 
     const markerButton = await screen.findByRole('button', { name: ru.chat.citationMarkerLabel(1, ru.chat.relationshipKinds.independent) });
-    const claimMark = container.querySelector('[data-claim-ids]');
-    expect(claimMark?.textContent).toBe('e\u0301 и ');
+    const claimMarker = container.querySelector('[data-claim-id]');
+    expect(claimMarker?.getAttribute('data-claim-id')).toBe(claimId);
+    expect(claimMarker?.getAttribute('data-start-utf16')).toBe('8');
+    expect(claimMarker?.getAttribute('data-end-utf16')).toBe('13');
+    expect(claimMarker?.previousSibling?.textContent).toBe(answer.slice(0, 13));
     expect(markerButton).toBeVisible();
     expect(screen.getByText(ru.chat.relationshipKinds.independent)).toBeVisible();
 
@@ -217,7 +248,7 @@ describe('accepted citation markers and inspection', () => {
     await user.click(await screen.findByRole('button', { name: ru.chat.citationMarkerLabel(1, ru.chat.relationshipKinds.independent) }));
 
     expect(await screen.findByText(ru.chat.citationUnavailable)).toBeVisible();
-    expect(container.querySelector('[data-claim-ids]')).toBeNull();
+    expect(container.querySelector('[data-claim-id]')).toBeNull();
     expect(screen.queryByText(answer)).toBeNull();
     expect(screen.queryByRole('button', { name: /Открыть источник/ })).toBeNull();
     expect(document.body.textContent).not.toContain('private authorization diagnostic');
@@ -266,6 +297,6 @@ describe('accepted citation markers and inspection', () => {
     expect(await screen.findByText(ru.chat.citationUnavailable)).toBeVisible();
     expect(screen.queryByText('Защищённый синтетический фрагмент.')).toBeNull();
     expect(screen.queryByText(answer)).toBeNull();
-    expect(container.querySelector('[data-claim-ids]')).toBeNull();
+    expect(container.querySelector('[data-claim-id]')).toBeNull();
   });
 });
