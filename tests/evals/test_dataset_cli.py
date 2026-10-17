@@ -43,6 +43,8 @@ def test_dataset_cli_synthetic_emits_metadata_only_report(capsys) -> None:
     assert report["dataset_kind"] == "synthetic"
     assert report["dataset_id"] == load_r1_dataset().dataset_id
     assert report["evaluation_status"] == "not_run"
+    assert report["answered_case_count"] + report["abstained_case_count"] + report["denied_case_count"] == report["case_count"]
+    assert report["answered_case_count"] > 0
     assert report["validator_version"]
     assert "not an evaluation" in report["note"]
 
@@ -61,6 +63,9 @@ def test_dataset_cli_reports_csv_drift_and_returns_nonzero(tmp_path, monkeypatch
         locator_mismatch_count=53,
         locator_mismatch_by_kind={"xlsx_cell_range": 53},
         case_count=136,
+        answered_case_count=136,
+        abstained_case_count=0,
+        denied_case_count=0,
         source_count=30,
         source_files_verified=30,
         evidence_count=171,
@@ -82,3 +87,7 @@ def test_dataset_cli_reports_csv_drift_and_returns_nonzero(tmp_path, monkeypatch
     assert report["validation_status"] == "blocked"
     assert report["csv_mismatch_case_count"] == 4
     assert report["csv_mismatch_fields"] == ["scenario_tags"]
+    assert report["answered_case_count"] == 136
+    assert report["abstained_case_count"] == 0
+    assert report["denied_case_count"] == 0
+    assert report["evaluation_status"] == "not_run"

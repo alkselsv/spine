@@ -43,6 +43,9 @@ def main(argv: list[str] | None = None) -> int:
             "version": dataset.version,
             "digest": dataset.dataset_digest,
             "case_count": len(dataset.cases),
+            "answered_case_count": sum(case.expected_outcome == "answered" for case in dataset.cases),
+            "abstained_case_count": sum(case.expected_outcome == "abstained" for case in dataset.cases),
+            "denied_case_count": sum(case.expected_outcome == "denied" for case in dataset.cases),
             "source_count": len(dataset.source_objects),
             "note": "Dataset loading is not an evaluation of RAG quality.",
         }

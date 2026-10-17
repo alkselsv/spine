@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -221,8 +222,76 @@ def test_real_dataset_loader_preserves_claims_and_exact_locators(
     }
     assert dataset.validation_report.source_files_verified == 3
     assert dataset.validation_report.evaluation_status == "not_run"
+    assert dataset.validation_report.answered_case_count == 1
+    assert dataset.validation_report.abstained_case_count == 0
+    assert dataset.validation_report.denied_case_count == 0
     assert dataset.validation_report.validator_version == real_qa.REAL_R1_VALIDATOR_VERSION
     assert dataset.validation_report.evidence_integrity_status == "passed"
+
+
+def test_real_dataset_loader_accepts_abstained_case_without_gold_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_dir, source_root, payload = _write_fixture(tmp_path)
+    case = payload["cases"][0]
+    case.update({
+        "expected_outcome": "abstained",
+        "expected_answer": None,
+        "golden_answer": None,
+        "expected_claims": [],
+        "expected_evidence_ids": [],
+        "citations": [],
+        "expected_reason": "insufficient_evidence",
+    })
+    payload["dataset_integrity_digest"] = hashlib.sha256(
+        _canonical({key: value for key, value in payload.items() if key != "dataset_integrity_digest"})
+    ).hexdigest()
+    (dataset_dir / "golden_qa.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    manifest_path = dataset_dir / "sources_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["dataset_integrity_digest"] = payload["dataset_integrity_digest"]
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    csv_path = dataset_dir / "golden_qa.csv"
+    with csv_path.open(encoding="utf-8-sig", newline="") as stream:
+        rows = list(csv.DictReader(stream))
+        fieldnames = list(rows[0])
+    row = rows[0]
+    row.update({
+        "golden_answer": "",
+        "expected_outcome": "abstained",
+        "evidence_ids": "",
+        "citations": "[]",
+        "expected_reason": "insufficient_evidence",
+        "dataset_digest": payload["dataset_integrity_digest"],
+    })
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    monkeypatch.setattr(real_qa, "REAL_R1_DATASET_DIGEST", payload["dataset_integrity_digest"])
+
+    loaded = real_qa.load_real_r1_dataset(dataset_dir, source_root=source_root)
+
+    assert loaded.dataset is not None
+    assert loaded.dataset.cases[0].expected_outcome == "abstained"
+    assert loaded.dataset.cases[0].expected_reason == "insufficient_evidence"
+    assert loaded.validation_report.answered_case_count == 0
+    assert loaded.validation_report.abstained_case_count == 1
+    assert loaded.validation_report.denied_case_count == 0
+
+
+def test_real_dataset_loader_rejects_inconsistent_manifest_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_dir, source_root, payload = _write_fixture(tmp_path)
+    manifest_path = dataset_dir / "sources_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["dataset_version"] = "0.3.7-user-approved"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(real_qa, "REAL_R1_DATASET_DIGEST", payload["dataset_integrity_digest"])
+
+    with pytest.raises(real_qa.RealDatasetValidationError, match="manifest dataset identity"):
+        real_qa.load_real_r1_dataset(dataset_dir, source_root=source_root)
 
 
 def test_real_dataset_loader_rejects_digest_mismatch(
@@ -232,6 +301,35 @@ def test_real_dataset_loader_rejects_digest_mismatch(
     monkeypatch.setattr(real_qa, "REAL_R1_DATASET_DIGEST", "f" * 64)
 
     with pytest.raises(real_qa.RealDatasetValidationError, match="digest does not match"):
+        real_qa.load_real_r1_dataset(dataset_dir, source_root=source_root)
+
+
+def test_real_dataset_loader_rejects_previous_approved_release(
+    tmp_path: Path,
+) -> None:
+    dataset_dir, source_root, payload = _write_fixture(tmp_path)
+    payload["version"] = "0.3.8-user-approved"
+    payload["dataset_integrity_digest"] = hashlib.sha256(
+        _canonical({key: value for key, value in payload.items() if key != "dataset_integrity_digest"})
+    ).hexdigest()
+    (dataset_dir / "golden_qa.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    manifest_path = dataset_dir / "sources_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["dataset_version"] = payload["version"]
+    manifest["dataset_integrity_digest"] = payload["dataset_integrity_digest"]
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    csv_path = dataset_dir / "golden_qa.csv"
+    with csv_path.open(encoding="utf-8-sig", newline="") as stream:
+        rows = list(csv.DictReader(stream))
+        fieldnames = list(rows[0])
+    rows[0]["dataset_version"] = payload["version"]
+    rows[0]["dataset_digest"] = payload["dataset_integrity_digest"]
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    with pytest.raises(real_qa.RealDatasetValidationError, match="pinned identity"):
         real_qa.load_real_r1_dataset(dataset_dir, source_root=source_root)
 
 
@@ -406,7 +504,48 @@ def test_real_and_synthetic_dataset_contracts_remain_separate() -> None:
 
 
 def test_real_dataset_pin_matches_user_approved_release() -> None:
-    assert real_qa.REAL_R1_DATASET_VERSION == "0.3.8-user-approved"
+    assert real_qa.REAL_R1_DATASET_VERSION == "0.3.9-user-approved"
     assert real_qa.REAL_R1_DATASET_DIGEST == (
-        "0fec8c2c990cbf52274ad7df5241f7bbd2c47bdc8171e8040102e370dca2f5a8"
+        "7c2787272fd34643ff5168a46f5672b5a091f3070888546fa7b6ed0c918b3a62"
     )
+
+
+@pytest.mark.skipif(
+    os.environ.get("SPINE_VALIDATE_PRIVATE_R1_DATASET") != "1",
+    reason="requires explicit opt-in and the local private approved R1 corpus",
+)
+def test_approved_real_r1_dataset_loads_from_local_private_corpus() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    dataset_dir = repo_root / "data/private/r1_gold_approved/0.3.9-user-approved"
+    source_root = repo_root / "data/incoming"
+
+    loaded = real_qa.load_real_r1_dataset(dataset_dir, source_root=source_root)
+
+    assert loaded.dataset is not None
+    assert loaded.dataset.version == "0.3.9-user-approved"
+    assert loaded.validation_report.digest == real_qa.REAL_R1_DATASET_DIGEST
+    assert loaded.validation_report.case_count == 149
+    assert loaded.validation_report.answered_case_count == 136
+    assert loaded.validation_report.abstained_case_count == 13
+    assert loaded.validation_report.denied_case_count == 0
+    assert loaded.validation_report.source_count == 30
+    assert loaded.validation_report.evaluation_status == "not_run"
+    abstained = [case for case in loaded.dataset.cases if case.expected_outcome == "abstained"]
+    assert len(abstained) == 13
+    assert all(
+        case.expected_answer is None
+        and case.golden_answer is None
+        and not case.expected_claims
+        and not case.expected_evidence_ids
+        and not case.citations
+        and case.expected_reason
+        for case in abstained
+    )
+    assert all(case.review_status not in {"pending", "rejected"} for case in loaded.dataset.cases)
+    baseline_path = repo_root / "data/private/r1_gold_approved/0.3.8-user-approved/golden_qa.json"
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    approved_payload = json.loads((dataset_dir / "golden_qa.json").read_text(encoding="utf-8"))
+    baseline_answered = [case for case in baseline["cases"] if case["expected_outcome"] == "answered"]
+    approved_answered = [case for case in approved_payload["cases"] if case["expected_outcome"] == "answered"]
+    assert len(baseline_answered) == 136
+    assert baseline_answered == approved_answered
