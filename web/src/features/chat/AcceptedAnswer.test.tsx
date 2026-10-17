@@ -158,6 +158,37 @@ describe('accepted citation markers and inspection', () => {
     expect(marker).toBeVisible();
   });
 
+  it('test_refreshed_ineligible_message_hides_previously_accepted_answer', async () => {
+    const client = createScopedApiClient({
+      baseUrl: 'https://spine.test',
+      fetch: vi.fn<typeof fetch>(),
+      getBearerCredential: () => 'test-token',
+      scope,
+    });
+    const message = acceptedMessage();
+    const view = render(<AcceptedAnswer client={client} message={message} scope={scope} />);
+
+    expect(await screen.findByText(answer)).toBeVisible();
+    view.rerender(
+      <AcceptedAnswer
+        client={client}
+        message={{
+          ...message,
+          answer: 'Запрещённый обновлённый ответ.',
+          accepted_presentation: null,
+          disclosure_eligibility: 'ineligible',
+          terminal_outcome: 'denied',
+          updated_at: '2026-10-17T10:01:00Z',
+        }}
+        scope={scope}
+      />,
+    );
+
+    expect(screen.queryByText(answer)).not.toBeInTheDocument();
+    expect(screen.queryByText('Запрещённый обновлённый ответ.')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: ru.chat.citationMarkerLabel(1, ru.chat.relationshipKinds.independent) })).not.toBeInTheDocument();
+  });
+
   it('test_deep_linked_citation_revalidates_and_opens_current_authorized_evidence', async () => {
     const messageResource = acceptedMessage();
     const fetcher = vi.fn<typeof fetch>(async (input) => {

@@ -27,6 +27,7 @@ export function AcceptedAnswer({
   const [inspection, setInspection] = useState<CitationInspection | null>(null);
   const [inspectionPending, setInspectionPending] = useState(false);
   const [inspectionAttempted, setInspectionAttempted] = useState(false);
+  const [validatedMessage, setValidatedMessage] = useState<QAMessage | null>(null);
   const request = useRef<AbortController | null>(null);
   const autoInspection = useRef<string | null>(null);
   const answer = message.answer;
@@ -77,6 +78,7 @@ export function AcceptedAnswer({
 
   useEffect(() => {
     request.current?.abort();
+    setValidatedMessage(null);
     setState('checking');
     setPlacements([]);
     setInspection(null);
@@ -86,17 +88,23 @@ export function AcceptedAnswer({
     void buildCitationPlacements(message).then((result) => {
       if (!active) return;
       if (!result) {
+        setValidatedMessage(message);
         setState('unavailable');
         return;
       }
       if (!answer || !isSafeMarkdownSource(answer)) {
+        setValidatedMessage(message);
         setState('unsafe');
         return;
       }
       setPlacements(result);
+      setValidatedMessage(message);
       setState('available');
     }).catch(() => {
-      if (active) setState('unavailable');
+      if (active) {
+        setValidatedMessage(message);
+        setState('unavailable');
+      }
     });
     return () => {
       active = false;
@@ -163,6 +171,7 @@ export function AcceptedAnswer({
       }
       setPlacements(currentPlacements);
       setInspection(inspected);
+      setValidatedMessage(message);
       setState('available');
     } catch {
       if (!controller.signal.aborted) setState('unavailable');
@@ -174,7 +183,7 @@ export function AcceptedAnswer({
     }
   }
 
-  if (state === 'checking') {
+  if (state === 'checking' || validatedMessage !== message) {
     return (
       <p className={styles.answerUnavailable} role="status" aria-live="polite">
         {inspectionPending ? ru.chat.citationChecking : ru.chat.answerChecking}
