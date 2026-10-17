@@ -161,14 +161,17 @@ export class SpineChatTransport implements ChatTransport {
       }
 
       try {
-        const stream = await this.api.openMessageStream({
-          sessionId,
-          requestContext: this.api.requestContext,
-          input,
-          resumeFromEventId: lastEventId,
-          resumeFromSequence: lastSequence,
+        const stream = await awaitWithAbort(
+          this.api.openMessageStream({
+            sessionId,
+            requestContext: this.api.requestContext,
+            input,
+            resumeFromEventId: lastEventId,
+            resumeFromSequence: lastSequence,
+            signal,
+          }),
           signal,
-        });
+        );
         const iterator = stream[Symbol.asyncIterator]();
         try {
           while (!terminal) {
@@ -186,6 +189,12 @@ export class SpineChatTransport implements ChatTransport {
               event.environmentId !== this.api.requestContext.environmentId
             ) {
               throw new ChatProtocolError('The chat event belongs to another session.');
+            }
+            if (
+              (messageId !== null && event.messageId !== null && event.messageId !== messageId) ||
+              (runId !== null && event.runId !== null && event.runId !== runId)
+            ) {
+              throw new ChatProtocolError('The chat event belongs to another message or run.');
             }
             if (event.messageId) messageId = event.messageId;
             if (event.runId) runId = event.runId;
@@ -300,9 +309,12 @@ export class SpineChatTransport implements ChatTransport {
     input: SendMessageInput,
     publish: (event: ChatEvent) => void,
   ): Promise<void> {
+    let cancellation: Promise<void> = Promise.resolve();
     if (runId) {
       try {
-        await this.api.cancelRun(runId, this.api.requestContext);
+        cancellation = this.api.cancelRun(runId, this.api.requestContext).catch(() => {
+          // Cancellation is fail-safe: the public outcome remains cancellation.
+        });
       } catch {
         // Cancellation is fail-safe: the public outcome remains cancellation.
       }
@@ -316,8 +328,9 @@ export class SpineChatTransport implements ChatTransport {
       traceId,
       sequence,
     );
-    await this.rehydrateCanonicalMessage(sessionId, messageId, runId, input);
     publish(event);
+    await cancellation;
+    await this.rehydrateCanonicalMessage(sessionId, messageId, runId, input);
   }
 
   private async rehydrateCanonicalMessage(
@@ -326,14 +339,34 @@ export class SpineChatTransport implements ChatTransport {
     runId: string | null,
     input: SendMessageInput,
   ): Promise<void> {
-    try {
-      if (messageId) {
-        const message = await this.api.getMessage(sessionId, messageId);
-        if (message.sessionId === sessionId) this.canonicalMessages.set(message.id, message);
-        return;
+    for (const [cachedMessageId, cachedMessage] of this.canonicalMessages) {
+      if (
+        cachedMessage.sessionId === sessionId &&
+        ((messageId !== null && cachedMessageId === messageId) ||
+          (runId !== null && cachedMessage.runId === runId))
+      ) {
+        this.canonicalMessages.delete(cachedMessageId);
       }
-      const message = await this.api.rehydrateMessage(sessionId, input, null, runId);
-      if (message) this.canonicalMessages.set(message.id, message);
+    }
+    try {
+      let message: Message | null;
+      if (messageId) {
+        message = await this.api.getMessage(sessionId, messageId);
+      } else {
+        message = await this.api.rehydrateMessage(sessionId, input, null, runId);
+      }
+      if (
+        message &&
+        message.sessionId === sessionId &&
+        message.workspaceId === this.api.requestContext.workspaceId &&
+        message.environmentId === this.api.requestContext.environmentId &&
+        (messageId === null || message.id === messageId) &&
+        (runId === null || message.runId === runId) &&
+        message.role === 'assistant' &&
+        message.status !== 'pending'
+      ) {
+        this.canonicalMessages.set(message.id, message);
+      }
     } catch {
       // The terminal event is already disclosure-safe; hydration failure is a
       // partial transport failure surfaced by the query layer on a later read.
@@ -451,6 +484,20 @@ async function nextWithTimeout<T>(
     return await Promise.race([next, timeoutPromise, abortPromise]);
   } finally {
     if (timeout) clearTimeout(timeout);
+    if (abort) signal.removeEventListener('abort', abort);
+  }
+}
+
+async function awaitWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) throw new AbortError();
+  let abort: (() => void) | undefined;
+  try {
+    const abortPromise = new Promise<never>((_, reject) => {
+      abort = () => reject(new AbortError());
+      signal.addEventListener('abort', abort, { once: true });
+    });
+    return await Promise.race([promise, abortPromise]);
+  } finally {
     if (abort) signal.removeEventListener('abort', abort);
   }
 }
