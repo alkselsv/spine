@@ -109,6 +109,7 @@ export type ScopedApiClient = Pick<
 
 type PublishedQaPath =
   | '/api/v1/ask'
+  | '/api/v1/ask/admissions'
   | '/api/v1/qa/feedback'
   | '/api/v1/qa/runs'
   | '/api/v1/qa/runs/{run_id}'

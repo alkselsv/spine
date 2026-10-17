@@ -10,6 +10,13 @@ does not implement Issue #26 endpoints and must be replaced by an adapter over
 the generated API client and Spine SSE endpoint when those endpoints exist.
 The transport never treats streamed deltas as the saved message source.
 
+`ask-command.ts` owns the isolated command actions for authorized Ask admission.
+It sends the generated admission request with a fresh idempotency key, keeps the
+same key and payload for an explicit retry, and links a clarification through the
+server contract. It does not subscribe to transport reconnects; restoring an SSE
+connection cannot submit another Ask. The shared Chat panel has not composed
+these actions yet.
+
 ## Composition reference map (Issue #410)
 
 Agno AgentOS Control Plane is the interaction target for this shared shell and
