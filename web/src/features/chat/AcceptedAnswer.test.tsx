@@ -205,10 +205,13 @@ describe('accepted citation markers and inspection', () => {
     expect(claimMarker?.previousSibling?.textContent).toBe(answer.slice(0, 13));
     expect(markerButton).toBeVisible();
     expect(screen.getByText(ru.chat.relationshipKinds.independent)).toBeVisible();
+    expect(screen.getByRole('group', { name: ru.chat.feedbackAnswerLabel })).toBeVisible();
+    expect(screen.queryByRole('group', { name: ru.chat.feedbackCitationLabel })).toBeNull();
 
     await user.click(markerButton);
 
     expect(await screen.findByText('Защищённый синтетический фрагмент.')).toBeVisible();
+    expect(screen.getByRole('group', { name: ru.chat.feedbackCitationLabel })).toBeVisible();
     expect(fetcher).toHaveBeenCalledTimes(2);
     const citationRequest = fetcher.mock.calls.find(([input]) =>
       String(input instanceof Request ? input.url : input).includes(`/api/v1/qa/citations/${citationId}`),
