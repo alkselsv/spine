@@ -31,7 +31,10 @@ createRoot(rootElement).render(
               status: 'authenticated',
               role: 'administrator',
               ...(readBrowserQualificationFixture() === 'controlled'
-                ? { getBearerCredential: () => 'controlled-browser-token' }
+                ? {
+                    getBearerCredential: () => 'controlled-browser-token',
+                    identityVersion: 'controlled-browser-identity',
+                  }
                 : {}),
               ...(readBrowserQualificationFixture() === 'chat-api'
                 ? {

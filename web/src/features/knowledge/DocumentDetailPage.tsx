@@ -194,6 +194,9 @@ function DocumentOverview({
   runSearch.delete('cursor');
   runSearch.set('document', documentId);
   const projectionKind = parseProjectionKind(searchParams.get('projection_kind')) ?? publication?.projection_kind ?? 'qa';
+  const projectionReference = [...(revision?.projection_references ?? [])]
+    .reverse()
+    .find((reference) => reference.projection_kind === projectionKind);
   const overviewLink = detailLink(documentId, searchParams, 'overview');
   const historyLink = detailLink(documentId, searchParams, 'revisions');
   const contentLink = detailLink(documentId, searchParams, 'content');
@@ -284,8 +287,10 @@ function DocumentOverview({
         <ProjectionStatusPanel
           client={client}
           indexingState={metadata?.processing_state ?? latestProcessingState(revision)}
+          correlationReferenceId={projectionReference?.projection_run_id}
           projectionKind={projectionKind}
           queryKey={queryKey}
+          scope={scope}
         />
       ) : tab === 'overview' ? <div className={styles.grid}>
         <section className={styles.card} aria-labelledby="source-object-heading">

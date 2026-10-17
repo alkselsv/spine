@@ -5,7 +5,9 @@ import type { components } from '../../../api/generated/schema';
 import { createScopedApiClient, SpineApiError } from '../../api/client';
 import { apiQueryOptions } from '../../api/query';
 import { ApiErrorPanel, StatusPanel } from '../../app/status';
+import type { ApiScope } from '../../api/client';
 import { ru } from '../../i18n/resources';
+import { OperationalCorrelationPanel } from '../diagnostics/OperationalCorrelationPanel';
 import { formatDate } from './format';
 import styles from './DocumentDetailPage.module.css';
 
@@ -19,14 +21,18 @@ type RecoveryReceipt = components['schemas']['ApiCommandResult_ProjectionRecover
 
 export function ProjectionStatusPanel({
   client,
+  correlationReferenceId,
   indexingState,
   projectionKind,
   queryKey,
+  scope,
 }: {
   client: ReturnType<typeof createScopedApiClient>;
+  correlationReferenceId?: string;
   indexingState: components['schemas']['IngestionItemState'] | null | undefined;
   projectionKind: string;
   queryKey: (resource: string) => readonly unknown[];
+  scope: ApiScope;
 }) {
   const queryClient = useQueryClient();
   const commandKeys = useRef(new Map<RecoveryAction, string>());
@@ -133,6 +139,14 @@ export function ProjectionStatusPanel({
           </dl>
         ) : null}
       </section>
+
+      <OperationalCorrelationPanel
+        client={client}
+        queryKey={queryKey}
+        referenceId={correlationReferenceId}
+        referenceKind="run"
+        scope={scope}
+      />
     </section>
   );
 }

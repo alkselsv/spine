@@ -8,6 +8,7 @@ import { apiQueryOptions } from '../../api/query';
 import { useAuth } from '../../app/auth';
 import { ApiErrorPanel, StatusPanel } from '../../app/status';
 import { useScope, type Scope } from '../../app/scope';
+import { OperationalCorrelationPanel } from '../diagnostics/OperationalCorrelationPanel';
 import { ru } from '../../i18n/resources';
 import {
   isValidQARunId,
@@ -63,15 +64,27 @@ export function QARunDetailPage() {
   }
   if (!detailQuery.data) return <StatusPanel state="failed" />;
 
-  return <QARunDetail detail={detailQuery.data} searchParams={searchParams} scope={scope} />;
+  return (
+    <QARunDetail
+      client={client}
+      detail={detailQuery.data}
+      queryKey={queryKey}
+      searchParams={searchParams}
+      scope={scope}
+    />
+  );
 }
 
 function QARunDetail({
+  client,
   detail,
+  queryKey,
   searchParams,
   scope,
 }: {
+  client: ReturnType<typeof createScopedApiClient>;
   detail: QARunDetail;
+  queryKey: (resource: string) => readonly unknown[];
   searchParams: URLSearchParams;
   scope: Scope;
 }) {
@@ -82,6 +95,14 @@ function QARunDetail({
         <BackToMessage detail={detail} searchParams={searchParams} scope={scope} />
         <BackToRuns searchParams={searchParams} scope={scope} />
       </div>
+
+      <OperationalCorrelationPanel
+        client={client}
+        queryKey={queryKey}
+        referenceId={detail.run_id}
+        referenceKind="run"
+        scope={scope}
+      />
 
       <div className={styles.grid}>
         <IdentityCard detail={detail} />
