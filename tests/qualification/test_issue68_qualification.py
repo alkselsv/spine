@@ -438,7 +438,21 @@ def test_issue68_gate_runner_rejects_marker_outside_setup_blocks() -> None:
 def test_issue68_gate_runner_artifact_matches_staged_diff_or_qualified_tree() -> None:
     repository_root = Path(__file__).parents[2]
     artifact_path = repository_root / GATE_ARTIFACT
-    artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+
+    def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        artifact: dict[str, object] = {}
+        for key, value in pairs:
+            if key in artifact:
+                raise ValueError(f"duplicate JSON key: {key}")
+            artifact[key] = value
+        return artifact
+
+    with pytest.raises(ValueError, match="duplicate JSON key"):
+        json.loads('{"key": 1, "key": 2}', object_pairs_hook=reject_duplicate_keys)
+
+    artifact = json.loads(
+        artifact_path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys
+    )
     validate_gate_artifact(artifact)
     assert artifact["qualified_tree_sha256"] == qualified_tree_sha256(repository_root)
     actual_staged_diff = staged_diff_sha256(repository_root)
