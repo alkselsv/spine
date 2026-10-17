@@ -11,10 +11,16 @@ import hashlib
 import json
 from pathlib import Path
 import re
-from typing import Annotated, Literal, TypeAlias, Union
+from enum import Enum
+from typing import Annotated, Literal, Protocol, TypeAlias, Union
+from uuid import UUID
 
 from openpyxl.utils.cell import range_boundaries
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
+
+from spine.auth import AuthorizationDeniedError, AuthorizedRequestContext, RequestedAuthorizationScope
+from spine.domain.common import DefinitionModel
+from spine.evals.production_contract import ProductionContractCaseRequest
 
 
 REAL_R1_DATASET_VERSION = "0.3.9-user-approved"
@@ -198,6 +204,501 @@ class RealQADataset(_Model):
     cases: tuple[RealQACase, ...] = Field(min_length=1)
     source_objects: tuple[RealSourceObject, ...] = Field(min_length=1)
     source_revisions: tuple[RealSourceRevision, ...] = Field(min_length=1)
+
+
+REAL_RUNTIME_MAPPING_MANIFEST_SCHEMA = "r1-runtime-mapping-manifest:v1"
+REAL_RUNTIME_REVISION_BINDING_SCHEMA = "r1-runtime-revision-binding:v1"
+REAL_RUNTIME_CASE_INPUT_SCHEMA = "r1-real-case-observation-input:v1"
+_OPAQUE_ID = r"^[^\x00-\x1f\x7f]{1,256}$"
+_UPLOAD_IDENTITY = r"^[a-z][a-z0-9_.:-]{0,63}$"
+
+
+class RealRuntimeResolutionCategory(str, Enum):
+    """Disclosure-safe reason categories for a rejected real-case resolution."""
+
+    INVALID_CASE = "invalid_case"
+    MANIFEST_MISMATCH = "manifest_mismatch"
+    MAPPING_MISSING = "mapping_missing"
+    MAPPING_AMBIGUOUS = "mapping_ambiguous"
+    MAPPING_CONFLICT = "mapping_conflict"
+    MAPPING_UNAVAILABLE = "mapping_unavailable"
+    REVISION_STALE = "revision_stale"
+    REVISION_NOT_CURRENT = "revision_not_current"
+    SCOPE_MISMATCH = "scope_mismatch"
+    AUTHORIZATION_UNAVAILABLE = "authorization_unavailable"
+    AUTHORIZATION_DENIED = "authorization_denied"
+
+
+class RealRuntimeResolutionError(ValueError):
+    """A safe, typed failure that never includes manifest or source contents."""
+
+    def __init__(self, category: RealRuntimeResolutionCategory) -> None:
+        self.category = category
+        super().__init__(f"real runtime case resolution failed: {category.value}")
+
+
+class RealRuntimeRevisionIntent(DefinitionModel):
+    """Owner-approved intent for one opaque dataset revision."""
+
+    dataset_revision_id: str = Field(min_length=1, max_length=256, pattern=_OPAQUE_ID)
+    expected_original_sha256: str = Field(pattern=_SHA256)
+    ingestion_intent_id: str = Field(min_length=1, max_length=128, pattern=_OPAQUE_ID)
+
+
+class RealRuntimeSourceIntent(DefinitionModel):
+    """Owner-approved upload identity and revision intents for one source."""
+
+    dataset_source_id: str = Field(min_length=1, max_length=256, pattern=_OPAQUE_ID)
+    upload_identity: str = Field(min_length=1, max_length=64, pattern=_UPLOAD_IDENTITY)
+    revisions: tuple[RealRuntimeRevisionIntent, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_revision_identities(self) -> "RealRuntimeSourceIntent":
+        revision_ids = [item.dataset_revision_id for item in self.revisions]
+        intent_ids = [item.ingestion_intent_id for item in self.revisions]
+        if len(revision_ids) != len(set(revision_ids)) or len(intent_ids) != len(set(intent_ids)):
+            raise ValueError("source revision intent identities must be unique")
+        return self
+
+
+class RealRuntimeMappingManifest(DefinitionModel):
+    """Private, versioned mapping input. It records intent and grants no authority."""
+
+    schema_version: Literal[REAL_RUNTIME_MAPPING_MANIFEST_SCHEMA] = REAL_RUNTIME_MAPPING_MANIFEST_SCHEMA
+    dataset_version: str = Field(min_length=1, max_length=128)
+    dataset_sha256: str = Field(pattern=_SHA256)
+    owner_approval_ref: str = Field(min_length=1, max_length=256, pattern=_OPAQUE_ID)
+    sources: tuple[RealRuntimeSourceIntent, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_mapping_keys(self) -> "RealRuntimeMappingManifest":
+        source_ids = [item.dataset_source_id for item in self.sources]
+        upload_ids = [item.upload_identity for item in self.sources]
+        revision_ids = [revision.dataset_revision_id for source in self.sources for revision in source.revisions]
+        intent_ids = [revision.ingestion_intent_id for source in self.sources for revision in source.revisions]
+        if any(len(values) != len(set(values)) for values in (source_ids, upload_ids, revision_ids, intent_ids)):
+            raise ValueError("runtime mapping manifest identities must be unique")
+        return self
+
+
+def runtime_mapping_manifest_digest(manifest: RealRuntimeMappingManifest) -> str:
+    """Return the stable digest pinned to this exact validated manifest."""
+
+    return hashlib.sha256(_canonical_json(manifest.model_dump(mode="json"))).hexdigest()
+
+
+class RealCaseObservationInput(DefinitionModel):
+    """Gold-blind projection of a validated real dataset case for observation."""
+
+    schema_version: Literal[REAL_RUNTIME_CASE_INPUT_SCHEMA] = REAL_RUNTIME_CASE_INPUT_SCHEMA
+    dataset_version: str = Field(min_length=1, max_length=128)
+    dataset_sha256: str = Field(pattern=_SHA256)
+    case_id: str = Field(min_length=1, max_length=256, pattern=_OPAQUE_ID)
+    question: str = Field(min_length=1)
+    language: str = Field(min_length=1)
+    source_ids: tuple[str, ...] = Field(min_length=1)
+    source_revision_ids: tuple[str, ...] = Field(min_length=1)
+    available_source_revision_ids: tuple[str, ...] = Field(min_length=1)
+    _validation_proof: str | None = PrivateAttr(default=None)
+
+    @classmethod
+    def from_case(
+        cls,
+        case: RealQACase,
+        *,
+        dataset_version: str,
+        dataset_sha256: str,
+    ) -> "RealCaseObservationInput":
+        if type(case) is not RealQACase or case.synthetic is not False:
+            raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.INVALID_CASE)
+        try:
+            validated_input = cls(
+                dataset_version=dataset_version,
+                dataset_sha256=dataset_sha256,
+                case_id=case.case_id,
+                question=case.question,
+                language=case.language,
+                source_ids=case.source_ids,
+                source_revision_ids=case.source_revision_ids,
+                available_source_revision_ids=case.available_source_revision_ids,
+            )
+            object.__setattr__(
+                validated_input,
+                "_validation_proof",
+                validated_input.public_fields_digest(),
+            )
+            return validated_input
+        except ValidationError:
+            raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.INVALID_CASE) from None
+
+    @property
+    def is_validated_real_case(self) -> bool:
+        """Whether this value came through the RealQACase validation adapter."""
+
+        return self._validation_proof is not None and self._validation_proof == self.public_fields_digest()
+
+    def public_fields_digest(self) -> str:
+        """Digest the validated gold-blind fields so copied updates invalidate proof."""
+
+        return hashlib.sha256(_canonical_json(self.model_dump(mode="json"))).hexdigest()
+
+    @model_validator(mode="after")
+    def validate_opaque_case_references(self) -> "RealCaseObservationInput":
+        if any(
+            len(values) != len(set(values))
+            for values in (
+                self.source_ids,
+                self.source_revision_ids,
+                self.available_source_revision_ids,
+            )
+        ):
+            raise ValueError("real case source references must be unique")
+        if not set(self.available_source_revision_ids) <= set(self.source_revision_ids):
+            raise ValueError("available source revisions must belong to the case")
+        return self
+
+
+class RealRuntimeRevisionRecord(DefinitionModel):
+    """Canonical readback plus currentness evidence returned by the source ports."""
+
+    upload_identity: str = Field(min_length=1, max_length=64, pattern=_UPLOAD_IDENTITY)
+    ingestion_intent_id: str = Field(min_length=1, max_length=128, pattern=_OPAQUE_ID)
+    workspace_id: UUID
+    environment_id: UUID
+    source_object_id: UUID
+    source_revision_id: UUID
+    canonical_acceptance_id: UUID
+    original_sha256: str = Field(pattern=_SHA256)
+    is_current: bool
+
+    @model_validator(mode="after")
+    def validate_non_nil_ids(self) -> "RealRuntimeRevisionRecord":
+        if any(
+            value.int == 0
+            for value in (
+                self.workspace_id,
+                self.environment_id,
+                self.source_object_id,
+                self.source_revision_id,
+                self.canonical_acceptance_id,
+            )
+        ):
+            raise ValueError("canonical runtime identities must be non-nil")
+        return self
+
+
+class RealRuntimeCanonicalMappingPort(Protocol):
+    """Read canonical ingestion/acceptance identity and currentness without mutation."""
+
+    async def resolve_revision(
+        self,
+        *,
+        upload_identity: str,
+        ingestion_intent_id: str,
+        workspace_id: UUID,
+        environment_id: UUID,
+    ) -> tuple[RealRuntimeRevisionRecord, ...]: ...
+
+
+class RealRuntimeTrustedContextPort(Protocol):
+    """Resolve selectors through the existing request authorization composition."""
+
+    async def resolve(
+        self, *, workspace_selector: UUID, environment_selector: UUID
+    ) -> AuthorizedRequestContext[object] | None: ...
+
+
+class RealRuntimeBindingStorePort(Protocol):
+    """Atomically retain verified bindings and return exact prior records on replay."""
+
+    async def resolve_binding(
+        self,
+        *,
+        manifest_sha256: str,
+        dataset_source_id: str,
+        dataset_revision_id: str,
+    ) -> tuple["RealRuntimeRevisionBinding", ...]: ...
+
+    async def persist_verified_binding(
+        self, binding: "RealRuntimeRevisionBinding"
+    ) -> "RealRuntimeRevisionBinding": ...
+
+
+class RealRuntimeRevisionBinding(DefinitionModel):
+    """Verified one-to-one binding to actual canonical source identities."""
+
+    schema_version: Literal[REAL_RUNTIME_REVISION_BINDING_SCHEMA] = REAL_RUNTIME_REVISION_BINDING_SCHEMA
+    manifest_sha256: str = Field(pattern=_SHA256)
+    dataset_source_id: str = Field(min_length=1, max_length=256, pattern=_OPAQUE_ID)
+    dataset_revision_id: str = Field(min_length=1, max_length=256, pattern=_OPAQUE_ID)
+    upload_identity: str = Field(min_length=1, max_length=64, pattern=_UPLOAD_IDENTITY)
+    ingestion_intent_id: str = Field(min_length=1, max_length=128, pattern=_OPAQUE_ID)
+    owner_approval_ref: str = Field(min_length=1, max_length=256, pattern=_OPAQUE_ID)
+    workspace_id: UUID
+    environment_id: UUID
+    source_object_id: UUID
+    source_revision_id: UUID
+    canonical_acceptance_id: UUID
+    original_sha256: str = Field(pattern=_SHA256)
+    currentness: Literal["current"] = "current"
+
+    @model_validator(mode="after")
+    def validate_non_nil_ids(self) -> "RealRuntimeRevisionBinding":
+        if any(
+            value.int == 0
+            for value in (
+                self.workspace_id,
+                self.environment_id,
+                self.source_object_id,
+                self.source_revision_id,
+                self.canonical_acceptance_id,
+            )
+        ):
+            raise ValueError("binding canonical identities must be non-nil")
+        return self
+
+
+def runtime_revision_binding_digest(binding: RealRuntimeRevisionBinding) -> str:
+    """Return the stable digest for one verified manifest-to-canonical binding."""
+
+    return hashlib.sha256(_canonical_json(binding.model_dump(mode="json"))).hexdigest()
+
+
+def runtime_revision_bindings_digest(bindings: tuple[RealRuntimeRevisionBinding, ...]) -> str:
+    """Return a stable digest for the complete opaque-to-canonical case crosswalk."""
+
+    ordered_bindings = sorted(
+        bindings,
+        key=lambda binding: (binding.dataset_source_id, binding.dataset_revision_id),
+    )
+    return hashlib.sha256(_canonical_json([item.model_dump(mode="json") for item in ordered_bindings])).hexdigest()
+
+
+class RealRuntimeCaseResolution(DefinitionModel):
+    """Gold-blind production request and the provenance needed to audit its scope."""
+
+    request: ProductionContractCaseRequest
+    manifest_sha256: str = Field(pattern=_SHA256)
+    binding_sha256: str = Field(pattern=_SHA256)
+    bindings: tuple[RealRuntimeRevisionBinding, ...] = Field(min_length=1)
+    authorization_generation: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def validate_request_provenance(self) -> "RealRuntimeCaseResolution":
+        if any(
+            binding.manifest_sha256 != self.manifest_sha256
+            or binding.workspace_id != self.request.workspace_id
+            or binding.environment_id != self.request.environment_id
+            for binding in self.bindings
+        ):
+            raise ValueError("runtime case binding scope or manifest digest is inconsistent")
+        if self.binding_sha256 != runtime_revision_bindings_digest(self.bindings):
+            raise ValueError("runtime case binding digest is inconsistent")
+        bound_revision_ids = {binding.source_revision_id for binding in self.bindings}
+        if not set(self.request.available_revision_ids) <= bound_revision_ids:
+            raise ValueError("runtime request revisions are not represented by verified bindings")
+        return self
+
+
+class RealRuntimeMappingResolver:
+    """Bind one gold-blind real case to canonical revisions and trusted scope."""
+
+    def __init__(
+        self,
+        *,
+        canonical_mappings: RealRuntimeCanonicalMappingPort,
+        binding_store: RealRuntimeBindingStorePort,
+        trusted_contexts: RealRuntimeTrustedContextPort,
+    ) -> None:
+        self._canonical_mappings = canonical_mappings
+        self._binding_store = binding_store
+        self._trusted_contexts = trusted_contexts
+
+    async def resolve(
+        self,
+        *,
+        manifest: RealRuntimeMappingManifest,
+        case: RealCaseObservationInput,
+        workspace_selector: UUID,
+        environment_selector: UUID,
+    ) -> RealRuntimeCaseResolution:
+        """Resolve a validated real case; never forward its gold fields."""
+
+        if type(case) is not RealCaseObservationInput or not case.is_validated_real_case:
+            raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.INVALID_CASE)
+        case_input = case
+        if type(manifest) is not RealRuntimeMappingManifest:
+            raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.MANIFEST_MISMATCH)
+        if (
+            case_input.dataset_version != manifest.dataset_version
+            or case_input.dataset_sha256 != manifest.dataset_sha256
+        ):
+            raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.MANIFEST_MISMATCH)
+
+        try:
+            trusted_context = await self._trusted_contexts.resolve(
+                workspace_selector=workspace_selector,
+                environment_selector=environment_selector,
+            )
+        except AuthorizationDeniedError:
+            raise RealRuntimeResolutionError(
+                RealRuntimeResolutionCategory.AUTHORIZATION_DENIED
+            ) from None
+        except Exception:
+            raise RealRuntimeResolutionError(
+                RealRuntimeResolutionCategory.AUTHORIZATION_UNAVAILABLE
+            ) from None
+        if not isinstance(trusted_context, AuthorizedRequestContext):
+            raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.AUTHORIZATION_UNAVAILABLE)
+        try:
+            trusted_scope = trusted_context.scope
+            principal_id = trusted_context.acting_subject_id
+            authorization_generation = trusted_context.authorization_generation
+        except Exception:
+            raise RealRuntimeResolutionError(
+                RealRuntimeResolutionCategory.AUTHORIZATION_UNAVAILABLE
+            ) from None
+        if (
+            type(trusted_scope) is not RequestedAuthorizationScope
+            or type(principal_id) is not UUID
+            or principal_id.int == 0
+            or type(authorization_generation) is not int
+            or authorization_generation < 1
+        ):
+            raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.AUTHORIZATION_UNAVAILABLE)
+        if (
+            trusted_scope.workspace_id != workspace_selector
+            or trusted_scope.environment_id != environment_selector
+        ):
+            raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.SCOPE_MISMATCH)
+
+        manifest_sources = {source.dataset_source_id: source for source in manifest.sources}
+        revision_intents = {
+            revision.dataset_revision_id: (source, revision)
+            for source in manifest.sources
+            for revision in source.revisions
+        }
+        if not set(case_input.source_ids) <= set(manifest_sources) or not set(case_input.source_revision_ids) <= set(revision_intents):
+            raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.MANIFEST_MISMATCH)
+
+        digest = runtime_mapping_manifest_digest(manifest)
+        bindings: list[RealRuntimeRevisionBinding] = []
+        source_object_by_opaque_id: dict[str, UUID] = {}
+        opaque_source_by_canonical_id: dict[UUID, str] = {}
+        canonical_revision_to_opaque: dict[UUID, str] = {}
+        mapped_case_source_ids: set[str] = set()
+        for opaque_revision_id in case_input.source_revision_ids:
+            source_intent, revision_intent = revision_intents[opaque_revision_id]
+            if source_intent.dataset_source_id not in case_input.source_ids:
+                raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.MANIFEST_MISMATCH)
+            mapped_case_source_ids.add(source_intent.dataset_source_id)
+            try:
+                records = await self._canonical_mappings.resolve_revision(
+                    upload_identity=source_intent.upload_identity,
+                    ingestion_intent_id=revision_intent.ingestion_intent_id,
+                    workspace_id=trusted_scope.workspace_id,
+                    environment_id=trusted_scope.environment_id,
+                )
+            except Exception:
+                raise RealRuntimeResolutionError(
+                    RealRuntimeResolutionCategory.MAPPING_UNAVAILABLE
+                ) from None
+            if not records:
+                raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.MAPPING_MISSING)
+            if len(records) != 1:
+                raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.MAPPING_AMBIGUOUS)
+            record = records[0]
+            if not isinstance(record, RealRuntimeRevisionRecord):
+                raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.MAPPING_UNAVAILABLE)
+            if (
+                record.workspace_id != trusted_scope.workspace_id
+                or record.environment_id != trusted_scope.environment_id
+                or record.upload_identity != source_intent.upload_identity
+                or record.ingestion_intent_id != revision_intent.ingestion_intent_id
+            ):
+                raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.SCOPE_MISMATCH)
+            existing_source_object_id = source_object_by_opaque_id.setdefault(
+                source_intent.dataset_source_id, record.source_object_id
+            )
+            if existing_source_object_id != record.source_object_id:
+                raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.MAPPING_CONFLICT)
+            existing_opaque_source = opaque_source_by_canonical_id.setdefault(
+                record.source_object_id, source_intent.dataset_source_id
+            )
+            if existing_opaque_source != source_intent.dataset_source_id:
+                raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.MAPPING_CONFLICT)
+            existing_opaque_revision = canonical_revision_to_opaque.setdefault(
+                record.source_revision_id, opaque_revision_id
+            )
+            if existing_opaque_revision != opaque_revision_id:
+                raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.MAPPING_CONFLICT)
+            if record.original_sha256 != revision_intent.expected_original_sha256:
+                raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.REVISION_STALE)
+            if not record.is_current:
+                raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.REVISION_NOT_CURRENT)
+            candidate = RealRuntimeRevisionBinding(
+                    manifest_sha256=digest,
+                    dataset_source_id=source_intent.dataset_source_id,
+                    dataset_revision_id=opaque_revision_id,
+                    upload_identity=source_intent.upload_identity,
+                    ingestion_intent_id=revision_intent.ingestion_intent_id,
+                    owner_approval_ref=manifest.owner_approval_ref,
+                    workspace_id=record.workspace_id,
+                    environment_id=record.environment_id,
+                    source_object_id=record.source_object_id,
+                    source_revision_id=record.source_revision_id,
+                    canonical_acceptance_id=record.canonical_acceptance_id,
+                    original_sha256=record.original_sha256,
+                )
+            try:
+                existing_bindings = await self._binding_store.resolve_binding(
+                    manifest_sha256=digest,
+                    dataset_source_id=source_intent.dataset_source_id,
+                    dataset_revision_id=opaque_revision_id,
+                )
+                if len(existing_bindings) > 1:
+                    raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.MAPPING_AMBIGUOUS)
+                if existing_bindings:
+                    if existing_bindings[0] != candidate:
+                        raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.MAPPING_CONFLICT)
+                    binding = existing_bindings[0]
+                else:
+                    binding = await self._binding_store.persist_verified_binding(candidate)
+                    if binding != candidate:
+                        raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.MAPPING_CONFLICT)
+            except RealRuntimeResolutionError:
+                raise
+            except Exception:
+                raise RealRuntimeResolutionError(
+                    RealRuntimeResolutionCategory.MAPPING_UNAVAILABLE
+                ) from None
+            bindings.append(binding)
+
+        if mapped_case_source_ids != set(case_input.source_ids):
+            raise RealRuntimeResolutionError(RealRuntimeResolutionCategory.MANIFEST_MISMATCH)
+
+        bindings_by_opaque_revision = {binding.dataset_revision_id: binding for binding in bindings}
+        available_revision_ids = tuple(
+            bindings_by_opaque_revision[item].source_revision_id
+            for item in case_input.available_source_revision_ids
+        )
+        request = ProductionContractCaseRequest(
+            case_id=case_input.case_id,
+            question=case_input.question,
+            language=case_input.language,
+            workspace_id=trusted_scope.workspace_id,
+            environment_id=trusted_scope.environment_id,
+            principal_id=principal_id,
+            available_revision_ids=available_revision_ids,
+            retrieval_strategy="server-resolved",
+        )
+        return RealRuntimeCaseResolution(
+            request=request,
+            manifest_sha256=digest,
+            binding_sha256=runtime_revision_bindings_digest(tuple(bindings)),
+            bindings=tuple(bindings),
+            authorization_generation=authorization_generation,
+        )
 
 
 class SourceManifestEntry(_Model):
