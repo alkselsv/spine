@@ -17,6 +17,7 @@ CRITERIA = {
     ),
     "AC2": (
         "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_ask_admission_replays_persisted_run_message_and_rejects_conflicts",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_ask_admission_replays_after_application_process_recreation",
         "tests/application/persistence/test_ask_admission.py::test_ask_admission_changed_payload_conflicts_without_aliasing",
         "tests/api/test_authorized_ask.py::test_authorized_ask_denies_other_workspace_without_calling_service",
     ),
@@ -29,22 +30,34 @@ CRITERIA = {
     "AC4": (
         "tests/application/workflows/test_ask_admission_dispatch.py::test_duplicate_admission_delivery_resolves_one_stable_workflow",
         "tests/application/workflows/test_ask_admission_dispatch.py::test_reconciliation_retries_committed_admission_without_second_start",
+        "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_duplicate_admission_delivery_converges_on_one_run",
         "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_ask_workflow_cancellation_signal_returns_terminal_result",
+        "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_ask_workflow_resumes_after_worker_restart",
+        "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_ask_cancellation_resumes_after_worker_restart",
+        "tests/integration/postgresql/test_postgresql_outbox_delivery.py::test_postgresql_expired_lease_rejects_stale_worker",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_ask_admission_replays_after_application_process_recreation",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_terminal_persistence_retries_after_commit_failure",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_temporal_retry_after_terminal_commit_failure_persists_one_postgresql_winner",
     ),
     "AC5": (
         "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_answer_question_retry_cancellation_contract",
         "tests/application/workflows/test_ask_admission_dispatch.py::test_workflow_cancel_before_start_runs_only_cancellation_activity",
         "tests/api/test_authorized_ask.py::test_legacy_cancellation_suppresses_answer_from_completion_race",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_ask_completion_cancellation_cas_keeps_first_terminal_winner",
     ),
     "AC6": (
         "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_ask_admission_replays_persisted_run_message_and_rejects_conflicts",
         "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_answer_question_retry_cancellation_contract",
         "tests/api/test_authorized_ask.py::test_authorized_ask_returns_only_accepted_answer_and_citation_references",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_terminal_retry_keeps_run_message_and_accepted_disclosure_consistent",
     ),
     "AC7": (
         "tests/application/workflows/test_ask_admission_dispatch.py::test_scoped_command_loader_rejects_denied_or_mismatched_command",
         "tests/api/test_authorized_ask.py::test_authorized_ask_denies_other_workspace_without_calling_service",
         "tests/integration/postgresql/test_postgresql_outbox_delivery.py::test_runtime_delivery_reads_are_isolated_between_workspaces",
+        "tests/api/test_authorized_ask.py::test_durable_ask_denial_isolated_by_workspace_environment_and_subject_without_leaks",
+        "tests/api/test_authorized_ask.py::test_cancel_response_does_not_disclose_foreign_run_existence",
+        "tests/application/persistence/test_ask_admission.py::test_cancellation_scope_hides_existing_foreign_run_like_unknown_run",
     ),
     "AC8": (
         "tests/api/test_authorized_ask.py::test_legacy_ask_is_unchanged_and_not_routed_through_authorized_service",
@@ -55,7 +68,24 @@ CRITERIA = {
     "AC9": (
         "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_ask_admission_replays_persisted_run_message_and_rejects_conflicts",
         "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_ask_workflow_cancellation_signal_returns_terminal_result",
+        "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_ask_workflow_resumes_after_worker_restart",
+        "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_ask_cancellation_resumes_after_worker_restart",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_terminal_persistence_retries_after_commit_failure",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_temporal_retry_after_terminal_commit_failure_persists_one_postgresql_winner",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_terminal_retry_keeps_run_message_and_accepted_disclosure_consistent",
     ),
+}
+
+QUALIFIED_STATUSES = {
+    "AC1": "qualified_postgresql_and_offline",
+    "AC2": "qualified_postgresql_and_offline_process_recreation",
+    "AC3": "qualified_offline",
+    "AC4": "qualified_postgresql_outbox_and_temporal_test_server",
+    "AC5": "qualified_postgresql_and_offline_both_cas_winners",
+    "AC6": "qualified_postgresql_and_offline",
+    "AC7": "qualified_workspace_environment_subject_and_no_leak",
+    "AC8": "qualified_openapi_and_generated_frontend_types",
+    "AC9": "qualified_integrations_and_boundaries_reported",
 }
 
 
@@ -91,6 +121,9 @@ def test_issue430_report_matches_traceability_and_is_explicit_about_boundaries()
     assert report["external_provider_qualification"] is False
     assert report["unverified_prerequisites"]
     criteria = {item["id"]: item for item in report["criteria"]}
-    for criterion in ("AC4", "AC5", "AC7", "AC8", "AC9"):
-        assert criteria[criterion]["status"].startswith("partial_")
-    assert criteria["AC8"]["verified_commands"] == ["corepack pnpm web:api:check"]
+    assert {key: item["status"] for key, item in criteria.items()} == QUALIFIED_STATUSES
+    assert criteria["AC8"]["verified_commands"] == ["corepack pnpm web:check"]
+    assert report["frontend_evidence"] == [
+        "web/src/features/chat/durable-ask-api-contract.ts",
+        "web/src/features/chat/durable-ask-api-contract.test.ts",
+    ]

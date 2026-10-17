@@ -2,13 +2,13 @@
   "schema_version": "spine.qa.ask-admission-cancellation:v1",
   "ticket": 430,
   "parent_ticket": 407,
-  "generated_at": "2026-10-17T11:00:50Z",
+  "generated_at": "2026-10-17T13:13:44Z",
   "production_approval": false,
   "exactly_once_physical_execution": false,
   "external_provider_qualification": false,
   "readiness": {
-    "postgresql": "qualified_disposable_postgresql_17_harness",
-    "temporal": "qualified_local_test_server",
+    "postgresql": "qualified_disposable_postgresql_17_harness_and_new_application_process_replay",
+    "temporal": "qualified_local_time_skipping_test_server_with_worker_restart",
     "production_temporal": "not_run",
     "production": "not_approved"
   },
@@ -23,9 +23,10 @@
     },
     {
       "id": "AC2",
-      "status": "qualified_postgresql_and_offline",
+      "status": "qualified_postgresql_and_offline_process_recreation",
       "evidence": [
         "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_ask_admission_replays_persisted_run_message_and_rejects_conflicts",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_ask_admission_replays_after_application_process_recreation",
         "tests/application/persistence/test_ask_admission.py::test_ask_admission_changed_payload_conflicts_without_aliasing",
         "tests/api/test_authorized_ask.py::test_authorized_ask_denies_other_workspace_without_calling_service"
       ]
@@ -42,20 +43,28 @@
     },
     {
       "id": "AC4",
-      "status": "partial_temporal_test_server_and_offline_dispatch",
+      "status": "qualified_postgresql_outbox_and_temporal_test_server",
       "evidence": [
         "tests/application/workflows/test_ask_admission_dispatch.py::test_duplicate_admission_delivery_resolves_one_stable_workflow",
         "tests/application/workflows/test_ask_admission_dispatch.py::test_reconciliation_retries_committed_admission_without_second_start",
-        "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_ask_workflow_cancellation_signal_returns_terminal_result"
+        "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_duplicate_admission_delivery_converges_on_one_run",
+        "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_ask_workflow_cancellation_signal_returns_terminal_result",
+        "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_ask_workflow_resumes_after_worker_restart",
+        "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_ask_cancellation_resumes_after_worker_restart",
+        "tests/integration/postgresql/test_postgresql_outbox_delivery.py::test_postgresql_expired_lease_rejects_stale_worker",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_ask_admission_replays_after_application_process_recreation",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_terminal_persistence_retries_after_commit_failure",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_temporal_retry_after_terminal_commit_failure_persists_one_postgresql_winner"
       ]
     },
     {
       "id": "AC5",
-      "status": "partial_postgresql_and_offline_with_race_limit",
+      "status": "qualified_postgresql_and_offline_both_cas_winners",
       "evidence": [
         "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_answer_question_retry_cancellation_contract",
         "tests/application/workflows/test_ask_admission_dispatch.py::test_workflow_cancel_before_start_runs_only_cancellation_activity",
-        "tests/api/test_authorized_ask.py::test_legacy_cancellation_suppresses_answer_from_completion_race"
+        "tests/api/test_authorized_ask.py::test_legacy_cancellation_suppresses_answer_from_completion_race",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_ask_completion_cancellation_cas_keeps_first_terminal_winner"
       ]
     },
     {
@@ -64,21 +73,25 @@
       "evidence": [
         "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_ask_admission_replays_persisted_run_message_and_rejects_conflicts",
         "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_answer_question_retry_cancellation_contract",
-        "tests/api/test_authorized_ask.py::test_authorized_ask_returns_only_accepted_answer_and_citation_references"
+        "tests/api/test_authorized_ask.py::test_authorized_ask_returns_only_accepted_answer_and_citation_references",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_terminal_retry_keeps_run_message_and_accepted_disclosure_consistent"
       ]
     },
     {
       "id": "AC7",
-      "status": "partial_workspace_only_isolation_evidence",
+      "status": "qualified_workspace_environment_subject_and_no_leak",
       "evidence": [
         "tests/application/workflows/test_ask_admission_dispatch.py::test_scoped_command_loader_rejects_denied_or_mismatched_command",
         "tests/api/test_authorized_ask.py::test_authorized_ask_denies_other_workspace_without_calling_service",
-        "tests/integration/postgresql/test_postgresql_outbox_delivery.py::test_runtime_delivery_reads_are_isolated_between_workspaces"
+        "tests/integration/postgresql/test_postgresql_outbox_delivery.py::test_runtime_delivery_reads_are_isolated_between_workspaces",
+        "tests/api/test_authorized_ask.py::test_durable_ask_denial_isolated_by_workspace_environment_and_subject_without_leaks",
+        "tests/api/test_authorized_ask.py::test_cancel_response_does_not_disclose_foreign_run_existence",
+        "tests/application/persistence/test_ask_admission.py::test_cancellation_scope_hides_existing_foreign_run_like_unknown_run"
       ]
     },
     {
       "id": "AC8",
-      "status": "partial_openapi_and_generated_client_check",
+      "status": "qualified_openapi_and_generated_frontend_types",
       "evidence": [
         "tests/api/test_authorized_ask.py::test_legacy_ask_is_unchanged_and_not_routed_through_authorized_service",
         "tests/api/test_authorized_ask.py::test_ask_admission_returns_stable_ids_without_content_before_execution",
@@ -86,17 +99,26 @@
         "tests/api/test_openapi_handoff.py::test_generation_export_matches_backend_openapi_document"
       ],
       "verified_commands": [
-        "corepack pnpm web:api:check"
+        "corepack pnpm web:check"
       ]
     },
     {
       "id": "AC9",
-      "status": "partial_postgresql_and_temporal_test_server_with_limits",
+      "status": "qualified_integrations_and_boundaries_reported",
       "evidence": [
         "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_ask_admission_replays_persisted_run_message_and_rejects_conflicts",
-        "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_ask_workflow_cancellation_signal_returns_terminal_result"
+        "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_ask_workflow_cancellation_signal_returns_terminal_result",
+        "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_ask_workflow_resumes_after_worker_restart",
+        "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_ask_cancellation_resumes_after_worker_restart",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_terminal_persistence_retries_after_commit_failure",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_temporal_retry_after_terminal_commit_failure_persists_one_postgresql_winner",
+        "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_terminal_retry_keeps_run_message_and_accepted_disclosure_consistent"
       ]
     }
+  ],
+  "frontend_evidence": [
+    "web/src/features/chat/durable-ask-api-contract.ts",
+    "web/src/features/chat/durable-ask-api-contract.test.ts"
   ],
   "integrations": {
     "postgresql": "Disposable PostgreSQL 17 harness with migrated Spine schema and runtime role.",
@@ -105,9 +127,7 @@
     "external_model_provider": "Not exercised."
   },
   "unverified_prerequisites": [
-    "PostgreSQL server restart and crash injection at each admission/outbox/terminal persistence boundary.",
-    "Production Temporal cluster and worker restart/recovery.",
-    "Concurrent completion/cancellation CAS race with both PostgreSQL winners orchestrated.",
+    "Production PostgreSQL server restart/failover and production Temporal cluster behavior.",
     "Production authorization configuration and external model provider."
   ],
   "boundaries": {

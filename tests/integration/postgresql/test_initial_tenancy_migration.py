@@ -4779,13 +4779,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261106_43_idempotency_actor_scope.py",
         "20261107_44_answer_question_admission_state.py",
         "20261108_45_qa_cancellation_intent.py",
+        "20261109_46_qa_message_row_lock_privilege.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261108_46_injected_failure.py").write_text(
+    (target / "versions" / "20261109_47_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261108_46'\n"
-        "down_revision = '20261108_45'\n"
+        "revision = '20261109_47'\n"
+        "down_revision = '20261109_46'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"
