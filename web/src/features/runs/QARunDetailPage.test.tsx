@@ -99,6 +99,7 @@ function renderDetail(initialEntry: string) {
       value={{
         status: 'authenticated',
         role: 'administrator',
+        identityVersion: 'principal-a',
         getBearerCredential: () => 'test-token',
       }}
     >

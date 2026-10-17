@@ -1,10 +1,11 @@
 import { useQuery } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Link } from 'react-router';
 
 import { SpineApiError, type ApiScope, type ScopedApiClient } from '../../api/client';
 import { apiQueryOptions } from '../../api/query';
 import { ApiErrorPanel, StatusPanel } from '../../app/status';
+import { useAuth } from '../../app/auth';
 import { ru } from '../../i18n/resources';
 import {
   loadOperationalCorrelation,
@@ -28,14 +29,20 @@ export function OperationalCorrelationPanel({
   referenceKind: CorrelationReferenceKind;
   scope: ApiScope;
 }) {
+  const auth = useAuth();
+  const identityVersion = auth.identityVersion ?? '';
   const [expanded, setExpanded] = useState(false);
-  const [activeReference, setActiveReference] = useState({
-    referenceId: referenceId ?? '',
-    referenceKind,
-  });
-  useEffect(() => {
-    setActiveReference({ referenceId: referenceId ?? '', referenceKind });
-  }, [referenceId, referenceKind]);
+  const [retrying, setRetrying] = useState(false);
+  const [deliveryDrilldown, setDeliveryDrilldown] = useState<{
+    deliveryId: string;
+    originId: string;
+    originKind: CorrelationReferenceKind;
+  } | null>(null);
+  const isDeliveryDrilldown = deliveryDrilldown !== null && deliveryDrilldown.originId === referenceId &&
+    deliveryDrilldown.originKind === referenceKind;
+  const activeReference = isDeliveryDrilldown
+    ? { referenceId: deliveryDrilldown.deliveryId, referenceKind: 'delivery' as const }
+    : { referenceId: referenceId ?? '', referenceKind };
   const hasReference = Boolean(activeReference.referenceId && UUID_PATTERN.test(activeReference.referenceId));
   const correlationQuery = useQuery({
     ...apiQueryOptions({
@@ -45,10 +52,12 @@ export function OperationalCorrelationPanel({
           { ...activeReference, scope },
           signal,
         ),
-      queryKey: [...queryKey('operational-correlation'), activeReference.referenceKind, activeReference.referenceId],
+      queryKey: [...queryKey('operational-correlation'), identityVersion, activeReference.referenceKind, activeReference.referenceId],
     }),
-    enabled: expanded && hasReference,
+    enabled: expanded && hasReference && Boolean(identityVersion),
     staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: 'always',
   });
   const scopeSearch = new URLSearchParams({
     workspace: scope.workspaceId,
@@ -79,14 +88,21 @@ export function OperationalCorrelationPanel({
       {expanded ? (
         <div id="operational-correlation-content">
           {!hasReference ? <p className={styles.notice} role="status">{ru.diagnostics.referenceUnavailable}</p> : null}
-          {hasReference && correlationQuery.isPending ? <StatusPanel state="loading" /> : null}
+          {hasReference && !identityVersion ? <StatusPanel state="degraded" /> : null}
+          {hasReference && identityVersion && correlationQuery.isPending ? <StatusPanel state="loading" /> : null}
+          {retrying ? (
+            <p className={styles.notice} role="status">{ru.diagnostics.reconnecting}</p>
+          ) : null}
           {correlationQuery.error ? <ApiErrorPanel error={correlationQuery.error} /> : null}
           {correlationQuery.error && safeResult ? <StatusPanel state="stale" /> : null}
           {correlationQuery.error ? (
             <button
               className={styles.retry}
               disabled={correlationQuery.isFetching}
-              onClick={() => void correlationQuery.refetch()}
+              onClick={() => {
+                setRetrying(true);
+                void correlationQuery.refetch().finally(() => setRetrying(false));
+              }}
               type="button"
             >
               {correlationQuery.isFetching ? ru.documents.refreshingStatus : ru.documents.retry}
@@ -97,17 +113,21 @@ export function OperationalCorrelationPanel({
               <code className={styles.reference} aria-label={ru.diagnostics.reference}>
                 {boundedReference(safeResult.view.reference_id)}
               </code>
-              {activeReference.referenceId !== referenceId || activeReference.referenceKind !== referenceKind ? (
+              {isDeliveryDrilldown ? (
                 <button
                   className={styles.retry}
-                  onClick={() => setActiveReference({ referenceId: referenceId ?? '', referenceKind })}
+                  onClick={() => setDeliveryDrilldown(null)}
                   type="button"
                 >
                   {ru.diagnostics.backToOriginalReference}
                 </button>
               ) : null}
               <CorrelationView
-                onInspectDelivery={(deliveryId) => setActiveReference({ referenceId: deliveryId, referenceKind: 'delivery' })}
+                onInspectDelivery={(deliveryId) => setDeliveryDrilldown({
+                  deliveryId,
+                  originId: referenceId ?? '',
+                  originKind: referenceKind,
+                })}
                 view={safeResult.view}
               />
               <p className={styles.auditReference}>

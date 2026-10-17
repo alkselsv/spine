@@ -3,9 +3,11 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 
 import type { components } from '../../../api/generated/schema';
 import { createScopedApiClient } from '../../api/client';
+import { AuthProvider } from '../../app/auth';
 import { ScopeContext, type Scope } from '../../app/scope';
 import { ru } from '../../i18n/resources';
 import { OperationalCorrelationPanel } from './OperationalCorrelationPanel';
@@ -138,6 +140,88 @@ describe('operational correlation panel', () => {
     expect(document.body).not.toHaveTextContent('protected answer text');
   });
 
+  it('test_correlation_panel_revalidates_and_hides_previous_identity_data_after_identity_change', async () => {
+    const fetchMock = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(Response.json(makeResponse()))
+      .mockResolvedValue(
+        Response.json(
+          {
+            code: 'spine.authorization.denied',
+            retryability: 'never',
+            safe_message: 'Access denied.',
+            schema_version: 1,
+            trace_id: traceId,
+          },
+          { status: 403 },
+        ),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { setIdentityVersion } = renderPanel(runId);
+    await userEvent.click(screen.getByRole('button', { name: ru.diagnostics.open }));
+    expect(await screen.findByText(ru.diagnostics.sources.canonical_run)).toBeVisible();
+
+    setIdentityVersion('principal-b');
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(ru.errors.authorization.title);
+    expect(screen.queryByText(ru.diagnostics.sources.canonical_run)).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('test_correlation_panel_switches_reference_without_rendering_previous_run_signals', async () => {
+    const nextRunId = 'a0000000-0000-4000-8000-000000000002';
+    const fetchMock = vi.fn<typeof globalThis.fetch>().mockImplementation(async (input) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      return url.searchParams.get('reference_id') === nextRunId
+        ? Response.json(makeResponse({ coverage: 'complete', records: [], reference_id: nextRunId }))
+        : Response.json(makeResponse());
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { setReferenceId } = renderPanel(runId);
+    await userEvent.click(screen.getByRole('button', { name: ru.diagnostics.open }));
+    expect(await screen.findByText(ru.diagnostics.sources.canonical_run)).toBeVisible();
+
+    setReferenceId(nextRunId);
+
+    expect(await screen.findByText(ru.status.empty.title)).toBeVisible();
+    expect(screen.queryByText(ru.diagnostics.sources.canonical_run)).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const switchedRequest = new URL(fetchMock.mock.calls[1]![0] instanceof Request
+      ? fetchMock.mock.calls[1]![0].url
+      : String(fetchMock.mock.calls[1]![0]));
+    expect(switchedRequest.searchParams.get('reference_id')).toBe(nextRunId);
+  });
+
+  it('test_correlation_panel_allows_retry_after_a_transient_read_failure', async () => {
+    let resolveRetry: ((response: Response) => void) | undefined;
+    const fetchMock = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(Response.json(
+        {
+          code: 'spine.validation.failed',
+          retryability: 'never',
+          safe_message: 'Invalid request.',
+          schema_version: 1,
+          trace_id: traceId,
+        },
+        { status: 400 },
+      ))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveRetry = resolve; }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderPanel(runId);
+    await userEvent.click(screen.getByRole('button', { name: ru.diagnostics.open }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(ru.errors.validation.title);
+    await userEvent.click(screen.getByRole('button', { name: ru.documents.retry }));
+    expect(await screen.findByText(ru.diagnostics.reconnecting)).toBeVisible();
+    resolveRetry?.(Response.json(makeResponse()));
+
+    expect(await screen.findByText(ru.diagnostics.partial)).toBeVisible();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('test_correlation_panel_drills_into_a_correlated_delivery_and_preserves_scope', async () => {
     const deliveryId = 'b0000000-0000-4000-8000-000000000001';
     const fetchMock = vi.fn<typeof globalThis.fetch>().mockImplementation(async (input) => {
@@ -182,32 +266,41 @@ function renderPanel(referenceId: string) {
     getBearerCredential: () => 'test-token',
     scope,
   });
+  let updateReferenceId: (nextReferenceId: string) => void = () => undefined;
+  function PanelHarness() {
+    const [currentReferenceId, setCurrentReferenceId] = useState(referenceId);
+    updateReferenceId = setCurrentReferenceId;
+    return (
+      <OperationalCorrelationPanel
+        client={client}
+        queryKey={(resource) => ['spine', resource, scope.workspaceId, scope.environmentId]}
+        referenceId={currentReferenceId}
+        referenceKind="run"
+        scope={scope}
+      />
+    );
+  }
   const router = createMemoryRouter(
-    [
-      {
-        path: '/diagnostics',
-        element: (
-          <OperationalCorrelationPanel
-            client={client}
-            queryKey={(resource) => ['spine', resource, scope.workspaceId, scope.environmentId]}
-            referenceId={referenceId}
-            referenceKind="run"
-            scope={scope}
-          />
-        ),
-      },
-    ],
+    [{ path: '/diagnostics', element: <PanelHarness /> }],
     { initialEntries: ['/diagnostics'] },
   );
-  render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <ScopeContext.Provider
-        value={{ scope, queryKey: (resource) => ['spine', resource, scope.workspaceId, scope.environmentId] }}
-      >
-        <RouterProvider router={router} />
-      </ScopeContext.Provider>
-    </QueryClientProvider>,
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const renderTree = (identityVersion: string) => (
+    <AuthProvider value={{ status: 'authenticated', role: 'administrator', identityVersion }}>
+      <QueryClientProvider client={queryClient}>
+        <ScopeContext.Provider
+          value={{ scope, queryKey: (resource) => ['spine', resource, scope.workspaceId, scope.environmentId] }}
+        >
+          <RouterProvider router={router} />
+        </ScopeContext.Provider>
+      </QueryClientProvider>
+    </AuthProvider>
   );
+  const mounted = render(renderTree('principal-a'));
+  return {
+    setIdentityVersion: (identityVersion: string) => mounted.rerender(renderTree(identityVersion)),
+    setReferenceId: (nextReferenceId: string) => updateReferenceId(nextReferenceId),
+  };
 }
 
 function makeResponse(
