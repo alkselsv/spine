@@ -122,8 +122,9 @@ def context(workspace_id=WORKSPACE_ID, environment_id=ENVIRONMENT_ID):
 
 
 class FakeEligibility:
-    def __init__(self, allowed: bool):
+    def __init__(self, allowed: bool, accepted_allowed: bool | None = None):
         self.allowed = allowed
+        self.accepted_allowed = allowed if accepted_allowed is None else accepted_allowed
         self.calls = 0
 
     async def is_eligible(self, *, message, requester):
@@ -131,9 +132,14 @@ class FakeEligibility:
         self.calls += 1
         return self.allowed
 
+    async def is_accepted_eligible(self, *, message, requester, record):
+        del message, requester, record
+        self.calls += 1
+        return self.accepted_allowed
 
-def service(*, allowed=True):
-    eligibility = FakeEligibility(allowed)
+
+def service(*, allowed=True, accepted_allowed=None):
+    eligibility = FakeEligibility(allowed, accepted_allowed)
     return PersistedQASessionService(
         repository=InMemoryQASessionRepository(),
         disclosure_eligibility=eligibility,
@@ -179,6 +185,53 @@ async def test_answered_message_exposes_accepted_presentation_only_from_final_at
         context=context(), session_id=session.value.session_id, message_id=message.value.message_id,
         answer="Protected answer", outcome=AnswerQuestionOutcome.ANSWERED,
         cancelled=False, idempotency_key=IdempotencyKey("join-complete"),
+    )
+
+    with pytest.raises(QAMessagePresentationUnavailable):
+        await qa.get_message(
+            context=context(), requester=requester, session_id=session.value.session_id,
+            message_id=message.value.message_id,
+        )
+
+
+@pytest.mark.asyncio
+async def test_answered_message_rejects_foreign_run_scope_without_disclosure_probe():
+    foreign_workspace = UUID("20000000-0000-0000-0000-000000000099")
+
+    class RunRepository:
+        async def resolve_run_in_scope(self, **kwargs):
+            return completed_run(
+                run_id=kwargs["run_id"],
+                workspace_id=foreign_workspace,
+                environment_id=ENVIRONMENT_ID,
+                attempt_id=UUID("70000000-0000-0000-0000-000000000002"),
+            )
+
+    class DisclosureRepository:
+        async def resolve_for_attempt(self, **kwargs):
+            raise AssertionError("foreign-scope disclosure must not be queried")
+
+    qa, _ = service()
+    qa = PersistedQASessionService(
+        repository=qa.repository,
+        disclosure_eligibility=qa.disclosure_eligibility,
+        answer_question_runs=RunRepository(),
+        answer_disclosures=DisclosureRepository(),
+        clock=lambda: NOW,
+    )
+    requester = QASessionRequester(SUBJECT_ID)
+    session = await qa.create_session(
+        context=context(), requester=requester, idempotency_key=IdempotencyKey("foreign-session")
+    )
+    message = await qa.create_pending_message(
+        context=context(), requester=requester, session_id=session.value.session_id,
+        question="Foreign question", run_id=UUID("70000000-0000-0000-0000-000000000001"),
+        idempotency_key=IdempotencyKey("foreign-message"),
+    )
+    await qa.complete_message(
+        context=context(), session_id=session.value.session_id, message_id=message.value.message_id,
+        answer="Foreign answer", outcome=AnswerQuestionOutcome.ANSWERED,
+        cancelled=False, idempotency_key=IdempotencyKey("foreign-complete"),
     )
 
     with pytest.raises(QAMessagePresentationUnavailable):
@@ -253,6 +306,71 @@ async def test_answered_message_projects_exact_unicode_spans_from_accepted_final
     assert read.accepted_presentation is not None
     assert read.accepted_presentation.claims[0].end_offset == len("Привет 🌍 e\u0301")
     assert read.accepted_presentation.answer_id == accepted.answer.answer_id
+    assert eligibility.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_answered_message_hides_content_when_accepted_record_is_revoked():
+    run_id = UUID("70000000-0000-0000-0000-000000000001")
+    accepted = accepted_answer()
+
+    class RunRepository:
+        async def resolve_run_in_scope(self, **kwargs):
+            return completed_run(
+                run_id=kwargs["run_id"],
+                workspace_id=WORKSPACE_ID,
+                environment_id=ENVIRONMENT_ID,
+                attempt_id=accepted.answer.attempt_id,
+            )
+
+    class DisclosureRepository:
+        async def resolve_for_attempt(self, **kwargs):
+            del kwargs
+            return AnswerDisclosureRecord(
+                request_id=UUID(int=721),
+                request_digest="b" * 64,
+                workspace_id=WORKSPACE_ID,
+                environment_id=ENVIRONMENT_ID,
+                run_id=run_id,
+                attempt_id=accepted.answer.attempt_id,
+                outcome=AnswerQuestionOutcome.ANSWERED,
+                validation=accepted.validation,
+                accepted_answer=accepted,
+                created_at=NOW,
+            )
+
+    qa, eligibility = service(accepted_allowed=False)
+    qa = PersistedQASessionService(
+        repository=qa.repository,
+        disclosure_eligibility=eligibility,
+        answer_question_runs=RunRepository(),
+        answer_disclosures=DisclosureRepository(),
+        clock=lambda: NOW,
+    )
+    requester = QASessionRequester(SUBJECT_ID)
+    session = await qa.create_session(
+        context=context(), requester=requester, idempotency_key=IdempotencyKey("revoked-session")
+    )
+    message = await qa.create_pending_message(
+        context=context(), requester=requester, session_id=session.value.session_id,
+        question="Revoked question", run_id=run_id,
+        idempotency_key=IdempotencyKey("revoked-message"),
+    )
+    await qa.complete_message(
+        context=context(), session_id=session.value.session_id, message_id=message.value.message_id,
+        answer=accepted.answer.text, outcome=AnswerQuestionOutcome.ANSWERED,
+        cancelled=False, idempotency_key=IdempotencyKey("revoked-complete"),
+    )
+
+    read = await qa.get_message(
+        context=context(), requester=requester, session_id=session.value.session_id,
+        message_id=message.value.message_id,
+    )
+
+    assert read is not None
+    assert read.question is None and read.answer is None
+    assert read.accepted_presentation is None
+    assert read.disclosure_eligibility.value == "ineligible"
     assert eligibility.calls == 2
 
 

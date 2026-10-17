@@ -28,7 +28,7 @@ from spine.application.persistence.errors import (
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.persistence.answer_disclosure import AnswerDisclosureRepository
 from spine.application.persistence.answer_question_runs import AnswerQuestionRunRepository
-from spine.domain.capabilities import AnswerQuestionOutcome
+from spine.domain.capabilities import AnswerDisclosureRecord, AnswerQuestionOutcome
 from spine.domain.capabilities import (
     AcceptedAnswerClaimPresentation,
     AcceptedAnswerPresentation,
@@ -239,12 +239,30 @@ class QAMessageDisclosureEligibilityPort(Protocol):
         requester: QASessionRequester,
     ) -> bool: ...
 
+    async def is_accepted_eligible(
+        self,
+        *,
+        message: QAMessage,
+        requester: QASessionRequester,
+        record: AnswerDisclosureRecord,
+    ) -> bool: ...
+
 
 class DenyAllQAMessageDisclosure:
     """Safe default when no content authorization adapter is composed."""
 
     async def is_eligible(self, *, message: QAMessage, requester: QASessionRequester) -> bool:
         del message, requester
+        return False
+
+    async def is_accepted_eligible(
+        self,
+        *,
+        message: QAMessage,
+        requester: QASessionRequester,
+        record: AnswerDisclosureRecord,
+    ) -> bool:
+        del message, requester, record
         return False
 
 
@@ -306,16 +324,6 @@ class PersistedQASessionService:
     command_id_factory: Callable[[], UUID] = uuid4
     answer_question_runs: AnswerQuestionRunRepository | None = None
     answer_disclosures: AnswerDisclosureRepository | None = None
-
-    def __post_init__(self) -> None:
-        # The PostgreSQL Q&A repository and its run/disclosure adapters share
-        # one tenant UoW. Resolve those adapters from it when the composition
-        # root supplies only the existing session repository.
-        uow = getattr(self.repository, "_uow", None)
-        if self.answer_question_runs is None and uow is not None:
-            object.__setattr__(self, "answer_question_runs", getattr(uow, "answer_question_runs", None))
-        if self.answer_disclosures is None and uow is not None:
-            object.__setattr__(self, "answer_disclosures", getattr(uow, "answer_disclosures", None))
 
     async def create_session(
         self, *, context: TrustedPersistenceContext, requester: QASessionRequester,
@@ -572,11 +580,6 @@ class PersistedQASessionService:
             raise QAMessagePresentationUnavailable()
         assert message.run_id is not None
         try:
-            current_authorized = await self.disclosure_eligibility.is_eligible(
-                message=message, requester=requester
-            )
-            if not current_authorized:
-                return None
             run = await self.answer_question_runs.resolve_run_in_scope(
                 workspace_id=message.workspace_id,
                 environment_id=message.environment_id,
@@ -623,6 +626,13 @@ class PersistedQASessionService:
                 or accepted.answer.text != message.answer
             ):
                 raise QAMessagePresentationUnavailable()
+            current_authorized = await self.disclosure_eligibility.is_accepted_eligible(
+                message=message,
+                requester=requester,
+                record=record,
+            )
+            if not current_authorized:
+                return None
             return _accepted_answer_presentation(message, accepted.answer)
         except QAMessagePresentationUnavailable:
             raise

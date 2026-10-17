@@ -30,10 +30,18 @@ class AllowDisclosure:
         del message, requester
         return True
 
+    async def is_accepted_eligible(self, *, message, requester, record):
+        del message, requester, record
+        return True
+
 
 class DenyDisclosure:
     async def is_eligible(self, *, message, requester):
         del message, requester
+        return False
+
+    async def is_accepted_eligible(self, *, message, requester, record):
+        del message, requester, record
         return False
 
 

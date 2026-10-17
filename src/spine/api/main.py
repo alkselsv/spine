@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
@@ -70,7 +71,8 @@ from spine.application.projection_control import (
     ProjectionRecoveryCommandService,
     ProjectionStatusService,
 )
-from spine.application.qa_sessions import QASessionService
+from spine.application.persistence import AnswerDisclosureRepository, AnswerQuestionRunRepository
+from spine.application.qa_sessions import PersistedQASessionService, QASessionService
 from spine.application.authorized_ask import (
     AnswerQuestionCapability,
     AuthorizedAskService,
@@ -228,6 +230,8 @@ def create_app(
     projection_status_service: ProjectionStatusService | None = None,
     projection_recovery_service: ProjectionRecoveryCommandService | None = None,
     qa_session_service: QASessionService | None = None,
+    qa_answer_question_runs: AnswerQuestionRunRepository | None = None,
+    qa_answer_disclosures: AnswerDisclosureRepository | None = None,
     qa_session_cursor_secret: bytes | None = None,
     authorized_ask_service: AuthorizedAskService | None = None,
     answer_question_capability: AnswerQuestionCapability | None = None,
@@ -422,6 +426,16 @@ def create_app(
             raise RuntimeError("Q&A session routes require an authorization runtime.")
         if qa_session_cursor_secret is None:
             raise RuntimeError("Q&A session routes require a cursor secret.")
+        if qa_answer_question_runs is not None or qa_answer_disclosures is not None:
+            if not isinstance(qa_session_service, PersistedQASessionService):
+                raise RuntimeError(
+                    "Q&A accepted presentation dependencies require the persisted session service."
+                )
+            qa_session_service = replace(
+                qa_session_service,
+                answer_question_runs=qa_answer_question_runs,
+                answer_disclosures=qa_answer_disclosures,
+            )
         install_qa_session_routes(
             application,
             service=qa_session_service,

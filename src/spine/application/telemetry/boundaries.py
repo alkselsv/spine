@@ -127,6 +127,19 @@ class ObservedAnswerQuestionRunRepository:
     async def resolve_run(self, run_id: UUID) -> AnswerQuestionRun:
         return await self._repository.resolve_run(run_id)
 
+    async def resolve_run_in_scope(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        run_id: UUID,
+    ) -> AnswerQuestionRun:
+        return await self._repository.resolve_run_in_scope(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            run_id=run_id,
+        )
+
     async def resolve_run_by_key(self, idempotency_key: str) -> AnswerQuestionRun:
         return await self._repository.resolve_run_by_key(idempotency_key)
 

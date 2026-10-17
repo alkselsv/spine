@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable, Protocol
+from typing import TYPE_CHECKING, Callable, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from spine.application.persistence.disclosure import DisclosureValidationRepository
@@ -20,6 +20,11 @@ from spine.domain.disclosure import (
     DisclosureRevalidationResult,
     DisclosureValidationFact,
 )
+
+if TYPE_CHECKING:
+    from spine.application.qa_sessions import QASessionRequester
+    from spine.domain.capabilities.answer_disclosure import AnswerDisclosureRecord
+    from spine.domain.qa_sessions import QAMessage
 
 
 class DisclosureStateProvider(Protocol):
@@ -265,6 +270,39 @@ class RevalidatingQAMessageDisclosure:
             checkpoint=checkpoint,
             dependencies=message.disclosure_dependencies,
             run_id=message.run_id,
+            message_id=message.message_id,
+            force_fresh=True,
+        )
+        result = await self._service.revalidate(request)
+        return result.can_disclose_content
+
+    async def is_accepted_eligible(
+        self,
+        *,
+        message: QAMessage,
+        requester: QASessionRequester,
+        record: AnswerDisclosureRecord,
+    ) -> bool:
+        """Freshly revalidate the exact dependencies bound to an accepted record."""
+
+        if (
+            record.accepted_answer is None
+            or record.validation is None
+            or message.run_id is None
+            or record.run_id != message.run_id
+            or tuple(record.validation.dependency_ids)
+            != tuple(message.disclosure_dependency_ids)
+        ):
+            return False
+        request = DisclosureRevalidationRequest(
+            request_id=record.request_id,
+            workspace_id=message.workspace_id,
+            environment_id=message.environment_id,
+            requester_id=requester.subject_id,
+            checkpoint=DisclosureRevalidationCheckpoint.BEFORE_STORED_ANSWER_READ,
+            dependencies=message.disclosure_dependencies,
+            run_id=message.run_id,
+            attempt_id=record.attempt_id,
             message_id=message.message_id,
             force_fresh=True,
         )
