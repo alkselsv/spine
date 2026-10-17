@@ -112,7 +112,11 @@ R0 не является самостоятельным продуктовым �
 - [ ] Administrator-only Knowledge Control Plane: документы и ревизии, ingestion /
       projection status, диагностический Q&A, citations inspector, run timeline,
       freshness и feedback.
-- [ ] Golden dataset из реальных обезличенных вопросов.
+- [ ] Golden Dataset из реальных корпоративных документов и вопросов для R1 Q&A;
+      обязательная анонимизация не требуется. Приватный корпус используется
+      только в пределах разрешения и действующих runtime authorization и
+      AccessPolicy, доступ к нему ограничен, он хранится вне Git; Git и CI
+      используют только безопасные synthetic или anonymized fixtures.
 - [ ] Regression eval для retrieval, groundedness, citation correctness и access-policy leakage.
 - [ ] Метрики latency, cost, answer rate и пользовательской полезности.
 
