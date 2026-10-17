@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import timedelta
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID
 
+from pydantic import ConfigDict
 from temporalio import activity, workflow
 from temporalio.exceptions import (
     ActivityError,
@@ -22,44 +23,54 @@ from spine.application.workflows.ask_admission_dispatch import (
 )
 from spine.domain.capabilities.answer_disclosure import AcceptedGroundedAnswer
 from spine.domain.capabilities.answer_question import AnswerQuestionOutput
+from spine.domain.common import DefinitionModel
 
 ASK_EXECUTE_ACTIVITY_NAME = "spine.qa.ask.execute:v1"
 ASK_CANCEL_ACTIVITY_NAME = "spine.qa.ask.cancel:v1"
 _ACTIVITY_START_TO_CLOSE_TIMEOUT = timedelta(minutes=15)
 
 
-def _result_to_payload(result: AuthorizedAskResult) -> dict[str, object]:
-    return {
-        "command_id": str(result.command_id),
-        "session_id": str(result.session_id),
-        "message_id": str(result.message_id),
-        "output": result.output.model_dump(mode="json"),
-        "accepted_answer": (
-            result.accepted_answer.model_dump(mode="json")
-            if result.accepted_answer is not None
-            else None
-        ),
-        "replay": result.replay,
-    }
+class AskAdmissionActivityResult(DefinitionModel):
+    """Versioned result contract serialized across the Temporal activity boundary."""
 
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-def _result_from_payload(payload: dict[str, object]) -> AuthorizedAskResult:
-    output = AnswerQuestionOutput.model_validate_json(json.dumps(payload["output"]))
-    accepted_answer_payload = payload["accepted_answer"]
-    accepted_answer = (
-        AcceptedGroundedAnswer.model_validate_json(
-            json.dumps(accepted_answer_payload)
-        )
-        if accepted_answer_payload is not None
-        else None
+    schema_version: Literal["spine.qa.ask-activity-result:v1"] = (
+        "spine.qa.ask-activity-result:v1"
     )
+    command_id: UUID
+    session_id: UUID
+    message_id: UUID
+    output: AnswerQuestionOutput
+    accepted_answer: AcceptedGroundedAnswer | None
+    replay: bool
+
+
+def _serialize_ask_admission_activity_result(
+    result: AuthorizedAskResult,
+) -> dict[str, object]:
+    payload = AskAdmissionActivityResult(
+        command_id=result.command_id,
+        session_id=result.session_id,
+        message_id=result.message_id,
+        output=result.output,
+        accepted_answer=result.accepted_answer,
+        replay=result.replay,
+    )
+    return payload.model_dump(mode="json")
+
+
+def _deserialize_ask_admission_activity_result(
+    payload: dict[str, object],
+) -> AuthorizedAskResult:
+    result = AskAdmissionActivityResult.model_validate_json(json.dumps(payload))
     return AuthorizedAskResult(
-        command_id=UUID(str(payload["command_id"])),
-        session_id=UUID(str(payload["session_id"])),
-        message_id=UUID(str(payload["message_id"])),
-        output=output,
-        accepted_answer=accepted_answer,
-        replay=bool(payload["replay"]),
+        command_id=result.command_id,
+        session_id=result.session_id,
+        message_id=result.message_id,
+        output=result.output,
+        accepted_answer=result.accepted_answer,
+        replay=result.replay,
     )
 
 
@@ -93,7 +104,7 @@ class AskAdmissionWorkflowDefinition:
                 start_to_close_timeout=_ACTIVITY_START_TO_CLOSE_TIMEOUT,
                 result_type=dict,
             )
-            return _result_from_payload(cancelled)
+            return _deserialize_ask_admission_activity_result(cancelled)
         execute_task = asyncio.create_task(
             workflow.execute_activity(
                 ASK_EXECUTE_ACTIVITY_NAME,
@@ -120,9 +131,9 @@ class AskAdmissionWorkflowDefinition:
                 start_to_close_timeout=_ACTIVITY_START_TO_CLOSE_TIMEOUT,
                 result_type=dict,
             )
-            return _result_from_payload(cancelled)
+            return _deserialize_ask_admission_activity_result(cancelled)
         result = await execute_task
-        return _result_from_payload(result)
+        return _deserialize_ask_admission_activity_result(result)
 
 
 def build_ask_admission_activity_bindings(
@@ -138,12 +149,12 @@ def build_ask_admission_activity_bindings(
     @activity.defn(name=ASK_EXECUTE_ACTIVITY_NAME)
     async def execute(payload: dict[str, object]) -> dict[str, object]:
         result = await service.execute(parse_workflow_input(payload))
-        return _result_to_payload(result)
+        return _serialize_ask_admission_activity_result(result)
 
     @activity.defn(name=ASK_CANCEL_ACTIVITY_NAME)
     async def cancel(payload: dict[str, object]) -> dict[str, object]:
         result = await service.cancel(parse_workflow_input(payload))
-        return _result_to_payload(result)
+        return _serialize_ask_admission_activity_result(result)
 
     return execute, cancel
 

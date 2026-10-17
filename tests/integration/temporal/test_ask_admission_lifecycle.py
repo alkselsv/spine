@@ -74,7 +74,7 @@ class BlockingAskActivity:
 
 
 @pytest.mark.asyncio
-async def test_temporal_ask_workflow_cancellation_signal_persists_terminal_result() -> None:
+async def test_temporal_ask_workflow_cancellation_signal_returns_terminal_result() -> None:
     activity = BlockingAskActivity()
     execute_activity, cancel_activity = build_ask_admission_activity_bindings(activity)
 

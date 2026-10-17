@@ -29,7 +29,7 @@ CRITERIA = {
     "AC4": (
         "tests/application/workflows/test_ask_admission_dispatch.py::test_duplicate_admission_delivery_resolves_one_stable_workflow",
         "tests/application/workflows/test_ask_admission_dispatch.py::test_reconciliation_retries_committed_admission_without_second_start",
-        "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_ask_workflow_cancellation_signal_persists_terminal_result",
+        "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_ask_workflow_cancellation_signal_returns_terminal_result",
     ),
     "AC5": (
         "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_answer_question_retry_cancellation_contract",
@@ -54,7 +54,7 @@ CRITERIA = {
     ),
     "AC9": (
         "tests/integration/postgresql/test_postgresql_unit_of_work.py::test_postgresql_ask_admission_replays_persisted_run_message_and_rejects_conflicts",
-        "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_ask_workflow_cancellation_signal_persists_terminal_result",
+        "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_ask_workflow_cancellation_signal_returns_terminal_result",
     ),
 }
 
@@ -90,3 +90,7 @@ def test_issue430_report_matches_traceability_and_is_explicit_about_boundaries()
     assert report["exactly_once_physical_execution"] is False
     assert report["external_provider_qualification"] is False
     assert report["unverified_prerequisites"]
+    criteria = {item["id"]: item for item in report["criteria"]}
+    for criterion in ("AC4", "AC5", "AC7", "AC8", "AC9"):
+        assert criteria[criterion]["status"].startswith("partial_")
+    assert criteria["AC8"]["verified_commands"] == ["corepack pnpm web:api:check"]

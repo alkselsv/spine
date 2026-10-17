@@ -20,12 +20,12 @@ report records evidence status and the integration boundaries exercised.
 | AC1 | PostgreSQL admission/replay records; rollback contract |
 | AC2 | PostgreSQL replay, NFC-equivalent and concurrent retries; changed payload and tenant scope rejection |
 | AC3 | Legacy synchronous route and cancellation compatibility; admission and conflict response contracts |
-| AC4 | Duplicate dispatch/reconciliation contracts and Temporal server workflow execution |
-| AC5 | PostgreSQL run/cancellation contract and deterministic workflow/API race cases |
+| AC4 | Partial: duplicate dispatch/reconciliation contracts and Temporal server workflow execution; restart recovery remains untested |
+| AC5 | Partial: PostgreSQL run/cancellation contract and deterministic workflow/API race cases; both CAS winners remain untested |
 | AC6 | PostgreSQL canonical run/message state and accepted-answer disclosure boundary |
-| AC7 | Workspace authorization and PostgreSQL delivery isolation |
-| AC8 | Legacy/API OpenAPI contracts and generated client export parity |
-| AC9 | PostgreSQL 17 disposable harness and Temporal local test server; limitations recorded below |
+| AC7 | Partial: workspace authorization and PostgreSQL delivery isolation; environment, subject, logs, and telemetry isolation remain untested |
+| AC8 | Partial: legacy/API OpenAPI contracts, export parity, and `corepack pnpm web:api:check`; full frontend compatibility remains untested |
+| AC9 | Partial: PostgreSQL 17 disposable harness and Temporal local test server; production boundaries recorded below |
 
 ## Verification
 
@@ -39,7 +39,9 @@ pnpm web:api:check
 
 PostgreSQL evidence uses the existing disposable PostgreSQL 17 test harness.
 Temporal evidence uses `WorkflowEnvironment.start_time_skipping()` and a real
-Temporal test server with the registered workflow and activity adapters. No
+Temporal test server with the registered workflow and activity adapters. The
+cancellation integration asserts workflow result arbitration; terminal database
+persistence is covered separately by the PostgreSQL contract. No
 production Temporal service or external model provider is claimed.
 
 ## Boundaries not exercised
