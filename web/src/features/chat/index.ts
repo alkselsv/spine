@@ -2,6 +2,7 @@ export * from './protocol';
 export * from './transport';
 export * from './ask-command';
 export * from './cancellation-api';
+export { ChatPanel } from './ChatPanel';
 export { AcceptedAnswer } from './AcceptedAnswer';
 export { AskCancellationControl } from './AskCancellationControl';
 export { AskComposer } from './AskComposer';
