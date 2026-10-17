@@ -1,0 +1,175 @@
+{
+  "schema_version": "r1-chat-runs-qualification:v1",
+  "ticket": 422,
+  "qualification_scope": "deterministic-browser-and-contract-coverage",
+  "production_contract_changes": false,
+  "external_provider_claim": false,
+  "evidence_kinds": [
+    {
+      "kind": "browser_with_synthetic_api",
+      "meaning": "Playwright renders the web application while API responses are supplied by deterministic synthetic route handlers."
+    },
+    {
+      "kind": "in_process_api_contract",
+      "meaning": "FastAPI is exercised in process with scoped test clients and fake application ports."
+    },
+    {
+      "kind": "deterministic_application_fake",
+      "meaning": "Application or transport contract is exercised against deterministic in-memory collaborators."
+    },
+    {
+      "kind": "component_test_with_fake",
+      "meaning": "A web component is rendered with a controlled fetch implementation."
+    },
+    {
+      "kind": "design_documentation",
+      "meaning": "A versioned repository design decision records the reference mapping and adaptation."
+    },
+    {
+      "kind": "not_exercised",
+      "meaning": "No evidence is claimed for a live service or external provider execution."
+    }
+  ],
+  "paths": [
+    {
+      "path": "session_reload",
+      "result": "pass",
+      "reason": "Scoped session and message reload behavior is covered in the browser harness and API contract suite; browser responses are synthetic.",
+      "evidence": [
+        { "kind": "browser_with_synthetic_api", "file": "web/e2e/app.spec.ts", "reference": "test_chat_run_citation_navigation_preserves_scope_back_reload_and_denies_other_workspace" },
+        { "kind": "component_test_with_fake", "file": "web/src/features/chat/ChatPanel.test.tsx", "reference": "test_message_deep_link_reloads_the_exact_scoped_message_and_return_run" },
+        { "kind": "in_process_api_contract", "file": "tests/api/test_qa_sessions.py", "reference": "test_session_create_replay_and_message_read_use_stable_scoped_contracts" }
+      ]
+    },
+    {
+      "path": "ask_canonical_outcome",
+      "result": "pass",
+      "reason": "A browser journey submits a scoped Ask, receives an accepted canonical message, inspects its citation and records feedback; the API contract is tested separately in process.",
+      "evidence": [
+        { "kind": "browser_with_synthetic_api", "file": "web/e2e/app.spec.ts", "reference": "test_chat_sends_question_displays_answer_inspects_citation_and_records_feedback" },
+        { "kind": "in_process_api_contract", "file": "tests/api/test_authorized_ask.py", "reference": "test_authorized_ask_returns_only_accepted_answer_and_citation_references" }
+      ]
+    },
+    {
+      "path": "persisted_sse_replay",
+      "result": "partial",
+      "reason": "Replay ordering, cursor scope and terminal rehydration pass deterministic transport, application and ASGI contract tests. These use in-memory collaborators; PostgreSQL-backed event persistence and a deployed live stream are not exercised here.",
+      "evidence": [
+        { "kind": "browser_with_synthetic_api", "file": "web/e2e/app.spec.ts", "reference": "test_chat_fixture_reconnects_and_rehydrates_canonical_message" },
+        { "kind": "deterministic_application_fake", "file": "tests/application/qa_events/test_event_log.py", "reference": "test_stream_rehydrates_terminal_event_after_disconnect" },
+        { "kind": "in_process_api_contract", "file": "tests/api/test_qa_stream.py", "reference": "test_sse_streams_accepted_ask_events_and_resumes_after_last_event_id" }
+      ]
+    },
+    {
+      "path": "cancellation",
+      "result": "partial",
+      "reason": "The browser cancel-and-retry journey uses the diagnostic fixture, whose cancel action aborts its synthetic stream. Canonical cancellation is covered by API/Temporal contract tests, but cancellation through the production Chat browser composition and a live Temporal service are not exercised.",
+      "evidence": [
+        { "kind": "browser_with_synthetic_api", "file": "web/e2e/app.spec.ts", "reference": "test_chat_fixture_cancels_and_retries_same_command_without_duplicate_message" },
+        { "kind": "in_process_api_contract", "file": "tests/api/test_authorized_ask.py", "reference": "test_v1_cancellation_returns_content_free_accepted_result" },
+        { "kind": "deterministic_application_fake", "file": "tests/integration/temporal/test_ask_admission_lifecycle.py", "reference": "test_temporal_ask_workflow_cancellation_signal_returns_terminal_result" }
+      ]
+    },
+    {
+      "path": "clarification_retry",
+      "result": "pass",
+      "reason": "The chat composition links a clarification reply to its canonical message; the controlled browser stream verifies safe retry without duplicate messages.",
+      "evidence": [
+        { "kind": "component_test_with_fake", "file": "web/src/features/chat/ChatPanel.test.tsx", "reference": "test_clarification_reply_links_to_the_canonical_message" },
+        { "kind": "component_test_with_fake", "file": "web/src/features/chat/ask-command.test.ts", "reference": "retries an ambiguous failure with the original key and exact payload" },
+        { "kind": "component_test_with_fake", "file": "web/src/features/chat/ask-command.test.ts", "reference": "links a clarification to its source message and gives it a new identity" },
+        { "kind": "browser_with_synthetic_api", "file": "web/e2e/app.spec.ts", "reference": "test_chat_fixture_cancels_and_retries_same_command_without_duplicate_message" },
+        { "kind": "deterministic_application_fake", "file": "web/src/features/chat/transport.test.ts", "reference": "test_transport_replays_partial_failure_without_reissuing_idempotent_command" }
+      ]
+    },
+    {
+      "path": "citation_revocation",
+      "result": "partial",
+      "reason": "Current citation inspection and revoked-access hiding are covered with synthetic fetch responses. Live authorization data and production database policy are not part of the browser run.",
+      "evidence": [
+        { "kind": "browser_with_synthetic_api", "file": "web/e2e/app.spec.ts", "reference": "test_chat_sends_question_displays_answer_inspects_citation_and_records_feedback" },
+        { "kind": "component_test_with_fake", "file": "web/src/features/chat/AcceptedAnswer.test.tsx", "reference": "test_revoked_citation_access_hides_the_whole_answer_and_graph" },
+        { "kind": "in_process_api_contract", "file": "tests/api/test_citation_inspector.py", "reference": "test_citation_inspector_uses_safe_error_for_unavailable_content" }
+      ]
+    },
+    {
+      "path": "feedback",
+      "result": "pass",
+      "reason": "The browser sends scope-bound answer feedback after citation inspection; the API suite proves idempotent replay and exact citation targeting.",
+      "evidence": [
+        { "kind": "browser_with_synthetic_api", "file": "web/e2e/app.spec.ts", "reference": "test_chat_sends_question_displays_answer_inspects_citation_and_records_feedback" },
+        { "kind": "in_process_api_contract", "file": "tests/api/test_feedback.py", "reference": "test_feedback_route_records_safe_result_and_replays_idempotently" },
+        { "kind": "in_process_api_contract", "file": "tests/api/test_feedback.py", "reference": "test_feedback_route_records_exact_citation_feedback" }
+      ]
+    },
+    {
+      "path": "runs_attempts_navigation",
+      "result": "pass",
+      "reason": "Run list/detail contracts cover safe attempt metadata and exact scoped links; the browser verifies chat-to-run navigation, back navigation and reload.",
+      "evidence": [
+        { "kind": "component_test_with_fake", "file": "web/src/features/runs/QARunsPage.test.tsx", "reference": "test_qa_run_link_opens_the_exact_run_and_preserves_scope_and_filters" },
+        { "kind": "component_test_with_fake", "file": "web/src/features/runs/QARunDetailPage.test.tsx", "reference": "test_qa_run_detail_renders_authoritative_metadata_and_sorted_safe_timeline" },
+        { "kind": "in_process_api_contract", "file": "tests/api/test_qa_runs.py", "reference": "test_run_detail_exposes_pinned_attempt_metadata_and_safe_timeline" },
+        { "kind": "browser_with_synthetic_api", "file": "web/e2e/app.spec.ts", "reference": "test_chat_run_citation_navigation_preserves_scope_back_reload_and_denies_other_workspace" }
+      ]
+    },
+    {
+      "path": "two_workspace_isolation",
+      "result": "pass",
+      "reason": "A foreign-workspace browser request is denied without protected answer or evidence; API authorization tests independently verify workspace rejection.",
+      "evidence": [
+        { "kind": "browser_with_synthetic_api", "file": "web/e2e/app.spec.ts", "reference": "test_chat_run_citation_navigation_preserves_scope_back_reload_and_denies_other_workspace" },
+        { "kind": "in_process_api_contract", "file": "tests/api/test_authorized_ask.py", "reference": "test_authorized_ask_denies_other_workspace_without_calling_service" },
+        { "kind": "in_process_api_contract", "file": "tests/api/test_qa_sessions.py", "reference": "test_session_cursors_are_scope_bound_and_protected_content_is_hidden" }
+      ]
+    },
+    {
+      "path": "stale_state_and_safe_diagnostics",
+      "result": "pass",
+      "reason": "Denied refresh and revoked citation tests remove protected content; browser and API cases assert provider details and protected diagnostics are not rendered or returned.",
+      "evidence": [
+        { "kind": "component_test_with_fake", "file": "web/src/features/chat/ChatPanel.test.tsx", "reference": "test_denied_revalidation_hides_cached_protected_messages" },
+        { "kind": "component_test_with_fake", "file": "web/src/features/chat/AcceptedAnswer.test.tsx", "reference": "test_refreshed_ineligible_message_hides_previously_accepted_answer" },
+        { "kind": "browser_with_synthetic_api", "file": "web/e2e/app.spec.ts", "reference": "test_chat_run_citation_navigation_preserves_scope_back_reload_and_denies_other_workspace" },
+        { "kind": "in_process_api_contract", "file": "tests/api/test_feedback.py", "reference": "test_feedback_requires_idempotency_key_and_never_returns_protected_comment" }
+      ]
+    },
+    {
+      "path": "accessibility_localization_responsive",
+      "result": "partial",
+      "reason": "The production Chat browser journey verifies semantic controls, Russian copy, keyboard submission and no horizontal overflow at 390px. This is not a complete WCAG audit or manual screen-reader evaluation.",
+      "evidence": [
+        { "kind": "browser_with_synthetic_api", "file": "web/e2e/app.spec.ts", "reference": "test_chat_sends_question_displays_answer_inspects_citation_and_records_feedback" },
+        { "kind": "browser_with_synthetic_api", "file": "web/e2e/app.spec.ts", "reference": "test_shared_shell_keeps_navigation_and_scope_controls_usable_on_mobile" }
+      ]
+    },
+    {
+      "path": "agno_halaska_mapping",
+      "result": "pass",
+      "reason": "The Chat experience documents Agno Control Plane patterns, Spine-owned adaptations and deviations, and pins the Halaska source revision and MIT notice.",
+      "evidence": [
+        { "kind": "design_documentation", "file": "web/src/features/chat/README.md", "reference": "| Area | Agno reference pattern | Halaska or Base UI fallback | Spine adaptation | Material deviation |" },
+        { "kind": "design_documentation", "file": "web/design-system/NOTICE.md", "reference": "f11ab6958de3fb186a4d431e8425bbe43a6dc87b" },
+        { "kind": "design_documentation", "file": "docs/INTERFACE.md", "reference": "Agno задаёт целевой интерфейс, Halaska — способ его реализации" }
+      ]
+    },
+    {
+      "path": "production_api_integration",
+      "result": "not_exercised",
+      "reason": "The browser routes and in-process API tests use synthetic payloads and fake application ports; this ticket does not claim a browser run against a deployed Spine API, Temporal worker or PostgreSQL Q&A store.",
+      "evidence": [
+        { "kind": "not_exercised", "file": "web/e2e/app.spec.ts", "reference": "test_chat_sends_question_displays_answer_inspects_citation_and_records_feedback" },
+        { "kind": "not_exercised", "file": "tests/api/test_qa_stream.py", "reference": "test_sse_streams_accepted_ask_events_and_resumes_after_last_event_id" }
+      ]
+    },
+    {
+      "path": "external_provider_qualification",
+      "result": "not_exercised",
+      "reason": "No Cognee or LLM provider was selected or contacted; no external-provider quality or availability claim is made.",
+      "evidence": [
+        { "kind": "not_exercised", "file": "docs/qualification/issue-357-grounded-answers.md", "reference": "Real Cognee, LLM and production" },
+        { "kind": "not_exercised", "file": "docs/qualification/issue-359-r1-regression-gate.md", "reference": "Real Cognee and LLM production profiles are not selected by CI." }
+      ]
+    }
+  ]
+}

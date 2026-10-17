@@ -1213,10 +1213,14 @@ test('test_chat_admits_question_and_displays_canonical_terminal_outcome', async 
   expect(admissionRequest!.headers['x-environment-id']).toBe(localEnvironment);
 });
 
-test('test_chat_places_accepted_claim_and_inspects_current_authorized_citation', async ({ page }) => {
+test('test_chat_sends_question_displays_answer_inspects_citation_and_records_feedback', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   const answer = 'Политика опубликована в базе знаний.';
   const answerDigest = createHash('sha256').update(answer, 'utf8').digest('hex');
   const citationRequests: Array<{ headers: Record<string, string>; url: string }> = [];
+  const feedbackRequests: Array<{ headers: Record<string, string>; body: string }> = [];
+  let askAdmitted = false;
+  let admissionRequest: { headers: Record<string, string>; body: string } | null = null;
   const message = {
     schema_version: 1,
     message_id: chatMessage,
@@ -1310,7 +1314,7 @@ test('test_chat_places_accepted_claim_and_inspects_current_authorized_citation',
           schema_version: 1,
           workspace_id: primaryWorkspace,
           environment_id: localEnvironment,
-          items: [message],
+          items: askAdmitted ? [message] : [],
           next_cursor: null,
           limit: 25,
         }),
@@ -1318,6 +1322,32 @@ test('test_chat_places_accepted_claim_and_inspects_current_authorized_citation',
       return;
     }
     await route.fulfill({ status: 404, body: '{}' });
+  });
+  await page.route('**/api/v1/ask/admissions', async (route) => {
+    const request = route.request();
+    admissionRequest = { headers: request.headers(), body: request.postData() ?? '' };
+    askAdmitted = true;
+    await route.fulfill({
+      contentType: 'application/json',
+      status: 202,
+      body: JSON.stringify({
+        schema_version: 1,
+        command_id: chatCommand,
+        workspace_id: primaryWorkspace,
+        environment_id: localEnvironment,
+        trace_id: traceId,
+        status: 'accepted',
+        replay: false,
+        result: {
+          schema_version: 1,
+          command_id: chatCommand,
+          session_id: chatSession,
+          message_id: chatMessage,
+          run_id: chatRun,
+          status: 'admitted',
+        },
+      }),
+    });
   });
   await page.route('**/api/v1/qa/citations/**', async (route) => {
     const request = route.request();
@@ -1386,21 +1416,78 @@ test('test_chat_places_accepted_claim_and_inspects_current_authorized_citation',
       }),
     });
   });
+  await page.route('**/api/v1/qa/feedback', async (route) => {
+    const request = route.request();
+    feedbackRequests.push({ headers: request.headers(), body: request.postData() ?? '' });
+    await route.fulfill({
+      contentType: 'application/json',
+      status: 200,
+      body: JSON.stringify({
+        schema_version: 1,
+        workspace_id: primaryWorkspace,
+        environment_id: localEnvironment,
+        trace_id: traceId,
+        result: {
+          schema_version: 1,
+          status: 'recorded',
+          feedback_id: '90000000-0000-4000-8000-000000000016',
+          feedback_version: 1,
+          target_kind: 'answer',
+          target_id: chatAnswer,
+          run_id: chatRun,
+          message_id: chatMessage,
+          citation_id: null,
+          outcome: 'answer.helpful',
+          audit_event_id: null,
+        },
+      }),
+    });
+  });
 
   await page.goto(
     `/chat/${chatSession}?fixture=chat-api&workspace=${primaryWorkspace}&environment=${localEnvironment}`,
   );
 
+  await expect(page.getByRole('heading', { name: `Сессия · ${chatSession.slice(-8)}` })).toBeVisible();
+  const question = page.getByRole('textbox', { name: 'Вопрос' });
+  await expect(question).toBeVisible();
+  await question.fill('Где опубликована инструкция?');
+  await page.getByRole('button', { name: 'Отправить' }).focus();
+  await page.keyboard.press('Enter');
+
   await expect(page.locator('[data-accepted-answer-text]')).toContainText(answer);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(admissionRequest).not.toBeNull();
+  expect(JSON.parse(admissionRequest!.body)).toEqual({
+    schema_version: 1,
+    session_id: chatSession,
+    question: 'Где опубликована инструкция?',
+  });
+  expect(admissionRequest!.headers['x-workspace-id']).toBe(primaryWorkspace);
+  expect(admissionRequest!.headers['x-environment-id']).toBe(localEnvironment);
+  expect(admissionRequest!.headers['idempotency-key']).toBeTruthy();
   await expect(page.locator('[data-claim-id]')).toHaveAttribute('data-end-utf16', String(answer.length));
   await page.getByRole('button', { name: 'Открыть источник 1 · Независимое подтверждение' }).click();
   await expect(page.getByText('Синтетический фрагмент из разрешённой ревизии.')).toBeVisible();
+  await page.getByRole('group', { name: 'Оценка ответа' }).getByRole('button', { name: 'Полезно' }).click();
+  await expect(page.getByText('Спасибо, отзыв сохранён.')).toBeVisible();
 
   expect(citationRequests).toHaveLength(1);
   expect(new URL(citationRequests[0]!.url).search).toBe('');
   expect(citationRequests[0]!.headers.authorization).toBe('Bearer controlled-chat-api-token');
   expect(citationRequests[0]!.headers['x-workspace-id']).toBe(primaryWorkspace);
   expect(citationRequests[0]!.headers['x-environment-id']).toBe(localEnvironment);
+  expect(feedbackRequests).toHaveLength(1);
+  expect(feedbackRequests[0]!.headers['x-workspace-id']).toBe(primaryWorkspace);
+  expect(feedbackRequests[0]!.headers['x-environment-id']).toBe(localEnvironment);
+  expect(feedbackRequests[0]!.headers['idempotency-key']).toBeTruthy();
+  expect(JSON.parse(feedbackRequests[0]!.body)).toEqual({
+    target_kind: 'answer',
+    target_id: chatAnswer,
+    outcome: 'answer.helpful',
+    run_id: chatRun,
+    message_id: chatMessage,
+  });
   await expect(page.locator('body')).not.toContainText(/provider stack|candidate answer|private diagnostic/i);
 });
 
