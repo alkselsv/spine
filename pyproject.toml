@@ -38,6 +38,7 @@ dev = [
 spine-seed = "spine.scripts.seed:main"
 spine-ask = "spine.scripts.ask_cli:main"
 spine-eval-gate = "spine.evals.regression_gate:main"
+spine-eval-dataset-check = "spine.evals.dataset_cli:main"
 spine-db-bootstrap = "spine.scripts.database:operator_bootstrap_main"
 spine-db-migrate = "spine.scripts.database:migrate_main"
 spine-db-bootstrap-workspace = "spine.scripts.database:initial_workspace_main"
