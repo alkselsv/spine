@@ -21,6 +21,7 @@ import {
 } from './session-api';
 import { AcceptedAnswer } from './AcceptedAnswer';
 import { AskComposer } from './AskComposer';
+import { AskCancellationControl } from './AskCancellationControl';
 import styles from './SessionBrowserPage.module.css';
 
 const SESSION_CURSOR = 'session_cursor';
@@ -424,6 +425,12 @@ function SessionDetails({
                   client={client}
                   key={message.message_id}
                   message={message}
+                  onCanonicalRefresh={() => {
+                    void queryClient.invalidateQueries({
+                      queryKey: qaSessionQueryKeys.messages(scope, session.session_id, messageCursor, identityVersion),
+                    });
+                    if (requestedMessageId === message.message_id) void admittedMessageQuery.refetch();
+                  }}
                   onClarify={() => setClarificationTarget(message.message_id)}
                   targetCitationId={
                     message.message_id === deepLinkMessageId && !deepLinkMismatch ? linkedCitationId : null
@@ -510,6 +517,7 @@ function SessionDetails({
 function MessageCard({
   client,
   message,
+  onCanonicalRefresh,
   onClarify,
   targetCitationId,
   returnRunId,
@@ -517,6 +525,7 @@ function MessageCard({
 }: {
   client: ReturnType<typeof createScopedApiClient>;
   message: QAMessage;
+  onCanonicalRefresh: () => void;
   onClarify: () => void;
   targetCitationId: string | null;
   returnRunId: string | null;
@@ -537,6 +546,18 @@ function MessageCard({
               <span className={styles.messageLabel}>{ru.chat.questionLabel}</span>
               <p>{message.question}</p>
             </div>
+          ) : null}
+          {(message.state === 'pending' || message.state === 'running') &&
+          message.run_id &&
+          UUID_PATTERN.test(message.run_id) &&
+          message.workspace_id === scope.workspaceId &&
+          message.environment_id === scope.environmentId ? (
+            <AskCancellationControl
+              client={client}
+              onCanonicalRefresh={onCanonicalRefresh}
+              runId={message.run_id}
+              scope={scope}
+            />
           ) : null}
           {message.state === 'terminal' && message.terminal_outcome === 'answered' ? (
             <AcceptedAnswer

@@ -1,0 +1,46 @@
+.control {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-2);
+}
+
+.button {
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  padding: 0.6rem 0.9rem;
+  background: var(--color-surface);
+  color: var(--color-link);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.button:hover,
+.button:focus-visible {
+  filter: brightness(0.95);
+}
+
+.button:focus-visible {
+  outline: 2px solid var(--color-link);
+  outline-offset: 3px;
+}
+
+.button:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.status,
+.error {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.status {
+  color: var(--color-muted);
+}
+
+.error {
+  color: var(--color-danger, #a63030);
+}
