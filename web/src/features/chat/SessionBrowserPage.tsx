@@ -307,33 +307,59 @@ function SessionDetails({
   const [admittedMessageId, setAdmittedMessageId] = useState<string | null>(null);
   const [clarificationTarget, setClarificationTarget] = useState<string | null>(null);
   const session = sessionQuery.isStale || sessionQuery.error ? undefined : sessionQuery.data;
+  const linkedMessageId = searchParams.get('message_id');
+  const linkedRunId = searchParams.get('run_id');
+  const linkedCitationId = searchParams.get('citation_id');
+  const returnRunId = searchParams.get('return_run_id');
+  const invalidDeepLink = Boolean(
+    (linkedMessageId && !UUID_PATTERN.test(linkedMessageId)) ||
+    (linkedRunId && !UUID_PATTERN.test(linkedRunId)) ||
+    (linkedCitationId && (!linkedMessageId || !linkedRunId || !UUID_PATTERN.test(linkedCitationId))) ||
+    (returnRunId && !UUID_PATTERN.test(returnRunId)),
+  );
+  const deepLinkMessageId = invalidDeepLink ? null : linkedMessageId;
+  const requestedMessageId = deepLinkMessageId ?? admittedMessageId;
   const admittedMessageQuery = useQuery({
     ...apiQueryOptions({
       load: (signal) => loadQAMessage(
         client,
         scope,
         session?.session_id ?? '',
-        admittedMessageId ?? '',
+        requestedMessageId ?? '',
         signal,
       ),
       queryKey: qaSessionQueryKeys.message(
         scope,
         session?.session_id ?? '',
-        admittedMessageId ?? '',
+        requestedMessageId ?? '',
         identityVersion,
       ),
     }),
-    enabled: Boolean(session?.status === 'active' && admittedMessageId),
+    enabled: Boolean(session?.status === 'active' && requestedMessageId),
     refetchInterval: (query) =>
       query.state.status !== 'error' && query.state.data?.state !== 'terminal' ? 2_000 : false,
   });
+  const deepLinkMismatch = Boolean(
+    deepLinkMessageId && admittedMessageQuery.data && (
+      admittedMessageQuery.data.message_id !== deepLinkMessageId ||
+      admittedMessageQuery.data.session_id !== session?.session_id ||
+      (linkedRunId && admittedMessageQuery.data.run_id !== linkedRunId) ||
+      (linkedCitationId && !admittedMessageQuery.data.accepted_presentation?.citation_ids.includes(linkedCitationId))
+    ),
+  );
+  const deepLinkNeedsActiveSession = Boolean(deepLinkMessageId && session && session.status !== 'active');
   const historyUnavailable =
-    Boolean(messageQuery.error) ||
+    invalidDeepLink ||
+    deepLinkMismatch ||
+    deepLinkNeedsActiveSession ||
     Boolean(admittedMessageQuery.error) ||
-    Boolean((messageQuery.isStale && messageQuery.data) || (admittedMessageQuery.isStale && admittedMessageQuery.data));
+    Boolean(admittedMessageQuery.isStale && admittedMessageQuery.data) ||
+    Boolean(!deepLinkMessageId && (messageQuery.error || (messageQuery.isStale && messageQuery.data)));
   const messages = historyUnavailable
     ? undefined
-    : mergeMessages(messageQuery.data?.items ?? [], admittedMessageQuery.data);
+    : deepLinkMessageId
+      ? admittedMessageQuery.data ? [admittedMessageQuery.data] : []
+      : mergeMessages(messageQuery.data?.items ?? [], admittedMessageQuery.data);
   const clarificationMessage = messages?.find(
     (message) => message.message_id === clarificationTarget && message.terminal_outcome === 'clarification_required',
   );
@@ -384,8 +410,10 @@ function SessionDetails({
       {session?.status === 'active' ? (
         <section className={styles.messagePanel} aria-labelledby="messages-heading">
           <h3 id="messages-heading">{ru.chat.messagesTitle}</h3>
+          {invalidDeepLink || deepLinkMismatch || deepLinkNeedsActiveSession ? <StatusPanel state="failed" /> : null}
           {messageQuery.error ? <ApiErrorPanel error={messageQuery.error} /> : null}
           {admittedMessageQuery.error ? <ApiErrorPanel error={admittedMessageQuery.error} /> : null}
+          {deepLinkMessageId && !admittedMessageQuery.data && !admittedMessageQuery.error ? <StatusPanel state="loading" /> : null}
           {messageQuery.isPending ? <StatusPanel state="loading" /> : null}
           {(messageQuery.isStale && messageQuery.data) || (admittedMessageQuery.isStale && admittedMessageQuery.data) ? <StatusPanel state="stale" /> : null}
           {!historyUnavailable && messages?.length === 0 ? <StatusPanel state="empty" /> : null}
@@ -397,6 +425,12 @@ function SessionDetails({
                   key={message.message_id}
                   message={message}
                   onClarify={() => setClarificationTarget(message.message_id)}
+                  targetCitationId={
+                    message.message_id === deepLinkMessageId && !deepLinkMismatch ? linkedCitationId : null
+                  }
+                  returnRunId={
+                    message.message_id === deepLinkMessageId && message.run_id === returnRunId ? returnRunId : null
+                  }
                   scope={scope}
                 />
               ))}
@@ -412,7 +446,7 @@ function SessionDetails({
               className={styles.secondaryButton}
               onClick={() => {
                 void messageQuery.refetch();
-                if (admittedMessageId) void admittedMessageQuery.refetch();
+                if (requestedMessageId) void admittedMessageQuery.refetch();
               }}
               type="button"
             >
@@ -427,7 +461,7 @@ function SessionDetails({
               className={styles.secondaryButton}
               onClick={() => {
                 if (messageQuery.isStale) void messageQuery.refetch();
-                if (admittedMessageId && admittedMessageQuery.isStale) void admittedMessageQuery.refetch();
+                if (requestedMessageId && admittedMessageQuery.isStale) void admittedMessageQuery.refetch();
               }}
               type="button"
             >
@@ -445,14 +479,16 @@ function SessionDetails({
           onAccepted={(admission) => {
             setAdmittedMessageId(admission.message_id);
             setClarificationTarget(null);
+            const nextSearch = new URLSearchParams(searchParams);
+            nextSearch.delete('message_id');
+            nextSearch.delete('run_id');
+            nextSearch.delete('citation_id');
+            nextSearch.delete('return_run_id');
+            nextSearch.delete(MESSAGE_CURSOR);
+            setSearchParams(nextSearch, { replace: true });
             void queryClient.invalidateQueries({
               queryKey: qaSessionQueryKeys.messages(scope, session.session_id, null, identityVersion),
             });
-            if (searchParams.has(MESSAGE_CURSOR)) {
-              const next = new URLSearchParams(searchParams);
-              next.delete(MESSAGE_CURSOR);
-              setSearchParams(next, { replace: true });
-            }
           }}
           onCancelClarification={() => setClarificationTarget(null)}
           scope={scope}
@@ -475,11 +511,15 @@ function MessageCard({
   client,
   message,
   onClarify,
+  targetCitationId,
+  returnRunId,
   scope,
 }: {
   client: ReturnType<typeof createScopedApiClient>;
   message: QAMessage;
   onClarify: () => void;
+  targetCitationId: string | null;
+  returnRunId: string | null;
   scope: Scope;
 }) {
   return (
@@ -499,12 +539,35 @@ function MessageCard({
             </div>
           ) : null}
           {message.state === 'terminal' && message.terminal_outcome === 'answered' ? (
-            <AcceptedAnswer client={client} message={message} scope={scope} />
+            <AcceptedAnswer
+              client={client}
+              message={message}
+              targetCitationId={targetCitationId}
+              scope={scope}
+            />
           ) : null}
           {message.state === 'terminal' && message.terminal_outcome === 'clarification_required' ? (
             <button className={styles.textButton} onClick={onClarify} type="button">
               {ru.chat.answerClarification}
             </button>
+          ) : null}
+          {message.run_id &&
+          UUID_PATTERN.test(message.run_id) &&
+          UUID_PATTERN.test(message.message_id) ? (
+            <Link
+              className={styles.textButton}
+              to={{
+                pathname: `/qa/runs/${message.run_id}`,
+                search: `?${new URLSearchParams({
+                  workspace: scope.workspaceId,
+                  environment: scope.environmentId,
+                  return_session_id: message.session_id,
+                  return_message_id: message.message_id,
+                }).toString()}`,
+              }}
+            >
+              {returnRunId === message.run_id ? ru.chat.backToRun : ru.chat.openRun}
+            </Link>
           ) : null}
         </>
       )}

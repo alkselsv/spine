@@ -47,6 +47,20 @@ describe('application bootstrap', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Подключено');
   });
 
+  it('test_qa_runs_route_is_available_from_the_scoped_navigation', async () => {
+    const router = createMemoryRouter(appRoutes, {
+      initialEntries: ['/qa/runs?workspace=10000000-0000-4000-8000-000000000002&environment=20000000-0000-4000-8000-000000000002'],
+    });
+
+    renderApp(router);
+
+    expect(await screen.findByRole('heading', { name: 'Запуски Q&A' })).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Запуски Q&A' })).toHaveAttribute(
+      'href',
+      expect.stringContaining('/qa/runs'),
+    );
+  });
+
   it('test_connection_check_updates_workspace_status', async () => {
     const user = userEvent.setup();
     const router = createMemoryRouter(appRoutes, { initialEntries: ['/'] });

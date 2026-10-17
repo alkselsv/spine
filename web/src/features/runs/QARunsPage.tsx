@@ -1,7 +1,7 @@
 import { Select } from '@base-ui/react';
 import { useQuery } from '@tanstack/react-query';
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 
 import { createScopedApiClient, SpineApiError } from '../../api/client';
 import { apiQueryOptions } from '../../api/query';
@@ -122,6 +122,9 @@ export function QARunsPage() {
       queryState.createdAfter ||
       queryState.createdBefore,
   );
+  const detailSearch = new URLSearchParams(searchParams);
+  detailSearch.set('workspace', scope.workspaceId);
+  detailSearch.set('environment', scope.environmentId);
 
   return (
     <section className={styles.page} aria-labelledby="qa-runs-heading">
@@ -193,6 +196,7 @@ export function QARunsPage() {
       ) : runsQuery.data ? (
         <RunResults
           data={runsQuery.data}
+          detailSearch={detailSearch.toString()}
           error={runsQuery.error}
           isStale={runsQuery.isStale}
           onNextPage={nextPage}
@@ -250,12 +254,14 @@ function OutcomeSelect({
 
 function RunResults({
   data,
+  detailSearch,
   error,
   isStale,
   onNextPage,
   onRetry,
 }: {
   data: QARunCollection;
+  detailSearch: string;
   error: SpineApiError | null;
   isStale: boolean;
   onNextPage: () => void;
@@ -296,7 +302,7 @@ function RunResults({
               </thead>
               <tbody>
                 {data.items.map((run) => (
-                  <RunRow key={run.run_id} run={run} />
+                  <RunRow detailSearch={detailSearch} key={run.run_id} run={run} />
                 ))}
               </tbody>
             </table>
@@ -312,10 +318,18 @@ function RunResults({
   );
 }
 
-function RunRow({ run }: { run: QARunSummary }) {
+function RunRow({ detailSearch, run }: { detailSearch: string; run: QARunSummary }) {
   return (
     <tr>
-      <td><code>{run.run_id}</code></td>
+      <td>
+        <Link
+          aria-label={run.run_id}
+          className={styles.runLink}
+          to={{ pathname: `/qa/runs/${run.run_id}`, search: `?${detailSearch}` }}
+        >
+          <code>{run.run_id}</code>
+        </Link>
+      </td>
       <td><span className={styles.statusPill}>{stateLabel(run.state)}</span></td>
       <td>{run.outcome ? ru.qaRuns.outcomes[run.outcome] : ru.qaRuns.unknown}</td>
       <td>

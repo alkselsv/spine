@@ -79,6 +79,7 @@ function QARunDetail({
     <section className={styles.page} aria-labelledby="qa-run-detail-heading">
       <DetailHeader detail={detail} />
       <div className={styles.actionRow}>
+        <BackToMessage detail={detail} searchParams={searchParams} scope={scope} />
         <BackToRuns searchParams={searchParams} scope={scope} />
       </div>
 
@@ -87,7 +88,7 @@ function QARunDetail({
         <WarningsCard warnings={detail.warnings} />
         <TimelineCard events={detail.diagnostic_events} />
         <AttemptsCard attempts={detail.attempts} />
-        <EvidenceCard eligible={detail.evidence_eligible} evidence={detail.accepted_evidence} />
+        <EvidenceCard detail={detail} evidence={detail.accepted_evidence} scope={scope} />
       </div>
     </section>
   );
@@ -261,32 +262,118 @@ function UsageCard({
 }
 
 function EvidenceCard({
-  eligible,
+  detail,
   evidence,
+  scope,
 }: {
-  eligible: boolean;
+  detail: QARunDetail;
   evidence: readonly QARunEvidence[];
+  scope: Scope;
 }) {
   return (
     <section className={`${styles.card} ${styles.cardWide}`} aria-labelledby="qa-run-evidence-heading">
       <h3 id="qa-run-evidence-heading">{ru.qaRuns.detail.evidence}</h3>
-      {!eligible ? (
+      {!detail.evidence_eligible ? (
         <p className={styles.muted} role="note">{ru.qaRuns.detail.evidenceHidden}</p>
       ) : evidence.length === 0 ? (
         <p className={styles.muted}>{ru.qaRuns.detail.unknown}</p>
       ) : (
         <ul className={styles.evidenceList}>
           {evidence.map((item) => (
-            <li className={styles.evidenceItem} key={item.evidence_id}>
-              <strong>{item.evidence_id}</strong>
-              <span>{item.locator_kind}: {item.locator_value}</span>
-              <code>{item.source_revision_id}</code>
-            </li>
+            <EvidenceItem detail={detail} item={item} key={item.evidence_id} scope={scope} />
           ))}
         </ul>
       )}
     </section>
   );
+}
+
+function EvidenceItem({
+  detail,
+  item,
+  scope,
+}: {
+  detail: QARunDetail;
+  item: QARunEvidence;
+  scope: Scope;
+}) {
+  const location = citationLocation(detail, item.citation_id, scope);
+  return (
+    <li className={styles.evidenceItem}>
+      {location ? (
+        <Link className={styles.secondaryButton} to={location}>
+          {ru.qaRuns.detail.openCitation}
+        </Link>
+      ) : null}
+      <strong>{item.evidence_id}</strong>
+      <span>{item.locator_kind}: {item.locator_value}</span>
+      <code>{item.source_revision_id}</code>
+    </li>
+  );
+}
+
+function BackToMessage({
+  detail,
+  searchParams,
+  scope,
+}: {
+  detail: QARunDetail;
+  searchParams: URLSearchParams;
+  scope: Scope;
+}) {
+  const sessionId = searchParams.get('return_session_id');
+  const messageId = searchParams.get('return_message_id');
+  if (
+    !sessionId ||
+    !messageId ||
+    !isValidQARunId(sessionId) ||
+    !isValidQARunId(messageId) ||
+    detail.session_id !== sessionId ||
+    detail.message_id !== messageId
+  ) {
+    return null;
+  }
+  const search = new URLSearchParams({
+    workspace: scope.workspaceId,
+    environment: scope.environmentId,
+    message_id: messageId,
+    run_id: detail.run_id,
+    return_run_id: detail.run_id,
+  });
+  return (
+    <Link
+      className={styles.secondaryButton}
+      to={{ pathname: `/chat/${sessionId}`, search: `?${search.toString()}` }}
+    >
+      {ru.qaRuns.detail.backToMessage}
+    </Link>
+  );
+}
+
+function citationLocation(
+  detail: QARunDetail,
+  citationId: string,
+  scope: Scope,
+): { pathname: string; search: string } | null {
+  if (
+    !detail.evidence_eligible ||
+    !detail.session_id ||
+    !detail.message_id ||
+    !isValidQARunId(detail.session_id) ||
+    !isValidQARunId(detail.message_id) ||
+    !isValidQARunId(citationId)
+  ) {
+    return null;
+  }
+  const search = new URLSearchParams({
+    workspace: scope.workspaceId,
+    environment: scope.environmentId,
+    message_id: detail.message_id,
+    run_id: detail.run_id,
+    citation_id: citationId,
+    return_run_id: detail.run_id,
+  });
+  return { pathname: `/chat/${detail.session_id}`, search: `?${search.toString()}` };
 }
 
 function DetailValue({

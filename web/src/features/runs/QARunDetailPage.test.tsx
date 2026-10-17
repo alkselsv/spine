@@ -50,6 +50,35 @@ describe('Q&A run detail', () => {
     expect(document.body).not.toHaveTextContent('secret answer or provider detail');
   });
 
+  it('test_eligible_run_evidence_links_to_the_exact_scoped_chat_citation_and_back', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        Response.json({
+          data: makeDetail(),
+          environment_id: scope.environmentId,
+          schema_version: 1,
+          trace_id: '50000000-0000-4000-8000-000000000099',
+          workspace_id: scope.workspaceId,
+        }),
+      ),
+    );
+
+    renderDetail(
+      `/qa/runs/${runId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}&return_session_id=90000000-0000-4000-8000-000000000002&return_message_id=90000000-0000-4000-8000-000000000001`,
+    );
+
+    const citationLink = await screen.findByRole('link', { name: ru.qaRuns.detail.openCitation });
+    expect(citationLink).toHaveAttribute(
+      'href',
+      `/chat/90000000-0000-4000-8000-000000000002?workspace=${scope.workspaceId}&environment=${scope.environmentId}&message_id=90000000-0000-4000-8000-000000000001&run_id=${runId}&citation_id=d0000000-0000-4000-8000-000000000001&return_run_id=${runId}`,
+    );
+    expect(screen.getByRole('link', { name: ru.qaRuns.detail.backToMessage })).toHaveAttribute(
+      'href',
+      `/chat/90000000-0000-4000-8000-000000000002?workspace=${scope.workspaceId}&environment=${scope.environmentId}&message_id=90000000-0000-4000-8000-000000000001&run_id=${runId}&return_run_id=${runId}`,
+    );
+  });
+
   it('test_qa_run_detail_exposes_safe_denied_state_without_provider_details', async () => {
     vi.stubGlobal(
       'fetch',

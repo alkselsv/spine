@@ -41,6 +41,25 @@ describe('Q&A runs list', () => {
     expect(document.body).not.toHaveTextContent('secret answer or provider detail');
   });
 
+  it('test_qa_run_link_opens_the_exact_run_and_preserves_scope_and_filters', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        Response.json(collection([makeRun()])),
+      ),
+    );
+
+    renderQARuns(
+      `/qa/runs?workspace=${scope.workspaceId}&environment=${scope.environmentId}&outcome=answered`,
+    );
+
+    const runLink = await screen.findByRole('link', { name: runId });
+    expect(runLink).toHaveAttribute(
+      'href',
+      `/qa/runs/${runId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}&outcome=answered`,
+    );
+  });
+
   it('test_qa_run_filters_update_url_and_request_without_losing_scope', async () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()
