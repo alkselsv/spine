@@ -13,9 +13,19 @@ The transport never treats streamed deltas as the saved message source.
 `ask-command.ts` owns the isolated command actions for authorized Ask admission.
 It sends the generated admission request with a fresh idempotency key, keeps the
 same key and payload for an explicit retry, and links a clarification through the
-server contract. It does not subscribe to transport reconnects; restoring an SSE
-connection cannot submit another Ask. The shared Chat panel has not composed
-these actions yet.
+server contract. `SessionBrowserPage.tsx` composes those actions with canonical
+session resources: an accepted command is hydrated by its message ID, and
+nonterminal messages are refreshed until the server records a terminal outcome.
+Restoring an SSE connection cannot submit another Ask. `ChatPanel.tsx` remains a
+controlled diagnostic fixture; C14 owns final ChatPanel wiring after C06 merges.
+
+`AcceptedAnswer.tsx` displays answer text only when the canonical message is
+terminal and answered, its current disclosure eligibility is `eligible`, and
+the accepted presentation's message/run identities and SHA-256 digest match.
+`SafeMarkdown.tsx` renders a restricted Markdown subset using React elements;
+raw HTML is rejected and links are limited to absolute HTTP(S) URLs. No answer,
+partiality or completeness state is inferred from transport health or citation
+counts. Citation placement and inspection remain owned by the citation slice.
 
 ## Composition reference map (Issue #410)
 
@@ -33,7 +43,7 @@ Base UI remains the primitive source for the existing accessible scope selects.
 
 | Area | Agno reference pattern | Halaska or Base UI fallback | Spine adaptation | Material deviation |
 | --- | --- | --- | --- | --- |
-| Chat | [Control Plane chat](https://docs.agno.com/agent-os/control-plane) starts a conversation from a registered component and follows its streamed output. | No Halaska Chat component is referenced by the pinned notice. Keep the existing Base UI scope selectors and Spine CSS Module surfaces. | Chat remains inside the shared workspace shell and retains Spine's versioned, disclosure-safe diagnostic stream for the controlled browser fixture. Persisted session history is loaded separately through Spine's generated API client. | Spine does not expose Agno's agent/team/workflow selector or a production Q&A composer in this slice. |
+| Chat | [Control Plane chat](https://docs.agno.com/agent-os/control-plane) starts a conversation from a registered component and follows its streamed output. | No Halaska Chat component is referenced by the pinned notice. Keep the existing Base UI scope selectors and Spine CSS Module surfaces. | The production Chat route composes a scoped Q&A session list, an Ask composer and canonical message hydration. Saved outcomes use localized status labels; accepted answer Markdown is gated by current disclosure eligibility and accepted-answer identity. | This initial composition does not add cancellation, citation inspection, feedback or the final ChatPanel wiring. The controlled diagnostic ChatPanel remains a fixture. |
 | Sessions and messages | Agno's [Control Plane session tracking](https://docs.agno.com/agent-os/control-plane#session-tracking) groups conversation messages and runs under a canonical `session_id`; its [session management guide](https://docs.agno.com/agent-os/usage/client/session-management) covers create, list and manage operations. The [storage overview](https://docs.agno.com/sessions/persisting-sessions/overview#session-storage-schema) describes persisted message/run history. | The pinned Halaska notice does not identify a session browser component. Reuse its navigation density and status/recovery hierarchy; native Spine links and buttons sit beside existing Base UI controls. | List/create/restore and message-history pages call `/api/v1/qa/sessions` through the generated, scope-injected client. The UUID session ID is the route identity; cursor pagination is represented in the URL and query key. Query keys include a non-secret auth identity version; scope and prior identity caches are removed when their context changes. Archived sessions require an explicit, versioned restore command. | Spine shows persisted questions and structured outcomes. Answers stay hidden because `QAMessageResponse` has no citation references for the required citation inspector and feedback flow. Session rename/delete, runtime selection, raw trace payloads, and Agno identity/authorization semantics remain outside this slice. Server authorization remains authoritative. |
 | Runs | [Tracing filters](https://docs.agno.com/agent-os/tracing/filter-options) distinguish individual runs from sessions that group traces. | Halaska's pinned status-panel hierarchy is applicable to Spine's existing run states; no run component is copied. | Keep the Runs navigation entry and compose its page in the shared main content area. | Spine's current Runs route represents ingestion runs, not a general Agent Run catalog or Agno trace run. |
 | Tracing and progress | The [Control Plane guide](https://docs.agno.com/agent-os/control-plane) describes streamed execution output and trace tree/waterfall views with span status, timing, and relationships. | Use the pinned Halaska status-panel pattern for concise state; Base UI remains limited to existing controls. | Keep live Chat state in its existing SSE boundary and make shell connection state explicit with text and a status marker. | No trace tree, waterfall, span timeline, or generic agent-step progress is introduced by this shared-shell ticket. |

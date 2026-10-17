@@ -10,6 +10,10 @@ const firstDocument = '30000000-0000-4000-8000-000000000001';
 const secondDocument = '30000000-0000-4000-8000-000000000002';
 const primaryDocument = '30000000-0000-4000-8000-000000000003';
 const primaryRevision = '30000000-0000-4000-8000-000000000004';
+const chatSession = '90000000-0000-4000-8000-000000000001';
+const chatMessage = '90000000-0000-4000-8000-000000000002';
+const chatRun = '90000000-0000-4000-8000-000000000003';
+const chatCommand = '90000000-0000-4000-8000-000000000004';
 
 test('test_control_plane_navigation_preserves_scope_and_generated_client_context', async ({ page }) => {
   const healthRequests = await installControlledHealth(page);
@@ -1077,6 +1081,130 @@ test('test_chat_fixture_reconnects_and_rehydrates_canonical_message', async ({ p
   await expect(page.getByText('Ответ восстановлен')).toBeVisible();
   await expect(page.getByText('Канонический ответ из controlled fixture.')).toHaveCount(1);
   await expect(page.getByLabel('События SSE')).toContainText('completed');
+});
+
+test('test_chat_admits_question_and_displays_canonical_terminal_outcome', async ({ page }) => {
+  let admissionRequest: { body: string; headers: Record<string, string> } | null = null;
+  await page.route('**/api/v1/qa/sessions/**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === `/api/v1/qa/sessions/${chatSession}`) {
+      await route.fulfill({
+        contentType: 'application/json',
+        status: 200,
+        body: JSON.stringify({
+          data: {
+            schema_version: 1,
+            session_id: chatSession,
+            workspace_id: primaryWorkspace,
+            environment_id: localEnvironment,
+            subject_id: '90000000-0000-4000-8000-000000000005',
+            version: 1,
+            status: 'active',
+            created_at: '2026-10-17T10:00:00Z',
+            updated_at: '2026-10-17T10:00:00Z',
+          },
+          schema_version: 1,
+          workspace_id: primaryWorkspace,
+          environment_id: localEnvironment,
+          trace_id: traceId,
+        }),
+      });
+      return;
+    }
+    if (url.pathname === `/api/v1/qa/sessions/${chatSession}/messages` && request.method() === 'GET') {
+      await route.fulfill({
+        contentType: 'application/json',
+        status: 200,
+        body: JSON.stringify({
+          schema_version: 1,
+          workspace_id: primaryWorkspace,
+          environment_id: localEnvironment,
+          items: [],
+          next_cursor: null,
+          limit: 25,
+        }),
+      });
+      return;
+    }
+    if (url.pathname === `/api/v1/qa/sessions/${chatSession}/messages/${chatMessage}`) {
+      await route.fulfill({
+        contentType: 'application/json',
+        status: 200,
+        body: JSON.stringify({
+          data: {
+            schema_version: 1,
+            message_id: chatMessage,
+            session_id: chatSession,
+            workspace_id: primaryWorkspace,
+            environment_id: localEnvironment,
+            version: 1,
+            ordinal: 1,
+            trace_id: traceId,
+            run_id: chatRun,
+            state: 'terminal',
+            terminal_outcome: 'abstained',
+            cancelled: false,
+            disclosure_eligibility: 'eligible',
+            question: 'Где опубликована инструкция?',
+            answer: null,
+            accepted_presentation: null,
+            created_at: '2026-10-17T10:01:00Z',
+            updated_at: '2026-10-17T10:01:00Z',
+          },
+          schema_version: 1,
+          workspace_id: primaryWorkspace,
+          environment_id: localEnvironment,
+          trace_id: traceId,
+        }),
+      });
+      return;
+    }
+    await route.fulfill({ status: 404, body: '{}' });
+  });
+  await page.route('**/api/v1/ask/admissions', async (route) => {
+    const request = route.request();
+    admissionRequest = { body: request.postData() ?? '', headers: request.headers() };
+    await route.fulfill({
+      contentType: 'application/json',
+      status: 202,
+      body: JSON.stringify({
+        schema_version: 1,
+        command_id: chatCommand,
+        workspace_id: primaryWorkspace,
+        environment_id: localEnvironment,
+        trace_id: traceId,
+        status: 'accepted',
+        replay: false,
+        result: {
+          schema_version: 1,
+          command_id: chatCommand,
+          session_id: chatSession,
+          message_id: chatMessage,
+          run_id: chatRun,
+          status: 'admitted',
+        },
+      }),
+    });
+  });
+
+  await page.goto(
+    `/chat/${chatSession}?fixture=chat-api&workspace=${primaryWorkspace}&environment=${localEnvironment}`,
+  );
+  await page.getByRole('textbox', { name: 'Вопрос' }).fill('Где опубликована инструкция?');
+  await page.getByRole('button', { name: 'Отправить' }).click();
+
+  await expect(page.getByText('Недостаточно данных для ответа')).toBeVisible();
+  await expect(page.getByText('Где опубликована инструкция?')).toBeVisible();
+  expect(admissionRequest).not.toBeNull();
+  expect(JSON.parse(admissionRequest!.body)).toEqual({
+    schema_version: 1,
+    session_id: chatSession,
+    question: 'Где опубликована инструкция?',
+  });
+  expect(admissionRequest!.headers['idempotency-key']).toBeTruthy();
+  expect(admissionRequest!.headers['x-workspace-id']).toBe(primaryWorkspace);
+  expect(admissionRequest!.headers['x-environment-id']).toBe(localEnvironment);
 });
 
 test('test_chat_fixture_cancels_and_retries_same_command_without_duplicate_message', async ({ page }) => {

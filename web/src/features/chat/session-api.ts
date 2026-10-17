@@ -1,5 +1,5 @@
 import type { components } from '../../../api/generated/schema';
-import type { ScopedApiClient } from '../../api/client';
+import type { QaApiClient, ScopedApiClient } from '../../api/client';
 import type { Scope } from '../../app/scope';
 
 const PAGE_LIMIT = 25;
@@ -20,6 +20,8 @@ export const qaSessionQueryKeys = {
     [...qaSessionQueryKeys.identity(scope, identityVersion), 'session', sessionId] as const,
   messages: (scope: Scope, sessionId: string, cursor: string | null, identityVersion: string) =>
     [...qaSessionQueryKeys.identity(scope, identityVersion), 'messages', sessionId, cursor] as const,
+  message: (scope: Scope, sessionId: string, messageId: string, identityVersion: string) =>
+    [...qaSessionQueryKeys.identity(scope, identityVersion), 'message', sessionId, messageId] as const,
 };
 
 export async function loadQASessionPage(
@@ -82,6 +84,29 @@ export async function loadQAMessagePage(
     throw new Error('The Q&A message page is unavailable.');
   }
   return response.data;
+}
+
+export async function loadQAMessage(
+  client: QaApiClient,
+  scope: Scope,
+  sessionId: string,
+  messageId: string,
+  signal: AbortSignal,
+): Promise<QAMessage> {
+  const response = await client.GET('/api/v1/qa/sessions/{session_id}/messages/{message_id}', {
+    params: { path: { session_id: sessionId, message_id: messageId } },
+    signal,
+  });
+  if (!response.data) throw new Error('The Q&A message is unavailable.');
+  const message = response.data.data;
+  if (
+    message.message_id !== messageId ||
+    message.session_id !== sessionId ||
+    !isInScope(message, scope)
+  ) {
+    throw new Error('The Q&A message is unavailable.');
+  }
+  return message;
 }
 
 export async function createQASession(
