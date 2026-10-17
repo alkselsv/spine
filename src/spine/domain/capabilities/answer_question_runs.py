@@ -53,6 +53,8 @@ def _unique_ids(value: tuple[UUID, ...], field_name: str) -> tuple[UUID, ...]:
 
 
 class AnswerQuestionRunState(str, Enum):
+    ADMITTED = "admitted"
+    DISPATCH_PENDING = "dispatch_pending"
     RUNNING = "running"
     COMPLETED = "completed"
 
@@ -224,6 +226,39 @@ class AnswerQuestionRun(ValidatedDefinitionModel):
             diagnostic_context=AnswerQuestionDiagnosticContext.from_identity(
                 diagnostic_context
             ),
+            created_at=created_at,
+        )
+
+    @classmethod
+    def admit(
+        cls,
+        *,
+        run_id: UUID,
+        workspace_id: UUID,
+        environment_id: UUID,
+        environment: EnvironmentKind,
+        subject: ActorRef,
+        idempotency_key: str,
+        command_digest: str,
+        input_artifact_ids: tuple[UUID, ...],
+        diagnostic_context: DiagnosticIdentity,
+        created_at: datetime,
+    ) -> AnswerQuestionRun:
+        """Create a durable run before dispatch or execution can begin."""
+
+        return cls(
+            run_id=run_id,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            environment=environment,
+            subject=subject,
+            idempotency_key=idempotency_key,
+            command_digest=command_digest,
+            input_artifact_ids=input_artifact_ids,
+            diagnostic_context=AnswerQuestionDiagnosticContext.from_identity(
+                diagnostic_context
+            ),
+            state=AnswerQuestionRunState.ADMITTED,
             created_at=created_at,
         )
 

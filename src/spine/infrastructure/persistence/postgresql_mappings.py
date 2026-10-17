@@ -161,6 +161,7 @@ idempotency_receipts = Table(
     Column("receipt_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
     Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("actor_id", PostgreSQLUUID(as_uuid=True), nullable=True),
     Column("operation_name", Text, nullable=False),
     Column("operation_schema_version", Integer, nullable=False),
     Column("idempotency_key", Text, nullable=False),

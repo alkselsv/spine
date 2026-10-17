@@ -82,6 +82,7 @@ from spine.application.persistence.answer_question_runs import (
     validate_answer_question_context_bundle,
     validate_answer_question_run_completion,
 )
+from spine.application.persistence.ask_admission import register_ask_admission_outbox_event
 from spine.application.disclosure_revalidation import (
     InMemoryDisclosureValidationResultRepository,
 )
@@ -212,6 +213,10 @@ from spine.domain.capabilities.answer_question_runs import (
 )
 from spine.infrastructure.persistence.projection import InMemoryProjectionRepository
 from spine.infrastructure.persistence.qa_sessions import InMemoryQASessionRepository
+from spine.infrastructure.persistence.in_memory_ask_admission import (
+    InMemoryAskAdmissionRecord,
+    InMemoryAskAdmissionRepository,
+)
 from spine.infrastructure.persistence.feedback import InMemoryFeedbackRepository
 
 
@@ -227,6 +232,7 @@ class _StoreState:
     context_bundles: dict[tuple[UUID, UUID, UUID, int], ContextBundle]
     answer_question_runs: dict[tuple[UUID, UUID, UUID], AnswerQuestionRun]
     answer_question_attempts: dict[tuple[UUID, UUID, UUID], AnswerQuestionAttempt]
+    ask_admissions: dict[tuple[UUID, UUID, UUID], InMemoryAskAdmissionRecord]
     idempotency_receipts: dict["_ReceiptKey", "_IdempotencyReceipt"]
     outbox_intents: dict[UUID, OutboxIntent]
     source_objects: dict[UUID, SourceObject]
@@ -268,6 +274,7 @@ class _StoreState:
 class _ReceiptKey:
     workspace_id: UUID
     environment_id: UUID | None
+    actor_id: UUID
     operation_name: str
     operation_schema_version: int
     idempotency_key: str
@@ -298,6 +305,7 @@ class _Store:
             context_bundles={},
             answer_question_runs={},
             answer_question_attempts={},
+            ask_admissions={},
             idempotency_receipts={},
             outbox_intents={},
             source_objects={},
@@ -369,6 +377,10 @@ class _Store:
     @property
     def answer_question_runs(self) -> dict[tuple[UUID, UUID, UUID], AnswerQuestionRun]:
         return self.state.answer_question_runs
+
+    @property
+    def ask_admissions(self) -> dict[tuple[UUID, UUID, UUID], InMemoryAskAdmissionRecord]:
+        return self.state.ask_admissions
 
     @property
     def answer_question_attempts(
@@ -1103,6 +1115,15 @@ class _AnswerQuestionRunRepository:
     async def resolve_message_link(self, run_id: UUID) -> AnswerQuestionRunMessageLink | None:
         self._uow._guard_active()
         scope = self._scope()
+        admission = (
+            self._uow._base_ask_admissions
+            | self._uow._pending_ask_admissions
+        ).get((scope.workspace_id, scope.environment_id, run_id))
+        if admission is not None:
+            return AnswerQuestionRunMessageLink(
+                session_id=admission.message.session_id,
+                message_id=admission.message.message_id,
+            )
         link = await self._uow.qa_sessions.resolve_message_link(
             workspace_id=scope.workspace_id,
             environment_id=scope.environment_id,
@@ -3430,6 +3451,9 @@ class InMemoryUnitOfWork:
         audit_events: AuditEventRegistry,
         audit_clock: Callable[[], datetime],
         audit_event_id_factory: Callable[[], UUID],
+        ask_admission_run_id_factory: Callable[[], UUID],
+        ask_admission_message_id_factory: Callable[[], UUID],
+        ask_admission_clock: Callable[[], datetime],
     ) -> None:
         if not isinstance(source_context, TrustedPersistenceContext):
             raise InvalidPersistenceContextError("Persistence context is invalid.")
@@ -3443,6 +3467,9 @@ class InMemoryUnitOfWork:
         self._audit_events = audit_events
         self._audit_clock = audit_clock
         self._audit_event_id_factory = audit_event_id_factory
+        self._ask_admission_run_id_factory = ask_admission_run_id_factory
+        self._ask_admission_message_id_factory = ask_admission_message_id_factory
+        self._ask_admission_clock = ask_admission_clock
         self._scope: PersistenceScope | None = None
         self._operation: PersistenceOperation | None = None
         self._trace_id: UUID | None = None
@@ -3456,6 +3483,9 @@ class InMemoryUnitOfWork:
         self._base_answer_question_runs: dict[tuple[UUID, UUID, UUID], AnswerQuestionRun] = {}
         self._base_answer_question_attempts: dict[
             tuple[UUID, UUID, UUID], AnswerQuestionAttempt
+        ] = {}
+        self._base_ask_admissions: dict[
+            tuple[UUID, UUID, UUID], InMemoryAskAdmissionRecord
         ] = {}
         self._base_receipts: dict[_ReceiptKey, _IdempotencyReceipt] = {}
         self._base_outbox_intents: dict[UUID, OutboxIntent] = {}
@@ -3500,6 +3530,9 @@ class InMemoryUnitOfWork:
         self._pending_answer_question_attempts: dict[
             tuple[UUID, UUID, UUID], AnswerQuestionAttempt
         ] = {}
+        self._pending_ask_admissions: dict[
+            tuple[UUID, UUID, UUID], InMemoryAskAdmissionRecord
+        ] = {}
         self._pending_receipts: dict[_ReceiptKey, _IdempotencyReceipt] = {}
         self._pending_outbox_intents: dict[UUID, OutboxIntent] = {}
         self._pending_source_objects: dict[UUID, SourceObject] = {}
@@ -3543,6 +3576,12 @@ class InMemoryUnitOfWork:
         self._context_profiles = _ContextProfileRepository(self)
         self._context_bundles = _ContextBundleRepository(self)
         self._answer_question_runs = _AnswerQuestionRunRepository(self)
+        self._ask_admissions = InMemoryAskAdmissionRepository(
+            self,
+            run_id_factory=ask_admission_run_id_factory,
+            message_id_factory=ask_admission_message_id_factory,
+            clock=ask_admission_clock,
+        )
         self._qa_sessions = store.qa_sessions
         self._feedback = store.feedback
         self._disclosure_validations = store.disclosure_validations
@@ -3581,6 +3620,11 @@ class InMemoryUnitOfWork:
     def answer_question_runs(self) -> _AnswerQuestionRunRepository:
         self._guard_active()
         return self._answer_question_runs
+
+    @property
+    def ask_admissions(self) -> InMemoryAskAdmissionRepository:
+        self._guard_active()
+        return self._ask_admissions
 
     @property
     def qa_sessions(self) -> InMemoryQASessionRepository:
@@ -3726,6 +3770,14 @@ class InMemoryUnitOfWork:
                 self._base_answer_question_attempts = {
                     key: value.model_copy(deep=True)
                     for key, value in self._store.answer_question_attempts.items()
+                }
+                self._base_ask_admissions = {
+                    key: InMemoryAskAdmissionRecord(
+                        run=value.run.model_copy(deep=True),
+                        message=value.message.model_copy(deep=True),
+                        dispatch_event_id=value.dispatch_event_id,
+                    )
+                    for key, value in self._store.ask_admissions.items()
                 }
                 self._base_receipts = {
                     key: _receipt_copy(value)
@@ -3924,6 +3976,24 @@ class InMemoryUnitOfWork:
                     {
                         key: value.model_copy(deep=True)
                         for key, value in self._pending_answer_question_attempts.items()
+                    }
+                )
+                prepared_ask_admissions = {
+                    key: InMemoryAskAdmissionRecord(
+                        run=value.run.model_copy(deep=True),
+                        message=value.message.model_copy(deep=True),
+                        dispatch_event_id=value.dispatch_event_id,
+                    )
+                    for key, value in self._store.ask_admissions.items()
+                }
+                prepared_ask_admissions.update(
+                    {
+                        key: InMemoryAskAdmissionRecord(
+                            run=value.run.model_copy(deep=True),
+                            message=value.message.model_copy(deep=True),
+                            dispatch_event_id=value.dispatch_event_id,
+                        )
+                        for key, value in self._pending_ask_admissions.items()
                     }
                 )
                 prepared_receipts = {
@@ -4191,6 +4261,7 @@ class InMemoryUnitOfWork:
                     context_bundles=prepared_context_bundles,
                     answer_question_runs=prepared_answer_question_runs,
                     answer_question_attempts=prepared_answer_question_attempts,
+                    ask_admissions=prepared_ask_admissions,
                     idempotency_receipts=prepared_receipts,
                     outbox_intents=prepared_outbox_intents,
                     source_objects=prepared_source_objects,
@@ -4227,6 +4298,8 @@ class InMemoryUnitOfWork:
                     active_projections=prepared_active_projections,
                     projection_drifts=prepared_projection_drifts,
                 )
+                for admission in self._pending_ask_admissions.values():
+                    self._store.qa_sessions.persist_admitted_message(admission.message)
         except BaseException as error:
             self._raise_terminal(error)
         self._lifecycle = _Lifecycle.COMMITTED
@@ -4246,6 +4319,7 @@ class InMemoryUnitOfWork:
         self._pending_context_bundles.clear()
         self._pending_answer_question_runs.clear()
         self._pending_answer_question_attempts.clear()
+        self._pending_ask_admissions.clear()
         self._pending_receipts.clear()
         self._pending_outbox_intents.clear()
         self._pending_source_objects.clear()
@@ -4712,6 +4786,12 @@ class InMemoryUnitOfWork:
         return _ReceiptKey(
             workspace_id=scope.workspace_id,
             environment_id=environment_id,
+            actor_id=(
+                self._active_context.acting_subject_id
+                or self._active_context.service_principal_id
+                if self._active_context is not None
+                else self._fail(InvalidPersistenceContextError("Persistence context is invalid."))
+            ),
             operation_name=operation.value,
             operation_schema_version=operation_schema_version,
             idempotency_key=key.value,
@@ -4724,6 +4804,7 @@ class InMemoryUnitOfWork:
         self._base_context_bundles.clear()
         self._base_answer_question_runs.clear()
         self._base_answer_question_attempts.clear()
+        self._base_ask_admissions.clear()
         self._base_receipts.clear()
         self._base_outbox_intents.clear()
         self._base_source_objects.clear()
@@ -4765,6 +4846,7 @@ class InMemoryUnitOfWork:
         self._pending_context_bundles.clear()
         self._pending_answer_question_runs.clear()
         self._pending_answer_question_attempts.clear()
+        self._pending_ask_admissions.clear()
         self._pending_receipts.clear()
         self._pending_outbox_intents.clear()
         self._pending_source_objects.clear()
@@ -4829,6 +4911,7 @@ def _receipt_id(key: _ReceiptKey) -> UUID:
                 "spine-idempotency-receipt-v1",
                 str(key.workspace_id),
                 environment_id,
+                str(key.actor_id),
                 key.operation_name,
                 str(key.operation_schema_version),
                 key.idempotency_key,
@@ -4858,6 +4941,9 @@ class _InMemoryUnitOfWorkFactory:
         audit_events: AuditEventRegistry,
         audit_clock: Callable[[], datetime],
         audit_event_id_factory: Callable[[], UUID],
+        ask_admission_run_id_factory: Callable[[], UUID],
+        ask_admission_message_id_factory: Callable[[], UUID],
+        ask_admission_clock: Callable[[], datetime],
     ) -> None:
         self._store = store
         self._context_verifier = context_verifier
@@ -4866,6 +4952,9 @@ class _InMemoryUnitOfWorkFactory:
         self._audit_events = audit_events
         self._audit_clock = audit_clock
         self._audit_event_id_factory = audit_event_id_factory
+        self._ask_admission_run_id_factory = ask_admission_run_id_factory
+        self._ask_admission_message_id_factory = ask_admission_message_id_factory
+        self._ask_admission_clock = ask_admission_clock
 
     def __call__(self, context: TrustedPersistenceContext) -> InMemoryUnitOfWork:
         if not isinstance(context, TrustedPersistenceContext):
@@ -4881,6 +4970,9 @@ class _InMemoryUnitOfWorkFactory:
             self._audit_events,
             self._audit_clock,
             self._audit_event_id_factory,
+            self._ask_admission_run_id_factory,
+            self._ask_admission_message_id_factory,
+            self._ask_admission_clock,
         )
 
 
@@ -5295,11 +5387,15 @@ class InMemoryPersistence:
         canonical_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         boundary_id_factory: Callable[[], UUID] = uuid4,
         boundary_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        ask_admission_run_id_factory: Callable[[], UUID] = uuid4,
+        ask_admission_message_id_factory: Callable[[], UUID] = uuid4,
+        ask_admission_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         selected_audit_events = (
             audit_events or AuditEventRegistry.with_default_families()
         )
         register_projection_outbox_events(outbox_events)
+        register_ask_admission_outbox_event(outbox_events)
         selected_audit_events.require_sealed()
         store = _Store(
             transaction_lock=transaction_lock,
@@ -5316,6 +5412,9 @@ class InMemoryPersistence:
             selected_audit_events,
             audit_clock,
             audit_event_id_factory,
+            ask_admission_run_id_factory,
+            ask_admission_message_id_factory,
+            ask_admission_clock,
         )
         self.initial_workspace_bootstrap = _InMemoryInitialWorkspaceBootstrap(
             store, bootstrap_authority

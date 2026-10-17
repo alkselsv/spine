@@ -68,3 +68,27 @@ def test_message_requires_terminal_outcome_and_matching_cancellation() -> None:
         updated_at=NOW,
     )
     assert message.cancelled is False
+
+
+def test_message_restores_json_disclosure_dependencies_from_postgresql() -> None:
+    message = QAMessage.model_validate(
+        {
+            "message_id": MESSAGE_ID,
+            "session_id": SESSION_ID,
+            "workspace_id": WORKSPACE_ID,
+            "environment_id": ENVIRONMENT_ID,
+            "version": 1,
+            "ordinal": 1,
+            "trace_id": TRACE_ID,
+            "question": "Where is the policy?",
+            "state": QAMessageState.PENDING,
+            "disclosure_dependencies": {
+                "schema_version": "disclosure-dependency-set:v1",
+                "dependencies": [],
+            },
+            "created_at": NOW,
+            "updated_at": NOW,
+        }
+    )
+
+    assert message.disclosure_dependency_ids == ()

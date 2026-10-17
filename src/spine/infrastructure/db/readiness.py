@@ -312,7 +312,7 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "context_bundles": ExpectedTablePrivileges(True, True, True, False, False),
         "answer_question_runs": ExpectedTablePrivileges(True, True, True, True, False),
         "answer_question_attempts": ExpectedTablePrivileges(True, True, True, True, False),
-        "qa_session_versions": ExpectedTablePrivileges(True, True, True, False, False),
+        "qa_session_versions": ExpectedTablePrivileges(True, True, True, True, False),
         "qa_message_versions": ExpectedTablePrivileges(True, True, True, False, False),
         "feedback_records": ExpectedTablePrivileges(True, True, True, False, False),
         "qa_disclosure_validation_results": ExpectedTablePrivileges(True, True, True, False, False),

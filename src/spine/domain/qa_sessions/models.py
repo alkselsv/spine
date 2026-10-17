@@ -125,9 +125,16 @@ class QAMessage(_QASessionModel):
             data = dict(values)
             dependencies = data.get("disclosure_dependencies")
             if dependencies is not None and not data.get("disclosure_dependency_ids"):
-                dependency_values = getattr(dependencies, "dependencies", dependencies)
+                dependency_values = (
+                    dependencies.get("dependencies", ())
+                    if isinstance(dependencies, Mapping)
+                    else getattr(dependencies, "dependencies", dependencies)
+                )
                 data["disclosure_dependency_ids"] = tuple(
-                    item.dependency_id for item in dependency_values
+                    item.get("dependency_id")
+                    if isinstance(item, Mapping)
+                    else item.dependency_id
+                    for item in dependency_values
                 )
             return data
         return values
