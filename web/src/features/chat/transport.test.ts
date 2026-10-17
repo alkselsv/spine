@@ -203,6 +203,63 @@ describe('SpineChatTransport', () => {
     expect(reconnectNotifications).toEqual([1]);
   });
 
+  it.each([
+    ['workspaceId', 'workspace-other'],
+    ['environmentId', 'environment-other'],
+    ['id', 'message-other'],
+    ['runId', 'run-other'],
+  ] as const)(
+    'test_transport_rejects_canonical_message_with_mismatched_%s',
+    async (field, value) => {
+      const { api, transport } = buildTransport(() => [runStarted, completed]);
+      await collect(
+        transport.sendMessage(session.id, { text: 'Первый вопрос', idempotencyKey: `send-valid-${field}` }, new AbortController().signal),
+      );
+      expect(transport.getCanonicalMessage(canonicalMessage.id)).toEqual(canonicalMessage);
+      vi.spyOn(api, 'getMessage').mockResolvedValue({ ...canonicalMessage, [field]: value });
+
+      const events = await collect(
+        transport.sendMessage(session.id, { text: 'Вопрос', idempotencyKey: `send-mismatched-${field}` }, new AbortController().signal),
+      );
+
+      expect(events.at(-1)).toMatchObject({ type: 'completed' });
+      expect(transport.getCanonicalMessage(canonicalMessage.id)).toBeUndefined();
+    },
+  );
+
+  it('test_transport_delivers_cancellation_while_stream_open_is_pending', async () => {
+    const { api, transport } = buildTransport(() => []);
+    const openMessageStream = vi.spyOn(api, 'openMessageStream').mockImplementation(
+      () => new Promise(() => undefined),
+    );
+    const controller = new AbortController();
+    const pending = collect(
+      transport.sendMessage(session.id, { text: 'Вопрос', idempotencyKey: 'send-abort-opening' }, controller.signal),
+    );
+    await vi.waitFor(() => expect(openMessageStream).toHaveBeenCalledOnce());
+    controller.abort();
+
+    const events = await pending;
+    expect(events.at(-1)).toMatchObject({ type: 'cancelled' });
+    expect(api.cancelledRuns).toEqual([]);
+  });
+
+  it('test_transport_rejects_event_that_changes_the_identified_run', async () => {
+    const conflictingTerminal = chatEvent(
+      'completed',
+      { outcome: 'answered' },
+      2,
+      { runId: 'run-other' },
+    );
+    const { transport } = buildTransport(() => [runStarted, conflictingTerminal]);
+
+    const events = await collect(
+      transport.sendMessage(session.id, { text: 'Вопрос', idempotencyKey: 'send-run-mismatch' }, new AbortController().signal),
+    );
+
+    expect(events.at(-1)).toMatchObject({ type: 'failed', payload: { reason: 'protocol_error' } });
+  });
+
   it('test_transport_times_out_heartbeats_and_fails_closed_after_retries', async () => {
     vi.useFakeTimers();
     const { api, transport } = buildTransport(
@@ -225,21 +282,32 @@ describe('SpineChatTransport', () => {
     }
   });
 
-  it('test_transport_cancels_run_and_reaches_cancelled_terminal_state', async () => {
+  it('test_transport_delivers_cancellation_before_waiting_for_cancel_and_hydration', async () => {
     const { api, transport } = buildTransport(async function* () {
       yield runStarted;
       await new Promise<void>(() => undefined);
     });
-    const controller = new AbortController();
-    const pending = collect(
-      transport.sendMessage(session.id, { text: 'Вопрос', idempotencyKey: 'send-4' }, controller.signal),
+    let finishCancellation: (() => void) | undefined;
+    const cancelRun = vi.spyOn(api, 'cancelRun').mockImplementation(
+      () => new Promise((resolve) => {
+        finishCancellation = resolve;
+      }),
     );
+    const controller = new AbortController();
+    const events = transport.sendMessage(
+      session.id,
+      { text: 'Вопрос', idempotencyKey: 'send-4' },
+      controller.signal,
+    )[Symbol.asyncIterator]();
+    await expect(events.next()).resolves.toMatchObject({ done: false, value: { type: 'run_started' } });
     await vi.waitFor(() => expect(api.streamCalls).toHaveLength(1));
     controller.abort();
 
-    const events = await pending;
-    expect(events.at(-1)).toMatchObject({ type: 'cancelled' });
-    expect(api.cancelledRuns).toEqual(['run-1']);
+    await expect(events.next()).resolves.toMatchObject({ done: false, value: { type: 'cancelled' } });
+    expect(cancelRun).toHaveBeenCalledWith('run-1', api.requestContext);
+    finishCancellation?.();
+    await expect(events.next()).resolves.toMatchObject({ done: true });
+    expect(api.getMessageCalls).toEqual([`${session.id}:${canonicalMessage.id}`]);
   });
 
   it('test_transport_rejects_cross_scope_or_malformed_stream_without_protected_content', async () => {
