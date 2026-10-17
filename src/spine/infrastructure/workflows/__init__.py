@@ -2,6 +2,10 @@
 
 from spine.infrastructure.workflows.ask_admission import (
     PersistenceAskAdmissionCommandSource,
+    PersistenceAskAdmissionRunStarter,
 )
 
-__all__ = ["PersistenceAskAdmissionCommandSource"]
+__all__ = [
+    "PersistenceAskAdmissionCommandSource",
+    "PersistenceAskAdmissionRunStarter",
+]

@@ -108,6 +108,8 @@ class AnswerQuestionRunRepository(Protocol):
 
     async def complete_run(self, run: AnswerQuestionRun) -> AnswerQuestionRun: ...
 
+    async def start_run(self, run: AnswerQuestionRun) -> AnswerQuestionRun: ...
+
     async def resolve_run(self, run_id: UUID) -> AnswerQuestionRun: ...
 
     async def resolve_run_in_scope(
@@ -227,6 +229,44 @@ def validate_answer_question_run_completion(
         raise ValueError("Q&A run completion lineage is invalid.")
 
 
+def validate_answer_question_run_start(
+    existing: AnswerQuestionRun,
+    started: AnswerQuestionRun,
+) -> None:
+    """Bind the workflow's running snapshot to the admitted run identity."""
+
+    immutable_fields = {
+        "schema_version",
+        "run_id",
+        "workspace_id",
+        "environment_id",
+        "environment",
+        "subject",
+        "idempotency_key",
+        "command_digest",
+        "input_artifact_ids",
+        "output_artifact_ids",
+        "diagnostic_context",
+        "created_at",
+        "outcome",
+        "final_attempt_id",
+        "completed_at",
+    }
+    if (
+        existing.state not in {
+            AnswerQuestionRunState.ADMITTED,
+            AnswerQuestionRunState.DISPATCH_PENDING,
+            AnswerQuestionRunState.RUNNING,
+        }
+        or started.state is not AnswerQuestionRunState.RUNNING
+        or any(
+            getattr(existing, field) != getattr(started, field)
+            for field in immutable_fields
+        )
+    ):
+        raise ValueError("Q&A run start lineage is invalid.")
+
+
 def validate_answer_question_context_bundle(
     attempt: AnswerQuestionAttempt,
     bundle: ContextBundle,
@@ -260,4 +300,5 @@ __all__ = [
     "validate_answer_question_attempt_start",
     "validate_answer_question_context_bundle",
     "validate_answer_question_run_completion",
+    "validate_answer_question_run_start",
 ]

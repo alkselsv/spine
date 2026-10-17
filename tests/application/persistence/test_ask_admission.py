@@ -215,6 +215,25 @@ async def test_ask_admission_changed_payload_conflicts_without_aliasing() -> Non
 
 
 @pytest.mark.asyncio
+async def test_admitted_run_start_is_idempotent_and_preserves_identity() -> None:
+    persistence, boundary = await _persistence()
+    context = _context(boundary, operation=QA_ASK_ADMISSION_OPERATION)
+    async with persistence.uow_factory(context) as uow:
+        admission = await uow.ask_admissions.admit(_command())
+        await uow.commit()
+
+    async with persistence.uow_factory(context) as uow:
+        admitted = await uow.answer_question_runs.resolve_run(admission.run_id)
+        running = admitted.begin_execution()
+        first = await uow.answer_question_runs.start_run(running)
+        second = await uow.answer_question_runs.start_run(running)
+        await uow.commit()
+
+    assert first.state.value == "running"
+    assert second == first
+
+
+@pytest.mark.asyncio
 async def test_ask_admission_missing_clarification_target_is_rejected() -> None:
     persistence, boundary = await _persistence()
     context = _context(boundary, operation=QA_ASK_ADMISSION_OPERATION)

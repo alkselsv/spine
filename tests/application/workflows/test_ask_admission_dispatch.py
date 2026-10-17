@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -13,6 +14,7 @@ from spine.application.persistence.ask_admission import (
     QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION,
     QA_ASK_ADMISSION_EVENT_TYPE,
 )
+from spine.domain.common import ActorKind, ActorRef, EnvironmentKind
 from spine.application.persistence.outbox import (
     OpaqueObjectReference,
     OutboxEventRegistry,
@@ -24,6 +26,7 @@ from spine.application.workflows.ask_admission_dispatch import (
     AskAdmissionDispatchConsumer,
     AskAdmissionReconciliationReport,
     AskAdmissionWorkflow,
+    AskAdmissionWorkflowExecutor,
     AskAdmissionWorkflowHandle,
     AskAdmissionWorkflowInput,
     AskAdmissionWorkflowLauncher,
@@ -52,6 +55,7 @@ def workflow_input() -> AskAdmissionWorkflowInput:
         message_id=MESSAGE_ID,
         run_id=RUN_ID,
         trace_id=TRACE_ID,
+        causation_id=UUID("80000000-0000-0000-0000-000000000427"),
     )
 
 
@@ -227,6 +231,54 @@ async def test_scoped_command_loader_rejects_denied_or_mismatched_command() -> N
     assert source.requested == [
         (WORKSPACE_ID, ENVIRONMENT_ID, RUN_ID, SESSION_ID, MESSAGE_ID)
     ]
+
+
+@pytest.mark.asyncio
+async def test_workflow_executor_releases_only_scoped_admitted_identity_to_capability() -> None:
+    command = AskAdmissionCommandData(
+        command_id=COMMAND_ID,
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        session_id=SESSION_ID,
+        message_id=MESSAGE_ID,
+        run_id=RUN_ID,
+        question="secret question",
+        subject=ActorRef(kind=ActorKind.HUMAN, id=UUID(int=427)),
+        environment=EnvironmentKind.PRODUCTION,
+        idempotency_key="ask-427",
+    )
+
+    class Loader:
+        async def load(self, workflow_input):
+            assert workflow_input.model_dump().get("question") is None
+            return command
+
+    class Service:
+        def __init__(self) -> None:
+            self.commands = []
+
+        async def execute_admitted(self, execution):
+            self.commands.append(execution)
+            return SimpleNamespace(
+                command_id=execution.command_id,
+                session_id=execution.session_id,
+                message_id=execution.message_id,
+                run_id=execution.run_id,
+            )
+
+    service = Service()
+    executor = AskAdmissionWorkflowExecutor(
+        loader=Loader(),
+        service=service,
+        persistence_context_factory=lambda workflow_input: object(),
+    )
+
+    result = await executor.execute(workflow_input())
+
+    assert result.run_id == RUN_ID
+    assert service.commands[0].question == "secret question"
+    assert service.commands[0].message_id == MESSAGE_ID
+    assert service.commands[0].run_id == RUN_ID
 
 
 @pytest.mark.asyncio

@@ -137,6 +137,7 @@ from spine.application.persistence.answer_question_runs import (
     validate_answer_question_attempt_start,
     validate_answer_question_context_bundle,
     validate_answer_question_run_completion,
+    validate_answer_question_run_start,
 )
 from spine.application.persistence.ask_admission import register_ask_admission_outbox_event
 from spine.application.persistence.outbox import (
@@ -1334,6 +1335,39 @@ class _PostgreSQLAnswerQuestionRunRepository:
             await self._uow._fail(
                 AnswerQuestionRunConflictError("Q&A run changed concurrently.")
             )
+        return run
+
+    async def start_run(self, run: AnswerQuestionRun) -> AnswerQuestionRun:
+        self._uow._guard_active()
+        self._validate_run_scope(run)
+        if run.state is not AnswerQuestionRunState.RUNNING:
+            await self._uow._fail(AnswerQuestionRunConflictError("Q&A run start is invalid."))
+        row = await self._find_run(run_id=run.run_id)
+        if row is None:
+            await self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
+        existing = self._restore_run(row)
+        if existing.state is AnswerQuestionRunState.COMPLETED:
+            return existing
+        try:
+            validate_answer_question_run_start(existing, run)
+        except ValueError:
+            await self._uow._fail(AnswerQuestionRunConflictError("Q&A run start lineage is invalid."))
+        updated = await self._uow._execute(
+            update(_ANSWER_QUESTION_RUNS)
+            .where(
+                _ANSWER_QUESTION_RUNS.c.workspace_id == run.workspace_id,
+                _ANSWER_QUESTION_RUNS.c.environment_id == run.environment_id,
+                _ANSWER_QUESTION_RUNS.c.run_id == run.run_id,
+                _ANSWER_QUESTION_RUNS.c.state.in_(("admitted", "dispatch_pending")),
+            )
+            .values(self._run_values(run))
+            .returning(_ANSWER_QUESTION_RUNS.c.run_id)
+        )
+        if updated.scalar_one_or_none() is None:
+            current = await self._find_run(run_id=run.run_id)
+            if current is None:
+                await self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
+            return self._restore_run(current)
         return run
 
     async def start_attempt(self, attempt: AnswerQuestionAttempt) -> AnswerQuestionAttempt:

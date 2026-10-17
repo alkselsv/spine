@@ -17,6 +17,10 @@ from spine.application.workflows.ask_admission_dispatch import (
     AskAdmissionWorkflowClient,
     AskAdmissionWorkflowLauncher,
 )
+from spine.workflows.temporal.definitions import (
+    AskAdmissionActivity,
+    AskAdmissionWorkflowDefinition,
+)
 from spine.workers import OutboxConsumerBinding
 
 ASK_ADMISSION_CONSUMER_NAME = "qa_ask_admission"
@@ -45,8 +49,17 @@ def build_ask_admission_delivery_binding(
     )
 
 
+def build_ask_admission_workflow_definition(
+    activity: AskAdmissionActivity,
+) -> AskAdmissionWorkflowDefinition:
+    """Compose the registered workflow body with its activity boundary."""
+
+    return AskAdmissionWorkflowDefinition(activity)
+
+
 __all__ = [
     "ASK_ADMISSION_CONSUMER_NAME",
     "build_ask_admission_delivery_binding",
+    "build_ask_admission_workflow_definition",
     "register_ask_admission_delivery_route",
 ]

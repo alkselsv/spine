@@ -124,6 +124,22 @@ class ObservedAnswerQuestionRunRepository:
         await self._observe(persisted, OperationalObservationOutcome.SUCCEEDED)
         return persisted
 
+    async def start_run(self, run: AnswerQuestionRun) -> AnswerQuestionRun:
+        try:
+            persisted = await self._repository.start_run(run)
+        except Exception:
+            await self._observe_failed(run)
+            raise
+        if (
+            persisted.run_id != run.run_id
+            or persisted.workspace_id != run.workspace_id
+            or persisted.environment_id != run.environment_id
+            or persisted.diagnostic_context != run.diagnostic_context
+        ):
+            raise ValueError("run repository substituted trusted run context")
+        await self._observe(persisted, OperationalObservationOutcome.SUCCEEDED)
+        return persisted
+
     async def resolve_run(self, run_id: UUID) -> AnswerQuestionRun:
         return await self._repository.resolve_run(run_id)
 

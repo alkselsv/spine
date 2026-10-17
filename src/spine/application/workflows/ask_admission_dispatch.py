@@ -8,7 +8,7 @@ an authorization-aware activity boundary.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from enum import Enum
 from typing import Protocol
 from uuid import UUID
@@ -27,6 +27,15 @@ from spine.application.persistence.ask_admission import (
 )
 from spine.application.persistence.outbox import OutboxIntent
 from spine.application.diagnostics.context import DiagnosticContext
+from spine.application.authorized_ask import (
+    AskExecutionCommand,
+    AskRequestContext,
+    AuthorizedAskResult,
+    AuthorizedAskService,
+)
+from spine.application.persistence.context import TrustedPersistenceContext
+from spine.application.persistence.idempotency import IdempotencyKey
+from spine.domain.common import ActorRef, EnvironmentKind
 
 ASK_ADMISSION_WORKFLOW_TYPE = "spine.qa.ask-admission:v1"
 
@@ -57,6 +66,8 @@ class AskAdmissionWorkflowInput(BaseModel):
     message_id: UUID
     run_id: UUID
     trace_id: UUID
+    correlation_id: UUID | None = None
+    causation_id: UUID | None = None
 
     def model_post_init(self, __context: object) -> None:
         del __context
@@ -70,6 +81,10 @@ class AskAdmissionWorkflowInput(BaseModel):
             "trace_id",
         ):
             _require_id(getattr(self, field_name), field_name)
+        for field_name in ("correlation_id", "causation_id"):
+            value = getattr(self, field_name)
+            if value is not None:
+                _require_id(value, field_name)
 
     @classmethod
     def from_intent(cls, intent: OutboxIntent) -> "AskAdmissionWorkflowInput":
@@ -101,6 +116,8 @@ class AskAdmissionWorkflowInput(BaseModel):
             message_id=payload.message_id,
             run_id=payload.run_id,
             trace_id=intent.trace_id,
+            correlation_id=intent.correlation_id,
+            causation_id=intent.event_id,
         )
 
 
@@ -116,6 +133,9 @@ class AskAdmissionCommandData(BaseModel):
     message_id: UUID
     run_id: UUID
     question: str = Field(min_length=1, max_length=32768)
+    subject: ActorRef | None = None
+    environment: EnvironmentKind | None = None
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=255)
 
     def matches(self, workflow_input: AskAdmissionWorkflowInput) -> bool:
         return all(
@@ -299,15 +319,11 @@ class AskAdmissionWorkflowState(str, Enum):
 
 
 class AskAdmissionWorkflow:
-    """Deterministic cancellation-aware bootstrap for the later B01-03 owner.
+    """Deterministic cancellation-aware execution for one admitted Ask run."""
 
-    The bootstrap deliberately has no answer capability invocation.  B01-04 may
-    use the cancellation seam without making this dispatch slice an executable
-    production Ask path.
-    """
-
-    def __init__(self) -> None:
+    def __init__(self, executor: "AskAdmissionWorkflowExecutor | None" = None) -> None:
         self._state = AskAdmissionWorkflowState.WAITING_FOR_EXECUTION
+        self._executor = executor
 
     @property
     def state(self) -> AskAdmissionWorkflowState:
@@ -319,6 +335,82 @@ class AskAdmissionWorkflow:
     @property
     def cancellation_requested(self) -> bool:
         return self._state is AskAdmissionWorkflowState.CANCELLATION_REQUESTED
+
+    async def execute(
+        self, workflow_input: AskAdmissionWorkflowInput
+    ) -> AuthorizedAskResult | None:
+        """Run the admitted capability exactly once through the activity seam."""
+
+        if self.cancellation_requested:
+            return None
+        if self._executor is None:
+            raise RuntimeError("Ask workflow execution is not composed")
+        return await self._executor.execute(workflow_input)
+
+
+class AskAdmissionWorkflowExecutor:
+    """Activity-side execution of one opaque Temporal workflow input."""
+
+    def __init__(
+        self,
+        *,
+        loader: AskAdmissionCommandLoader,
+        service: AuthorizedAskService,
+        persistence_context_factory: Callable[
+            [AskAdmissionWorkflowInput], TrustedPersistenceContext
+        ],
+        run_starter: Callable[[AskAdmissionWorkflowInput], Awaitable[object]] | None = None,
+        authorization_generation: int = 1,
+    ) -> None:
+        if authorization_generation < 1:
+            raise ValueError("authorization generation must be positive")
+        self._loader = loader
+        self._service = service
+        self._persistence_context_factory = persistence_context_factory
+        self._run_starter = run_starter
+        self._authorization_generation = authorization_generation
+
+    async def execute(self, workflow_input: AskAdmissionWorkflowInput) -> AuthorizedAskResult:
+        command = await self._loader.load(workflow_input)
+        if (
+            command.subject is None
+            or command.environment is None
+            or command.idempotency_key is None
+        ):
+            raise AskAdmissionCommandUnavailable(
+                "Admitted Ask command lacks execution identity."
+            )
+        if self._run_starter is not None:
+            await self._run_starter(workflow_input)
+        context = self._persistence_context_factory(workflow_input)
+        result = await self._service.execute_admitted(
+            AskExecutionCommand(
+                request_context=AskRequestContext(
+                    subject_id=command.subject.id,
+                    workspace_id=workflow_input.workspace_id,
+                    environment_id=workflow_input.environment_id,
+                    trace_id=workflow_input.trace_id,
+                    authorization_generation=self._authorization_generation,
+                    correlation_id=workflow_input.correlation_id,
+                    causation_id=workflow_input.causation_id,
+                ),
+                persistence_context=context,
+                command_id=workflow_input.command_id,
+                session_id=workflow_input.session_id,
+                message_id=workflow_input.message_id,
+                run_id=workflow_input.run_id,
+                question=command.question,
+                idempotency_key=IdempotencyKey(command.idempotency_key),
+            )
+        )
+        if (
+            result.command_id != workflow_input.command_id
+            or result.session_id != workflow_input.session_id
+            or result.message_id != workflow_input.message_id
+            or result.run_id != workflow_input.run_id
+        ):
+            raise InvalidAskAdmissionIntent("Ask execution returned mismatched identity.")
+        return result
 
 
 class AskAdmissionReconciliationSource(Protocol):
@@ -384,6 +476,7 @@ __all__ = [
     "AskAdmissionReconciliationReport",
     "AskAdmissionReconciliationSource",
     "AskAdmissionWorkflow",
+    "AskAdmissionWorkflowExecutor",
     "AskAdmissionWorkflowClient",
     "AskAdmissionWorkflowHandle",
     "AskAdmissionWorkflowInput",
