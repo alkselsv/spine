@@ -1,0 +1,396 @@
+"""Durable dispatch contracts for an admitted Q&A run.
+
+This module owns the framework-independent boundary between the transactional
+outbox and a Temporal adapter.  It intentionally carries only opaque persisted
+identities into workflow start.  Protected command content is loaded later by
+an authorization-aware activity boundary.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from enum import Enum
+from typing import Protocol
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from spine.application.outbox.dispatch import (
+    OutboxConsumerSuccess,
+    RetryableOutboxConsumerFailure,
+    TerminalOutboxConsumerFailure,
+)
+from spine.application.persistence.ask_admission import (
+    AskAdmissionDispatchPayload,
+    QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION,
+    QA_ASK_ADMISSION_EVENT_TYPE,
+)
+from spine.application.persistence.outbox import OutboxIntent
+from spine.application.diagnostics.context import DiagnosticContext
+
+ASK_ADMISSION_WORKFLOW_TYPE = "spine.qa.ask-admission:v1"
+
+
+def _require_id(value: UUID, field_name: str) -> UUID:
+    if not isinstance(value, UUID) or value.int == 0:
+        raise ValueError(f"{field_name} must be a non-zero UUID")
+    return value
+
+
+def workflow_id_for_run(run_id: UUID) -> str:
+    """Return the one stable Temporal identity for a canonical Q&A run."""
+
+    _require_id(run_id, "run_id")
+    return str(run_id)
+
+
+class AskAdmissionWorkflowInput(BaseModel):
+    """Opaque workflow input assembled from a committed admission intent."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: int = Field(default=1, gt=0)
+    command_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    session_id: UUID
+    message_id: UUID
+    run_id: UUID
+    trace_id: UUID
+
+    def model_post_init(self, __context: object) -> None:
+        del __context
+        for field_name in (
+            "command_id",
+            "workspace_id",
+            "environment_id",
+            "session_id",
+            "message_id",
+            "run_id",
+            "trace_id",
+        ):
+            _require_id(getattr(self, field_name), field_name)
+
+    @classmethod
+    def from_intent(cls, intent: OutboxIntent) -> "AskAdmissionWorkflowInput":
+        if (
+            type(intent) is not OutboxIntent
+            or intent.event_type != QA_ASK_ADMISSION_EVENT_TYPE
+            or intent.schema_version != QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION
+            or intent.environment_id is None
+            or type(intent.payload) is not AskAdmissionDispatchPayload
+            or intent.aggregate is None
+            or intent.aggregate.object_type != "answer_question_run"
+        ):
+            raise InvalidAskAdmissionIntent("Ask admission intent is invalid.")
+
+        payload = intent.payload
+        if (
+            payload.run_id != intent.aggregate.object_id
+            or payload.command_id.int == 0
+            or payload.session_id.int == 0
+            or payload.message_id.int == 0
+            or payload.run_id.int == 0
+        ):
+            raise InvalidAskAdmissionIntent("Ask admission intent lineage is invalid.")
+        return cls(
+            command_id=payload.command_id,
+            workspace_id=intent.workspace_id,
+            environment_id=intent.environment_id,
+            session_id=payload.session_id,
+            message_id=payload.message_id,
+            run_id=payload.run_id,
+            trace_id=intent.trace_id,
+        )
+
+
+class AskAdmissionCommandData(BaseModel):
+    """Protected command data released only by a governed activity loader."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    command_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    session_id: UUID
+    message_id: UUID
+    run_id: UUID
+    question: str = Field(min_length=1, max_length=32768)
+
+    def matches(self, workflow_input: AskAdmissionWorkflowInput) -> bool:
+        return all(
+            getattr(self, field_name) == getattr(workflow_input, field_name)
+            for field_name in (
+                "command_id",
+                "workspace_id",
+                "environment_id",
+                "session_id",
+                "message_id",
+                "run_id",
+            )
+        )
+
+
+class AskAdmissionCommandLoader(Protocol):
+    """Load the exact admitted command under current authorization."""
+
+    async def load(
+        self, workflow_input: AskAdmissionWorkflowInput
+    ) -> AskAdmissionCommandData: ...
+
+
+class AskAdmissionCommandSource(Protocol):
+    """Persistence read port for one exact, scope-bound admitted command."""
+
+    async def load_exact(
+        self,
+        workflow_input: AskAdmissionWorkflowInput,
+    ) -> AskAdmissionCommandData | None: ...
+
+
+class AskAdmissionCommandAuthorizer(Protocol):
+    """Current authorization check for protected command content."""
+
+    async def authorize(
+        self,
+        *,
+        workflow_input: AskAdmissionWorkflowInput,
+        command: AskAdmissionCommandData,
+    ) -> bool: ...
+
+
+class AskAdmissionCommandUnavailable(LookupError):
+    """A command is missing, mismatched, stale, or no longer authorized."""
+
+
+class ScopedAskAdmissionCommandLoader:
+    """Load protected command data only after exact lineage and auth checks."""
+
+    def __init__(
+        self,
+        source: AskAdmissionCommandSource,
+        authorizer: AskAdmissionCommandAuthorizer,
+    ) -> None:
+        self._source = source
+        self._authorizer = authorizer
+
+    async def load(
+        self, workflow_input: AskAdmissionWorkflowInput
+    ) -> AskAdmissionCommandData:
+        command = await self._source.load_exact(workflow_input)
+        if command is None or not command.matches(workflow_input):
+            raise AskAdmissionCommandUnavailable("Admitted Ask command is unavailable.")
+        try:
+            allowed = await self._authorizer.authorize(
+                workflow_input=workflow_input,
+                command=command,
+            )
+        except Exception:
+            allowed = False
+        if not allowed:
+            raise AskAdmissionCommandUnavailable("Admitted Ask command is unavailable.")
+        return command
+
+
+class AskAdmissionWorkflowHandle(BaseModel):
+    """Safe identity returned by a Temporal client after start or lookup."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    workflow_id: str = Field(min_length=1, max_length=255)
+    run_id: UUID
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> "AskAdmissionWorkflowHandle":
+        expected = workflow_id_for_run(self.run_id)
+        if self.workflow_id != expected:
+            raise ValueError("Temporal workflow handle identity is invalid")
+        return self
+
+
+class TemporalWorkflowAlreadyStarted(Exception):
+    """The requested workflow identity already exists in Temporal."""
+
+    def __init__(self, workflow_id: str) -> None:
+        self.workflow_id = workflow_id
+        super().__init__(workflow_id)
+
+
+class AskAdmissionWorkflowClient(Protocol):
+    async def start_workflow(
+        self,
+        *,
+        workflow_type: str,
+        workflow_id: str,
+        input: AskAdmissionWorkflowInput,
+    ) -> AskAdmissionWorkflowHandle: ...
+
+    async def get_workflow(self, *, workflow_id: str) -> AskAdmissionWorkflowHandle: ...
+
+
+class AskAdmissionWorkflowLauncher:
+    """Start once, then resolve duplicate delivery to the existing workflow."""
+
+    def __init__(self, client: AskAdmissionWorkflowClient) -> None:
+        self._client = client
+
+    async def get_existing(
+        self, *, workflow_id: str
+    ) -> AskAdmissionWorkflowHandle | None:
+        try:
+            return await self._client.get_workflow(workflow_id=workflow_id)
+        except LookupError:
+            return None
+
+    async def start_or_resume(
+        self, workflow_input: AskAdmissionWorkflowInput
+    ) -> AskAdmissionWorkflowHandle:
+        workflow_id = workflow_id_for_run(workflow_input.run_id)
+        try:
+            handle = await self._client.start_workflow(
+                workflow_type=ASK_ADMISSION_WORKFLOW_TYPE,
+                workflow_id=workflow_id,
+                input=workflow_input,
+            )
+        except TemporalWorkflowAlreadyStarted as error:
+            if error.workflow_id != workflow_id:
+                raise InvalidAskAdmissionIntent(
+                    "Temporal duplicate-start identity is invalid."
+                ) from None
+            handle = await self._client.get_workflow(workflow_id=workflow_id)
+        if handle.workflow_id != workflow_id or handle.run_id != workflow_input.run_id:
+            raise InvalidAskAdmissionIntent("Temporal workflow identity is invalid.")
+        return handle
+
+
+class AskAdmissionDispatchConsumer:
+    """Outbox consumer that acknowledges only after Temporal accepts the start."""
+
+    def __init__(self, launcher: AskAdmissionWorkflowLauncher) -> None:
+        self._launcher = launcher
+
+    async def consume(
+        self,
+        intent: OutboxIntent,
+        diagnostic_context: DiagnosticContext,
+    ) -> OutboxConsumerSuccess:
+        try:
+            workflow_input = AskAdmissionWorkflowInput.from_intent(intent)
+            expected_context = DiagnosticContext(
+                trace_id=workflow_input.trace_id,
+                correlation_id=intent.correlation_id,
+                causation_id=intent.event_id,
+            )
+            if diagnostic_context != expected_context:
+                raise InvalidAskAdmissionIntent("Dispatch context is invalid.")
+            await self._launcher.start_or_resume(workflow_input)
+        except (InvalidAskAdmissionIntent, ValueError):
+            raise TerminalOutboxConsumerFailure("qa.ask.invalid_intent") from None
+        except Exception:
+            raise RetryableOutboxConsumerFailure(
+                "qa.ask.temporal_unavailable"
+            ) from None
+        return OutboxConsumerSuccess(diagnostic_context=diagnostic_context)
+
+
+class AskAdmissionWorkflowState(str, Enum):
+    WAITING_FOR_EXECUTION = "waiting_for_execution"
+    CANCELLATION_REQUESTED = "cancellation_requested"
+
+
+class AskAdmissionWorkflow:
+    """Deterministic cancellation-aware bootstrap for the later B01-03 owner.
+
+    The bootstrap deliberately has no answer capability invocation.  B01-04 may
+    use the cancellation seam without making this dispatch slice an executable
+    production Ask path.
+    """
+
+    def __init__(self) -> None:
+        self._state = AskAdmissionWorkflowState.WAITING_FOR_EXECUTION
+
+    @property
+    def state(self) -> AskAdmissionWorkflowState:
+        return self._state
+
+    def request_cancellation(self) -> None:
+        self._state = AskAdmissionWorkflowState.CANCELLATION_REQUESTED
+
+    @property
+    def cancellation_requested(self) -> bool:
+        return self._state is AskAdmissionWorkflowState.CANCELLATION_REQUESTED
+
+
+class AskAdmissionReconciliationSource(Protocol):
+    async def list_unstarted_admissions(
+        self, *, limit: int
+    ) -> Sequence[AskAdmissionWorkflowInput]: ...
+
+
+class AskAdmissionReconciliationReport(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    inspected: int
+    started: int
+    resumed: int
+    failed: int
+
+
+async def reconcile_ask_admissions(
+    source: AskAdmissionReconciliationSource,
+    launcher: AskAdmissionWorkflowLauncher,
+    *,
+    limit: int = 100,
+) -> AskAdmissionReconciliationReport:
+    """Retry committed admitted runs without creating a second workflow."""
+
+    if isinstance(limit, bool) or not 1 <= limit <= 1000:
+        raise ValueError("reconciliation limit must be between 1 and 1000")
+    inputs = tuple(await source.list_unstarted_admissions(limit=limit))
+    started = resumed = failed = 0
+    for workflow_input in inputs:
+        try:
+            before = await launcher.get_existing(
+                workflow_id=workflow_id_for_run(workflow_input.run_id)
+            )
+        except Exception:
+            before = None
+        try:
+            await launcher.start_or_resume(workflow_input)
+        except Exception:
+            failed += 1
+        else:
+            if before is None:
+                started += 1
+            else:
+                resumed += 1
+    return AskAdmissionReconciliationReport(
+        inspected=len(inputs), started=started, resumed=resumed, failed=failed
+    )
+
+
+class InvalidAskAdmissionIntent(ValueError):
+    """The committed intent cannot be safely mapped to one Q&A workflow."""
+
+
+__all__ = [
+    "ASK_ADMISSION_WORKFLOW_TYPE",
+    "AskAdmissionCommandData",
+    "AskAdmissionCommandAuthorizer",
+    "AskAdmissionCommandLoader",
+    "AskAdmissionCommandSource",
+    "AskAdmissionCommandUnavailable",
+    "AskAdmissionDispatchConsumer",
+    "AskAdmissionReconciliationReport",
+    "AskAdmissionReconciliationSource",
+    "AskAdmissionWorkflow",
+    "AskAdmissionWorkflowClient",
+    "AskAdmissionWorkflowHandle",
+    "AskAdmissionWorkflowInput",
+    "AskAdmissionWorkflowLauncher",
+    "AskAdmissionWorkflowState",
+    "InvalidAskAdmissionIntent",
+    "TemporalWorkflowAlreadyStarted",
+    "reconcile_ask_admissions",
+    "workflow_id_for_run",
+]
