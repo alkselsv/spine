@@ -26,7 +26,7 @@ export interface AskCancellationActions {
 export function createAskCancellationActions(
   client: ScopedApiClient,
   scope: Scope,
-  createIdempotencyKey: () => string = () => `qa-cancel-${globalThis.crypto.randomUUID()}`,
+  createIdempotencyKey: (runId: string) => string = (runId) => `qa-cancel-${runId}`,
 ): AskCancellationActions {
   let state: AskCancellationState = { kind: 'idle' };
   let command: { runId: string; idempotencyKey: string; body: CancelRequest } | null = null;
@@ -42,7 +42,7 @@ export function createAskCancellationActions(
         state = { kind: 'failed', message: ru.chat.cancelFailed, retryable: false };
         return state;
       }
-      const idempotencyKey = createIdempotencyKey();
+      const idempotencyKey = createIdempotencyKey(runId);
       if (!idempotencyKey.trim()) {
         state = { kind: 'failed', message: ru.chat.cancelFailed, retryable: false };
         return state;

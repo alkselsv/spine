@@ -45,8 +45,8 @@ afterEach(() => vi.restoreAllMocks());
 
 describe('active Q&A cancellation actions', () => {
   it('requests cancellation for the exact scoped run with the approved versioned contract', async () => {
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
-      cancelResponse('cancellation_requested', null, 202),
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(() =>
+      Promise.resolve(cancelResponse('cancellation_requested', null, 202)),
     );
     const actions = createAskCancellationActions(clientFor(fetcher), scope, () => 'cancel-key-1');
 
@@ -102,6 +102,19 @@ describe('active Q&A cancellation actions', () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(fetcher.mock.calls.map(([request]) => (request as Request).headers.get('Idempotency-Key')))
       .toEqual(['cancel-key-stable', 'cancel-key-stable']);
+  });
+
+  it('uses a run-stable identity when cancellation is retried after control recreation', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(() =>
+      Promise.resolve(cancelResponse('cancellation_requested', null, 202)),
+    );
+    const firstControl = createAskCancellationActions(clientFor(fetcher), scope);
+    const recreatedControl = createAskCancellationActions(clientFor(fetcher), scope);
+
+    expect((await firstControl.cancel(runId)).kind).toBe('requested');
+    expect((await recreatedControl.cancel(runId)).kind).toBe('requested');
+    const keys = fetcher.mock.calls.map(([request]) => (request as Request).headers.get('Idempotency-Key'));
+    expect(keys).toEqual([`qa-cancel-${runId}`, `qa-cancel-${runId}`]);
   });
 
   it('fails closed when the response names a different run', async () => {

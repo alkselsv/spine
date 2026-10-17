@@ -189,13 +189,17 @@ afterEach(() => {
 });
 
 describe('Q&A session navigation', () => {
-  it('test_active_canonical_ask_can_be_cancelled_and_reloads_its_server_terminal_result', async () => {
+  it.each([
+    ['before_start', 'pending'],
+    ['in_progress', 'running'],
+  ] as const)('test_%s_canonical_ask_can_be_cancelled_and_reloads_its_server_terminal_result', async (_phase, initialState) => {
     const user = userEvent.setup();
     const pendingMessage = message('Где находится политика отпуска?', null, 'failed', {
-      state: 'running',
+      state: initialState,
       terminal_outcome: null,
     });
     let cancelAccepted = false;
+    let messageReadsAfterCancel = 0;
     const fetcher = vi.fn<typeof fetch>(async (input, init) => {
       const request = new Request(input, init);
       const url = new URL(request.url);
@@ -203,15 +207,19 @@ describe('Q&A session navigation', () => {
         return response({ data: session(), workspace_id: scope.workspaceId, environment_id: scope.environmentId, trace_id: traceId });
       }
       if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages`) {
-        const currentMessage = cancelAccepted
-          ? message('Где находится политика отпуска?', null, 'cancelled', { cancelled: true })
-          : pendingMessage;
+        let currentMessage = pendingMessage;
+        if (cancelAccepted) {
+          messageReadsAfterCancel += 1;
+          if (messageReadsAfterCancel > 1) {
+            currentMessage = message('Где находится политика отпуска?', null, 'cancelled', { cancelled: true });
+          }
+        }
         return collection(request, [currentMessage], null);
       }
       if (url.pathname === `/api/v1/ask/${runId}/cancel` && request.method === 'POST') {
         cancelAccepted = true;
         expect(request.headers.get('Accept')).toBe('application/vnd.spine.qa-cancel+json;version=1');
-        expect(request.headers.get('Idempotency-Key')).toMatch(/^qa-cancel-/);
+        expect(request.headers.get('Idempotency-Key')).toBe(`qa-cancel-${runId}`);
         expect(request.headers.get('X-Workspace-ID')).toBe(scope.workspaceId);
         expect(request.headers.get('X-Environment-ID')).toBe(scope.environmentId);
         expect(await request.json()).toEqual({ schema_version: 1 });
@@ -240,7 +248,8 @@ describe('Q&A session navigation', () => {
 
     await user.click(await screen.findByRole('button', { name: ru.chat.cancelRequest }, { timeout: 5_000 }));
 
-    expect(await screen.findByText(ru.chat.messageCancelled)).toBeVisible();
+    expect(await screen.findByText(ru.chat.cancelRequested)).toBeVisible();
+    expect(await screen.findByText(ru.chat.messageCancelled, {}, { timeout: 5_000 })).toBeVisible();
     expect(fetcher.mock.calls.some(([input]) => new URL(input instanceof Request ? input.url : String(input)).pathname === `/api/v1/ask/${runId}/cancel`)).toBe(true);
   });
 
