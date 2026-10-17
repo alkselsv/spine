@@ -47,14 +47,18 @@ class GateResult:
 def validate_gate_artifact(artifact: object) -> None:
     if not isinstance(artifact, dict) or set(artifact) != {
         "staged_diff_sha256",
+        "qualified_tree_sha256",
         "results",
     }:
         raise ValueError("gate artifact schema is invalid")
     staged_hash = artifact["staged_diff_sha256"]
+    tree_hash = artifact["qualified_tree_sha256"]
     results = artifact["results"]
     if (
         not isinstance(staged_hash, str)
         or re.fullmatch(r"[0-9a-f]{64}", staged_hash) is None
+        or not isinstance(tree_hash, str)
+        or re.fullmatch(r"[0-9a-f]{64}", tree_hash) is None
         or not isinstance(results, list)
         or len(results) != len(GATE_COMMANDS)
     ):
@@ -183,6 +187,30 @@ def staged_diff_sha256(repository_root: Path) -> str:
     return hashlib.sha256(completed.stdout).hexdigest()
 
 
+def qualified_tree_sha256(repository_root: Path) -> str:
+    """Hash the staged source tree, excluding the self-referential gate artifact."""
+
+    completed = subprocess.run(
+        ("git", "ls-files", "--stage", "-z"),
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+    )
+    digest = hashlib.sha256()
+    excluded_path = GATE_ARTIFACT.as_posix().encode("utf-8")
+    for entry in completed.stdout.split(b"\0"):
+        if not entry:
+            continue
+        metadata, path = entry.split(b"\t", maxsplit=1)
+        mode, object_id, stage = metadata.split()
+        if path == excluded_path:
+            continue
+        if stage != b"0":
+            raise ValueError("qualified source tree contains an unresolved index entry")
+        digest.update(mode + b" " + object_id + b" " + path + b"\0")
+    return digest.hexdigest()
+
+
 def _worktree_has_unstaged_files(repository_root: Path) -> bool:
     unstaged = subprocess.run(
         ("git", "diff", "--quiet"),
@@ -216,6 +244,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             json.dumps(
                 {
                     "staged_diff_sha256": staged_diff_sha256(repository_root),
+                    "qualified_tree_sha256": qualified_tree_sha256(repository_root),
                     "commands": [" ".join(command) for command in GATE_COMMANDS],
                     "results": [],
                 },
@@ -231,6 +260,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     report_results = [result.as_json() for result in results]
     report = {
         "staged_diff_sha256": staged_diff_sha256(repository_root),
+        "qualified_tree_sha256": qualified_tree_sha256(repository_root),
         "results": report_results,
     }
     try:
@@ -241,6 +271,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     report["artifact_match"] = (
         artifact.get("staged_diff_sha256") == report["staged_diff_sha256"]
+        and artifact.get("qualified_tree_sha256") == report["qualified_tree_sha256"]
         and artifact.get("results") == report_results
     )
     if report["artifact_match"] is not True:

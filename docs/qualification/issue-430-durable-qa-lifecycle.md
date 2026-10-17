@@ -52,7 +52,11 @@ the activity and the canonical run reaches one terminal result. A related
 PostgreSQL test proves a failed terminal transaction rolls back the run,
 terminal message, accepted disclosure, and message receipt together before a
 fresh adapter commits the replay. Outbox lease reclamation is exercised against
-PostgreSQL. Temporal evidence uses
+PostgreSQL. A duplicate-delivery integration case sends the same admission
+intent twice through the normal consumer and `TemporalSdkWorkflowClient` against
+Temporal's local test server while the workflow is running. Both deliveries
+resolve to the canonical run ID, and one answer execution reaches the same
+cancelled result. Temporal evidence uses
 `WorkflowEnvironment.start_time_skipping()` and the local test server with the
 registered workflow and activity adapters. One worker persists the execution
 activity task and shuts down before an activity worker polls it; a fresh worker

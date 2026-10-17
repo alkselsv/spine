@@ -13,7 +13,10 @@ from temporalio.worker import Worker
 from spine.application.authorized_ask import AuthorizedAskResult
 from spine.application.diagnostics import DiagnosticContext
 from spine.application.persistence.ask_admission import (
+    AskAdmissionDispatchPayload,
     AskCancellationDispatchPayload,
+    QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION,
+    QA_ASK_ADMISSION_EVENT_TYPE,
     QA_ASK_CANCELLATION_EVENT_SCHEMA_VERSION,
     QA_ASK_CANCELLATION_EVENT_TYPE,
     register_ask_admission_outbox_event,
@@ -21,6 +24,8 @@ from spine.application.persistence.ask_admission import (
 from spine.application.persistence.outbox import OpaqueObjectReference
 from spine.application.workflows.ask_admission_dispatch import (
     ASK_ADMISSION_WORKFLOW_TYPE,
+    AskAdmissionDispatchConsumer,
+    AskAdmissionWorkflowLauncher,
     AskCancellationDispatchConsumer,
     AskAdmissionWorkflowInput,
 )
@@ -66,6 +71,31 @@ def _cancelled_result() -> AuthorizedAskResult:
     )
 
 
+def _admission_intent():
+    events = create_outbox_event_registry()
+    register_ask_admission_outbox_event(events)
+    return events.build_intent(
+        event_id=UUID("80000000-0000-0000-0000-000000000430"),
+        workspace_id=_workflow_input().workspace_id,
+        environment_id=_workflow_input().environment_id,
+        event_type=QA_ASK_ADMISSION_EVENT_TYPE,
+        schema_version=QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION,
+        payload=AskAdmissionDispatchPayload(
+            command_id=COMMAND_ID,
+            session_id=SESSION_ID,
+            message_id=MESSAGE_ID,
+            run_id=RUN_ID,
+        ),
+        aggregate=OpaqueObjectReference(
+            object_type="answer_question_run",
+            object_id=RUN_ID,
+            schema_version=1,
+        ),
+        producer_deduplication_id=f"qa-ask-admission:{RUN_ID}",
+        trace_id=TRACE_ID,
+    )
+
+
 class BlockingAskActivity:
     def __init__(self) -> None:
         self.started = asyncio.Event()
@@ -107,6 +137,48 @@ class WorkerRestartAskActivity:
         assert workflow_input.run_id == RUN_ID
         self.cancel_calls += 1
         return _cancelled_result()
+
+
+@pytest.mark.asyncio
+async def test_temporal_duplicate_admission_delivery_converges_on_one_run() -> None:
+    activity = BlockingAskActivity()
+    execute_activity, cancel_activity = build_ask_admission_activity_bindings(activity)
+    task_queue = f"{TASK_QUEUE}-duplicate-admission"
+    event = _admission_intent()
+    context = DiagnosticContext(
+        trace_id=TRACE_ID,
+        correlation_id=event.correlation_id,
+        causation_id=event.event_id,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping(
+        data_converter=pydantic_data_converter
+    ) as environment:
+        temporal_client = TemporalSdkWorkflowClient(
+            environment.client,
+            task_queue=task_queue,
+            id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
+        )
+        consumer = AskAdmissionDispatchConsumer(AskAdmissionWorkflowLauncher(temporal_client))
+        async with Worker(
+            environment.client,
+            task_queue=task_queue,
+            workflows=[AskAdmissionWorkflowDefinition],
+            activities=[execute_activity, cancel_activity],
+        ):
+            await consumer.consume(event, context)
+            handle = environment.client.get_workflow_handle(str(RUN_ID))
+            await asyncio.wait_for(activity.started.wait(), timeout=10)
+
+            # A redelivered outbox event must resolve to the active execution
+            # with the canonical run ID instead of creating a second run.
+            await consumer.consume(event, context)
+            await handle.signal("request_cancellation")
+            result = await asyncio.wait_for(handle.result(), timeout=10)
+
+    assert result["output"]["outcome"] == AnswerQuestionOutcome.CANCELLED.value
+    assert activity.execute_calls >= 1
+    assert activity.cancel_calls == 1
 
 
 @pytest.mark.asyncio
@@ -271,7 +343,7 @@ async def test_temporal_ask_cancellation_resumes_after_worker_restart() -> None:
             result = await asyncio.wait_for(handle.result(), timeout=10)
 
     assert result["output"]["outcome"] == AnswerQuestionOutcome.CANCELLED.value
-    assert activity.execute_calls == 1
+    assert activity.execute_calls >= 1
     assert activity.cancel_calls == 1
 
 

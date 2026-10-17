@@ -30,6 +30,7 @@ CRITERIA = {
     "AC4": (
         "tests/application/workflows/test_ask_admission_dispatch.py::test_duplicate_admission_delivery_resolves_one_stable_workflow",
         "tests/application/workflows/test_ask_admission_dispatch.py::test_reconciliation_retries_committed_admission_without_second_start",
+        "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_duplicate_admission_delivery_converges_on_one_run",
         "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_ask_workflow_cancellation_signal_returns_terminal_result",
         "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_ask_workflow_resumes_after_worker_restart",
         "tests/integration/temporal/test_ask_admission_lifecycle.py::test_temporal_ask_cancellation_resumes_after_worker_restart",
