@@ -235,6 +235,9 @@ from tests.contracts.persistence.test_answer_question_run_repository_contract im
     test_answer_question_run_create_and_replay_are_canonical_and_idempotent as contract_qa_create_replay,
     test_answer_question_run_resolution_does_not_cross_workspace_or_environment as contract_qa_isolation,
 )
+from tests.contracts.persistence.test_ask_admission_contract import (
+    exercise_ask_admission_contract,
+)
 from tests.contracts.persistence.test_unit_of_work_contract import (
     test_concurrent_duplicate_commit_has_one_logical_effect as contract_concurrent_duplicate,
     test_duplicate_workspace_identity_raises_typed_conflict as contract_duplicate_workspace,
@@ -3143,6 +3146,12 @@ async def test_postgresql_answer_question_run_isolation_contract(
     postgresql_adapter: PersistenceAdapter,
 ) -> None:
     await contract_qa_isolation(postgresql_adapter)
+
+
+async def test_postgresql_ask_admission_replays_persisted_run_and_message(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    await exercise_ask_admission_contract(postgresql_adapter)
 
 
 async def test_postgresql_answer_question_retry_cancellation_contract(

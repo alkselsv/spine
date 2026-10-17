@@ -2342,6 +2342,9 @@ detectors без специальных обходов в platform core.
 - [ADR-035](adr/0035-resumable-qa-event-contract.md): versioned Q&A event
   envelopes, scope-bound resumable replay, terminal rehydration and fresh
   disclosure checks for protected emissions.
+- [ADR-038](adr/0038-atomic-qa-ask-admission.md): PostgreSQL-canonical atomic
+  Ask admission with actor-scoped idempotency, linked pending identities and a
+  delivery-only dispatch intent.
 - ADR-TBD: artifact schemas и handoff evaluation protocol.
 - ADR-012: business outcome attribution и cost accounting.
 - ADR-013: future third-party Agent SDK, package trust и certification после появления подтверждённого внешнего кейса.

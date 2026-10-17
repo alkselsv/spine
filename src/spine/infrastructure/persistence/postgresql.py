@@ -138,6 +138,7 @@ from spine.application.persistence.answer_question_runs import (
     validate_answer_question_context_bundle,
     validate_answer_question_run_completion,
 )
+from spine.application.persistence.ask_admission import register_ask_admission_outbox_event
 from spine.application.persistence.outbox import (
     OpaqueObjectReference,
     OutboxEventRegistry,
@@ -294,6 +295,9 @@ from spine.infrastructure.persistence.postgresql_mappings import (
 )
 from spine.infrastructure.persistence.postgresql_qa_sessions import (
     PostgreSQLQASessionRepository,
+)
+from spine.infrastructure.persistence.postgresql_ask_admission import (
+    PostgreSQLAskAdmissionRepository,
 )
 from spine.infrastructure.persistence.postgresql_feedback import (
     PostgreSQLFeedbackRepository,
@@ -4243,40 +4247,39 @@ class _PostgreSQLIdempotencyRepository:
         environment_id = (
             scope.environment_id if isinstance(scope, EnvironmentScope) else None
         )
+        actor_id = self._actor_id()
         receipt_id = self._uow._receipt_id_factory()
         values = {
             "receipt_id": receipt_id,
             "workspace_id": scope.workspace_id,
             "environment_id": environment_id,
+            "actor_id": actor_id,
             "operation_name": operation.value,
             "operation_schema_version": operation_schema_version,
             "idempotency_key": key.value,
             "digest_algorithm_version": digest.algorithm_version,
             "command_digest": digest.value,
         }
-        uniqueness_columns = [
-            _IDEMPOTENCY_RECEIPTS.c.workspace_id,
-            _IDEMPOTENCY_RECEIPTS.c.operation_name,
-            _IDEMPOTENCY_RECEIPTS.c.operation_schema_version,
-            _IDEMPOTENCY_RECEIPTS.c.idempotency_key,
-        ]
-        if environment_id is None:
-            conflict_columns = uniqueness_columns
-            conflict_predicate = _IDEMPOTENCY_RECEIPTS.c.environment_id.is_(None)
-        else:
-            conflict_columns = [
-                _IDEMPOTENCY_RECEIPTS.c.workspace_id,
-                _IDEMPOTENCY_RECEIPTS.c.environment_id,
-                *uniqueness_columns[1:],
-            ]
-            conflict_predicate = _IDEMPOTENCY_RECEIPTS.c.environment_id.is_not(None)
+        legacy = await self._uow._execute(
+            select(_IDEMPOTENCY_RECEIPTS).where(
+                *self._key_predicates(
+                    operation, operation_schema_version, key, actor_id=None
+                )
+            )
+        )
+        legacy_row = legacy.mappings().one_or_none()
+        if legacy_row is not None:
+            return await self._replay_or_conflict(
+                legacy_row,
+                digest=digest,
+                operation=operation,
+                operation_schema_version=operation_schema_version,
+                key=key,
+            )
         inserted = await self._uow._execute(
             postgresql_insert(_IDEMPOTENCY_RECEIPTS)
             .values(**values)
-            .on_conflict_do_nothing(
-                index_elements=conflict_columns,
-                index_where=conflict_predicate,
-            )
+            .on_conflict_do_nothing()
             .returning(_IDEMPOTENCY_RECEIPTS.c.receipt_id)
         )
         owned_receipt_id = inserted.scalar_one_or_none()
@@ -4292,43 +4295,32 @@ class _PostgreSQLIdempotencyRepository:
             self._uow._owned_claims[owned_receipt_id] = claim
             return claim
 
+        receipt_collision = await self._uow._execute(
+            select(_IDEMPOTENCY_RECEIPTS.c.receipt_id).where(
+                _IDEMPOTENCY_RECEIPTS.c.receipt_id == receipt_id
+            )
+        )
+        if receipt_collision.scalar_one_or_none() is not None:
+            await self._uow._fail(
+                ConstraintConflictError("Idempotency receipt identity already exists.")
+            )
+
         existing = await self._uow._execute(
-            select(
-                _IDEMPOTENCY_RECEIPTS.c.receipt_id,
-                _IDEMPOTENCY_RECEIPTS.c.digest_algorithm_version,
-                _IDEMPOTENCY_RECEIPTS.c.command_digest,
-                _IDEMPOTENCY_RECEIPTS.c.result_type,
-                _IDEMPOTENCY_RECEIPTS.c.result_id,
-                _IDEMPOTENCY_RECEIPTS.c.result_schema_version,
-            ).where(*self._key_predicates(operation, operation_schema_version, key))
+            select(_IDEMPOTENCY_RECEIPTS).where(
+                *self._key_predicates(
+                    operation, operation_schema_version, key, actor_id=actor_id
+                )
+            )
         )
         row = existing.mappings().one_or_none()
         if row is None:
             await self._uow._fail(idempotency_conflict())
-        if (
-            row.digest_algorithm_version != digest.algorithm_version
-            or row.command_digest != digest.value
-        ):
-            await self._uow._fail(idempotency_conflict())
-        if (
-            row.result_type is None
-            or row.result_id is None
-            or row.result_schema_version is None
-        ):
-            await self._uow._fail(
-                IdempotencyConflictError("Idempotency key is already claimed.")
-            )
-        return IdempotencyReplay(
-            kind="replay",
-            receipt_id=row.receipt_id,
+        return await self._replay_or_conflict(
+            row,
+            digest=digest,
             operation=operation,
             operation_schema_version=operation_schema_version,
             key=key,
-            result=OpaqueResultReference(
-                result_type=row.result_type,
-                result_id=row.result_id,
-                schema_version=row.result_schema_version,
-            ),
         )
 
     async def complete(
@@ -4364,6 +4356,7 @@ class _PostgreSQLIdempotencyRepository:
                     claim.operation,
                     claim.operation_schema_version,
                     claim.key,
+                    actor_id=self._actor_id(),
                 ),
                 _IDEMPOTENCY_RECEIPTS.c.digest_algorithm_version
                 == claim.digest.algorithm_version,
@@ -4387,6 +4380,7 @@ class _PostgreSQLIdempotencyRepository:
         operation: PersistenceOperation,
         operation_schema_version: int,
         key: IdempotencyKey,
+        actor_id: UUID | None = None,
     ) -> tuple[object, ...]:
         scope = self._uow.scope
         environment_predicate = (
@@ -4401,6 +4395,53 @@ class _PostgreSQLIdempotencyRepository:
             _IDEMPOTENCY_RECEIPTS.c.operation_schema_version
             == operation_schema_version,
             _IDEMPOTENCY_RECEIPTS.c.idempotency_key == key.value,
+            (
+                _IDEMPOTENCY_RECEIPTS.c.actor_id == actor_id
+                if actor_id is not None
+                else _IDEMPOTENCY_RECEIPTS.c.actor_id.is_(None)
+            ),
+        )
+
+    def _actor_id(self) -> UUID:
+        context = self._uow._context_snapshot_active()
+        actor_id = context.acting_subject_id or context.service_principal_id
+        if actor_id is None:
+            raise InvalidPersistenceContextError("Persistence context is invalid.")
+        return actor_id
+
+    async def _replay_or_conflict(
+        self,
+        row: Mapping[str, object],
+        *,
+        digest: CommandDigest,
+        operation: PersistenceOperation,
+        operation_schema_version: int,
+        key: IdempotencyKey,
+    ) -> IdempotencyReplay:
+        if (
+            row["digest_algorithm_version"] != digest.algorithm_version
+            or row["command_digest"] != digest.value
+        ):
+            await self._uow._fail(idempotency_conflict())
+        if (
+            row["result_type"] is None
+            or row["result_id"] is None
+            or row["result_schema_version"] is None
+        ):
+            await self._uow._fail(
+                IdempotencyConflictError("Idempotency key is already claimed.")
+            )
+        return IdempotencyReplay(
+            kind="replay",
+            receipt_id=row["receipt_id"],
+            operation=operation,
+            operation_schema_version=operation_schema_version,
+            key=key,
+            result=OpaqueResultReference(
+                result_type=row["result_type"],
+                result_id=row["result_id"],
+                schema_version=row["result_schema_version"],
+            ),
         )
 
 
@@ -5862,6 +5903,9 @@ class PostgreSQLTenantUnitOfWork:
         transaction_probe: PostgreSQLTransactionProbe,
         boundary_id_factory: Callable[[], UUID],
         boundary_clock: Callable[[], datetime] | None,
+        ask_admission_run_id_factory: Callable[[], UUID],
+        ask_admission_message_id_factory: Callable[[], UUID],
+        ask_admission_clock: Callable[[], datetime],
     ) -> None:
         self._session_factory = session_factory
         self._source_context = source_context
@@ -5886,6 +5930,12 @@ class PostgreSQLTenantUnitOfWork:
         self._context_bundles = _PostgreSQLContextBundleRepository(self)
         self._answer_question_runs = _PostgreSQLAnswerQuestionRunRepository(self)
         self._qa_sessions = PostgreSQLQASessionRepository(self)
+        self._ask_admissions = PostgreSQLAskAdmissionRepository(
+            self,
+            run_id_factory=ask_admission_run_id_factory,
+            message_id_factory=ask_admission_message_id_factory,
+            clock=ask_admission_clock,
+        )
         self._feedback = PostgreSQLFeedbackRepository(self)
         self._disclosure_validations = PostgreSQLDisclosureValidationRepository(self)
         self._answer_disclosures = PostgreSQLAnswerDisclosureRepository(self)
@@ -5939,6 +5989,11 @@ class PostgreSQLTenantUnitOfWork:
     def qa_sessions(self) -> PostgreSQLQASessionRepository:
         self._guard_active()
         return self._qa_sessions
+
+    @property
+    def ask_admissions(self) -> PostgreSQLAskAdmissionRepository:
+        self._guard_active()
+        return self._ask_admissions
 
     @property
     def feedback(self) -> PostgreSQLFeedbackRepository:
@@ -6386,6 +6441,9 @@ class PostgreSQLTenantUnitOfWorkFactory:
         receipt_id_factory: Callable[[], UUID] = uuid4,
         boundary_id_factory: Callable[[], UUID] = uuid4,
         boundary_clock: Callable[[], datetime] | None = None,
+        ask_admission_run_id_factory: Callable[[], UUID] = uuid4,
+        ask_admission_message_id_factory: Callable[[], UUID] = uuid4,
+        ask_admission_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self._session_factory = session_factory
         self._context_verifier = context_verifier
@@ -6395,6 +6453,9 @@ class PostgreSQLTenantUnitOfWorkFactory:
         self._transaction_probe = transaction_probe
         self._boundary_id_factory = boundary_id_factory
         self._boundary_clock = boundary_clock
+        self._ask_admission_run_id_factory = ask_admission_run_id_factory
+        self._ask_admission_message_id_factory = ask_admission_message_id_factory
+        self._ask_admission_clock = ask_admission_clock
 
     def __call__(
         self, context: TrustedPersistenceContext
@@ -6413,6 +6474,9 @@ class PostgreSQLTenantUnitOfWorkFactory:
             transaction_probe=self._transaction_probe,
             boundary_id_factory=self._boundary_id_factory,
             boundary_clock=self._boundary_clock,
+            ask_admission_run_id_factory=self._ask_admission_run_id_factory,
+            ask_admission_message_id_factory=self._ask_admission_message_id_factory,
+            ask_admission_clock=self._ask_admission_clock,
         )
 
 
@@ -6447,11 +6511,15 @@ class PostgreSQLPersistence:
         receipt_id_factory: Callable[[], UUID] = uuid4,
         boundary_id_factory: Callable[[], UUID] = uuid4,
         boundary_clock: Callable[[], datetime] | None = None,
+        ask_admission_run_id_factory: Callable[[], UUID] = uuid4,
+        ask_admission_message_id_factory: Callable[[], UUID] = uuid4,
+        ask_admission_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         selected_audit_events = (
             audit_events or AuditEventRegistry.with_default_families()
         )
         register_projection_outbox_events(outbox_events)
+        register_ask_admission_outbox_event(outbox_events)
         selected_audit_events.require_sealed()
         self.tenant_uow_factory = PostgreSQLTenantUnitOfWorkFactory(
             session_factory=session_factory,
@@ -6462,6 +6530,9 @@ class PostgreSQLPersistence:
             transaction_probe=transaction_probe,
             boundary_id_factory=boundary_id_factory,
             boundary_clock=boundary_clock,
+            ask_admission_run_id_factory=ask_admission_run_id_factory,
+            ask_admission_message_id_factory=ask_admission_message_id_factory,
+            ask_admission_clock=ask_admission_clock,
         )
         self.uow_factory = self.tenant_uow_factory
         self.audit_reader = PostgreSQLAuditReader(self.tenant_uow_factory)

@@ -2379,7 +2379,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "context_bundles": (True, True, False, False),
         "answer_question_runs": (True, True, True, False),
         "answer_question_attempts": (True, True, True, False),
-        "qa_session_versions": (True, True, False, False),
+        "qa_session_versions": (True, True, True, False),
         "qa_message_versions": (True, True, False, False),
         "qa_disclosure_validation_results": (True, True, False, False),
         "qa_answer_disclosure_records": (True, True, False, False),
@@ -2809,6 +2809,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         ("idempotency_receipts", "created_at"),
         ("idempotency_receipts", "digest_algorithm_version"),
         ("idempotency_receipts", "environment_id"),
+        ("idempotency_receipts", "actor_id"),
         ("idempotency_receipts", "idempotency_key"),
         ("idempotency_receipts", "operation_name"),
         ("idempotency_receipts", "operation_schema_version"),
@@ -3982,7 +3983,8 @@ async def test_k0_receipt_integrity_objects_are_catalogued_and_restricted(
                         "('validate_issue7_receipt_scope', "
                         "'reject_idempotency_receipt_scope_update', "
                         "'validate_idempotency_receipt_tenant', "
-                        "'enforce_idempotency_receipt_scope_immutable')"
+                        "'enforce_idempotency_receipt_scope_immutable', "
+                        "'enforce_idempotency_receipt_actor_immutable')"
                     ),
                     {"runtime": RUNTIME_ROLE},
                 )
@@ -4006,6 +4008,7 @@ async def test_k0_receipt_integrity_objects_are_catalogued_and_restricted(
     assert set(functions) == {
         "validate_issue7_receipt_scope",
         "reject_idempotency_receipt_scope_update",
+        "enforce_idempotency_receipt_actor_immutable",
     }
     for owner, language, volatility, security_definer, config, public_execute, runtime_execute, definition in functions.values():
         assert owner == MIGRATION_ROLE
@@ -4018,7 +4021,7 @@ async def test_k0_receipt_integrity_objects_are_catalogued_and_restricted(
         if "validate_issue7_receipt_scope" in definition:
             assert "FOR KEY SHARE" in definition
 
-    assert len(trigger) == 2
+    assert len(trigger) == 3
     scope_trigger = next(
         row for row in trigger if row.tgname == "trg_idempotency_receipts_scope_immutable"
     )
@@ -4029,6 +4032,16 @@ async def test_k0_receipt_integrity_objects_are_catalogued_and_restricted(
     assert "BEFORE UPDATE OF workspace_id, environment_id" in scope_trigger.definition
     assert "reject_idempotency_receipt_scope_update" in scope_trigger.definition
     assert scope_trigger.tgtype == 19
+    actor_trigger = next(
+        row for row in trigger if row.tgname == "trg_idempotency_receipts_actor_immutable"
+    )
+    assert actor_trigger.owner == MIGRATION_ROLE
+    assert actor_trigger.tgenabled == "O"
+    assert actor_trigger.tgdeferrable is False
+    assert actor_trigger.tginitdeferred is False
+    assert "BEFORE UPDATE OF actor_id" in actor_trigger.definition
+    assert "enforce_idempotency_receipt_actor_immutable" in actor_trigger.definition
+    assert actor_trigger.tgtype == 19
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -4763,13 +4776,15 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261103_40_operational_metrics.py",
         "20261104_41_operational_correlation.py",
         "20261105_42_operational_metric_correlation_refs.py",
+        "20261106_43_idempotency_actor_scope.py",
+        "20261107_44_answer_question_admission_state.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261105_42_injected_failure.py").write_text(
+    (target / "versions" / "20261107_45_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261106_43'\n"
-        "down_revision = '20261105_42'\n"
+        "revision = '20261107_45'\n"
+        "down_revision = '20261107_44'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

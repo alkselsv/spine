@@ -21,6 +21,7 @@ from spine.application.persistence.projection import ProjectionRepository
 from spine.application.persistence.context_profiles import ContextProfileRepository
 from spine.application.persistence.context_bundles import ContextBundleRepository
 from spine.application.persistence.answer_question_runs import AnswerQuestionRunRepository
+from spine.application.persistence.ask_admission import AskAdmissionRepository
 from spine.application.persistence.disclosure import DisclosureValidationRepository
 from spine.application.persistence.answer_disclosure import AnswerDisclosureRepository
 from spine.application.qa_sessions import QASessionRepository
@@ -46,6 +47,9 @@ class TenantUnitOfWork(Protocol):
 
     @property
     def answer_question_runs(self) -> AnswerQuestionRunRepository: ...
+
+    @property
+    def ask_admissions(self) -> AskAdmissionRepository: ...
 
     @property
     def disclosure_validations(self) -> DisclosureValidationRepository: ...

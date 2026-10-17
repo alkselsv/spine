@@ -48,6 +48,18 @@ class InMemoryQASessionRepository(QASessionRepository):
         self._message_versions: dict[tuple[UUID, UUID, UUID], list[QAMessage]] = {}
         self._receipts: dict[tuple[UUID, UUID, str, str], _Receipt] = {}
 
+    def persist_admitted_message(self, message: QAMessage) -> None:
+        """Materialize an already-committed admission without a second receipt."""
+
+        key = (message.workspace_id, message.environment_id, message.message_id)
+        existing = self._messages.get(key)
+        if existing is not None:
+            if existing != message:
+                raise ValueError("Admitted message identity conflicts with history.")
+            return
+        self._messages[key] = message
+        self._message_versions[key] = [message]
+
     async def create_session(
         self,
         session: QASession,
