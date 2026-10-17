@@ -3148,7 +3148,7 @@ async def test_postgresql_answer_question_run_isolation_contract(
     await contract_qa_isolation(postgresql_adapter)
 
 
-async def test_postgresql_ask_admission_replays_persisted_run_and_message(
+async def test_postgresql_ask_admission_replays_persisted_run_message_and_rejects_conflicts(
     postgresql_adapter: PersistenceAdapter,
 ) -> None:
     await exercise_ask_admission_contract(postgresql_adapter)
