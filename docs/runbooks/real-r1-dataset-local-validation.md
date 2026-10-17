@@ -9,7 +9,7 @@
 ```bash
 uv run spine-eval-dataset-check \
   --dataset-kind real \
-  --dataset-dir data/private/r1_gold_approved/0.3.8-user-approved \
+  --dataset-dir data/private/r1_gold_approved/0.3.9-user-approved \
   --source-root data/incoming
 ```
 
@@ -24,11 +24,11 @@ uv run spine-eval-dataset-check --dataset-kind synthetic
 ```
 
 Для утверждённой версии loader проверяет pinned version/digest, source file
-SHA-256, anonymized representation и её SHA-256, revision/evidence/case links,
+SHA-256, extracted representation and its SHA-256, revision/evidence/case links,
 citations, excerpts и точные PDF page/character, DOCX paragraph/character и
 XLSX sheet/cell locators. Проверка anonymized representations — часть
-утверждённого контракта существующей версии 0.3.8, а не универсальное требование
-анонимизировать все будущие benchmark datasets.
+фактического контракта этих утверждённых версий датасета, а не универсальное
+требование анонимизировать все benchmark datasets.
 JSON остаётся источником кейсов; расхождение CSV явно отражается в отчёте и
 блокирует проверку, не нормализуя ни один файл. Согласуйте export с владельцем
 датасета, не редактируя approved JSON ради прохождения проверки.
@@ -39,13 +39,27 @@ JSON остаётся источником кейсов; расхождение 
 к ошибке; автоматического перехода к synthetic dataset нет. Отчёт всегда
 содержит `evaluation_status: not_run`.
 
-Approved local dataset is version `0.3.8-user-approved`, pinned to digest
-`0fec8c2c990cbf52274ad7df5241f7bbd2c47bdc8171e8040102e370dca2f5a8`.
-It preserves the approved 0.3.6 baseline and the 0.3.7 review candidate as
-private snapshots. The approved revision carries the reviewed CSV and exact
-XLSX locator corrections and the three owner-approved claim/evidence links.
-The loader still validates source/evidence integrity only; it does not run RAG
-quality evaluation.
+The current approved local baseline is `0.3.9-user-approved`, pinned to digest
+`7c2787272fd34643ff5168a46f5672b5a091f3070888546fa7b6ed0c918b3a62`. It has
+149 cases: 136 answered, 13 abstained, and 0 denied, across 30 source documents.
+Direct abstention context is XLSX-only (13); there are no direct PDF or DOCX
+abstention cases and no denied cases, so those outcome slices have no benchmark
+coverage. The earlier approved `0.3.8-user-approved` baseline remains an
+immutable historical version (136 answered, 0 abstained, 0 denied).
+
+For count interpretation, the approved corpus contains 171 unique source
+evidence records, 177 case-citation references, and 177 locator references.
+There are 158 claim-evidence relationships and 19 supplementary citation
+references not linked to a claim. These counts use different units: 171 is the
+deduplicated source evidence inventory; 177 counts citation occurrences across
+cases (each with a locator); 158 counts claim-to-evidence links; and 19 counts
+case citations absent from all expected claim evidence lists. Abstained cases
+have no expected evidence or citations. The 136 answered case records are
+unchanged from 0.3.8.
+
+The loader validates source/evidence integrity only; it does not run RAG quality
+evaluation. A metadata validation report always has `evaluation_status:
+not_run`; this does not indicate a real RAG evaluation result.
 
 Использовать real data можно только из локальных приватных директорий. Не
 добавляйте оригиналы, anonymized representations, Q&A JSON/CSV, цитаты или

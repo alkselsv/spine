@@ -17,8 +17,8 @@ from openpyxl.utils.cell import range_boundaries
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-REAL_R1_DATASET_VERSION = "0.3.8-user-approved"
-REAL_R1_DATASET_DIGEST = "0fec8c2c990cbf52274ad7df5241f7bbd2c47bdc8171e8040102e370dca2f5a8"
+REAL_R1_DATASET_VERSION = "0.3.9-user-approved"
+REAL_R1_DATASET_DIGEST = "7c2787272fd34643ff5168a46f5672b5a091f3070888546fa7b6ed0c918b3a62"
 REAL_R1_VALIDATOR_VERSION = "1.0.1"
 REAL_R1_SCHEMA_VERSION = "qa-manifest:v1"
 REAL_R1_CASE_SCHEMA_VERSION = "qa-case:v1"
@@ -273,11 +273,20 @@ class RealDatasetValidationReport(_Model):
     locator_mismatch_count: int = Field(ge=0)
     locator_mismatch_by_kind: dict[str, int] = Field(default_factory=dict)
     case_count: int = Field(ge=0)
+    answered_case_count: int = Field(ge=0)
+    abstained_case_count: int = Field(ge=0)
+    denied_case_count: int = Field(ge=0)
     source_count: int = Field(ge=0)
     source_files_verified: int = Field(ge=0)
     evidence_count: int = Field(ge=0)
     claim_count: int = Field(ge=0)
     quality_metrics: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_outcome_counts(self) -> "RealDatasetValidationReport":
+        if self.answered_case_count + self.abstained_case_count + self.denied_case_count != self.case_count:
+            raise ValueError("outcome counts must sum to the case count")
+        return self
 
 
 class LoadedRealDataset(_Model):
@@ -575,6 +584,9 @@ def load_real_r1_dataset(
         locator_mismatch_count=locator_mismatch_count,
         locator_mismatch_by_kind=locator_mismatch_by_kind,
         case_count=len(dataset.cases),
+        answered_case_count=sum(case.expected_outcome == "answered" for case in dataset.cases),
+        abstained_case_count=sum(case.expected_outcome == "abstained" for case in dataset.cases),
+        denied_case_count=sum(case.expected_outcome == "denied" for case in dataset.cases),
         source_count=len(objects),
         source_files_verified=len(objects),
         evidence_count=len(citation_by_id),
