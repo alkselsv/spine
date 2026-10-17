@@ -9,6 +9,10 @@ type Block =
   | { kind: 'list'; ordered: boolean; items: string[] }
   | { kind: 'code'; text: string };
 
+export function isSafeMarkdownSource(source: string): boolean {
+  return parseBlocks(source) !== null;
+}
+
 const rawHtmlPattern = /<!--|<!doctype\b|<\/?[a-z][^>]*>/i;
 const inlineCodePattern = /`[^`\n]*`/g;
 
