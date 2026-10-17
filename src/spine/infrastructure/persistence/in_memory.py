@@ -81,6 +81,7 @@ from spine.application.persistence.answer_question_runs import (
     validate_answer_question_attempt_start,
     validate_answer_question_context_bundle,
     validate_answer_question_run_completion,
+    validate_answer_question_run_start,
 )
 from spine.application.persistence.ask_admission import register_ask_admission_outbox_event
 from spine.application.disclosure_revalidation import (
@@ -1178,6 +1179,24 @@ class _AnswerQuestionRunRepository:
                 reason="answer_question_run_completed",
             )
         )
+        self._uow._pending_answer_question_runs[key] = run.model_copy(deep=True)
+        return run.model_copy(deep=True)
+
+    async def start_run(self, run: AnswerQuestionRun) -> AnswerQuestionRun:
+        self._uow._guard_active()
+        self._validate_run_scope(run)
+        if run.state is not AnswerQuestionRunState.RUNNING:
+            self._uow._fail(AnswerQuestionRunConflictError("Q&A run start is invalid."))
+        key = self._run_key(run.run_id)
+        existing = self._runs().get(key)
+        if existing is None:
+            self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
+        if existing.state is AnswerQuestionRunState.COMPLETED:
+            return existing.model_copy(deep=True)
+        try:
+            validate_answer_question_run_start(existing, run)
+        except ValueError:
+            self._uow._fail(AnswerQuestionRunConflictError("Q&A run start lineage is invalid."))
         self._uow._pending_answer_question_runs[key] = run.model_copy(deep=True)
         return run.model_copy(deep=True)
 

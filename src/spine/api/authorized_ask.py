@@ -6,7 +6,8 @@ from typing import TYPE_CHECKING, Literal, cast
 from uuid import UUID
 
 from fastapi import Body, Depends, FastAPI, Request
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from spine.api.authorization import (
     add_protected_api_route,
@@ -25,6 +26,14 @@ from spine.application.authorized_ask import (
     AuthorizedAskResult,
     AuthorizedAskService,
     InvalidAuthorizedAskRequest,
+)
+from spine.application.persistence.ask_admission import (
+    AskAdmissionApplication,
+    AskAdmissionCommand,
+    AskAdmissionLifecycle,
+    AskAdmissionResult,
+    AskAdmissionStatus,
+    QA_ASK_ADMISSION_OPERATION,
 )
 
 if TYPE_CHECKING:
@@ -47,6 +56,7 @@ from spine.auth import (
 )
 from spine.application.persistence import PersistenceOperation, PersistencePurpose
 from spine.domain.capabilities import AnswerQuestionOutcome, AnswerQuestionSafeReasonCode
+from spine.domain.common import ActorKind, ActorRef, EnvironmentKind
 
 
 _MAX_TEXT_LENGTH = 32_768
@@ -68,6 +78,40 @@ class AuthorizedAskRequest(BaseModel):
             raise ValueError("question must not be blank")
         return value
 
+
+class QAAskAdmissionRequestV1(AuthorizedAskRequest):
+    """Versioned request model for the durable admission operation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, title="QAAskAdmissionRequestV1")
+
+
+class QAAskAdmissionResultV1(BaseModel):
+    """Content-free identity and lifecycle result for durable Ask admission."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    command_id: UUID
+    session_id: UUID
+    message_id: UUID
+    run_id: UUID
+    status: Literal["admitted", "running", "terminal"]
+    outcome: AnswerQuestionOutcome | None = None
+
+    @field_validator("command_id", "session_id", "message_id", "run_id")
+    @classmethod
+    def reject_zero_identity(cls, value: UUID) -> UUID:
+        if value.int == 0:
+            raise ValueError("Ask admission identities must be non-zero")
+        return value
+
+    @model_validator(mode="after")
+    def validate_outcome(self) -> "QAAskAdmissionResultV1":
+        if self.status == "terminal" and self.outcome is None:
+            raise ValueError("terminal Ask admission result requires an outcome")
+        if self.status != "terminal" and self.outcome is not None:
+            raise ValueError("non-terminal Ask admission result cannot carry an outcome")
+        return self
 
 class CancelAskRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -126,15 +170,85 @@ class AskOutcomeResponse(BaseModel):
 def install_authorized_ask_routes(
     application: FastAPI,
     *,
-    service: AuthorizedAskService,
+    service: AuthorizedAskService | None,
     stream_service: QAResultEventPublisher | None = None,
     operational_observer: OperationalObservationEmitter | None = None,
+    admission_service: AskAdmissionApplication | None = None,
+    admission_environment: EnvironmentKind = EnvironmentKind.PRODUCTION,
 ) -> None:
     """Register the protected ask and cooperative cancellation commands."""
 
     application.state.authorized_ask_service = service
     application.state.qa_stream_service = stream_service
     application.state.operational_observer = operational_observer
+    application.state.ask_admission_service = admission_service
+    application.state.ask_admission_environment = admission_environment
+
+    async def admission_endpoint(
+        request: Request,
+        body: QAAskAdmissionRequestV1 = Body(...),
+        request_context: AuthorizedRequestContext[object] = Depends(get_authorized_request_context),
+        persistence_context: TrustedPersistenceContext = Depends(get_authorized_persistence_context),
+    ) -> JSONResponse:
+        try:
+            result = await _admission_service(request).admit(
+                context=persistence_context,
+                command=AskAdmissionCommand.create(
+                    workspace_id=request_context.scope.workspace_id,
+                    environment_id=request_context.scope.environment_id,
+                    session_id=body.session_id,
+                    subject=ActorRef(
+                        kind=ActorKind.HUMAN,
+                        id=request_context.acting_subject_id,
+                    ),
+                    environment=getattr(
+                        request.app.state,
+                        "ask_admission_environment",
+                        EnvironmentKind.PRODUCTION,
+                    ),
+                    question=body.question,
+                    idempotency_key=_idempotency(
+                        request.headers.getlist("Idempotency-Key")
+                    ),
+                    clarification_of_message_id=body.clarification_of_message_id,
+                ),
+            )
+            status = await _admission_status(
+                request,
+                persistence_context=persistence_context,
+                result=result,
+            )
+        except InvalidAuthorizedAskRequest:
+            await _observe_api_failure(
+                request,
+                request_context,
+                SafeOperationalFailureCode.VALIDATION_FAILED,
+            )
+            raise
+        except Exception:
+            await _observe_api_failure(
+                request, request_context, SafeOperationalFailureCode.INTERNAL_FAILURE
+            )
+            raise
+        payload = ApiCommandResult(
+            workspace_id=request_context.scope.workspace_id,
+            environment_id=request_context.scope.environment_id,
+            trace_id=request_context.diagnostic_context.trace_id,
+            command_id=status.command_id,
+            status=(
+                CommandStatus.COMPLETED
+                if status.status is AskAdmissionLifecycle.TERMINAL
+                else CommandStatus.ACCEPTED
+            ),
+            replay=result.replay,
+            result=_admission_response(status),
+        )
+        return JSONResponse(
+            status_code=(
+                200 if status.status is AskAdmissionLifecycle.TERMINAL else 202
+            ),
+            content=payload.model_dump(mode="json"),
+        )
 
     async def ask_endpoint(
         request: Request,
@@ -237,6 +351,20 @@ def install_authorized_ask_routes(
     )
     add_protected_api_route(
         application,
+        "/api/v1/ask/admissions",
+        admission_endpoint,
+        route_id="qa.ask.admissions",
+        policy=_admission_policy(),
+        methods=["POST"],
+        response_model=ApiCommandResult[QAAskAdmissionResultV1],
+        responses={
+            200: {"model": ApiCommandResult[QAAskAdmissionResultV1]},
+            202: {"model": ApiCommandResult[QAAskAdmissionResultV1]},
+        },
+        openapi_extra=_idempotency_openapi_extra(),
+    )
+    add_protected_api_route(
+        application,
         "/api/v1/ask/{run_id}/cancel",
         cancel_endpoint,
         route_id="qa.ask.cancel",
@@ -252,6 +380,43 @@ def _service(request: Request) -> AuthorizedAskService:
     if service is None:
         raise RuntimeError("Authorized ask service is unavailable.")
     return cast(AuthorizedAskService, service)
+
+
+def _admission_service(request: Request) -> AskAdmissionApplication:
+    service = getattr(request.app.state, "ask_admission_service", None)
+    if service is None:
+        raise AuthorizedAskServiceUnavailable()
+    return cast(AskAdmissionApplication, service)
+
+
+async def _admission_status(
+    request: Request,
+    *,
+    persistence_context: TrustedPersistenceContext,
+    result: AskAdmissionResult,
+) -> AskAdmissionStatus:
+    service = _admission_service(request)
+    status_reader = getattr(service, "status", None)
+    if callable(status_reader):
+        return await status_reader(context=persistence_context, result=result)
+    return AskAdmissionStatus(
+        command_id=result.command_id,
+        session_id=result.session_id,
+        message_id=result.message_id,
+        run_id=result.run_id,
+        status=AskAdmissionLifecycle.ADMITTED,
+    )
+
+
+def _admission_response(status: AskAdmissionStatus) -> QAAskAdmissionResultV1:
+    return QAAskAdmissionResultV1(
+        command_id=status.command_id,
+        session_id=status.session_id,
+        message_id=status.message_id,
+        run_id=status.run_id,
+        status=status.status.value,
+        outcome=status.outcome,
+    )
 
 
 async def _publish_stream_result(request: Request, result: AuthorizedAskResult) -> None:
@@ -432,6 +597,15 @@ def _policy() -> RouteAuthorizationPolicy:
     )
 
 
+def _admission_policy() -> RouteAuthorizationPolicy:
+    return RouteAuthorizationPolicy(
+        required_roles=frozenset({AuthorizationRole.ADMINISTRATOR}),
+        required_scope=AuthorizationScopeRequirement.WORKSPACE_ENVIRONMENT,
+        purpose=PersistencePurpose("knowledge_control"),
+        operation=QA_ASK_ADMISSION_OPERATION,
+    )
+
+
 def _idempotency_openapi_extra() -> dict[str, object]:
     return {
         "parameters": [
@@ -450,6 +624,8 @@ __all__ = [
     "AskAsOfResponse",
     "AskCitationResponse",
     "AskOutcomeResponse",
+    "QAAskAdmissionResultV1",
+    "QAAskAdmissionRequestV1",
     "AuthorizedAskRequest",
     "AskRequest",
     "CancelAskRequest",

@@ -14,6 +14,12 @@ from spine.application.authorized_ask import (
     AskCommand,
     AskCancellationCommand,
 )
+from spine.application.persistence.ask_admission import (
+    AskAdmissionLifecycle,
+    AskAdmissionResult,
+    AskAdmissionStatus,
+)
+from spine.application.persistence.errors import IdempotencyConflictError
 from spine.application.telemetry import (
     OperationalComponent,
     OperationalObservationEmitter,
@@ -182,10 +188,154 @@ class FakeAskService:
         return self.result
 
 
+@dataclass
+class FakeAdmissionService:
+    result: AskAdmissionResult
+    lifecycle: AskAdmissionLifecycle = AskAdmissionLifecycle.ADMITTED
+    calls: list[object] = None
+
+    def __post_init__(self) -> None:
+        self.calls = [] if self.calls is None else self.calls
+
+    async def admit(self, *, context, command) -> AskAdmissionResult:
+        del context
+        self.calls.append(command)
+        if command.question == "conflict":
+            raise IdempotencyConflictError("protected payload conflict")
+        return self.result
+
+    async def status(self, *, context, result) -> AskAdmissionStatus:
+        del context
+        return AskAdmissionStatus(
+            command_id=result.command_id,
+            session_id=result.session_id,
+            message_id=result.message_id,
+            run_id=result.run_id,
+            status=self.lifecycle,
+            outcome=(
+                AnswerQuestionOutcome.ABSTAINED
+                if self.lifecycle is AskAdmissionLifecycle.TERMINAL
+                else None
+            ),
+        )
+
 def app(service: FakeAskService):
     application = authorized_app([])
     install_authorized_ask_routes(application, service=service)
     return application
+
+
+def admission_app(service: FakeAdmissionService):
+    application = authorized_app([])
+    install_authorized_ask_routes(
+        application,
+        service=FakeAskService(answered_result(), []),
+        admission_service=service,
+    )
+    return application
+
+
+@pytest.mark.asyncio
+async def test_ask_admission_returns_stable_ids_without_content_before_execution() -> None:
+    admission = FakeAdmissionService(
+        AskAdmissionResult(
+            command_id=UUID("70000000-0000-0000-0000-000000000001"),
+            session_id=SESSION_ID,
+            message_id=MESSAGE_ID,
+            run_id=RUN_ID,
+            dispatch_event_id=UUID("70000000-0000-0000-0000-000000000005"),
+            replay=False,
+        )
+    )
+    application = admission_app(admission)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/v1/ask/admissions",
+            json={
+                "schema_version": 1,
+                "session_id": str(SESSION_ID),
+                "question": "protected question",
+            },
+            headers={**headers(), "Idempotency-Key": "admission-1"},
+        )
+
+    assert response.status_code == 202
+    assert response.json()["result"]["status"] == "admitted"
+    assert response.json()["result"]["run_id"] == str(RUN_ID)
+    assert "protected question" not in response.text
+    assert "answer" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_ask_admission_terminal_replay_returns_200_without_answer_content() -> None:
+    admission = FakeAdmissionService(
+        AskAdmissionResult(
+            command_id=UUID("70000000-0000-0000-0000-000000000006"),
+            session_id=SESSION_ID,
+            message_id=MESSAGE_ID,
+            run_id=RUN_ID,
+            dispatch_event_id=UUID("70000000-0000-0000-0000-000000000007"),
+            replay=True,
+        ),
+        lifecycle=AskAdmissionLifecycle.TERMINAL,
+    )
+    application = admission_app(admission)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/v1/ask/admissions",
+            json={
+                "schema_version": 1,
+                "session_id": str(SESSION_ID),
+                "question": "protected question",
+            },
+            headers={**headers(), "Idempotency-Key": "admission-1"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert response.json()["result"]["status"] == "terminal"
+    assert response.json()["result"]["outcome"] == "abstained"
+    assert "protected question" not in response.text
+    assert "The policy applies" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_ask_admission_payload_conflict_is_safe_409() -> None:
+    application = admission_app(
+        FakeAdmissionService(
+            AskAdmissionResult(
+                command_id=COMMAND_ID,
+                session_id=SESSION_ID,
+                message_id=MESSAGE_ID,
+                run_id=RUN_ID,
+                dispatch_event_id=UUID(int=5),
+                replay=True,
+            )
+        )
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/v1/ask/admissions",
+            json={
+                "schema_version": 1,
+                "session_id": str(SESSION_ID),
+                "question": "conflict",
+            },
+            headers={**headers(), "Idempotency-Key": "admission-1"},
+        )
+
+    assert response.status_code == 409
+    assert "protected payload conflict" not in response.text
+    assert "protected" not in response.text
 
 
 @pytest.mark.asyncio

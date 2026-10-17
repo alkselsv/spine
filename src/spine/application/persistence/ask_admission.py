@@ -8,6 +8,7 @@ owner may consume that intent and start execution.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Protocol
 from uuid import UUID
 
@@ -22,9 +23,12 @@ from spine.application.persistence.context import (
 from spine.application.persistence.errors import InvalidPersistenceContextError
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.domain.common import ActorRef, EnvironmentKind
+from spine.domain.capabilities.answer_question import AnswerQuestionOutcome
+from spine.domain.capabilities.answer_question_runs import AnswerQuestionRunState
 
 
 QA_ASK_ADMISSION_OPERATION = PersistenceOperation("qa.ask-admission-cancellation")
+QA_ASK_LEGACY_OPERATION = PersistenceOperation("qa.ask")
 QA_ASK_ADMISSION_SCHEMA_VERSION = 1
 QA_ASK_ADMISSION_RESULT_TYPE = "qa_ask_admission"
 QA_ASK_ADMISSION_EVENT_TYPE = "qa.ask-admitted"
@@ -141,6 +145,40 @@ class AskAdmissionResult:
             raise ValueError("Ask admission result identities must be non-zero")
 
 
+class AskAdmissionLifecycle(str, Enum):
+    ADMITTED = "admitted"
+    RUNNING = "running"
+    TERMINAL = "terminal"
+
+
+@dataclass(frozen=True, slots=True)
+class AskAdmissionStatus:
+    """Safe lifecycle projection; it never contains question or answer text."""
+
+    command_id: UUID
+    session_id: UUID
+    message_id: UUID
+    run_id: UUID
+    status: AskAdmissionLifecycle
+    outcome: AnswerQuestionOutcome | None = None
+
+    def __post_init__(self) -> None:
+        if any(
+            identifier.int == 0
+            for identifier in (
+                self.command_id,
+                self.session_id,
+                self.message_id,
+                self.run_id,
+            )
+        ):
+            raise ValueError("Ask admission status identities must be non-zero")
+        if self.status is AskAdmissionLifecycle.TERMINAL and self.outcome is None:
+            raise ValueError("terminal Ask admission status requires an outcome")
+        if self.status is not AskAdmissionLifecycle.TERMINAL and self.outcome is not None:
+            raise ValueError("non-terminal Ask admission status cannot carry an outcome")
+
+
 class AskAdmissionRepository(Protocol):
     async def admit(self, command: AskAdmissionCommand) -> AskAdmissionResult: ...
 
@@ -153,6 +191,13 @@ class AskAdmissionApplication(Protocol):
         command: AskAdmissionCommand,
     ) -> AskAdmissionResult: ...
 
+    async def status(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        result: AskAdmissionResult,
+    ) -> AskAdmissionStatus: ...
+
 
 def validate_ask_admission_context(
     context: TrustedPersistenceContext,
@@ -163,7 +208,7 @@ def validate_ask_admission_context(
     actor_id = context.acting_subject_id or context.service_principal_id
     if (
         not isinstance(context.scope, EnvironmentScope)
-        or context.operation != QA_ASK_ADMISSION_OPERATION
+        or context.operation not in {QA_ASK_ADMISSION_OPERATION, QA_ASK_LEGACY_OPERATION}
         or actor_id != command.subject.id
         or context.scope.workspace_id != command.workspace_id
         or context.scope.environment_id != command.environment_id
@@ -187,9 +232,12 @@ __all__ = [
     "AskAdmissionDispatchPayload",
     "AskAdmissionRepository",
     "AskAdmissionResult",
+    "AskAdmissionLifecycle",
+    "AskAdmissionStatus",
     "QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION",
     "QA_ASK_ADMISSION_EVENT_TYPE",
     "QA_ASK_ADMISSION_OPERATION",
+    "QA_ASK_LEGACY_OPERATION",
     "QA_ASK_ADMISSION_REQUEST_SCHEMA",
     "QA_ASK_ADMISSION_RESULT_TYPE",
     "QA_ASK_ADMISSION_SCHEMA_VERSION",

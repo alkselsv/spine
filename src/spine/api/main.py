@@ -72,12 +72,14 @@ from spine.application.projection_control import (
     ProjectionStatusService,
 )
 from spine.application.persistence import AnswerDisclosureRepository, AnswerQuestionRunRepository
+from spine.application.persistence.ask_admission import AskAdmissionApplication
 from spine.application.qa_sessions import PersistedQASessionService, QASessionService
 from spine.application.authorized_ask import (
     AnswerQuestionCapability,
     AuthorizedAskService,
     PersistedAuthorizedAskService,
 )
+from spine.domain.common import EnvironmentKind
 from spine.application.citation_inspector import CitationInspectorService
 from spine.application.feedback import FeedbackService
 from spine.application.qa_run_history import QARunHistoryService
@@ -234,6 +236,8 @@ def create_app(
     qa_answer_disclosures: AnswerDisclosureRepository | None = None,
     qa_session_cursor_secret: bytes | None = None,
     authorized_ask_service: AuthorizedAskService | None = None,
+    ask_admission_service: AskAdmissionApplication | None = None,
+    ask_admission_environment: EnvironmentKind = EnvironmentKind.PRODUCTION,
     answer_question_capability: AnswerQuestionCapability | None = None,
     citation_inspector_service: CitationInspectorService | None = None,
     feedback_service: FeedbackService | None = None,
@@ -448,8 +452,10 @@ def create_app(
         resolved_authorized_ask_service = PersistedAuthorizedAskService(
             capability=answer_question_capability,
             sessions=qa_session_service,
+            admission=ask_admission_service,
+            environment=ask_admission_environment,
         )
-    if resolved_authorized_ask_service is not None:
+    if resolved_authorized_ask_service is not None or ask_admission_service is not None:
         if type(authorization_runtime) is not ApiAuthorizationRuntime:
             raise RuntimeError("Authorized ask routes require an authorization runtime.")
         install_authorized_ask_routes(
@@ -457,6 +463,8 @@ def create_app(
             service=resolved_authorized_ask_service,
             stream_service=qa_stream_service,
             operational_observer=operational_observer,
+            admission_service=ask_admission_service,
+            admission_environment=ask_admission_environment,
         )
     if qa_stream_service is not None:
         if type(authorization_runtime) is not ApiAuthorizationRuntime:

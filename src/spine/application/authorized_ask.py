@@ -12,6 +12,11 @@ from typing import Protocol
 from uuid import UUID
 
 from spine.application.persistence.context import TrustedPersistenceContext
+from spine.application.persistence.ask_admission import (
+    AskAdmissionApplication,
+    AskAdmissionCommand,
+    AskAdmissionResult,
+)
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.qa_sessions import (
     QAMessage,
@@ -25,6 +30,7 @@ from spine.domain.capabilities import (
     AnswerQuestionOutcome,
     AnswerQuestionOutput,
 )
+from spine.domain.common import ActorKind, ActorRef, EnvironmentKind
 
 
 class AuthorizedAskServiceUnavailable(RuntimeError):
@@ -118,6 +124,34 @@ class AskCancellationCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class AskExecutionCommand:
+    """The exact admitted identity released to the governed capability."""
+
+    request_context: AskRequestContext
+    persistence_context: TrustedPersistenceContext
+    command_id: UUID
+    session_id: UUID
+    message_id: UUID
+    run_id: UUID
+    question: str
+    idempotency_key: IdempotencyKey
+
+    def __post_init__(self) -> None:
+        if any(
+            value.int == 0
+            for value in (
+                self.command_id,
+                self.session_id,
+                self.message_id,
+                self.run_id,
+            )
+        ):
+            raise ValueError("admitted Ask identities must be non-zero")
+        if not self.question.strip():
+            raise ValueError("admitted Ask question must not be blank")
+
+
+@dataclass(frozen=True, slots=True)
 class AnswerQuestionCapabilityCommand:
     """Typed handoff to the already composed answer_question capability."""
 
@@ -178,6 +212,16 @@ class AnswerQuestionCapability(Protocol):
     ) -> AnswerQuestionCapabilityResult: ...
 
 
+class AskTerminalPersistence(Protocol):
+    """Canonical terminal CAS seam shared by execution and cancellation owners."""
+
+    async def persist_terminal(
+        self,
+        command: AskExecutionCommand,
+        capability: AnswerQuestionCapabilityResult,
+    ) -> AuthorizedAskResult: ...
+
+
 @dataclass(frozen=True, slots=True)
 class AuthorizedAskResult:
     """Terminal result after the answer disclosure gate.
@@ -224,6 +268,10 @@ class AuthorizedAskService(Protocol):
 
     async def ask(self, command: AskCommand) -> AuthorizedAskResult: ...
 
+    async def execute_admitted(
+        self, command: AskExecutionCommand
+    ) -> AuthorizedAskResult: ...
+
     async def cancel(self, command: AskCancellationCommand) -> AuthorizedAskResult: ...
 
 
@@ -233,8 +281,36 @@ class PersistedAuthorizedAskService:
 
     capability: AnswerQuestionCapability
     sessions: QASessionService
+    admission: AskAdmissionApplication | None = None
+    environment: EnvironmentKind = EnvironmentKind.PRODUCTION
 
     async def ask(self, command: AskCommand) -> AuthorizedAskResult:
+        if self.admission is not None:
+            admitted = await self.admission.admit(
+                context=command.persistence_context,
+                command=AskAdmissionCommand.create(
+                    workspace_id=command.workspace_id,
+                    environment_id=command.environment_id,
+                    session_id=command.session_id,
+                    subject=ActorRef(kind=ActorKind.HUMAN, id=command.subject_id),
+                    environment=self.environment,
+                    question=command.question,
+                    idempotency_key=command.idempotency_key,
+                    clarification_of_message_id=command.clarification_of_message_id,
+                ),
+            )
+            return await self.execute_admitted(
+                AskExecutionCommand(
+                    request_context=command.request_context,
+                    persistence_context=command.persistence_context,
+                    command_id=admitted.command_id,
+                    session_id=admitted.session_id,
+                    message_id=admitted.message_id,
+                    run_id=admitted.run_id,
+                    question=command.question,
+                    idempotency_key=command.idempotency_key,
+                )
+            )
         requester = QASessionRequester(
             subject_id=command.request_context.subject_id,
             authorization_generation=command.request_context.authorization_generation,
@@ -264,6 +340,85 @@ class PersistedAuthorizedAskService:
             message=pending,
             capability=capability,
             operation_prefix="complete",
+        )
+
+    async def execute_admitted(
+        self, command: AskExecutionCommand
+    ) -> AuthorizedAskResult:
+        """Execute one persisted admission without creating another message."""
+
+        capability = await self.capability.answer(
+            AnswerQuestionCapabilityCommand(
+                request_context=command.request_context,
+                persistence_context=command.persistence_context,
+                session_id=command.session_id,
+                message_id=command.message_id,
+                question=command.question,
+                run_id=command.run_id,
+                idempotency_key=command.idempotency_key,
+            )
+        )
+        _validate_capability_scope(command.request_context, capability)
+        if (
+            capability.command_id != command.command_id
+            or capability.session_id != command.session_id
+            or capability.message_id != command.message_id
+            or capability.output.correlation.run_id != command.run_id
+        ):
+            raise InvalidAuthorizedAskRequest(
+                "answer capability returned mismatched admitted identity"
+            )
+        return await self.persist_terminal(command, capability)
+
+    async def persist_terminal(
+        self,
+        command: AskExecutionCommand,
+        capability: AnswerQuestionCapabilityResult,
+    ) -> AuthorizedAskResult:
+        """Persist one terminal winner without overwriting a terminal message."""
+
+        _validate_capability_scope(command.request_context, capability)
+        if (
+            capability.command_id != command.command_id
+            or capability.session_id != command.session_id
+            or capability.message_id != command.message_id
+            or capability.output.correlation.run_id != command.run_id
+        ):
+            raise InvalidAuthorizedAskRequest(
+                "terminal result returned mismatched admitted identity"
+            )
+        message = await self.sessions.get_message(
+            context=command.persistence_context,
+            requester=QASessionRequester(
+                subject_id=command.request_context.subject_id,
+                authorization_generation=command.request_context.authorization_generation,
+            ),
+            session_id=command.session_id,
+            message_id=command.message_id,
+        )
+        if message is None:
+            raise AuthorizedAskServiceUnavailable()
+        if message.state is not QAMessageState.TERMINAL:
+            await self.sessions.complete_message(
+                context=command.persistence_context,
+                session_id=command.session_id,
+                message_id=command.message_id,
+                answer=(
+                    capability.accepted_answer.answer.text
+                    if capability.accepted_answer is not None
+                    else None
+                ),
+                outcome=capability.output.outcome,
+                cancelled=capability.output.outcome is AnswerQuestionOutcome.CANCELLED,
+                idempotency_key=_derived_key("admitted-complete", command.idempotency_key),
+            )
+        return AuthorizedAskResult(
+            command_id=command.command_id,
+            session_id=command.session_id,
+            message_id=command.message_id,
+            output=capability.output,
+            accepted_answer=capability.accepted_answer,
+            replay=capability.replay or message.state is QAMessageState.TERMINAL,
         )
 
     async def cancel(self, command: AskCancellationCommand) -> AuthorizedAskResult:
@@ -391,7 +546,9 @@ __all__ = [
     "AnswerQuestionCapability",
     "AnswerQuestionCapabilityCommand",
     "AnswerQuestionCapabilityResult",
+    "AskTerminalPersistence",
     "AskCancellationCommand",
+    "AskExecutionCommand",
     "AskCommand",
     "AuthorizedAskResult",
     "AuthorizedAskService",

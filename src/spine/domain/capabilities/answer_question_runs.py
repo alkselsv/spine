@@ -283,6 +283,30 @@ class AnswerQuestionRun(ValidatedDefinitionModel):
             }
         )
 
+    def begin_execution(self) -> "AnswerQuestionRun":
+        """Advance an admitted run to the single executable state.
+
+        Admission owns the identity and the ``admitted``/``dispatch_pending``
+        states.  The workflow owns this idempotent hand-off to ``running``;
+        terminal persistence remains a separate compare-and-set operation.
+        """
+
+        if self.state is AnswerQuestionRunState.COMPLETED:
+            return self
+        if self.state is AnswerQuestionRunState.RUNNING:
+            return self
+        if self.state not in {
+            AnswerQuestionRunState.ADMITTED,
+            AnswerQuestionRunState.DISPATCH_PENDING,
+        }:
+            raise ValueError("Q&A run cannot begin execution from its current state")
+        return type(self).model_validate(
+            {
+                **self.model_dump(mode="python"),
+                "state": AnswerQuestionRunState.RUNNING,
+            }
+        )
+
     @field_validator("run_id", "workspace_id", "environment_id", "final_attempt_id")
     @classmethod
     def validate_id(cls, value: UUID | None, info: Any) -> UUID | None:

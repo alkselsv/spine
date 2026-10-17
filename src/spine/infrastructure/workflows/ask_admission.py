@@ -48,8 +48,6 @@ class PersistenceAskAdmissionCommandSource(AskAdmissionCommandSource):
                     environment_id=workflow_input.environment_id,
                     run_id=workflow_input.run_id,
                 )
-                if run.state is AnswerQuestionRunState.COMPLETED:
-                    return None
                 link = await uow.answer_question_runs.resolve_message_link(
                     workflow_input.run_id
                 )
@@ -78,9 +76,42 @@ class PersistenceAskAdmissionCommandSource(AskAdmissionCommandSource):
                     message_id=message.message_id,
                     run_id=run.run_id,
                     question=message.question,
+                    subject=run.subject,
+                    environment=run.environment,
+                    idempotency_key=run.idempotency_key,
                 )
         except (AnswerQuestionRunNotFoundError, PersistenceError):
             return None
 
 
-__all__ = ["PersistenceAskAdmissionCommandSource"]
+class PersistenceAskAdmissionRunStarter:
+    """CAS the admitted run into ``running`` inside a fresh worker UoW."""
+
+    def __init__(
+        self,
+        *,
+        uow_factory: TenantUnitOfWorkFactory,
+        context_factory: Callable[
+            [AskAdmissionWorkflowInput], TrustedPersistenceContext
+        ],
+    ) -> None:
+        self._uow_factory = uow_factory
+        self._context_factory = context_factory
+
+    async def __call__(self, workflow_input: AskAdmissionWorkflowInput) -> object:
+        context = self._context_factory(workflow_input)
+        async with self._uow_factory(context) as uow:
+            run = await uow.answer_question_runs.resolve_run_in_scope(
+                workspace_id=workflow_input.workspace_id,
+                environment_id=workflow_input.environment_id,
+                run_id=workflow_input.run_id,
+            )
+            await uow.answer_question_runs.start_run(run.begin_execution())
+            await uow.commit()
+        return workflow_input.run_id
+
+
+__all__ = [
+    "PersistenceAskAdmissionCommandSource",
+    "PersistenceAskAdmissionRunStarter",
+]
