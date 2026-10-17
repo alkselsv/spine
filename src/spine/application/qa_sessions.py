@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from hashlib import sha256
 from typing import Generic, Protocol, TypeVar
 from uuid import UUID, uuid4
 
@@ -25,7 +26,15 @@ from spine.application.persistence.errors import (
     OptimisticConflictError,
 )
 from spine.application.persistence.idempotency import IdempotencyKey
+from spine.application.persistence.answer_disclosure import AnswerDisclosureRepository
+from spine.application.persistence.answer_question_runs import AnswerQuestionRunRepository
 from spine.domain.capabilities import AnswerQuestionOutcome
+from spine.domain.capabilities import (
+    AcceptedAnswerClaimPresentation,
+    AcceptedAnswerPresentation,
+    AcceptedAnswerRelationshipPresentation,
+)
+from spine.domain.capabilities.answer_question_runs import AnswerQuestionRunState
 from spine.domain.disclosure import DisclosureDependencySet
 from spine.domain.qa_sessions import QAMessage, QAMessageDisclosureEligibility, QAMessageState, QASession
 
@@ -41,6 +50,10 @@ class QASessionNotFound(LookupError):
 
 class QAMessageNotFound(LookupError):
     """The requested message is not visible in the trusted scope."""
+
+
+class QAMessagePresentationUnavailable(RuntimeError):
+    """The canonical accepted-answer join could not be verified safely."""
 
 
 class QASessionVersionConflict(OptimisticConflictError):
@@ -110,6 +123,7 @@ class QAMessageRead:
     disclosure_eligibility: QAMessageDisclosureEligibility
     question: str | None
     answer: str | None
+    accepted_presentation: AcceptedAnswerPresentation | None
     created_at: datetime
     updated_at: datetime
 
@@ -290,6 +304,8 @@ class PersistedQASessionService:
     session_id_factory: Callable[[], UUID] = uuid4
     message_id_factory: Callable[[], UUID] = uuid4
     command_id_factory: Callable[[], UUID] = uuid4
+    answer_question_runs: AnswerQuestionRunRepository | None = None
+    answer_disclosures: AnswerDisclosureRepository | None = None
 
     async def create_session(
         self, *, context: TrustedPersistenceContext, requester: QASessionRequester,
@@ -504,6 +520,15 @@ class PersistedQASessionService:
             if allowed
             else QAMessageDisclosureEligibility.INELIGIBLE
         )
+        question = message.question if allowed else None
+        answer = message.answer if allowed else None
+        accepted_presentation = None
+        if allowed and message.answer is not None:
+            if message.run_id is None:
+                question = None
+                answer = None
+            else:
+                accepted_presentation = await self._accepted_presentation(message)
         return QAMessageRead(
             message_id=message.message_id,
             session_id=message.session_id,
@@ -517,11 +542,67 @@ class PersistedQASessionService:
             terminal_outcome=message.terminal_outcome,
             cancelled=message.cancelled,
             disclosure_eligibility=eligibility,
-            question=message.question if allowed else None,
-            answer=message.answer if allowed else None,
+            question=question,
+            answer=answer,
+            accepted_presentation=accepted_presentation,
             created_at=message.created_at,
             updated_at=message.updated_at,
         )
+
+    async def _accepted_presentation(
+        self, message: QAMessage
+    ) -> AcceptedAnswerPresentation:
+        if self.answer_question_runs is None or self.answer_disclosures is None:
+            raise QAMessagePresentationUnavailable()
+        assert message.run_id is not None
+        try:
+            run = await self.answer_question_runs.resolve_run(message.run_id)
+            if (
+                run.run_id != message.run_id
+                or run.workspace_id != message.workspace_id
+                or run.environment_id != message.environment_id
+                or run.state is not AnswerQuestionRunState.COMPLETED
+                or run.outcome is not AnswerQuestionOutcome.ANSWERED
+                or run.final_attempt_id is None
+            ):
+                raise QAMessagePresentationUnavailable()
+            link = await self.repository.resolve_message_link(
+                workspace_id=message.workspace_id,
+                environment_id=message.environment_id,
+                run_id=message.run_id,
+            )
+            if link != (message.session_id, message.message_id):
+                raise QAMessagePresentationUnavailable()
+            record = await self.answer_disclosures.resolve_for_attempt(
+                workspace_id=message.workspace_id,
+                environment_id=message.environment_id,
+                run_id=message.run_id,
+                attempt_id=run.final_attempt_id,
+            )
+            accepted = None if record is None else record.accepted_answer
+            if (
+                record is None
+                or accepted is None
+                or record.workspace_id != message.workspace_id
+                or record.environment_id != message.environment_id
+                or record.run_id != message.run_id
+                or record.attempt_id != run.final_attempt_id
+                or record.outcome is not AnswerQuestionOutcome.ANSWERED
+                or record.validation is None
+                or tuple(record.validation.dependency_ids)
+                != tuple(message.disclosure_dependency_ids)
+                or accepted.answer.workspace_id != message.workspace_id
+                or accepted.answer.environment_id != message.environment_id
+                or accepted.answer.run_id != message.run_id
+                or accepted.answer.attempt_id != run.final_attempt_id
+                or accepted.answer.text != message.answer
+            ):
+                raise QAMessagePresentationUnavailable()
+            return _accepted_answer_presentation(message, accepted.answer)
+        except QAMessagePresentationUnavailable:
+            raise
+        except Exception:
+            raise QAMessagePresentationUnavailable() from None
 
 
 def _scope(context: TrustedPersistenceContext) -> tuple[UUID, UUID]:
@@ -550,6 +631,42 @@ def _digest(operation: PersistenceOperation, payload: dict[str, object]) -> Comm
     )
 
 
+def _accepted_answer_presentation(
+    message: QAMessage, answer: object
+) -> AcceptedAnswerPresentation:
+    from spine.domain.capabilities import AnswerContent
+
+    if not isinstance(answer, AnswerContent):
+        raise QAMessagePresentationUnavailable()
+    return AcceptedAnswerPresentation(
+        message_id=message.message_id,
+        run_id=answer.run_id,
+        attempt_id=answer.attempt_id,
+        answer_id=answer.answer_id,
+        answer_text_sha256=sha256(answer.text.encode("utf-8")).hexdigest(),
+        claims=tuple(
+            AcceptedAnswerClaimPresentation(
+                claim_id=claim.claim_id,
+                kind=claim.kind,
+                start_offset=claim.location.start_offset,
+                end_offset=claim.location.end_offset,
+            )
+            for claim in answer.claims
+        ),
+        relationships=tuple(
+            AcceptedAnswerRelationshipPresentation(
+                relationship_id=relationship.relationship_id,
+                claim_id=relationship.claim_id,
+                kind=relationship.kind,
+                citation_ids=relationship.citation_ids,
+                related_claim_id=relationship.related_claim_id,
+            )
+            for relationship in answer.relationships
+        ),
+        citation_ids=tuple(citation.citation_id for citation in answer.citations),
+    )
+
+
 __all__ = [
     "DenyAllQAMessageDisclosure",
     "MESSAGE_SCHEMA_VERSION",
@@ -557,6 +674,7 @@ __all__ = [
     "QAMessageDisclosureEligibility",
     "QAMessageDisclosureEligibilityPort",
     "QAMessageNotFound",
+    "QAMessagePresentationUnavailable",
     "QAMessagePage",
     "QAMessagePosition",
     "QAMessageRead",

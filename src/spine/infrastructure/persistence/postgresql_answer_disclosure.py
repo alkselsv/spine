@@ -34,15 +34,7 @@ class PostgreSQLAnswerDisclosureRepository:
         row = result.mappings().first()
         if row is None:
             return None
-        payload = AnswerDisclosureRecord.model_validate(row["payload"])
-        if (
-            payload.workspace_id != row["workspace_id"]
-            or payload.environment_id != row["environment_id"]
-            or payload.request_id != row["request_id"]
-            or payload.outcome.value != row["outcome"]
-        ):
-            raise ValueError("answer disclosure record relational identity is inconsistent")
-        return payload
+        return self._restore(row)
 
     async def resolve_for_attempt(
         self,
@@ -64,7 +56,7 @@ class PostgreSQLAnswerDisclosureRepository:
         row = result.mappings().first()
         if row is None:
             return None
-        return AnswerDisclosureRecord.model_validate(row["payload"])
+        return self._restore(row)
 
     async def save(self, record: AnswerDisclosureRecord) -> AnswerDisclosureRecord:
         current = await self.resolve(
@@ -191,6 +183,18 @@ class PostgreSQLAnswerDisclosureRepository:
             ):
                 return accepted
         return None
+
+    @staticmethod
+    def _restore(row: Any) -> AnswerDisclosureRecord:
+        payload = AnswerDisclosureRecord.model_validate(row["payload"])
+        if (
+            payload.workspace_id != row["workspace_id"]
+            or payload.environment_id != row["environment_id"]
+            or payload.request_id != row["request_id"]
+            or payload.outcome.value != row["outcome"]
+        ):
+            raise ValueError("answer disclosure record relational identity is inconsistent")
+        return payload
 
 
 __all__ = ["PostgreSQLAnswerDisclosureRepository"]

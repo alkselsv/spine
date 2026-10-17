@@ -1,6 +1,171 @@
 {
   "components": {
     "schemas": {
+      "AcceptedAnswerClaimPresentation": {
+        "additionalProperties": false,
+        "description": "An authoritative claim identity, kind and code-point span.",
+        "properties": {
+          "claim_id": {
+            "format": "uuid",
+            "title": "Claim Id",
+            "type": "string"
+          },
+          "end_offset": {
+            "exclusiveMinimum": 0.0,
+            "title": "End Offset",
+            "type": "integer"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AnswerClaimKind"
+          },
+          "schema_version": {
+            "const": "accepted-answer-claim-presentation:v1",
+            "default": "accepted-answer-claim-presentation:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "start_offset": {
+            "minimum": 0.0,
+            "title": "Start Offset",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "claim_id",
+          "kind",
+          "start_offset",
+          "end_offset"
+        ],
+        "title": "AcceptedAnswerClaimPresentation",
+        "type": "object"
+      },
+      "AcceptedAnswerPresentation": {
+        "additionalProperties": false,
+        "description": "Versioned, content-free projection of a persisted accepted answer.",
+        "properties": {
+          "answer_id": {
+            "format": "uuid",
+            "title": "Answer Id",
+            "type": "string"
+          },
+          "answer_text_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Answer Text Sha256",
+            "type": "string"
+          },
+          "attempt_id": {
+            "format": "uuid",
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "citation_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Citation Ids",
+            "type": "array"
+          },
+          "claims": {
+            "items": {
+              "$ref": "#/components/schemas/AcceptedAnswerClaimPresentation"
+            },
+            "minItems": 1,
+            "title": "Claims",
+            "type": "array"
+          },
+          "message_id": {
+            "format": "uuid",
+            "title": "Message Id",
+            "type": "string"
+          },
+          "relationships": {
+            "items": {
+              "$ref": "#/components/schemas/AcceptedAnswerRelationshipPresentation"
+            },
+            "minItems": 1,
+            "title": "Relationships",
+            "type": "array"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "accepted-answer-presentation:v1",
+            "default": "accepted-answer-presentation:v1",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id",
+          "run_id",
+          "attempt_id",
+          "answer_id",
+          "answer_text_sha256",
+          "claims",
+          "relationships",
+          "citation_ids"
+        ],
+        "title": "AcceptedAnswerPresentation",
+        "type": "object"
+      },
+      "AcceptedAnswerRelationshipPresentation": {
+        "additionalProperties": false,
+        "description": "A typed relationship linking an accepted claim to citation identities.",
+        "properties": {
+          "citation_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Citation Ids",
+            "type": "array"
+          },
+          "claim_id": {
+            "format": "uuid",
+            "title": "Claim Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ClaimEvidenceRelationshipKind"
+          },
+          "related_claim_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Related Claim Id"
+          },
+          "relationship_id": {
+            "format": "uuid",
+            "title": "Relationship Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "accepted-answer-relationship-presentation:v1",
+            "default": "accepted-answer-relationship-presentation:v1",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "relationship_id",
+          "claim_id",
+          "kind"
+        ],
+        "title": "AcceptedAnswerRelationshipPresentation",
+        "type": "object"
+      },
       "AccessPolicyMetadata": {
         "additionalProperties": false,
         "description": "Safe identity of the current policy, never its grants.",
@@ -42,6 +207,15 @@
           "rejected"
         ],
         "title": "AdmissionDisposition",
+        "type": "string"
+      },
+      "AnswerClaimKind": {
+        "description": "Whether a claim asserts evidence or a reproducible derivation from it.",
+        "enum": [
+          "factual",
+          "derived"
+        ],
+        "title": "AnswerClaimKind",
         "type": "string"
       },
       "AnswerQuestionOutcome": {
@@ -1923,6 +2097,18 @@
           "unavailable"
         ],
         "title": "CitationInspectionStatus",
+        "type": "string"
+      },
+      "ClaimEvidenceRelationshipKind": {
+        "description": "Closed composition semantics for claim-level attribution.",
+        "enum": [
+          "independent",
+          "corroborating",
+          "joint",
+          "derivation_input",
+          "contradiction"
+        ],
+        "title": "ClaimEvidenceRelationshipKind",
         "type": "string"
       },
       "CommandStatus": {
@@ -5533,6 +5719,16 @@
       "QAMessageResponse": {
         "additionalProperties": false,
         "properties": {
+          "accepted_presentation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AcceptedAnswerPresentation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "answer": {
             "anyOf": [
               {
@@ -5659,6 +5855,7 @@
           "disclosure_eligibility",
           "question",
           "answer",
+          "accepted_presentation",
           "created_at",
           "updated_at"
         ],

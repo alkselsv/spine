@@ -7,8 +7,17 @@ import pytest
 from spine.application.persistence.context import EnvironmentScope, PersistenceOperation
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.persistence.errors import IdempotencyConflictError
+from spine.domain.capabilities import (
+    AcceptedGroundedAnswer,
+    AnswerClaimLocation,
+    AnswerContent,
+    AnswerDisclosureValidation,
+)
+from spine.domain.capabilities.answer_question_runs import AnswerQuestionRunState
+from spine.domain.capabilities.answer_disclosure import AnswerDisclosureRecord
 from spine.application.qa_sessions import (
     PersistedQASessionService,
+    QAMessagePresentationUnavailable,
     QASessionRequester,
     QASessionVersionConflict,
 )
@@ -21,6 +30,59 @@ ENVIRONMENT_ID = UUID("30000000-0000-0000-0000-000000000001")
 SUBJECT_ID = UUID("10000000-0000-0000-0000-000000000001")
 TRACE_ID = UUID("60000000-0000-0000-0000-000000000001")
 NOW = datetime(2026, 10, 15, tzinfo=timezone.utc)
+
+
+def accepted_answer() -> AcceptedGroundedAnswer:
+    from tests.domain.capabilities.test_answer_question_candidate import candidate_output
+
+    source = candidate_output().answer
+    replacements = {
+        UUID(int=1): WORKSPACE_ID,
+        UUID(int=2): ENVIRONMENT_ID,
+        UUID(int=9): UUID("70000000-0000-0000-0000-000000000001"),
+        UUID(int=10): UUID("70000000-0000-0000-0000-000000000002"),
+    }
+
+    def replace(value):
+        if isinstance(value, UUID):
+            return replacements.get(value, value)
+        if isinstance(value, dict):
+            return {key: replace(item) for key, item in value.items()}
+        if isinstance(value, tuple):
+            return tuple(replace(item) for item in value)
+        if isinstance(value, list):
+            return [replace(item) for item in value]
+        return value
+
+    answer = AnswerContent.model_validate(replace(source.model_dump(mode="python")))
+    text = "Привет 🌍 e\u0301"
+    claim = answer.claims[0].model_copy(
+        update={
+            "text": text,
+            "location": AnswerClaimLocation(
+                answer_id=answer.answer_id,
+                start_offset=0,
+                end_offset=len(text),
+            ),
+        }
+    )
+    answer = answer.model_copy(update={"text": text, "claims": (claim,)})
+    validation = AnswerDisclosureValidation(
+        citation_validation_reference=UUID(int=710),
+        semantic_support_validation_reference=UUID(int=711),
+        evaluation_lineage_reference=UUID(int=712),
+        disclosure_eligibility_reference=UUID(int=713),
+        context_bundle_id=answer.citations[0].context_bundle.bundle.bundle_id,
+        context_bundle_version=answer.citations[0].context_bundle.bundle.bundle_version,
+        context_bundle_digest=answer.citations[0].context_bundle.bundle.bundle_digest,
+        claim_ids=tuple(claim.claim_id for claim in answer.claims),
+        citation_ids=tuple(citation.citation_id for citation in answer.citations),
+    )
+    return AcceptedGroundedAnswer(
+        answer=answer,
+        validation=validation,
+        accepted_at=NOW,
+    )
 
 
 def context(workspace_id=WORKSPACE_ID, environment_id=ENVIRONMENT_ID):
@@ -50,6 +112,122 @@ def service(*, allowed=True):
         disclosure_eligibility=eligibility,
         clock=lambda: NOW,
     ), eligibility
+
+
+@pytest.mark.asyncio
+async def test_answered_message_exposes_accepted_presentation_only_from_final_attempt_join():
+    class RunRepository:
+        async def resolve_run(self, run_id):
+            return SimpleNamespace(
+                run_id=run_id,
+                workspace_id=WORKSPACE_ID,
+                environment_id=ENVIRONMENT_ID,
+                final_attempt_id=UUID("70000000-0000-0000-0000-000000000002"),
+                state=AnswerQuestionRunState.COMPLETED,
+                outcome=AnswerQuestionOutcome.ANSWERED,
+            )
+
+    class DisclosureRepository:
+        async def resolve_for_attempt(self, **kwargs):
+            del kwargs
+            return None
+
+    qa, _ = service()
+    qa = PersistedQASessionService(
+        repository=qa.repository,
+        disclosure_eligibility=qa.disclosure_eligibility,
+        answer_question_runs=RunRepository(),
+        answer_disclosures=DisclosureRepository(),
+        clock=lambda: NOW,
+    )
+    requester = QASessionRequester(SUBJECT_ID)
+    session = await qa.create_session(
+        context=context(), requester=requester, idempotency_key=IdempotencyKey("join-session")
+    )
+    message = await qa.create_pending_message(
+        context=context(), requester=requester, session_id=session.value.session_id,
+        question="Protected question", run_id=UUID("70000000-0000-0000-0000-000000000001"),
+        idempotency_key=IdempotencyKey("join-message"),
+    )
+    await qa.complete_message(
+        context=context(), session_id=session.value.session_id, message_id=message.value.message_id,
+        answer="Protected answer", outcome=AnswerQuestionOutcome.ANSWERED,
+        cancelled=False, idempotency_key=IdempotencyKey("join-complete"),
+    )
+
+    with pytest.raises(QAMessagePresentationUnavailable):
+        await qa.get_message(
+            context=context(), requester=requester, session_id=session.value.session_id,
+            message_id=message.value.message_id,
+        )
+
+
+@pytest.mark.asyncio
+async def test_answered_message_projects_exact_unicode_spans_from_accepted_final_attempt():
+    run_id = UUID("70000000-0000-0000-0000-000000000001")
+    accepted = accepted_answer()
+
+    class RunRepository:
+        async def resolve_run(self, requested_run_id):
+            return SimpleNamespace(
+                run_id=requested_run_id,
+                workspace_id=WORKSPACE_ID,
+                environment_id=ENVIRONMENT_ID,
+                final_attempt_id=accepted.answer.attempt_id,
+                state=AnswerQuestionRunState.COMPLETED,
+                outcome=AnswerQuestionOutcome.ANSWERED,
+            )
+
+    class DisclosureRepository:
+        async def resolve_for_attempt(self, **kwargs):
+            assert kwargs["run_id"] == run_id
+            assert kwargs["attempt_id"] == accepted.answer.attempt_id
+            return AnswerDisclosureRecord(
+                request_id=UUID(int=720),
+                request_digest="a" * 64,
+                workspace_id=WORKSPACE_ID,
+                environment_id=ENVIRONMENT_ID,
+                run_id=run_id,
+                attempt_id=accepted.answer.attempt_id,
+                outcome=AnswerQuestionOutcome.ANSWERED,
+                validation=accepted.validation,
+                accepted_answer=accepted,
+                created_at=NOW,
+            )
+
+    qa, _ = service()
+    qa = PersistedQASessionService(
+        repository=qa.repository,
+        disclosure_eligibility=qa.disclosure_eligibility,
+        answer_question_runs=RunRepository(),
+        answer_disclosures=DisclosureRepository(),
+        clock=lambda: NOW,
+    )
+    requester = QASessionRequester(SUBJECT_ID)
+    session = await qa.create_session(
+        context=context(), requester=requester, idempotency_key=IdempotencyKey("unicode-session")
+    )
+    message = await qa.create_pending_message(
+        context=context(), requester=requester, session_id=session.value.session_id,
+        question="Protected question", run_id=run_id,
+        idempotency_key=IdempotencyKey("unicode-message"),
+    )
+    await qa.complete_message(
+        context=context(), session_id=session.value.session_id, message_id=message.value.message_id,
+        answer=accepted.answer.text, outcome=AnswerQuestionOutcome.ANSWERED,
+        cancelled=False, idempotency_key=IdempotencyKey("unicode-complete"),
+    )
+
+    read = await qa.get_message(
+        context=context(), requester=requester, session_id=session.value.session_id,
+        message_id=message.value.message_id,
+    )
+
+    assert read is not None
+    assert read.answer == "Привет 🌍 e\u0301"
+    assert read.accepted_presentation is not None
+    assert read.accepted_presentation.claims[0].end_offset == len("Привет 🌍 e\u0301")
+    assert read.accepted_presentation.answer_id == accepted.answer.answer_id
 
 
 @pytest.mark.asyncio

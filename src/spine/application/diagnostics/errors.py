@@ -48,6 +48,7 @@ from spine.application.feedback_errors import FeedbackTargetNotFound, InvalidFee
 from spine.application.qa_sessions import (
     InvalidQASessionRequest,
     QAMessageNotFound,
+    QAMessagePresentationUnavailable,
     QASessionNotFound,
     QASessionVersionConflict,
 )
@@ -109,6 +110,7 @@ _SAFE_MESSAGE_BY_CODE = MappingProxyType({
     "spine.documents.not_found": "The document was not found.",
     "spine.qa_sessions.not_found": "The Q&A session was not found.",
     "spine.qa_sessions.message_not_found": "The Q&A message was not found.",
+    "spine.qa_sessions.message_unavailable": "The Q&A message is temporarily unavailable.",
     "spine.qa_sessions.conflict": "The Q&A session state conflicts with a newer version.",
     "spine.qa_sessions.invalid_request": "The Q&A session request is invalid.",
     "spine.qa.citations.unavailable": "The citation is unavailable.",
@@ -342,6 +344,7 @@ def build_default_error_registry() -> StructuredErrorRegistry:
         (DocumentNotFound, "spine.documents.not_found", "The document was not found.", Retryability.NEVER),
         (QASessionNotFound, "spine.qa_sessions.not_found", "The Q&A session was not found.", Retryability.NEVER),
         (QAMessageNotFound, "spine.qa_sessions.message_not_found", "The Q&A message was not found.", Retryability.NEVER),
+        (QAMessagePresentationUnavailable, "spine.qa_sessions.message_unavailable", "The Q&A message is temporarily unavailable.", Retryability.AFTER_DELAY),
         (QASessionVersionConflict, "spine.qa_sessions.conflict", "The Q&A session state conflicts with a newer version.", Retryability.NEVER),
         (InvalidQASessionRequest, "spine.qa_sessions.invalid_request", "The Q&A session request is invalid.", Retryability.NEVER),
         (AuthorizedAskServiceUnavailable, "spine.qa.unavailable", "The Q&A service is temporarily unavailable.", Retryability.AFTER_DELAY),

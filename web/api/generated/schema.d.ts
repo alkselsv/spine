@@ -657,6 +657,98 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * AcceptedAnswerClaimPresentation
+         * @description An authoritative claim identity, kind and code-point span.
+         */
+        AcceptedAnswerClaimPresentation: {
+            /**
+             * Claim Id
+             * Format: uuid
+             */
+            claim_id: string;
+            /** End Offset */
+            end_offset: number;
+            kind: components["schemas"]["AnswerClaimKind"];
+            /**
+             * Schema Version
+             * @default accepted-answer-claim-presentation:v1
+             * @constant
+             */
+            schema_version: "accepted-answer-claim-presentation:v1";
+            /** Start Offset */
+            start_offset: number;
+        };
+        /**
+         * AcceptedAnswerPresentation
+         * @description Versioned, content-free projection of a persisted accepted answer.
+         */
+        AcceptedAnswerPresentation: {
+            /**
+             * Answer Id
+             * Format: uuid
+             */
+            answer_id: string;
+            /** Answer Text Sha256 */
+            answer_text_sha256: string;
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            /** Citation Ids */
+            citation_ids: string[];
+            /** Claims */
+            claims: components["schemas"]["AcceptedAnswerClaimPresentation"][];
+            /**
+             * Message Id
+             * Format: uuid
+             */
+            message_id: string;
+            /** Relationships */
+            relationships: components["schemas"]["AcceptedAnswerRelationshipPresentation"][];
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /**
+             * Schema Version
+             * @default accepted-answer-presentation:v1
+             * @constant
+             */
+            schema_version: "accepted-answer-presentation:v1";
+        };
+        /**
+         * AcceptedAnswerRelationshipPresentation
+         * @description A typed relationship linking an accepted claim to citation identities.
+         */
+        AcceptedAnswerRelationshipPresentation: {
+            /**
+             * Citation Ids
+             * @default []
+             */
+            citation_ids: string[];
+            /**
+             * Claim Id
+             * Format: uuid
+             */
+            claim_id: string;
+            kind: components["schemas"]["ClaimEvidenceRelationshipKind"];
+            /** Related Claim Id */
+            related_claim_id?: string | null;
+            /**
+             * Relationship Id
+             * Format: uuid
+             */
+            relationship_id: string;
+            /**
+             * Schema Version
+             * @default accepted-answer-relationship-presentation:v1
+             * @constant
+             */
+            schema_version: "accepted-answer-relationship-presentation:v1";
+        };
+        /**
          * AccessPolicyMetadata
          * @description Safe identity of the current policy, never its grants.
          */
@@ -682,6 +774,12 @@ export interface components {
          * @enum {string}
          */
         AdmissionDisposition: "admitted" | "quarantined" | "rejected";
+        /**
+         * AnswerClaimKind
+         * @description Whether a claim asserts evidence or a reproducible derivation from it.
+         * @enum {string}
+         */
+        AnswerClaimKind: "factual" | "derived";
         /**
          * AnswerQuestionOutcome
          * @description The complete and closed set of terminal Q&A outcomes.
@@ -1643,6 +1741,12 @@ export interface components {
          * @enum {string}
          */
         CitationInspectionStatus: "available" | "unavailable";
+        /**
+         * ClaimEvidenceRelationshipKind
+         * @description Closed composition semantics for claim-level attribution.
+         * @enum {string}
+         */
+        ClaimEvidenceRelationshipKind: "independent" | "corroborating" | "joint" | "derivation_input" | "contradiction";
         /**
          * CommandStatus
          * @description Public lifecycle of a requested mutation.
@@ -3018,6 +3122,7 @@ export interface components {
         };
         /** QAMessageResponse */
         QAMessageResponse: {
+            accepted_presentation: components["schemas"]["AcceptedAnswerPresentation"] | null;
             /** Answer */
             answer: string | null;
             /** Cancelled */
