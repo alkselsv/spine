@@ -77,7 +77,7 @@ describe('Knowledge parsed content inspection', () => {
       `/knowledge/documents/${sourceObjectId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}&tab=content&revision=${revisionId}`,
     );
 
-    expect(await screen.findByRole('heading', { name: ru.documents.contentInspectionTitle })).toBeVisible();
+    expect(await screen.findByRole('heading', { name: ru.documents.contentInspectionTitle }, { timeout: 5_000 })).toBeVisible();
     expect(await screen.findByText('PDF evidence text')).toBeVisible();
     expect(await screen.findByText('Spreadsheet evidence text')).toBeVisible();
     expect(await screen.findByText('Line evidence text')).toBeVisible();

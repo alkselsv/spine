@@ -14,6 +14,7 @@ const primaryRevision = '30000000-0000-4000-8000-000000000004';
 const chatSession = '90000000-0000-4000-8000-000000000001';
 const chatMessage = '90000000-0000-4000-8000-000000000002';
 const chatRun = '90000000-0000-4000-8000-000000000003';
+const projectionRun = 'a0000000-0000-4000-8000-000000000001';
 const chatCommand = '90000000-0000-4000-8000-000000000004';
 const chatCitation = '90000000-0000-4000-8000-000000000005';
 const chatClaim = '90000000-0000-4000-8000-000000000006';
@@ -730,8 +731,56 @@ test('test_document_lifecycle_actions_are_scope_owned_and_preserve_tombstone_lin
 });
 
 test('test_projection_status_scope_switch_reload_and_safe_degradation', async ({ page }) => {
-  await installControlledDocumentDetail(page);
+  await installControlledDocumentDetail(page, true);
   const projectionRequests: Array<{ headers: Record<string, string>; url: string }> = [];
+  const correlationRequests: Array<{ headers: Record<string, string>; url: string }> = [];
+  await page.route('**/api/v1/diagnostics/operational-correlation*', async (route) => {
+    const request = route.request();
+    const headers = request.headers();
+    const url = new URL(request.url());
+    correlationRequests.push({ headers, url: request.url() });
+    await route.fulfill({
+      contentType: 'application/json',
+      status: 200,
+      body: JSON.stringify({
+        authorization_audit_event_id: '70000000-0000-4000-8000-000000000001',
+        data: {
+          conflict_codes: ['metric_coverage_incomplete'],
+          correlation_ids: [],
+          coverage: 'incomplete',
+          environment_id: stagingEnvironment,
+          lineage: [],
+          missing_sources: ['delivery_metadata'],
+          records: [{
+            correlation_id: null,
+            deduplication_key: `metric:${projectionRun}`,
+            environment_id: stagingEnvironment,
+            metric_coverage: 'degraded',
+            metric_measurement: 'projection.publication_latency',
+            observed_at: '2026-10-17T10:00:00Z',
+            run_id: projectionRun,
+            schema_version: 'operational-correlation-record:v1',
+            source_identity: 'spine.observation:v1',
+            source_kind: 'operational_metric',
+            source_record_id: '70000000-0000-4000-8000-000000000002',
+            source_schema_version: 'operational-metric-event:v1',
+            workspace_id: salesWorkspace,
+          }],
+          reference_id: projectionRun,
+          reference_kind: 'run',
+          schema_version: 'operational-correlation-view:v1',
+          trace_ids: [traceId],
+          workspace_id: salesWorkspace,
+        },
+        environment_id: headers['x-environment-id'],
+        schema_version: 1,
+        trace_id: traceId,
+        workspace_id: headers['x-workspace-id'],
+      }),
+    });
+    expect(url.searchParams.get('reference_kind')).toBe('run');
+    expect(url.searchParams.get('reference_id')).toBe(projectionRun);
+  });
   await page.route('**/api/v1/projections/*/status', async (route) => {
     const request = route.request();
     const headers = request.headers();
@@ -819,6 +868,13 @@ test('test_projection_status_scope_switch_reload_and_safe_degradation', async ({
   await expect(panel.getByText('Устарела')).toBeVisible();
   await expect(panel.getByText('Ограничен')).toHaveCount(3);
   await expect(panel.getByRole('button', { name: 'Запросить пересборку проекции' })).toBeVisible();
+  await panel.getByRole('button', { name: 'Показать диагностику' }).click();
+  await expect(page.getByText('Данные корреляции неполные')).toBeVisible();
+  await expect(page.getByText('projection.publication_latency')).toBeVisible();
+  expect(correlationRequests).toHaveLength(1);
+  expect(correlationRequests[0]?.headers['x-workspace-id']).toBe(salesWorkspace);
+  expect(correlationRequests[0]?.headers['x-environment-id']).toBe(stagingEnvironment);
+  await expect(page.locator('body')).not.toContainText('provider stack');
   await expect(page.getByText(/не подтверждает доступ к доказательствам/i)).toBeVisible();
   await expect(page.locator('body')).not.toContainText('must not be rendered');
   await expect(page).toHaveURL(/tab=projection.*projection_kind=qa/);
@@ -1658,7 +1714,7 @@ function controlledRevision({
   };
 }
 
-async function installControlledDocumentDetail(page: Page) {
+async function installControlledDocumentDetail(page: Page, withProjectionCorrelation = false) {
   const requests: Array<{ url: string; headers: Record<string, string> }> = [];
   const fixtures = [
     { environmentId: stagingEnvironment, sourceObjectId: firstDocument, sourceRevisionId: secondDocument, workspaceId: salesWorkspace },
@@ -1691,7 +1747,14 @@ async function installControlledDocumentDetail(page: Page) {
             state: 'processed' as const,
           },
         ],
-        projection_references: [],
+        projection_references: withProjectionCorrelation
+          ? [{
+              projection_candidate_id: 'a1000000-0000-4000-8000-000000000001',
+              projection_kind: 'qa',
+              projection_run_id: projectionRun,
+              state: 'failed' as const,
+            }]
+          : [],
         schema_version: 1 as const,
         source_revision_id: fixture.sourceRevisionId,
         predecessor_revision_id: null,
@@ -2065,6 +2128,59 @@ test('test_chat_run_citation_navigation_preserves_scope_back_reload_and_denies_o
   const answerDigest = createHash('sha256').update(answer, 'utf8').digest('hex');
   const runRequests: Array<Record<string, string>> = [];
   const citationRequests: Array<Record<string, string>> = [];
+  const correlationRequests: Array<Record<string, string>> = [];
+  await page.route('**/api/v1/diagnostics/operational-correlation*', async (route) => {
+    const request = route.request();
+    const headers = request.headers();
+    const url = new URL(request.url());
+    correlationRequests.push(headers);
+    if (!isOwnedScope(headers, salesWorkspace, stagingEnvironment)) {
+      await fulfillForeignScopeDenied(route);
+      return;
+    }
+    expect(url.searchParams.get('reference_kind')).toBe('run');
+    expect(url.searchParams.get('reference_id')).toBe(chatRun);
+    await route.fulfill({
+      contentType: 'application/json',
+      status: 200,
+      body: JSON.stringify({
+        authorization_audit_event_id: '70000000-0000-4000-8000-000000000001',
+        data: {
+          conflict_codes: [],
+          correlation_ids: [],
+          coverage: 'complete',
+          environment_id: stagingEnvironment,
+          lineage: [],
+          missing_sources: [],
+          records: [{
+            deduplication_key: `run:${chatRun}`,
+            environment_id: stagingEnvironment,
+            message_id: chatMessage,
+            observed_at: '2026-10-17T10:01:00Z',
+            run_id: chatRun,
+            run_outcome: 'answered',
+            run_state: 'completed',
+            schema_version: 'operational-correlation-record:v1',
+            source_identity: 'canonical.answer-question-run:v1',
+            source_kind: 'canonical_run',
+            source_record_id: chatRun,
+            source_schema_version: 'answer-question-run:v1',
+            trace_id: traceId,
+            workspace_id: salesWorkspace,
+          }],
+          reference_id: chatRun,
+          reference_kind: 'run',
+          schema_version: 'operational-correlation-view:v1',
+          trace_ids: [traceId],
+          workspace_id: salesWorkspace,
+        },
+        environment_id: stagingEnvironment,
+        schema_version: 1,
+        trace_id: traceId,
+        workspace_id: salesWorkspace,
+      }),
+    });
+  });
   const message = {
     schema_version: 1,
     message_id: chatMessage,
@@ -2292,6 +2408,12 @@ test('test_chat_run_citation_navigation_preserves_scope_back_reload_and_denies_o
   await page.getByRole('link', { name: 'Открыть запуск Q&A' }).click();
   await expect(page).toHaveURL(new RegExp(`/qa/runs/${chatRun}.*workspace=${salesWorkspace}.*environment=${stagingEnvironment}`));
   await expect(page.getByRole('heading', { name: 'Детали запуска Q&A' })).toBeVisible();
+  await page.getByRole('button', { name: 'Показать диагностику' }).click();
+  await expect(page.getByText('Источники корреляции доступны')).toBeVisible();
+  await expect(page.getByText('Канонический запуск Q&A')).toBeVisible();
+  expect(correlationRequests[0]?.['x-workspace-id']).toBe(salesWorkspace);
+  expect(correlationRequests[0]?.['x-environment-id']).toBe(stagingEnvironment);
+  await expect(page.locator('body')).not.toContainText('provider stack trace');
   await page.getByRole('link', { name: 'Открыть источник в чате' }).click();
   await expect(page).toHaveURL(new RegExp(`/chat/${chatSession}.*message_id=${chatMessage}.*run_id=${chatRun}.*citation_id=${chatCitation}.*return_run_id=${chatRun}`));
   await expect(page.getByText('Ответ и ссылки скрыты: не удалось подтвердить их актуальность и доступность.')).toBeVisible();

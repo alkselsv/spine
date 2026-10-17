@@ -1,0 +1,154 @@
+.panel {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+  padding: 1.25rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.65rem;
+  background: var(--color-surface);
+}
+
+.header,
+.recordHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.header h3 {
+  margin: 0;
+}
+
+.toggle {
+  flex: 0 0 auto;
+  border: 1px solid var(--color-border);
+  border-radius: 0.4rem;
+  padding: 0.45rem 0.7rem;
+  background: var(--color-surface);
+  color: var(--color-link);
+  font: inherit;
+  cursor: pointer;
+}
+
+.description,
+.notice {
+  margin: 0.35rem 0 0;
+  color: var(--color-muted);
+}
+
+.reference,
+.record code {
+  overflow-wrap: anywhere;
+}
+
+.content {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.coverage {
+  margin: 0;
+  font-weight: 600;
+}
+
+.notice {
+  padding: 0.65rem 0.75rem;
+  border-radius: 0.4rem;
+  background: var(--color-surface-strong);
+}
+
+.records {
+  display: grid;
+  gap: 0.75rem;
+  max-height: 24rem;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.record {
+  display: grid;
+  gap: 0.65rem;
+  min-width: 0;
+  padding: 0.85rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.4rem;
+}
+
+.recordHeader time {
+  color: var(--color-muted);
+  font-size: 0.85rem;
+}
+
+.recordDetails {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+  gap: 0.6rem 1rem;
+  margin: 0;
+}
+
+.recordDetails dt {
+  color: var(--color-muted);
+  font-size: 0.8rem;
+}
+
+.recordDetails dd {
+  margin: 0.15rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.navigation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+}
+
+.navigation a,
+.retry,
+.drilldown {
+  color: var(--color-link);
+  font: inherit;
+}
+
+.retry {
+  justify-self: start;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.retry:disabled {
+  cursor: wait;
+}
+
+.drilldown {
+  justify-self: start;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  text-align: left;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.panel > div[id] {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+@media (max-width: 38rem) {
+  .panel {
+    padding: 0.9rem;
+  }
+
+  .recordHeader {
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+}

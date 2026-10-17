@@ -9,6 +9,7 @@ import { useAuth } from '../../app/auth';
 import { ApiErrorPanel, StatusPanel, type InterfaceState } from '../../app/status';
 import { useScope } from '../../app/scope';
 import { ru } from '../../i18n/resources';
+import { OperationalCorrelationPanel } from '../diagnostics/OperationalCorrelationPanel';
 import { loadBatchStatus } from './upload-api';
 import { ProcessingCommandAction } from './ProcessingCommandAction';
 import {
@@ -116,6 +117,7 @@ export function IngestionRunPage() {
         <RunDetails
           client={client}
           currentSearch={currentSearch}
+          diagnosticsQueryKey={queryKey}
           queryKey={queryKey('document-processing-history')}
           query={runQuery}
           scope={scope}
@@ -155,12 +157,14 @@ export function IngestionRunPage() {
 function RunDetails({
   client,
   currentSearch,
+  diagnosticsQueryKey,
   queryKey,
   query,
   scope,
 }: {
   client: ReturnType<typeof createScopedApiClient>;
   currentSearch: string;
+  diagnosticsQueryKey: (resource: string) => readonly unknown[];
   queryKey: readonly unknown[];
   query: ReturnType<typeof useQuery<components['schemas']['BatchIngestionStatusResponse'], SpineApiError>>;
   scope: { workspaceId: string; environmentId: string };
@@ -225,6 +229,14 @@ function RunDetails({
         <MetaEntry label={ru.documents.run.status} value={batchStatusLabel(query.data.status)} />
         <MetaEntry label={ru.documents.run.runState} value={runStateLabel(query.data.run_state)} />
       </dl>
+
+      <OperationalCorrelationPanel
+        client={client}
+        queryKey={diagnosticsQueryKey}
+        referenceId={query.data.run_id}
+        referenceKind="run"
+        scope={scope}
+      />
 
       <ul className={styles.runItemList} aria-label={ru.documents.upload.runItems}>
         {query.data.items.map((item) => (

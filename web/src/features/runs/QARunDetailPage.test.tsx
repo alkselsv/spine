@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 
@@ -22,18 +23,7 @@ afterEach(() => {
 
 describe('Q&A run detail', () => {
   it('test_qa_run_detail_renders_authoritative_metadata_and_sorted_safe_timeline', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn<typeof globalThis.fetch>().mockResolvedValue(
-        Response.json({
-          data: makeDetail(),
-          environment_id: scope.environmentId,
-          schema_version: 1,
-          trace_id: '50000000-0000-4000-8000-000000000099',
-          workspace_id: scope.workspaceId,
-        }),
-      ),
-    );
+    vi.stubGlobal('fetch', createRunAndCorrelationFetch());
 
     renderDetail(`/qa/runs/${runId}`);
 
@@ -42,6 +32,12 @@ describe('Q&A run detail', () => {
     expect(screen.getByText(/gpt-safe-2026/)).toBeVisible();
     expect(screen.getByText(/b0000000-0000-4000-8000-000000000004/)).toBeVisible();
     expect(screen.getByText('12')).toBeVisible();
+    await userEvent.click(screen.getByRole('button', { name: ru.diagnostics.open }));
+    expect(await screen.findByText(ru.diagnostics.partial)).toBeVisible();
+    expect(screen.getByRole('link', { name: ru.diagnostics.documents })).toHaveAttribute(
+      'href',
+      `/knowledge/documents?workspace=${scope.workspaceId}&environment=${scope.environmentId}`,
+    );
 
     const timeline = screen.getByRole('list', { name: ru.qaRuns.detail.timeline });
     const events = within(timeline).getAllByRole('listitem');
@@ -51,18 +47,7 @@ describe('Q&A run detail', () => {
   });
 
   it('test_eligible_run_evidence_links_to_the_exact_scoped_chat_citation_and_back', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn<typeof globalThis.fetch>().mockResolvedValue(
-        Response.json({
-          data: makeDetail(),
-          environment_id: scope.environmentId,
-          schema_version: 1,
-          trace_id: '50000000-0000-4000-8000-000000000099',
-          workspace_id: scope.workspaceId,
-        }),
-      ),
-    );
+    vi.stubGlobal('fetch', createRunAndCorrelationFetch());
 
     renderDetail(
       `/qa/runs/${runId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}&return_session_id=90000000-0000-4000-8000-000000000002&return_message_id=90000000-0000-4000-8000-000000000001`,
@@ -282,6 +267,74 @@ function makeEvidence(): components['schemas']['QARunEvidenceResponse'] {
     revision_number: 2,
     source_object_id: 'e0000000-0000-4000-8000-000000000001',
     source_revision_id: 'e0000000-0000-4000-8000-000000000002',
+    workspace_id: scope.workspaceId,
+  };
+}
+
+function createRunAndCorrelationFetch() {
+  return vi.fn<typeof globalThis.fetch>().mockImplementation(async (input) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.pathname === '/api/v1/diagnostics/operational-correlation') {
+      return Response.json(makeCorrelationResponse());
+    }
+    return Response.json({
+      data: makeDetail(),
+      environment_id: scope.environmentId,
+      schema_version: 1,
+      trace_id: '50000000-0000-4000-8000-000000000099',
+      workspace_id: scope.workspaceId,
+    });
+  });
+}
+
+function makeCorrelationResponse(): components['schemas']['OperationalCorrelationResponse'] {
+  return {
+    authorization_audit_event_id: '70000000-0000-4000-8000-000000000001',
+    data: {
+      conflict_codes: [],
+      correlation_ids: [],
+      coverage: 'incomplete',
+      environment_id: scope.environmentId,
+      lineage: [],
+      missing_sources: ['delivery_metadata'],
+      records: [{
+        correlation_id: '60000000-0000-4000-8000-000000000002',
+        deduplication_key: `run:${runId}`,
+        delivery_event_id: null,
+        delivery_last_error_code: null,
+        delivery_status: null,
+        environment_id: scope.environmentId,
+        feedback_id: null,
+        feedback_outcome: null,
+        feedback_target_kind: null,
+        message_id: '90000000-0000-4000-8000-000000000001',
+        metric_coverage: null,
+        metric_currency: null,
+        metric_denominator: null,
+        metric_measurement: null,
+        metric_numerator: null,
+        metric_value: null,
+        observed_at: '2026-10-16T10:00:03Z',
+        run_id: runId,
+        run_outcome: 'failed',
+        run_state: 'completed',
+        schema_version: 'operational-correlation-record:v1',
+        source_identity: 'canonical.answer-question-run:v1',
+        source_kind: 'canonical_run',
+        source_record_id: runId,
+        source_schema_version: 'answer-question-run:v1',
+        trace_id: '50000000-0000-4000-8000-000000000002',
+        workspace_id: scope.workspaceId,
+      }],
+      reference_id: runId,
+      reference_kind: 'run',
+      schema_version: 'operational-correlation-view:v1',
+      trace_ids: ['50000000-0000-4000-8000-000000000002'],
+      workspace_id: scope.workspaceId,
+    },
+    environment_id: scope.environmentId,
+    schema_version: 1,
+    trace_id: '50000000-0000-4000-8000-000000000099',
     workspace_id: scope.workspaceId,
   };
 }
