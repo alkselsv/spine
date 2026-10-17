@@ -7,6 +7,7 @@ import { loadQAMessage, type QAMessage } from './session-api';
 import { inspectAcceptedCitation, type CitationInspection } from './citation-inspection';
 import { buildCitationPlacements, type ClaimCitationPlacement } from './citation-presentation';
 import { isSafeMarkdownSource, SafeMarkdown, type InlineMarkdownMarker } from './SafeMarkdown';
+import { FeedbackControls } from './FeedbackControls';
 import styles from './SessionBrowserPage.module.css';
 
 type AnswerState = 'checking' | 'available' | 'unavailable' | 'unsafe';
@@ -177,10 +178,20 @@ export function AcceptedAnswer({
     <div className={styles.acceptedAnswer}>
       <span className={styles.messageLabel}>{ru.chat.answerLabel}</span>
       <SafeMarkdown markers={inlineMarkers} source={answer} />
+      <FeedbackControls
+        client={client}
+        targetKind="answer"
+        targetId={presentation.answer_id}
+        runId={presentation.run_id}
+        messageId={message.message_id}
+      />
       {inspection?.status === 'available' ? (
         <CitationEvidence
           citationNumber={citationNumber(presentation.citation_ids, inspection.evidence.citation_id)}
+          client={client}
           evidence={inspection.evidence}
+          messageId={message.message_id}
+          runId={presentation.run_id}
           onClose={() => setInspection(null)}
         />
       ) : null}
@@ -190,11 +201,17 @@ export function AcceptedAnswer({
 
 function CitationEvidence({
   citationNumber: number,
+  client,
   evidence,
+  messageId,
+  runId,
   onClose,
 }: {
   citationNumber: number;
+  client: ScopedApiClient;
   evidence: Extract<CitationInspection, { status: 'available' }>['evidence'];
+  messageId: string;
+  runId: string;
   onClose: () => void;
 }) {
   return (
@@ -216,6 +233,13 @@ function CitationEvidence({
           <dd>{evidence.locator_schema}: {evidence.locator_reference}</dd>
         </div>
       </dl>
+      <FeedbackControls
+        client={client}
+        targetKind="citation"
+        targetId={evidence.citation_id}
+        runId={runId}
+        messageId={messageId}
+      />
     </section>
   );
 }
