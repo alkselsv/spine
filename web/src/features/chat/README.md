@@ -13,7 +13,7 @@ The transport never treats streamed deltas as the saved message source.
 `ask-command.ts` owns the isolated command actions for authorized Ask admission.
 It sends the generated admission request with a fresh idempotency key, keeps the
 same key and payload for an explicit retry, and links a clarification through the
-server contract. `SessionBrowserPage.tsx` composes those actions with canonical
+server contract. `ChatPanel.tsx` composes those actions with canonical
 session resources: an accepted command is hydrated by its message ID, and
 nonterminal messages are refreshed until the server records a terminal outcome.
 Restoring an SSE connection cannot submit another Ask. `cancellation-api.ts` and
@@ -22,8 +22,11 @@ adapter and control. The control targets the canonical message's admitted run ID
 uses a run-stable idempotency identity, reports pending separately from the
 server's terminal outcome, and refreshes canonical message history. Closing a
 browser connection remains distinct from server cancellation. `ChatPanel.tsx`
-remains a controlled diagnostic fixture; C14 owns final ChatPanel wiring after
-C06 merges.
+is the final user-facing composition of scoped sessions, Ask, canonical outcomes,
+protected answer and citation inspection, feedback, and cancellation. It fails
+closed when current authorization or identity checks fail. `SessionBrowserPage.tsx`
+is a compatibility export for the C11 route; `DiagnosticChatPanel.tsx` retains
+the explicitly selected controlled transport fixture.
 
 `AcceptedAnswer.tsx` displays answer text only when the canonical message is
 terminal and answered, its current disclosure eligibility is `eligible`, and
@@ -38,7 +41,8 @@ endpoint with the current workspace/environment scope. The UI does not enable
 historical inspection or reuse cached excerpts; any failed, stale, denied or
 mismatched disclosure hides the answer and all claim placements. No answer,
 partiality or completeness state is inferred from transport health or citation
-counts. C14 (#421) owns the final ChatPanel wiring.
+counts. The final ChatPanel composes the already-owned APIs and feature controls;
+it does not define new endpoints or canonical outcome semantics.
 
 ## Composition reference map (Issue #410)
 
@@ -56,7 +60,7 @@ Base UI remains the primitive source for the existing accessible scope selects.
 
 | Area | Agno reference pattern | Halaska or Base UI fallback | Spine adaptation | Material deviation |
 | --- | --- | --- | --- | --- |
-| Chat | [Control Plane chat](https://docs.agno.com/agent-os/control-plane) starts a conversation from a registered component and follows its streamed output. | No Halaska Chat component is referenced by the pinned notice. Keep the existing Base UI scope selectors and Spine CSS Module surfaces. | The production Chat route composes a scoped Q&A session list, an Ask composer and canonical message hydration. Saved outcomes use localized status labels; accepted answer Markdown is gated by current disclosure eligibility and accepted-answer identity. C13 adds a standalone server-backed cancellation control for active canonical messages; it never represents transport disconnect as cancellation. | The initial C06 composition did not add cancellation, citation inspection, feedback or final ChatPanel wiring. The controlled diagnostic ChatPanel remains a fixture. |
+| Chat | [Control Plane chat](https://docs.agno.com/agent-os/control-plane) starts a conversation from a registered component and follows its streamed output. | No Halaska Chat component is referenced by the pinned notice. Keep the existing Base UI scope selectors and Spine CSS Module surfaces. | `ChatPanel` composes scoped session navigation, Ask admission, canonical message hydration and outcomes, exact accepted citation placement and current inspection, answer/citation feedback, and server-backed cancellation. | The controlled SSE diagnostic fixture is explicitly selected in browser qualification mode. It is not used as an authorization or canonical data source. |
 | Sessions and messages | Agno's [Control Plane session tracking](https://docs.agno.com/agent-os/control-plane#session-tracking) groups conversation messages and runs under a canonical `session_id`; its [session management guide](https://docs.agno.com/agent-os/usage/client/session-management) covers create, list and manage operations. The [storage overview](https://docs.agno.com/sessions/persisting-sessions/overview#session-storage-schema) describes persisted message/run history. | The pinned Halaska notice does not identify a session browser component. Reuse its navigation density and status/recovery hierarchy; native Spine links and buttons sit beside existing Base UI controls. | List/create/restore and message-history pages call `/api/v1/qa/sessions` through the generated, scope-injected client. The UUID session ID is the route identity; cursor pagination is represented in the URL and query key. Query keys include a non-secret auth identity version; scope and prior identity caches are removed when their context changes. Archived sessions require an explicit, versioned restore command. Accepted answers use the server-authorized `accepted_presentation`; exact claim quotes and typed relationships reference citation IDs that are inspected through the protected citation API. | Session rename/delete, runtime selection, raw trace payloads, and Agno identity/authorization semantics remain outside this slice. Server authorization remains authoritative; denied or unavailable current inspection suppresses the answer and its placement graph. |
 | Runs | [Tracing filters](https://docs.agno.com/agent-os/tracing/filter-options) distinguish individual runs from sessions that group traces. | Halaska's pinned status-panel hierarchy is applicable to Spine's existing run states; no run component is copied. | Keep ingestion runs at `/runs` and expose Q&A runs separately at `/qa/runs`. Canonical Chat messages link to their run, and eligible run evidence links back to a scoped message and citation in Chat. | Spine's Q&A Runs route is an operational Q&A view, not a general Agent Run catalog or Agno trace run. |
 | Tracing and progress | The [Control Plane guide](https://docs.agno.com/agent-os/control-plane) describes streamed execution output and trace tree/waterfall views with span status, timing, and relationships. | Use the pinned Halaska status-panel pattern for concise state; Base UI remains limited to existing controls. | Keep live Chat state in its existing SSE boundary and make shell connection state explicit with text and a status marker. | No trace tree, waterfall, span timeline, or generic agent-step progress is introduced by this shared-shell ticket. |

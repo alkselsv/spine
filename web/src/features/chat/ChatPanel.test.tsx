@@ -9,7 +9,7 @@ import { AuthProvider } from '../../app/auth';
 import { ScopeContext, type Scope } from '../../app/scope';
 import { ru } from '../../i18n/resources';
 import { qaSessionQueryKeys } from './session-api';
-import { SessionBrowserPage } from './SessionBrowserPage';
+import { ChatPanel } from './ChatPanel';
 
 const scope: Scope = {
   workspaceId: '10000000-0000-4000-8000-000000000001',
@@ -147,8 +147,8 @@ function renderPage(entry: string, currentScope: Scope = scope, seedStaleContent
           <ScopeContext.Provider value={{ scope: pageScope, queryKey: () => [] }}>
             <MemoryRouter initialEntries={[entry]}>
               <Routes>
-                <Route path="/chat" element={<SessionBrowserPage />} />
-                <Route path="/chat/:sessionId" element={<SessionBrowserPage />} />
+                <Route path="/chat" element={<ChatPanel />} />
+                <Route path="/chat/:sessionId" element={<ChatPanel />} />
               </Routes>
               <LocationProbe />
             </MemoryRouter>
@@ -188,7 +188,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('Q&A session navigation', () => {
+describe('final Chat experience', () => {
   it.each([
     ['before_start', 'pending'],
     ['in_progress', 'running'],
@@ -450,6 +450,65 @@ describe('Q&A session navigation', () => {
     expect(await screen.findByText('Завершилось с ошибкой')).toBeVisible();
     expect(screen.queryByText('Ответ подготовлен')).not.toBeInTheDocument();
     expect(screen.queryByText('Нельзя показывать ответ здесь.')).not.toBeInTheDocument();
+  });
+
+  it('test_chat_panel_composes_canonical_answer_and_scope_bound_feedback', async () => {
+    const user = userEvent.setup();
+    const feedbackRequests: Array<{ body: unknown; headers: Headers }> = [];
+    const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}`) {
+        return response({ data: session(), workspace_id: scope.workspaceId, environment_id: scope.environmentId, trace_id: traceId });
+      }
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages`) {
+        return collection(request, [message()], null);
+      }
+      if (url.pathname === '/api/v1/qa/feedback' && request.method === 'POST') {
+        feedbackRequests.push({ headers: request.headers, body: await request.json() });
+        return response({
+          schema_version: 1,
+          trace_id: traceId,
+          workspace_id: scope.workspaceId,
+          environment_id: scope.environmentId,
+          result: {
+            schema_version: 1,
+            status: 'recorded',
+            feedback_id: '90000000-0000-4000-8000-000000000001',
+            feedback_version: 1,
+            target_kind: 'answer',
+            target_id: answerId,
+            run_id: runId,
+            message_id: messageId,
+            citation_id: null,
+            outcome: 'answer.helpful',
+            audit_event_id: null,
+          },
+        });
+      }
+      return response({ error: 'unexpected request' });
+    });
+    vi.stubGlobal('fetch', fetcher);
+
+    renderPage(`/chat/${sessionId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}`);
+
+    expect(await screen.findByText('В разделе HR.')).toBeVisible();
+    expect(screen.getByRole('button', {
+      name: ru.chat.citationMarkerLabel(1, ru.chat.relationshipKinds.independent),
+    })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: ru.chat.feedbackHelpful }));
+
+    expect(await screen.findByText(ru.chat.feedbackRecorded)).toBeVisible();
+    expect(feedbackRequests[0]?.headers.get('X-Workspace-ID')).toBe(scope.workspaceId);
+    expect(feedbackRequests[0]?.headers.get('X-Environment-ID')).toBe(scope.environmentId);
+    expect(feedbackRequests[0]?.headers.get('Idempotency-Key')).toBeTruthy();
+    expect(feedbackRequests[0]?.body).toEqual({
+      target_kind: 'answer',
+      target_id: answerId,
+      outcome: 'answer.helpful',
+      run_id: runId,
+      message_id: messageId,
+    });
   });
 
   it.each([
