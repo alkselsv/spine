@@ -8,6 +8,16 @@ import styles from './FeedbackControls.module.css';
 
 type FeedbackTargetKind = components['schemas']['FeedbackTargetKind'];
 type FeedbackOutcome = components['schemas']['FeedbackOutcome'];
+type FeedbackUiStatus = 'idle' | 'submitting' | 'recorded' | 'denied' | 'unavailable' | 'conflict';
+
+const FEEDBACK_STATUS_COPY: Record<FeedbackUiStatus, string | null> = {
+  idle: null,
+  submitting: ru.chat.feedbackSubmitting,
+  recorded: ru.chat.feedbackRecorded,
+  denied: ru.chat.feedbackDenied,
+  unavailable: ru.chat.feedbackUnavailable,
+  conflict: ru.chat.feedbackConflict,
+};
 
 export function FeedbackControls({
   client,
@@ -23,7 +33,7 @@ export function FeedbackControls({
   messageId: string;
 }) {
   const [comment, setComment] = useState('');
-  const [status, setStatus] = useState<'idle' | 'submitting' | 'recorded' | 'denied' | 'unavailable' | 'conflict'>('idle');
+  const [status, setStatus] = useState<FeedbackUiStatus>('idle');
   const [pendingCommand, setPendingCommand] = useState<{
     idempotencyKey: string;
     request: QaFeedbackRequest;
@@ -33,7 +43,7 @@ export function FeedbackControls({
 
   useEffect(() => () => requestRef.current?.abort(), []);
 
-  function begin(outcome: FeedbackOutcome) {
+  function startFeedbackSubmission(outcome: FeedbackOutcome) {
     if (submittingRef.current || pendingCommand || status !== 'idle') return;
     const normalizedComment = comment.trim() ? comment : undefined;
     const request: QaFeedbackRequest = {
@@ -47,10 +57,10 @@ export function FeedbackControls({
     };
     const command = { idempotencyKey: crypto.randomUUID(), request };
     setPendingCommand(command);
-    void send(command);
+    void sendFeedbackCommand(command);
   }
 
-  async function send(command: { idempotencyKey: string; request: QaFeedbackRequest }) {
+  async function sendFeedbackCommand(command: { idempotencyKey: string; request: QaFeedbackRequest }) {
     if (submittingRef.current) return;
     submittingRef.current = true;
     const controller = new AbortController();
@@ -79,23 +89,17 @@ export function FeedbackControls({
     }
   }
 
-  const isDisabled = status === 'submitting' || status === 'recorded' || status === 'denied' || status === 'conflict' || Boolean(pendingCommand);
+  const isSubmitting = status === 'submitting';
+  const isTerminal = status === 'recorded' || status === 'denied' || status === 'conflict';
+  const isFailure = status === 'denied' || status === 'unavailable' || status === 'conflict';
+  const isDisabled = isSubmitting || isTerminal || Boolean(pendingCommand);
+  const canRetry = Boolean(pendingCommand) && status === 'unavailable';
   const helpfulOutcome: FeedbackOutcome = targetKind === 'answer' ? 'answer.helpful' : 'citation.helpful';
   const incorrectOutcome: FeedbackOutcome = targetKind === 'answer' ? 'answer.incorrect' : 'citation.incorrect';
-  const statusCopy = status === 'submitting'
-    ? ru.chat.feedbackSubmitting
-    : status === 'recorded'
-      ? ru.chat.feedbackRecorded
-      : status === 'denied'
-        ? ru.chat.feedbackDenied
-        : status === 'conflict'
-          ? ru.chat.feedbackConflict
-          : status === 'unavailable'
-            ? ru.chat.feedbackUnavailable
-            : null;
+  const statusCopy = FEEDBACK_STATUS_COPY[status];
 
   return (
-    <fieldset className={styles.controls} disabled={status === 'submitting' || status === 'recorded' || status === 'denied' || status === 'conflict'}>
+    <fieldset className={styles.controls} disabled={isSubmitting || isTerminal}>
       <legend>{targetKind === 'answer' ? ru.chat.feedbackAnswerLabel : ru.chat.feedbackCitationLabel}</legend>
       <label className={styles.commentLabel}>
         {ru.chat.feedbackCommentLabel}
@@ -113,21 +117,21 @@ export function FeedbackControls({
       <div className={styles.actions}>
         {!pendingCommand ? (
           <>
-            <button className={styles.action} disabled={isDisabled} onClick={() => begin(helpfulOutcome)} type="button">
+            <button className={styles.action} disabled={isDisabled} onClick={() => startFeedbackSubmission(helpfulOutcome)} type="button">
               {ru.chat.feedbackHelpful}
             </button>
-            <button className={styles.action} disabled={isDisabled} onClick={() => begin(incorrectOutcome)} type="button">
+            <button className={styles.action} disabled={isDisabled} onClick={() => startFeedbackSubmission(incorrectOutcome)} type="button">
               {ru.chat.feedbackIncorrect}
             </button>
           </>
-        ) : status !== 'submitting' && status !== 'denied' && status !== 'conflict' ? (
-          <button className={styles.action} onClick={() => void send(pendingCommand)} type="button">
+        ) : canRetry ? (
+          <button className={styles.action} onClick={() => void sendFeedbackCommand(pendingCommand)} type="button">
             {ru.chat.feedbackRetry}
           </button>
         ) : null}
       </div>
       {statusCopy ? (
-        <p aria-live="polite" className={status === 'denied' || status === 'unavailable' || status === 'conflict' ? styles.error : styles.status} role={status === 'denied' || status === 'unavailable' || status === 'conflict' ? 'alert' : 'status'}>
+        <p aria-live="polite" className={isFailure ? styles.error : styles.status} role={isFailure ? 'alert' : 'status'}>
           {statusCopy}
         </p>
       ) : null}
