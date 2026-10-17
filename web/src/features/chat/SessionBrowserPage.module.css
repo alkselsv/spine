@@ -271,6 +271,93 @@
   color: var(--color-muted);
 }
 
+.acceptedAnswer {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.claimRelationship {
+  display: inline;
+  margin-left: 0.2rem;
+  color: var(--color-muted);
+  font-size: 0.78em;
+}
+
+.citationMarker {
+  min-width: 1.35rem;
+  min-height: 1.35rem;
+  border: 1px solid var(--color-link);
+  border-radius: 999px;
+  padding: 0 0.2rem;
+  background: var(--color-surface);
+  color: var(--color-link);
+  font: inherit;
+  font-size: 0.85em;
+  font-weight: 750;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.citationMarker:hover,
+.citationMarker:focus-visible {
+  background: var(--color-link);
+  color: white;
+}
+
+.citationMarker:focus-visible {
+  outline: 2px solid var(--color-link);
+  outline-offset: 2px;
+}
+
+.citationEvidence {
+  display: grid;
+  gap: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: 0.65rem;
+  padding: var(--space-4);
+  background: var(--color-surface);
+}
+
+.citationEvidence header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.citationEvidence h4,
+.citationEvidence p {
+  margin: 0;
+}
+
+.citationExcerpt {
+  border-left: 3px solid var(--color-link);
+  padding-left: var(--space-3);
+}
+
+.citationEvidence dl {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.citationEvidence dl div {
+  display: grid;
+  grid-template-columns: minmax(8rem, 0.35fr) 1fr;
+  gap: var(--space-3);
+}
+
+.citationEvidence dt {
+  color: var(--color-muted);
+}
+
+.citationEvidence dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .messageMeta time,
 .messageLabel,
 .identity > span {

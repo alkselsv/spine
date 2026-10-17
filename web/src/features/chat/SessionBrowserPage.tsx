@@ -153,6 +153,7 @@ export function SessionBrowserPage() {
     return (
       <SessionDetails
         key={`${validSessionId}:${identityVersion}`}
+        client={client}
         askClient={askClient}
         identityVersion={identityVersion}
         messageCursor={messageCursor}
@@ -275,6 +276,7 @@ function SessionList({
 }
 
 function SessionDetails({
+  client,
   askClient,
   identityVersion,
   messageCursor,
@@ -287,6 +289,7 @@ function SessionDetails({
   scope,
   sessionQuery,
 }: {
+  client: ReturnType<typeof createScopedApiClient>;
   askClient: ReturnType<typeof createQaApiClient>;
   identityVersion: string;
   messageCursor: string | null;
@@ -307,7 +310,7 @@ function SessionDetails({
   const admittedMessageQuery = useQuery({
     ...apiQueryOptions({
       load: (signal) => loadQAMessage(
-        askClient,
+        client,
         scope,
         session?.session_id ?? '',
         admittedMessageId ?? '',
@@ -390,9 +393,11 @@ function SessionDetails({
             <div className={styles.messageList} aria-label={ru.chat.messagesTitle}>
               {messages.map((message) => (
                 <MessageCard
+                  client={client}
                   key={message.message_id}
                   message={message}
                   onClarify={() => setClarificationTarget(message.message_id)}
+                  scope={scope}
                 />
               ))}
             </div>
@@ -466,7 +471,17 @@ function SessionDetails({
   );
 }
 
-function MessageCard({ message, onClarify }: { message: QAMessage; onClarify: () => void }) {
+function MessageCard({
+  client,
+  message,
+  onClarify,
+  scope,
+}: {
+  client: ReturnType<typeof createScopedApiClient>;
+  message: QAMessage;
+  onClarify: () => void;
+  scope: Scope;
+}) {
   return (
     <article className={styles.messageCard}>
       <div className={styles.messageMeta}>
@@ -484,7 +499,7 @@ function MessageCard({ message, onClarify }: { message: QAMessage; onClarify: ()
             </div>
           ) : null}
           {message.state === 'terminal' && message.terminal_outcome === 'answered' ? (
-            <AcceptedAnswer message={message} />
+            <AcceptedAnswer client={client} message={message} scope={scope} />
           ) : null}
           {message.state === 'terminal' && message.terminal_outcome === 'clarification_required' ? (
             <button className={styles.textButton} onClick={onClarify} type="button">

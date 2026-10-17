@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
+import { createHash } from 'node:crypto';
 import type { components } from '../api/generated/schema';
 
 const primaryWorkspace = '10000000-0000-4000-8000-000000000001';
@@ -14,6 +15,11 @@ const chatSession = '90000000-0000-4000-8000-000000000001';
 const chatMessage = '90000000-0000-4000-8000-000000000002';
 const chatRun = '90000000-0000-4000-8000-000000000003';
 const chatCommand = '90000000-0000-4000-8000-000000000004';
+const chatCitation = '90000000-0000-4000-8000-000000000005';
+const chatClaim = '90000000-0000-4000-8000-000000000006';
+const chatRelationship = '90000000-0000-4000-8000-000000000007';
+const chatAnswer = '90000000-0000-4000-8000-000000000008';
+const chatAttempt = '90000000-0000-4000-8000-000000000009';
 
 test('test_control_plane_navigation_preserves_scope_and_generated_client_context', async ({ page }) => {
   const healthRequests = await installControlledHealth(page);
@@ -1205,6 +1211,197 @@ test('test_chat_admits_question_and_displays_canonical_terminal_outcome', async 
   expect(admissionRequest!.headers['idempotency-key']).toBeTruthy();
   expect(admissionRequest!.headers['x-workspace-id']).toBe(primaryWorkspace);
   expect(admissionRequest!.headers['x-environment-id']).toBe(localEnvironment);
+});
+
+test('test_chat_places_accepted_claim_and_inspects_current_authorized_citation', async ({ page }) => {
+  const answer = 'Политика опубликована в базе знаний.';
+  const answerDigest = createHash('sha256').update(answer, 'utf8').digest('hex');
+  const citationRequests: Array<{ headers: Record<string, string>; url: string }> = [];
+  const message = {
+    schema_version: 1,
+    message_id: chatMessage,
+    session_id: chatSession,
+    workspace_id: primaryWorkspace,
+    environment_id: localEnvironment,
+    version: 1,
+    ordinal: 1,
+    trace_id: traceId,
+    run_id: chatRun,
+    state: 'terminal',
+    terminal_outcome: 'answered',
+    cancelled: false,
+    disclosure_eligibility: 'eligible',
+    question: 'Где опубликована инструкция?',
+    answer,
+    accepted_presentation: {
+      schema_version: 'accepted-answer-presentation:v1',
+      answer_id: chatAnswer,
+      answer_text_sha256: answerDigest,
+      attempt_id: chatAttempt,
+      message_id: chatMessage,
+      run_id: chatRun,
+      claims: [{
+        schema_version: 'accepted-answer-claim-presentation:v1',
+        claim_id: chatClaim,
+        kind: 'factual',
+        start_offset: 0,
+        end_offset: answer.length,
+      }],
+      relationships: [{
+        schema_version: 'accepted-answer-relationship-presentation:v1',
+        relationship_id: chatRelationship,
+        claim_id: chatClaim,
+        kind: 'independent',
+        citation_ids: [chatCitation],
+        related_claim_id: null,
+      }],
+      citation_ids: [chatCitation],
+    },
+    created_at: '2026-10-17T10:01:00Z',
+    updated_at: '2026-10-17T10:01:00Z',
+  };
+
+  await page.route('**/api/v1/qa/sessions/**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === `/api/v1/qa/sessions/${chatSession}`) {
+      await route.fulfill({
+        contentType: 'application/json',
+        status: 200,
+        body: JSON.stringify({
+          data: {
+            schema_version: 1,
+            session_id: chatSession,
+            workspace_id: primaryWorkspace,
+            environment_id: localEnvironment,
+            subject_id: '90000000-0000-4000-8000-000000000010',
+            version: 1,
+            status: 'active',
+            created_at: '2026-10-17T10:00:00Z',
+            updated_at: '2026-10-17T10:00:00Z',
+          },
+          schema_version: 1,
+          workspace_id: primaryWorkspace,
+          environment_id: localEnvironment,
+          trace_id: traceId,
+        }),
+      });
+      return;
+    }
+    if (url.pathname === `/api/v1/qa/sessions/${chatSession}/messages/${chatMessage}`) {
+      await route.fulfill({
+        contentType: 'application/json',
+        status: 200,
+        body: JSON.stringify({
+          data: message,
+          schema_version: 1,
+          workspace_id: primaryWorkspace,
+          environment_id: localEnvironment,
+          trace_id: traceId,
+        }),
+      });
+      return;
+    }
+    if (url.pathname === `/api/v1/qa/sessions/${chatSession}/messages`) {
+      await route.fulfill({
+        contentType: 'application/json',
+        status: 200,
+        body: JSON.stringify({
+          schema_version: 1,
+          workspace_id: primaryWorkspace,
+          environment_id: localEnvironment,
+          items: [message],
+          next_cursor: null,
+          limit: 25,
+        }),
+      });
+      return;
+    }
+    await route.fulfill({ status: 404, body: '{}' });
+  });
+  await page.route('**/api/v1/qa/citations/**', async (route) => {
+    const request = route.request();
+    citationRequests.push({ headers: request.headers(), url: request.url() });
+    await route.fulfill({
+      contentType: 'application/json',
+      status: 200,
+      body: JSON.stringify({
+        schema_version: 1,
+        workspace_id: primaryWorkspace,
+        environment_id: localEnvironment,
+        trace_id: traceId,
+        data: {
+          schema_version: 'citation-inspection-result:v1',
+          status: 'available',
+          reason: 'available',
+          evidence: {
+            schema_version: 'citation-inspection-evidence:v1',
+            answer_id: chatAnswer,
+            citation_id: chatCitation,
+            context_bundle: {
+              schema_version: 'context-bundle-lineage-ref:v1',
+              attempt_id: chatAttempt,
+              run_id: chatRun,
+              workspace_id: primaryWorkspace,
+              environment_id: localEnvironment,
+              bundle: {
+                bundle_id: '90000000-0000-4000-8000-000000000011',
+                bundle_version: 1,
+                bundle_digest: 'd'.repeat(64),
+              },
+            },
+            evidence_reference: {
+              schema_version: 'context-evidence-reference:v2',
+              workspace_id: primaryWorkspace,
+              environment_id: localEnvironment,
+              evidence_id: 'synthetic-evidence',
+              projection_snapshot_id: '90000000-0000-4000-8000-000000000012',
+              activation_generation: 1,
+              source_object_id: '90000000-0000-4000-8000-000000000013',
+              source_revision_id: '90000000-0000-4000-8000-000000000014',
+              original_sha256: 'a'.repeat(64),
+              revision_digest: 'b'.repeat(64),
+              processing_receipt_id: '90000000-0000-4000-8000-000000000015',
+              projected_kind: 'chunk',
+              locator_contract_version: 'pdf-page-extracted-codepoint:v1',
+              locator: { kind: 'page', page_number: 2 },
+              locator_digest: 'c'.repeat(64),
+              evidence_digest: 'c'.repeat(64),
+              status: 'valid',
+            },
+            excerpt: 'Синтетический фрагмент из разрешённой ревизии.',
+            historical: false,
+            locator_digest: 'c'.repeat(64),
+            locator_reference: 'page:2#0-18',
+            locator_schema: 'pdf-page-extracted-codepoint:v1',
+            original_sha256: 'a'.repeat(64),
+            revision_digest: 'b'.repeat(64),
+            revision_number: 2,
+            source_object_id: '90000000-0000-4000-8000-000000000013',
+            source_revision_id: '90000000-0000-4000-8000-000000000014',
+            workspace_id: primaryWorkspace,
+            environment_id: localEnvironment,
+          },
+        },
+      }),
+    });
+  });
+
+  await page.goto(
+    `/chat/${chatSession}?fixture=chat-api&workspace=${primaryWorkspace}&environment=${localEnvironment}`,
+  );
+
+  await expect(page.locator('[data-accepted-answer-text]')).toContainText(answer);
+  await expect(page.locator('[data-claim-id]')).toHaveAttribute('data-end-utf16', String(answer.length));
+  await page.getByRole('button', { name: 'Открыть источник 1 · Независимое подтверждение' }).click();
+  await expect(page.getByText('Синтетический фрагмент из разрешённой ревизии.')).toBeVisible();
+
+  expect(citationRequests).toHaveLength(1);
+  expect(new URL(citationRequests[0]!.url).search).toBe('');
+  expect(citationRequests[0]!.headers.authorization).toBe('Bearer controlled-chat-api-token');
+  expect(citationRequests[0]!.headers['x-workspace-id']).toBe(primaryWorkspace);
+  expect(citationRequests[0]!.headers['x-environment-id']).toBe(localEnvironment);
+  await expect(page.locator('body')).not.toContainText(/provider stack|candidate answer|private diagnostic/i);
 });
 
 test('test_chat_fixture_cancels_and_retries_same_command_without_duplicate_message', async ({ page }) => {

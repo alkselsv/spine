@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createHash } from 'node:crypto';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
@@ -67,7 +67,7 @@ function message(
           schema_version: 'accepted-answer-relationship-presentation:v1',
           relationship_id: relationshipId,
           claim_id: claimId,
-          kind: 'supported_by',
+          kind: 'independent',
           citation_ids: [citationId],
           related_claim_id: null,
         }],
@@ -217,7 +217,7 @@ describe('Q&A session navigation', () => {
     await user.click(await screen.findByRole('button', { name: 'Создать сессию' }));
 
     expect(await screen.findByText('Где находится политика отпуска?')).toBeVisible();
-    expect(await screen.findByText('В разделе HR.')).toBeVisible();
+    expect((await screen.findAllByText('В разделе HR.'))[0]).toBeVisible();
     expect(screen.getByText('Ответ подготовлен')).toBeVisible();
     expect(screen.getByLabelText('Текущий адрес')).toHaveTextContent(`/chat/${sessionId}`);
     expect(createHeaders[0]?.get('Idempotency-Key')).toBeTruthy();
@@ -320,7 +320,7 @@ describe('Q&A session navigation', () => {
     expect(screen.getByText('Принятый факт').tagName).toBe('STRONG');
     expect(screen.getByRole('link', { name: 'ссылка' })).toHaveAttribute('href', 'https://example.org/');
     expect(screen.queryByRole('link', { name: 'опасная' })).not.toBeInTheDocument();
-    expect(screen.getByText(/опасная/)).toBeVisible();
+    expect(within(screen.getByRole('link', { name: 'ссылка' }).closest('p')!).getByText(/опасная/)).toBeVisible();
   });
 
   it('test_ineligible_message_hides_question_and_answer_even_if_payload_contains_them', async () => {

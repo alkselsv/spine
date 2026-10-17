@@ -1,5 +1,5 @@
 import type { components } from '../../../api/generated/schema';
-import type { QaApiClient, ScopedApiClient } from '../../api/client';
+import type { ScopedApiClient } from '../../api/client';
 import type { Scope } from '../../app/scope';
 
 const PAGE_LIMIT = 25;
@@ -87,7 +87,7 @@ export async function loadQAMessagePage(
 }
 
 export async function loadQAMessage(
-  client: QaApiClient,
+  client: ScopedApiClient,
   scope: Scope,
   sessionId: string,
   messageId: string,
@@ -97,7 +97,14 @@ export async function loadQAMessage(
     params: { path: { session_id: sessionId, message_id: messageId } },
     signal,
   });
-  if (!response.data) throw new Error('The Q&A message is unavailable.');
+  if (
+    !response.data ||
+    response.data.schema_version !== 1 ||
+    response.data.workspace_id !== scope.workspaceId ||
+    response.data.environment_id !== scope.environmentId
+  ) {
+    throw new Error('The Q&A message is unavailable.');
+  }
   const message = response.data.data;
   if (
     message.message_id !== messageId ||

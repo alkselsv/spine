@@ -1,76 +1,275 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-import type { QAMessage } from './session-api';
-import { SafeMarkdown } from './SafeMarkdown';
+import type { ScopedApiClient } from '../../api/client';
+import type { Scope } from '../../app/scope';
 import { ru } from '../../i18n/resources';
+import { loadQAMessage, type QAMessage } from './session-api';
+import { inspectAcceptedCitation, type CitationInspection } from './citation-inspection';
+import { buildCitationPlacements, type ClaimCitationPlacement } from './citation-presentation';
+import { isSafeMarkdownSource, SafeMarkdown, type InlineMarkdownMarker } from './SafeMarkdown';
 import styles from './SessionBrowserPage.module.css';
 
-type AnswerValidation = 'checking' | 'accepted' | 'unavailable';
-
-export function AcceptedAnswer({ message }: { message: QAMessage }) {
+type AnswerState = 'checking' | 'available' | 'unavailable' | 'unsafe';
+export function AcceptedAnswer({
+  client,
+  message,
+  scope,
+}: {
+  client: ScopedApiClient;
+  message: QAMessage;
+  scope: Scope;
+}) {
+  const [state, setState] = useState<AnswerState>('checking');
+  const [placements, setPlacements] = useState<ClaimCitationPlacement[]>([]);
+  const [inspection, setInspection] = useState<CitationInspection | null>(null);
+  const [inspectionPending, setInspectionPending] = useState(false);
+  const [inspectionAttempted, setInspectionAttempted] = useState(false);
+  const request = useRef<AbortController | null>(null);
   const answer = message.answer;
   const presentation = message.accepted_presentation;
-  const [validation, setValidation] = useState<AnswerValidation>('checking');
+  const inlineMarkers = placements.flatMap((claim): InlineMarkdownMarker[] =>
+    claim.relationships.flatMap((relationship) => {
+      const relationLabel = ru.chat.relationshipKinds[relationship.kind];
+      const common = {
+        claimId: claim.claimId,
+        endOffset: claim.utf16EndOffset,
+        key: `${relationship.relationship_id}:${claim.claimId}`,
+        offset: claim.utf16EndOffset,
+        startOffset: claim.utf16StartOffset,
+      };
+      if (relationship.kind === 'contradiction') {
+        const claimNumber = placements.findIndex((item) => item.claimId === relationship.related_claim_id) + 1;
+        return [{
+          ...common,
+          render: () => <span className={styles.claimRelationship}>
+            {ru.chat.relatedClaimRelationship(relationLabel, claimNumber)}
+          </span>,
+        }];
+      }
+      return relationship.citation_ids.map((citationId): InlineMarkdownMarker => {
+        const number = citationNumber(presentation?.citation_ids ?? [], citationId);
+        return {
+          ...common,
+          key: `${common.key}:${citationId}`,
+          render: () => (
+            <span className={styles.claimRelationship}>
+              {relationLabel}{' '}
+              <sup>
+                <button
+                  aria-label={ru.chat.citationMarkerLabel(number, relationLabel)}
+                  className={styles.citationMarker}
+                  onClick={() => onInspect(citationId)}
+                  type="button"
+                >
+                  {number}
+                </button>
+              </sup>
+            </span>
+          ),
+        };
+      });
+    }),
+  );
 
   useEffect(() => {
+    request.current?.abort();
+    setState('checking');
+    setPlacements([]);
+    setInspection(null);
+    setInspectionPending(false);
+    setInspectionAttempted(false);
     let active = true;
-    setValidation('checking');
-    if (!answer || !presentation || !hasAcceptedIdentity(message)) {
-      setValidation('unavailable');
-      return () => { active = false; };
-    }
-
-    void hashMatches(answer, presentation.answer_text_sha256).then((matches) => {
-      if (active) setValidation(matches ? 'accepted' : 'unavailable');
+    void buildCitationPlacements(message).then((result) => {
+      if (!active) return;
+      if (!result) {
+        setState('unavailable');
+        return;
+      }
+      if (!answer || !isSafeMarkdownSource(answer)) {
+        setState('unsafe');
+        return;
+      }
+      setPlacements(result);
+      setState('available');
+    }).catch(() => {
+      if (active) setState('unavailable');
     });
-    return () => { active = false; };
-  }, [answer, message, presentation]);
+    return () => {
+      active = false;
+      request.current?.abort();
+    };
+  }, [answer, client, message, scope.environmentId, scope.workspaceId]);
 
-  if (validation === 'checking') {
-    return <p className={styles.answerUnavailable} role="status">{ru.chat.answerChecking}</p>;
+  async function onInspect(citationId: string): Promise<void> {
+    if (!presentation || !message.session_id || !message.run_id) return;
+    request.current?.abort();
+    const controller = new AbortController();
+    request.current = controller;
+    setState('checking');
+    setInspectionPending(true);
+    setInspectionAttempted(true);
+    setInspection(null);
+    try {
+      const currentMessage = await loadQAMessage(
+        client,
+        scope,
+        message.session_id,
+        message.message_id,
+        controller.signal,
+      );
+      const currentPlacements = await buildCitationPlacements(currentMessage);
+      if (
+        !currentPlacements ||
+        !currentMessage.answer ||
+        !isSafeMarkdownSource(currentMessage.answer) ||
+        !sameAcceptedPresentation(message, currentMessage) ||
+        !hasCitation(currentPlacements, citationId)
+      ) {
+        throw new Error('The accepted answer is unavailable.');
+      }
+
+      const inspected = await inspectAcceptedCitation(
+        client,
+        scope,
+        {
+          answerId: presentation.answer_id,
+          attemptId: presentation.attempt_id,
+          runId: presentation.run_id,
+        },
+        citationId,
+        controller.signal,
+      );
+      if (controller.signal.aborted) return;
+      if (inspected.status === 'unavailable') {
+        setState('unavailable');
+        return;
+      }
+      setPlacements(currentPlacements);
+      setInspection(inspected);
+      setState('available');
+    } catch {
+      if (!controller.signal.aborted) setState('unavailable');
+    } finally {
+      if (request.current === controller) {
+        request.current = null;
+        setInspectionPending(false);
+      }
+    }
   }
-  if (validation !== 'accepted' || !answer) {
-    return <p className={styles.answerUnavailable} role="status">{ru.chat.answerUnavailable}</p>;
+
+  if (state === 'checking') {
+    return (
+      <p className={styles.answerUnavailable} role="status" aria-live="polite">
+        {inspectionPending ? ru.chat.citationChecking : ru.chat.answerChecking}
+      </p>
+    );
+  }
+  if (state !== 'available' || !answer || !presentation) {
+    const message = state === 'unsafe'
+      ? ru.chat.answerUnsafe
+      : inspectionAttempted
+        ? ru.chat.citationUnavailable
+        : ru.chat.answerUnavailable;
+    return <p className={styles.answerUnavailable} role="status">{message}</p>;
   }
 
   return (
-    <div>
+    <div className={styles.acceptedAnswer}>
       <span className={styles.messageLabel}>{ru.chat.answerLabel}</span>
-      <SafeMarkdown source={answer} />
+      <SafeMarkdown markers={inlineMarkers} source={answer} />
+      {inspection?.status === 'available' ? (
+        <CitationEvidence
+          citationNumber={citationNumber(presentation.citation_ids, inspection.evidence.citation_id)}
+          evidence={inspection.evidence}
+          onClose={() => setInspection(null)}
+        />
+      ) : null}
     </div>
   );
 }
 
-function hasAcceptedIdentity(message: QAMessage): boolean {
-  const presentation = message.accepted_presentation;
-  return Boolean(
-    message.state === 'terminal' &&
-    message.terminal_outcome === 'answered' &&
-    message.disclosure_eligibility === 'eligible' &&
-    message.run_id &&
-    typeof message.answer === 'string' &&
-    message.answer.trim() &&
-    presentation &&
-    presentation.schema_version === 'accepted-answer-presentation:v1' &&
-    presentation.message_id === message.message_id &&
-    presentation.run_id === message.run_id &&
-    /^[0-9a-f]{64}$/.test(presentation.answer_text_sha256) &&
-    Array.isArray(presentation.claims) &&
-    presentation.claims.length > 0 &&
-    Array.isArray(presentation.relationships) &&
-    presentation.relationships.length > 0 &&
-    Array.isArray(presentation.citation_ids) &&
-    presentation.citation_ids.length > 0,
+function CitationEvidence({
+  citationNumber: number,
+  evidence,
+  onClose,
+}: {
+  citationNumber: number;
+  evidence: Extract<CitationInspection, { status: 'available' }>['evidence'];
+  onClose: () => void;
+}) {
+  return (
+    <section aria-labelledby="citation-evidence-heading" className={styles.citationEvidence}>
+      <header>
+        <h4 id="citation-evidence-heading">{ru.chat.citationEvidenceTitle(number)}</h4>
+        <button className={styles.textButton} onClick={onClose} type="button">
+          {ru.chat.closeCitationEvidence}
+        </button>
+      </header>
+      <p className={styles.citationExcerpt}>{evidence.excerpt}</p>
+      <dl>
+        <div>
+          <dt>{ru.chat.citationSourceRevision}</dt>
+          <dd>{evidence.source_revision_id}{evidence.revision_number ? ` · ${evidence.revision_number}` : ''}</dd>
+        </div>
+        <div>
+          <dt>{ru.chat.citationSourceLocation}</dt>
+          <dd>{evidence.locator_schema}: {evidence.locator_reference}</dd>
+        </div>
+      </dl>
+    </section>
   );
 }
 
-async function hashMatches(answer: string, expected: string): Promise<boolean> {
-  try {
-    if (!globalThis.crypto?.subtle) return false;
-    const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(answer));
-    const actual = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
-    return actual === expected;
-  } catch {
+function citationNumber(citationIds: string[], citationId: string): number {
+  const index = citationIds.indexOf(citationId);
+  return index < 0 ? 0 : index + 1;
+}
+
+function hasCitation(placements: ClaimCitationPlacement[], citationId: string): boolean {
+  return placements.some((claim) =>
+    claim.relationships.some((relationship) => relationship.citation_ids.includes(citationId)),
+  );
+}
+
+function sameAcceptedPresentation(original: QAMessage, current: QAMessage): boolean {
+  const first = original.accepted_presentation;
+  const second = current.accepted_presentation;
+  if (
+    !first ||
+    !second ||
+    original.message_id !== current.message_id ||
+    original.session_id !== current.session_id ||
+    original.answer !== current.answer ||
+    original.run_id !== current.run_id ||
+    current.disclosure_eligibility !== 'eligible' ||
+    current.state !== 'terminal' ||
+    current.terminal_outcome !== 'answered'
+  ) {
     return false;
   }
+  return acceptedPresentationSignature(first) === acceptedPresentationSignature(second);
+}
+
+function acceptedPresentationSignature(presentation: NonNullable<QAMessage['accepted_presentation']>): string {
+  return JSON.stringify([
+    presentation.schema_version,
+    presentation.message_id,
+    presentation.run_id,
+    presentation.attempt_id,
+    presentation.answer_id,
+    presentation.answer_text_sha256,
+    [...presentation.citation_ids].sort(),
+    presentation.claims
+      .map(({ claim_id, kind, start_offset, end_offset }) => [claim_id, kind, start_offset, end_offset])
+      .sort(([leftId], [rightId]) => String(leftId).localeCompare(String(rightId))),
+    presentation.relationships
+      .map(({ relationship_id, claim_id, kind, related_claim_id, citation_ids }) => [
+        relationship_id,
+        claim_id,
+        kind,
+        related_claim_id,
+        [...citation_ids].sort(),
+      ])
+      .sort(([leftId], [rightId]) => String(leftId).localeCompare(String(rightId))),
+  ]);
 }
