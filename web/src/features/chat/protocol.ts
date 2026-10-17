@@ -176,6 +176,31 @@ export function isTerminalChatEvent(event: ChatEvent): event is ChatEvent<ChatTe
   return ['abstained', 'denied', 'completed', 'failed', 'cancelled'].includes(event.type);
 }
 
+/**
+ * Convert canonical Python code-point boundaries to JavaScript UTF-16 DOM
+ * offsets without normalizing or otherwise changing the accepted text.
+ */
+export function codePointSpanToUtf16(
+  text: string,
+  startOffset: number,
+  endOffset: number,
+): { startOffset: number; endOffset: number } {
+  const codePoints = Array.from(text);
+  if (
+    !Number.isSafeInteger(startOffset) ||
+    !Number.isSafeInteger(endOffset) ||
+    startOffset < 0 ||
+    endOffset <= startOffset ||
+    endOffset > codePoints.length
+  ) {
+    throw new ChatProtocolError('The accepted claim span is malformed.');
+  }
+  return {
+    startOffset: codePoints.slice(0, startOffset).join('').length,
+    endOffset: codePoints.slice(0, endOffset).join('').length,
+  };
+}
+
 function validatePayload(type: ChatEventType, payload: Record<string, unknown>): void {
   switch (type) {
     case 'run_started':

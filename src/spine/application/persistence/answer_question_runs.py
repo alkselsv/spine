@@ -110,6 +110,14 @@ class AnswerQuestionRunRepository(Protocol):
 
     async def resolve_run(self, run_id: UUID) -> AnswerQuestionRun: ...
 
+    async def resolve_run_in_scope(
+        self,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        run_id: UUID,
+    ) -> AnswerQuestionRun: ...
+
     async def resolve_run_by_key(self, idempotency_key: str) -> AnswerQuestionRun: ...
 
     async def start_attempt(

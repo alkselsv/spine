@@ -7,14 +7,16 @@ import pytest
 from spine.application.persistence.context import EnvironmentScope, PersistenceOperation
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.persistence.errors import IdempotencyConflictError
+from spine.application.diagnostics import DiagnosticContext
 from spine.domain.capabilities import (
     AcceptedGroundedAnswer,
     AnswerClaimLocation,
     AnswerContent,
     AnswerDisclosureValidation,
 )
-from spine.domain.capabilities.answer_question_runs import AnswerQuestionRunState
 from spine.domain.capabilities.answer_disclosure import AnswerDisclosureRecord
+from spine.domain.capabilities.answer_question_runs import AnswerQuestionRun
+from spine.domain.common import ActorKind, ActorRef, EnvironmentKind
 from spine.application.qa_sessions import (
     PersistedQASessionService,
     QAMessagePresentationUnavailable,
@@ -85,6 +87,31 @@ def accepted_answer() -> AcceptedGroundedAnswer:
     )
 
 
+def completed_run(*, run_id: UUID, workspace_id: UUID, environment_id: UUID, attempt_id: UUID) -> AnswerQuestionRun:
+    running = AnswerQuestionRun.start(
+        run_id=run_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        environment=EnvironmentKind.PRODUCTION,
+        subject=ActorRef(kind=ActorKind.HUMAN, id=SUBJECT_ID),
+        idempotency_key="qa-session-test-run",
+        command_digest="0" * 64,
+        input_artifact_ids=(UUID(int=800),),
+        diagnostic_context=DiagnosticContext(
+            trace_id=TRACE_ID,
+            correlation_id=UUID(int=801),
+            causation_id=UUID(int=802),
+        ),
+        created_at=NOW,
+    )
+    return running.complete(
+        outcome=AnswerQuestionOutcome.ANSWERED,
+        final_attempt_id=attempt_id,
+        output_artifact_ids=(UUID(int=803),),
+        completed_at=NOW,
+    )
+
+
 def context(workspace_id=WORKSPACE_ID, environment_id=ENVIRONMENT_ID):
     return SimpleNamespace(
         scope=EnvironmentScope(workspace_id=workspace_id, environment_id=environment_id),
@@ -117,14 +144,13 @@ def service(*, allowed=True):
 @pytest.mark.asyncio
 async def test_answered_message_exposes_accepted_presentation_only_from_final_attempt_join():
     class RunRepository:
-        async def resolve_run(self, run_id):
-            return SimpleNamespace(
+        async def resolve_run_in_scope(self, *, workspace_id, environment_id, run_id):
+            assert (workspace_id, environment_id) == (WORKSPACE_ID, ENVIRONMENT_ID)
+            return completed_run(
                 run_id=run_id,
                 workspace_id=WORKSPACE_ID,
                 environment_id=ENVIRONMENT_ID,
-                final_attempt_id=UUID("70000000-0000-0000-0000-000000000002"),
-                state=AnswerQuestionRunState.COMPLETED,
-                outcome=AnswerQuestionOutcome.ANSWERED,
+                attempt_id=UUID("70000000-0000-0000-0000-000000000002"),
             )
 
     class DisclosureRepository:
@@ -168,14 +194,13 @@ async def test_answered_message_projects_exact_unicode_spans_from_accepted_final
     accepted = accepted_answer()
 
     class RunRepository:
-        async def resolve_run(self, requested_run_id):
-            return SimpleNamespace(
-                run_id=requested_run_id,
+        async def resolve_run_in_scope(self, *, workspace_id, environment_id, run_id):
+            assert (workspace_id, environment_id) == (WORKSPACE_ID, ENVIRONMENT_ID)
+            return completed_run(
+                run_id=run_id,
                 workspace_id=WORKSPACE_ID,
                 environment_id=ENVIRONMENT_ID,
-                final_attempt_id=accepted.answer.attempt_id,
-                state=AnswerQuestionRunState.COMPLETED,
-                outcome=AnswerQuestionOutcome.ANSWERED,
+                attempt_id=accepted.answer.attempt_id,
             )
 
     class DisclosureRepository:
@@ -195,7 +220,7 @@ async def test_answered_message_projects_exact_unicode_spans_from_accepted_final
                 created_at=NOW,
             )
 
-    qa, _ = service()
+    qa, eligibility = service()
     qa = PersistedQASessionService(
         repository=qa.repository,
         disclosure_eligibility=qa.disclosure_eligibility,
@@ -228,6 +253,7 @@ async def test_answered_message_projects_exact_unicode_spans_from_accepted_final
     assert read.accepted_presentation is not None
     assert read.accepted_presentation.claims[0].end_offset == len("Привет 🌍 e\u0301")
     assert read.accepted_presentation.answer_id == accepted.answer.answer_id
+    assert eligibility.calls == 2
 
 
 @pytest.mark.asyncio

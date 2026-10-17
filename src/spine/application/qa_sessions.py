@@ -307,6 +307,16 @@ class PersistedQASessionService:
     answer_question_runs: AnswerQuestionRunRepository | None = None
     answer_disclosures: AnswerDisclosureRepository | None = None
 
+    def __post_init__(self) -> None:
+        # The PostgreSQL Q&A repository and its run/disclosure adapters share
+        # one tenant UoW. Resolve those adapters from it when the composition
+        # root supplies only the existing session repository.
+        uow = getattr(self.repository, "_uow", None)
+        if self.answer_question_runs is None and uow is not None:
+            object.__setattr__(self, "answer_question_runs", getattr(uow, "answer_question_runs", None))
+        if self.answer_disclosures is None and uow is not None:
+            object.__setattr__(self, "answer_disclosures", getattr(uow, "answer_disclosures", None))
+
     async def create_session(
         self, *, context: TrustedPersistenceContext, requester: QASessionRequester,
         idempotency_key: IdempotencyKey,
@@ -525,10 +535,16 @@ class PersistedQASessionService:
         accepted_presentation = None
         if allowed and message.answer is not None:
             if message.run_id is None:
+                eligibility = QAMessageDisclosureEligibility.INELIGIBLE
                 question = None
                 answer = None
             else:
-                accepted_presentation = await self._accepted_presentation(message)
+                accepted_presentation = await self._accepted_presentation(message, requester)
+                if accepted_presentation is None:
+                    eligibility = QAMessageDisclosureEligibility.INELIGIBLE
+                    question = None
+                    answer = None
+                    accepted_presentation = None
         return QAMessageRead(
             message_id=message.message_id,
             session_id=message.session_id,
@@ -550,13 +566,22 @@ class PersistedQASessionService:
         )
 
     async def _accepted_presentation(
-        self, message: QAMessage
-    ) -> AcceptedAnswerPresentation:
+        self, message: QAMessage, requester: QASessionRequester
+    ) -> AcceptedAnswerPresentation | None:
         if self.answer_question_runs is None or self.answer_disclosures is None:
             raise QAMessagePresentationUnavailable()
         assert message.run_id is not None
         try:
-            run = await self.answer_question_runs.resolve_run(message.run_id)
+            current_authorized = await self.disclosure_eligibility.is_eligible(
+                message=message, requester=requester
+            )
+            if not current_authorized:
+                return None
+            run = await self.answer_question_runs.resolve_run_in_scope(
+                workspace_id=message.workspace_id,
+                environment_id=message.environment_id,
+                run_id=message.run_id,
+            )
             if (
                 run.run_id != message.run_id
                 or run.workspace_id != message.workspace_id

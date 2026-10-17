@@ -2,10 +2,23 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CHAT_PROTOCOL_VERSION,
+  codePointSpanToUtf16,
   ChatProtocolError,
   decodeChatEvent,
   type ChatEvent,
 } from './protocol';
+
+describe('accepted claim placement boundaries', () => {
+  it.each([
+    ['Cyrillic', 'Привет', 0, 6, 'Привет'],
+    ['astral emoji', 'A🌍B', 1, 2, '🌍'],
+    ['precomposed character', 'café', 3, 4, 'é'],
+    ['decomposed character', 'cafe\u0301', 3, 5, 'e\u0301'],
+  ])('%s preserves the exact canonical substring', (_name, text, start, end, expected) => {
+    const offsets = codePointSpanToUtf16(text, start, end);
+    expect(text.slice(offsets.startOffset, offsets.endOffset)).toBe(expected);
+  });
+});
 
 const ids = {
   sessionId: 'session-1',
