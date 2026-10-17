@@ -306,7 +306,7 @@ async def test_pending_cancellation_wait_has_a_bounded_deadline() -> None:
         await uow.commit()
     service = PersistedAskAdmissionService(persistence.uow_factory, clock=lambda: NOW)
 
-    with pytest.raises(TimeoutError):
+    with pytest.raises(asyncio.TimeoutError):
         await service.wait_for_cancellation(
             context=context,
             run_id=RUN_ID,
