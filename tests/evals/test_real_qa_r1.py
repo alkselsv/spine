@@ -403,3 +403,10 @@ def test_real_and_synthetic_dataset_contracts_remain_separate() -> None:
     assert dataset.version == "1.0.0"
     assert all(case.synthetic is True for case in dataset.cases)
     assert real_qa.RealQACase is not type(dataset.cases[0])
+
+
+def test_real_dataset_pin_matches_user_approved_release() -> None:
+    assert real_qa.REAL_R1_DATASET_VERSION == "0.3.8-user-approved"
+    assert real_qa.REAL_R1_DATASET_DIGEST == (
+        "0fec8c2c990cbf52274ad7df5241f7bbd2c47bdc8171e8040102e370dca2f5a8"
+    )

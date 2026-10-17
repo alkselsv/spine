@@ -17,8 +17,8 @@ from openpyxl.utils.cell import range_boundaries
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-REAL_R1_DATASET_VERSION = "0.3.6-user-approved"
-REAL_R1_DATASET_DIGEST = "d85d7819687625f885fb898f640a0c64e06b6756bcf6efe165578e2417144bb5"
+REAL_R1_DATASET_VERSION = "0.3.8-user-approved"
+REAL_R1_DATASET_DIGEST = "0fec8c2c990cbf52274ad7df5241f7bbd2c47bdc8171e8040102e370dca2f5a8"
 REAL_R1_VALIDATOR_VERSION = "1.0.1"
 REAL_R1_SCHEMA_VERSION = "qa-manifest:v1"
 REAL_R1_CASE_SCHEMA_VERSION = "qa-case:v1"

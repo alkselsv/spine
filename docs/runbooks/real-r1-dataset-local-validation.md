@@ -9,7 +9,7 @@
 ```bash
 uv run spine-eval-dataset-check \
   --dataset-kind real \
-  --dataset-dir data/private/r1_gold_draft \
+  --dataset-dir data/private/r1_gold_approved/0.3.8-user-approved \
   --source-root data/incoming
 ```
 
@@ -36,17 +36,13 @@ JSON остаётся источником кейсов; расхождение 
 к ошибке; автоматического перехода к synthetic dataset нет. Отчёт всегда
 содержит `evaluation_status: not_run`.
 
-После локальной reconciliation остаётся CSV/JSON расхождение в `scenario_tags`
-у 4 кейсов и 33 XLSX citation findings. Ещё 20 ранее блокировавшихся XLSX
-citations прошли после добавления точной проверки `cell=value` сериализации и
-строгого сопоставления координат диапазона. Из 33 оставшихся findings 30
-требуют проверки/исправления locator в candidate version, а 3 требуют
-экспертной проверки связи evidence с claim. Исходный approved dataset не
-изменён; исправленный CSV подготовлен отдельным приватным candidate-файлом,
-который меняет только производные `scenario_tags` и ждёт подтверждения
-владельца dataset. Пока эти решения не внесены в согласованную версию, loader
-вернёт `validation_status: blocked`, а CLI завершится с кодом 2. JSON, CSV и
-evidence автоматически не нормализуются.
+Approved local dataset is version `0.3.8-user-approved`, pinned to digest
+`0fec8c2c990cbf52274ad7df5241f7bbd2c47bdc8171e8040102e370dca2f5a8`.
+It preserves the approved 0.3.6 baseline and the 0.3.7 review candidate as
+private snapshots. The approved revision carries the reviewed CSV and exact
+XLSX locator corrections and the three owner-approved claim/evidence links.
+The loader still validates source/evidence integrity only; it does not run RAG
+quality evaluation.
 
 Использовать real data можно только из локальных приватных директорий. Не
 добавляйте оригиналы, anonymized representations, Q&A JSON/CSV, цитаты или
