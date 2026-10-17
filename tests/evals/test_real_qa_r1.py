@@ -167,6 +167,42 @@ def _write_fixture(
     return dataset_dir, source_root, raw
 
 
+def _set_xlsx_locator(
+    dataset_dir: Path,
+    payload: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    cell_range: str,
+) -> None:
+    for revision in payload["source_revisions"]:
+        for evidence in revision["evidence"]:
+            if evidence["evidence_id"] == "ev-xlsx":
+                evidence["locator"]["cell_range"] = cell_range
+    for case in payload["cases"]:
+        for citation in case["citations"]:
+            if citation["evidence_id"] == "ev-xlsx":
+                citation["locator"]["cell_range"] = cell_range
+
+    payload["dataset_integrity_digest"] = hashlib.sha256(
+        _canonical({key: value for key, value in payload.items() if key != "dataset_integrity_digest"})
+    ).hexdigest()
+    (dataset_dir / "golden_qa.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    manifest_path = dataset_dir / "sources_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["dataset_integrity_digest"] = payload["dataset_integrity_digest"]
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    csv_path = dataset_dir / "golden_qa.csv"
+    with csv_path.open(encoding="utf-8-sig", newline="") as stream:
+        rows = list(csv.DictReader(stream))
+        fieldnames = list(rows[0])
+    rows[0]["citations"] = json.dumps(payload["cases"][0]["citations"], ensure_ascii=False)
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    monkeypatch.setattr(real_qa, "REAL_R1_DATASET_DIGEST", payload["dataset_integrity_digest"])
+
+
 def test_real_dataset_loader_preserves_claims_and_exact_locators(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -266,6 +302,53 @@ def test_xlsx_locator_excerpt_must_come_from_exact_cell_range(
     assert loaded.dataset is None
     assert loaded.validation_report.validation_status == "blocked"
     assert loaded.validation_report.locator_mismatch_by_kind == {"xlsx_cell_range": 1}
+
+
+def test_xlsx_row_serialization_requires_exact_referenced_cell_range(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_dir, source_root, payload = _write_fixture(
+        tmp_path,
+        xlsx_excerpt="A1=Heading | B1=42",
+        xlsx_row_text="A1=Heading | B1=42",
+    )
+    _set_xlsx_locator(dataset_dir, payload, monkeypatch, "A1:B1")
+
+    loaded = real_qa.load_real_r1_dataset(dataset_dir, source_root=source_root)
+
+    assert loaded.validation_report.locator_mismatch_count == 0
+    assert loaded.validation_report.evidence_integrity_status == "passed"
+
+
+@pytest.mark.parametrize("cell_range", ["A1:C1", "A1:B2", "B2"])
+def test_xlsx_row_serialization_rejects_ranges_that_do_not_exactly_bound_excerpt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cell_range: str
+) -> None:
+    dataset_dir, source_root, payload = _write_fixture(
+        tmp_path,
+        xlsx_excerpt="A1=Heading | B1=42",
+        xlsx_row_text="A1=Heading | B1=42",
+    )
+    _set_xlsx_locator(dataset_dir, payload, monkeypatch, cell_range)
+
+    loaded = real_qa.load_real_r1_dataset(dataset_dir, source_root=source_root)
+
+    assert loaded.validation_report.locator_mismatch_count == 1
+
+
+def test_xlsx_multi_cell_locator_does_not_borrow_excerpt_from_one_cell(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_dir, source_root, payload = _write_fixture(
+        tmp_path,
+        xlsx_excerpt="42",
+        xlsx_row_text="A1=Heading | B1=42",
+    )
+    _set_xlsx_locator(dataset_dir, payload, monkeypatch, "A1:B1")
+
+    loaded = real_qa.load_real_r1_dataset(dataset_dir, source_root=source_root)
+
+    assert loaded.validation_report.locator_mismatch_count == 1
 
 
 @pytest.mark.parametrize("representation", ["source", "anonymized"])

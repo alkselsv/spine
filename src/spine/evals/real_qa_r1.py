@@ -13,12 +13,13 @@ from pathlib import Path
 import re
 from typing import Annotated, Literal, TypeAlias, Union
 
+from openpyxl.utils.cell import range_boundaries
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 REAL_R1_DATASET_VERSION = "0.3.6-user-approved"
 REAL_R1_DATASET_DIGEST = "d85d7819687625f885fb898f640a0c64e06b6756bcf6efe165578e2417144bb5"
-REAL_R1_VALIDATOR_VERSION = "1.0.0"
+REAL_R1_VALIDATOR_VERSION = "1.0.1"
 REAL_R1_SCHEMA_VERSION = "qa-manifest:v1"
 REAL_R1_CASE_SCHEMA_VERSION = "qa-case:v1"
 _SHA256 = r"^[0-9a-f]{64}$"
@@ -329,20 +330,42 @@ def _validate_locator_excerpt(citation: RealCitation, units: list[dict[str, obje
         elif unit.get("kind") == "xlsx_row" and unit.get("sheet") == locator.sheet and unit.get("row") == locator.row:
             cell_values = unit.get("cells")
             if isinstance(cell_values, list):
-                cells = {str(item.get("cell")): str(item.get("value")) for item in cell_values if isinstance(item, dict)}
-                start, _, end = locator.cell_range.partition(":")
-                end = end or start
-                columns = re.findall(r"[A-Z]+", start + end)
-                rows = re.findall(r"[0-9]+", start + end)
-                if len(columns) == 2 and len(rows) == 2 and rows[0] == rows[1] == str(locator.row):
-                    selected = [
-                        value
-                        for cell, value in cells.items()
-                        if _cell_row(cell) == locator.row
-                        and _column_number(columns[0]) <= _cell_column(cell) <= _column_number(columns[1])
-                    ]
-                    if selected and citation.excerpt in " | ".join(selected):
-                        return
+                try:
+                    min_column, min_row, max_column, max_row = range_boundaries(locator.cell_range)
+                except ValueError:
+                    continue
+                if min_row != locator.row or max_row != locator.row:
+                    continue
+                cells = {
+                    str(item.get("cell")): "" if item.get("value") is None else str(item.get("value"))
+                    for item in cell_values
+                    if isinstance(item, dict)
+                }
+                selected = [
+                    (cell, value)
+                    for cell, value in cells.items()
+                    if _cell_row(cell) == locator.row
+                    and min_column <= _cell_column(cell) <= max_column
+                ]
+                if not selected:
+                    continue
+                # Some extracted XLSX evidence is a complete row serialized as
+                # stable A1 references. Accept it only when the locator bounds
+                # exactly the referenced non-empty cells; a wider range or a
+                # single-cell locator cannot borrow text from its row neighbors.
+                nonempty_selected = [(cell, value) for cell, value in selected if value]
+                labeled_excerpt = " | ".join(f"{cell}={value}" for cell, value in nonempty_selected)
+                excerpt_cells = re.findall(r"(?<![A-Z0-9])([A-Z]+[0-9]+)=", citation.excerpt)
+                if (
+                    len(excerpt_cells) == len(nonempty_selected)
+                    and set(excerpt_cells) == {cell for cell, _ in nonempty_selected}
+                    and min_column == min((_cell_column(cell) for cell in excerpt_cells), default=-1)
+                    and max_column == max((_cell_column(cell) for cell in excerpt_cells), default=-1)
+                    and citation.excerpt == labeled_excerpt
+                ):
+                    return
+                if len(selected) == 1 and citation.excerpt in selected[0][1]:
+                    return
     raise RealDatasetValidationError("citation locator excerpt does not match anonymized source unit")
 
 

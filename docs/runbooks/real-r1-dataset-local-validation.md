@@ -36,12 +36,17 @@ JSON остаётся источником кейсов; расхождение 
 к ошибке; автоматического перехода к synthetic dataset нет. Отчёт всегда
 содержит `evaluation_status: not_run`.
 
-На момент подготовки интеграции проверенная локальная копия имеет CSV/JSON
-расхождение в `scenario_tags` у 4 кейсов и 53 XLSX citations, чьи excerpts не
-совпадают со значениями указанного cell range. Loader сохранит JSON кейсы и
-вернёт `validation_status: blocked` с агрегированными причинами; CLI выведет
-metadata-only отчёт и завершится с кодом 2. JSON, CSV и evidence не
-нормализуются автоматически.
+После локальной reconciliation остаётся CSV/JSON расхождение в `scenario_tags`
+у 4 кейсов и 33 XLSX citation findings. Ещё 20 ранее блокировавшихся XLSX
+citations прошли после добавления точной проверки `cell=value` сериализации и
+строгого сопоставления координат диапазона. Из 33 оставшихся findings 30
+требуют проверки/исправления locator в candidate version, а 3 требуют
+экспертной проверки связи evidence с claim. Исходный approved dataset не
+изменён; исправленный CSV подготовлен отдельным приватным candidate-файлом,
+который меняет только производные `scenario_tags` и ждёт подтверждения
+владельца dataset. Пока эти решения не внесены в согласованную версию, loader
+вернёт `validation_status: blocked`, а CLI завершится с кодом 2. JSON, CSV и
+evidence автоматически не нормализуются.
 
 Использовать real data можно только из локальных приватных директорий. Не
 добавляйте оригиналы, anonymized representations, Q&A JSON/CSV, цитаты или
