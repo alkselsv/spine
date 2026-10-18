@@ -1,6 +1,6 @@
 {
-  "staged_diff_sha256": "719f6687c413186b07125bbca3db709d644d09e18374b1ebbcbe98aebd4205fd",
-  "qualified_tree_sha256": "20d0403d6dba8b964ca28f0bc86b5ff327269e7c9b4cd9aaef718de41c08e553",
+  "staged_diff_sha256": "085d63d3ab6ac56acaf4fa4ff0d3ba09dfb965307e1273a6889fa0cef2fe3001",
+  "qualified_tree_sha256": "be560ccf5896fc0e3bb7b3ef67841be6a91153459683c80ac721683c890c498b",
   "results": [
     {
       "command": "uv sync --extra dev",
@@ -18,7 +18,7 @@
       "command": "uv run pytest -q",
       "returncode": 0,
       "status": "passed",
-      "summary": "3402 passed, 5 skipped"
+      "summary": "3407 passed, 5 skipped"
     },
     {
       "command": "uv run python -m compileall -q src tests",

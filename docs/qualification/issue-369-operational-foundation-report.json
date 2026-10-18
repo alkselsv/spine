@@ -1,0 +1,258 @@
+{
+  "schema_version": "r1-operational-foundation-qualification:v1",
+  "report_id": "issue-369:qualification:v1",
+  "ticket": 369,
+  "parent_ticket": 18,
+  "generated_at": "2026-10-18T05:45:11Z",
+  "immutable": true,
+  "content_free": true,
+  "server_logs_used": false,
+  "undocumented_claims_used": false,
+  "approved_contracts": [
+    "issue18-operational-telemetry:v1",
+    "issue18-operational-metrics:v1",
+    "issue18-physical-backup-profile:v1"
+  ],
+  "outcome_semantics": {
+    "pass": "The pinned evidence proves the bounded contract in the named environment.",
+    "fail": "The evidence demonstrates a contract violation; the gate fails closed.",
+    "blocked": "A mandatory prerequisite or independent verification is absent.",
+    "unavailable": "Trusted evidence cannot be read or authorized; absence is never interpreted as zero or success.",
+    "unverified_provider": "Deterministic contract evidence exists, but the configured physical provider was not exercised."
+  },
+  "gate_decision": {
+    "status": "blocked",
+    "production_qualified": false,
+    "downstream_ticket": 16,
+    "reason_codes": [
+      "deployment_bindings_unverified",
+      "physical_restore_unverified",
+      "projection_provider_unverified",
+      "runbook_deployment_exercises_incomplete",
+      "retention_and_authorization_bindings_unverified"
+    ]
+  },
+  "evidence": [
+    {
+      "gate_id": "O01",
+      "ticket": 361,
+      "source_commit": "a864e87be0304db8fff4651844bbdf4f7430a5f5",
+      "source_schema_version": "operational-observation:v1",
+      "environment": "offline_deterministic_fake",
+      "observed_at": "2026-10-16T18:42:31Z",
+      "timestamp_kind": "commit",
+      "verification_status": "pass",
+      "evidence_references": [
+        "tests/application/telemetry/test_operational_observations.py::test_diagnostic_bridge_preserves_trusted_context_for_each_closed_boundary_label",
+        "tests/application/telemetry/test_operational_observations.py::test_reader_enforces_scope_retention_and_legal_hold",
+        "tests/application/telemetry/test_operational_observations.py::test_observation_schema_is_closed_frozen_and_content_free"
+      ]
+    },
+    {
+      "gate_id": "O02",
+      "ticket": 370,
+      "source_commit": "4590da1b2152dacf452713d16b4be62288f8669d",
+      "source_schema_version": "operational-metric:v1",
+      "environment": "offline_deterministic_fake",
+      "observed_at": "2026-10-16T20:18:21Z",
+      "timestamp_kind": "commit",
+      "verification_status": "pass",
+      "evidence_references": [
+        "tests/application/telemetry/test_operational_metrics.py::test_metrics_use_half_open_windows_and_deduplicate_replays",
+        "tests/application/telemetry/test_operational_metrics.py::test_answer_rate_excludes_denied_and_pre_execution_cancellation",
+        "tests/application/telemetry/test_operational_metrics.py::test_metrics_distinguish_stale_degraded_and_unavailable"
+      ]
+    },
+    {
+      "gate_id": "O03",
+      "ticket": 362,
+      "source_commit": "626a9970dd15a80aa387b1cd25ebb67ce67447d3",
+      "source_schema_version": "r1-coordinated-backup:v1",
+      "environment": "synthetic_and_disposable",
+      "observed_at": "2026-10-16T19:39:58Z",
+      "timestamp_kind": "commit",
+      "verification_status": "blocked",
+      "independently_verified_physical_evidence": false,
+      "evidence_references": [
+        "tests/application/storage/test_backup_profile.py::test_coordinated_profile_records_matching_verified_components",
+        "tests/application/storage/test_backup_profile.py::test_coordinated_profile_persists_mixed_component_failure_as_incomplete",
+        "tests/application/storage/test_backup_profile.py::test_coordinated_profile_replays_same_immutable_recovery_set"
+      ],
+      "blocker": "No deployment-approved destination, tool version, encryption, credential, identity, or retention-enforcement binding is recorded."
+    },
+    {
+      "gate_id": "O04",
+      "ticket": 363,
+      "source_commit": "042ea02a85d22a8e454e61407b761a6138426a53",
+      "source_schema_version": "isolated-restore-evidence:v1",
+      "environment": "synthetic_and_disposable",
+      "observed_at": "2026-10-16T21:22:58Z",
+      "timestamp_kind": "commit",
+      "verification_status": "blocked",
+      "independently_verified_physical_evidence": false,
+      "evidence_references": [
+        "tests/infrastructure/test_isolated_restore.py::test_successful_restore_evidence_is_read_back_without_rewriting_targets",
+        "tests/infrastructure/test_isolated_restore.py::test_verification_rejects_mixed_component_evidence_before_restore",
+        "tests/infrastructure/test_isolated_restore.py::test_filesystem_archive_digest_mismatch_is_rejected"
+      ],
+      "blocker": "No deployment-approved isolated PostgreSQL/filesystem target and independent verifier exercise is recorded."
+    },
+    {
+      "gate_id": "O05",
+      "ticket": 364,
+      "source_commit": "36735769d8a59d6c116290faaf58cfbcae5d2bcf",
+      "source_schema_version": "projection-recovery-qualification:v1",
+      "environment": "synthetic_and_disposable",
+      "observed_at": "2026-10-16T13:00:00Z",
+      "timestamp_kind": "qualification_record",
+      "source_record": "docs/qualification/issue-364-projection-recovery-report.json",
+      "verification_status": "unverified_provider",
+      "evidence_references": [
+        "tests/application/test_projection_recovery_execution.py::test_recovery_request_dispatch_rebuilds_once_and_records_canonical_result",
+        "tests/application/test_projection_recovery_execution.py::test_retryable_physical_rebuild_redelivery_has_one_canonical_result",
+        "tests/application/test_projection_publication.py::test_rollback_command_targets_only_a_validated_successor_snapshot"
+      ],
+      "blocker": "The configured Cognee/Neo4j/PGVector provider profile was not selected or exercised."
+    },
+    {
+      "gate_id": "O06",
+      "ticket": 365,
+      "source_commit": "c6d014dc2576803ff750e69d5093b76979995d24",
+      "source_schema_version": "outbox-inspection-response:v1",
+      "environment": "offline_deterministic_fake",
+      "observed_at": "2026-10-16T19:05:38Z",
+      "timestamp_kind": "commit",
+      "verification_status": "pass",
+      "evidence_references": [
+        "tests/api/test_outbox_inspection.py::test_quarantine_inspection_is_bounded_scoped_and_keyset_paginated",
+        "tests/api/test_outbox_inspection.py::test_quarantine_inspection_denies_missing_and_foreign_scope",
+        "tests/api/test_outbox_inspection.py::test_quarantine_inspection_does_not_disclose_service_failure"
+      ]
+    },
+    {
+      "gate_id": "O07",
+      "ticket": 366,
+      "source_commit": "954e46338d5bfaa93be86a5192e455e759dc0ccf",
+      "source_schema_version": "operational-correlation-view:v1",
+      "environment": "offline_deterministic_fake",
+      "observed_at": "2026-10-16T21:48:43Z",
+      "timestamp_kind": "commit",
+      "verification_status": "pass",
+      "evidence_references": [
+        "tests/application/test_operational_correlation.py::test_correlation_connects_safe_operational_sources_without_content",
+        "tests/application/test_operational_correlation.py::test_correlation_denial_does_not_enumerate_other_workspace",
+        "tests/application/test_operational_correlation.py::test_correlation_marks_schema_mismatch_incomplete"
+      ]
+    },
+    {
+      "gate_id": "O08",
+      "ticket": 367,
+      "source_commit": "d62933a468feae0c509413a873da880a5257210b",
+      "source_schema_version": "operational-correlation-view:v1",
+      "environment": "browser_fixture",
+      "observed_at": "2026-10-17T23:21:35Z",
+      "timestamp_kind": "commit",
+      "verification_status": "pass",
+      "evidence_references": [
+        "web/src/features/diagnostics/OperationalCorrelationPanel.test.tsx::test_correlation_panel_shows_safe_partial_diagnostics_and_scoped_cross_feature_links",
+        "web/src/features/diagnostics/OperationalCorrelationPanel.test.tsx::test_correlation_panel_hides_protected_api_diagnostics_on_access_denial",
+        "web/e2e/app.spec.ts::test_chat_run_citation_navigation_preserves_scope_back_reload_and_denies_other_workspace"
+      ]
+    },
+    {
+      "gate_id": "O09",
+      "ticket": 368,
+      "source_commit": "ffcaadba236eddc6d3c1506712431beed42006fc",
+      "source_schema_version": "r1-runbook-exercise:v1",
+      "environment": "synthetic_and_disposable",
+      "observed_at": "2026-10-16T22:26:20Z",
+      "timestamp_kind": "qualification_record",
+      "source_record": "docs/qualification/issue-368-r1-runbook-exercises.json",
+      "verification_status": "blocked",
+      "evidence_references": [
+        "tests/test_issue_368_runbooks.py::test_r1_operator_runbooks_state_the_safe_execution_contract",
+        "tests/test_issue_368_runbooks.py::test_issue_368_exercise_record_is_versioned_content_free_and_resolvable"
+      ],
+      "blocker": "The versioned exercise record is partial and explicitly does not approve production qualification."
+    }
+  ],
+  "execution_evidence": [
+    {
+      "execution_id": "issue-68-repository-gate:issue-369:v1",
+      "environment": "offline_deterministic_fake",
+      "executed_at": "2026-10-18T05:38:00Z",
+      "status": "pass",
+      "working_directory": ".",
+      "command": "TMPDIR=/private/tmp UV_CACHE_DIR=/private/tmp/spine-uv-cache uv run pytest -q",
+      "source_artifact": "docs/qualification/issue-68-gate-results.json",
+      "gate_ids": ["O01", "O02", "O03", "O04", "O05", "O06", "O07", "O09"]
+    },
+    {
+      "execution_id": "issue-369-web-diagnostics:v1",
+      "environment": "browser_fixture",
+      "executed_at": "2026-10-18T05:45:06Z",
+      "status": "pass",
+      "working_directory": "web",
+      "command": "npm run build && npm run test:unit -- src/features/diagnostics/operational-correlation.test.ts src/features/diagnostics/OperationalCorrelationPanel.test.tsx && npm run test:e2e -- --grep 'test_projection_status_scope_switch_reload_and_safe_degradation|test_chat_run_citation_navigation_preserves_scope_back_reload_and_denies_other_workspace'",
+      "gate_ids": ["O08"]
+    }
+  ],
+  "operational_path": [
+    {"stage": "safe_runtime_telemetry", "gate_ids": ["O01"]},
+    {"stage": "metrics_semantics", "gate_ids": ["O02"]},
+    {"stage": "quarantine_inspection", "gate_ids": ["O06"]},
+    {"stage": "operational_correlation", "gate_ids": ["O07"]},
+    {"stage": "ui_no_log_diagnosis", "gate_ids": ["O08"]},
+    {"stage": "backup_and_restore", "gate_ids": ["O03", "O04"]},
+    {"stage": "projection_rebuild_and_rollback", "gate_ids": ["O05"]},
+    {"stage": "operator_runbooks", "gate_ids": ["O09"]}
+  ],
+  "cross_cutting_verification": {
+    "workspace_isolation": [
+      "tests/application/telemetry/test_operational_observations.py::test_reader_enforces_scope_retention_and_legal_hold",
+      "tests/application/telemetry/test_operational_metrics.py::test_metrics_denial_does_not_disclose_other_workspace_data"
+    ],
+    "authorization_denial": [
+      "tests/api/test_outbox_inspection.py::test_quarantine_inspection_denies_missing_and_foreign_scope",
+      "web/src/features/diagnostics/OperationalCorrelationPanel.test.tsx::test_correlation_panel_hides_protected_api_diagnostics_on_access_denial"
+    ],
+    "idempotency": [
+      "tests/application/storage/test_backup_profile.py::test_coordinated_profile_replays_same_immutable_recovery_set",
+      "tests/application/test_projection_recovery_execution.py::test_retryable_physical_rebuild_redelivery_has_one_canonical_result"
+    ],
+    "retry_failure_rollback": [
+      "tests/application/test_projection_recovery_execution.py::test_rejected_rebuild_emits_only_bounded_failure_evidence",
+      "tests/application/test_projection_publication.py::test_rollback_command_targets_only_a_validated_successor_snapshot"
+    ],
+    "stale_degraded_unavailable": [
+      "tests/application/telemetry/test_operational_metrics.py::test_metrics_distinguish_stale_degraded_and_unavailable",
+      "tests/application/test_operational_correlation.py::test_correlation_without_any_source_is_unavailable"
+    ],
+    "no_content_or_secret_disclosure": [
+      "tests/application/telemetry/test_operational_observations.py::test_observation_schema_is_closed_frozen_and_content_free",
+      "tests/api/test_outbox_inspection.py::test_quarantine_inspection_does_not_disclose_service_failure",
+      "tests/application/test_operational_correlation.py::test_correlation_connects_safe_operational_sources_without_content"
+    ]
+  },
+  "unresolved_conditions": [
+    "deployment_bindings_unverified",
+    "physical_restore_unverified",
+    "projection_provider_unverified",
+    "runbook_deployment_exercises_incomplete",
+    "retention_and_authorization_bindings_unverified"
+  ],
+  "unsupported_claims": {
+    "rpo_rto": false,
+    "pitr": false,
+    "ha": false,
+    "quality_threshold": false
+  },
+  "authority_boundaries": {
+    "audit": "issue_4_remains_canonical",
+    "run_and_feedback": "issues_302_and_298_remain_canonical",
+    "health": "issue_300_remains_canonical",
+    "projection": "existing_projection_lifecycle_remains_canonical",
+    "backup": "adr_0022_recovery_evidence_remains_canonical",
+    "ui": "issues_22_and_23_remain_owners"
+  }
+}
