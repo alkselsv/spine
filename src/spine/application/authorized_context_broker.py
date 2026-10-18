@@ -8,7 +8,7 @@ about HTTP, a database, Cognee, a workflow engine, or an LLM provider.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -55,6 +55,7 @@ from spine.domain.context_bundles import (
     RevalidationCheckpointResult,
     RevalidationRequest,
 )
+from spine.domain.common import ActorKind
 from spine.domain.projections import (
     ProjectionRun,
     ProjectionSnapshotMember,
@@ -83,6 +84,14 @@ from spine.memory.read_plan import (
 )
 from spine.memory.retrieval import PhysicalReadPlanExecutor
 from spine.application.content_authorization import TrustedAuthorizationContext
+from spine.application.qa_observation.context_capture import (
+    AuthorizedContextCapture,
+    AuthorizedContextCaptureContext,
+    AuthorizedContextCaptureResult,
+    AuthorizedContextCaptureSink,
+    CaptureDisposition,
+    retrieval_result_from_projection,
+)
 
 
 class TrustedRequestContextPort(Protocol):
@@ -98,7 +107,11 @@ class ActivePublicationPort(Protocol):
 
     async def resolve_active_publication(
         self, projection_kind: str
-    ) -> PublishedActivePublication | UnpublishedActivePublication | UnavailableActivePublication: ...
+    ) -> (
+        PublishedActivePublication
+        | UnpublishedActivePublication
+        | UnavailableActivePublication
+    ): ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,15 +178,21 @@ class SavedContextBundlePort(Protocol):
         reference: ContextBundleRef,
     ) -> ContextBundle: ...
 
-    async def revalidate(self, request: RevalidationRequest) -> RevalidationCheckpointResult: ...
+    async def revalidate(
+        self, request: RevalidationRequest
+    ) -> RevalidationCheckpointResult: ...
 
 
 class ContextBundleRevalidator(Protocol):
-    async def revalidate(self, request: RevalidationRequest) -> RevalidationCheckpointResult: ...
+    async def revalidate(
+        self, request: RevalidationRequest
+    ) -> RevalidationCheckpointResult: ...
 
 
 class PhysicalReadPlanPort(Protocol):
-    async def resolve(self, context: PhysicalReadContext) -> PhysicalReadPlanResolution: ...
+    async def resolve(
+        self, context: PhysicalReadContext
+    ) -> PhysicalReadPlanResolution: ...
 
 
 class StructuredReadPort(Protocol):
@@ -185,7 +204,9 @@ class StructuredReadPort(Protocol):
 class AuthorizedContextRequest(ContextRequest):
     """The closed, server-routed request envelope for one run/attempt."""
 
-    schema_version: Literal["authorized-context-request:v1"] = "authorized-context-request:v1"
+    schema_version: Literal["authorized-context-request:v1"] = (
+        "authorized-context-request:v1"
+    )
     run_id: UUID
     attempt_id: UUID
     idempotency_key: str
@@ -246,7 +267,9 @@ class InMemoryContextBundleStore:
             existing = self._bundles.get(key)
             if existing is not None:
                 if existing != bundle:
-                    raise ContextBundleConflictError("Context bundle attempt conflicts with history.")
+                    raise ContextBundleConflictError(
+                        "Context bundle attempt conflicts with history."
+                    )
                 return existing
             self._bundles[key] = bundle
             return bundle
@@ -290,7 +313,9 @@ class SavedContextBundleAccess:
             reference=reference,
         )
 
-    async def revalidate(self, request: RevalidationRequest) -> RevalidationCheckpointResult:
+    async def revalidate(
+        self, request: RevalidationRequest
+    ) -> RevalidationCheckpointResult:
         return await self._revalidator.revalidate(request)
 
 
@@ -345,13 +370,120 @@ class AuthorizedContextBrokerApplicationService:
         async with await self._attempt_lock(key):
             return await self._retrieve(request)
 
+    async def retrieve_with_capture(
+        self,
+        request: AuthorizedContextRequest,
+        *,
+        capture_context: AuthorizedContextCaptureContext,
+        capture_sink: AuthorizedContextCaptureSink,
+        capture_timeout_seconds: float = 1.0,
+    ) -> AuthorizedContextCaptureResult:
+        """Capture typed values from this call without changing its response."""
+
+        disposition = CaptureDisposition.NOT_ELIGIBLE
+        if (
+            type(capture_context) is not AuthorizedContextCaptureContext
+            or not callable(getattr(capture_sink, "capture", None))
+            or type(request) is not AuthorizedContextRequest
+            or capture_context.identity.workspace_id != request.workspace_id
+            or capture_context.identity.environment_id != request.environment_id
+            or capture_context.identity.run_id != request.run_id
+            or capture_context.identity.attempt_id != request.attempt_id
+            or capture_context.question.subject.text != request.query
+            or capture_context.subscription.expires_at <= self._clock()
+            or capture_timeout_seconds <= 0
+        ):
+            response = await self.retrieve(request)
+            return AuthorizedContextCaptureResult(
+                response=response,
+                disposition=CaptureDisposition.INVALID_CONTEXT,
+            )
+
+        async def capture_success(
+            projection: ProjectionRetrievalResult,
+            response: ContextResponse,
+            bundle: ContextBundle,
+            pin: PublicationPin,
+            trusted: TrustedAuthorizationContext,
+        ) -> None:
+            nonlocal disposition
+            try:
+                if capture_context.subscription.expires_at <= self._clock():
+                    disposition = CaptureDisposition.EXPIRED
+                    return
+                if (
+                    capture_context.identity.requester.kind is not ActorKind.HUMAN
+                    or capture_context.identity.requester.id
+                    != trusted.canonical_human_id
+                    or capture_context.question.correlation.trace_id != trusted.trace_id
+                ):
+                    disposition = CaptureDisposition.INVALID_CONTEXT
+                    return
+                retrieval_result = retrieval_result_from_projection(
+                    projection,
+                    retrieval_strategy=bundle.retrieval_strategy,
+                    outcome=response.outcome,
+                )
+                capture = AuthorizedContextCapture(
+                    capture_context=capture_context,
+                    response=response,
+                    projection_retrieval=projection,
+                    retrieval=retrieval_result,
+                    context_bundle=bundle,
+                    publication_pin=pin,
+                )
+            except Exception:
+                disposition = CaptureDisposition.INVALID_LINEAGE
+                return
+            try:
+                await asyncio.wait_for(
+                    capture_sink.capture(capture), timeout=capture_timeout_seconds
+                )
+            except asyncio.TimeoutError:
+                disposition = CaptureDisposition.SINK_TIMEOUT
+            except Exception:
+                disposition = CaptureDisposition.SINK_FAILED
+            else:
+                disposition = CaptureDisposition.CAPTURED
+
+        key = (
+            request.workspace_id,
+            request.environment_id,
+            request.run_id,
+            request.attempt_id,
+            request.idempotency_key,
+        )
+        async with await self._attempt_lock(key):
+            response = await self._retrieve(request, capture_success=capture_success)
+        return AuthorizedContextCaptureResult(
+            response=response,
+            disposition=disposition,
+        )
+
     async def _attempt_lock(
         self, key: tuple[UUID, UUID, UUID, UUID, str]
     ) -> asyncio.Lock:
         async with self._attempt_locks_guard:
             return self._attempt_locks.setdefault(key, asyncio.Lock())
 
-    async def _retrieve(self, request: AuthorizedContextRequest) -> ContextResponse:
+    async def _retrieve(
+        self,
+        request: AuthorizedContextRequest,
+        *,
+        capture_success: (
+            Callable[
+                [
+                    ProjectionRetrievalResult,
+                    ContextResponse,
+                    ContextBundle,
+                    PublicationPin,
+                    TrustedAuthorizationContext,
+                ],
+                Awaitable[None],
+            ]
+            | None
+        ) = None,
+    ) -> ContextResponse:
         """Execute one complete flow and return only the typed v1 response."""
 
         if type(request) is not AuthorizedContextRequest:
@@ -383,7 +515,8 @@ class AuthorizedContextBrokerApplicationService:
         profile_resolution = await self._resolve_profile(request)
         if (
             profile_resolution is None
-            or profile_resolution.outcome is not ContextProfileResolutionOutcome.RESOLVED
+            or profile_resolution.outcome
+            is not ContextProfileResolutionOutcome.RESOLVED
             or profile_resolution.profile is None
             or profile_resolution.policy is None
             or profile_resolution.profile.reference != request.profile_ref
@@ -500,7 +633,14 @@ class AuthorizedContextBrokerApplicationService:
             return self._response(
                 ContextOutcome.UNAVAILABLE, ContextReasonCode.BUNDLE_UNAVAILABLE
             )
-        return self._response_from_bundle(stored)
+        response = self._response_from_bundle(stored)
+        if capture_success is not None:
+            try:
+                await capture_success(retrieval, response, stored, pin, trusted)
+            except Exception:
+                # Observability failures never change the authorized response.
+                pass
+        return response
 
     async def _resolve_trusted_context(
         self, request: AuthorizedContextRequest
@@ -542,9 +682,16 @@ class AuthorizedContextBrokerApplicationService:
 
     async def _resolve_publication(
         self,
-    ) -> PublishedActivePublication | UnpublishedActivePublication | UnavailableActivePublication | None:
+    ) -> (
+        PublishedActivePublication
+        | UnpublishedActivePublication
+        | UnavailableActivePublication
+        | None
+    ):
         try:
-            return await self._publication.resolve_active_publication(self._projection_kind)
+            return await self._publication.resolve_active_publication(
+                self._projection_kind
+            )
         except Exception:
             return None
 
@@ -610,7 +757,8 @@ class AuthorizedContextBrokerApplicationService:
             boundary.workspace_id != publication.workspace_id
             or boundary.environment_id != publication.environment_id
             or boundary.boundary_id != publication.canonical_boundary_id
-            or boundary.manifest_digest != publication.canonical_boundary_manifest_digest
+            or boundary.manifest_digest
+            != publication.canonical_boundary_manifest_digest
             or boundary.accepted_through_generation
             != publication.accepted_through_generation
             or not read_model.provider_capability_reference
@@ -716,7 +864,9 @@ class AuthorizedContextBrokerApplicationService:
                 revision_number=item.revision_number,
                 processing_receipt_id=item.processing_receipt_id,
                 locator_contract_version=item.locator_contract_version,
-                locator=EvidenceLocator(kind=item.locator.kind, value=item.locator.value),
+                locator=EvidenceLocator(
+                    kind=item.locator.kind, value=item.locator.value
+                ),
                 evidence_digest=item.evidence_digest,
                 status=ContextBundleEvidenceStatus(item.status),
             )
@@ -792,12 +942,15 @@ class AuthorizedContextBrokerApplicationService:
 
     @staticmethod
     def _scope_response(resolution) -> ContextResponse:
-        from spine.application.authorized_retrieval_scope import AuthorizedRetrievalScopeReason
+        from spine.application.authorized_retrieval_scope import (
+            AuthorizedRetrievalScopeReason,
+        )
 
         if resolution.outcome is AuthorizedRetrievalScopeOutcome.DENIED:
             reason = (
                 ContextReasonCode.INVALID_TRUSTED_CONTEXT
-                if resolution.reason is AuthorizedRetrievalScopeReason.INVALID_TRUSTED_CONTEXT
+                if resolution.reason
+                is AuthorizedRetrievalScopeReason.INVALID_TRUSTED_CONTEXT
                 else ContextReasonCode.AUTHORIZATION_DENIED
             )
             return ContextResponse(
@@ -831,10 +984,15 @@ class AuthorizedContextBrokerApplicationService:
     def _response_from_bundle(bundle: ContextBundle) -> ContextResponse:
         outcome = ContextOutcome(bundle.outcome.value)
         reason = ContextReasonCode(bundle.reason_code)
-        reference = bundle.reference if outcome in {
-            ContextOutcome.ALLOWED,
-            ContextOutcome.PARTIAL,
-        } else None
+        reference = (
+            bundle.reference
+            if outcome
+            in {
+                ContextOutcome.ALLOWED,
+                ContextOutcome.PARTIAL,
+            }
+            else None
+        )
         return ContextResponse(
             outcome=outcome,
             context_bundle_ref=reference,

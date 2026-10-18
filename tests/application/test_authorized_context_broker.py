@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -13,6 +14,15 @@ from spine.application.authorized_context_broker import (
     InMemoryContextBundleStore,
     SavedContextBundleAccess,
     context_bundle_id_for_request,
+)
+from spine.application.qa_observation.context_capture import (
+    AuthorizedContextCapture,
+    AuthorizedContextCaptureContext,
+    CaptureDisposition,
+)
+from spine.application.qa_observation.contracts import (
+    AdmittedExecutionIdentity,
+    CaptureSubscription,
 )
 from spine.application.context_profiles import (
     EffectiveContextRetrievalPolicy,
@@ -28,6 +38,13 @@ from spine.domain.context_profiles import (
     RetrievalStrategy,
 )
 from spine.domain.context_bundles import ContextBundleRef
+from spine.domain.common import ActorKind, ActorRef
+from spine.domain.capabilities import (
+    AnswerQuestionInput,
+    AnswerQuestionScope,
+    QuestionSubject,
+    RunAttemptCorrelation,
+)
 from spine.application.content_authorization import (
     AuthorizationContextMode,
     TrustedAuthorizationContext,
@@ -57,7 +74,6 @@ from spine.application.authorized_retrieval_scope import (
     AuthorizedRetrievalScopeReason,
 )
 from spine.application.evidence_lineage_verification import VerifiedEvidenceItem
-
 
 WORKSPACE = UUID(int=1)
 ENVIRONMENT = UUID(int=2)
@@ -139,21 +155,25 @@ def service(
     profiles: object | None = None,
     publication: object | None = None,
 ) -> AuthorizedContextBrokerApplicationService:
-    trusted = Trusted(
-        TrustedAuthorizationContext(
-            mode=AuthorizationContextMode.HUMAN_DISCLOSURE,
-            workspace_id=WORKSPACE,
-            environment_id=ENVIRONMENT,
-            canonical_human_id=UUID(int=9),
-            purpose="answer_question",
-            operation="retrieve_context",
-            membership_generation=1,
-            authority_generation=1,
-            authority_snapshot_reference=UUID(int=10),
-            trace_id=UUID(int=11),
-            issued_at=NOW,
+    trusted = (
+        Trusted(
+            TrustedAuthorizationContext(
+                mode=AuthorizationContextMode.HUMAN_DISCLOSURE,
+                workspace_id=WORKSPACE,
+                environment_id=ENVIRONMENT,
+                canonical_human_id=UUID(int=9),
+                purpose="answer_question",
+                operation="retrieve_context",
+                membership_generation=1,
+                authority_generation=1,
+                authority_snapshot_reference=UUID(int=10),
+                trace_id=UUID(int=11),
+                issued_at=NOW,
+            )
         )
-    ) if trusted_available else Trusted()
+        if trusted_available
+        else Trusted()
+    )
     return AuthorizedContextBrokerApplicationService(
         trusted_context=trusted,
         profile_resolver=profiles or Profiles(),
@@ -168,7 +188,9 @@ def service(
 
 
 @pytest.mark.asyncio
-async def test_missing_trusted_context_denies_without_disclosing_profile_state() -> None:
+async def test_missing_trusted_context_denies_without_disclosing_profile_state() -> (
+    None
+):
     response = await service(trusted_available=False).retrieve(request())
 
     assert response.outcome is ContextOutcome.DENIED
@@ -177,7 +199,80 @@ async def test_missing_trusted_context_denies_without_disclosing_profile_state()
 
 
 @pytest.mark.asyncio
-async def test_profile_resolution_failure_is_unavailable_and_does_not_read_publication() -> None:
+async def test_denied_request_does_not_send_a_capture_to_the_observer() -> None:
+    current = request()
+    capture_context = AuthorizedContextCaptureContext(
+        identity=AdmittedExecutionIdentity(
+            command_id=UUID(int=700),
+            run_id=current.run_id,
+            session_id=UUID(int=701),
+            message_id=UUID(int=702),
+            workspace_id=current.workspace_id,
+            environment_id=current.environment_id,
+            requester=ActorRef(kind=ActorKind.HUMAN, id=UUID(int=9)),
+            attempt_id=current.attempt_id,
+            attempt_number=1,
+        ),
+        subscription=CaptureSubscription(
+            capture_id=UUID(int=705),
+            subscription_id=UUID(int=706),
+            expires_at=NOW.replace(year=2027),
+        ),
+        question=AnswerQuestionInput(
+            subject=QuestionSubject(text=current.query),
+            scope=AnswerQuestionScope(
+                workspace_id=current.workspace_id,
+                environment_id=current.environment_id,
+            ),
+            correlation=RunAttemptCorrelation(
+                run_id=current.run_id,
+                attempt_id=current.attempt_id,
+                trace_id=UUID(int=11),
+            ),
+        ),
+    )
+
+    class CaptureSink:
+        calls = 0
+
+        async def capture(self, value: object) -> None:
+            del value
+            self.calls += 1
+
+    sink = CaptureSink()
+    result = await service(trusted_available=False).retrieve_with_capture(
+        current,
+        capture_context=capture_context,
+        capture_sink=sink,
+    )
+
+    assert result.response.outcome is ContextOutcome.DENIED
+    assert result.disposition is CaptureDisposition.NOT_ELIGIBLE
+    assert sink.calls == 0
+
+    unavailable = await service().retrieve_with_capture(
+        current,
+        capture_context=capture_context,
+        capture_sink=sink,
+    )
+    assert unavailable.response.outcome is ContextOutcome.UNAVAILABLE
+    assert unavailable.disposition is CaptureDisposition.NOT_ELIGIBLE
+    assert sink.calls == 0
+
+    cross_workspace = await service().retrieve_with_capture(
+        request(workspace_id=UUID(int=99)),
+        capture_context=capture_context,
+        capture_sink=sink,
+    )
+    assert cross_workspace.response.outcome is ContextOutcome.DENIED
+    assert cross_workspace.disposition is CaptureDisposition.INVALID_CONTEXT
+    assert sink.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_profile_resolution_failure_is_unavailable_and_does_not_read_publication() -> (
+    None
+):
     response = await service().retrieve(request())
 
     assert response.outcome is ContextOutcome.UNAVAILABLE
@@ -185,7 +280,9 @@ async def test_profile_resolution_failure_is_unavailable_and_does_not_read_publi
 
 
 @pytest.mark.asyncio
-async def test_bundle_store_failure_is_safe_unavailable_without_restarting_retrieval() -> None:
+async def test_bundle_store_failure_is_safe_unavailable_without_restarting_retrieval() -> (
+    None
+):
     class FailingStore:
         async def resolve_attempt(self, **kwargs: object) -> None:
             del kwargs
@@ -199,7 +296,9 @@ async def test_bundle_store_failure_is_safe_unavailable_without_restarting_retri
 
 
 @pytest.mark.asyncio
-async def test_workspace_mismatch_denies_without_leaking_other_workspace_state() -> None:
+async def test_workspace_mismatch_denies_without_leaking_other_workspace_state() -> (
+    None
+):
     response = await service().retrieve(request(workspace_id=UUID(int=99)))
 
     assert response.outcome is ContextOutcome.DENIED
@@ -244,7 +343,9 @@ async def test_unpublished_active_projection_is_safe_unavailable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_replay_returns_immutable_bundle_without_reinvoking_profile_or_publication() -> None:
+async def test_replay_returns_immutable_bundle_without_reinvoking_profile_or_publication() -> (
+    None
+):
     bundle_id = UUID(int=90)
     stored = SimpleNamespace(
         bundle_id=bundle_id,
@@ -275,7 +376,9 @@ async def test_replay_returns_immutable_bundle_without_reinvoking_profile_or_pub
 
 
 @pytest.mark.asyncio
-async def test_allowed_request_persists_exact_bundle_and_replays_without_second_read() -> None:
+async def test_allowed_request_persists_exact_bundle_and_replays_without_second_read(
+    caplog,
+) -> None:
     from tests.memory.test_physical_read_plan import _config, _context, _publication
 
     physical_context, _ = _context()
@@ -437,14 +540,28 @@ async def test_allowed_request_persists_exact_bundle_and_replays_without_second_
 
     class Retrieval:
         calls = 0
+        expire_clock_after_read = False
+        return_stale = False
 
         async def execute(self, plan: object) -> ProjectionRetrievalResult:
             del plan
             self.calls += 1
+            if self.expire_clock_after_read:
+                clock_now[0] = NOW.replace(hour=14)
+            if self.return_stale:
+                return retrieval_result.model_copy(
+                    update={"outcome": ProjectionOutcome.STALE}
+                )
             return retrieval_result
 
     class Evidence:
-        async def verify(self, *, item: object, publication_pin: PublicationPin, authorization_context: object) -> VerifiedEvidenceItem:
+        async def verify(
+            self,
+            *,
+            item: object,
+            publication_pin: PublicationPin,
+            authorization_context: object,
+        ) -> VerifiedEvidenceItem:
             del authorization_context
             return VerifiedEvidenceItem(
                 item=item,
@@ -454,6 +571,7 @@ async def test_allowed_request_persists_exact_bundle_and_replays_without_second_
             )
 
     retrieval = Retrieval()
+    clock_now = [NOW]
     current = request(profile_ref=profile.reference)
     bundles = InMemoryContextBundleStore()
     broker = AuthorizedContextBrokerApplicationService(
@@ -462,7 +580,11 @@ async def test_allowed_request_persists_exact_bundle_and_replays_without_second_
         publication=type(
             "Publication",
             (),
-            {"resolve_active_publication": lambda self, kind: _async_return(publication)},
+            {
+                "resolve_active_publication": lambda self, kind: _async_return(
+                    publication
+                )
+            },
         )(),
         scope_resolver=Scope(),
         read_model=ReadModel(),
@@ -470,16 +592,255 @@ async def test_allowed_request_persists_exact_bundle_and_replays_without_second_
         retrieval=retrieval,
         evidence_verifier=Evidence(),
         bundles=bundles,
-        clock=lambda: NOW,
+        clock=lambda: clock_now[0],
     )
 
-    first = await broker.retrieve(current)
+    identity = AdmittedExecutionIdentity(
+        command_id=UUID(int=700),
+        run_id=current.run_id,
+        session_id=UUID(int=701),
+        message_id=UUID(int=702),
+        workspace_id=current.workspace_id,
+        environment_id=current.environment_id,
+        requester=ActorRef(kind=ActorKind.HUMAN, id=UUID(int=9)),
+        attempt_id=current.attempt_id,
+        attempt_number=1,
+    )
+    question = AnswerQuestionInput(
+        subject=QuestionSubject(text=current.query),
+        scope=AnswerQuestionScope(
+            workspace_id=current.workspace_id,
+            environment_id=current.environment_id,
+        ),
+        correlation=RunAttemptCorrelation(
+            run_id=current.run_id,
+            attempt_id=current.attempt_id,
+            trace_id=UUID(int=11),
+        ),
+    )
+    capture_context = AuthorizedContextCaptureContext(
+        identity=identity,
+        subscription=CaptureSubscription(
+            capture_id=UUID(int=705),
+            subscription_id=UUID(int=706),
+            expires_at=NOW.replace(hour=13),
+        ),
+        question=question,
+    )
+
+    class CaptureSink:
+        values = []
+
+        async def capture(self, value: object) -> None:
+            self.values.append(value)
+
+    sink = CaptureSink()
+    captured_result = await broker.retrieve_with_capture(
+        current,
+        capture_context=capture_context,
+        capture_sink=sink,
+    )
+    first = captured_result.response
     second = await broker.retrieve(current)
 
+    assert captured_result.disposition is CaptureDisposition.CAPTURED
+    assert len(sink.values) == 1
+    capture = sink.values[0]
+    assert capture.projection_retrieval is retrieval_result
+    assert capture.retrieval.context == ("protected text",)
+    assert (
+        capture.retrieval.references[0].source_revision_id == source.source_revision_id
+    )
+    assert capture.context_bundle.reference == first.context_bundle_ref
+    assert (
+        capture.retrieval.references[0].source_revision_id == source.source_revision_id
+    )
+    assert capture.retrieval.outcome is first.outcome
+    persisted_bundle = await bundles.resolve(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        reference=first.context_bundle_ref,
+    )
+    assert "protected text" not in first.model_dump_json()
+    assert "protected text" not in persisted_bundle.model_dump_json()
+    assert "protected text" not in caplog.text
+    with pytest.raises(ValueError, match="does not match admitted execution"):
+        AuthorizedContextCaptureContext(
+            identity=identity.model_copy(update={"workspace_id": UUID(int=99)}),
+            subscription=capture_context.subscription,
+            question=question,
+        )
+    wrong_attempt = UUID(int=99)
+    wrong_attempt_context = AuthorizedContextCaptureContext(
+        identity=identity.model_copy(update={"attempt_id": wrong_attempt}),
+        subscription=capture_context.subscription,
+        question=question.model_copy(
+            update={
+                "correlation": question.correlation.model_copy(
+                    update={"attempt_id": wrong_attempt}
+                )
+            }
+        ),
+    )
+    with pytest.raises(
+        ValueError, match="capture lineage does not match authorized execution"
+    ):
+        AuthorizedContextCapture(
+            capture_context=wrong_attempt_context,
+            response=first,
+            projection_retrieval=retrieval_result,
+            retrieval=capture.retrieval,
+            context_bundle=capture.context_bundle,
+            publication_pin=capture.publication_pin,
+        )
+    with pytest.raises(ValueError, match="capture references do not match"):
+        AuthorizedContextCapture(
+            capture_context=capture_context,
+            response=first,
+            projection_retrieval=retrieval_result.model_copy(
+                update={
+                    "evidence": (
+                        retrieval_result.evidence[0].model_copy(
+                            update={"source_revision_id": UUID(int=99)}
+                        ),
+                    )
+                }
+            ),
+            retrieval=capture.retrieval,
+            context_bundle=capture.context_bundle,
+            publication_pin=capture.publication_pin,
+        )
     assert first.outcome is ContextOutcome.ALLOWED
     assert first.context_bundle_ref is not None
     assert second == first
     assert retrieval.calls == 1
+
+    next_request = request(
+        profile_ref=profile.reference,
+        attempt_id=UUID(int=80),
+        idempotency_key="attempt-2",
+    )
+    next_identity = identity.model_copy(update={"attempt_id": next_request.attempt_id})
+    next_question = question.model_copy(
+        update={
+            "correlation": question.correlation.model_copy(
+                update={"attempt_id": next_request.attempt_id}
+            )
+        }
+    )
+    next_capture_context = capture_context.model_copy(
+        update={"identity": next_identity, "question": next_question}
+    )
+
+    class FailingCaptureSink:
+        async def capture(self, value: object) -> None:
+            del value
+            raise RuntimeError("protected payload must not escape")
+
+    failed_capture = await broker.retrieve_with_capture(
+        next_request,
+        capture_context=next_capture_context,
+        capture_sink=FailingCaptureSink(),
+    )
+    assert failed_capture.response.outcome is ContextOutcome.ALLOWED
+    assert failed_capture.disposition is CaptureDisposition.SINK_FAILED
+    assert retrieval.calls == 2
+
+    hanging_request = request(
+        profile_ref=profile.reference,
+        attempt_id=UUID(int=82),
+        idempotency_key="attempt-3",
+    )
+    hanging_capture_context = capture_context.model_copy(
+        update={
+            "identity": identity.model_copy(
+                update={"attempt_id": hanging_request.attempt_id}
+            ),
+            "question": question.model_copy(
+                update={
+                    "correlation": question.correlation.model_copy(
+                        update={"attempt_id": hanging_request.attempt_id}
+                    )
+                }
+            ),
+        }
+    )
+
+    class HangingCaptureSink:
+        async def capture(self, value: object) -> None:
+            del value
+            await asyncio.Event().wait()
+
+    timed_out_capture = await broker.retrieve_with_capture(
+        hanging_request,
+        capture_context=hanging_capture_context,
+        capture_sink=HangingCaptureSink(),
+        capture_timeout_seconds=0.01,
+    )
+    assert timed_out_capture.response.outcome is ContextOutcome.ALLOWED
+    assert timed_out_capture.disposition is CaptureDisposition.SINK_TIMEOUT
+    assert retrieval.calls == 3
+
+    stale_request = request(
+        profile_ref=profile.reference,
+        attempt_id=UUID(int=83),
+        idempotency_key="attempt-stale",
+    )
+    stale_context = capture_context.model_copy(
+        update={
+            "identity": identity.model_copy(
+                update={"attempt_id": stale_request.attempt_id}
+            ),
+            "question": question.model_copy(
+                update={
+                    "correlation": question.correlation.model_copy(
+                        update={"attempt_id": stale_request.attempt_id}
+                    )
+                }
+            ),
+        }
+    )
+    retrieval.return_stale = True
+    stale_capture = await broker.retrieve_with_capture(
+        stale_request,
+        capture_context=stale_context,
+        capture_sink=sink,
+    )
+    retrieval.return_stale = False
+    assert stale_capture.response.outcome is ContextOutcome.INSUFFICIENT
+    assert stale_capture.disposition is CaptureDisposition.NOT_ELIGIBLE
+    assert len(sink.values) == 1
+    assert retrieval.calls == 4
+
+    last_request = request(
+        profile_ref=profile.reference,
+        attempt_id=UUID(int=81),
+        idempotency_key="attempt-5",
+    )
+    last_capture_context = capture_context.model_copy(
+        update={
+            "identity": identity.model_copy(
+                update={"attempt_id": last_request.attempt_id}
+            ),
+            "question": question.model_copy(
+                update={
+                    "correlation": question.correlation.model_copy(
+                        update={"attempt_id": last_request.attempt_id}
+                    )
+                }
+            ),
+        }
+    )
+    retrieval.expire_clock_after_read = True
+    expired_capture = await broker.retrieve_with_capture(
+        last_request,
+        capture_context=last_capture_context,
+        capture_sink=sink,
+    )
+    assert expired_capture.response.outcome is ContextOutcome.ALLOWED
+    assert expired_capture.disposition is CaptureDisposition.EXPIRED
+    assert len(sink.values) == 1
+    assert retrieval.calls == 5
     with pytest.raises(ValueError, match="unavailable"):
         await bundles.resolve(
             workspace_id=UUID(int=99),
@@ -506,11 +867,14 @@ async def test_saved_bundle_access_keeps_load_and_revalidation_as_typed_ports() 
         bundle_id=UUID(int=200), bundle_version=1, bundle_digest="a" * 64
     )
 
-    assert await access.load(
-        workspace_id=WORKSPACE,
-        environment_id=ENVIRONMENT,
-        reference=reference,
-    ) == "bundle"
+    assert (
+        await access.load(
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+            reference=reference,
+        )
+        == "bundle"
+    )
     assert await access.revalidate("checkpoint") == "revalidated"
 
 
