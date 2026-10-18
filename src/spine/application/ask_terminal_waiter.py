@@ -377,43 +377,28 @@ class TerminalAskWaiter:
     @staticmethod
     def _status_matches_run(identity: AdmittedRunIdentity, status: AskAdmissionStatus) -> bool:
         return (
-            TerminalAskWaiter._status_matches_admission(
-                identity.command_id,
-                identity.run_id,
-                identity.session_id,
-                identity.message_id,
-                status,
-            )
+            TerminalAskWaiter._status_matches_admission(identity, status)
             and ((status.attempt_id is None) == (status.attempt_number is None))
         )
 
     @staticmethod
     def _status_matches_admission(
-        command_id: UUID,
-        run_id: UUID,
-        session_id: UUID,
-        message_id: UUID,
+        identity: AdmittedExecutionIdentity | AdmittedRunIdentity,
         status: AskAdmissionStatus,
     ) -> bool:
         return (
             isinstance(status, AskAdmissionStatus)
-            and status.command_id == command_id
-            and status.run_id == run_id
-            and status.session_id == session_id
-            and status.message_id == message_id
+            and status.command_id == identity.command_id
+            and status.run_id == identity.run_id
+            and status.session_id == identity.session_id
+            and status.message_id == identity.message_id
         )
 
     @staticmethod
     def _status_matches(
         identity: AdmittedExecutionIdentity, status: AskAdmissionStatus
     ) -> bool:
-        if not TerminalAskWaiter._status_matches_admission(
-            identity.command_id,
-            identity.run_id,
-            identity.session_id,
-            identity.message_id,
-            status,
-        ):
+        if not TerminalAskWaiter._status_matches_admission(identity, status):
             return False
         if status.status is AskAdmissionLifecycle.RUNNING:
             return (
