@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
 from dataclasses import replace
+from datetime import datetime, timezone
 from hashlib import sha256
-from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -15,7 +14,11 @@ from spine.application.persistence.ask_admission import (
     AskAdmissionResult,
     AskAdmissionStatus,
 )
-from spine.application.persistence.context import EnvironmentScope
+from spine.application.persistence.context import (
+    EnvironmentScope,
+    PersistenceOperation,
+    PersistencePurpose,
+)
 from spine.application.qa_observation.contracts import (
     ExecutionWaitState,
     SafeWaitUnavailableReason,
@@ -30,6 +33,7 @@ from spine.domain.capabilities import (
     ClaimEvidenceRelationshipKind,
 )
 from spine.domain.qa_sessions import QAMessageDisclosureEligibility, QAMessageState
+from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from tests.application.qa_observation.factories import execution_identity
 
 
@@ -71,14 +75,20 @@ class _Sessions:
         return self.message
 
 
-def _context(identity):
-    return SimpleNamespace(
+def _context(identity, *, workspace_id=None, environment_id=None):
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=UUID("f1000000-0000-0000-0000-000000000475"),
+        secret=b"terminal-ask-waiter-test-secret-475",
+    )
+    return boundary.interactive(
         scope=EnvironmentScope(
-            workspace_id=identity.workspace_id,
-            environment_id=identity.environment_id,
+            workspace_id=workspace_id or identity.workspace_id,
+            environment_id=environment_id or identity.environment_id,
         ),
         acting_subject_id=identity.requester.id,
-        service_principal_id=None,
+        purpose=PersistencePurpose("question_answering"),
+        operation=PersistenceOperation("qa.ask-admission-cancellation"),
+        trace_id=UUID("f2000000-0000-0000-0000-000000000475"),
     )
 
 
@@ -186,7 +196,11 @@ async def test_waiter_returns_exact_current_authorized_answer_after_pending_and_
         identity,
         [
             _status(identity, AskAdmissionLifecycle.ADMITTED),
-            _status(identity, AskAdmissionLifecycle.RUNNING),
+            _status(
+                identity,
+                AskAdmissionLifecycle.RUNNING,
+                attempt_id=identity.attempt_id,
+            ),
             _status(
                 identity,
                 AskAdmissionLifecycle.TERMINAL,
@@ -246,7 +260,14 @@ async def test_waiter_times_out_without_requesting_cancellation():
     clock = _Clock()
     waiter, args, admission, sessions, _ = _waiter(
         identity,
-        [_status(identity, AskAdmissionLifecycle.ADMITTED)],
+        [
+            _status(identity, AskAdmissionLifecycle.ADMITTED),
+            _status(
+                identity,
+                AskAdmissionLifecycle.RUNNING,
+                attempt_id=identity.attempt_id,
+            ),
+        ],
         None,
         clock,
     )
@@ -259,6 +280,7 @@ async def test_waiter_times_out_without_requesting_cancellation():
     assert admission.calls == 2
     assert sessions.calls == 0
     assert clock.sleeps == [0.25, 0.25]
+    assert result.last_observed_state is ExecutionWaitState.RUNNING
     assert not hasattr(admission, "request_cancellation")
 
 
@@ -270,13 +292,9 @@ async def test_waiter_rejects_cross_scope_and_requester_before_status_read():
         [_status(identity, AskAdmissionLifecycle.ADMITTED)],
         None,
     )
-    args["context"] = SimpleNamespace(
-        scope=EnvironmentScope(
-            workspace_id=UUID("f0000000-0000-0000-0000-000000000475"),
-            environment_id=identity.environment_id,
-        ),
-        acting_subject_id=identity.requester.id,
-        service_principal_id=None,
+    args["context"] = _context(
+        identity,
+        workspace_id=UUID("f0000000-0000-0000-0000-000000000475"),
     )
 
     result = await waiter.wait(**args)
@@ -302,6 +320,22 @@ async def test_waiter_rejects_requester_substitution_before_status_read():
 
     assert result.wait.unavailable_reason is SafeWaitUnavailableReason.CORRELATION_MISMATCH
     assert admission.calls == 0
+    assert sessions.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_waiter_fails_closed_when_running_attempt_cannot_be_correlated():
+    identity = execution_identity()
+    waiter, args, admission, sessions, _ = _waiter(
+        identity,
+        [_status(identity, AskAdmissionLifecycle.RUNNING)],
+        None,
+    )
+
+    result = await waiter.wait(**args)
+
+    assert result.wait.unavailable_reason is SafeWaitUnavailableReason.CORRELATION_MISMATCH
+    assert admission.calls == 1
     assert sessions.calls == 0
 
 
@@ -350,6 +384,32 @@ async def test_waiter_fails_closed_when_canonical_terminal_message_is_missing():
     assert result.wait.unavailable_reason is SafeWaitUnavailableReason.INCOMPLETE_TERMINAL_STATE
     assert result.message is None
     assert sessions.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_waiter_rejects_message_linked_to_another_run():
+    identity = execution_identity()
+    message = replace(
+        _message(identity, AnswerQuestionOutcome.ABSTAINED),
+        run_id=UUID("f0000000-0000-0000-0000-000000000475"),
+    )
+    waiter, args, _, _, _ = _waiter(
+        identity,
+        [
+            _status(
+                identity,
+                AskAdmissionLifecycle.TERMINAL,
+                AnswerQuestionOutcome.ABSTAINED,
+                identity.attempt_id,
+            )
+        ],
+        message,
+    )
+
+    result = await waiter.wait(**args)
+
+    assert result.wait.unavailable_reason is SafeWaitUnavailableReason.CORRELATION_MISMATCH
+    assert result.message is None
 
 
 @pytest.mark.asyncio

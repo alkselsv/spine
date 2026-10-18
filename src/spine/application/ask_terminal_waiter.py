@@ -32,10 +32,11 @@ MAX_TERMINAL_ASK_POLL_INTERVAL_SECONDS = 5.0
 
 @dataclass(frozen=True, slots=True)
 class TerminalAskWaitResult:
-    """Wait disposition plus the current-authorized message, when terminal."""
+    """Wait disposition, last canonical lifecycle, and authorized message."""
 
     wait: TerminalWaitResult
     message: QAMessageRead | None = None
+    last_observed_state: ExecutionWaitState | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,13 +77,18 @@ class TerminalAskWaiter:
         if deadline <= started_at:
             return self._unavailable(identity, SafeWaitUnavailableReason.DEADLINE_EXCEEDED)
         bounded_deadline = min(deadline, started_at + self.max_wait_seconds)
+        last_observed_state: ExecutionWaitState | None = None
 
         while True:
             if not self._request_matches(identity, context, admission_result, requester):
                 return self._unavailable(identity, SafeWaitUnavailableReason.CORRELATION_MISMATCH)
             read_timeout = self._remaining(bounded_deadline)
             if read_timeout <= 0:
-                return self._unavailable(identity, SafeWaitUnavailableReason.DEADLINE_EXCEEDED)
+                return self._unavailable(
+                    identity,
+                    SafeWaitUnavailableReason.DEADLINE_EXCEEDED,
+                    last_observed_state=last_observed_state,
+                )
             try:
                 status = await asyncio.wait_for(
                     self.admission.status(context=context, result=admission_result),
@@ -90,10 +96,16 @@ class TerminalAskWaiter:
                 )
             except asyncio.TimeoutError:
                 return self._unavailable(
-                    identity, SafeWaitUnavailableReason.DEADLINE_EXCEEDED
+                    identity,
+                    SafeWaitUnavailableReason.DEADLINE_EXCEEDED,
+                    last_observed_state=last_observed_state,
                 )
             except Exception:
-                return self._unavailable(identity, SafeWaitUnavailableReason.READBACK_UNAVAILABLE)
+                return self._unavailable(
+                    identity,
+                    SafeWaitUnavailableReason.READBACK_UNAVAILABLE,
+                    last_observed_state=last_observed_state,
+                )
 
             if not self._status_matches(identity, status):
                 return self._unavailable(identity, SafeWaitUnavailableReason.CORRELATION_MISMATCH)
@@ -105,19 +117,34 @@ class TerminalAskWaiter:
                     status=status,
                     deadline=bounded_deadline,
                 )
+            last_observed_state = (
+                ExecutionWaitState.RUNNING
+                if status.status is AskAdmissionLifecycle.RUNNING
+                else ExecutionWaitState.PENDING
+            )
 
             now = self.clock()
             if not isfinite(now):
                 return self._unavailable(
-                    identity, SafeWaitUnavailableReason.READBACK_UNAVAILABLE
+                    identity,
+                    SafeWaitUnavailableReason.READBACK_UNAVAILABLE,
+                    last_observed_state=last_observed_state,
                 )
             remaining = bounded_deadline - now
             if remaining <= 0:
-                return self._unavailable(identity, SafeWaitUnavailableReason.DEADLINE_EXCEEDED)
+                return self._unavailable(
+                    identity,
+                    SafeWaitUnavailableReason.DEADLINE_EXCEEDED,
+                    last_observed_state=last_observed_state,
+                )
             try:
                 await self.sleeper(min(poll_interval, remaining))
             except Exception:
-                return self._unavailable(identity, SafeWaitUnavailableReason.READBACK_UNAVAILABLE)
+                return self._unavailable(
+                    identity,
+                    SafeWaitUnavailableReason.READBACK_UNAVAILABLE,
+                    last_observed_state=last_observed_state,
+                )
 
     async def _read_terminal_message(
         self,
@@ -128,13 +155,18 @@ class TerminalAskWaiter:
         status: AskAdmissionStatus,
         deadline: float,
     ) -> TerminalAskWaitResult:
+        terminal_state = ExecutionWaitState.TERMINAL
         if status.outcome is None or status.attempt_id is None:
             return self._unavailable(
-                identity, SafeWaitUnavailableReason.INCOMPLETE_TERMINAL_STATE
+                identity,
+                SafeWaitUnavailableReason.INCOMPLETE_TERMINAL_STATE,
+                last_observed_state=terminal_state,
             )
         if status.attempt_id != identity.attempt_id:
             return self._unavailable(
-                identity, SafeWaitUnavailableReason.CORRELATION_MISMATCH
+                identity,
+                SafeWaitUnavailableReason.CORRELATION_MISMATCH,
+                last_observed_state=terminal_state,
             )
         try:
             message = await asyncio.wait_for(
@@ -148,19 +180,33 @@ class TerminalAskWaiter:
             )
         except asyncio.TimeoutError:
             return self._unavailable(
-                identity, SafeWaitUnavailableReason.DEADLINE_EXCEEDED
+                identity,
+                SafeWaitUnavailableReason.DEADLINE_EXCEEDED,
+                last_observed_state=terminal_state,
             )
         except Exception:
-            return self._unavailable(identity, SafeWaitUnavailableReason.READBACK_UNAVAILABLE)
+            return self._unavailable(
+                identity,
+                SafeWaitUnavailableReason.READBACK_UNAVAILABLE,
+                last_observed_state=terminal_state,
+            )
         if message is None:
             return self._unavailable(
-                identity, SafeWaitUnavailableReason.INCOMPLETE_TERMINAL_STATE
+                identity,
+                SafeWaitUnavailableReason.INCOMPLETE_TERMINAL_STATE,
+                last_observed_state=terminal_state,
             )
         if not isinstance(message, QAMessageRead):
-            return self._unavailable(identity, SafeWaitUnavailableReason.READBACK_UNAVAILABLE)
+            return self._unavailable(
+                identity,
+                SafeWaitUnavailableReason.READBACK_UNAVAILABLE,
+                last_observed_state=terminal_state,
+            )
         if message.state is not QAMessageState.TERMINAL:
             return self._unavailable(
-                identity, SafeWaitUnavailableReason.INCOMPLETE_TERMINAL_STATE
+                identity,
+                SafeWaitUnavailableReason.INCOMPLETE_TERMINAL_STATE,
+                last_observed_state=terminal_state,
             )
         if (
             message.message_id != identity.message_id
@@ -172,7 +218,9 @@ class TerminalAskWaiter:
             or message.cancelled != (status.outcome is AnswerQuestionOutcome.CANCELLED)
         ):
             return self._unavailable(
-                identity, SafeWaitUnavailableReason.CORRELATION_MISMATCH
+                identity,
+                SafeWaitUnavailableReason.CORRELATION_MISMATCH,
+                last_observed_state=terminal_state,
             )
 
         if status.outcome is AnswerQuestionOutcome.ANSWERED:
@@ -189,11 +237,15 @@ class TerminalAskWaiter:
                 or not presentation.citation_ids
             ):
                 return self._unavailable(
-                    identity, SafeWaitUnavailableReason.AUTHORIZATION_CHANGED
+                    identity,
+                    SafeWaitUnavailableReason.AUTHORIZATION_CHANGED,
+                    last_observed_state=terminal_state,
                 )
         elif message.answer is not None or message.accepted_presentation is not None:
             return self._unavailable(
-                identity, SafeWaitUnavailableReason.CORRELATION_MISMATCH
+                identity,
+                SafeWaitUnavailableReason.CORRELATION_MISMATCH,
+                last_observed_state=terminal_state,
             )
 
         return TerminalAskWaitResult(
@@ -203,6 +255,7 @@ class TerminalAskWaiter:
                 outcome=status.outcome,
             ),
             message=message,
+            last_observed_state=terminal_state,
         )
 
     @staticmethod
@@ -240,6 +293,8 @@ class TerminalAskWaiter:
             or status.message_id != identity.message_id
         ):
             return False
+        if status.status is AskAdmissionLifecycle.RUNNING:
+            return status.attempt_id == identity.attempt_id
         return status.attempt_id in (None, identity.attempt_id)
 
     def _remaining(self, deadline: float) -> float:
@@ -252,13 +307,16 @@ class TerminalAskWaiter:
     def _unavailable(
         identity: AdmittedExecutionIdentity,
         reason: SafeWaitUnavailableReason,
+        *,
+        last_observed_state: ExecutionWaitState | None = None,
     ) -> TerminalAskWaitResult:
         return TerminalAskWaitResult(
             wait=TerminalWaitResult(
                 identity=identity,
                 state=ExecutionWaitState.UNAVAILABLE,
                 unavailable_reason=reason,
-            )
+            ),
+            last_observed_state=last_observed_state,
         )
 
 

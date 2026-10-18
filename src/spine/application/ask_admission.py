@@ -28,7 +28,10 @@ from spine.application.persistence.context import (
 from spine.application.persistence.errors import InvalidPersistenceContextError
 from spine.application.persistence.errors import AnswerQuestionRunNotFoundError
 from spine.domain.capabilities.answer_question import AnswerQuestionOutcome
-from spine.domain.capabilities.answer_question_runs import AnswerQuestionRunState
+from spine.domain.capabilities.answer_question_runs import (
+    AnswerQuestionAttemptState,
+    AnswerQuestionRunState,
+)
 from spine.domain.qa_sessions import QAMessageState
 
 
@@ -75,6 +78,18 @@ class PersistedAskAdmissionService:
             link = await uow.answer_question_runs.resolve_message_link(result.run_id)
             if link is None or link.session_id != result.session_id or link.message_id != result.message_id:
                 raise ValueError("Ask admission status lineage is invalid")
+            attempt_id = None
+            if run.state is AnswerQuestionRunState.RUNNING:
+                attempts = await uow.answer_question_runs.list_attempts(run.run_id)
+                active_attempts = tuple(
+                    attempt
+                    for attempt in attempts
+                    if attempt.state is AnswerQuestionAttemptState.RUNNING
+                )
+                if len(active_attempts) > 1:
+                    raise ValueError("Ask admission status attempt lineage is ambiguous")
+                if active_attempts:
+                    attempt_id = active_attempts[0].attempt_id
             await uow.commit()
         if run.state is AnswerQuestionRunState.COMPLETED:
             return AskAdmissionStatus(
@@ -96,6 +111,7 @@ class PersistedAskAdmissionService:
                 if run.state is AnswerQuestionRunState.RUNNING
                 else AskAdmissionLifecycle.ADMITTED
             ),
+            attempt_id=attempt_id,
         )
 
     async def request_cancellation(
