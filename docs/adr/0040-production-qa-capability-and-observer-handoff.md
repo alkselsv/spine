@@ -192,6 +192,35 @@ across incomplete/retried samples is allowed. V1 serialization and
 dispatch on `schema_version`; #480 owns v2 report serialization and keeps both
 measurements distinct.
 
+### D8 — Versioned observer capture routing
+
+Observer-routed executions may use the existing strictly typed
+`ObserverRoutedAskAdmissionWorkflowInput` wrapper, or an equivalent
+backward-compatible versioned wrapper, to carry `capture_id`,
+`subscription_id`, and the subscription expiry needed by the worker publisher.
+These values are opaque routing metadata, not authorization credentials.
+The existing application and authenticated `CaptureChannel` boundaries remain
+responsible for authorization and full canonical execution identity checks.
+Legacy Ask Admission v1 without observer capture remains supported. Protected
+retrieval, context bundle, answer, and disclosure values remain in worker
+memory and the authenticated ephemeral capture channel; they are not included
+in Temporal input, result, history, or durable metadata. This refines #476's
+capture-enabled metadata contract, which previously named only `capture_id`.
+
+### D9 — Canonical persisted Q&A attempt identity
+
+The canonical Q&A domain attempt identity and attempt number are allocated and
+persisted before authorized retrieval begins. A retry of the same logical
+execution, including a Temporal Activity retry, resumes the same persisted
+attempt identity. A new Q&A domain attempt is allocated through the canonical
+run/attempt persistence lifecycle and receives a distinct identity. Temporal
+Activity attempt numbers and Q&A domain attempt numbers remain separate.
+Capability input, Context Broker capture, terminal status, `CaptureEnvelope`,
+and observer validation all use the persisted Q&A attempt identity. The
+observer does not derive an attempt identity from `run_id` or assume an
+attempt ordinal. Capture publication failure does not start another retrieval
+or change the canonical Q&A result; `CaptureChannel` binding remains one-shot.
+
 ## Consequences
 
 - #469 owns the concrete production capability, dependency wiring, durable
