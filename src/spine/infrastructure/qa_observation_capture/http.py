@@ -494,15 +494,20 @@ class HttpCaptureChannel(CaptureChannel):
             cleanup_task = asyncio.create_task(
                 self.cleanup(subscription_id=subscription_id)
             )
-            try:
-                await asyncio.shield(cleanup_task)
-            except asyncio.CancelledError:
+            while True:
                 try:
-                    await cleanup_task
+                    disposition = await asyncio.shield(cleanup_task)
+                    break
+                except asyncio.CancelledError:
+                    if cleanup_task.done():
+                        raise CaptureTransportUnavailable() from None
                 except Exception:
-                    pass
-            except Exception:
-                pass
+                    raise CaptureTransportUnavailable() from None
+            if disposition not in {
+                CaptureDisposition.CLEANED,
+                CaptureDisposition.NOT_FOUND,
+            }:
+                raise CaptureTransportUnavailable()
             raise
         except (
             CaptureTransportUnavailable,

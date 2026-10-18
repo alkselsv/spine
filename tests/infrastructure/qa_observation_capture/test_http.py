@@ -20,8 +20,8 @@ from spine.infrastructure.qa_observation_capture.http import (
     MAX_CAPTURE_PAYLOAD_BYTES,
     CaptureWorkload,
     CaptureWorkloadRole,
+    CaptureTransportUnavailable,
     HttpCaptureChannel,
-    _CaptureService,
     create_capture_channel_router,
 )
 from tests.application.qa_observation.factories import (
@@ -249,43 +249,113 @@ async def test_receive_cancellation_cleans_subscription_before_propagating():
 async def test_server_observed_disconnect_cleans_subscription():
     clock = FakeClock()
     authorizer = FakeAuthorizer()
-    service = _CaptureService(authorizer=authorizer, clock=clock)
+    workloads = {
+        "Bearer observer-test": OBSERVER,
+        "Bearer worker-test": WORKER,
+    }
+
+    async def authenticate(authorization):
+        return workloads.get(authorization)
+
+    app = FastAPI()
+    app.include_router(
+        create_capture_channel_router(
+            authenticator=authenticate,
+            authorizer=authorizer,
+            clock=clock,
+        )
+    )
+
+    async def disconnect_after_body(scope, receive, send):
+        if not scope["path"].endswith("/receive"):
+            await app(scope, receive, send)
+            return
+
+        body_complete = False
+
+        async def receive_with_disconnect():
+            nonlocal body_complete
+            if body_complete:
+                return {"type": "http.disconnect"}
+            message = await receive()
+            if message["type"] == "http.request" and not message.get(
+                "more_body", False
+            ):
+                body_complete = True
+            return message
+
+        await app(scope, receive_with_disconnect, send)
+
+    transport = httpx.ASGITransport(app=disconnect_after_body)
+    observer = HttpCaptureChannel(
+        base_url="https://capture.test",
+        headers=lambda: {"Authorization": "Bearer observer-test"},
+        transport=transport,
+    )
+    worker = HttpCaptureChannel(
+        base_url="https://capture.test",
+        headers=lambda: {"Authorization": "Bearer worker-test"},
+        transport=transport,
+    )
     envelope = capture_envelope()
-    subscription = await service.register(
-        OBSERVER,
-        envelope.capture_id,
-        timedelta(minutes=1),
+    subscription = await observer.register(
+        capture_id=envelope.capture_id,
+        ttl=timedelta(minutes=1),
     )
     envelope = CaptureEnvelope.model_validate(
         envelope.model_dump(mode="python")
         | {"subscription_id": subscription.subscription_id}
     )
     identity = execution_identity()
-    assert await service.bind(
-        OBSERVER,
-        subscription.subscription_id,
-        identity,
+    assert await observer.bind(
+        subscription_id=subscription.subscription_id,
+        identity=identity,
     ) is CaptureDisposition.BOUND
 
-    disconnect_checks = 0
-
-    async def disconnected() -> bool:
-        nonlocal disconnect_checks
-        disconnect_checks += 1
-        return True
-
-    result = await service.receive(
-        OBSERVER,
-        subscription.subscription_id,
-        identity,
-        timedelta(seconds=10),
-        disconnected,
+    result = await observer.receive(
+        subscription_id=subscription.subscription_id,
+        identity=identity,
+        timeout=timedelta(seconds=10),
     )
 
     assert result.state is CaptureReceiveState.UNAVAILABLE
     assert result.capture is None
-    assert disconnect_checks == 1
-    assert await service.publish(WORKER, envelope) is CaptureDisposition.NOT_FOUND
+    assert await worker.publish(envelope) is CaptureDisposition.NOT_FOUND
+    await observer.close()
+    await worker.close()
+
+
+@pytest.mark.asyncio
+async def test_receive_cancellation_fails_unavailable_if_cleanup_is_not_confirmed():
+    receive_started = asyncio.Event()
+    never_respond = asyncio.Event()
+
+    async def handler(request):
+        if request.method == "DELETE":
+            return httpx.Response(503)
+        receive_started.set()
+        await never_respond.wait()
+        return httpx.Response(200, json={"state": "pending", "capture": None})
+
+    observer = HttpCaptureChannel(
+        base_url="https://capture.test",
+        headers=lambda: {"Authorization": "Bearer observer-test"},
+        transport=httpx.MockTransport(handler),
+    )
+    pending_receive = asyncio.create_task(
+        observer.receive(
+            subscription_id=UUID("f6000000-0000-0000-0000-000000000471"),
+            identity=execution_identity(),
+            timeout=timedelta(seconds=10),
+        )
+    )
+    await receive_started.wait()
+    pending_receive.cancel()
+
+    with pytest.raises(CaptureTransportUnavailable):
+        await pending_receive
+
+    await observer.close()
 
 
 @pytest.mark.asyncio
