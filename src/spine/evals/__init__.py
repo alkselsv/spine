@@ -60,6 +60,17 @@ from spine.evals.real_qa_r1 import (
     runtime_revision_binding_digest,
     runtime_revision_bindings_digest,
 )
+from spine.evals.corpus_preparation import (
+    CORPUS_PREPARATION_REPORT_SCHEMA,
+    ApprovedCorpusArtifact,
+    ApprovedCorpusArtifactLocation,
+    ApprovedCorpusPreparationService,
+    CorpusPreparationReport,
+    CorpusPreparationStatus,
+    CorpusRevisionPreparation,
+    FilesystemApprovedCorpusArtifactStore,
+    corpus_readiness_request_from_bindings,
+)
 from spine.evaluations.grounded_answer_safety import (
     GROUNDED_ANSWER_SAFETY_SEAM,
     GroundedAnswerSafetyGate,
@@ -115,6 +126,15 @@ __all__ = [
     "runtime_mapping_manifest_digest",
     "runtime_revision_binding_digest",
     "runtime_revision_bindings_digest",
+    "CORPUS_PREPARATION_REPORT_SCHEMA",
+    "ApprovedCorpusArtifact",
+    "ApprovedCorpusArtifactLocation",
+    "ApprovedCorpusPreparationService",
+    "CorpusPreparationReport",
+    "CorpusPreparationStatus",
+    "CorpusRevisionPreparation",
+    "FilesystemApprovedCorpusArtifactStore",
+    "corpus_readiness_request_from_bindings",
     "GROUNDED_ANSWER_SAFETY_SEAM",
     "GroundedAnswerSafetyGate",
     "GroundedAnswerSafetyResult",

@@ -205,7 +205,7 @@ def test_issue369_evidence_is_pinned_to_real_merged_git_lineage() -> None:
         (ROOT / repository_execution.source_artifact).read_text(encoding="utf-8")
     )
     assert all(result["status"] == "passed" for result in repository_artifact["results"])
-    assert repository_artifact["results"][2]["summary"] == "3407 passed, 5 skipped"
+    assert repository_artifact["results"][2]["summary"] == "3445 passed, 5 skipped"
     assert repository_artifact["qualified_tree_sha256"] == qualified_tree_sha256(ROOT)
     web_execution = execution_by_id["issue-369-web-diagnostics:v1"]
     assert web_execution.environment is QualificationEnvironment.BROWSER

@@ -61,6 +61,40 @@ The loader validates source/evidence integrity only; it does not run RAG quality
 evaluation. A metadata validation report always has `evaluation_status:
 not_run`; this does not indicate a real RAG evaluation result.
 
+## Canonical corpus preparation and readiness
+
+After structural validation, the local benchmark composition may use
+`ApprovedCorpusPreparationService` with the validated private
+`r1-runtime-mapping-manifest:v1`, an issued `AuthorizedRequestContext`, and an
+artifact adapter for the approved local files. The service accepts only the
+pinned 30-source dataset identity; workspace and environment come from the
+trusted context, never from operator-supplied selectors. The root-confined
+`FilesystemApprovedCorpusArtifactStore` is the concrete adapter for an
+explicitly registered set of local files. The service sends every revision
+through `DocumentIngestionOrchestrator`;
+it never writes to Cognee or another vector index. Its stable idempotency key is
+derived from the manifest and approved ingestion intent, so a retry reuses the
+same logical source and canonical revision lifecycle. A `prepared` result means
+that canonical ingestion accepted the revision and durably requested projection;
+it does not mean that projection is active.
+
+After the normal projection worker and publication path have completed, convert
+the verified `r1-runtime-revision-binding:v1` records with
+`corpus_readiness_request_from_bindings(...)` and call
+`CanonicalCorpusReadinessService.inspect(...)` using the issued trusted
+workspace/environment context. A corpus is `ready` only when every requested
+revision is accepted and current, has completed canonical projection processing,
+is the exact included member of the active healthy/current snapshot, and the
+existing authorized retrieval-scope resolver returns exactly the requested
+canonical revision set. Missing, rejected, stale, tombstoned, excluded,
+degraded, cross-scope, or unavailable state returns an actionable non-ready
+reason without running Q&A.
+
+The preparation report, `r1-corpus-readiness:v1` report, production observation,
+quality evaluation, and release qualification are separate records. Preparation
+and readiness therefore keep observation/evaluation/release fields at
+`not_run`; do not infer later-stage success from them.
+
 Использовать real data можно только из локальных приватных директорий. Не
 добавляйте оригиналы, anonymized representations, Q&A JSON/CSV, цитаты или
 извлечённый текст в Git, CI artifacts, Issues, PR, логи или сторонние сервисы.
