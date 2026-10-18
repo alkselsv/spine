@@ -140,8 +140,10 @@ run, session, message, workspace, environment, requester, attempt, and capture
 routing identity. `trace_id` is acceptable only with proven per-case uniqueness;
 otherwise use an opaque `capture_id`. Delivery is bounded, TTL-limited,
 one-shot acknowledged, idempotent for duplicates, and cleaned up on completion
-or expiry. Capture loss fails observation closed but never changes the
-canonical Q&A result or triggers another retrieval.
+or expiry. Observer acknowledgement, timeout, or disconnect also removes its
+subscription; this cleanup never cancels the admitted workflow. Capture loss
+fails observation closed but never changes the canonical Q&A result or triggers
+another retrieval.
 
 ### Worker-local latency
 
@@ -157,7 +159,9 @@ samples do not produce fabricated aggregate latency. Preserve
 `ProductionContractApplicationFlow.execute` latency boundary in ADR-0039. Map
 worker invocation duration into the existing execution-record boundary only
 when meanings match; otherwise require a separately versioned execution-record
-contract.
+contract. Include the non-negative `worker_elapsed_ns` scalar and its
+`activity_attempt_id` in the ephemeral execution/capture envelope; do not
+transmit worker timestamps.
 
 ## Consequences
 
