@@ -4,12 +4,13 @@ Spine — платформа для корпоративных AI-сценари
 контекст, совместная работа агентов и людей и контролируемые действия во внешних
 системах.
 
-Проект находится на ранней стадии. В репозитории работает legacy Q&A-прототип на
-Cognee и реализован значительный R0-фундамент: PostgreSQL persistence и tenancy,
-identity/authorization, diagnostics/audit/outbox, immutable original storage,
-source/ingestion records и framework-independent local Agent Runtime. Эти
-компоненты ещё не соединены в готовый R1-путь с governed retrieval, citations и
-веб-интерфейсом.
+Проект находится на стадии интеграции и квалификации R1 — Q&A по внутренним
+документам. R0-фундамент, versioned ingestion, governed retrieval contracts,
+grounded-answer contracts, durable Q&A lifecycle и администраторский web-интерфейс
+уже реализованы и проверены на своих границах. Полный production-capable путь
+`upload → projection → answer → citations → UI` ещё не квалифицирован: требуется
+единая production-композиция `answer_question`, реальный benchmark и финальные
+release gates. Legacy Q&A-прототип на Cognee сохраняется как compatibility path.
 
 ## Продуктовые кейсы
 
@@ -40,15 +41,28 @@ Spine развивается вертикальными релизами в фи
 Квалификация отдельного компонента не означает, что квалифицирован весь R1 или
 реальная внешняя интеграция.
 
-### Implemented
+### Реализовано
 
 - PostgreSQL persistence kernel с tenancy/RLS, idempotency и transactional outbox;
 - provider-neutral identity и request authorization contracts;
 - trace context, structured errors, diagnostic events и append-only audit;
 - immutable original-storage contracts и filesystem adapter;
-- `SourceObject`/`SourceRevision`, admission decisions и ingestion ledger;
+- `SourceObject`/`SourceRevision`, admission decisions, ingestion ledger и
+  canonical source/projection lifecycle;
+- versioned ingestion PDF, DOCX, XLSX, Markdown и text через `/api/v1`, включая
+  stable locators, batch/partial outcomes и Knowledge Control Plane;
+- provider-neutral Context Projection и authorized Context Broker с immutable
+  Context Bundles, access-policy enforcement и disclosure revalidation;
+- grounded `answer_question` contracts: typed outcomes, abstention, claims,
+  citations, lineage validation и Q&A run persistence;
 - local Agent Runtime: typed schemas and artifacts, explicit registry/bindings,
-  diagnostics, cooperative cancellation, replay/recovery и bounded local retry.
+  diagnostics, cooperative cancellation, replay/recovery и bounded local retry;
+- durable Ask Admission через PostgreSQL, transactional outbox и Temporal,
+  включая idempotency, retry, cancellation и terminal arbitration;
+- React Control Plane: документы и ревизии, ingestion/projection state,
+  диагностический Chat, citation inspector, feedback и Q&A runs;
+- synthetic regression gate и компоненты real-dataset mapping, canonical corpus
+  preparation и post-observation evaluation.
 
 ### Operational compatibility path
 
@@ -60,42 +74,45 @@ Spine развивается вертикальными релизами в фи
 - diagnostics и authorization composition для API/workers;
 - synthetic `answer_question`-shaped handler через общий Agent Runtime contract.
 
-Первые пять пунктов образуют legacy prototype path. Остальные два доказывают
-совместимость инфраструктурных контрактов. Эти пути operational, но не имеют
-статуса `integrated`, потому что не входят в целевой governed R1 flow.
+Первые пять пунктов образуют legacy prototype path. Он operational, но не имеет
+статуса `integrated`, потому что не входит в целевой governed R1 flow. Команды
+быстрого старта ниже относятся именно к этому compatibility path.
 
-### Integrated
+### Интегрировано и квалифицировано на ограниченных границах
 
-Пока ни один компонент не интегрирован в полный целевой путь
-`upload → projection → answer → citations → UI`.
+- supported local ingestion profile квалифицирован с реальными PostgreSQL и
+  filesystem adapters;
+- PostgreSQL persistence/tenancy, RLS, outbox и durable Ask lifecycle проверены
+  на disposable PostgreSQL 17 и Temporal test server;
+- Context Projection и authorized Context Broker квалифицированы offline на
+  deterministic provider-shaped fakes; production Cognee/Neo4j/PGVector profile
+  не квалифицирован;
+- `answer_question`, grounded-answer safety и disclosure gates квалифицированы
+  offline и на disposable PostgreSQL, без реального LLM/provider execution;
+- Knowledge Control Plane и Chat/Runs проходят component, in-process ASGI и
+  controlled Playwright gates с synthetic API responses;
+- synthetic R1 regression gate воспроизводим и квалифицирован offline;
+- operational telemetry, metrics, correlation и no-log UI diagnosis собраны и
+  квалифицированы детерминированно, но deployment backup/restore и physical
+  provider evidence остаются незавершёнными.
 
-### Qualified
+### Что ещё блокирует R1
 
-- PostgreSQL persistence/tenancy kernel — repository contract и real-PostgreSQL
-  gates при наличии обязательного container runtime;
-- diagnostics, audit и outbox delivery foundation — offline qualification;
-- identity и authorization foundation — offline qualification, с отдельным
-  opt-in live OIDC provider gate;
-- local Agent Runtime — deterministic fake-backed offline qualification по
-  AC1–AC20 из Issue #104.
+- единая production-композиция `AnswerQuestionCapability`, общая для API,
+  Temporal worker и evaluation observer;
+- bounded canonical terminal readback и безопасный typed capture из того же
+  authorized execution без повторного retrieval;
+- фактический прогон утверждённого private Golden Dataset
+  `0.3.9-user-approved` через production application flow;
+- утверждение quality/latency/cost/usefulness thresholds и полная end-to-end
+  квалификация R0 + R1 через UI;
+- deployment-approved backup/restore exercises и production qualification
+  выбранного Cognee/Neo4j/PGVector и LLM profile.
 
-Local Agent Runtime qualification не включает реальный model provider, Tool
-Gateway, PostgreSQL Artifact persistence, Temporal Activity, Cognee projection
-или production integration.
-
-### Ещё не интегрировано в R1
-
-- versioned document ingestion через публичный `/api/v1` contract;
-- object-level document access policy в retrieval path;
-- versioned Context projection и Cognee adapter за Context Broker;
-- реальная capability `answer_question`, grounded outcomes, abstention и
-  структурированные citations;
-- Knowledge Control Plane resources и пользовательский путь через готовые
-  generated API client и web foundation;
-- R1 datasets, regression evaluations и release qualification.
-
-Поэтому `/ask` и `/ingest` остаются prototype endpoints, а наличие
-квалифицированных R0-компонентов не означает готовность пользовательского R1.
+Поэтому legacy `/ask` и `/ingest` остаются prototype endpoints, а наличие
+квалифицированных компонентов и fake-backed UI journeys не означает готовность
+пользовательского R1 или production approval. Канонический статус release gates
+зафиксирован в [`docs/qualification/`](docs/qualification/).
 
 ## Быстрый старт
 
@@ -234,16 +251,16 @@ src/spine/
   domain/          чистые бизнес-модели и инварианты
   application/     команды, запросы и policies
   auth/            identity и request-authorization contracts
-  api/             FastAPI control plane и legacy Q&A endpoints
+  api/             FastAPI control plane, /api/v1 resources и legacy endpoints
   connectors/      интеграции с внешними источниками
   ingestion/       целевой ingestion и identity resolution
   memory/          Context Broker и Cognee adapter
   agents/          framework-independent agent runtime
   workflows/       durable workflow adapters
-  evaluations/     evaluators и release gates
+  evaluations/     evaluators; eval datasets/runners находятся в evals/
   infrastructure/  persistence, outbox, storage и telemetry
 migrations/         линейные Alembic revisions канонической PostgreSQL schema
-web/               каркас продуктового интерфейса
+web/               React Control Plane для R1 Knowledge, Chat и Runs
 tests/             автоматические проверки
 ```
 
