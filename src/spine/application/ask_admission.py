@@ -84,6 +84,7 @@ class PersistedAskAdmissionService:
                 run_id=result.run_id,
                 status=AskAdmissionLifecycle.TERMINAL,
                 outcome=run.outcome,
+                attempt_id=run.final_attempt_id,
             )
         return AskAdmissionStatus(
             command_id=result.command_id,

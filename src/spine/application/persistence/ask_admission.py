@@ -179,6 +179,7 @@ class AskAdmissionStatus:
     run_id: UUID
     status: AskAdmissionLifecycle
     outcome: AnswerQuestionOutcome | None = None
+    attempt_id: UUID | None = None
 
     def __post_init__(self) -> None:
         if any(
