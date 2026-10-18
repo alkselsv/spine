@@ -253,6 +253,15 @@ async def test_worker_process_publishes_over_http_and_disconnect_cleans_subscrip
         await asyncio.to_thread(producer.join, 10)
         assert producer.exitcode == 0
         assert results.get(timeout=1) == CaptureDisposition.BUFFERED.value
+        restarted_worker_results = context.Queue()
+        restarted_worker = context.Process(
+            target=_publish_from_worker_process,
+            args=(base_url, envelope.model_dump(mode="json"), restarted_worker_results),
+        )
+        restarted_worker.start()
+        await asyncio.to_thread(restarted_worker.join, 10)
+        assert restarted_worker.exitcode == 0
+        assert restarted_worker_results.get(timeout=1) == CaptureDisposition.DUPLICATE.value
         received = await observer.receive(
             subscription_id=subscription.subscription_id,
             identity=identity,
@@ -548,6 +557,35 @@ async def test_workspace_captures_are_isolated_across_observer_reads(transport_s
             timeout=timedelta(0),
         )
     ).capture == second
+    await observer.close()
+    await worker.close()
+
+
+@pytest.mark.asyncio
+async def test_receive_timeout_fails_closed_and_cleans_subscription(transport_setup):
+    _, _, client, _ = transport_setup
+    observer = client("observer-test")
+    worker = client("worker-test")
+    envelope = capture_envelope()
+    subscription = await observer.register(
+        capture_id=envelope.capture_id, ttl=timedelta(minutes=1)
+    )
+    identity = execution_identity()
+    assert await observer.bind(
+        subscription_id=subscription.subscription_id, identity=identity
+    ) is CaptureDisposition.BOUND
+
+    result = await observer.receive(
+        subscription_id=subscription.subscription_id,
+        identity=identity,
+        timeout=timedelta(milliseconds=20),
+    )
+    assert result.state is CaptureReceiveState.UNAVAILABLE
+    envelope = CaptureEnvelope.model_validate(
+        envelope.model_dump(mode="python")
+        | {"subscription_id": subscription.subscription_id}
+    )
+    assert await worker.publish(envelope) is CaptureDisposition.NOT_FOUND
     await observer.close()
     await worker.close()
 

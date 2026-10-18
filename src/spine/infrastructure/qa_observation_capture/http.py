@@ -191,7 +191,10 @@ class _CaptureService:
                 return CaptureReceiveResult(CaptureReceiveState.UNAVAILABLE)
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
-                return result
+                if timeout <= timedelta(0):
+                    return result
+                await self.cleanup(workload, subscription_id)
+                return CaptureReceiveResult(CaptureReceiveState.UNAVAILABLE)
             await asyncio.sleep(min(0.01, remaining))
 
     async def publish(
@@ -454,15 +457,11 @@ class HttpCaptureChannel(CaptureChannel):
     async def bind(
         self, *, subscription_id: UUID, identity: AdmittedExecutionIdentity
     ) -> CaptureDisposition:
-        try:
-            response = await self._request(
-                "POST",
-                f"/subscriptions/{subscription_id}/bind",
-                json={"identity": identity.model_dump(mode="json")},
-            )
-            return _DispositionResponse.model_validate(response.json()).disposition
-        except (CaptureTransportUnavailable, ValidationError):
-            return CaptureDisposition.UNAVAILABLE
+        return await self._request_disposition(
+            "POST",
+            f"/subscriptions/{subscription_id}/bind",
+            json={"identity": identity.model_dump(mode="json")},
+        )
 
     async def receive(
         self,
@@ -491,13 +490,9 @@ class HttpCaptureChannel(CaptureChannel):
             return CaptureReceiveResult(CaptureReceiveState.UNAVAILABLE)
 
     async def publish(self, envelope: CaptureEnvelope) -> CaptureDisposition:
-        try:
-            response = await self._request(
-                "POST", "/captures", json=envelope.model_dump(mode="json")
-            )
-            return _DispositionResponse.model_validate(response.json()).disposition
-        except (CaptureTransportUnavailable, ValidationError):
-            return CaptureDisposition.UNAVAILABLE
+        return await self._request_disposition(
+            "POST", "/captures", json=envelope.model_dump(mode="json")
+        )
 
     async def acknowledge(
         self,
@@ -506,24 +501,27 @@ class HttpCaptureChannel(CaptureChannel):
         capture_id: UUID,
         identity: AdmittedExecutionIdentity,
     ) -> CaptureDisposition:
-        try:
-            response = await self._request(
-                "POST",
-                f"/subscriptions/{subscription_id}/acknowledge",
-                json={
-                    "capture_id": str(capture_id),
-                    "identity": identity.model_dump(mode="json"),
-                },
-            )
-            return _DispositionResponse.model_validate(response.json()).disposition
-        except (CaptureTransportUnavailable, ValidationError):
-            return CaptureDisposition.UNAVAILABLE
+        return await self._request_disposition(
+            "POST",
+            f"/subscriptions/{subscription_id}/acknowledge",
+            json={
+                "capture_id": str(capture_id),
+                "identity": identity.model_dump(mode="json"),
+            },
+        )
 
     async def cleanup(self, *, subscription_id: UUID) -> CaptureDisposition:
+        return await self._request_disposition(
+            "DELETE", f"/subscriptions/{subscription_id}"
+        )
+
+    async def _request_disposition(
+        self, method: str, path: str, **kwargs: object
+    ) -> CaptureDisposition:
         try:
-            response = await self._request("DELETE", f"/subscriptions/{subscription_id}")
+            response = await self._request(method, path, **kwargs)
             return _DispositionResponse.model_validate(response.json()).disposition
-        except (CaptureTransportUnavailable, ValidationError):
+        except (CaptureTransportUnavailable, ValidationError, ValueError):
             return CaptureDisposition.UNAVAILABLE
 
     async def _request(self, method: str, path: str, **kwargs: object) -> httpx.Response:
