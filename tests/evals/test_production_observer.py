@@ -4,15 +4,18 @@ from collections.abc import Iterator
 from uuid import UUID
 
 import pytest
+from pydantic import ValidationError
 
 from spine.evals.production_contract import (
     CaseExecutionDisposition,
     CaseExecutionFailureCategory,
+    CaseExecutionRecordV2,
     ProductionContractApplicationFlow,
     ProductionContractAuthorizationDenied,
     ProductionContractCaseRequest,
     ProductionContractObservation,
     ProductionContractObserver,
+    ProductionContractFlowResult,
     ProductionContractPartialFailure,
     ProductionContractUnavailable,
 )
@@ -244,3 +247,99 @@ async def test_observed_record_round_trip_revalidates_observation_before_release
     parsed = type(record).model_validate(record.model_dump(mode="python"))
 
     assert parsed == record
+
+
+@pytest.mark.asyncio
+async def test_v1_execution_record_keeps_accepted_timing_and_serialization() -> None:
+    record = await ProductionContractObserver(
+        flow=_Flow(_safe_observation(load_r1_dataset().cases[1])),
+        clock=_Clock(iter((3.0, 3.007))),
+    ).observe(request=_request())
+
+    payload = record.model_dump(mode="json")
+    assert record.schema_version == "r1-case-execution-record:v1"
+    assert record.observer_elapsed_ms == 7
+    assert "worker_execution_elapsed_ns" not in payload
+    assert "worker_execution_attempt_id" not in payload
+    assert type(record).model_validate_json(record.model_dump_json()) == record
+
+
+@pytest.mark.asyncio
+async def test_v2_keeps_observer_wall_time_separate_from_worker_duration() -> None:
+    observation = _safe_observation(load_r1_dataset().cases[1])
+    attempt_id = observation.question.correlation.attempt_id
+    flow = _Flow(
+        ProductionContractFlowResult(
+            observation=observation,
+            worker_execution_elapsed_ns=125_000_000,
+            worker_execution_attempt_id=attempt_id,
+        )
+    )
+    record = await ProductionContractObserver(
+        flow=flow,
+        clock=_Clock(iter((10.0, 22.0))),
+    ).observe_v2(request=_request())
+
+    assert record.schema_version == "r1-case-execution-record:v2"
+    assert record.observer_elapsed_ms == 12_000
+    assert record.worker_execution_elapsed_ns == 125_000_000
+    assert record.worker_execution_attempt_id == attempt_id
+    assert CaseExecutionRecordV2.model_validate_json(record.model_dump_json()) == record
+
+
+@pytest.mark.asyncio
+async def test_v2_omits_worker_timing_when_sample_is_missing() -> None:
+    record = await ProductionContractObserver(
+        flow=_Flow(_safe_observation(load_r1_dataset().cases[1])),
+        clock=_Clock(iter((1.0, 1.003))),
+    ).observe_v2(request=_request())
+
+    assert record.observer_elapsed_ms == 3
+    assert record.worker_execution_elapsed_ns is None
+    assert record.worker_execution_attempt_id is None
+
+
+@pytest.mark.asyncio
+async def test_v2_rejects_timing_for_a_different_attempt() -> None:
+    observation = _safe_observation(load_r1_dataset().cases[1])
+    wrong_attempt_id = UUID(int=observation.question.correlation.attempt_id.int + 1)
+    record = await ProductionContractObserver(
+        flow=_Flow(
+            ProductionContractFlowResult(
+                observation=observation,
+                worker_execution_elapsed_ns=20,
+                worker_execution_attempt_id=wrong_attempt_id,
+            )
+        ),
+        clock=_Clock(iter((1.0, 1.001))),
+    ).observe_v2(request=_request())
+
+    assert record.disposition is CaseExecutionDisposition.FAILED
+    assert record.failure_category is CaseExecutionFailureCategory.INVALID_OBSERVATION
+    assert record.worker_execution_elapsed_ns is None
+
+
+@pytest.mark.asyncio
+async def test_v2_requires_non_negative_duration_and_paired_attempt_identity() -> None:
+    observation = _safe_observation(load_r1_dataset().cases[1])
+    attempt_id = observation.question.correlation.attempt_id
+    record = await ProductionContractObserver(
+        flow=_Flow(
+            ProductionContractFlowResult(
+                observation=observation,
+                worker_execution_elapsed_ns=1,
+                worker_execution_attempt_id=attempt_id,
+            )
+        ),
+        clock=_Clock(iter((1.0, 1.001))),
+    ).observe_v2(request=_request())
+    payload = record.model_dump(mode="python")
+
+    with pytest.raises(ValidationError):
+        CaseExecutionRecordV2.model_validate(
+            payload | {"worker_execution_attempt_id": None}
+        )
+    with pytest.raises(ValidationError):
+        CaseExecutionRecordV2.model_validate(
+            payload | {"worker_execution_elapsed_ns": -1}
+        )

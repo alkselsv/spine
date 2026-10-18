@@ -15,7 +15,7 @@ from datetime import timedelta
 import hashlib
 import time
 from typing import Protocol
-from uuid import UUID, uuid4, uuid5
+from uuid import UUID, uuid4
 
 from spine.application.ask_terminal_waiter import TerminalAskWaiter
 from spine.application.persistence.ask_admission import AskAdmissionCommand
@@ -31,7 +31,11 @@ from spine.application.qa_observation.channel import (
 )
 from spine.application.qa_observation.admission import ObserverAskAdmission
 from spine.application.qa_sessions import QASessionService
-from spine.application.qa_observation.contracts import AdmittedExecutionIdentity, ExecutionWaitState
+from spine.application.qa_observation.contracts import (
+    AdmittedExecutionIdentity,
+    ExecutionWaitState,
+    TerminalRunWaitResult,
+)
 from spine.application.qa_sessions import QASessionRequester
 from spine.auth import AuthorizationDeniedError
 from spine.domain.common import ActorKind, ActorRef, EnvironmentKind
@@ -39,6 +43,7 @@ from spine.evals.production_contract import (
     ProductionContractApplicationFlow,
     ProductionContractAuthorizationDenied,
     ProductionContractCaseRequest,
+    ProductionContractFlowResult,
     ProductionContractObservation,
     ProductionContractObserverFailure,
     ProductionContractPartialFailure,
@@ -92,7 +97,7 @@ class DurableProductionQAAFlow(ProductionContractApplicationFlow):
 
     async def execute(
         self, request: ProductionContractCaseRequest
-    ) -> ProductionContractObservation:
+    ) -> ProductionContractObservation | ProductionContractFlowResult:
         composition = self.composition
         sessions = composition.sessions
         observer_admission = composition.observer_admission
@@ -159,23 +164,24 @@ class DurableProductionQAAFlow(ProductionContractApplicationFlow):
         except Exception:
             raise ProductionContractUnavailable() from None
 
-        identity = AdmittedExecutionIdentity(
-            command_id=admitted.admission.command_id,
-            run_id=admitted.admission.run_id,
-            session_id=admitted.admission.session_id,
-            message_id=admitted.admission.message_id,
-            workspace_id=request.workspace_id,
-            environment_id=request.environment_id,
-            requester=ActorRef(kind=ActorKind.HUMAN, id=request.principal_id),
-            attempt_id=uuid5(admitted.admission.run_id, "attempt:1"),
-            attempt_number=1,
-        )
-        correlation_id = identity.run_id
+        run_identity = admitted.run_identity
+        if (
+            run_identity.command_id != admitted.admission.command_id
+            or run_identity.run_id != admitted.admission.run_id
+            or run_identity.session_id != admitted.admission.session_id
+            or run_identity.message_id != admitted.admission.message_id
+            or run_identity.workspace_id != request.workspace_id
+            or run_identity.environment_id != request.environment_id
+            or run_identity.requester.id != request.principal_id
+        ):
+            await channel.cleanup(subscription_id=admitted.subscription_id)
+            raise ProductionContractUnavailable()
+        correlation_id = run_identity.run_id
         subscription_id = admitted.subscription_id
         try:
             deadline = self.monotonic() + self.wait_timeout.total_seconds()
-            terminal = await self.waiter.wait(
-                identity=identity,
+            terminal = await self.waiter.wait_for_run(
+                identity=run_identity,
                 context=context,
                 admission_result=admitted.admission,
                 requester=requester,
@@ -183,7 +189,9 @@ class DurableProductionQAAFlow(ProductionContractApplicationFlow):
             )
             if (
                 terminal.wait.state is not ExecutionWaitState.TERMINAL
-                or terminal.wait.identity != identity
+                or terminal.wait.identity != run_identity
+                or not isinstance(terminal.wait, TerminalRunWaitResult)
+                or terminal.wait.execution_identity is None
                 or terminal.message is None
             ):
                 if terminal.wait.unavailable_reason is not None and (
@@ -193,6 +201,19 @@ class DurableProductionQAAFlow(ProductionContractApplicationFlow):
                         correlation_id=correlation_id,
                     )
                 raise ProductionContractUnavailable(correlation_id=correlation_id)
+
+            identity = terminal.wait.execution_identity
+            if not run_identity.matches_execution(identity):
+                raise _partial_failure(identity)
+            binding = await channel.bind(
+                subscription_id=subscription_id,
+                identity=identity,
+            )
+            if binding not in {
+                CaptureDisposition.BOUND,
+                CaptureDisposition.ALREADY_BOUND,
+            }:
+                raise _partial_failure(identity)
 
             receive = await channel.receive(
                 subscription_id=subscription_id,
@@ -243,7 +264,15 @@ class DurableProductionQAAFlow(ProductionContractApplicationFlow):
             )
             if ack not in {CaptureDisposition.ACKNOWLEDGED, CaptureDisposition.DUPLICATE}:
                 raise _partial_failure(identity)
-            return observation
+            return ProductionContractFlowResult(
+                observation=observation,
+                worker_execution_elapsed_ns=envelope.worker_execution_elapsed_ns,
+                worker_execution_attempt_id=(
+                    identity.attempt_id
+                    if envelope.worker_execution_elapsed_ns is not None
+                    else None
+                ),
+            )
         except ProductionContractObserverFailure:
             raise
         except asyncio.CancelledError:

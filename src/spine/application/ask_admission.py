@@ -79,6 +79,7 @@ class PersistedAskAdmissionService:
             if link is None or link.session_id != result.session_id or link.message_id != result.message_id:
                 raise ValueError("Ask admission status lineage is invalid")
             attempt_id = None
+            attempt_number = None
             if run.state is AnswerQuestionRunState.RUNNING:
                 attempts = await uow.answer_question_runs.list_attempts(run.run_id)
                 active_attempts = tuple(
@@ -90,6 +91,17 @@ class PersistedAskAdmissionService:
                     raise ValueError("Ask admission status attempt lineage is ambiguous")
                 if active_attempts:
                     attempt_id = active_attempts[0].attempt_id
+                    attempt_number = active_attempts[0].attempt_number
+            elif run.final_attempt_id is not None:
+                attempts = await uow.answer_question_runs.list_attempts(run.run_id)
+                final_attempts = tuple(
+                    attempt
+                    for attempt in attempts
+                    if attempt.attempt_id == run.final_attempt_id
+                )
+                if len(final_attempts) == 1:
+                    attempt_id = final_attempts[0].attempt_id
+                    attempt_number = final_attempts[0].attempt_number
             await uow.commit()
         if run.state is AnswerQuestionRunState.COMPLETED:
             return AskAdmissionStatus(
@@ -99,7 +111,8 @@ class PersistedAskAdmissionService:
                 run_id=result.run_id,
                 status=AskAdmissionLifecycle.TERMINAL,
                 outcome=run.outcome,
-                attempt_id=run.final_attempt_id,
+                attempt_id=attempt_id,
+                attempt_number=attempt_number,
             )
         return AskAdmissionStatus(
             command_id=result.command_id,
@@ -112,6 +125,7 @@ class PersistedAskAdmissionService:
                 else AskAdmissionLifecycle.ADMITTED
             ),
             attempt_id=attempt_id,
+            attempt_number=attempt_number,
         )
 
     async def request_cancellation(

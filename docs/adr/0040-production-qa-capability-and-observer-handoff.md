@@ -120,6 +120,16 @@ is lost. The existing authorized Context Broker/execution is the sole source
 of the typed records; no second retrieval or reconstruction from run history
 or gold labels is allowed.
 
+The observer retains the canonical command/run/session/message/scope/requester
+identity returned by admission. The canonical attempt is not guessed from
+`run_id`: the bounded waiter resolves `attempt_id` and `attempt_number` from
+PostgreSQL terminal status, then binds the complete execution identity before
+it accepts the capture. The channel may hold one bounded, TTL-limited pre-bind envelope;
+the later bind rejects and discards it if any run or attempt field differs.
+Unavailable status without complete attempt identity fails closed. This keeps
+Temporal Activity retries and later Q&A attempts from being treated as the
+same observer attempt.
+
 ### D5 — bounded canonical terminal readback
 
 The application waiter is read-only and bounded. It polls canonical admission
@@ -159,9 +169,24 @@ samples do not produce fabricated aggregate latency. Preserve
 `ProductionContractApplicationFlow.execute` latency boundary in ADR-0039. Map
 worker invocation duration into the existing execution-record boundary only
 when meanings match; otherwise require a separately versioned execution-record
-contract. Include the non-negative `worker_elapsed_ns` scalar and its
-`activity_attempt_id` in the ephemeral execution/capture envelope; do not
+contract. Include the non-negative `worker_execution_elapsed_ns` scalar and its
+canonical `attempt_id` in the ephemeral execution/capture envelope; do not
 transmit worker timestamps.
+
+### D7 execution-record compatibility
+
+The selected v2 record is `r1-case-execution-record:v2`. It retains
+`observer_elapsed_ms` with the exact v1 boundary and adds nullable
+`worker_execution_elapsed_ns` and `worker_execution_attempt_id`. Both worker
+fields must be null together or present together; a present duration is one
+non-negative worker-local monotonic sample and its ID is the canonical Q&A
+attempt ID from that execution's typed capture. The sample excludes queue wait,
+Temporal scheduling/retry delay, observer readback/capture waiting, corpus
+preparation, and evaluation. No cross-process monotonic timestamp or aggregate
+across incomplete/retried samples is allowed. V1 serialization and
+`ProductionContractObservation:v1` remain unchanged. Downstream consumers
+dispatch on `schema_version`; #480 owns v2 report serialization and keeps both
+measurements distinct.
 
 ## Consequences
 
