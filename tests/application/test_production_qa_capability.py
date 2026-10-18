@@ -24,6 +24,16 @@ from spine.application.persistence.context import (
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.answer_question_context import AnswerQuestionContextResolution
 from spine.application.answer_outcomes import resolve_answer_outcome
+from spine.application.answer_disclosure import (
+    AnswerDisclosureGate,
+    InMemoryAcceptedAnswerOutputPort,
+    InMemoryAnswerDisclosureRepository,
+)
+from spine.application.answer_question_context import AnswerQuestionContextService
+from spine.application.authorized_context_broker import (
+    InMemoryContextBundleStore,
+    SavedContextBundleAccess,
+)
 from spine.application.citation_validation import CitationValidationFacts, ValidCitation
 from spine.application.answer_question_execution import (
     AnswerQuestionExecutionPin,
@@ -61,6 +71,12 @@ from spine.domain.capabilities import (
 from spine.domain.capabilities.answer_disclosure import AnswerDisclosureValidation
 from spine.domain.common import EnvironmentKind
 from spine.domain.context_bundles import ContextBundle
+from spine.domain.disclosure import (
+    DisclosureRevalidationDisposition,
+    DisclosureRevalidationResult,
+    DisclosureValidationFact,
+)
+from spine.memory.contracts import ContextOutcome, ContextReasonCode, ContextResponse
 from spine.domain.capabilities.semantic_support import (
     SemanticSupportEvidence,
     SemanticSupportOutcome,
@@ -71,6 +87,14 @@ from spine.domain.capabilities.semantic_support import (
 )
 from spine.domain.context_bundles import ContextBundle
 from tests.application.test_answer_question_execution import configuration
+from tests.application.test_answer_question_context import (
+    Broker as ContextBroker,
+    Revalidator as ContextRevalidator,
+    pin_for,
+)
+from tests.domain.context_bundle.test_context_bundle_models import (
+    context_bundle as base_context_bundle,
+)
 from tests.domain.capabilities.test_answer_question_candidate import (
     candidate_input,
     candidate_output,
@@ -560,6 +584,122 @@ async def test_supported_answer_is_validated_and_disclosed_once() -> None:
     assert validator.calls == 1
     assert validator.error is None, repr(validator.error)
     assert len(context.disclosures) == 1
+
+
+@pytest.mark.asyncio
+async def test_supported_answer_revalidates_and_persists_through_disclosure_gate() -> (
+    None
+):
+    probe = ProductionAnswerQuestionCapability(
+        context=object(),
+        execution=object(),
+        context_references=References(),
+        disclosure_gate=object(),
+        candidate_runner=object(),
+        validator=object(),
+        disclosure_environment=EnvironmentKind.DEVELOPMENT,
+    )
+    request = probe._request(command())
+    bundle_values = base_context_bundle().model_dump(mode="python")
+    bundle_values.update(
+        {
+            "run_id": request.question.correlation.run_id,
+            "attempt_id": request.question.correlation.attempt_id,
+            "request_id": request.request_id,
+            "idempotency_key": request.idempotency_key,
+            "trusted_request_context_ref": UUID(int=10),
+            "authorization_context_ref": UUID(int=11),
+        }
+    )
+    bundle = ContextBundle.create(**bundle_values)
+    revalidator = ContextRevalidator()
+
+    class CurrentAuthority:
+        async def revalidate(self, authority_request):
+            dependency = authority_request.dependencies.dependencies[0]
+            return DisclosureRevalidationResult(
+                request_id=authority_request.request_id,
+                request_digest=authority_request.command_digest,
+                workspace_id=authority_request.workspace_id,
+                environment_id=authority_request.environment_id,
+                checkpoint=authority_request.checkpoint,
+                disposition=DisclosureRevalidationDisposition.SAFE_REUSE,
+                safe_reason="current_authority_confirmed",
+                facts=(
+                    DisclosureValidationFact.create(
+                        validation_id=UUID(int=53),
+                        request_id=authority_request.request_id,
+                        workspace_id=authority_request.workspace_id,
+                        environment_id=authority_request.environment_id,
+                        run_id=authority_request.run_id,
+                        attempt_id=authority_request.attempt_id,
+                        message_id=None,
+                        checkpoint=authority_request.checkpoint,
+                        dependency_id=dependency.dependency_id,
+                        disposition=DisclosureRevalidationDisposition.SAFE_REUSE,
+                        failure_codes=(),
+                        evaluated_at=datetime(2026, 10, 18, tzinfo=timezone.utc),
+                    ),
+                ),
+            )
+
+    store = InMemoryContextBundleStore()
+    await store.create_or_replay(bundle)
+    context = AnswerQuestionContextService(
+        broker=ContextBroker(
+            ContextResponse(
+                outcome=ContextOutcome.ALLOWED,
+                context_bundle_ref=bundle.reference,
+                reason_code=ContextReasonCode.ALLOWED,
+                publication_pin_id=bundle.publication_pin_id,
+            )
+        ),
+        bundles=SavedContextBundleAccess(store=store, revalidator=revalidator),
+        revalidator=revalidator,
+        disclosure_revalidator=CurrentAuthority(),
+    )
+
+    class PinnedExecution(BoundExecution):
+        def resolve(self, execution_request):
+            assert execution_request.workspace_id == bundle.workspace_id
+            return None, pin_for(bundle)
+
+    repository = InMemoryAnswerDisclosureRepository()
+    sink = InMemoryAcceptedAnswerOutputPort(reference_factory=lambda: UUID(int=40))
+    gate = AnswerDisclosureGate(
+        repository=repository,
+        accepted_output=sink,
+        clock=lambda: datetime(2026, 10, 18, tzinfo=timezone.utc),
+    )
+    capability = ProductionAnswerQuestionCapability(
+        context=context,
+        execution=PinnedExecution(),
+        context_references=References(),
+        disclosure_gate=gate,
+        candidate_runner=SuccessfulCandidateRunner(),
+        validator=ExistingAnswerQuestionCandidateValidator(
+            citations=ExistingCitationValidation(),
+            semantic_support=ExistingSemanticValidation(),
+            plans=ValidationPlan(),
+        ),
+        disclosure_environment=EnvironmentKind.DEVELOPMENT,
+    )
+
+    result = await capability.answer(command())
+    stored = await repository.resolve(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        request_id=request.request_id,
+    )
+
+    assert result.output.outcome is AnswerQuestionOutcome.ANSWERED
+    assert result.accepted_answer is not None
+    assert stored is not None and stored.accepted_answer == result.accepted_answer
+    assert len(sink.published) == 1
+    assert [item.checkpoint.value for item in revalidator.requests] == [
+        "before_evidence_reuse",
+        "before_final_disclosure",
+    ]
 
 
 @pytest.mark.asyncio
