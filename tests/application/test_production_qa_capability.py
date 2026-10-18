@@ -66,6 +66,7 @@ from spine.domain.capabilities import (
     AnswerQuestionOutcome,
     AnswerQuestionSafeReason,
     AnswerQuestionSafeReasonCode,
+    QuestionSubject,
     RetrievalOutcome,
 )
 from spine.domain.capabilities.answer_disclosure import AnswerDisclosureValidation
@@ -620,10 +621,9 @@ async def test_candidate_identity_mismatch_fails_closed_before_validation() -> N
 
     class MismatchedCandidateRunner:
         async def generate(self, *, question, authorized_context, **_kwargs):
-            foreign_scope = question.scope.model_copy(
-                update={"workspace_id": UUID(int=99)}
+            foreign_question = question.model_copy(
+                update={"subject": QuestionSubject(text="different question")}
             )
-            foreign_question = question.model_copy(update={"scope": foreign_scope})
             return _candidate_for_question(
                 foreign_question, authorized_context.bundle.lineage_reference
             )
@@ -645,7 +645,7 @@ async def test_candidate_identity_mismatch_fails_closed_before_validation() -> N
     result = await capability.answer(command())
 
     assert result.output.outcome is AnswerQuestionOutcome.FAILED
-    assert result.availability is AnswerQuestionCapabilityAvailability.UNAVAILABLE
+    assert result.availability is AnswerQuestionCapabilityAvailability.AVAILABLE
     assert result.output.scope.workspace_id == WORKSPACE
     assert result.accepted_answer is None
     assert not context.disclosures
