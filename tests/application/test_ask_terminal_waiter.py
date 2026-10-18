@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
+from dataclasses import replace
 from hashlib import sha256
 from types import SimpleNamespace
 from uuid import UUID
@@ -20,6 +22,13 @@ from spine.application.qa_observation.contracts import (
 )
 from spine.application.qa_sessions import QAMessageRead, QASessionRequester
 from spine.domain.capabilities.answer_question import AnswerQuestionOutcome
+from spine.domain.capabilities import (
+    AcceptedAnswerClaimPresentation,
+    AcceptedAnswerPresentation,
+    AcceptedAnswerRelationshipPresentation,
+    AnswerClaimKind,
+    ClaimEvidenceRelationshipKind,
+)
 from spine.domain.qa_sessions import QAMessageDisclosureEligibility, QAMessageState
 from tests.application.qa_observation.factories import execution_identity
 
@@ -99,11 +108,28 @@ def _status(identity, lifecycle, outcome=None, attempt_id=None):
 def _message(identity, outcome, *, eligible=True, answer=None):
     presentation = None
     if answer is not None:
-        presentation = SimpleNamespace(
+        presentation = AcceptedAnswerPresentation(
             message_id=identity.message_id,
             run_id=identity.run_id,
             attempt_id=identity.attempt_id,
+            answer_id=UUID("c0000000-0000-0000-0000-000000000475"),
             answer_text_sha256=sha256(answer.encode("utf-8")).hexdigest(),
+            claims=(
+                AcceptedAnswerClaimPresentation(
+                    claim_id=UUID("d0000000-0000-0000-0000-000000000475"),
+                    kind=AnswerClaimKind.FACTUAL,
+                    start_offset=0,
+                    end_offset=1,
+                ),
+            ),
+            relationships=(
+                AcceptedAnswerRelationshipPresentation(
+                    relationship_id=UUID("e0000000-0000-0000-0000-000000000475"),
+                    claim_id=UUID("d0000000-0000-0000-0000-000000000475"),
+                    kind=ClaimEvidenceRelationshipKind.INDEPENDENT,
+                    citation_ids=(UUID("a0000000-0000-0000-0000-000000000475"),),
+                ),
+            ),
             citation_ids=(UUID("a0000000-0000-0000-0000-000000000475"),),
         )
     return QAMessageRead(
@@ -230,7 +256,7 @@ async def test_waiter_times_out_without_requesting_cancellation():
 
     assert result.wait.state is ExecutionWaitState.UNAVAILABLE
     assert result.wait.unavailable_reason is SafeWaitUnavailableReason.DEADLINE_EXCEEDED
-    assert admission.calls == 3
+    assert admission.calls == 2
     assert sessions.calls == 0
     assert clock.sleeps == [0.25, 0.25]
     assert not hasattr(admission, "request_cancellation")
@@ -251,6 +277,25 @@ async def test_waiter_rejects_cross_scope_and_requester_before_status_read():
         ),
         acting_subject_id=identity.requester.id,
         service_principal_id=None,
+    )
+
+    result = await waiter.wait(**args)
+
+    assert result.wait.unavailable_reason is SafeWaitUnavailableReason.CORRELATION_MISMATCH
+    assert admission.calls == 0
+    assert sessions.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_waiter_rejects_requester_substitution_before_status_read():
+    identity = execution_identity()
+    waiter, args, admission, sessions, _ = _waiter(
+        identity,
+        [_status(identity, AskAdmissionLifecycle.ADMITTED)],
+        None,
+    )
+    args["requester"] = QASessionRequester(
+        UUID("f0000000-0000-0000-0000-000000000475")
     )
 
     result = await waiter.wait(**args)
@@ -361,3 +406,62 @@ async def test_waiter_does_not_return_answer_after_disclosure_revocation():
     assert result.wait.state is ExecutionWaitState.UNAVAILABLE
     assert result.wait.unavailable_reason is SafeWaitUnavailableReason.AUTHORIZATION_CHANGED
     assert result.message is None
+
+
+@pytest.mark.asyncio
+async def test_waiter_rejects_persisted_answer_with_mismatched_presentation_digest():
+    identity = execution_identity()
+    message = _message(
+        identity,
+        AnswerQuestionOutcome.ANSWERED,
+        answer="Protected answer",
+    )
+    message = replace(
+        message,
+        accepted_presentation=message.accepted_presentation.model_copy(
+            update={"answer_text_sha256": "f" * 64}
+        ),
+    )
+    waiter, args, _, _, _ = _waiter(
+        identity,
+        [
+            _status(
+                identity,
+                AskAdmissionLifecycle.TERMINAL,
+                AnswerQuestionOutcome.ANSWERED,
+                identity.attempt_id,
+            )
+        ],
+        message,
+    )
+
+    result = await waiter.wait(**args)
+
+    assert result.wait.unavailable_reason is SafeWaitUnavailableReason.AUTHORIZATION_CHANGED
+    assert result.message is None
+
+
+@pytest.mark.asyncio
+async def test_waiter_bounds_a_stalled_canonical_status_read():
+    identity = execution_identity()
+
+    class StalledAdmission:
+        async def status(self, **kwargs):
+            del kwargs
+            await asyncio.Event().wait()
+
+    waiter = TerminalAskWaiter(
+        admission=StalledAdmission(),
+        sessions=_Sessions(None),
+        clock=lambda: 0.0,
+        max_wait_seconds=0.01,
+    )
+    result = await waiter.wait(
+        identity=identity,
+        context=_context(identity),
+        admission_result=_admission_result(identity),
+        requester=QASessionRequester(identity.requester.id),
+        deadline=10.0,
+    )
+
+    assert result.wait.unavailable_reason is SafeWaitUnavailableReason.DEADLINE_EXCEEDED

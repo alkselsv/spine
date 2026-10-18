@@ -80,8 +80,18 @@ class TerminalAskWaiter:
         while True:
             if not self._request_matches(identity, context, admission_result, requester):
                 return self._unavailable(identity, SafeWaitUnavailableReason.CORRELATION_MISMATCH)
+            read_timeout = self._remaining(bounded_deadline)
+            if read_timeout <= 0:
+                return self._unavailable(identity, SafeWaitUnavailableReason.DEADLINE_EXCEEDED)
             try:
-                status = await self.admission.status(context=context, result=admission_result)
+                status = await asyncio.wait_for(
+                    self.admission.status(context=context, result=admission_result),
+                    timeout=read_timeout,
+                )
+            except asyncio.TimeoutError:
+                return self._unavailable(
+                    identity, SafeWaitUnavailableReason.DEADLINE_EXCEEDED
+                )
             except Exception:
                 return self._unavailable(identity, SafeWaitUnavailableReason.READBACK_UNAVAILABLE)
 
@@ -93,6 +103,7 @@ class TerminalAskWaiter:
                     context=context,
                     requester=requester,
                     status=status,
+                    deadline=bounded_deadline,
                 )
 
             now = self.clock()
@@ -115,6 +126,7 @@ class TerminalAskWaiter:
         context: TrustedPersistenceContext,
         requester: QASessionRequester,
         status: AskAdmissionStatus,
+        deadline: float,
     ) -> TerminalAskWaitResult:
         if status.outcome is None or status.attempt_id is None:
             return self._unavailable(
@@ -125,11 +137,18 @@ class TerminalAskWaiter:
                 identity, SafeWaitUnavailableReason.CORRELATION_MISMATCH
             )
         try:
-            message = await self.sessions.get_message(
-                context=context,
-                requester=requester,
-                session_id=identity.session_id,
-                message_id=identity.message_id,
+            message = await asyncio.wait_for(
+                self.sessions.get_message(
+                    context=context,
+                    requester=requester,
+                    session_id=identity.session_id,
+                    message_id=identity.message_id,
+                ),
+                timeout=self._remaining(deadline),
+            )
+        except asyncio.TimeoutError:
+            return self._unavailable(
+                identity, SafeWaitUnavailableReason.DEADLINE_EXCEEDED
             )
         except Exception:
             return self._unavailable(identity, SafeWaitUnavailableReason.READBACK_UNAVAILABLE)
@@ -222,6 +241,12 @@ class TerminalAskWaiter:
         ):
             return False
         return status.attempt_id in (None, identity.attempt_id)
+
+    def _remaining(self, deadline: float) -> float:
+        now = self.clock()
+        if not isfinite(now):
+            return 0.0
+        return max(0.0, deadline - now)
 
     @staticmethod
     def _unavailable(
