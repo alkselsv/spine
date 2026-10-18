@@ -176,7 +176,11 @@ transmit worker timestamps.
 ### D7 execution-record compatibility
 
 The selected v2 record is `r1-case-execution-record:v2`. It retains
-`observer_elapsed_ms` with the exact v1 boundary and adds nullable
+`observer_elapsed_ms` with the exact v1 boundary: wall time around
+`ProductionContractApplicationFlow.execute`, including queue/admission wait,
+Temporal scheduling, and terminal readback/capture waits that occur inside that
+call. Corpus preparation before the call and evaluation after it are excluded.
+V2 adds nullable
 `worker_execution_elapsed_ns` and `worker_execution_attempt_id`. Both worker
 fields must be null together or present together; a present duration is one
 non-negative worker-local monotonic sample and its ID is the canonical Q&A
@@ -196,6 +200,16 @@ measurements distinct.
   it does not own Q&A execution composition.
 - #452 owns benchmark orchestration and readiness preflight; it does not own
   Q&A composition or projection writes.
+- #478 owns the production observer adapter, real application-contract
+  composition checks, canonical identity and terminal/capture/disclosure
+  validation, retry/cancellation safety, fail-closed behavior, and deterministic
+  composition tests. It does not own final opt-in end-to-end qualification.
+- #480 owns connecting the observer to the deterministic runner and adapting
+  metadata-only reports to v2; it does not own final production-runtime
+  qualification.
+- #453 owns the final operator-triggered opt-in end-to-end qualification through
+  the integrated #480 runner and configured production composition. Fake tests
+  never qualify production runtime.
 - #469 specifies the bounded waiter and `CaptureChannel` port, schemas,
   lifecycle, and deterministic failure semantics. Runtime authentication and
   deployment security configuration remain operational prerequisites owned by

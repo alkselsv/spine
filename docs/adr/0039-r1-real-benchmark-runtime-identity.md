@@ -271,11 +271,15 @@ elapsed time to their terminal event. Use monotonic clock duration for observer
 elapsed time; no latency is imputed when execution never starts.
 
 **D7 — additive timing contract.** Preserve the v1 schema and its
-`observer_elapsed_ms` value and meaning. Durable observers that also have a
-worker-local sample emit `r1-case-execution-record:v2`, with the same
-`observer_elapsed_ms` wall interval plus nullable `worker_execution_elapsed_ns`
-and `worker_execution_attempt_id`. The two worker fields are either both null
-or both present; the duration is a non-negative integer measured by the worker's
+`observer_elapsed_ms` value and meaning. In v2, `observer_elapsed_ms` remains
+wall time around `ProductionContractApplicationFlow.execute`; it includes
+admission/queue wait, Temporal scheduling, and terminal readback/capture waiting
+that occur inside that call. Corpus preparation before `execute` and evaluation
+after it remain outside this interval. Durable observers that also have a
+worker-local sample emit `r1-case-execution-record:v2`, with that same
+`observer_elapsed_ms` plus nullable `worker_execution_elapsed_ns` and
+`worker_execution_attempt_id`. The two worker fields are either both null or
+both present; the duration is a non-negative integer measured by the worker's
 monotonic clock for one canonical Q&A attempt. For an observed record, the
 worker attempt ID must equal the observation's canonical correlation attempt ID.
 The worker duration excludes dispatch queue wait, Temporal scheduling and retry
@@ -292,7 +296,8 @@ measurements. A metadata report that accepts v2 must version its own schema and
 carry both nullable values plus the worker attempt reference; it must not
 silently map worker duration onto the legacy latency field. #479 remains the
 deterministic v1 runner; #480 owns adapting downstream production-runner and
-metadata-report consumers to v2.
+metadata-report consumers to v2, while #453 owns final opt-in end-to-end
+qualification.
 
 ### F. Gold join and metric semantics
 

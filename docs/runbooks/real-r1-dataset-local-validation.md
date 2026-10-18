@@ -108,8 +108,11 @@ and readiness therefore keep observation/evaluation/release fields at
 typed capture только от совпавшего execution identity. Он не вызывает retrieval
 или capability отдельно и не восстанавливает отсутствующие данные из run history.
 
-Реальная квалификация остаётся явным локальным действием владельца production
-composition. В factory, переданной через `--composition` в
+Финальная real opt-in end-to-end qualification принадлежит #453 и выполняется
+через интегрированный runner #480 с observer adapter #478 и production
+composition из #469. #480 подключает runner, но не подтверждает качество
+production runtime. Запуск остаётся явным локальным действием уполномоченного
+оператора. В factory, переданной через `--composition` в
 `spine-eval-real-benchmark`, настройте `RealBenchmarkRunner` на production
 observer, который вызывает `DurableProductionQAAFlow`; fake flow разрешён только
 для deterministic contract tests. Запускайте команду с approved local dataset,
@@ -121,3 +124,10 @@ Temporal/worker и аутентифицированный CaptureChannel. Эта
 должен быть safe `unavailable`/`failed`; fake успех не считается production
 qualification. Подготовка и readiness остаются отдельными этапами до observer,
 а evaluator не получает gold labels до финализации валидного observation.
+
+В execution record v2 `observer_elapsed_ms` измеряет wall time вокруг
+`execute` и включает admission/queue, Temporal scheduling и terminal
+readback/capture waits, произошедшие внутри вызова. Отдельный
+`worker_execution_elapsed_ns` исключает эти ожидания, corpus preparation и
+evaluation и остаётся связан с canonical attempt identity. V1 сохраняет
+прежнюю семантику без новых полей.
