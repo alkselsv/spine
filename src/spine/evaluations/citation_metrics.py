@@ -40,6 +40,44 @@ AnswerOutcome = Literal[
 ]
 
 
+def answer_outcome_passes(
+    *,
+    observed_outcome: AnswerOutcome,
+    expected_outcome: Literal["answered", "abstained", "denied"],
+    has_claims: bool,
+    has_citations: bool,
+) -> bool:
+    """The shared v1 answer-outcome formula used by every dataset adapter."""
+
+    return observed_outcome == expected_outcome and (
+        observed_outcome == "answered" or (not has_claims and not has_citations)
+    )
+
+
+def score_grounded_claims(
+    *,
+    expected_evidence_by_claim: Mapping[str, frozenset[str]],
+    observed_evidence_by_claim: Mapping[str, frozenset[str]],
+) -> tuple[float | None, int, int, tuple[str, ...]]:
+    """Apply v1 explicit claim-to-evidence support without semantic guessing."""
+
+    supported = {
+        claim_id
+        for claim_id, expected in expected_evidence_by_claim.items()
+        if expected <= observed_evidence_by_claim.get(claim_id, frozenset())
+    }
+    unsupported = (
+        set(expected_evidence_by_claim) - supported
+    ) | (set(observed_evidence_by_claim) - set(expected_evidence_by_claim))
+    eligible = len(expected_evidence_by_claim)
+    return (
+        len(supported) / eligible if eligible else None,
+        len(supported),
+        eligible,
+        tuple(sorted(unsupported)),
+    )
+
+
 class Citation(DefinitionModel):
     """A candidate answer's immutable reference to one evidence item.
 
@@ -211,10 +249,8 @@ def evaluate_groundedness(
     context_bundle = _coerce_bundle(context_bundle, case)
     assessment = _assess(answer, case, dataset=dataset, context_bundle=context_bundle)
     valid_by_id = assessment.valid_evidence_by_citation
-    expected_by_id = {claim.claim_id: claim for claim in case.expected_claims}
-    supported_claims: list[str] = []
-    unsupported_claims: list[str] = []
     missing_by_claim: dict[str, list[str]] = {}
+    observed_evidence_by_claim: dict[str, frozenset[str]] = {}
 
     for claim in case.expected_claims:
         candidate = next((item for item in answer.claims if item.claim_id == claim.claim_id), None)
@@ -223,17 +259,19 @@ def evaluate_groundedness(
             for citation_id in candidate.citation_ids
             if candidate is not None and citation_id in valid_by_id
         } if candidate is not None else set()
+        observed_evidence_by_claim[claim.claim_id] = frozenset(cited_evidence)
         missing = sorted(set(claim.evidence_ids) - cited_evidence)
         if missing:
-            unsupported_claims.append(claim.claim_id)
             missing_by_claim[claim.claim_id] = missing
-        else:
-            supported_claims.append(claim.claim_id)
-
-    extra_claims = sorted({claim.claim_id for claim in answer.claims} - set(expected_by_id))
-    unsupported_claims.extend(extra_claims)
-    expected_count = len(case.expected_claims)
-    score = (len(supported_claims) / expected_count) if expected_count else None
+    for claim in answer.claims:
+        observed_evidence_by_claim.setdefault(claim.claim_id, frozenset())
+    score, supported_count, expected_count, unsupported_claims = score_grounded_claims(
+        expected_evidence_by_claim={
+            claim.claim_id: frozenset(claim.evidence_ids)
+            for claim in case.expected_claims
+        },
+        observed_evidence_by_claim=observed_evidence_by_claim,
+    )
     passed = (
         case.expected_outcome != "answered"
         and answer.outcome == case.expected_outcome
@@ -244,16 +282,16 @@ def evaluate_groundedness(
         and answer.outcome == "answered"
         and not assessment.failures
         and not unsupported_claims
-        and len(supported_claims) == expected_count
+        and supported_count == expected_count
     )
     details = {
         "outcome": answer.outcome,
         "expected_outcome": case.expected_outcome,
         "status": "measured" if passed else "failed",
-        "supported_claim_count": len(supported_claims),
+        "supported_claim_count": supported_count,
         "expected_claim_count": expected_count,
         "groundedness_support": score,
-        "unsupported_claim_ids": sorted(set(unsupported_claims)),
+        "unsupported_claim_ids": list(unsupported_claims),
         "missing_evidence_by_claim": {
             claim_id: sorted(set(evidence_ids))
             for claim_id, evidence_ids in sorted(missing_by_claim.items())
@@ -283,8 +321,11 @@ def evaluate_answer_outcome(
     """Evaluate answered, abstained, and denied as distinct outcomes."""
 
     del dataset, context_bundle
-    passed = answer.outcome == case.expected_outcome and (
-        answer.outcome == "answered" or (not answer.claims and not answer.citations)
+    passed = answer_outcome_passes(
+        observed_outcome=answer.outcome,
+        expected_outcome=case.expected_outcome,
+        has_claims=bool(answer.claims),
+        has_citations=bool(answer.citations),
     )
     return _result(
         evaluator_key="qa.answer_outcome",

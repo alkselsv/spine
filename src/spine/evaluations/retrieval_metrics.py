@@ -24,6 +24,39 @@ RETRIEVAL_METRICS_EVALUATOR_VERSION: Final[str] = "v1"
 _SUBJECT_NAMESPACE: Final[UUID] = UUID("8fd8c9cb-7dbf-4df6-a9af-0d3d35a5a8a1")
 
 
+def score_recall_at_k(
+    ranked_ids: Iterable[str], relevant_ids: Iterable[str], *, k: int
+) -> tuple[float | None, int, int]:
+    """Apply the v1 recall formula to already-authorized evidence identities."""
+
+    _validate_k(k)
+    relevant = set(relevant_ids)
+    if not relevant:
+        return None, 0, 0
+    ranked = tuple(dict.fromkeys(ranked_ids))
+    matched = len(set(ranked[:k]).intersection(relevant))
+    return matched / len(relevant), matched, len(relevant)
+
+
+def score_mrr(
+    ranked_ids: Iterable[str], relevant_ids: Iterable[str]
+) -> tuple[float | None, int | None]:
+    """Apply the v1 reciprocal-rank formula to authorized evidence identities."""
+
+    relevant = set(relevant_ids)
+    if not relevant:
+        return None, None
+    rank = next(
+        (
+            position
+            for position, evidence_id in enumerate(dict.fromkeys(ranked_ids), start=1)
+            if evidence_id in relevant
+        ),
+        None,
+    )
+    return (0.0 if rank is None else 1.0 / rank), rank
+
+
 def evaluate_recall_at_k(
     result: RetrievalResult,
     case: QACase,
@@ -94,14 +127,15 @@ def evaluate_recall_at_k(
                 },
             }
         )
-    matched_ids = set(ranked_ids[:k]).intersection(relevant_ids)
-    score = len(matched_ids) / len(relevant_ids)
+    score, matched_count, relevant_count = score_recall_at_k(
+        ranked_ids, relevant_ids, k=k
+    )
     details = {
         "index_version": result.index_version,
         "k": k,
-        "matched_relevant_count": len(matched_ids),
-        "missing_relevant_count": len(relevant_ids) - len(matched_ids),
-        "relevant_count": len(relevant_ids),
+        "matched_relevant_count": matched_count,
+        "missing_relevant_count": relevant_count - matched_count,
+        "relevant_count": relevant_count,
         "retrieval_strategy": result.retrieval_strategy,
         "scope_filtered_count": scope_filtered_count,
         "status": "measured",
@@ -181,11 +215,7 @@ def evaluate_mrr(
             }
         )
     relevant_set = set(relevant_ids)
-    first_rank = next(
-        (rank for rank, evidence_id in enumerate(ranked_ids, start=1) if evidence_id in relevant_set),
-        None,
-    )
-    score = 0.0 if first_rank is None else 1.0 / first_rank
+    score, first_rank = score_mrr(ranked_ids, relevant_ids)
     details = {
         "index_version": result.index_version,
         "first_relevant_rank": first_rank,
