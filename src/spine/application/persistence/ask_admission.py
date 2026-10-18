@@ -179,6 +179,7 @@ class AskAdmissionStatus:
     run_id: UUID
     status: AskAdmissionLifecycle
     outcome: AnswerQuestionOutcome | None = None
+    attempt_id: UUID | None = None
 
     def __post_init__(self) -> None:
         if any(
@@ -195,6 +196,8 @@ class AskAdmissionStatus:
             raise ValueError("terminal Ask admission status requires an outcome")
         if self.status is not AskAdmissionLifecycle.TERMINAL and self.outcome is not None:
             raise ValueError("non-terminal Ask admission status cannot carry an outcome")
+        if self.attempt_id is not None and self.attempt_id.int == 0:
+            raise ValueError("Ask admission attempt identity must be non-zero")
 
 
 class AskCancellationLifecycle(str, Enum):
