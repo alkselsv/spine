@@ -10,8 +10,13 @@ existing evaluation contracts.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final, Literal, Protocol
-from uuid import UUID
+from enum import Enum
+import time
+from math import isfinite
+from typing import Callable, Final, Literal, Protocol
+from uuid import NAMESPACE_URL, UUID, uuid5
+
+from pydantic import Field, ValidationError, field_validator, model_validator
 
 from spine.domain.capabilities import (
     AnswerQuestionInput,
@@ -40,6 +45,7 @@ PRODUCTION_CONTRACT_INDEX_VERSION: Final[str] = (
 PRODUCTION_CONTRACT_CASE_REQUEST_SCHEMA: Final[str] = (
     "r1-production-contract-case-request:v1"
 )
+CASE_EXECUTION_RECORD_SCHEMA: Final[str] = "r1-case-execution-record:v1"
 
 
 class ProductionContractObservationError(ValueError):
@@ -58,8 +64,29 @@ class ProductionContractCaseRequest(DefinitionModel):
     workspace_id: UUID
     environment_id: UUID
     principal_id: UUID
-    available_revision_ids: tuple[UUID, ...]
+    available_revision_ids: tuple[UUID, ...] = Field(min_length=1)
     retrieval_strategy: str
+
+    @field_validator("case_id", "question", "language", "retrieval_strategy")
+    @classmethod
+    def validate_non_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("production case request fields must not be blank")
+        return value
+
+    @field_validator("workspace_id", "environment_id", "principal_id")
+    @classmethod
+    def validate_scope_identifier(cls, value: UUID) -> UUID:
+        if value.int == 0:
+            raise ValueError("production case request scope identifiers must be non-zero")
+        return value
+
+    @field_validator("available_revision_ids")
+    @classmethod
+    def validate_revision_identifiers(cls, value: tuple[UUID, ...]) -> tuple[UUID, ...]:
+        if any(item.int == 0 for item in value) or len(set(value)) != len(value):
+            raise ValueError("production case request revision identifiers are invalid")
+        return value
 
     @classmethod
     def from_case(cls, case: QACase) -> "ProductionContractCaseRequest":
@@ -257,7 +284,329 @@ class ProductionContractObservationBridge:
             for reference in observation.context_bundle.evidence_references
         ):
             raise ProductionContractObservationError("observation contains an unavailable source revision")
+        if observation.retrieval.index_version != self.index_version:
+            raise ProductionContractObservationError(
+                "observed retrieval index version is not pinned"
+            )
         return observation.validate()
+
+
+class CaseExecutionDisposition(str, Enum):
+    """Safe outer disposition for one gold-blind application invocation."""
+
+    OBSERVED = "observed"
+    DENIED = "denied"
+    UNAVAILABLE = "unavailable"
+    FAILED = "failed"
+
+
+class CaseExecutionFailureCategory(str, Enum):
+    """Closed, content-free categories exposed by the observer boundary."""
+
+    INVALID_CASE = "invalid_case"
+    INVALID_SCOPE = "invalid_scope"
+    INVALID_REVISION = "invalid_revision"
+    INVALID_OBSERVATION = "invalid_observation"
+    STALE_LINEAGE = "stale_lineage"
+    FABRICATED_CITATION = "fabricated_citation"
+    INCONSISTENT_DISCLOSURE = "inconsistent_disclosure"
+    AUTHORIZATION_DENIED = "authorization_denied"
+    RUNTIME_UNAVAILABLE = "runtime_unavailable"
+    PARTIAL_FAILURE = "partial_failure"
+    APPLICATION_FAILURE = "application_failure"
+    INVALID_TIMING = "invalid_timing"
+
+
+class CaseExecutionRecord(DefinitionModel):
+    """Validated outer result; protected observation data is all-or-nothing."""
+
+    schema_version: Literal[CASE_EXECUTION_RECORD_SCHEMA] = CASE_EXECUTION_RECORD_SCHEMA
+    case_id: str = Field(min_length=1, max_length=128)
+    workspace_id: UUID
+    environment_id: UUID
+    disposition: CaseExecutionDisposition
+    observation: ProductionContractObservation | None = None
+    failure_category: CaseExecutionFailureCategory | None = None
+    correlation_id: UUID | None = None
+    failure_type: str | None = Field(
+        default=None,
+        max_length=128,
+        pattern=r"^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$",
+    )
+    completed_attempt_id: UUID | None = None
+    completed_attempt_number: int | None = Field(default=None, ge=1)
+    observer_elapsed_ms: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_disposition(self) -> "CaseExecutionRecord":
+        if self.disposition is CaseExecutionDisposition.OBSERVED:
+            if (
+                self.observation is None
+                or self.failure_category is not None
+                or self.failure_type is not None
+            ):
+                raise ValueError("observed record requires only a validated observation")
+            if self.observer_elapsed_ms is None:
+                raise ValueError("observed record requires observer elapsed time")
+            try:
+                self.observation.validate()
+            except ProductionContractObservationError as error:
+                raise ValueError("observed record contains an invalid observation") from error
+            if self.observation.case_id != self.case_id:
+                raise ValueError("observed record case identity is inconsistent")
+            if (
+                self.observation.question.scope.workspace_id != self.workspace_id
+                or self.observation.question.scope.environment_id != self.environment_id
+            ):
+                raise ValueError("observed record scope is inconsistent")
+            expected_correlation_id = _observation_correlation_id(self.observation)
+            if self.correlation_id != expected_correlation_id:
+                raise ValueError("observed record correlation is inconsistent")
+        elif self.observation is not None or self.failure_category is None:
+            raise ValueError("safe disposition cannot carry an observation")
+        if self.correlation_id is not None and self.correlation_id.int == 0:
+            raise ValueError("correlation_id must be non-zero")
+        if self.completed_attempt_id is not None and self.completed_attempt_id.int == 0:
+            raise ValueError("completed_attempt_id must be non-zero")
+        if (self.completed_attempt_id is None) != (
+            self.completed_attempt_number is None
+        ):
+            raise ValueError("completed attempt metadata must be complete")
+        return self
+
+
+class ProductionContractObserverFailure(RuntimeError):
+    """Base class for safe application-flow dispositions."""
+
+    category: CaseExecutionFailureCategory = (
+        CaseExecutionFailureCategory.APPLICATION_FAILURE
+    )
+    disposition: CaseExecutionDisposition = CaseExecutionDisposition.FAILED
+
+    def __init__(
+        self,
+        *,
+        correlation_id: UUID | None = None,
+        completed_attempt_id: UUID | None = None,
+        completed_attempt_number: int | None = None,
+    ) -> None:
+        super().__init__()
+        self.correlation_id = correlation_id
+        self.completed_attempt_id = completed_attempt_id
+        self.completed_attempt_number = completed_attempt_number
+
+
+class ProductionContractAuthorizationDenied(ProductionContractObserverFailure):
+    category = CaseExecutionFailureCategory.AUTHORIZATION_DENIED
+    disposition = CaseExecutionDisposition.DENIED
+
+
+class ProductionContractUnavailable(ProductionContractObserverFailure):
+    category = CaseExecutionFailureCategory.RUNTIME_UNAVAILABLE
+    disposition = CaseExecutionDisposition.UNAVAILABLE
+
+
+class ProductionContractPartialFailure(ProductionContractObserverFailure):
+    category = CaseExecutionFailureCategory.PARTIAL_FAILURE
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionContractObserver:
+    """Run and freeze one bounded, gold-blind production observation."""
+
+    flow: ProductionContractApplicationFlow
+    clock: Callable[[], float] = time.monotonic
+    index_version: str = PRODUCTION_CONTRACT_INDEX_VERSION
+
+    async def observe(
+        self, *, request: ProductionContractCaseRequest
+    ) -> CaseExecutionRecord:
+        preflight_failure = _validate_observer_request(request)
+        if preflight_failure is not None:
+            return CaseExecutionRecord(
+                case_id=_safe_case_id(request),
+                workspace_id=_safe_scope_id(request, "workspace_id"),
+                environment_id=_safe_scope_id(request, "environment_id"),
+                disposition=CaseExecutionDisposition.FAILED,
+                failure_category=preflight_failure,
+                correlation_id=_safe_correlation_id(request),
+                failure_type="preflight_validation",
+            )
+
+        try:
+            started_at = self.clock()
+        except Exception:
+            return self._failed(
+                request,
+                CaseExecutionFailureCategory.INVALID_TIMING,
+                failure_type="clock_error",
+                elapsed_ms=None,
+            )
+        if not isfinite(started_at):
+            return self._failed(
+                request,
+                CaseExecutionFailureCategory.INVALID_TIMING,
+                failure_type="clock_error",
+                elapsed_ms=None,
+            )
+
+        try:
+            observation = await ProductionContractObservationBridge(
+                self.flow,
+                index_version=self.index_version,
+            ).observe(request=request)
+            elapsed_ms = self._elapsed_ms(started_at)
+            if elapsed_ms is None:
+                return self._failed(
+                    request,
+                    CaseExecutionFailureCategory.INVALID_TIMING,
+                    elapsed_ms=None,
+                )
+            return CaseExecutionRecord(
+                case_id=request.case_id,
+                workspace_id=request.workspace_id,
+                environment_id=request.environment_id,
+                disposition=CaseExecutionDisposition.OBSERVED,
+                observation=observation,
+                correlation_id=_observation_correlation_id(observation),
+                observer_elapsed_ms=elapsed_ms,
+            )
+        except ProductionContractObserverFailure as error:
+            return self._failed(
+                request,
+                error.category,
+                disposition=error.disposition,
+                correlation_id=error.correlation_id,
+                failure_type=_safe_failure_type(error),
+                completed_attempt_id=error.completed_attempt_id,
+                completed_attempt_number=error.completed_attempt_number,
+                elapsed_ms=self._elapsed_ms(started_at),
+            )
+        except ProductionContractObservationError as error:
+            return self._failed(
+                request,
+                _observation_failure_category(error),
+                failure_type=_safe_failure_type(error),
+                elapsed_ms=self._elapsed_ms(started_at),
+            )
+        except Exception as error:
+            return self._failed(
+                request,
+                CaseExecutionFailureCategory.APPLICATION_FAILURE,
+                failure_type=_safe_failure_type(error),
+                elapsed_ms=self._elapsed_ms(started_at),
+            )
+
+    def _elapsed_ms(self, started_at: float) -> int | None:
+        try:
+            finished_at = self.clock()
+        except Exception:
+            return None
+        if not isfinite(finished_at) or finished_at < started_at:
+            return None
+        return int(round((finished_at - started_at) * 1000))
+
+    def _failed(
+        self,
+        request: ProductionContractCaseRequest,
+        category: CaseExecutionFailureCategory,
+        *,
+        disposition: CaseExecutionDisposition = CaseExecutionDisposition.FAILED,
+        correlation_id: UUID | None = None,
+        failure_type: str | None = None,
+        completed_attempt_id: UUID | None = None,
+        completed_attempt_number: int | None = None,
+        elapsed_ms: int | None,
+    ) -> CaseExecutionRecord:
+        return CaseExecutionRecord(
+            case_id=_safe_case_id(request),
+            workspace_id=_safe_scope_id(request, "workspace_id"),
+            environment_id=_safe_scope_id(request, "environment_id"),
+            disposition=disposition,
+            failure_category=category,
+            correlation_id=correlation_id or _safe_correlation_id(request),
+            failure_type=failure_type or category.value,
+            completed_attempt_id=completed_attempt_id,
+            completed_attempt_number=completed_attempt_number,
+            observer_elapsed_ms=elapsed_ms,
+        )
+
+
+def _safe_case_id(request: object) -> str:
+    if isinstance(request, ProductionContractCaseRequest) and request.case_id.strip():
+        return request.case_id
+    return "unknown"
+
+
+def _safe_scope_id(request: object, field_name: str) -> UUID:
+    value = getattr(request, field_name, None)
+    return value if isinstance(value, UUID) else UUID(int=0)
+
+
+def _safe_correlation_id(request: object) -> UUID | None:
+    if not isinstance(request, ProductionContractCaseRequest):
+        return None
+    return uuid5(
+        NAMESPACE_URL,
+        "spine:r1:observer:"
+        f"{request.case_id}:{request.workspace_id}:{request.environment_id}",
+    )
+
+
+def _safe_failure_type(error: BaseException) -> str:
+    name = type(error).__name__
+    return name if name and name[0].isalpha() else "unknown_failure"
+
+
+def _validate_observer_request(
+    request: object,
+) -> CaseExecutionFailureCategory | None:
+    if not isinstance(request, ProductionContractCaseRequest):
+        return CaseExecutionFailureCategory.INVALID_CASE
+    try:
+        ProductionContractCaseRequest.model_validate(
+            request.model_dump(mode="python")
+        )
+    except ValidationError as error:
+        fields = {
+            str(location[0])
+            for item in error.errors()
+            for location in (item.get("loc", ()),)
+            if location
+        }
+        if fields & {"workspace_id", "environment_id", "principal_id"}:
+            return CaseExecutionFailureCategory.INVALID_SCOPE
+        if "available_revision_ids" in fields:
+            return CaseExecutionFailureCategory.INVALID_REVISION
+        return CaseExecutionFailureCategory.INVALID_CASE
+    return None
+
+
+def _observation_correlation_id(observation: ProductionContractObservation) -> UUID | None:
+    correlation = observation.question.correlation
+    return correlation.correlation_id or correlation.trace_id
+
+
+def _observation_failure_category(
+    error: ProductionContractObservationError,
+) -> CaseExecutionFailureCategory:
+    message = str(error)
+    if "another case" in message or "case identity" in message:
+        return CaseExecutionFailureCategory.INVALID_CASE
+    if "request scope" in message or "scope" in message:
+        return CaseExecutionFailureCategory.INVALID_SCOPE
+    if "unavailable source revision" in message:
+        return CaseExecutionFailureCategory.INVALID_REVISION
+    if "stale" in message:
+        return CaseExecutionFailureCategory.STALE_LINEAGE
+    if "fabricated" in message or "unrelated evidence" in message:
+        return CaseExecutionFailureCategory.FABRICATED_CITATION
+    if "disclosure" in message:
+        return CaseExecutionFailureCategory.INCONSISTENT_DISCLOSURE
+    return CaseExecutionFailureCategory.INVALID_OBSERVATION
+
+
+ProductionContractExecutionRecord = CaseExecutionRecord
 
 
 def _validate_retrieval_lineage(retrieval: RetrievalResult, bundle: ContextBundle) -> None:
@@ -345,6 +694,11 @@ def _validate_projection_retrieval(
 
 
 __all__ = [
+    "CASE_EXECUTION_RECORD_SCHEMA",
+    "CaseExecutionDisposition",
+    "CaseExecutionFailureCategory",
+    "CaseExecutionRecord",
+    "ProductionContractExecutionRecord",
     "PRODUCTION_CONTRACT_INDEX_VERSION",
     "PRODUCTION_CONTRACT_CASE_REQUEST_SCHEMA",
     "PRODUCTION_CONTRACT_OBSERVATION_SEAM",
@@ -353,4 +707,9 @@ __all__ = [
     "ProductionContractObservation",
     "ProductionContractObservationBridge",
     "ProductionContractObservationError",
+    "ProductionContractObserver",
+    "ProductionContractObserverFailure",
+    "ProductionContractAuthorizationDenied",
+    "ProductionContractUnavailable",
+    "ProductionContractPartialFailure",
 ]

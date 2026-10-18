@@ -19,6 +19,9 @@ from spine.domain.evaluations import EvaluationResult, EvaluationVerdict
 from spine.evals.production_contract import (
     PRODUCTION_CONTRACT_INDEX_VERSION,
     PRODUCTION_CONTRACT_OBSERVATION_SEAM,
+    CaseExecutionDisposition,
+    CaseExecutionFailureCategory,
+    CaseExecutionRecord,
     ProductionContractCaseRequest,
     ProductionContractObservation,
     ProductionContractObservationError,
@@ -179,6 +182,24 @@ class ScenarioResult(DefinitionModel):
     evaluation_ids: tuple[UUID, ...] = ()
     expected_evidence_ids: tuple[str, ...] = ()
     observed_evidence_ids: tuple[str, ...] = ()
+    execution_disposition: CaseExecutionDisposition | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    execution_failure_category: CaseExecutionFailureCategory | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    execution_correlation_id: UUID | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    observer_elapsed_ms: int | None = Field(
+        default=None, ge=0, exclude_if=lambda value: value is None
+    )
+    completed_attempt_id: UUID | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    completed_attempt_number: int | None = Field(
+        default=None, ge=1, exclude_if=lambda value: value is None
+    )
 
 
 class FailureRecord(DefinitionModel):
@@ -290,7 +311,7 @@ class ProductionContractObservationPort(Protocol):
 
     async def observe(
         self, *, request: ProductionContractCaseRequest
-    ) -> ProductionContractObservation: ...
+    ) -> ProductionContractObservation | CaseExecutionRecord: ...
 
 
 class UnavailableIntegrationError(RuntimeError):
@@ -560,9 +581,29 @@ class OfflineEvaluationRunner:
             assert self.production_observer is not None
             request = ProductionContractCaseRequest.from_case(case)
             try:
-                observation = await self.production_observer.observe(
+                observed_result = await self.production_observer.observe(
                     request=request
                 )
+                if isinstance(observed_result, CaseExecutionRecord):
+                    if observed_result.disposition.value != "observed":
+                        failure_category = (
+                            "unavailable_integration"
+                            if observed_result.disposition
+                            is CaseExecutionDisposition.UNAVAILABLE
+                            else "scenario_failure"
+                        )
+                        return self._failed_case(
+                            case,
+                            failure_category,
+                            "production-contract-observer",
+                            ProductionContractObservationError(
+                                "production observer returned a safe non-observed disposition"
+                            ),
+                            execution_record=observed_result,
+                        )
+                    observation = observed_result.observation
+                else:
+                    observation = observed_result
                 if not isinstance(observation, ProductionContractObservation):
                     raise ProductionContractObservationError(
                         "production observer returned an invalid observation"
@@ -816,6 +857,7 @@ class OfflineEvaluationRunner:
         additional_failures: Sequence[FailureRecord] = (),
         safety_result: ProductionContractSafetyResult | None = None,
         grounded_answer_safety_result: GroundedAnswerSafetyResult | None = None,
+        execution_record: CaseExecutionRecord | None = None,
     ) -> tuple[
         ScenarioResult,
         tuple[EvaluationResult, ...],
@@ -838,6 +880,34 @@ class OfflineEvaluationRunner:
                     tuple(reference.evidence_id for reference in retrieval.references)
                     if retrieval is not None
                     else ()
+                ),
+                execution_disposition=(
+                    execution_record.disposition if execution_record is not None else None
+                ),
+                execution_failure_category=(
+                    execution_record.failure_category
+                    if execution_record is not None
+                    else None
+                ),
+                execution_correlation_id=(
+                    execution_record.correlation_id
+                    if execution_record is not None
+                    else None
+                ),
+                observer_elapsed_ms=(
+                    execution_record.observer_elapsed_ms
+                    if execution_record is not None
+                    else None
+                ),
+                completed_attempt_id=(
+                    execution_record.completed_attempt_id
+                    if execution_record is not None
+                    else None
+                ),
+                completed_attempt_number=(
+                    execution_record.completed_attempt_number
+                    if execution_record is not None
+                    else None
                 ),
             ),
             tuple(evaluations),
