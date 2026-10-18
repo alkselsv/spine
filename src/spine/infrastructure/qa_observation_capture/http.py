@@ -490,6 +490,25 @@ class HttpCaptureChannel(CaptureChannel):
             )
             data = _ReceiveResponse.model_validate(response.json())
             return CaptureReceiveResult(state=data.state, capture=data.capture)
+        except asyncio.CancelledError:
+            cleanup_task = asyncio.create_task(
+                self.cleanup(subscription_id=subscription_id)
+            )
+            while True:
+                try:
+                    disposition = await asyncio.shield(cleanup_task)
+                    break
+                except asyncio.CancelledError:
+                    if cleanup_task.done():
+                        raise CaptureTransportUnavailable() from None
+                except Exception:
+                    raise CaptureTransportUnavailable() from None
+            if disposition not in {
+                CaptureDisposition.CLEANED,
+                CaptureDisposition.NOT_FOUND,
+            }:
+                raise CaptureTransportUnavailable()
+            raise
         except (
             CaptureTransportUnavailable,
             httpx.HTTPError,
