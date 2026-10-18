@@ -343,3 +343,38 @@ async def test_v2_requires_non_negative_duration_and_paired_attempt_identity() -
         CaseExecutionRecordV2.model_validate(
             payload | {"worker_execution_elapsed_ns": -1}
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("clock_values", [(float("nan"),), (1.0, float("nan"))])
+async def test_v2_preserves_v2_schema_when_observer_clock_is_invalid(
+    clock_values: tuple[float, ...],
+) -> None:
+    record = await ProductionContractObserver(
+        flow=_Flow(_safe_observation(load_r1_dataset().cases[1])),
+        clock=_Clock(iter(clock_values)),
+    ).observe_v2(request=_request())
+
+    assert record.schema_version == "r1-case-execution-record:v2"
+    assert record.disposition is CaseExecutionDisposition.FAILED
+    assert record.failure_category is CaseExecutionFailureCategory.INVALID_TIMING
+    assert record.observer_elapsed_ms is None
+    assert record.worker_execution_elapsed_ns is None
+    assert record.worker_execution_attempt_id is None
+    assert CaseExecutionRecordV2.model_validate_json(record.model_dump_json()) == record
+
+
+@pytest.mark.asyncio
+async def test_v2_preserves_v2_schema_when_observer_clock_raises() -> None:
+    def broken_clock() -> float:
+        raise RuntimeError("clock unavailable")
+
+    record = await ProductionContractObserver(
+        flow=_Flow(_safe_observation(load_r1_dataset().cases[1])),
+        clock=broken_clock,
+    ).observe_v2(request=_request())
+
+    assert record.schema_version == "r1-case-execution-record:v2"
+    assert record.failure_category is CaseExecutionFailureCategory.INVALID_TIMING
+    assert record.observer_elapsed_ms is None
+    assert CaseExecutionRecordV2.model_validate_json(record.model_dump_json()) == record

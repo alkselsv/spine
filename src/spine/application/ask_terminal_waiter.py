@@ -125,12 +125,7 @@ class TerminalAskWaiter:
 
         while True:
             is_run_identity = isinstance(identity, AdmittedRunIdentity)
-            request_matches = (
-                self._request_matches_run(identity, context, admission_result, requester)
-                if is_run_identity
-                else self._request_matches(identity, context, admission_result, requester)
-            )
-            if not request_matches:
+            if not self._request_matches(identity, context, admission_result, requester):
                 return self._identity_unavailable(
                     identity, SafeWaitUnavailableReason.CORRELATION_MISMATCH
                 )
@@ -359,7 +354,7 @@ class TerminalAskWaiter:
 
     @staticmethod
     def _request_matches(
-        identity: AdmittedExecutionIdentity,
+        identity: AdmittedExecutionIdentity | AdmittedRunIdentity,
         context: TrustedPersistenceContext,
         admission_result: AskAdmissionResult,
         requester: QASessionRequester,
@@ -370,27 +365,6 @@ class TerminalAskWaiter:
         actor_id = context.acting_subject_id or context.service_principal_id
         return (
             scope.workspace_id == identity.workspace_id
-            and scope.environment_id == identity.environment_id
-            and actor_id == identity.requester.id
-            and requester.subject_id == identity.requester.id
-            and admission_result.command_id == identity.command_id
-            and admission_result.run_id == identity.run_id
-            and admission_result.session_id == identity.session_id
-            and admission_result.message_id == identity.message_id
-        )
-
-    @staticmethod
-    def _request_matches_run(
-        identity: AdmittedRunIdentity,
-        context: TrustedPersistenceContext,
-        admission_result: AskAdmissionResult,
-        requester: QASessionRequester,
-    ) -> bool:
-        scope = context.scope
-        actor_id = context.acting_subject_id or context.service_principal_id
-        return (
-            isinstance(scope, EnvironmentScope)
-            and scope.workspace_id == identity.workspace_id
             and scope.environment_id == identity.environment_id
             and actor_id == identity.requester.id
             and requester.subject_id == identity.requester.id

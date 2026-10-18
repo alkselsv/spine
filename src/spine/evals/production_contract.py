@@ -616,19 +616,21 @@ class ProductionContractObserver:
         try:
             started_at = self.clock()
         except Exception:
-            return self._failed(
+            record = self._failed(
                 request,
                 CaseExecutionFailureCategory.INVALID_TIMING,
                 failure_type="clock_error",
                 elapsed_ms=None,
             )
+            return CaseExecutionRecordV2.from_v1(record) if versioned_timing else record
         if not isfinite(started_at):
-            return self._failed(
+            record = self._failed(
                 request,
                 CaseExecutionFailureCategory.INVALID_TIMING,
                 failure_type="clock_error",
                 elapsed_ms=None,
             )
+            return CaseExecutionRecordV2.from_v1(record) if versioned_timing else record
 
         try:
             bridge = ProductionContractObservationBridge(
@@ -647,11 +649,12 @@ class ProductionContractObserver:
             )
             elapsed_ms = self._elapsed_ms(started_at)
             if elapsed_ms is None:
-                return self._failed(
+                record = self._failed(
                     request,
                     CaseExecutionFailureCategory.INVALID_TIMING,
                     elapsed_ms=None,
                 )
+                return CaseExecutionRecordV2.from_v1(record) if versioned_timing else record
             values = dict(
                 case_id=request.case_id,
                 workspace_id=request.workspace_id,
