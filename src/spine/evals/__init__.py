@@ -50,6 +50,11 @@ from spine.evals.production_contract import (
     ProductionContractUnavailable,
     ProductionContractPartialFailure,
 )
+from spine.evals.durable_qa_observer import (
+    DurableProductionQAAFlow,
+    ObserverAuthorization,
+    ObserverAuthorizationPort,
+)
 from spine.evals.real_qa_r1 import (
     REAL_RUNTIME_CASE_INPUT_SCHEMA,
     REAL_RUNTIME_MAPPING_MANIFEST_SCHEMA,
@@ -148,6 +153,9 @@ __all__ = [
     "ProductionContractAuthorizationDenied",
     "ProductionContractUnavailable",
     "ProductionContractPartialFailure",
+    "DurableProductionQAAFlow",
+    "ObserverAuthorization",
+    "ObserverAuthorizationPort",
     "REAL_RUNTIME_CASE_INPUT_SCHEMA",
     "REAL_RUNTIME_MAPPING_MANIFEST_SCHEMA",
     "REAL_RUNTIME_REVISION_BINDING_SCHEMA",

@@ -80,6 +80,8 @@ class DurableAskComposition:
     workflow_definition: type
     activity_bindings: tuple[object, object]
     observer_admission: ObserverAskAdmission | None = None
+    sessions: QASessionService | None = None
+    capture_channel: CaptureChannel | None = None
 
     def create_api_app(self, **dependencies: object) -> FastAPI:
         """Create the public API with the admission-only durable ask route."""
@@ -155,6 +157,8 @@ def compose_durable_ask(
             if capture_channel is not None
             else None
         ),
+        sessions=sessions,
+        capture_channel=capture_channel,
     )
 
 
