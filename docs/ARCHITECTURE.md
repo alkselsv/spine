@@ -2353,6 +2353,9 @@ detectors без специальных обходов в platform core.
 - [ADR-039](adr/0039-r1-real-benchmark-runtime-identity.md): private real-dataset
   identity manifest, trusted local runtime scope, canonical corpus readiness,
   authorized Q&A observation, bounded latency and gold-blind evaluation.
+- [ADR-040](adr/0040-production-qa-capability-and-observer-handoff.md): durable
+  production Q&A composition, bounded canonical terminal readback, authenticated
+  ephemeral typed-capture handoff, and worker-local latency.
 - ADR-TBD: artifact schemas и handoff evaluation protocol.
 - ADR-012: business outcome attribution и cost accounting.
 - ADR-013: future third-party Agent SDK, package trust и certification после появления подтверждённого внешнего кейса.
