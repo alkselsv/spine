@@ -69,7 +69,7 @@ class VolatileCaptureStore:
     ) -> CaptureDisposition:
         state = self._active(subscription_id)
         if state is None:
-            return self._missing(subscription_id)
+            return self._missing_disposition(subscription_id)
         if state.identity is not None:
             return (
                 CaptureDisposition.ALREADY_BOUND
@@ -109,7 +109,7 @@ class VolatileCaptureStore:
     async def publish(self, envelope: CaptureEnvelope) -> CaptureDisposition:
         state = self._active(envelope.subscription_id)
         if state is None:
-            return self._missing(envelope.subscription_id)
+            return self._missing_disposition(envelope.subscription_id)
         if envelope.capture_id != state.routing.capture_id:
             return CaptureDisposition.IDENTITY_MISMATCH
         if state.consumed:
@@ -141,7 +141,7 @@ class VolatileCaptureStore:
     ) -> CaptureDisposition:
         state = self._active(subscription_id)
         if state is None:
-            return self._missing(subscription_id)
+            return self._missing_disposition(subscription_id)
         if (
             capture_id != state.routing.capture_id
             or state.identity is None
@@ -172,7 +172,7 @@ class VolatileCaptureStore:
             return None
         return state
 
-    def _missing(self, subscription_id: UUID) -> CaptureDisposition:
+    def _missing_disposition(self, subscription_id: UUID) -> CaptureDisposition:
         return (
             CaptureDisposition.EXPIRED
             if subscription_id in self._subscriptions

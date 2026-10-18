@@ -16,8 +16,8 @@ from typing import Protocol
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from spine.application.qa_observation.channel import (
     CaptureChannel,
@@ -97,6 +97,23 @@ class _RegisterRequest(BaseModel):
     ttl_ms: int
 
 
+class _DispositionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    disposition: CaptureDisposition
+
+
+class _ReceiveResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    state: CaptureReceiveState
+    capture: CaptureEnvelope | None = None
+
+    @model_validator(mode="after")
+    def validate_capture_state(self) -> "_ReceiveResponse":
+        if (self.state is CaptureReceiveState.CAPTURED) != (self.capture is not None):
+            raise ValueError("captured state requires exactly one envelope")
+        return self
+
+
 class _CaptureService:
     def __init__(
         self, *, authorizer: CaptureAuthorizer, clock: Callable[[], datetime]
@@ -152,6 +169,7 @@ class _CaptureService:
         subscription_id: UUID,
         identity: AdmittedExecutionIdentity,
         timeout: timedelta,
+        is_disconnected: Callable[[], Awaitable[bool]],
     ) -> CaptureReceiveResult:
         await self._prune_expired()
         owner_entry = self._owners.get(subscription_id)
@@ -168,6 +186,9 @@ class _CaptureService:
             )
             if result.state is not CaptureReceiveState.PENDING:
                 return result
+            if await is_disconnected():
+                await self.cleanup(workload, subscription_id)
+                return CaptureReceiveResult(CaptureReceiveState.UNAVAILABLE)
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 return result
@@ -182,8 +203,8 @@ class _CaptureService:
         if (
             workload.role is not CaptureWorkloadRole.WORKER
             or owner is None
-            or not await self._authorizer.worker_may_publish(workload, envelope.identity)
-            or not await self._authorizer.worker_may_deliver_to_observer(
+            or not await self._authorized_worker(workload, envelope.identity)
+            or not await self._authorized_delivery(
                 workload, owner, envelope.identity
             )
         ):
@@ -235,6 +256,27 @@ class _CaptureService:
     ) -> bool:
         try:
             return await self._authorizer.observer_may_bind(workload, identity)
+        except Exception:
+            return False
+
+    async def _authorized_worker(
+        self, workload: CaptureWorkload, identity: AdmittedExecutionIdentity
+    ) -> bool:
+        try:
+            return await self._authorizer.worker_may_publish(workload, identity)
+        except Exception:
+            return False
+
+    async def _authorized_delivery(
+        self,
+        worker: CaptureWorkload,
+        observer: CaptureWorkload,
+        identity: AdmittedExecutionIdentity,
+    ) -> bool:
+        try:
+            return await self._authorizer.worker_may_deliver_to_observer(
+                worker, observer, identity
+            )
         except Exception:
             return False
 
@@ -297,16 +339,24 @@ def create_capture_channel_router(
             raise HTTPException(400, "capture request unavailable")
         return await service.register(workload, data.capture_id, ttl)
 
-    @router.post("/subscriptions/{subscription_id}/bind")
-    async def bind(subscription_id: UUID, request: Request) -> dict[str, str]:
+    @router.post(
+        "/subscriptions/{subscription_id}/bind", response_model=_DispositionResponse
+    )
+    async def bind(
+        subscription_id: UUID, request: Request
+    ) -> _DispositionResponse:
         workload = await authenticate(request, CaptureWorkloadRole.OBSERVER)
         data = await parse_body(request, _BindRequest)
         assert isinstance(data, _BindRequest)
         disposition = await service.bind(workload, subscription_id, data.identity)
-        return {"disposition": disposition.value}
+        return _DispositionResponse(disposition=disposition)
 
-    @router.post("/subscriptions/{subscription_id}/receive")
-    async def receive(subscription_id: UUID, request: Request) -> Response:
+    @router.post(
+        "/subscriptions/{subscription_id}/receive", response_model=_ReceiveResponse
+    )
+    async def receive(
+        subscription_id: UUID, request: Request
+    ) -> _ReceiveResponse:
         workload = await authenticate(request, CaptureWorkloadRole.OBSERVER)
         data = await parse_body(request, _ReceiveRequest)
         assert isinstance(data, _ReceiveRequest)
@@ -315,48 +365,61 @@ def create_capture_channel_router(
             or data.timeout_ms > int(MAX_RECEIVE_WAIT.total_seconds() * 1000)
         ):
             raise HTTPException(400, "capture request unavailable")
-        result = await service.receive(
-            workload,
-            subscription_id,
-            data.identity,
-            timedelta(milliseconds=data.timeout_ms),
-        )
-        if result.capture is None:
-            return Response(
-                content=f'{{"state":"{result.state.value}"}}',
-                media_type="application/json",
+        try:
+            result = await service.receive(
+                workload,
+                subscription_id,
+                data.identity,
+                timedelta(milliseconds=data.timeout_ms),
+                request.is_disconnected,
             )
-        return Response(content=_receive_json(result), media_type="application/json")
+        except asyncio.CancelledError:
+            await service.cleanup(workload, subscription_id)
+            raise
+        return _ReceiveResponse(state=result.state, capture=result.capture)
 
-    @router.post("/subscriptions/{subscription_id}/acknowledge")
-    async def acknowledge(subscription_id: UUID, request: Request) -> dict[str, str]:
+    @router.post(
+        "/subscriptions/{subscription_id}/acknowledge",
+        response_model=_DispositionResponse,
+    )
+    async def acknowledge(
+        subscription_id: UUID, request: Request
+    ) -> _DispositionResponse:
         workload = await authenticate(request, CaptureWorkloadRole.OBSERVER)
         data = await parse_body(request, _AcknowledgeRequest)
         assert isinstance(data, _AcknowledgeRequest)
         disposition = await service.acknowledge(
             workload, subscription_id, data.capture_id, data.identity
         )
-        return {"disposition": disposition.value}
+        return _DispositionResponse(disposition=disposition)
 
-    @router.delete("/subscriptions/{subscription_id}")
-    async def cleanup(subscription_id: UUID, request: Request) -> dict[str, str]:
+    @router.delete(
+        "/subscriptions/{subscription_id}", response_model=_DispositionResponse
+    )
+    async def cleanup(
+        subscription_id: UUID, request: Request
+    ) -> _DispositionResponse:
         workload = await authenticate(request, CaptureWorkloadRole.OBSERVER)
         disposition = await service.cleanup(workload, subscription_id)
-        return {"disposition": disposition.value}
+        return _DispositionResponse(disposition=disposition)
 
-    @router.post("/captures")
-    async def publish(request: Request) -> dict[str, str]:
+    @router.post("/captures", response_model=_DispositionResponse)
+    async def publish(request: Request) -> _DispositionResponse:
         workload = await authenticate(request, CaptureWorkloadRole.WORKER)
         data = await parse_body(request, CaptureEnvelope)
         assert isinstance(data, CaptureEnvelope)
         disposition = await service.publish(workload, data)
-        return {"disposition": disposition.value}
+        return _DispositionResponse(disposition=disposition)
 
     return router
 
 
 class HttpCaptureChannel(CaptureChannel):
-    """Client adapter used by separately deployed observer and worker processes."""
+    """Client adapter for separately deployed worker and observer processes.
+
+    Production callers supply an HTTPS endpoint and inject workload credentials
+    through ``headers`` and TLS/workload identity through ``transport``.
+    """
 
     def __init__(
         self,
@@ -397,8 +460,8 @@ class HttpCaptureChannel(CaptureChannel):
                 f"/subscriptions/{subscription_id}/bind",
                 json={"identity": identity.model_dump(mode="json")},
             )
-            return CaptureDisposition(response.json()["disposition"])
-        except (CaptureTransportUnavailable, ValueError, KeyError):
+            return _DispositionResponse.model_validate(response.json()).disposition
+        except (CaptureTransportUnavailable, ValidationError):
             return CaptureDisposition.UNAVAILABLE
 
     async def receive(
@@ -418,16 +481,12 @@ class HttpCaptureChannel(CaptureChannel):
                 },
                 timeout=max(self._client.timeout.read or 35.0, timeout.total_seconds() + 1.0),
             )
-            data = response.json()
-            state = CaptureReceiveState(data["state"])
-            capture = CaptureEnvelope.model_validate(data["capture"]) if data.get("capture") is not None else None
-            return CaptureReceiveResult(state=state, capture=capture)
+            data = _ReceiveResponse.model_validate(response.json())
+            return CaptureReceiveResult(state=data.state, capture=data.capture)
         except (
             CaptureTransportUnavailable,
             httpx.HTTPError,
-            ValueError,
-            KeyError,
-            TypeError,
+            ValidationError,
         ):
             return CaptureReceiveResult(CaptureReceiveState.UNAVAILABLE)
 
@@ -436,8 +495,8 @@ class HttpCaptureChannel(CaptureChannel):
             response = await self._request(
                 "POST", "/captures", json=envelope.model_dump(mode="json")
             )
-            return CaptureDisposition(response.json()["disposition"])
-        except (CaptureTransportUnavailable, ValueError, KeyError):
+            return _DispositionResponse.model_validate(response.json()).disposition
+        except (CaptureTransportUnavailable, ValidationError):
             return CaptureDisposition.UNAVAILABLE
 
     async def acknowledge(
@@ -456,15 +515,15 @@ class HttpCaptureChannel(CaptureChannel):
                     "identity": identity.model_dump(mode="json"),
                 },
             )
-            return CaptureDisposition(response.json()["disposition"])
-        except (CaptureTransportUnavailable, ValueError, KeyError):
+            return _DispositionResponse.model_validate(response.json()).disposition
+        except (CaptureTransportUnavailable, ValidationError):
             return CaptureDisposition.UNAVAILABLE
 
     async def cleanup(self, *, subscription_id: UUID) -> CaptureDisposition:
         try:
             response = await self._request("DELETE", f"/subscriptions/{subscription_id}")
-            return CaptureDisposition(response.json()["disposition"])
-        except (CaptureTransportUnavailable, ValueError, KeyError):
+            return _DispositionResponse.model_validate(response.json()).disposition
+        except (CaptureTransportUnavailable, ValidationError):
             return CaptureDisposition.UNAVAILABLE
 
     async def _request(self, method: str, path: str, **kwargs: object) -> httpx.Response:
@@ -491,15 +550,3 @@ class HttpCaptureChannel(CaptureChannel):
 
 class CaptureTransportUnavailable(RuntimeError):
     """Safe transport failure; deliberately contains no payload or credentials."""
-
-
-def _receive_json(result: CaptureReceiveResult) -> str:
-    from json import dumps
-
-    return dumps(
-        {
-            "state": result.state.value,
-            "capture": result.capture.model_dump(mode="json") if result.capture else None,
-        },
-        separators=(",", ":"),
-    )
