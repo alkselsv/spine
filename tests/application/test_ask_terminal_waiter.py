@@ -525,3 +525,41 @@ async def test_waiter_bounds_a_stalled_canonical_status_read():
     )
 
     assert result.wait.unavailable_reason is SafeWaitUnavailableReason.DEADLINE_EXCEEDED
+
+
+@pytest.mark.asyncio
+async def test_waiter_bounds_a_stalled_authorized_message_read():
+    identity = execution_identity()
+
+    class StalledSessions:
+        async def get_message(self, **kwargs):
+            del kwargs
+            await asyncio.Event().wait()
+
+    waiter = TerminalAskWaiter(
+        admission=_Admission(
+            [
+                _status(
+                    identity,
+                    AskAdmissionLifecycle.TERMINAL,
+                    AnswerQuestionOutcome.ABSTAINED,
+                    identity.attempt_id,
+                )
+            ]
+        ),
+        sessions=StalledSessions(),
+        clock=lambda: 0.0,
+        max_wait_seconds=0.01,
+    )
+
+    result = await waiter.wait(
+        identity=identity,
+        context=_context(identity),
+        admission_result=_admission_result(identity),
+        requester=QASessionRequester(identity.requester.id),
+        deadline=10.0,
+    )
+
+    assert result.wait.unavailable_reason is SafeWaitUnavailableReason.DEADLINE_EXCEEDED
+    assert result.last_observed_state is ExecutionWaitState.TERMINAL
+    assert result.message is None
