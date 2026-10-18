@@ -562,6 +562,21 @@ async def test_workspace_captures_are_isolated_across_observer_reads(transport_s
 
 
 @pytest.mark.asyncio
+async def test_http_registration_retry_reuses_subscription_for_same_workload(
+    transport_setup,
+) -> None:
+    _, _, client, _ = transport_setup
+    observer = client("observer-test")
+    capture_id = UUID("f3000000-0000-0000-0000-000000000471")
+
+    first = await observer.register(capture_id=capture_id, ttl=timedelta(minutes=1))
+    replay = await observer.register(capture_id=capture_id, ttl=timedelta(minutes=1))
+
+    assert replay == first
+    await observer.close()
+
+
+@pytest.mark.asyncio
 async def test_receive_timeout_fails_closed_and_cleans_subscription(transport_setup):
     _, _, client, _ = transport_setup
     observer = client("observer-test")

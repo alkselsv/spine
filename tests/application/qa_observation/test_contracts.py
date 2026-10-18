@@ -154,7 +154,7 @@ def test_subscription_rejects_naive_expiry_timestamp() -> None:
         )
 
 
-def test_capture_route_uses_its_own_versioned_contract() -> None:
+def test_legacy_workflow_input_keeps_v1_without_capture_metadata() -> None:
     subscription = CaptureSubscription(
         capture_id=UUID("c0000000-0000-0000-0000-000000000471"),
         subscription_id=UUID("d0000000-0000-0000-0000-000000000471"),
@@ -163,7 +163,17 @@ def test_capture_route_uses_its_own_versioned_contract() -> None:
 
     assert subscription.schema_version == "r1-qa-observer-subscription:v1"
     assert AskAdmissionWorkflowInput.model_fields["schema_version"].default == 1
-    assert "capture_id" not in AskAdmissionWorkflowInput.model_fields
+    legacy_input = AskAdmissionWorkflowInput(
+        command_id=UUID("10000000-0000-0000-0000-000000000471"),
+        workspace_id=UUID("50000000-0000-0000-0000-000000000471"),
+        environment_id=UUID("60000000-0000-0000-0000-000000000471"),
+        session_id=UUID("30000000-0000-0000-0000-000000000471"),
+        message_id=UUID("40000000-0000-0000-0000-000000000471"),
+        run_id=UUID("20000000-0000-0000-0000-000000000471"),
+        trace_id=UUID("a0000000-0000-0000-0000-000000000471"),
+    )
+    assert legacy_input.schema_version == 1
+    assert legacy_input.capture_id is None
 
 
 def test_observer_route_uses_compatible_separate_workflow_contract() -> None:

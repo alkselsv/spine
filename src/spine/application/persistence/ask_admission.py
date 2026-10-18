@@ -12,7 +12,7 @@ from enum import Enum
 from typing import Protocol
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from spine.application.persistence.command_digest import CommandDigest, digest_command
 from spine.application.persistence.context import (
@@ -36,6 +36,12 @@ QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION = 1
 QA_ASK_CANCELLATION_EVENT_TYPE = "qa.ask-cancellation-requested"
 QA_ASK_CANCELLATION_EVENT_SCHEMA_VERSION = 1
 QA_ASK_ADMISSION_REQUEST_SCHEMA = "qa.ask-admission-request:v1"
+
+
+def ask_admission_metadata_schema_version(capture_id: UUID | None) -> int:
+    """Return the compatible payload version for optional capture correlation."""
+
+    return 2 if capture_id is not None else 1
 
 
 class AskCancellationDispatchPayload(BaseModel):
@@ -63,7 +69,23 @@ class AskAdmissionDispatchPayload(BaseModel):
     session_id: UUID
     message_id: UUID
     run_id: UUID
+    capture_id: UUID | None = None
     schema_version: int = Field(default=1, gt=0)
+
+    @field_validator("capture_id")
+    @classmethod
+    def validate_capture_id(cls, value: UUID | None) -> UUID | None:
+        if value is not None and value.int == 0:
+            raise ValueError("capture_id must be non-zero")
+        return value
+
+    @model_validator(mode="after")
+    def validate_payload_version(self) -> "AskAdmissionDispatchPayload":
+        if self.schema_version != ask_admission_metadata_schema_version(
+            self.capture_id
+        ):
+            raise ValueError("Ask admission dispatch payload version is invalid")
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +101,7 @@ class AskAdmissionCommand:
     idempotency_key: IdempotencyKey
     digest: CommandDigest
     clarification_of_message_id: UUID | None = None
+    capture_id: UUID | None = None
 
     def __post_init__(self) -> None:
         identifiers = (
@@ -87,6 +110,7 @@ class AskAdmissionCommand:
             self.session_id,
             self.subject.id,
             self.clarification_of_message_id,
+            self.capture_id,
         )
         if any(value is not None and value.int == 0 for value in identifiers):
             raise ValueError("Ask admission identity must be non-zero")
@@ -109,6 +133,7 @@ class AskAdmissionCommand:
         question: str,
         idempotency_key: IdempotencyKey,
         clarification_of_message_id: UUID | None = None,
+        capture_id: UUID | None = None,
     ) -> "AskAdmissionCommand":
         digest = digest_command(
             operation=QA_ASK_ADMISSION_OPERATION,
@@ -135,6 +160,7 @@ class AskAdmissionCommand:
             idempotency_key=idempotency_key,
             digest=digest,
             clarification_of_message_id=clarification_of_message_id,
+            capture_id=capture_id,
         )
 
 
@@ -306,6 +332,7 @@ __all__ = [
     "QA_ASK_ADMISSION_REQUEST_SCHEMA",
     "QA_ASK_ADMISSION_RESULT_TYPE",
     "QA_ASK_ADMISSION_SCHEMA_VERSION",
+    "ask_admission_metadata_schema_version",
     "register_ask_admission_outbox_event",
     "validate_ask_admission_context",
 ]

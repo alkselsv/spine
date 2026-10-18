@@ -1,5 +1,11 @@
 """Application contracts for the Q&A observer handoff."""
 
+from spine.application.qa_observation.admission import (
+    ObserverAskAdmission,
+    ObserverAskAdmissionResult,
+    ObserverAskAdmissionUnavailable,
+)
+
 from spine.application.qa_observation.contracts import (
     AdmittedExecutionIdentity,
     CaptureEnvelope,
@@ -25,6 +31,9 @@ __all__ = [
     "CaptureEnvelope",
     "CaptureDisposition",
     "CaptureSubscription",
+    "ObserverAskAdmission",
+    "ObserverAskAdmissionResult",
+    "ObserverAskAdmissionUnavailable",
     "ObserverRoutedAskAdmissionWorkflowInput",
     "SameExecutionCapture",
     "TerminalWaitResult",

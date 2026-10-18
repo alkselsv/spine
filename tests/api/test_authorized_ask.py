@@ -304,6 +304,40 @@ async def test_ask_admission_returns_stable_ids_without_content_before_execution
 
 
 @pytest.mark.asyncio
+async def test_durable_ask_route_returns_admission_without_inline_execution() -> None:
+    admission = FakeAdmissionService(
+        AskAdmissionResult(
+            command_id=COMMAND_ID,
+            session_id=SESSION_ID,
+            message_id=MESSAGE_ID,
+            run_id=RUN_ID,
+            dispatch_event_id=UUID("70000000-0000-0000-0000-000000000011"),
+            replay=False,
+        )
+    )
+    service = FakeAskService(answered_result(), [])
+    application = authorized_app([])
+    install_authorized_ask_routes(
+        application, service=service, admission_service=admission
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/v1/ask",
+            json={"schema_version": 1, "session_id": str(SESSION_ID), "question": "protected"},
+            headers={**headers(), "Idempotency-Key": "durable-ask"},
+        )
+
+    assert response.status_code == 202
+    assert response.json()["result"]["run_id"] == str(RUN_ID)
+    assert "protected" not in response.text
+    assert len(admission.calls) == 1
+    assert service.calls == []
+
+
+@pytest.mark.asyncio
 async def test_ask_admission_terminal_replay_returns_200_without_answer_content() -> None:
     admission = FakeAdmissionService(
         AskAdmissionResult(

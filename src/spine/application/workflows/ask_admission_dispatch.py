@@ -27,6 +27,7 @@ from spine.application.persistence.ask_admission import (
     QA_ASK_CANCELLATION_EVENT_TYPE,
     QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION,
     QA_ASK_ADMISSION_EVENT_TYPE,
+    ask_admission_metadata_schema_version,
 )
 from spine.application.persistence.outbox import OutboxIntent
 from spine.application.diagnostics.context import DiagnosticContext
@@ -39,6 +40,10 @@ from spine.application.authorized_ask import (
 )
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.application.persistence.idempotency import IdempotencyKey
+from spine.application.worker_execution_observation import (
+    WorkerExecutionElapsedCapturePort,
+    WorkerExecutionElapsedSample,
+)
 from spine.domain.common import ActorRef, EnvironmentKind
 
 ASK_ADMISSION_WORKFLOW_TYPE = "spine.qa.ask-admission:v1"
@@ -72,6 +77,7 @@ class AskAdmissionWorkflowInput(BaseModel):
     trace_id: UUID
     correlation_id: UUID | None = None
     causation_id: UUID | None = None
+    capture_id: UUID | None = None
 
     def model_post_init(self, __context: object) -> None:
         del __context
@@ -85,10 +91,18 @@ class AskAdmissionWorkflowInput(BaseModel):
             "trace_id",
         ):
             _require_id(getattr(self, field_name), field_name)
-        for field_name in ("correlation_id", "causation_id"):
+        for field_name in (
+            "correlation_id",
+            "causation_id",
+            "capture_id",
+        ):
             value = getattr(self, field_name)
             if value is not None:
                 _require_id(value, field_name)
+        if self.schema_version != ask_admission_metadata_schema_version(
+            self.capture_id
+        ):
+            raise ValueError("Ask workflow input version is invalid")
 
     @classmethod
     def from_intent(cls, intent: OutboxIntent) -> "AskAdmissionWorkflowInput":
@@ -98,6 +112,7 @@ class AskAdmissionWorkflowInput(BaseModel):
             or intent.schema_version != QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION
             or intent.environment_id is None
             or type(intent.payload) is not AskAdmissionDispatchPayload
+            or intent.payload.schema_version not in {1, 2}
             or intent.aggregate is None
             or intent.aggregate.object_type != "answer_question_run"
         ):
@@ -122,6 +137,8 @@ class AskAdmissionWorkflowInput(BaseModel):
             trace_id=intent.trace_id,
             correlation_id=intent.correlation_id,
             causation_id=intent.event_id,
+            capture_id=payload.capture_id,
+            schema_version=payload.schema_version,
         )
 
 
@@ -407,6 +424,8 @@ class AskAdmissionWorkflowExecutor:
         ],
         run_starter: Callable[[AskAdmissionWorkflowInput], Awaitable[object]] | None = None,
         authorization_generation: int = 1,
+        monotonic_ns: Callable[[], int] | None = None,
+        execution_elapsed_port: WorkerExecutionElapsedCapturePort | None = None,
     ) -> None:
         if authorization_generation < 1:
             raise ValueError("authorization generation must be positive")
@@ -415,6 +434,8 @@ class AskAdmissionWorkflowExecutor:
         self._persistence_context_factory = persistence_context_factory
         self._run_starter = run_starter
         self._authorization_generation = authorization_generation
+        self._monotonic_ns = monotonic_ns
+        self._execution_elapsed_port = execution_elapsed_port
 
     async def execute(self, workflow_input: AskAdmissionWorkflowInput) -> AuthorizedAskResult:
         command = await self._loader.load(workflow_input)
@@ -429,6 +450,7 @@ class AskAdmissionWorkflowExecutor:
         if self._run_starter is not None:
             await self._run_starter(workflow_input)
         context = self._persistence_context_factory(workflow_input)
+        started_at = self._monotonic_ns() if self._monotonic_ns is not None else None
         result = await self._service.execute_admitted(
             AskExecutionCommand(
                 request_context=AskRequestContext(
@@ -449,6 +471,10 @@ class AskAdmissionWorkflowExecutor:
                 idempotency_key=IdempotencyKey(command.idempotency_key),
             )
         )
+        finished_at = self._monotonic_ns() if started_at is not None else None
+        elapsed_ns: int | None = None
+        if started_at is not None and finished_at is not None:
+            elapsed_ns = max(0, finished_at - started_at)
         if (
             result.command_id != workflow_input.command_id
             or result.session_id != workflow_input.session_id
@@ -456,6 +482,22 @@ class AskAdmissionWorkflowExecutor:
             or result.run_id != workflow_input.run_id
         ):
             raise InvalidAskAdmissionIntent("Ask execution returned mismatched identity.")
+        if (
+            elapsed_ns is not None
+            and self._execution_elapsed_port is not None
+        ):
+            try:
+                await self._execution_elapsed_port.record_worker_execution_elapsed(
+                    WorkerExecutionElapsedSample(
+                        run_id=workflow_input.run_id,
+                        attempt_id=result.attempt_id,
+                        capture_id=workflow_input.capture_id,
+                        worker_execution_elapsed_ns=elapsed_ns,
+                    )
+                )
+            except Exception:
+                # Observability must not change the canonical terminal result.
+                pass
         return result
 
     async def cancel(

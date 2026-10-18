@@ -287,7 +287,17 @@ def install_authorized_ask_routes(
         body: AuthorizedAskRequest = Body(...),
         request_context: AuthorizedRequestContext[object] = Depends(get_authorized_request_context),
         persistence_context: TrustedPersistenceContext = Depends(get_authorized_persistence_context),
-    ) -> ApiCommandResult[AskOutcomeResponse]:
+    ) -> ApiCommandResult[AskOutcomeResponse] | JSONResponse:
+        # Durable configuration has one execution owner: the Temporal worker.
+        # Reuse the admission-only operation so this route cannot admit and then
+        # invoke the capability inline in the API process.
+        if getattr(request.app.state, "ask_admission_service", None) is not None:
+            return await admission_endpoint(
+                request,
+                QAAskAdmissionRequestV1.model_validate(body.model_dump(mode="python")),
+                request_context,
+                persistence_context,
+            )
         try:
             result = await _service(request).ask(
                 AskCommand(

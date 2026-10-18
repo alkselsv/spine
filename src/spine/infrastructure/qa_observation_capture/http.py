@@ -131,14 +131,22 @@ class _CaptureService:
     ) -> CaptureSubscription:
         async with self._lock:
             await self._prune_expired()
-            if len(self._owners) >= MAX_SUBSCRIPTIONS:
-                raise HTTPException(429, "capture channel unavailable")
             try:
                 subscription = await self._channel.register(
                     capture_id=capture_id, ttl=ttl
                 )
             except ValueError:
                 raise HTTPException(409, "capture subscription unavailable") from None
+            existing_owner = self._owners.get(subscription.subscription_id)
+            if existing_owner is not None:
+                if existing_owner[0] != workload:
+                    raise HTTPException(409, "capture subscription unavailable")
+                return subscription
+            if len(self._owners) >= MAX_SUBSCRIPTIONS:
+                await self._channel.cleanup(
+                    subscription_id=subscription.subscription_id
+                )
+                raise HTTPException(429, "capture channel unavailable")
             self._owners[subscription.subscription_id] = (
                 workload,
                 subscription.expires_at,

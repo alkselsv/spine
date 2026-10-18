@@ -173,6 +173,8 @@ class InMemoryAskAdmissionRepository(AskAdmissionRepository):
                     session_id=command.session_id,
                     message_id=message_id,
                     run_id=run_id,
+                    capture_id=command.capture_id,
+                    schema_version=2 if command.capture_id is not None else 1,
                 ),
                 aggregate=OpaqueObjectReference(
                     object_type="answer_question_run",
