@@ -59,7 +59,9 @@ def _request(case_id: str = "allowed-acl") -> ProductionContractCaseRequest:
     return ProductionContractCaseRequest.from_case(case)
 
 
-def _allowed_observation() -> ProductionContractObservation:
+def _allowed_observation(
+    *, run_id: UUID | None = None, attempt_id: UUID | None = None
+) -> ProductionContractObservation:
     case = next(case for case in load_r1_dataset().cases if case.case_id == "allowed-acl")
     reference = ContextBundleEvidenceReference(
         evidence_id="evidence-1",
@@ -84,8 +86,8 @@ def _allowed_observation() -> ProductionContractObservation:
         subject=QuestionSubject(text=case.question),
         scope=AnswerQuestionScope(workspace_id=UUID(int=1), environment_id=UUID(int=2)),
         correlation=RunAttemptCorrelation(
-            run_id=uuid5(NAMESPACE_URL, "r1:allowed:run"),
-            attempt_id=uuid5(NAMESPACE_URL, "r1:allowed:attempt"),
+            run_id=run_id or uuid5(NAMESPACE_URL, "r1:allowed:run"),
+            attempt_id=attempt_id or uuid5(NAMESPACE_URL, "r1:allowed:attempt"),
             trace_id=uuid5(NAMESPACE_URL, "r1:allowed:trace"),
         ),
     )

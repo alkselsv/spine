@@ -51,6 +51,7 @@ from spine.evals.production_contract import (
     ProductionContractPartialFailure,
 )
 from spine.evals.durable_qa_observer import (
+    DurableAskObservationComposition,
     DurableProductionQAAFlow,
     ObserverAuthorization,
     ObserverAuthorizationPort,
@@ -154,6 +155,7 @@ __all__ = [
     "ProductionContractUnavailable",
     "ProductionContractPartialFailure",
     "DurableProductionQAAFlow",
+    "DurableAskObservationComposition",
     "ObserverAuthorization",
     "ObserverAuthorizationPort",
     "REAL_RUNTIME_CASE_INPUT_SCHEMA",

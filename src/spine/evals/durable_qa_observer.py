@@ -17,7 +17,6 @@ import time
 from typing import Protocol
 from uuid import UUID, uuid4, uuid5
 
-from spine.api.composition import DurableAskComposition
 from spine.application.ask_terminal_waiter import TerminalAskWaiter
 from spine.application.persistence.ask_admission import AskAdmissionCommand
 from spine.application.persistence.context import (
@@ -26,9 +25,12 @@ from spine.application.persistence.context import (
 )
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.qa_observation.channel import (
+    CaptureChannel,
     CaptureDisposition,
     CaptureReceiveState,
 )
+from spine.application.qa_observation.admission import ObserverAskAdmission
+from spine.application.qa_sessions import QASessionService
 from spine.application.qa_observation.contracts import AdmittedExecutionIdentity, ExecutionWaitState
 from spine.application.qa_sessions import QASessionRequester
 from spine.auth import AuthorizationDeniedError
@@ -61,11 +63,19 @@ class ObserverAuthorizationPort(Protocol):
     ) -> ObserverAuthorization: ...
 
 
+class DurableAskObservationComposition(Protocol):
+    """Application ports exposed by the configured durable API composition."""
+
+    sessions: QASessionService | None
+    observer_admission: ObserverAskAdmission | None
+    capture_channel: CaptureChannel | None
+
+
 @dataclass(frozen=True, slots=True)
 class DurableProductionQAAFlow(ProductionContractApplicationFlow):
     """Execute one case through the shared API/Temporal Q&A composition."""
 
-    composition: DurableAskComposition
+    composition: DurableAskObservationComposition
     authorization: ObserverAuthorizationPort
     waiter: TerminalAskWaiter
     invocation_id_source: Callable[[], UUID] = uuid4
@@ -190,29 +200,17 @@ class DurableProductionQAAFlow(ProductionContractApplicationFlow):
                 timeout=self.capture_timeout,
             )
             if receive.state is not CaptureReceiveState.CAPTURED or receive.capture is None:
-                raise ProductionContractPartialFailure(
-                    correlation_id=correlation_id,
-                    completed_attempt_id=identity.attempt_id,
-                    completed_attempt_number=identity.attempt_number,
-                )
+                raise _partial_failure(identity)
             envelope = receive.capture
             if (
                 envelope.capture_id != admitted.capture_id
                 or envelope.subscription_id != subscription_id
                 or not envelope.identity.matches(identity)
             ):
-                raise ProductionContractPartialFailure(
-                    correlation_id=correlation_id,
-                    completed_attempt_id=identity.attempt_id,
-                    completed_attempt_number=identity.attempt_number,
-                )
+                raise _partial_failure(identity)
             capture = envelope.capture
             if terminal.wait.outcome is not capture.answer.outcome:
-                raise ProductionContractPartialFailure(
-                    correlation_id=correlation_id,
-                    completed_attempt_id=identity.attempt_id,
-                    completed_attempt_number=identity.attempt_number,
-                )
+                raise _partial_failure(identity)
             self._validate_terminal_message(
                 request=request,
                 identity=identity,
@@ -244,22 +242,14 @@ class DurableProductionQAAFlow(ProductionContractApplicationFlow):
                 identity=identity,
             )
             if ack not in {CaptureDisposition.ACKNOWLEDGED, CaptureDisposition.DUPLICATE}:
-                raise ProductionContractPartialFailure(
-                    correlation_id=correlation_id,
-                    completed_attempt_id=identity.attempt_id,
-                    completed_attempt_number=identity.attempt_number,
-                )
+                raise _partial_failure(identity)
             return observation
         except ProductionContractObserverFailure:
             raise
         except asyncio.CancelledError:
             raise
         except Exception:
-            raise ProductionContractPartialFailure(
-                correlation_id=correlation_id,
-                completed_attempt_id=identity.attempt_id,
-                completed_attempt_number=identity.attempt_number,
-            ) from None
+            raise _partial_failure(identity) from None
         finally:
             # Cleanup is best-effort and never turns a safe outcome into a
             # content-bearing error. No cancellation is sent to Temporal.
@@ -280,34 +270,36 @@ class DurableProductionQAAFlow(ProductionContractApplicationFlow):
             or message.environment_id != identity.environment_id
             or message.question != request.question
         ):
-            raise ProductionContractPartialFailure(
-                correlation_id=identity.run_id,
-                completed_attempt_id=identity.attempt_id,
-                completed_attempt_number=identity.attempt_number,
-            )
+            raise _partial_failure(identity)
         if capture_answer.outcome.value == "answered":
             presentation = message.accepted_presentation
             accepted = capture_answer.answer
             if (
                 message.answer is None
                 or presentation is None
+                or message.disclosure_eligibility.value != "eligible"
                 or accepted is None
                 or hashlib.sha256(message.answer.encode("utf-8")).hexdigest()
                 != hashlib.sha256(accepted.text.encode("utf-8")).hexdigest()
                 or tuple(presentation.citation_ids)
                 != tuple(citation.citation_id for citation in accepted.citations)
             ):
-                raise ProductionContractPartialFailure(
-                    correlation_id=identity.run_id,
-                    completed_attempt_id=identity.attempt_id,
-                    completed_attempt_number=identity.attempt_number,
-                )
+                raise _partial_failure(identity)
         elif message.answer is not None or message.accepted_presentation is not None:
-            raise ProductionContractPartialFailure(
-                correlation_id=identity.run_id,
-                completed_attempt_id=identity.attempt_id,
-                completed_attempt_number=identity.attempt_number,
-            )
+            raise _partial_failure(identity)
 
 
-__all__ = ["DurableProductionQAAFlow", "ObserverAuthorization", "ObserverAuthorizationPort"]
+def _partial_failure(identity: AdmittedExecutionIdentity) -> ProductionContractPartialFailure:
+    return ProductionContractPartialFailure(
+        correlation_id=identity.run_id,
+        completed_attempt_id=identity.attempt_id,
+        completed_attempt_number=identity.attempt_number,
+    )
+
+
+__all__ = [
+    "DurableAskObservationComposition",
+    "DurableProductionQAAFlow",
+    "ObserverAuthorization",
+    "ObserverAuthorizationPort",
+]
