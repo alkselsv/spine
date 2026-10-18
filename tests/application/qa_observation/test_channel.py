@@ -62,6 +62,18 @@ async def test_publish_before_bind_is_buffered_then_released_after_exact_bind() 
 
 
 @pytest.mark.asyncio
+async def test_registration_retry_reuses_same_active_subscription() -> None:
+    clock = FakeClock()
+    channel = InMemoryCaptureChannel(clock=clock)
+    capture_id = UUID("c1000000-0000-0000-0000-000000000471")
+
+    first = await channel.register(capture_id=capture_id, ttl=timedelta(minutes=1))
+    replay = await channel.register(capture_id=capture_id, ttl=timedelta(minutes=1))
+
+    assert replay == first
+
+
+@pytest.mark.asyncio
 async def test_duplicate_publish_is_idempotent_and_acknowledgement_is_one_shot() -> (
     None
 ):

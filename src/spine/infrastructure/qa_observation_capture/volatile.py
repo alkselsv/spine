@@ -48,12 +48,14 @@ class VolatileCaptureStore:
     ) -> CaptureSubscription:
         if capture_id.int == 0 or ttl <= timedelta(0):
             raise ValueError("capture registration bounds are invalid")
-        if any(
-            state.routing.capture_id == capture_id
-            for state in self._subscriptions.values()
-        ):
-            raise ValueError("capture_id is already registered")
         subscription_id = uuid5(NAMESPACE_URL, f"spine:qa-observer:{capture_id}")
+        existing = self._subscriptions.get(subscription_id)
+        if existing is not None:
+            if existing.routing.capture_id != capture_id:
+                raise ValueError("subscription identity collision")
+            if self._active(subscription_id) is not None:
+                return existing.routing
+            self._subscriptions.pop(subscription_id, None)
         if subscription_id in self._subscriptions:
             raise ValueError("subscription identity collision")
         routing = CaptureSubscription(

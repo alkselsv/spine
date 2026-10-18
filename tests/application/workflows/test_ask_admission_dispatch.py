@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -68,7 +68,6 @@ def admission_intent():
     from spine.application.persistence.ask_admission import (
         register_ask_admission_outbox_event,
     )
-
     register_ask_admission_outbox_event(registry)
     return registry.build_intent(
         event_id=UUID("80000000-0000-0000-0000-000000000427"),
@@ -90,6 +89,45 @@ def admission_intent():
         producer_deduplication_id="qa-ask-admission:427",
         trace_id=TRACE_ID,
     )
+
+
+def test_capture_enabled_dispatch_uses_compatible_v2_workflow_metadata() -> None:
+    capture_id = UUID("90000000-0000-0000-0000-000000000427")
+    registry = OutboxEventRegistry()
+    from spine.application.persistence.ask_admission import (
+        register_ask_admission_outbox_event,
+    )
+
+    register_ask_admission_outbox_event(registry)
+    intent = registry.build_intent(
+        event_id=UUID("80000000-0000-0000-0000-000000000427"),
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        event_type=QA_ASK_ADMISSION_EVENT_TYPE,
+        schema_version=QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION,
+        payload=AskAdmissionDispatchPayload(
+            command_id=COMMAND_ID,
+            session_id=SESSION_ID,
+            message_id=MESSAGE_ID,
+            run_id=RUN_ID,
+            capture_id=capture_id,
+            schema_version=2,
+        ),
+        aggregate=OpaqueObjectReference(
+            object_type="answer_question_run", object_id=RUN_ID, schema_version=1
+        ),
+        producer_deduplication_id="qa-ask-admission:observer-427",
+        trace_id=TRACE_ID,
+    )
+
+    workflow = AskAdmissionWorkflowInput.from_intent(intent)
+    restored = AskAdmissionWorkflowInput.model_validate_json(
+        workflow.model_dump_json()
+    )
+
+    assert restored.schema_version == 2
+    assert restored.capture_id == capture_id
+    assert "question" not in restored.model_dump(mode="json")
 
 
 class FakeTemporal:
@@ -320,21 +358,86 @@ async def test_workflow_executor_releases_only_scoped_admitted_identity_to_capab
                 session_id=execution.session_id,
                 message_id=execution.message_id,
                 run_id=execution.run_id,
+                attempt_id=UUID(int=RUN_ID.int + len(self.commands)),
             )
 
     service = Service()
+    timings = []
+    capture_id = UUID("a0000000-0000-0000-0000-000000000427")
+
+    class ElapsedPort:
+        async def record_worker_execution_elapsed(self, sample):
+            timings.append(sample)
+
     executor = AskAdmissionWorkflowExecutor(
         loader=Loader(),
         service=service,
         persistence_context_factory=lambda workflow_input: object(),
+        monotonic_ns=iter((100, 130, 500, 570)).__next__,
+        execution_elapsed_port=ElapsedPort(),
     )
 
-    result = await executor.execute(workflow_input())
+    capture_input = workflow_input().model_copy(
+        update={"capture_id": capture_id, "schema_version": 2}
+    )
+    result = await executor.execute(capture_input)
+    retry_result = await executor.execute(capture_input)
 
     assert result.run_id == RUN_ID
+    assert retry_result.run_id == RUN_ID
     assert service.commands[0].question == "secret question"
     assert service.commands[0].message_id == MESSAGE_ID
     assert service.commands[0].run_id == RUN_ID
+    assert [sample.run_id for sample in timings] == [RUN_ID, RUN_ID]
+    assert [sample.attempt_id for sample in timings] == [
+        UUID(int=RUN_ID.int + 1),
+        UUID(int=RUN_ID.int + 2),
+    ]
+    assert [sample.worker_execution_elapsed_ns for sample in timings] == [30, 70]
+    assert [sample.capture_id for sample in timings] == [capture_id, capture_id]
+
+
+@pytest.mark.asyncio
+async def test_workflow_executor_does_not_emit_duration_for_incomplete_attempt() -> None:
+    command = AskAdmissionCommandData(
+        command_id=COMMAND_ID,
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        session_id=SESSION_ID,
+        message_id=MESSAGE_ID,
+        run_id=RUN_ID,
+        question="secret question",
+        subject=ActorRef(kind=ActorKind.HUMAN, id=UUID(int=427)),
+        environment=EnvironmentKind.PRODUCTION,
+        idempotency_key="ask-427",
+    )
+
+    class Loader:
+        async def load(self, workflow_input):
+            return command
+
+    class Service:
+        async def execute_admitted(self, execution):
+            raise RuntimeError("incomplete attempt")
+
+    timings = []
+
+    class ElapsedPort:
+        async def record_worker_execution_elapsed(self, sample):
+            timings.append(sample)
+
+    executor = AskAdmissionWorkflowExecutor(
+        loader=Loader(),
+        service=Service(),
+        persistence_context_factory=lambda workflow_input: object(),
+        monotonic_ns=iter((100, 130)).__next__,
+        execution_elapsed_port=ElapsedPort(),
+    )
+
+    with pytest.raises(RuntimeError, match="incomplete attempt"):
+        await executor.execute(workflow_input())
+
+    assert timings == []
 
 
 @pytest.mark.asyncio
