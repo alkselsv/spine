@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from dataclasses import replace
 from datetime import datetime, timezone
-from uuid import UUID
+from uuid import UUID, uuid5
 
 import pytest
 
@@ -587,26 +587,84 @@ async def test_supported_answer_is_validated_and_disclosed_once() -> None:
 
 
 @pytest.mark.asyncio
-async def test_supported_answer_revalidates_and_persists_through_disclosure_gate() -> (
-    None
-):
-    probe = ProductionAnswerQuestionCapability(
-        context=object(),
-        execution=object(),
+async def test_candidate_generation_failure_returns_safe_unavailable_result() -> None:
+    context = SuccessfulContext()
+
+    class FailingCandidateRunner:
+        async def generate(self, **_kwargs):
+            raise RuntimeError("protected candidate and provider diagnostics")
+
+    capability = ProductionAnswerQuestionCapability(
+        context=context,
+        execution=BoundExecution(),
         context_references=References(),
         disclosure_gate=object(),
-        candidate_runner=object(),
+        candidate_runner=FailingCandidateRunner(),
         validator=object(),
         disclosure_environment=EnvironmentKind.DEVELOPMENT,
     )
-    request = probe._request(command())
+
+    result = await capability.answer(command())
+
+    assert result.output.outcome is AnswerQuestionOutcome.FAILED
+    assert result.availability is AnswerQuestionCapabilityAvailability.UNAVAILABLE
+    assert result.accepted_answer is None
+    assert not context.disclosures
+    assert "protected candidate" not in repr(result)
+    assert "provider diagnostics" not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_candidate_identity_mismatch_fails_closed_before_validation() -> None:
+    context = SuccessfulContext()
+
+    class MismatchedCandidateRunner:
+        async def generate(self, *, question, authorized_context, **_kwargs):
+            foreign_scope = question.scope.model_copy(
+                update={"workspace_id": UUID(int=99)}
+            )
+            foreign_question = question.model_copy(update={"scope": foreign_scope})
+            return _candidate_for_question(
+                foreign_question, authorized_context.bundle.lineage_reference
+            )
+
+    class UnexpectedValidator:
+        async def validate(self, **_kwargs):
+            raise AssertionError("mismatched candidate must not be validated")
+
+    capability = ProductionAnswerQuestionCapability(
+        context=context,
+        execution=BoundExecution(),
+        context_references=References(),
+        disclosure_gate=object(),
+        candidate_runner=MismatchedCandidateRunner(),
+        validator=UnexpectedValidator(),
+        disclosure_environment=EnvironmentKind.DEVELOPMENT,
+    )
+
+    result = await capability.answer(command())
+
+    assert result.output.outcome is AnswerQuestionOutcome.FAILED
+    assert result.availability is AnswerQuestionCapabilityAvailability.UNAVAILABLE
+    assert result.output.scope.workspace_id == WORKSPACE
+    assert result.accepted_answer is None
+    assert not context.disclosures
+
+
+@pytest.mark.asyncio
+async def test_supported_answer_revalidates_and_persists_through_disclosure_gate() -> (
+    None
+):
+    request_id = uuid5(RUN, "context-request")
+    attempt_id = uuid5(RUN, "attempt:1")
+    idempotency_key = "admitted-key"
     bundle_values = base_context_bundle().model_dump(mode="python")
     bundle_values.update(
         {
-            "run_id": request.question.correlation.run_id,
-            "attempt_id": request.question.correlation.attempt_id,
-            "request_id": request.request_id,
-            "idempotency_key": request.idempotency_key,
+            "run_id": RUN,
+            "attempt_id": attempt_id,
+            "request_id": request_id,
+            "idempotency_key": idempotency_key,
             "trusted_request_context_ref": UUID(int=10),
             "authorization_context_ref": UUID(int=11),
         }
@@ -689,7 +747,7 @@ async def test_supported_answer_revalidates_and_persists_through_disclosure_gate
     stored = await repository.resolve(
         workspace_id=WORKSPACE,
         environment_id=ENVIRONMENT,
-        request_id=request.request_id,
+        request_id=request_id,
     )
 
     assert result.output.outcome is AnswerQuestionOutcome.ANSWERED
