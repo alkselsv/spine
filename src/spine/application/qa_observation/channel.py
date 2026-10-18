@@ -29,6 +29,7 @@ class CaptureDisposition(str, Enum):
     BACKPRESSURE = "backpressure"
     CONFLICT = "conflict"
     ALREADY_CONSUMED = "already_consumed"
+    UNAVAILABLE = "unavailable"
 
 
 class CaptureReceiveState(str, Enum):
