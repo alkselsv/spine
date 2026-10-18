@@ -5,6 +5,7 @@ from collections.abc import AsyncIterable, AsyncIterator
 from datetime import datetime, timezone
 from io import BytesIO
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from docx import Document
@@ -12,12 +13,24 @@ from openpyxl import Workbook
 import pytest
 from pydantic import ValidationError
 
+from spine.auth import AuthorizedRequestContext, RequestedAuthorizationScope
 from spine.application.document_ingestion import (
     DocumentIngestionOrchestrator,
     DocumentIngestionStatus,
     DocumentUploadCommand,
     ProjectionRequestPayload,
     build_projection_request_intent,
+)
+from spine.evals.corpus_preparation import (
+    ApprovedCorpusArtifact,
+    ApprovedCorpusPreparationService,
+)
+from spine.evals.real_qa_r1 import (
+    REAL_R1_DATASET_DIGEST,
+    REAL_R1_DATASET_VERSION,
+    RealRuntimeMappingManifest,
+    RealRuntimeRevisionIntent,
+    RealRuntimeSourceIntent,
 )
 from spine.application.ingestion import BoundedContentValidator
 from spine.application.persistence.context import PersistenceOperation
@@ -367,6 +380,82 @@ def _r1_document(media_type: str) -> bytes:
     raise AssertionError(f"unhandled media type: {media_type}")
 
 
+class _ApprovedCorpusArtifacts:
+    def __init__(self, artifact: ApprovedCorpusArtifact) -> None:
+        self._artifact = artifact
+
+    async def resolve(
+        self, *, dataset_source_id: str, dataset_revision_id: str
+    ) -> ApprovedCorpusArtifact | None:
+        if (
+            dataset_source_id == self._artifact.dataset_source_id
+            and dataset_revision_id == self._artifact.dataset_revision_id
+        ):
+            return self._artifact
+        return None
+
+
+@pytest.mark.asyncio
+async def test_approved_corpus_preparation_uses_canonical_ingestion_and_outbox() -> None:
+    content = b"hello\nworld\n"
+    digest = hashlib.sha256(content).hexdigest()
+    manifest = RealRuntimeMappingManifest(
+        dataset_version=REAL_R1_DATASET_VERSION,
+        dataset_sha256=REAL_R1_DATASET_DIGEST,
+        owner_approval_ref="approval:integration-test",
+        sources=tuple(
+            RealRuntimeSourceIntent(
+                dataset_source_id=f"source:approved-{index}",
+                upload_identity=f"approved.source.{index}",
+                revisions=(
+                    RealRuntimeRevisionIntent(
+                        dataset_revision_id=f"revision:approved-{index}",
+                        expected_original_sha256=(
+                            digest
+                            if index == 0
+                            else hashlib.sha256(f"missing-{index}".encode()).hexdigest()
+                        ),
+                        ingestion_intent_id=f"intent:approved-{index}",
+                    ),
+                ),
+            )
+            for index in range(30)
+        ),
+    )
+    artifact = ApprovedCorpusArtifact(
+        dataset_source_id="source:approved-0",
+        dataset_revision_id="revision:approved-0",
+        original_sha256=digest,
+        byte_length=len(content),
+        media_type="text/plain",
+        filename="approved-0.txt",
+        content=content,
+    )
+    parser_calls: list[int] = []
+    orchestrator, _, _, canonical, outbox, _ = _orchestrator(
+        content, media_type="text/plain", parser_calls=parser_calls
+    )
+    context = MagicMock(spec=AuthorizedRequestContext)
+    context.scope = RequestedAuthorizationScope(
+        workspace_id=WORKSPACE, environment_id=ENVIRONMENT
+    )
+    context.acting_subject_id = _id("operator")
+    context.authorization_generation = 1
+
+    report = await ApprovedCorpusPreparationService(
+        artifacts=_ApprovedCorpusArtifacts(artifact), ingestion=orchestrator
+    ).prepare(manifest=manifest, trusted_context=context)
+
+    assert report.revisions[0].status == "prepared"
+    assert all(item.status == "missing" for item in report.revisions[1:])
+    assert canonical.calls == 1
+    assert parser_calls == [1]
+    assert [event.event_type for event in outbox.events] == [
+        "ingestion.processing.requested",
+        "ingestion.projection.requested",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_document_ingestion_completes_text_path_and_replays_stably() -> None:
     parser_calls: list[int] = []
@@ -646,3 +735,4 @@ def test_projection_request_payload_rejects_content_bearing_fields(
 
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         ProjectionRequestPayload.model_validate(values)
+from spine.auth import AuthorizedRequestContext, RequestedAuthorizationScope
