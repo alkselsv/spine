@@ -58,60 +58,90 @@ authorization, persistence, or disclosure pipeline.
 ### D3 — bounded terminal result
 
 The observer obtains a bounded, identity-correlated terminal result for the
-specific admitted command/run and the existing Q&A terminal outcome. Protected
-answer/citation content is returned only from persisted state after disclosure
-is revalidated under current authorization. Mismatched identities, incomplete
-persistence, authorization changes, and unavailable readback fail closed; they
-do not become fabricated model outcomes. D5 defines the readback contract.
+specific admitted command/run, including the existing Q&A terminal outcome and
+a persisted disclosure that is revalidated under current authorization before
+protected answer/citation content is returned. A result for another command,
+run, attempt, workspace, or environment is rejected. Timeout, cancellation,
+authorization change, incomplete persistence, and unavailable readback fail
+closed and do not become fabricated model outcomes.
+
+Use bounded polling of PostgreSQL-canonical state through the existing
+`AskAdmissionApplication.status()` and canonical persistence read contracts.
+Add a read-only application waiter with an injected monotonic clock and sleeper,
+bounded deadline, and strict correlation of `command_id`, `run_id`,
+`session_id`, `message_id`, `workspace_id`, `environment_id`, and requester
+identity. Once terminal state is observed, obtain protected presentation only
+through the existing authorized `QASessionService.get_message()` path and its
+current disclosure revalidation. A result is observable only after terminal
+state, the exact terminal message, matching typed capture, and current
+disclosure have all been validated.
+
+The waiter distinguishes pending/admitted, running, terminal success,
+terminal failure/cancellation, and infrastructure unavailability. A missing
+or mismatched record is never substituted from history. Observer timeout ends
+only the observer's wait and never cancels durable execution; do not use
+`wait_for_cancellation()` for polling. Workflow ownership of retries,
+cancellation, and terminal arbitration remains unchanged. `COMPLETED` is not
+the only execution result eligible for terminal reporting.
 
 ### D4 — same-execution typed capture
 
 The observer's typed capture originates from the same authorized execution and
-contains `ContextResponse`, `ProjectionRetrievalResult`, `RetrievalResult`,
-`ContextBundle` and lineage, answer/citations, and verified disclosure. It must
-not trigger another retrieval or reconstruct missing values from run history
-or gold labels. D6 defines the transport and lifecycle contract.
+contains the existing observation inputs: `ContextResponse`,
+`ProjectionRetrievalResult`, `RetrievalResult`, `ContextBundle` and lineage,
+answer/citations, and verified disclosure. It must not trigger a second
+retrieval, bypass current authorization or disclosure checks, or synthesize
+missing values from run history or gold labels.
+
+Add an application `CaptureChannel` port backed by an authenticated, ephemeral
+in-memory transport for separate-process worker/observer topology. The observer
+registers a subscription before admission. The authorized worker publishes a
+versioned `r1-qa-observer-capture:v1` envelope from the same execution after
+terminal persistence and disclosure. It contains strict execution, scope,
+requester, attempt, and capture-routing correlation plus typed observation
+inputs. The observer accepts it only when identities match terminal readback
+and current authorized disclosure.
+
+The channel contract includes workload authentication and per-subscription
+authorization; bounded buffering and backpressure; TTL; one-shot acknowledgement;
+idempotent duplicate handling; and cleanup. Worker restart, duplicate or
+expired delivery, observer disconnect, backpressure, or capture loss fails the
+observation closed without changing canonical Q&A outcome or retrying
+retrieval. `trace_id` may route a subscription only if uniqueness per case is
+proven; otherwise use a separate opaque `capture_id`. Deployment topology,
+workload credentials, authenticated transport settings, and channel security
+configuration must be supplied and operated by the runtime owner; this ADR
+does not assert that they are deployed.
+
+The channel carries no protected retrieval payload in Temporal history, logs,
+or benchmark-only durable storage. It does not write a second copy into
+canonical Q&A persistence and does not change persisted Q&A outcome if capture
+is lost. The existing authorized Context Broker/execution is the sole source
+of the typed records; no second retrieval or reconstruction from run history
+or gold labels is allowed.
 
 ### D5 — bounded canonical terminal readback
 
 The application waiter is read-only and bounded. It polls canonical admission
-state through `AskAdmissionApplication.status()` with an injected monotonic
-clock, sleeper, and deadline. It distinguishes admitted/pending, running,
-terminal success, terminal failure/cancellation, and infrastructure
-unavailability. It validates `command_id`, `run_id`, `session_id`, `message_id`,
-`workspace_id`, `environment_id`, and requester identity, then reads the exact
-message through authorized `QASessionService.get_message()` and current
-disclosure revalidation, including the current authorization generation.
-Terminal persistence can race capture publication:
-neither alone is sufficient. Freeze observation only after terminal read,
-matching capture, and current disclosure all succeed. Timeout ends only the
-observer wait, does not cancel the workflow, and does not use
-`wait_for_cancellation()` for polling. Missing or mismatched data is never
-substituted from history; infrastructure read failures remain unavailable,
-not model outcomes.
+state with an injected clock/sleeper, validates the full correlation tuple and
+requester, then uses authorized persisted message readback and disclosure
+revalidation. Terminal persistence can race capture publication: neither alone
+is sufficient. Freeze observation only after terminal read, matching capture,
+and current disclosure all succeed. Observer timeout does not send a
+cancellation request. Infrastructure read failures remain unavailable, not
+model outcomes.
 
 ### D6 — authenticated ephemeral typed-capture handoff
 
-The application `CaptureChannel` registers before admission and delivers the
-versioned `r1-qa-observer-capture:v1` typed envelope from the authorized worker
-to the observer over an authenticated, ephemeral in-memory channel for the
-separate-process topology. Strict correlation binds command, run, session,
-message, workspace, environment, requester, attempt, and capture-routing
-identity. `trace_id` is a valid routing key only when uniqueness per case is
-proven; otherwise use an opaque `capture_id`. Authorize each subscription for
-its exact expected execution and trusted scope. Bound buffering and backpressure,
-apply a TTL, acknowledge once after schema and identity validation, handle
-matching duplicate delivery idempotently, and clean up on acknowledgement,
-timeout, or expiry.
-
-Worker restart, expired or mismatched delivery, observer disconnect,
-backpressure, and capture loss fail observation closed. They do not alter the
-canonical Q&A outcome, cancel the workflow, or trigger another retrieval. Do
-not put protected capture payloads in Temporal history, logs, benchmark-only
-durable storage, or a second copy in canonical Q&A persistence. The runtime
-owner supplies and operates deployment topology, workload credentials,
-authenticated transport settings, and channel security configuration; this
-approval does not assert that they are deployed.
+The application `CaptureChannel` registers before admission and delivers a
+versioned typed envelope from the authorized worker to the observer over an
+authenticated, ephemeral in-memory channel. Strict correlation binds command,
+run, session, message, workspace, environment, requester, attempt, and capture
+routing identity. `trace_id` is acceptable only with proven per-case uniqueness;
+otherwise use an opaque `capture_id`. Delivery is bounded, TTL-limited,
+one-shot acknowledged, idempotent for duplicates, and cleaned up on completion
+or expiry. Capture loss fails observation closed but never changes the
+canonical Q&A result or triggers another retrieval.
 
 ### Worker-local latency
 
@@ -127,9 +157,7 @@ samples do not produce fabricated aggregate latency. Preserve
 `ProductionContractApplicationFlow.execute` latency boundary in ADR-0039. Map
 worker invocation duration into the existing execution-record boundary only
 when meanings match; otherwise require a separately versioned execution-record
-contract. Put the non-negative `worker_elapsed_ns` scalar in the ephemeral
-execution/capture envelope with its activity-attempt identity; do not transmit
-worker timestamps.
+contract.
 
 ## Consequences
 
