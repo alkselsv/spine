@@ -8,6 +8,7 @@ the adapter never performs retrieval or answer validation itself.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Protocol
 from uuid import UUID
 
@@ -41,6 +42,13 @@ class InvalidAuthorizedAskRequest(ValueError):
     """The authorized ask command could not be formed from trusted input."""
 
 
+class AnswerQuestionCapabilityAvailability(str, Enum):
+    """Whether infrastructure completed the capability request."""
+
+    AVAILABLE = "available"
+    UNAVAILABLE = "unavailable"
+
+
 @dataclass(frozen=True, slots=True)
 class AskRequestContext:
     """Small application-owned request context released by the API adapter."""
@@ -62,10 +70,13 @@ class AskRequestContext:
             self.correlation_id,
             self.causation_id,
         )
-        if any(
-            identifier is not None and identifier.int == 0
-            for identifier in identifiers
-        ) or self.authorization_generation < 1:
+        if (
+            any(
+                identifier is not None and identifier.int == 0
+                for identifier in identifiers
+            )
+            or self.authorization_generation < 1
+        ):
             raise ValueError("authorized ask request context is invalid")
 
 
@@ -185,6 +196,9 @@ class AnswerQuestionCapabilityResult:
     output: AnswerQuestionOutput
     accepted_answer: AcceptedGroundedAnswer | None
     replay: bool = False
+    availability: AnswerQuestionCapabilityAvailability = (
+        AnswerQuestionCapabilityAvailability.AVAILABLE
+    )
 
     def __post_init__(self) -> None:
         if self.command_id.int == 0:
@@ -193,6 +207,8 @@ class AnswerQuestionCapabilityResult:
             raise ValueError("answer capability result identities must be non-zero")
         if type(self.output) is not AnswerQuestionOutput:
             raise TypeError("answer capability requires AnswerQuestionOutput")
+        if not isinstance(self.availability, AnswerQuestionCapabilityAvailability):
+            raise TypeError("answer capability availability is invalid")
         if self.output.outcome is AnswerQuestionOutcome.ANSWERED:
             if (
                 self.accepted_answer is None
@@ -239,6 +255,9 @@ class AuthorizedAskResult:
     output: AnswerQuestionOutput
     accepted_answer: AcceptedGroundedAnswer | None
     replay: bool = False
+    availability: AnswerQuestionCapabilityAvailability = (
+        AnswerQuestionCapabilityAvailability.AVAILABLE
+    )
 
     def __post_init__(self) -> None:
         if any(
@@ -253,7 +272,9 @@ class AuthorizedAskResult:
                 self.accepted_answer is None
                 or self.accepted_answer.answer != self.output.answer
             ):
-                raise ValueError("answered result requires the accepted grounded answer")
+                raise ValueError(
+                    "answered result requires the accepted grounded answer"
+                )
         elif self.accepted_answer is not None:
             raise ValueError("safe ask result cannot carry accepted answer content")
 
@@ -414,7 +435,9 @@ class PersistedAuthorizedAskService:
                 ),
                 outcome=capability.output.outcome,
                 cancelled=capability.output.outcome is AnswerQuestionOutcome.CANCELLED,
-                idempotency_key=_derived_key("admitted-complete", command.idempotency_key),
+                idempotency_key=_derived_key(
+                    "admitted-complete", command.idempotency_key
+                ),
             )
         return AuthorizedAskResult(
             command_id=command.command_id,
@@ -423,6 +446,7 @@ class PersistedAuthorizedAskService:
             output=capability.output,
             accepted_answer=capability.accepted_answer,
             replay=capability.replay or message.state is QAMessageState.TERMINAL,
+            availability=capability.availability,
         )
 
     async def cancel(self, command: AskCancellationCommand) -> AuthorizedAskResult:
@@ -456,7 +480,9 @@ class PersistedAuthorizedAskService:
                     session_id=capability.session_id,
                     message_id=capability.message_id,
                     run_id=capability.output.correlation.run_id,
-                    idempotency_key=_derived_key("cancel-link", command.idempotency_key),
+                    idempotency_key=_derived_key(
+                        "cancel-link", command.idempotency_key
+                    ),
                 )
             await self.sessions.complete_message(
                 context=command.persistence_context,
@@ -469,7 +495,9 @@ class PersistedAuthorizedAskService:
                 ),
                 outcome=capability.output.outcome,
                 cancelled=capability.output.outcome is AnswerQuestionOutcome.CANCELLED,
-                idempotency_key=_derived_key("cancel-complete", command.idempotency_key),
+                idempotency_key=_derived_key(
+                    "cancel-complete", command.idempotency_key
+                ),
             )
         return AuthorizedAskResult(
             command_id=capability.command_id,
@@ -478,6 +506,7 @@ class PersistedAuthorizedAskService:
             output=capability.output,
             accepted_answer=capability.accepted_answer,
             replay=capability.replay,
+            availability=capability.availability,
         )
 
     async def _finish(
@@ -489,8 +518,13 @@ class PersistedAuthorizedAskService:
         operation_prefix: str,
     ) -> AuthorizedAskResult:
         _validate_capability_scope(command.request_context, capability)
-        if capability.session_id != command.session_id or capability.message_id != message.value.message_id:
-            raise InvalidAuthorizedAskRequest("answer capability returned mismatched message identity")
+        if (
+            capability.session_id != command.session_id
+            or capability.message_id != message.value.message_id
+        ):
+            raise InvalidAuthorizedAskRequest(
+                "answer capability returned mismatched message identity"
+            )
         message_id = message.value.message_id
         if message.value.state is not QAMessageState.TERMINAL:
             await self.sessions.link_message_to_run(
@@ -520,6 +554,7 @@ class PersistedAuthorizedAskService:
             output=capability.output,
             accepted_answer=capability.accepted_answer,
             replay=message.replay or capability.replay,
+            availability=capability.availability,
         )
 
 
@@ -547,6 +582,7 @@ def _derived_key(prefix: str, key: IdempotencyKey) -> IdempotencyKey:
 
 
 __all__ = [
+    "AnswerQuestionCapabilityAvailability",
     "AnswerQuestionCapability",
     "AnswerQuestionCapabilityCommand",
     "AnswerQuestionCapabilityResult",

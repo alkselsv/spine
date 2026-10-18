@@ -15,7 +15,6 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from spine.application.answer_question_context import (
     AnswerQuestionAuthorizedContext,
     AnswerQuestionContextRequest,
-    AnswerQuestionContextResolution,
     AnswerQuestionContextService,
     AnswerQuestionDisclosureGate,
 )
@@ -24,12 +23,22 @@ from spine.application.answer_question_execution import (
     AnswerQuestionExecutionRequest,
 )
 from spine.application.answer_outcomes import AnswerOutcomeFacts, resolve_answer_outcome
+from spine.application.citation_validation import (
+    CitationValidationReasonCode,
+    CitationValidationService,
+    RejectedCitation,
+)
+from spine.application.content_authorization import TrustedAuthorizationContext
 from spine.application.authorized_ask import (
+    AnswerQuestionCapabilityAvailability,
     AnswerQuestionCapabilityCommand,
     AnswerQuestionCapabilityResult,
+    AuthorizedAskServiceUnavailable,
 )
 from spine.application.persistence.context import EnvironmentScope
+from spine.agents.runtime import ArtifactPersistence
 from spine.domain.capabilities import (
+    AcceptedGroundedAnswer,
     AnswerAuthorizationOutcome,
     AnswerQuestionInput,
     AnswerQuestionOutcome,
@@ -37,12 +46,31 @@ from spine.domain.capabilities import (
     AnswerQuestionSafeReason,
     AnswerQuestionSafeReasonCode,
     AnswerQuestionScope,
+    LineageReference,
     QuestionSubject,
     RetrievalOutcome,
     RunAttemptCorrelation,
 )
-from spine.domain.capabilities.answer_question_candidate import AnswerQuestionCandidateOutput
-from spine.domain.common import ActorKind, ActorRef, EnvironmentKind
+from spine.domain.capabilities.answer_question_candidate import (
+    AnswerQuestionCandidateInput,
+    AnswerQuestionCandidateOutput,
+    parse_answer_question_candidate_output,
+)
+from spine.domain.capabilities.answer_question_execution import (
+    AnswerQuestionExecutionPin,
+)
+from spine.domain.capabilities.answer_evaluation import AnswerEvaluationDecision
+from spine.domain.capabilities.semantic_support import (
+    SemanticSupportOutcome,
+    SemanticSupportRequest,
+)
+from spine.application.semantic_support import SemanticSupportValidationService
+from spine.application.answer_question_candidate import (
+    generate_answer_question_candidate,
+)
+from spine.domain.agents import AgentInvocation, AgentRetrySafety, AgentRunStatus
+from spine.domain.artifacts import Artifact, ArtifactState
+from spine.domain.common import ActorKind, ActorRef, ContextOrigin, EnvironmentKind
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,9 +103,11 @@ class AnswerQuestionCandidateRunner(Protocol):
         self,
         *,
         question: AnswerQuestionInput,
+        requester_id: UUID,
         authorized_context: AnswerQuestionAuthorizedContext,
         execution: AnswerQuestionExecutionBoundary,
         execution_request: AnswerQuestionExecutionRequest,
+        expected_execution_pin: AnswerQuestionExecutionPin,
         idempotency_key: str,
     ) -> AnswerQuestionCandidateOutput: ...
 
@@ -98,6 +128,180 @@ class AnswerQuestionCandidateValidator(Protocol):
     ) -> AnswerOutcomeFacts: ...
 
 
+class CandidateInputArtifactWriter(Protocol):
+    """Persist an authorized candidate input as an immutable artifact."""
+
+    async def persist_input(
+        self,
+        *,
+        input_value: AnswerQuestionCandidateInput,
+        workspace_id: UUID,
+        environment_id: UUID,
+        work_item_id: UUID,
+        idempotency_key: str,
+    ) -> UUID: ...
+
+
+class AnswerQuestionRunCanceller(Protocol):
+    """Delegate cancellation to the admitted durable execution owner."""
+
+    async def cancel(
+        self, command: AnswerQuestionCapabilityCommand
+    ) -> AnswerQuestionCapabilityResult: ...
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedAnswerQuestionCandidateRunner:
+    """Run generation through the governed runtime and persisted artifacts."""
+
+    input_artifacts: CandidateInputArtifactWriter
+    artifacts: ArtifactPersistence
+    canceller: AnswerQuestionRunCanceller
+
+    async def generate(
+        self,
+        *,
+        question: AnswerQuestionInput,
+        requester_id: UUID,
+        authorized_context: AnswerQuestionAuthorizedContext,
+        execution: AnswerQuestionExecutionBoundary,
+        execution_request: AnswerQuestionExecutionRequest,
+        expected_execution_pin: AnswerQuestionExecutionPin,
+        idempotency_key: str,
+    ) -> AnswerQuestionCandidateOutput:
+        input_id = await self.input_artifacts.persist_input(
+            input_value=authorized_context.candidate_input,
+            workspace_id=question.scope.workspace_id,
+            environment_id=question.scope.environment_id,
+            work_item_id=question.correlation.run_id,
+            idempotency_key=f"{idempotency_key}:candidate-input",
+        )
+        if not isinstance(input_id, UUID) or input_id.int == 0:
+            raise ValueError("candidate input artifact identity is invalid")
+        invocation = AgentInvocation(
+            work_item_id=question.correlation.run_id,
+            step_run_id=question.correlation.attempt_id,
+            capability="answer_question",
+            acting_on_behalf_of=ActorRef(kind=ActorKind.HUMAN, id=requester_id),
+            input_artifact_ids=(input_id,),
+            idempotency_key=f"{idempotency_key}:candidate-generation",
+            retry_safety=AgentRetrySafety.SAFE_TO_REPEAT,
+        )
+        executed = await generate_answer_question_candidate(
+            execution, execution_request, invocation
+        )
+        if executed.pin != expected_execution_pin:
+            raise RuntimeError("answer candidate execution pin changed")
+        result = executed.result
+        if (
+            result.status is not AgentRunStatus.SUCCEEDED
+            or len(result.output_artifact_ids) != 1
+        ):
+            raise RuntimeError("answer candidate execution did not complete")
+        artifact = await self.artifacts.load(
+            result.output_artifact_ids[0],
+            workspace_id=question.scope.workspace_id,
+            environment_id=question.scope.environment_id,
+            work_item_id=question.correlation.run_id,
+        )
+        if type(artifact) is not Artifact or artifact.state is not ArtifactState.ACTIVE:
+            raise RuntimeError("answer candidate artifact is unavailable")
+        await self.artifacts.verify_lineage(
+            artifact,
+            workspace_id=question.scope.workspace_id,
+            environment_id=question.scope.environment_id,
+            work_item_id=question.correlation.run_id,
+        )
+        candidate = parse_answer_question_candidate_output(artifact.content)
+        if (
+            candidate.question != question
+            or candidate.context_bundle != authorized_context.bundle.lineage_reference
+        ):
+            raise ValueError("persisted answer candidate has mismatched identity")
+        return candidate
+
+    async def cancel(
+        self, command: AnswerQuestionCapabilityCommand
+    ) -> AnswerQuestionCapabilityResult:
+        return await self.canceller.cancel(command)
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerQuestionValidationPlan:
+    """Trusted validator inputs derived from the exact authorized attempt."""
+
+    citation_authorization_context: TrustedAuthorizationContext
+    semantic_requests: tuple[SemanticSupportRequest, ...]
+    evaluation: AnswerEvaluationDecision | None
+
+
+class AnswerQuestionValidationPlanProvider(Protocol):
+    """Resolve current authorization and semantic inputs without retrieval."""
+
+    def create_plan(
+        self,
+        *,
+        question: AnswerQuestionInput,
+        authorized_context: AnswerQuestionAuthorizedContext,
+        candidate: AnswerQuestionCandidateOutput,
+    ) -> AnswerQuestionValidationPlan: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ExistingAnswerQuestionCandidateValidator:
+    """Compose the existing citation and semantic validation services."""
+
+    citations: CitationValidationService
+    semantic_support: SemanticSupportValidationService
+    plans: AnswerQuestionValidationPlanProvider
+
+    async def validate(
+        self,
+        *,
+        question: AnswerQuestionInput,
+        authorized_context: AnswerQuestionAuthorizedContext,
+        candidate: AnswerQuestionCandidateOutput,
+    ) -> AnswerOutcomeFacts:
+        plan = self.plans.create_plan(
+            question=question,
+            authorized_context=authorized_context,
+            candidate=candidate,
+        )
+        if type(plan) is not AnswerQuestionValidationPlan:
+            raise ValueError("answer validation plan is invalid")
+        citation_results = tuple(
+            [
+                await self.citations.validate(
+                    citation=citation,
+                    expected_context_bundle=candidate.context_bundle,
+                    authorization_context=plan.citation_authorization_context,
+                )
+                for citation in candidate.answer.citations
+            ]
+        )
+        expected_claim_ids = tuple(claim.claim_id for claim in candidate.answer.claims)
+        planned_claim_ids = tuple(
+            request.claim.claim_id for request in plan.semantic_requests
+        )
+        if planned_claim_ids != expected_claim_ids:
+            raise ValueError("semantic validation plan does not cover every claim")
+        semantic_results = tuple(
+            [
+                await self.semantic_support.validate(request)
+                for request in plan.semantic_requests
+            ]
+        )
+        return AnswerOutcomeFacts(
+            question=question,
+            retrieval_outcome=RetrievalOutcome.EVIDENCE_AVAILABLE,
+            authorization=AnswerAuthorizationOutcome.ALLOWED,
+            candidate=candidate,
+            citation_results=citation_results,
+            semantic_results=semantic_results,
+            evaluation=plan.evaluation,
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class ProductionAnswerQuestionCapability:
     """Concrete application adapter for the existing capability Protocol."""
@@ -110,19 +314,27 @@ class ProductionAnswerQuestionCapability:
     validator: AnswerQuestionCandidateValidator
     disclosure_environment: EnvironmentKind = EnvironmentKind.PRODUCTION
 
+    def _execution_request(
+        self, question: AnswerQuestionInput
+    ) -> AnswerQuestionExecutionRequest:
+        return AnswerQuestionExecutionRequest(
+            workspace_id=question.scope.workspace_id,
+            environment_id=question.scope.environment_id,
+            environment=self.disclosure_environment,
+        )
+
     async def answer(
         self, command: AnswerQuestionCapabilityCommand
     ) -> AnswerQuestionCapabilityResult:
         request = self._request(command)
         try:
-            resolved = self.execution.resolve(
-                AnswerQuestionExecutionRequest(
-                    workspace_id=request.question.scope.workspace_id,
-                    environment_id=request.question.scope.environment_id,
-                    environment=self.disclosure_environment,
-                )
+            request = replace(
+                request, references=self.context_references.for_command(command)
             )
-            _, pin = resolved
+            execution_request = self._execution_request(request.question)
+            _, pin = self.execution.resolve(execution_request)
+            if request.references is None:
+                return self._failed(command, request)
             context_resolution = await self.context.prepare(
                 AnswerQuestionContextRequest(
                     question=request.question,
@@ -136,20 +348,25 @@ class ProductionAnswerQuestionCapability:
             if context_resolution.output is not None:
                 output = context_resolution.output
                 self._validate_output(request.question, output)
-                return self._result(command, request, output, None)
+                availability = (
+                    AnswerQuestionCapabilityAvailability.UNAVAILABLE
+                    if context_resolution.failure is not None
+                    else AnswerQuestionCapabilityAvailability.AVAILABLE
+                )
+                return self._result(
+                    command, request, output, None, availability=availability
+                )
             authorized = context_resolution.context
             if authorized is None:
                 return self._failed(command, request)
 
             candidate = await self.candidate_runner.generate(
                 question=request.question,
+                requester_id=command.request_context.subject_id,
                 authorized_context=authorized,
                 execution=self.execution,
-                execution_request=AnswerQuestionExecutionRequest(
-                    workspace_id=request.question.scope.workspace_id,
-                    environment_id=request.question.scope.environment_id,
-                    environment=self.disclosure_environment,
-                ),
+                execution_request=execution_request,
+                expected_execution_pin=pin,
                 idempotency_key=request.idempotency_key,
             )
             candidate = AnswerQuestionCandidateOutput.model_validate(
@@ -159,14 +376,22 @@ class ProductionAnswerQuestionCapability:
                 candidate.question != request.question
                 or candidate.context_bundle != authorized.bundle.lineage_reference
             ):
-                return self._failed(command, request)
+                return self._failed(
+                    command,
+                    request,
+                    availability=AnswerQuestionCapabilityAvailability.AVAILABLE,
+                )
             facts = await self.validator.validate(
                 question=request.question,
                 authorized_context=authorized,
                 candidate=candidate,
             )
             if type(facts) is not AnswerOutcomeFacts or facts.candidate != candidate:
-                return self._failed(command, request)
+                return self._failed(
+                    command,
+                    request,
+                    availability=AnswerQuestionCapabilityAvailability.AVAILABLE,
+                )
             disclosed = await self.context.disclose(
                 context=authorized,
                 outcome_facts=facts,
@@ -183,7 +408,19 @@ class ProductionAnswerQuestionCapability:
             if output is None:
                 return self._failed(command, request)
             self._validate_output(request.question, output)
-            return self._result(command, request, output, disclosed.accepted_answer, disclosed.replay)
+            return self._result(
+                command,
+                request,
+                output,
+                disclosed.accepted_answer,
+                disclosed.replay,
+                availability=(
+                    AnswerQuestionCapabilityAvailability.UNAVAILABLE
+                    if _validator_unavailable(facts)
+                    or output.outcome is AnswerQuestionOutcome.FAILED
+                    else AnswerQuestionCapabilityAvailability.AVAILABLE
+                ),
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -201,11 +438,12 @@ class ProductionAnswerQuestionCapability:
         except asyncio.CancelledError:
             raise
         except Exception:
-            raise RuntimeError("answer cancellation is unavailable") from None
+            raise AuthorizedAskServiceUnavailable() from None
         if (
             type(result) is not AnswerQuestionCapabilityResult
             or result.output.scope.workspace_id != command.request_context.workspace_id
-            or result.output.scope.environment_id != command.request_context.environment_id
+            or result.output.scope.environment_id
+            != command.request_context.environment_id
             or result.output.correlation.run_id != command.run_id
             or result.output.correlation.trace_id != command.request_context.trace_id
         ):
@@ -216,7 +454,8 @@ class ProductionAnswerQuestionCapability:
         self,
         command: AnswerQuestionCapabilityCommand,
     ) -> "_CapabilityRequest":
-        command.request_context  # reject malformed lookalikes before accessing data
+        if type(command) is not AnswerQuestionCapabilityCommand:
+            raise TypeError("answer capability command is invalid")
         context = command.request_context
         persistence = command.persistence_context
         persistence.validate_shape()
@@ -224,10 +463,22 @@ class ProductionAnswerQuestionCapability:
             not isinstance(persistence.scope, EnvironmentScope)
             or persistence.scope.workspace_id != context.workspace_id
             or persistence.scope.environment_id != context.environment_id
-            or persistence.acting_subject_id != context.subject_id
             or persistence.trace_id != context.trace_id
         ):
             raise ValueError("trusted persistence context does not match the request")
+        if persistence.origin is ContextOrigin.INTERACTIVE:
+            if persistence.acting_subject_id != context.subject_id:
+                raise ValueError(
+                    "interactive persistence principal does not match request"
+                )
+        elif persistence.origin is ContextOrigin.WORKER:
+            if (
+                persistence.acting_subject_id is not None
+                or persistence.service_principal_id is None
+            ):
+                raise ValueError("worker persistence principal is invalid")
+        else:
+            raise ValueError("persistence context origin is invalid")
         if command.session_id is None or command.message_id is None:
             raise ValueError("answer request requires the admitted session and message")
         if command.question is None:
@@ -255,17 +506,22 @@ class ProductionAnswerQuestionCapability:
                 causation_id=context.causation_id,
             ),
         )
-        refs = self.context_references.for_command(command)
         return _CapabilityRequest(
             question=question,
             request_id=uuid5(run_id, "context-request"),
             idempotency_key=key,
             command_id=command_id,
-            references=refs,
+            references=None,
         )
 
     def _failed(
-        self, command: AnswerQuestionCapabilityCommand, request: "_CapabilityRequest"
+        self,
+        command: AnswerQuestionCapabilityCommand,
+        request: "_CapabilityRequest",
+        *,
+        availability: AnswerQuestionCapabilityAvailability = (
+            AnswerQuestionCapabilityAvailability.UNAVAILABLE
+        ),
     ) -> AnswerQuestionCapabilityResult:
         output = AnswerQuestionOutput(
             correlation=request.question.correlation,
@@ -276,20 +532,19 @@ class ProductionAnswerQuestionCapability:
             ),
             lineage=self._run_lineage(request.question.correlation.run_id),
         )
-        return self._result(command, request, output, None)
+        return self._result(command, request, output, None, availability=availability)
 
     @staticmethod
-    def _validate_output(question: AnswerQuestionInput, output: AnswerQuestionOutput) -> None:
-        if (
-            output.scope != question.scope
-            or output.correlation != question.correlation
-        ):
-            raise ValueError("answer output identity does not match the admitted command")
+    def _validate_output(
+        question: AnswerQuestionInput, output: AnswerQuestionOutput
+    ) -> None:
+        if output.scope != question.scope or output.correlation != question.correlation:
+            raise ValueError(
+                "answer output identity does not match the admitted command"
+            )
 
     @staticmethod
-    def _run_lineage(run_id: UUID):
-        from spine.domain.capabilities import LineageReference
-
+    def _run_lineage(run_id: UUID) -> tuple[LineageReference, ...]:
         return (
             LineageReference(
                 kind="run", identifier=run_id, schema_version="answer-question-run:v1"
@@ -301,8 +556,12 @@ class ProductionAnswerQuestionCapability:
         command: AnswerQuestionCapabilityCommand,
         request: "_CapabilityRequest",
         output: AnswerQuestionOutput,
-        accepted_answer,
+        accepted_answer: AcceptedGroundedAnswer | None,
         replay: bool = False,
+        *,
+        availability: AnswerQuestionCapabilityAvailability = (
+            AnswerQuestionCapabilityAvailability.AVAILABLE
+        ),
     ) -> AnswerQuestionCapabilityResult:
         return AnswerQuestionCapabilityResult(
             command_id=request.command_id,
@@ -311,6 +570,7 @@ class ProductionAnswerQuestionCapability:
             output=output,
             accepted_answer=accepted_answer,
             replay=replay,
+            availability=availability,
         )
 
 
@@ -320,7 +580,18 @@ class _CapabilityRequest:
     request_id: UUID
     idempotency_key: str
     command_id: UUID
-    references: AnswerQuestionContextReferences
+    references: AnswerQuestionContextReferences | None
+
+
+def _validator_unavailable(facts: AnswerOutcomeFacts) -> bool:
+    return any(
+        isinstance(result, RejectedCitation)
+        and result.reason_code is CitationValidationReasonCode.VALIDATION_UNAVAILABLE
+        for result in facts.citation_results
+    ) or any(
+        result.outcome is SemanticSupportOutcome.VALIDATOR_UNAVAILABLE
+        for result in facts.semantic_results
+    )
 
 
 __all__ = [
@@ -328,5 +599,11 @@ __all__ = [
     "AnswerQuestionCandidateValidator",
     "AnswerQuestionContextReferenceProvider",
     "AnswerQuestionContextReferences",
+    "AnswerQuestionRunCanceller",
+    "AnswerQuestionValidationPlan",
+    "AnswerQuestionValidationPlanProvider",
+    "CandidateInputArtifactWriter",
+    "ExistingAnswerQuestionCandidateValidator",
+    "PersistedAnswerQuestionCandidateRunner",
     "ProductionAnswerQuestionCapability",
 ]
