@@ -34,6 +34,9 @@ if TYPE_CHECKING:
         context_bundle_id_for_request,
         request_command_digest,
     )
+    from .production_qa_capability import (
+        ProductionAnswerQuestionCapability,
+    )
 
 __all__ = [
     "AnswerQuestionAuthorizedContext",
@@ -57,6 +60,7 @@ __all__ = [
     "SavedContextBundlePort",
     "context_bundle_id_for_request",
     "request_command_digest",
+    "ProductionAnswerQuestionCapability",
     "CandidateOutputStreamingError",
     "CursorScopeError",
     "InMemoryQAEventLog",
@@ -106,6 +110,8 @@ def __getattr__(name: str) -> object:
             }
             else "spine.application.authorized_context_broker"
         )
+        if name == "ProductionAnswerQuestionCapability":
+            module_name = "spine.application.production_qa_capability"
         if name in {
             "AuthorizedQAStreamService",
             "QAEventLogStore",

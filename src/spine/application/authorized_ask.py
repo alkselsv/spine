@@ -163,6 +163,7 @@ class AnswerQuestionCapabilityCommand:
     run_id: UUID | None
     idempotency_key: IdempotencyKey
     clarification_of_message_id: UUID | None = None
+    command_id: UUID | None = None
 
     def __post_init__(self) -> None:
         if self.run_id is None:
@@ -170,6 +171,8 @@ class AnswerQuestionCapabilityCommand:
                 raise ValueError("answer capability command requires message input")
         elif self.run_id.int == 0:
             raise ValueError("answer capability run identity must be non-zero")
+        if self.command_id is not None and self.command_id.int == 0:
+            raise ValueError("answer capability command identity must be non-zero")
 
 
 @dataclass(frozen=True, slots=True)
@@ -356,6 +359,7 @@ class PersistedAuthorizedAskService:
                 question=command.question,
                 run_id=command.run_id,
                 idempotency_key=command.idempotency_key,
+                command_id=command.command_id,
             )
         )
         _validate_capability_scope(command.request_context, capability)
