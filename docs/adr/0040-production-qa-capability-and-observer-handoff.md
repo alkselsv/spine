@@ -221,6 +221,22 @@ observer does not derive an attempt identity from `run_id` or assume an
 attempt ordinal. Capture publication failure does not start another retrieval
 or change the canonical Q&A result; `CaptureChannel` binding remains one-shot.
 
+### D10 — Preserve observation v1 with safe outer dispositions
+
+Keep `ProductionContractObservation:v1`'s schema and meaning unchanged. Build
+an observation only when the actual authorized execution provides the required
+typed `ContextResponse`, `ProjectionRetrievalResult`, `RetrievalResult`, any
+`ContextBundle` required by that response, `AnswerQuestionOutput`,
+`AnswerDisclosureRecord`, and full canonical execution identity. Never invent
+typed records, reconstruct them from run history, or perform a second
+retrieval. If records are missing or fail validation, return a safe
+non-success outer execution disposition and leave the persisted Q&A outcome
+unchanged. In-flow denial may remain inside a validated observation when all
+required records exist. A pre-retrieval denial maps to outer `denied` only
+after canonical authorization denial is confirmed; missing capture by itself
+is not denial. An unobserved eligible case does not pass evaluation. This does
+not alter v1, metric formulas, or release qualification rules.
+
 ## Consequences
 
 - #469 owns the concrete production capability, dependency wiring, durable
