@@ -590,6 +590,25 @@ async def test_receive_timeout_fails_closed_and_cleans_subscription(transport_se
     await worker.close()
 
 
+@pytest.mark.asyncio
+async def test_malformed_receive_response_returns_unavailable():
+    def malformed_response(request):
+        return httpx.Response(200, content=b"{")
+
+    channel = HttpCaptureChannel(
+        base_url="https://capture.test",
+        headers=lambda: {"Authorization": "Bearer observer-test"},
+        transport=httpx.MockTransport(malformed_response),
+    )
+    result = await channel.receive(
+        subscription_id=UUID("c0000000-0000-0000-0000-000000000471"),
+        identity=execution_identity(),
+        timeout=timedelta(0),
+    )
+    assert result.state is CaptureReceiveState.UNAVAILABLE
+    await channel.close()
+
+
 def _capture_in_second_workspace():
     identity = execution_identity().model_copy(
         update={

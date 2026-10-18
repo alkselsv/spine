@@ -486,6 +486,7 @@ class HttpCaptureChannel(CaptureChannel):
             CaptureTransportUnavailable,
             httpx.HTTPError,
             ValidationError,
+            ValueError,
         ):
             return CaptureReceiveResult(CaptureReceiveState.UNAVAILABLE)
 
