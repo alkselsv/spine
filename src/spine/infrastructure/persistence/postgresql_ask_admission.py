@@ -180,7 +180,12 @@ class PostgreSQLAskAdmissionRepository(AskAdmissionRepository):
             message_id=message_id,
             run_id=run_id,
             capture_id=command.capture_id,
-            schema_version=2 if command.capture_id is not None else 1,
+            capture_subscription=command.capture_subscription,
+            schema_version=(
+                3
+                if command.capture_subscription is not None
+                else 2 if command.capture_id is not None else 1
+            ),
         )
         intent = self._uow._outbox_events.build_intent(
             event_id=dispatch_event_id,

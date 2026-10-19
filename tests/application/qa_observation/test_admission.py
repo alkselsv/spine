@@ -51,6 +51,8 @@ class Admission:
         del context
         self.calls.append("admit")
         assert command.capture_id == CAPTURE_ID
+        assert command.capture_subscription is not None
+        assert command.capture_subscription.capture_id == CAPTURE_ID
         self.count += 1
         return AskAdmissionResult(
             command_id=COMMAND_ID,
@@ -145,6 +147,8 @@ async def test_observer_registers_before_admission_and_keeps_attempt_unresolved(
     assert calls == ["register", "admit", "register", "admit"]
     assert result.admission.run_id == RUN_ID
     assert result.capture_id == CAPTURE_ID
+    assert result.capture_subscription is not None
+    assert result.capture_subscription == replay.capture_subscription
     assert result.run_identity is not None
     assert result.run_identity.command_id == COMMAND_ID
     assert result.run_identity.run_id == RUN_ID

@@ -14,7 +14,10 @@ from spine.application.persistence.ask_admission import (
 )
 from spine.application.persistence.context import TrustedPersistenceContext
 from spine.application.qa_observation.channel import CaptureChannel
-from spine.application.qa_observation.contracts import AdmittedRunIdentity
+from spine.application.qa_observation.contracts import (
+    AdmittedRunIdentity,
+    CaptureSubscription,
+)
 from spine.domain.common import ActorKind, ActorRef
 
 
@@ -28,6 +31,7 @@ class ObserverAskAdmissionResult:
     capture_id: UUID
     subscription_id: UUID
     run_identity: AdmittedRunIdentity
+    capture_subscription: CaptureSubscription | None = None
 
 
 class ObserverAskAdmission:
@@ -79,6 +83,7 @@ class ObserverAskAdmission:
                     idempotency_key=command.idempotency_key,
                     clarification_of_message_id=command.clarification_of_message_id,
                     capture_id=capture_id,
+                    capture_subscription=subscription,
                 ),
             )
             run_identity = AdmittedRunIdentity(
@@ -95,6 +100,7 @@ class ObserverAskAdmission:
                 capture_id=capture_id,
                 subscription_id=subscription.subscription_id,
                 run_identity=run_identity,
+                capture_subscription=subscription,
             )
         except Exception:
             await self._channel.cleanup(

@@ -114,6 +114,7 @@ def compose_durable_ask(
     authorization_generation: int = 1,
     run_starter: Callable[[AskAdmissionWorkflowInput], Awaitable[object]] | None = None,
     capture_channel: CaptureChannel | None = None,
+    worker_capture_channel: CaptureChannel | None = None,
     capture_id_source: Callable[[AskAdmissionCommand], UUID] | None = None,
 ) -> DurableAskComposition:
     """Wire API admission to the canonical outbox and Temporal execution owner.
@@ -138,6 +139,11 @@ def compose_durable_ask(
         authorization_generation=authorization_generation,
         monotonic_ns=monotonic_ns,
         execution_elapsed_port=worker_execution_elapsed_port,
+        capture_publisher=(
+            worker_capture_channel
+            if worker_capture_channel is not None
+            else capture_channel
+        ),
     )
     register_ask_admission_delivery_route(delivery_routes)
     delivery_routes.seal()

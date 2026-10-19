@@ -36,6 +36,13 @@ from spine.application.authorized_ask import (
     AuthorizedAskServiceUnavailable,
 )
 from spine.application.persistence.context import EnvironmentScope
+from spine.application.qa_observation.contracts import (
+    AdmittedExecutionIdentity,
+    SameExecutionCapture,
+)
+from spine.application.qa_observation.context_capture import (
+    AuthorizedContextCaptureContext,
+)
 from spine.application.persistence.answer_question_runs import CanonicalQATerminalizationReceipt
 from spine.agents.runtime import ArtifactPersistence
 from spine.domain.capabilities import (
@@ -414,6 +421,36 @@ class ProductionAnswerQuestionCapability:
             request = replace(
                 request, references=self.context_references.for_command(command)
             )
+            capture_context = None
+            if command.capture_subscription is not None:
+                if (
+                    command.command_id is None
+                    or command.run_id is None
+                    or command.attempt_id is None
+                    or command.attempt_number is None
+                    or command.session_id is None
+                    or command.message_id is None
+                ):
+                    raise ValueError("observer capture lacks canonical attempt identity")
+                capture_identity = AdmittedExecutionIdentity(
+                    command_id=command.command_id,
+                    run_id=command.run_id,
+                    session_id=command.session_id,
+                    message_id=command.message_id,
+                    workspace_id=command.request_context.workspace_id,
+                    environment_id=command.request_context.environment_id,
+                    requester=ActorRef(
+                        kind=ActorKind.HUMAN,
+                        id=command.request_context.subject_id,
+                    ),
+                    attempt_id=command.attempt_id,
+                    attempt_number=command.attempt_number,
+                )
+                capture_context = AuthorizedContextCaptureContext(
+                    identity=capture_identity,
+                    subscription=command.capture_subscription,
+                    question=request.question,
+                )
             execution_request = self._execution_request(request.question)
             _, pin = self.execution.resolve(execution_request)
             if command.execution_pin is not None and command.execution_pin != pin:
@@ -432,6 +469,7 @@ class ProductionAnswerQuestionCapability:
                     trusted_request_context_ref=request.references.trusted_request_context_ref,
                     authorization_context_ref=request.references.authorization_context_ref,
                     idempotency_key=request.idempotency_key,
+                    capture_context=capture_context,
                 )
             )
             if context_resolution.output is not None:
@@ -598,6 +636,24 @@ class ProductionAnswerQuestionCapability:
             if output is None:
                 return self._failed(command, request)
             self._validate_output(request.question, output)
+            same_execution_capture = None
+            if context_resolution.broker_capture is not None:
+                try:
+                    captured = context_resolution.broker_capture
+                    same_execution_capture = SameExecutionCapture(
+                        question=request.question,
+                        context_response=captured.response,
+                        context_bundle=captured.context_bundle,
+                        projection_retrieval=captured.projection_retrieval,
+                        retrieval=captured.retrieval,
+                        answer=output,
+                        disclosure=disclosed.record,
+                    )
+                except Exception:
+                    # Capture validation is an independent observer concern.
+                    # The canonical answer remains governed by the disclosure
+                    # and terminalization contracts.
+                    same_execution_capture = None
             receipt = None
             if command.attempt_id is not None and persisted_candidate is not None:
                 receipt = CanonicalQATerminalizationReceipt(
@@ -628,6 +684,7 @@ class ProductionAnswerQuestionCapability:
                     else AnswerQuestionCapabilityAvailability.AVAILABLE
                 ),
                 terminalization_receipt=receipt,
+                same_execution_capture=same_execution_capture,
             )
         except asyncio.CancelledError:
             raise
@@ -810,6 +867,13 @@ class ProductionAnswerQuestionCapability:
             command.run_id is None or command.attempt_number is None
         ):
             raise ValueError("durable answer request lacks canonical attempt identity")
+        if command.capture_subscription is not None and (
+            command.attempt_id is None
+            or command.run_id is None
+            or command.attempt_number is None
+            or command.command_id is None
+        ):
+            raise ValueError("observer capture requires canonical attempt identity")
         key = command.idempotency_key.value
         stable_id = uuid5(
             NAMESPACE_URL,
@@ -817,7 +881,10 @@ class ProductionAnswerQuestionCapability:
             f"{command.session_id}:{command.message_id}:{key}",
         )
         run_id = command.run_id or uuid5(stable_id, "run")
-        attempt_id = command.attempt_id or uuid5(run_id, "attempt:1")
+        attempt_id = command.attempt_id or uuid5(
+            stable_id,
+            f"legacy-ephemeral-attempt:v1:{command.session_id}:{command.message_id}:{key}",
+        )
         command_id = command.command_id or stable_id
         question = AnswerQuestionInput(
             subject=QuestionSubject(text=command.question),
@@ -890,6 +957,7 @@ class ProductionAnswerQuestionCapability:
             AnswerQuestionCapabilityAvailability.AVAILABLE
         ),
         terminalization_receipt: CanonicalQATerminalizationReceipt | None = None,
+        same_execution_capture: SameExecutionCapture | None = None,
     ) -> AnswerQuestionCapabilityResult:
         return AnswerQuestionCapabilityResult(
             command_id=request.command_id,
@@ -898,6 +966,7 @@ class ProductionAnswerQuestionCapability:
             output=output,
             accepted_answer=accepted_answer,
             terminalization_receipt=terminalization_receipt,
+            same_execution_capture=same_execution_capture,
             replay=replay,
             availability=availability,
         )

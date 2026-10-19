@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
 from enum import Enum
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -23,6 +23,7 @@ from spine.application.outbox.dispatch import (
 from spine.application.persistence.ask_admission import (
     AskCancellationDispatchPayload,
     AskAdmissionDispatchPayload,
+    AskCaptureSubscription,
     QA_ASK_CANCELLATION_EVENT_SCHEMA_VERSION,
     QA_ASK_CANCELLATION_EVENT_TYPE,
     QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION,
@@ -44,7 +45,10 @@ from spine.application.worker_execution_observation import (
     WorkerExecutionElapsedCapturePort,
     WorkerExecutionElapsedSample,
 )
-from spine.domain.common import ActorRef, EnvironmentKind
+from spine.domain.common import ActorKind, ActorRef, EnvironmentKind
+
+if TYPE_CHECKING:
+    from spine.application.qa_observation.contracts import CaptureEnvelope
 
 ASK_ADMISSION_WORKFLOW_TYPE = "spine.qa.ask-admission:v1"
 
@@ -78,6 +82,7 @@ class AskAdmissionWorkflowInput(BaseModel):
     correlation_id: UUID | None = None
     causation_id: UUID | None = None
     capture_id: UUID | None = None
+    capture_subscription: AskCaptureSubscription | None = None
 
     def model_post_init(self, __context: object) -> None:
         del __context
@@ -100,9 +105,13 @@ class AskAdmissionWorkflowInput(BaseModel):
             if value is not None:
                 _require_id(value, field_name)
         if self.schema_version != ask_admission_metadata_schema_version(
-            self.capture_id
+            self.capture_id, self.capture_subscription
         ):
             raise ValueError("Ask workflow input version is invalid")
+        if self.capture_subscription is not None and (
+            self.capture_subscription.capture_id != self.capture_id
+        ):
+            raise ValueError("capture subscription does not match capture_id")
 
     @classmethod
     def from_intent(cls, intent: OutboxIntent) -> "AskAdmissionWorkflowInput":
@@ -112,7 +121,7 @@ class AskAdmissionWorkflowInput(BaseModel):
             or intent.schema_version != QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION
             or intent.environment_id is None
             or type(intent.payload) is not AskAdmissionDispatchPayload
-            or intent.payload.schema_version not in {1, 2}
+            or intent.payload.schema_version not in {1, 2, 3}
             or intent.aggregate is None
             or intent.aggregate.object_type != "answer_question_run"
         ):
@@ -138,8 +147,15 @@ class AskAdmissionWorkflowInput(BaseModel):
             correlation_id=intent.correlation_id,
             causation_id=intent.event_id,
             capture_id=payload.capture_id,
+            capture_subscription=payload.capture_subscription,
             schema_version=payload.schema_version,
         )
+
+
+class WorkerCapturePublisher(Protocol):
+    """Worker-side CaptureChannel seam used only after terminal commit."""
+
+    async def publish(self, envelope: "CaptureEnvelope") -> object: ...
 
 
 class AskAdmissionCommandData(BaseModel):
@@ -426,6 +442,7 @@ class AskAdmissionWorkflowExecutor:
         authorization_generation: int = 1,
         monotonic_ns: Callable[[], int] | None = None,
         execution_elapsed_port: WorkerExecutionElapsedCapturePort | None = None,
+        capture_publisher: WorkerCapturePublisher | None = None,
     ) -> None:
         if authorization_generation < 1:
             raise ValueError("authorization generation must be positive")
@@ -436,6 +453,7 @@ class AskAdmissionWorkflowExecutor:
         self._authorization_generation = authorization_generation
         self._monotonic_ns = monotonic_ns
         self._execution_elapsed_port = execution_elapsed_port
+        self._capture_publisher = capture_publisher
 
     async def execute(self, workflow_input: AskAdmissionWorkflowInput) -> AuthorizedAskResult:
         command = await self._loader.load(workflow_input)
@@ -470,6 +488,7 @@ class AskAdmissionWorkflowExecutor:
                 question=command.question,
                 idempotency_key=IdempotencyKey(command.idempotency_key),
                 logical_execution_key=f"durable-ask:{workflow_input.command_id}",
+                capture_subscription=workflow_input.capture_subscription,
             )
         )
         finished_at = self._monotonic_ns() if started_at is not None else None
@@ -483,6 +502,51 @@ class AskAdmissionWorkflowExecutor:
             or result.run_id != workflow_input.run_id
         ):
             raise InvalidAskAdmissionIntent("Ask execution returned mismatched identity.")
+        if (
+            getattr(result, "same_execution_capture", None) is not None
+            and getattr(result, "capture_subscription", None) is not None
+            and getattr(result, "attempt_number", None) is not None
+            and elapsed_ns is not None
+            and self._capture_publisher is not None
+        ):
+            try:
+                from spine.application.qa_observation.contracts import (
+                    AdmittedExecutionIdentity,
+                    CaptureEnvelope,
+                )
+
+                if (
+                    workflow_input.capture_subscription
+                    != getattr(result, "capture_subscription")
+                    or workflow_input.capture_id
+                    != getattr(result, "capture_subscription").capture_id
+                ):
+                    raise ValueError("observer capture route changed during execution")
+                identity = AdmittedExecutionIdentity(
+                    command_id=result.command_id,
+                    run_id=result.run_id,
+                    session_id=result.session_id,
+                    message_id=result.message_id,
+                    workspace_id=workflow_input.workspace_id,
+                    environment_id=workflow_input.environment_id,
+                    requester=ActorRef(kind=ActorKind.HUMAN, id=command.subject.id),
+                    attempt_id=result.attempt_id,
+                    attempt_number=getattr(result, "attempt_number"),
+                )
+                envelope = CaptureEnvelope(
+                    capture_id=getattr(result, "capture_subscription").capture_id,
+                    subscription_id=getattr(result, "capture_subscription").subscription_id,
+                    identity=identity,
+                    capture=getattr(result, "same_execution_capture"),
+                    worker_execution_elapsed_ns=elapsed_ns,
+                )
+                publish = getattr(self._capture_publisher, "publish", None)
+                if callable(publish):
+                    await publish(envelope)
+            except Exception:
+                # Capture delivery happens after canonical terminal commit and
+                # cannot change the persisted Q&A outcome.
+                pass
         if (
             elapsed_ns is not None
             and self._execution_elapsed_port is not None

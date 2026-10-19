@@ -26,6 +26,12 @@ from spine.application.authorized_context_broker import (
     ContextBundleRevalidator,
     SavedContextBundlePort,
 )
+from spine.application.qa_observation.context_capture import (
+    AuthorizedContextCapture,
+    AuthorizedContextCaptureContext,
+    AuthorizedContextCaptureResult,
+    CaptureDisposition,
+)
 from spine.application.diagnostics import DiagnosticContext
 from spine.domain.capabilities import (
     AnswerAuthorizationOutcome,
@@ -121,6 +127,7 @@ class AnswerQuestionContextRequest(ValidatedDefinitionModel):
     authorization_context_ref: UUID
     idempotency_key: str = Field(min_length=1, max_length=256)
     cancelled: bool = False
+    capture_context: AuthorizedContextCaptureContext | None = None
 
     @model_validator(mode="after")
     def validate_scope_and_lineage(self) -> "AnswerQuestionContextRequest":
@@ -139,6 +146,14 @@ class AnswerQuestionContextRequest(ValidatedDefinitionModel):
                 raise ValueError(f"{name} must be non-zero")
         if self.question.correlation.run_id.int == 0 or self.question.correlation.attempt_id.int == 0:
             raise ValueError("answer question correlation is invalid")
+        if self.capture_context is not None and (
+            self.capture_context.question != self.question
+            or self.capture_context.identity.run_id
+            != self.question.correlation.run_id
+            or self.capture_context.identity.attempt_id
+            != self.question.correlation.attempt_id
+        ):
+            raise ValueError("observer capture context does not match question")
         return self
 
 
@@ -171,6 +186,7 @@ class AnswerQuestionContextResolution:
     context: AnswerQuestionAuthorizedContext | None = None
     output: AnswerQuestionOutput | None = None
     failure: ContextRevalidationFailure | None = None
+    broker_capture: AuthorizedContextCapture | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,8 +244,36 @@ class AnswerQuestionContextService:
             ),
             cancelled=request.cancelled,
         )
+        broker_capture = None
         try:
-            response = await self._broker.retrieve(broker_request)
+            if request.capture_context is None:
+                response = await self._broker.retrieve(broker_request)
+            else:
+                retrieve_with_capture = getattr(
+                    self._broker, "retrieve_with_capture", None
+                )
+                if not callable(retrieve_with_capture):
+                    raise ValueError("capture-enabled Context Broker is unavailable")
+
+                class CaptureSink:
+                    value: AuthorizedContextCapture | None = None
+
+                    async def capture(self, value: AuthorizedContextCapture) -> None:
+                        if self.value is not None:
+                            raise ValueError("Context Broker emitted duplicate capture")
+                        self.value = value
+
+                sink = CaptureSink()
+                captured = await retrieve_with_capture(
+                    broker_request,
+                    capture_context=request.capture_context,
+                    capture_sink=sink,
+                )
+                if type(captured) is not AuthorizedContextCaptureResult:
+                    raise ValueError("Context Broker capture result is invalid")
+                response = captured.response
+                if captured.disposition is CaptureDisposition.CAPTURED:
+                    broker_capture = sink.value
             if type(response) is not ContextResponse:
                 raise ValueError("context response is invalid")
         except Exception:
@@ -348,6 +392,7 @@ class AnswerQuestionContextService:
             retrieval_outcome=retrieval_outcome,
             authorization=AnswerAuthorizationOutcome.ALLOWED,
             context=context,
+            broker_capture=broker_capture,
         )
 
     async def before_final_disclosure(

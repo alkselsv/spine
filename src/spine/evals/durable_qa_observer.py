@@ -38,6 +38,7 @@ from spine.application.qa_observation.contracts import (
 )
 from spine.application.qa_sessions import QASessionRequester
 from spine.auth import AuthorizationDeniedError
+from spine.domain.capabilities import AnswerQuestionOutcome
 from spine.domain.common import ActorKind, ActorRef, EnvironmentKind
 from spine.evals.production_contract import (
     ProductionContractApplicationFlow,
@@ -205,6 +206,16 @@ class DurableProductionQAAFlow(ProductionContractApplicationFlow):
             identity = terminal.wait.execution_identity
             if not run_identity.matches_execution(identity):
                 raise _partial_failure(identity)
+            if terminal.wait.outcome is AnswerQuestionOutcome.DENIED:
+                # The canonical waiter has matched the terminal run, persisted
+                # attempt, and currently authorized message readback. DENIED is
+                # therefore a confirmed Q&A authorization outcome; missing
+                # capture alone never maps to this disposition.
+                raise ProductionContractAuthorizationDenied(
+                    correlation_id=correlation_id,
+                    completed_attempt_id=identity.attempt_id,
+                    completed_attempt_number=identity.attempt_number,
+                )
             binding = await channel.bind(
                 subscription_id=subscription_id,
                 identity=identity,

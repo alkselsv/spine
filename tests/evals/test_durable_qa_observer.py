@@ -496,6 +496,57 @@ async def test_durable_observer_freezes_same_execution_terminal_capture() -> Non
 
 
 @pytest.mark.asyncio
+async def test_durable_observer_maps_canonical_denial_without_capture_to_denied() -> None:
+    channel = _Channel()
+
+    class DeniedWaiter:
+        async def wait_for_run(self, *, identity, **kwargs):
+            del kwargs
+            execution_identity = identity.with_attempt(
+                attempt_id=UUID("4f000000-0000-0000-0000-000000000478"),
+                attempt_number=1,
+            )
+            return TerminalAskWaitResult(
+                wait=TerminalRunWaitResult(
+                    identity=identity,
+                    state=ExecutionWaitState.TERMINAL,
+                    outcome=AnswerQuestionOutcome.DENIED,
+                    execution_identity=execution_identity,
+                ),
+                message=object(),  # returned only after authorized canonical readback
+            )
+
+    flow = DurableProductionQAAFlow(
+        composition=DurableAskComposition(
+            admission=object(),
+            api_ask_service=object(),
+            workflow_executor=object(),
+            delivery_bindings=(),
+            workflow_definition=object,
+            activity_bindings=(object(), object()),
+            observer_admission=_Admission(),  # type: ignore[arg-type]
+            sessions=_SessionService(),  # type: ignore[arg-type]
+            capture_channel=channel,  # type: ignore[arg-type]
+        ),
+        authorization=_RequestAuthorization(),
+        waiter=DeniedWaiter(),  # type: ignore[arg-type]
+        invocation_id_source=lambda: UUID("4e000000-0000-0000-0000-000000000478"),
+    )
+
+    record = await ProductionContractObserver(
+        flow=flow,
+        index_version=UNAUTHORIZED_RETRIEVAL_SAFETY_SEAM,
+    ).observe_v2(request=_allowed_request())
+
+    assert record.disposition is CaseExecutionDisposition.DENIED
+    assert record.failure_category is CaseExecutionFailureCategory.AUTHORIZATION_DENIED
+    assert record.completed_attempt_id == UUID("4f000000-0000-0000-0000-000000000478")
+    assert record.observation is None
+    assert channel.bind_calls == channel.receive_calls == 0
+    assert channel.cleanup_calls == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("reason", "disposition", "category"),
     [

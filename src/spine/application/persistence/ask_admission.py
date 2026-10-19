@@ -8,8 +8,9 @@ owner may consume that intent and start execution.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -23,6 +24,7 @@ from spine.application.persistence.context import (
 from spine.application.persistence.errors import InvalidPersistenceContextError
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.domain.common import ActorRef, EnvironmentKind
+from spine.domain.common import ValidatedDefinitionModel
 from spine.domain.capabilities.answer_question import AnswerQuestionOutcome
 from spine.domain.capabilities.answer_question_runs import AnswerQuestionRunState
 
@@ -36,11 +38,42 @@ QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION = 1
 QA_ASK_CANCELLATION_EVENT_TYPE = "qa.ask-cancellation-requested"
 QA_ASK_CANCELLATION_EVENT_SCHEMA_VERSION = 1
 QA_ASK_ADMISSION_REQUEST_SCHEMA = "qa.ask-admission-request:v1"
+ASK_CAPTURE_SUBSCRIPTION_SCHEMA = "r1-qa-observer-subscription:v1"
 
 
-def ask_admission_metadata_schema_version(capture_id: UUID | None) -> int:
-    """Return the compatible payload version for optional capture correlation."""
+class AskCaptureSubscription(ValidatedDefinitionModel):
+    """Opaque, expiring observer route carried to the durable worker."""
 
+    schema_version: Literal[ASK_CAPTURE_SUBSCRIPTION_SCHEMA] = (
+        ASK_CAPTURE_SUBSCRIPTION_SCHEMA
+    )
+    capture_id: UUID
+    subscription_id: UUID
+    expires_at: datetime
+
+    @field_validator("capture_id", "subscription_id")
+    @classmethod
+    def validate_identifier(cls, value: UUID) -> UUID:
+        if value.int == 0:
+            raise ValueError("capture routing identifiers must be non-zero")
+        return value
+
+    @field_validator("expires_at")
+    @classmethod
+    def validate_expiry(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() != timedelta(0):
+            raise ValueError("capture route expiry must be aware UTC")
+        return value.astimezone(timezone.utc)
+
+
+def ask_admission_metadata_schema_version(
+    capture_id: UUID | None,
+    capture_subscription: AskCaptureSubscription | None = None,
+) -> int:
+    """Version opaque observer routing while retaining v1/v2 history support."""
+
+    if capture_subscription is not None:
+        return 3
     return 2 if capture_id is not None else 1
 
 
@@ -70,6 +103,7 @@ class AskAdmissionDispatchPayload(BaseModel):
     message_id: UUID
     run_id: UUID
     capture_id: UUID | None = None
+    capture_subscription: AskCaptureSubscription | None = None
     schema_version: int = Field(default=1, gt=0)
 
     @field_validator("capture_id")
@@ -82,9 +116,13 @@ class AskAdmissionDispatchPayload(BaseModel):
     @model_validator(mode="after")
     def validate_payload_version(self) -> "AskAdmissionDispatchPayload":
         if self.schema_version != ask_admission_metadata_schema_version(
-            self.capture_id
+            self.capture_id, self.capture_subscription
         ):
             raise ValueError("Ask admission dispatch payload version is invalid")
+        if self.capture_subscription is not None and (
+            self.capture_subscription.capture_id != self.capture_id
+        ):
+            raise ValueError("capture subscription does not match capture_id")
         return self
 
 
@@ -102,6 +140,7 @@ class AskAdmissionCommand:
     digest: CommandDigest
     clarification_of_message_id: UUID | None = None
     capture_id: UUID | None = None
+    capture_subscription: AskCaptureSubscription | None = None
 
     def __post_init__(self) -> None:
         identifiers = (
@@ -120,6 +159,10 @@ class AskAdmissionCommand:
             raise ValueError("Ask admission digest operation is invalid")
         if self.digest.operation_schema_version != QA_ASK_ADMISSION_SCHEMA_VERSION:
             raise ValueError("Ask admission digest schema version is invalid")
+        if self.capture_subscription is not None and (
+            self.capture_subscription.capture_id != self.capture_id
+        ):
+            raise ValueError("capture subscription does not match capture_id")
 
     @classmethod
     def create(
@@ -134,6 +177,7 @@ class AskAdmissionCommand:
         idempotency_key: IdempotencyKey,
         clarification_of_message_id: UUID | None = None,
         capture_id: UUID | None = None,
+        capture_subscription: AskCaptureSubscription | None = None,
     ) -> "AskAdmissionCommand":
         digest = digest_command(
             operation=QA_ASK_ADMISSION_OPERATION,
@@ -161,6 +205,7 @@ class AskAdmissionCommand:
             digest=digest,
             clarification_of_message_id=clarification_of_message_id,
             capture_id=capture_id,
+            capture_subscription=capture_subscription,
         )
 
 
@@ -319,6 +364,7 @@ def register_ask_admission_outbox_event(registry: object) -> None:
 
 __all__ = [
     "AskAdmissionApplication",
+    "AskCaptureSubscription",
     "AskAdmissionCommand",
     "AskAdmissionDispatchPayload",
     "AskAdmissionRepository",

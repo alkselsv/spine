@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Literal
 from uuid import UUID
@@ -10,6 +9,7 @@ from uuid import UUID
 from pydantic import Field, field_validator, model_validator
 
 from spine.application.workflows.ask_admission_dispatch import AskAdmissionWorkflowInput
+from spine.application.persistence.ask_admission import AskCaptureSubscription
 from spine.domain.capabilities import (
     AnswerQuestionInput,
     AnswerQuestionOutcome,
@@ -202,27 +202,7 @@ class TerminalRunWaitResult(ValidatedDefinitionModel):
         return self
 
 
-class CaptureSubscription(ValidatedDefinitionModel):
-    """Pre-admission routing identity with a server-bounded expiry."""
-
-    schema_version: Literal[CAPTURE_SUBSCRIPTION_SCHEMA] = CAPTURE_SUBSCRIPTION_SCHEMA
-    capture_id: UUID
-    subscription_id: UUID
-    expires_at: datetime
-
-    @field_validator("capture_id", "subscription_id")
-    @classmethod
-    def require_non_zero_id(cls, value: UUID) -> UUID:
-        if value.int == 0:
-            raise ValueError("capture routing identifiers must be non-zero")
-        return value
-
-    @field_validator("expires_at")
-    @classmethod
-    def require_aware_utc(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset() != timedelta(0):
-            raise ValueError("expires_at must be an aware UTC timestamp")
-        return value.astimezone(timezone.utc)
+CaptureSubscription = AskCaptureSubscription
 
 
 class ObserverRoutedAskAdmissionWorkflowInput(ValidatedDefinitionModel):

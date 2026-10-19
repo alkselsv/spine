@@ -196,8 +196,9 @@ measurements distinct.
 
 Observer-routed executions may use the existing strictly typed
 `ObserverRoutedAskAdmissionWorkflowInput` wrapper, or an equivalent
-backward-compatible versioned wrapper, to carry `capture_id`,
-`subscription_id`, and the subscription expiry needed by the worker publisher.
+backward-compatible versioned wrapper. Outbox metadata v3 carries the typed
+`capture_id`, `subscription_id`, and UTC expiry through admission and Temporal
+to the worker publisher; v1 and capture-id-only v2 remain readable.
 These values are opaque routing metadata, not authorization credentials.
 The existing application and authenticated `CaptureChannel` boundaries remain
 responsible for authorization and full canonical execution identity checks.
