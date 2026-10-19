@@ -5,23 +5,33 @@ from uuid import UUID
 import pytest
 
 from spine.application.answer_disclosure import (
+    AnswerDisclosureFacts,
     AnswerDisclosureGate,
     AnswerDisclosureIdempotencyConflict,
     InMemoryAcceptedAnswerOutputPort,
     InMemoryAnswerDisclosureRepository,
 )
+from spine.application.answer_outcomes import AnswerOutcomeFacts
 from spine.application.qa_sessions import _accepted_answer_presentation
 from spine.domain.capabilities import (
     AnswerAuthorizationOutcome,
     AnswerDisclosureRequest,
     AnswerOutcomeDecisionInput,
     AnswerQuestionOutcome,
+    AnswerQuestionOutput,
+    AnswerQuestionSafeReason,
+    AnswerQuestionSafeReasonCode,
     CitationValidationStatus,
     CurrentDisclosureEligibility,
     DisclosureEligibilityReason,
     DisclosureEligibilityStatus,
     RetrievalOutcome,
 )
+from spine.domain.capabilities.answer_disclosure import (
+    AnswerDisclosureRecordV2,
+    AnswerExecutionCheckpoint,
+)
+from spine.domain.capabilities.answer_question_runs import AgentResultRef
 
 from tests.domain.capabilities.test_answer_disclosure import _evaluation
 from tests.domain.capabilities.test_answer_question_candidate import candidate_output, question
@@ -114,6 +124,42 @@ async def test_gate_persists_accepted_disclosure_without_publishing_before_termi
 
 
 @pytest.mark.asyncio
+async def test_gate_persists_and_replays_immutable_execution_checkpoint() -> None:
+    repository = InMemoryAnswerDisclosureRepository()
+    gate = AnswerDisclosureGate(
+        repository=repository,
+        accepted_output=InMemoryAcceptedAnswerOutputPort(),
+    )
+    candidate = disclosure_request().decision.candidate
+    assert candidate is not None
+    checkpoint = AnswerExecutionCheckpoint(
+        execution_pin_digest="a" * 64,
+        context_bundle_ref=candidate.context_bundle.bundle,
+        candidate_input_artifact_id=uid(910),
+        agent_result_ref=AgentResultRef(result_id=uid(911)),
+        output_artifact_ids=(uid(912),),
+    )
+
+    first = await gate.prepare(
+        disclosure_request(), execution_checkpoint=checkpoint
+    )
+    replay = await gate.prepare(
+        disclosure_request(), execution_checkpoint=checkpoint
+    )
+
+    assert isinstance(first.record, AnswerDisclosureRecordV2)
+    assert replay.record == first.record
+    assert replay.replay is True
+    with pytest.raises(AnswerDisclosureIdempotencyConflict):
+        await gate.prepare(
+            disclosure_request(),
+            execution_checkpoint=checkpoint.model_copy(
+                update={"candidate_input_artifact_id": uid(913)}
+            ),
+        )
+
+
+@pytest.mark.asyncio
 async def test_committed_delivery_requires_matching_authorized_presentation() -> None:
     repository = InMemoryAnswerDisclosureRepository()
     sink = InMemoryAcceptedAnswerOutputPort(reference_factory=lambda: uid(906))
@@ -163,6 +209,46 @@ async def test_gate_persists_safe_non_content_result_without_publishing_candidat
     assert result.record.validation is not None
     assert "The policy applies" not in result.record.model_dump_json()
     assert sink.published == []
+
+
+@pytest.mark.asyncio
+async def test_gate_persists_explicit_safe_validation_failure_with_actual_retrieval_facts() -> None:
+    repository = InMemoryAnswerDisclosureRepository()
+    gate = AnswerDisclosureGate(
+        repository=repository,
+        accepted_output=InMemoryAcceptedAnswerOutputPort(),
+    )
+    q = question()
+    output = AnswerQuestionOutput(
+        correlation=q.correlation,
+        scope=q.scope,
+        outcome=AnswerQuestionOutcome.FAILED,
+        reason=AnswerQuestionSafeReason(
+            code=AnswerQuestionSafeReasonCode.MANDATORY_PROCESSING_FAILED
+        ),
+    )
+    facts = AnswerDisclosureFacts(
+        request_id=uid(914),
+        outcome_facts=AnswerOutcomeFacts(
+            question=q,
+            retrieval_outcome=RetrievalOutcome.EVIDENCE_AVAILABLE,
+            authorization=AnswerAuthorizationOutcome.ALLOWED,
+        ),
+        safe_terminal_output=output,
+    )
+
+    result = await gate.prepare_facts(
+        facts,
+        execution_checkpoint=AnswerExecutionCheckpoint(
+            execution_pin_digest="a" * 64,
+        ),
+    )
+
+    assert isinstance(result.record, AnswerDisclosureRecordV2)
+    assert result.record.outcome is AnswerQuestionOutcome.FAILED
+    assert result.record.output == output
+    assert result.record.execution_checkpoint.context_bundle_ref is None
+    assert result.accepted_answer is None
 
 
 @pytest.mark.asyncio

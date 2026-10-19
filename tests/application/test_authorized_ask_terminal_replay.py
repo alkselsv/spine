@@ -150,3 +150,76 @@ async def test_terminal_activity_replay_returns_persisted_result_without_capabil
     assert attempts.resolved == [(RUN_ID, ATTEMPT_ID), (RUN_ID, ATTEMPT_ID)]
     assert result.replay is True
     assert result.output == _terminal_output()
+
+
+@pytest.mark.asyncio
+async def test_disclosure_checkpoint_replay_terminalizes_before_capability() -> None:
+    class Attempts:
+        def __init__(self) -> None:
+            self.terminalizations = 0
+            self.checkpoint = SimpleNamespace(
+                run_id=RUN_ID,
+                attempt_id=ATTEMPT_ID,
+                output=_terminal_output(),
+                disclosure_record=SimpleNamespace(accepted_answer=None),
+            )
+
+        async def allocate_or_resume(self, **_: object):
+            return SimpleNamespace(
+                attempt=SimpleNamespace(
+                    attempt_id=ATTEMPT_ID,
+                    attempt_number=1,
+                    state=AnswerQuestionAttemptState.RUNNING,
+                )
+            )
+
+        async def resolve_recovery_checkpoint(self, **_: object):
+            return self.checkpoint
+
+        async def terminalize(self, **values: object):
+            self.terminalizations += 1
+            assert values["receipt"] is self.checkpoint
+            return AnswerQuestionAttemptTerminalResult(
+                output=_terminal_output(), accepted_answer=None
+            )
+
+    class Capability:
+        async def answer(self, _: AnswerQuestionCapabilityCommand):
+            pytest.fail("disclosure checkpoint replay must not repeat Q&A execution")
+
+        async def cancel(self, _: AnswerQuestionCapabilityCommand):
+            pytest.fail("not used")
+
+    class Sessions:
+        async def get_message(self, **_: object):
+            return SimpleNamespace(state=QAMessageState.PENDING)
+
+    attempts = Attempts()
+    service = PersistedAuthorizedAskService(
+        capability=Capability(),
+        sessions=Sessions(),  # type: ignore[arg-type]
+        attempts=attempts,  # type: ignore[arg-type]
+    )
+    result = await service.execute_admitted(
+        AskExecutionCommand(
+            request_context=AskRequestContext(
+                subject_id=SUBJECT_ID,
+                workspace_id=WORKSPACE_ID,
+                environment_id=ENVIRONMENT_ID,
+                trace_id=TRACE_ID,
+                authorization_generation=1,
+            ),
+            persistence_context=_context(),
+            command_id=COMMAND_ID,
+            session_id=SESSION_ID,
+            message_id=MESSAGE_ID,
+            run_id=RUN_ID,
+            question="checkpoint recovery",
+            idempotency_key=IdempotencyKey("checkpoint-replay"),
+            logical_execution_key="durable-ask:checkpoint-replay",
+        )
+    )
+
+    assert attempts.terminalizations == 1
+    assert result.replay is True
+    assert result.output == _terminal_output()

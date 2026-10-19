@@ -46,8 +46,11 @@ from spine.domain.context_bundles import (
     RevalidationFailureCode,
     RevalidationRequest,
 )
-from spine.domain.capabilities.answer_disclosure import CurrentDisclosureEligibility
-from spine.domain.capabilities.answer_disclosure import AnswerDisclosureRecord
+from spine.domain.capabilities.answer_disclosure import (
+    AnswerDisclosureRecord,
+    AnswerExecutionCheckpoint,
+    CurrentDisclosureEligibility,
+)
 from spine.domain.capabilities import AcceptedAnswerPresentation
 from spine.domain.common import ValidatedDefinitionModel
 from spine.domain.disclosure import (
@@ -78,7 +81,12 @@ class AnswerQuestionDisclosureGate(Protocol):
 
     async def disclose_facts(self, facts: AnswerDisclosureFacts) -> AnswerDisclosureResult: ...
 
-    async def prepare_facts(self, facts: AnswerDisclosureFacts) -> AnswerDisclosureResult: ...
+    async def prepare_facts(
+        self,
+        facts: AnswerDisclosureFacts,
+        *,
+        execution_checkpoint: AnswerExecutionCheckpoint | None = None,
+    ) -> AnswerDisclosureResult: ...
 
     async def deliver_committed(
         self,
@@ -310,6 +318,12 @@ class AnswerQuestionContextService:
                 retrieval_outcome,
                 ContextRevalidationFailure.REVALIDATION_UNAVAILABLE,
             )
+        if checkpoint.disposition is RevalidationDisposition.RETRYABLE_FAILURE:
+            return self._failure(
+                request.question,
+                retrieval_outcome,
+                ContextRevalidationFailure.REVALIDATION_UNAVAILABLE,
+            )
         if checkpoint.disposition is not RevalidationDisposition.SAFE_REPLAY:
             return self._revalidation_terminal(request.question, retrieval_outcome, checkpoint)
         try:
@@ -413,6 +427,8 @@ class AnswerQuestionContextService:
         disclosure_gate: AnswerQuestionDisclosureGate,
         cancelled: bool = False,
         defer_delivery: bool = False,
+        execution_checkpoint: AnswerExecutionCheckpoint | None = None,
+        safe_terminal_output: AnswerQuestionOutput | None = None,
     ) -> AnswerDisclosureResult:
         """Run AQ-11 disclosure only after the same bundle is revalidated.
 
@@ -433,6 +449,8 @@ class AnswerQuestionContextService:
             requester_id=requester_id,
             cancelled=cancelled,
         )
+        if checkpoint.revalidation.disposition is RevalidationDisposition.RETRYABLE_FAILURE:
+            raise RuntimeError("answer disclosure revalidation is temporarily unavailable")
         final_facts = replace(
             outcome_facts,
             disclosure_eligible=checkpoint.eligibility.can_disclose,
@@ -442,9 +460,12 @@ class AnswerQuestionContextService:
             request_id=request_id,
             outcome_facts=final_facts,
             current_eligibility=checkpoint.eligibility,
+            safe_terminal_output=safe_terminal_output,
         )
         if defer_delivery:
-            return await disclosure_gate.prepare_facts(facts)
+            return await disclosure_gate.prepare_facts(
+                facts, execution_checkpoint=execution_checkpoint
+            )
         return await disclosure_gate.disclose_facts(facts)
 
     async def prepare_terminal_disclosure(
@@ -456,6 +477,7 @@ class AnswerQuestionContextService:
         request_id: UUID,
         disclosure_gate: AnswerQuestionDisclosureGate,
         cancelled: bool = False,
+        execution_checkpoint: AnswerExecutionCheckpoint | None = None,
     ) -> AnswerDisclosureResult:
         """Persist a safe early terminal output without evidence fabrication."""
 
@@ -468,7 +490,9 @@ class AnswerQuestionContextService:
                 cancellation_requested=cancelled,
             ),
         )
-        return await disclosure_gate.prepare_facts(facts)
+        return await disclosure_gate.prepare_facts(
+            facts, execution_checkpoint=execution_checkpoint
+        )
 
     async def _revalidate(
         self,
@@ -604,12 +628,10 @@ class AnswerQuestionContextService:
                 AnswerQuestionSafeReasonCode.AUTHORIZATION_DENIED,
             )
         if result.disposition is RevalidationDisposition.RETRYABLE_FAILURE:
-            return cls._terminal(
+            return cls._failure(
                 question,
                 retrieval_outcome,
-                AnswerAuthorizationOutcome.ALLOWED,
-                AnswerQuestionOutcome.FAILED,
-                AnswerQuestionSafeReasonCode.MANDATORY_PROCESSING_FAILED,
+                ContextRevalidationFailure.REVALIDATION_UNAVAILABLE,
             )
         return cls._terminal(
             question,

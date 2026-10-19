@@ -28,13 +28,18 @@ from spine.domain.capabilities.answer_question import (
     AnswerQuestionSafeReason,
     AnswerQuestionSafeReasonCode,
 )
+from spine.domain.capabilities.answer_question_execution import AnswerQuestionExecutionPin
+from spine.domain.capabilities.answer_question_runs import AgentResultRef
 from spine.domain.common import DefinitionModel
+from spine.domain.context_bundles import ContextBundleRef
 
 
 ANSWER_DISCLOSURE_REQUEST_SCHEMA = "answer-disclosure-request:v1"
 ANSWER_DISCLOSURE_DECISION_SCHEMA = "answer-disclosure-decision:v1"
 ACCEPTED_GROUNDED_ANSWER_SCHEMA = "accepted-grounded-answer:v1"
 ANSWER_DISCLOSURE_RECORD_SCHEMA = "answer-disclosure-record:v1"
+ANSWER_DISCLOSURE_RECORD_V2_SCHEMA = "answer-disclosure-record:v2"
+ANSWER_EXECUTION_CHECKPOINT_SCHEMA = "answer-execution-checkpoint:v1"
 _DIGEST = r"^[0-9a-f]{64}$"
 
 
@@ -267,6 +272,12 @@ class AnswerDisclosureRecord(DefinitionModel):
     terminal_output: AnswerQuestionOutput | None = None
     created_at: datetime
 
+    @property
+    def output(self) -> AnswerQuestionOutput | None:
+        """Return the exact persisted terminal output when available."""
+
+        return self.terminal_output or self.safe_output
+
     @model_validator(mode="after")
     def validate_record(self) -> "AnswerDisclosureRecord":
         for name in (
@@ -325,11 +336,95 @@ class AnswerDisclosureRecord(DefinitionModel):
             raise ValueError("disclosure result scope does not match its record")
         return self
 
-    @property
-    def output(self) -> AnswerQuestionOutput | None:
-        """Return the exact persisted terminal output when it is available."""
 
-        return self.terminal_output or self.safe_output
+class AnswerExecutionCheckpoint(DefinitionModel):
+    """Non-content references needed to resume a saved disclosure safely."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["answer-execution-checkpoint:v1"] = ANSWER_EXECUTION_CHECKPOINT_SCHEMA
+    execution_pin_digest: str = Field(pattern=_DIGEST)
+    context_bundle_ref: ContextBundleRef | None = None
+    candidate_input_artifact_id: UUID | None = None
+    agent_result_ref: AgentResultRef | None = None
+    output_artifact_ids: tuple[UUID, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_execution_references(self) -> "AnswerExecutionCheckpoint":
+        if self.candidate_input_artifact_id is not None:
+            _id(self.candidate_input_artifact_id, "candidate_input_artifact_id")
+        if any(identifier.int == 0 for identifier in self.output_artifact_ids):
+            raise ValueError("execution checkpoint artifact IDs must be non-zero")
+        if len(set(self.output_artifact_ids)) != len(self.output_artifact_ids):
+            raise ValueError("execution checkpoint artifact IDs must be unique")
+        if bool(self.output_artifact_ids) != (self.agent_result_ref is not None):
+            raise ValueError("output artifacts require their persisted AgentResult reference")
+        if self.output_artifact_ids and self.candidate_input_artifact_id is None:
+            raise ValueError("output artifacts require their persisted candidate input")
+        if self.candidate_input_artifact_id is not None and self.context_bundle_ref is None:
+            raise ValueError("candidate input requires its persisted ContextBundle")
+        return self
+
+
+class AnswerDisclosureRecordV2(AnswerDisclosureRecord):
+    """Disclosure v2 adds only references for retry-safe terminal recovery."""
+
+    schema_version: Literal["answer-disclosure-record:v2"] = ANSWER_DISCLOSURE_RECORD_V2_SCHEMA
+    execution_checkpoint: AnswerExecutionCheckpoint
+
+    @model_validator(mode="after")
+    def validate_checkpoint_identity(self) -> "AnswerDisclosureRecordV2":
+        checkpoint = self.execution_checkpoint
+        if self.accepted_answer is not None:
+            validation = self.accepted_answer.validation
+            bundle = checkpoint.context_bundle_ref
+            if (
+                bundle is None
+                or bundle.bundle_id != validation.context_bundle_id
+                or bundle.bundle_version != validation.context_bundle_version
+                or bundle.bundle_digest != validation.context_bundle_digest
+                or checkpoint.agent_result_ref is None
+                or checkpoint.candidate_input_artifact_id is None
+                or not checkpoint.output_artifact_ids
+            ):
+                raise ValueError("answered disclosure checkpoint is incomplete")
+        return self
+
+    def as_v1(self) -> AnswerDisclosureRecord:
+        """Project the historical disclosure payload without recovery metadata."""
+
+        return AnswerDisclosureRecord(
+            request_id=self.request_id,
+            request_digest=self.request_digest,
+            workspace_id=self.workspace_id,
+            environment_id=self.environment_id,
+            run_id=self.run_id,
+            attempt_id=self.attempt_id,
+            outcome=self.outcome,
+            validation=self.validation,
+            accepted_answer=self.accepted_answer,
+            safe_output=self.safe_output,
+            terminal_output=self.terminal_output,
+            created_at=self.created_at,
+        )
+
+
+def parse_answer_disclosure_record(payload: object) -> AnswerDisclosureRecord:
+    """Restore either persisted disclosure schema while preserving v1 reads."""
+
+    if isinstance(payload, dict) and payload.get("schema_version") == ANSWER_DISCLOSURE_RECORD_V2_SCHEMA:
+        return AnswerDisclosureRecordV2.model_validate(payload)
+    return AnswerDisclosureRecord.model_validate(payload)
+
+
+def execution_checkpoint_for_disclosure(
+    record: AnswerDisclosureRecord,
+) -> AnswerExecutionCheckpoint | None:
+    """Return recovery metadata only for the schema version that defines it."""
+
+    if isinstance(record, AnswerDisclosureRecordV2):
+        return record.execution_checkpoint
+    return None
 
 
 def compose_answer_disclosure(

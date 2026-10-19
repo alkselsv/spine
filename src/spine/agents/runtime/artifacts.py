@@ -162,6 +162,17 @@ class ArtifactPersistence(Protocol):
         work_item_id: UUID,
     ) -> Artifact | None: ...
 
+    async def load_agent_result(
+        self,
+        result_id: UUID,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        work_item_id: UUID,
+    ) -> AgentResult | None:
+        """Resolve a persisted invocation result under its owning scope."""
+        ...
+
     async def verify_lineage(
         self,
         artifact: Artifact,

@@ -142,6 +142,7 @@ from spine.domain.capabilities.answer_question_runs import (
     AnswerQuestionAttemptEvent,
     AnswerQuestionAttemptEventKind,
     AnswerQuestionAttemptState,
+    AnswerQuestionRunState,
     AnswerQuestionUsage,
 )
 from spine.domain.metrics import AnswerRateFact, MetricWindow, OperationalMetricEvent, OperationalMeasurement
@@ -343,17 +344,28 @@ class CanonicalTransactionProbe:
         self._target: PostgreSQLTransactionStage | None = None
         self._reached: asyncio.Event | None = None
         self._release: asyncio.Event | None = None
+        self._failure: BaseException | None = None
 
-    def arm(self, target: PostgreSQLTransactionStage) -> None:
+    def arm(
+        self,
+        target: PostgreSQLTransactionStage,
+        *,
+        failure: BaseException | None = None,
+    ) -> None:
         assert self._target is None
         self._target = target
         self._reached = asyncio.Event()
         self._release = asyncio.Event()
+        self._failure = failure
 
     async def __call__(self, stage: PostgreSQLTransactionStage) -> None:
         if stage is not self._target:
             return
         self._target = None
+        failure = self._failure
+        self._failure = None
+        if failure is not None:
+            raise failure
         assert self._reached is not None
         assert self._release is not None
         self._reached.set()
@@ -372,6 +384,7 @@ class CanonicalTransactionProbe:
         self._target = None
         self._reached = None
         self._release = None
+        self._failure = None
         if release is not None:
             release.set()
 
@@ -4427,3 +4440,201 @@ async def test_postgresql_operational_metrics_are_idempotent_retained_and_tenant
             now=now,
             retention=timedelta(days=90),
         ) == ()
+
+
+async def test_postgresql_application_terminalizer_commits_attempt_run_and_message_together(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    from spine.application.answer_question_attempts import (
+        PersistedAnswerQuestionAttemptService,
+    )
+    from spine.application.qa_sessions import PersistedQASessionService
+    from spine.domain.capabilities import (
+        AnswerQuestionOutput,
+        AnswerQuestionSafeReason,
+        AnswerQuestionSafeReasonCode,
+        AnswerQuestionScope,
+        RunAttemptCorrelation,
+    )
+    from spine.domain.capabilities.answer_disclosure import (
+        AnswerDisclosureRecordV2,
+        AnswerExecutionCheckpoint,
+    )
+
+    workspace_id = synthetic_uuid(49700)
+    environment_id = synthetic_uuid(49701)
+    run_id = synthetic_uuid(49702)
+    attempt_id = synthetic_uuid(49703)
+    session_id = synthetic_uuid(49704)
+    message_id = synthetic_uuid(49705)
+    subject_id = synthetic_uuid(49706)
+    logical_key = "issue-496-postgresql-terminalization"
+    started_at = datetime(2026, 10, 19, tzinfo=timezone.utc)
+    await persist_qa_scope(postgresql_adapter, workspace_id, environment_id)
+    context = qa_context(postgresql_adapter, workspace_id, environment_id)
+    run = qa_run_record(
+        workspace_id,
+        environment_id,
+        run_id=run_id,
+        idempotency_key=logical_key,
+        created_at=started_at,
+    )
+    pin = qa_execution_pin(workspace_id, environment_id)
+    attempt = AnswerQuestionAttempt.start(
+        attempt_id=attempt_id,
+        run=run,
+        attempt_number=1,
+        logical_execution_key=logical_key,
+        execution_pin=pin,
+        input_artifact_ids=run.input_artifact_ids,
+        diagnostic_context=run.diagnostic_context,
+        started_at=started_at,
+    )
+    output = AnswerQuestionOutput(
+        correlation=RunAttemptCorrelation(
+            run_id=run_id,
+            attempt_id=attempt_id,
+            trace_id=run.diagnostic_context.trace_id,
+        ),
+        scope=AnswerQuestionScope(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+        ),
+        outcome=AnswerQuestionOutcome.ABSTAINED,
+        reason=AnswerQuestionSafeReason(
+            code=AnswerQuestionSafeReasonCode.NO_USABLE_EVIDENCE
+        ),
+    )
+    disclosure = AnswerDisclosureRecordV2(
+        request_id=synthetic_uuid(49707),
+        request_digest="a" * 64,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        outcome=AnswerQuestionOutcome.ABSTAINED,
+        safe_output=output,
+        terminal_output=output,
+        execution_checkpoint=AnswerExecutionCheckpoint(
+            execution_pin_digest=pin.pin_digest,
+        ),
+        created_at=started_at,
+    )
+    session = QASession(
+        session_id=session_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        subject_id=subject_id,
+        created_at=started_at,
+        updated_at=started_at,
+        version=1,
+        status=QASessionStatus.ACTIVE,
+    )
+    message = QAMessage(
+        message_id=message_id,
+        session_id=session_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        version=1,
+        ordinal=1,
+        trace_id=run.diagnostic_context.trace_id,
+        run_id=run_id,
+        question="synthetic question",
+        state=QAMessageState.RUNNING,
+        created_at=started_at,
+        updated_at=started_at,
+    )
+    async with postgresql_adapter.uow_factory(context) as uow:
+        await uow.answer_question_runs.create_run(qa_run_command(run))
+        await uow.answer_question_runs.start_attempt(attempt)
+        await uow.qa_sessions.create_session(
+            session,
+            command_id=synthetic_uuid(49708),
+            idempotency_key=IdempotencyKey("issue-496-postgresql-session"),
+            digest=digest_command(
+                operation=PersistenceOperation("qa_sessions"),
+                operation_schema_version=1,
+                payload={"session_id": session_id, "subject_id": subject_id},
+            ),
+        )
+        await uow.qa_sessions.create_pending_message(
+            message,
+            command_id=synthetic_uuid(49709),
+            idempotency_key=IdempotencyKey("issue-496-postgresql-message"),
+            digest=digest_command(
+                operation=PersistenceOperation("qa_sessions"),
+                operation_schema_version=1,
+                payload={"session_id": session_id, "message_id": message_id, "run_id": run_id},
+            ),
+        )
+        await uow.answer_disclosures.save(disclosure)
+        await uow.commit()
+
+    sessions = PersistedQASessionService(
+        repository=None,  # The terminalizer supplies its caller-owned repository.
+        disclosure_eligibility=None,
+        clock=lambda: started_at + timedelta(minutes=1),
+        command_id_factory=lambda: synthetic_uuid(49710),
+    )
+    terminalizer = PersistedAnswerQuestionAttemptService(
+        uow_factory=postgresql_adapter.uow_factory,
+        execution=object(),  # Allocation is out of scope for this terminalization test.
+        clock=lambda: started_at + timedelta(minutes=1),
+        event_id_factory=lambda: synthetic_uuid(49711),
+    )
+    CANONICAL_TRANSACTION_PROBE.arm(
+        PostgreSQLTransactionStage.BEFORE_COMMIT,
+        failure=RuntimeError("synthetic terminal transaction failure"),
+    )
+    try:
+        with pytest.raises(UnexpectedPersistenceError):
+            await terminalizer.terminalize(
+                context=context,
+                session_id=session_id,
+                message_id=message_id,
+                idempotency_key=logical_key,
+                sessions=sessions,
+                receipt=None,
+            )
+    finally:
+        CANONICAL_TRANSACTION_PROBE.disarm()
+
+    async with postgresql_adapter.uow_factory(context) as uow:
+        rolled_back_run = await uow.answer_question_runs.resolve_run(run_id)
+        rolled_back_attempt = await uow.answer_question_runs.resolve_attempt(attempt_id)
+        rolled_back_message = await uow.qa_sessions.resolve_message(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            session_id=session_id,
+            message_id=message_id,
+        )
+    assert rolled_back_run.state is AnswerQuestionRunState.RUNNING
+    assert rolled_back_run.final_attempt_id is None
+    assert rolled_back_attempt.state is AnswerQuestionAttemptState.RUNNING
+    assert rolled_back_attempt.completed_at is None
+    assert rolled_back_message.state is QAMessageState.RUNNING
+    assert rolled_back_message.terminal_outcome is None
+
+    result = await terminalizer.terminalize(
+        context=context,
+        session_id=session_id,
+        message_id=message_id,
+        idempotency_key=logical_key,
+        sessions=sessions,
+        receipt=None,
+    )
+
+    assert result.output == output
+    async with postgresql_adapter.uow_factory(context) as uow:
+        persisted_run = await uow.answer_question_runs.resolve_run(run_id)
+        persisted_attempt = await uow.answer_question_runs.resolve_attempt(attempt_id)
+        persisted_message = await uow.qa_sessions.resolve_message(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            session_id=session_id,
+            message_id=message_id,
+        )
+    assert persisted_run.final_attempt_id == attempt_id
+    assert persisted_run.outcome is AnswerQuestionOutcome.ABSTAINED
+    assert persisted_attempt.outcome is AnswerQuestionOutcome.ABSTAINED
+    assert persisted_message.terminal_outcome is AnswerQuestionOutcome.ABSTAINED

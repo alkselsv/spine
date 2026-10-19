@@ -43,11 +43,16 @@ from spine.application.production_qa_capability import (
     AnswerQuestionValidationPlan,
     AnswerQuestionContextReferences,
     ExistingAnswerQuestionCandidateValidator,
+    PersistedCandidateExecution,
     PersistedAnswerQuestionCandidateRunner,
     ProductionAnswerQuestionCapability,
 )
 from spine.application.answer_question_execution import AnswerQuestionExecutionResult
 from spine.domain.capabilities.answer_question_runs import AgentResultRef
+from spine.domain.capabilities.answer_disclosure import (
+    AnswerDisclosureRecord,
+    AnswerDisclosureRecordV2,
+)
 from spine.domain.agents import AgentResult, AgentRunStatus
 from spine.domain.artifacts import Artifact
 from spine.domain.capabilities.answer_question_candidate import (
@@ -119,6 +124,7 @@ def command(
     worker: bool = False,
     attempt_id: UUID | None = None,
     attempt_number: int | None = None,
+    execution_pin: AnswerQuestionExecutionPin | None = None,
 ) -> AnswerQuestionCapabilityCommand:
     return AnswerQuestionCapabilityCommand(
         request_context=AskRequestContext(
@@ -151,6 +157,7 @@ def command(
         command_id=COMMAND_ID,
         attempt_id=attempt_id,
         attempt_number=attempt_number,
+        execution_pin=execution_pin,
     )
 
 
@@ -180,6 +187,40 @@ class BoundExecution:
         return None, pin
 
 
+@pytest.mark.asyncio
+async def test_durable_capability_rejects_stale_allocated_pin_before_retrieval() -> None:
+    context = SuccessfulContext()
+    runner = SuccessfulCandidateRunner()
+    capability = ProductionAnswerQuestionCapability(
+        context=context,
+        execution=BoundExecution(),
+        context_references=References(),
+        disclosure_gate=object(),
+        candidate_runner=runner,
+        validator=object(),
+        disclosure_environment=EnvironmentKind.DEVELOPMENT,
+    )
+    stale_pin = AnswerQuestionExecutionPin.create(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        environment=EnvironmentKind.PRODUCTION,
+        configuration=configuration(),
+    )
+
+    result = await capability.answer(
+        command(
+            attempt_id=UUID(int=99),
+            attempt_number=1,
+            execution_pin=stale_pin,
+        )
+    )
+
+    assert result.availability is AnswerQuestionCapabilityAvailability.UNAVAILABLE
+    assert result.terminalization_receipt is None
+    assert context.requests == []
+    assert runner.generated is False
+
+
 class TerminalContext:
     def __init__(self, outcome: AnswerQuestionOutcome) -> None:
         self.outcome = outcome
@@ -200,7 +241,12 @@ class TerminalContext:
             reason=AnswerQuestionSafeReason(code=reason),
         )
         return AnswerQuestionContextResolution(
-            retrieval_outcome=RetrievalOutcome.UNAVAILABLE,
+            retrieval_outcome={
+                AnswerQuestionOutcome.ABSTAINED: RetrievalOutcome.INSUFFICIENT_EVIDENCE,
+                AnswerQuestionOutcome.DENIED: RetrievalOutcome.UNAVAILABLE,
+                AnswerQuestionOutcome.FAILED: RetrievalOutcome.FAILED,
+                AnswerQuestionOutcome.CANCELLED: RetrievalOutcome.UNAVAILABLE,
+            }[self.outcome],
             authorization=(
                 AnswerAuthorizationOutcome.DENIED
                 if self.outcome is AnswerQuestionOutcome.DENIED
@@ -208,6 +254,55 @@ class TerminalContext:
             ),
             output=output,
         )
+
+    async def prepare_terminal_disclosure(
+        self,
+        *,
+        question,
+        retrieval_outcome,
+        authorization,
+        request_id,
+        disclosure_gate,
+        cancelled=False,
+        execution_checkpoint=None,
+    ):
+        del retrieval_outcome, disclosure_gate, cancelled
+        output = AnswerQuestionOutput(
+            correlation=question.correlation,
+            scope=question.scope,
+            outcome=self.outcome,
+            reason=AnswerQuestionSafeReason(
+                code={
+                    AnswerQuestionOutcome.ABSTAINED: AnswerQuestionSafeReasonCode.NO_USABLE_EVIDENCE,
+                    AnswerQuestionOutcome.DENIED: AnswerQuestionSafeReasonCode.AUTHORIZATION_DENIED,
+                    AnswerQuestionOutcome.FAILED: AnswerQuestionSafeReasonCode.MANDATORY_PROCESSING_FAILED,
+                    AnswerQuestionOutcome.CANCELLED: AnswerQuestionSafeReasonCode.CANCELLED,
+                }[self.outcome]
+            ),
+        )
+        record_type = (
+            AnswerDisclosureRecordV2
+            if execution_checkpoint is not None
+            else AnswerDisclosureRecord
+        )
+        record = record_type(
+            request_id=request_id,
+            request_digest="a" * 64,
+            workspace_id=question.scope.workspace_id,
+            environment_id=question.scope.environment_id,
+            run_id=question.correlation.run_id,
+            attempt_id=question.correlation.attempt_id,
+            outcome=self.outcome,
+            safe_output=output,
+            terminal_output=output,
+            created_at=datetime(2026, 10, 19, tzinfo=timezone.utc),
+            **(
+                {"execution_checkpoint": execution_checkpoint}
+                if execution_checkpoint is not None
+                else {}
+            ),
+        )
+        return SimpleNamespace(record=record, replay=False)
 
 
 class UnexpectedCandidateStage:
@@ -324,8 +419,9 @@ class SuccessfulContext:
         requester_id,
         disclosure_gate,
         defer_delivery=False,
+        execution_checkpoint=None,
     ):
-        del context, requester_id, disclosure_gate, defer_delivery
+        del context, requester_id, disclosure_gate, defer_delivery, execution_checkpoint
         try:
             resolution = resolve_answer_outcome(
                 replace(outcome_facts, disclosure_eligible=True)
@@ -570,7 +666,20 @@ async def test_context_terminal_outcome_is_preserved_without_candidate_generatio
         disclosure_environment=EnvironmentKind.DEVELOPMENT,
     )
 
-    result = await capability.answer(command(worker=True))
+    persisted_pin = AnswerQuestionExecutionPin.create(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        environment=EnvironmentKind.DEVELOPMENT,
+        configuration=configuration(),
+    )
+    result = await capability.answer(
+        command(
+            worker=True,
+            attempt_id=UUID(int=99),
+            attempt_number=3,
+            execution_pin=persisted_pin,
+        )
+    )
 
     assert result.output.outcome is outcome
     assert result.command_id == COMMAND_ID
@@ -578,6 +687,8 @@ async def test_context_terminal_outcome_is_preserved_without_candidate_generatio
     assert result.message_id == MESSAGE
     assert result.output.correlation.run_id == RUN
     assert result.availability is AnswerQuestionCapabilityAvailability.AVAILABLE
+    assert result.terminalization_receipt is not None
+    assert result.terminalization_receipt.disclosure_record.output == result.output
     assert context.prepared == 1
 
 
@@ -683,6 +794,130 @@ async def test_candidate_identity_mismatch_fails_closed_before_validation() -> N
     assert result.output.scope.workspace_id == WORKSPACE
     assert result.accepted_answer is None
     assert not context.disclosures
+
+
+@pytest.mark.asyncio
+async def test_durable_candidate_identity_mismatch_persists_safe_terminal_receipt() -> None:
+    from spine.domain.capabilities.answer_disclosure import (
+        AnswerDisclosureRecordV2,
+    )
+    from spine.domain.disclosure import DisclosureDependencySet
+
+    persisted = {}
+    attempt_id = UUID(int=9)
+    bundle = base_context_bundle()
+    run_id = bundle.run_id
+
+    class ContextWithSafeFailure:
+        def __init__(self) -> None:
+            self.error = None
+
+        async def prepare(self, request):
+            authorized_context = SimpleNamespace(
+                question=request.question,
+                bundle=bundle,
+                response=SimpleNamespace(outcome=ContextOutcome.ALLOWED),
+                disclosure_dependencies=DisclosureDependencySet(),
+            )
+            return AnswerQuestionContextResolution(
+                retrieval_outcome=RetrievalOutcome.EVIDENCE_AVAILABLE,
+                authorization=AnswerAuthorizationOutcome.ALLOWED,
+                context=authorized_context,
+            )
+
+        async def disclose(
+            self,
+            *,
+            context,
+            outcome_facts,
+            request_id,
+            execution_checkpoint,
+            safe_terminal_output,
+            **_kwargs,
+        ):
+            try:
+                assert context.response.outcome is ContextOutcome.ALLOWED
+                assert outcome_facts.retrieval_outcome is RetrievalOutcome.EVIDENCE_AVAILABLE
+                record = AnswerDisclosureRecordV2(
+                    request_id=request_id,
+                    request_digest="a" * 64,
+                    workspace_id=WORKSPACE,
+                    environment_id=ENVIRONMENT,
+                    run_id=run_id,
+                    attempt_id=attempt_id,
+                    outcome=safe_terminal_output.outcome,
+                    safe_output=safe_terminal_output,
+                    terminal_output=safe_terminal_output,
+                    execution_checkpoint=execution_checkpoint,
+                    created_at=datetime(2026, 10, 18, tzinfo=timezone.utc),
+                )
+                persisted[request_id] = record
+                return SimpleNamespace(record=record, replay=False)
+            except Exception as error:
+                self.error = error
+                raise
+
+    class MismatchedCandidateRunner:
+        async def generate_persisted(self, *, question, authorized_context, **_kwargs):
+            foreign_question = question.model_copy(
+                update={"subject": QuestionSubject(text="different question")}
+            )
+            candidate = _candidate_for_question(
+                foreign_question, authorized_context.bundle.lineage_reference
+            )
+            input_id = UUID(int=51)
+            output_artifact = Artifact(
+                id=UUID(int=52),
+                workspace_id=WORKSPACE,
+                environment_id=ENVIRONMENT,
+                work_item_id=run_id,
+                produced_by=ActorRef(kind=ActorKind.AGENT, id=SUBJECT),
+                artifact_schema=SchemaRef(
+                    name="answer-question.candidate-output", version="v1"
+                ),
+                content=candidate,
+                created_at=datetime(2026, 10, 18, tzinfo=timezone.utc),
+                upstream_artifact_ids=(input_id,),
+            )
+            result = AgentResult(
+                status=AgentRunStatus.SUCCEEDED,
+                output_artifact_ids=(output_artifact.id,),
+            )
+            return PersistedCandidateExecution(
+                candidate=candidate,
+                candidate_input_artifact_id=input_id,
+                agent_result_ref=AgentResultRef(result_id=UUID(int=53)),
+                agent_result=result,
+                output_artifacts=(output_artifact,),
+            )
+
+    capability = ProductionAnswerQuestionCapability(
+        context=ContextWithSafeFailure(),
+        execution=BoundExecution(),
+        context_references=References(),
+        disclosure_gate=object(),
+        candidate_runner=MismatchedCandidateRunner(),
+        validator=object(),
+        disclosure_environment=EnvironmentKind.DEVELOPMENT,
+    )
+
+    result = await capability.answer(
+        command(run_id=run_id, attempt_id=attempt_id, attempt_number=2)
+    )
+
+    assert capability.context.error is None, repr(capability.context.error)
+    assert result.output.outcome is AnswerQuestionOutcome.FAILED
+    assert result.availability is AnswerQuestionCapabilityAvailability.AVAILABLE
+    assert result.terminalization_receipt is not None
+    assert result.terminalization_receipt.attempt_id == attempt_id
+    record = persisted[uuid5(run_id, "context-request")]
+    assert isinstance(record, AnswerDisclosureRecordV2)
+    checkpoint = record.execution_checkpoint
+    assert checkpoint.candidate_input_artifact_id == UUID(int=51)
+    assert checkpoint.agent_result_ref == AgentResultRef(result_id=UUID(int=53))
+    assert checkpoint.output_artifact_ids == (UUID(int=52),)
+    assert result.terminalization_receipt.agent_result_ref == checkpoint.agent_result_ref
+    assert result.terminalization_receipt.output_artifact_ids == checkpoint.output_artifact_ids
 
 
 @pytest.mark.asyncio

@@ -290,6 +290,25 @@ class FakeArtifactPersistence:
             raise ArtifactReadError("protected record exists")
         return self.records.get(artifact_id)
 
+    async def load_agent_result(
+        self,
+        result_id: UUID,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        work_item_id: UUID,
+    ) -> AgentResult | None:
+        del work_item_id
+        for receipt_key, (_, reference, record) in self.receipts.items():
+            if (
+                receipt_key[0] == workspace_id
+                and receipt_key[1] == environment_id
+                and reference.result_id == result_id
+                and record.state == "completed"
+            ):
+                return record.result
+        return None
+
     async def verify_lineage(
         self,
         artifact: Artifact,

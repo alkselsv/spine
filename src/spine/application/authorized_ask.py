@@ -37,6 +37,7 @@ from spine.domain.capabilities import (
     AnswerQuestionOutput,
 )
 from spine.domain.capabilities.answer_question_runs import AnswerQuestionAttemptState
+from spine.domain.capabilities.answer_question_execution import AnswerQuestionExecutionPin
 from spine.domain.common import ActorKind, ActorRef, EnvironmentKind
 
 
@@ -192,6 +193,7 @@ class AnswerQuestionCapabilityCommand:
     command_id: UUID | None = None
     attempt_id: UUID | None = None
     attempt_number: int | None = None
+    execution_pin: AnswerQuestionExecutionPin | None = None
 
     def __post_init__(self) -> None:
         if self.run_id is None:
@@ -209,6 +211,13 @@ class AnswerQuestionCapabilityCommand:
             or self.attempt_number < 1
         ):
             raise ValueError("answer capability attempt identity is invalid")
+        if self.execution_pin is not None and self.attempt_id is None:
+            raise ValueError("answer capability execution pin requires an allocated attempt")
+        if self.execution_pin is not None and (
+            self.execution_pin.workspace_id != self.request_context.workspace_id
+            or self.execution_pin.environment_id != self.request_context.environment_id
+        ):
+            raise ValueError("answer capability execution pin has a different scope")
 
 
 @dataclass(frozen=True, slots=True)
@@ -463,6 +472,31 @@ class PersistedAuthorizedAskService:
                         "persisted terminal result has mismatched attempt identity"
                     )
                 return await self.persist_terminal(command, replay)
+            resolve_checkpoint = getattr(
+                self.attempts, "resolve_recovery_checkpoint", None
+            )
+            checkpoint = None
+            if callable(resolve_checkpoint):
+                checkpoint = await resolve_checkpoint(
+                context=command.persistence_context,
+                run_id=command.run_id,
+                attempt_id=allocated.attempt.attempt_id,
+                )
+            if checkpoint is not None:
+                # Disclosure v2 is an immutable durable checkpoint. Let the
+                # terminalizer validate and commit it before invoking capability
+                # code that could perform another retrieval or generation.
+                replay = AnswerQuestionCapabilityResult(
+                    command_id=command.command_id,
+                    session_id=command.session_id,
+                    message_id=command.message_id,
+                    output=checkpoint.output,
+                    accepted_answer=checkpoint.disclosure_record.accepted_answer,
+                    replay=True,
+                    terminalization_receipt=checkpoint,
+                )
+                _validate_capability_scope(command.request_context, replay)
+                return await self.persist_terminal(command, replay)
         capability = await self.capability.answer(
             AnswerQuestionCapabilityCommand(
                 request_context=command.request_context,
@@ -478,6 +512,9 @@ class PersistedAuthorizedAskService:
                 ),
                 attempt_number=(
                     allocated.attempt.attempt_number if allocated is not None else None
+                ),
+                execution_pin=(
+                    allocated.attempt.execution_pin if allocated is not None else None
                 ),
             )
         )

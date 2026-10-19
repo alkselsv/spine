@@ -15,11 +15,15 @@ from spine.domain.capabilities.answer_disclosure import (
     AnswerDisclosureRequest,
     AnswerDisclosureDecision,
     AcceptedGroundedAnswer,
+    AnswerDisclosureRecordV2,
+    AnswerExecutionCheckpoint,
+    execution_checkpoint_for_disclosure,
     CurrentDisclosureEligibility,
     DisclosureEligibilityReason,
     DisclosureEligibilityStatus,
     compose_answer_disclosure,
 )
+from spine.domain.capabilities.answer_outcomes import AnswerOutcomeResolution
 from spine.domain.capabilities import AcceptedAnswerPresentation
 from spine.domain.capabilities.answer_question import (
     AnswerQuestionOutput,
@@ -72,6 +76,7 @@ class AnswerDisclosureFacts:
     request_id: UUID
     outcome_facts: AnswerOutcomeFacts
     current_eligibility: CurrentDisclosureEligibility | None = None
+    safe_terminal_output: AnswerQuestionOutput | None = None
 
     def to_request(self) -> AnswerDisclosureRequest:
         return AnswerDisclosureRequest(
@@ -97,7 +102,11 @@ class InMemoryAnswerDisclosureRepository:
         key = (record.workspace_id, record.environment_id, record.request_id)
         current = self._records.get(key)
         if current is not None:
-            if current.request_digest != record.request_digest:
+            if (
+                current.request_digest != record.request_digest
+                or execution_checkpoint_for_disclosure(current)
+                != execution_checkpoint_for_disclosure(record)
+            ):
                 raise AnswerDisclosureIdempotencyConflict(
                     "Disclosure request conflicts with an immutable result."
                 )
@@ -215,15 +224,29 @@ class AnswerDisclosureGate:
             output_reference=reference,
         )
 
-    async def prepare_facts(self, facts: AnswerDisclosureFacts) -> AnswerDisclosureResult:
+    async def prepare_facts(
+        self,
+        facts: AnswerDisclosureFacts,
+        *,
+        execution_checkpoint: AnswerExecutionCheckpoint | None = None,
+    ) -> AnswerDisclosureResult:
         """Persist the immutable gate decision without external delivery."""
 
-        return await self._prepare(facts.to_request())
+        return await self._prepare(
+            facts.to_request(),
+            execution_checkpoint=execution_checkpoint,
+            safe_terminal_output=facts.safe_terminal_output,
+        )
 
-    async def prepare(self, request: AnswerDisclosureRequest) -> AnswerDisclosureResult:
+    async def prepare(
+        self,
+        request: AnswerDisclosureRequest,
+        *,
+        execution_checkpoint: AnswerExecutionCheckpoint | None = None,
+    ) -> AnswerDisclosureResult:
         """Persist a precomposed gate request without external delivery."""
 
-        return await self._prepare(request)
+        return await self._prepare(request, execution_checkpoint=execution_checkpoint)
 
     async def deliver_committed(
         self,
@@ -268,25 +291,53 @@ class AnswerDisclosureGate:
             reference = await self._publish_and_record(record)
         return reference
 
-    async def _prepare(self, request: AnswerDisclosureRequest) -> AnswerDisclosureResult:
+    async def _prepare(
+        self,
+        request: AnswerDisclosureRequest,
+        *,
+        execution_checkpoint: AnswerExecutionCheckpoint | None = None,
+        safe_terminal_output: AnswerQuestionOutput | None = None,
+    ) -> AnswerDisclosureResult:
+        if safe_terminal_output is not None and (
+            safe_terminal_output.outcome
+            not in {AnswerQuestionOutcome.FAILED, AnswerQuestionOutcome.CANCELLED}
+            or safe_terminal_output.answer is not None
+            or safe_terminal_output.scope != request.decision.question.scope
+            or safe_terminal_output.correlation != request.decision.question.correlation
+            or safe_terminal_output.reason is None
+        ):
+            raise ValueError("safe terminal disclosure output is invalid")
         existing = await self.repository.resolve(
             workspace_id=request.decision.question.scope.workspace_id,
             environment_id=request.decision.question.scope.environment_id,
             request_id=request.request_id,
         )
         if existing is not None:
-            if existing.accepted_answer is not None and (
+            if execution_checkpoint is not None and (
+                not isinstance(existing, AnswerDisclosureRecordV2)
+                or existing.execution_checkpoint != execution_checkpoint
+            ):
+                raise AnswerDisclosureIdempotencyConflict(
+                    "Persisted disclosure execution checkpoint conflicts with this retry."
+                )
+            if execution_checkpoint is None and existing.accepted_answer is not None and (
                 request.current_eligibility is None
                 or not request.current_eligibility.can_disclose
             ):
                 decision = compose_answer_disclosure(
                     request, accepted_at=self.clock()
                 )
-                safe_record = _record(request, decision, self.clock())
+                safe_record = _record(
+                    request, decision, self.clock(), execution_checkpoint
+                )
                 return AnswerDisclosureResult(record=safe_record, replay=True)
             if existing.request_digest != request.command_digest:
                 raise AnswerDisclosureIdempotencyConflict(
                     "Disclosure request conflicts with an immutable result."
+                )
+            if safe_terminal_output is not None and existing.output != safe_terminal_output:
+                raise AnswerDisclosureIdempotencyConflict(
+                    "Persisted safe terminal output conflicts with this retry."
                 )
             if existing.accepted_answer is None:
                 return AnswerDisclosureResult(record=existing, replay=True)
@@ -295,7 +346,15 @@ class AnswerDisclosureGate:
             )
 
         try:
-            decision = compose_answer_disclosure(request, accepted_at=self.clock())
+            if safe_terminal_output is None:
+                decision = compose_answer_disclosure(request, accepted_at=self.clock())
+            else:
+                decision = AnswerDisclosureDecision(
+                    resolution=AnswerOutcomeResolution(
+                        outcome=safe_terminal_output.outcome,
+                        output=safe_terminal_output,
+                    )
+                )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -305,8 +364,12 @@ class AnswerDisclosureGate:
                 except Exception:
                     pass
             decision = _safe_failure(request)
-        record = _record(request, decision, self.clock())
+        record = _record(request, decision, self.clock(), execution_checkpoint)
         stored = await self.repository.save(record)
+        if safe_terminal_output is not None and stored.output != safe_terminal_output:
+            raise AnswerDisclosureIdempotencyConflict(
+                "Persisted safe terminal output conflicts with this retry."
+            )
         if stored.accepted_answer is None:
             return AnswerDisclosureResult(record=stored, replay=False)
         return AnswerDisclosureResult(record=stored, replay=False)
@@ -364,8 +427,9 @@ def _record(
     request: AnswerDisclosureRequest,
     decision: AnswerDisclosureDecision,
     created_at: datetime,
+    execution_checkpoint: AnswerExecutionCheckpoint | None = None,
 ) -> AnswerDisclosureRecord:
-    return AnswerDisclosureRecord(
+    record_fields = dict(
         request_id=request.request_id,
         request_digest=request.command_digest,
         workspace_id=request.decision.question.scope.workspace_id,
@@ -379,6 +443,11 @@ def _record(
         terminal_output=decision.output,
         created_at=created_at,
     )
+    if execution_checkpoint is not None:
+        return AnswerDisclosureRecordV2(
+            **record_fields, execution_checkpoint=execution_checkpoint
+        )
+    return AnswerDisclosureRecord(**record_fields)
 
 
 def _safe_failure(request: AnswerDisclosureRequest) -> AnswerDisclosureDecision:
