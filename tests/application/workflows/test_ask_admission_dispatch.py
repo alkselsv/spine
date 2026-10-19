@@ -388,6 +388,14 @@ async def test_workflow_executor_releases_only_scoped_admitted_identity_to_capab
     assert service.commands[0].question == "secret question"
     assert service.commands[0].message_id == MESSAGE_ID
     assert service.commands[0].run_id == RUN_ID
+    assert service.commands[0].logical_execution_key == (
+        f"durable-ask:{COMMAND_ID}"
+    )
+    assert (
+        service.commands[1].logical_execution_key
+        == service.commands[0].logical_execution_key
+    )
+    assert "secret question" not in service.commands[0].logical_execution_key
     assert [sample.run_id for sample in timings] == [RUN_ID, RUN_ID]
     assert [sample.attempt_id for sample in timings] == [
         UUID(int=RUN_ID.int + 1),

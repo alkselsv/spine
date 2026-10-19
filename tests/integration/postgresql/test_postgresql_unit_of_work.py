@@ -254,6 +254,8 @@ from tests.contracts.persistence.test_answer_question_run_repository_contract im
     test_answer_question_attempt_concurrent_completion_has_one_terminal_winner as contract_qa_concurrent_completion,
     test_answer_question_partial_failure_retry_and_cancellation_are_replayable as contract_qa_retry_cancel,
     test_answer_question_attempt_terminal_record_is_immutable_and_replayable as contract_qa_attempt_immutable,
+    test_answer_question_attempt_allocation_resumes_and_orders_logical_attempts as contract_qa_attempt_allocation,
+    test_answer_question_attempt_allocation_rejects_cancellation_winner as contract_qa_attempt_allocation_cancelled,
     test_answer_question_run_conflicting_command_key_fails_closed as contract_qa_conflicting_key,
     test_answer_question_run_create_and_replay_are_canonical_and_idempotent as contract_qa_create_replay,
     test_answer_question_run_resolution_does_not_cross_workspace_or_environment as contract_qa_isolation,
@@ -3151,6 +3153,18 @@ async def test_postgresql_answer_question_attempt_immutability_contract(
     postgresql_adapter: PersistenceAdapter,
 ) -> None:
     await contract_qa_attempt_immutable(postgresql_adapter)
+
+
+async def test_postgresql_answer_question_attempt_allocation_contract(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    await contract_qa_attempt_allocation(postgresql_adapter)
+
+
+async def test_postgresql_answer_question_attempt_allocation_rejects_cancellation(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    await contract_qa_attempt_allocation_cancelled(postgresql_adapter)
 
 
 async def test_postgresql_answer_question_context_bundle_reference_contract(

@@ -93,15 +93,13 @@ class PersistedAskAdmissionService:
                     attempt_id = active_attempts[0].attempt_id
                     attempt_number = active_attempts[0].attempt_number
             elif run.final_attempt_id is not None:
-                attempts = await uow.answer_question_runs.list_attempts(run.run_id)
-                final_attempts = tuple(
-                    attempt
-                    for attempt in attempts
-                    if attempt.attempt_id == run.final_attempt_id
+                final_attempt = await uow.answer_question_runs.resolve_attempt(
+                    run.final_attempt_id
                 )
-                if len(final_attempts) == 1:
-                    attempt_id = final_attempts[0].attempt_id
-                    attempt_number = final_attempts[0].attempt_number
+                if final_attempt.run_id != run.run_id:
+                    raise ValueError("Ask admission status attempt lineage is invalid")
+                attempt_id = final_attempt.attempt_id
+                attempt_number = final_attempt.attempt_number
             await uow.commit()
         if run.state is AnswerQuestionRunState.COMPLETED:
             return AskAdmissionStatus(

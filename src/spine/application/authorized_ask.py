@@ -19,6 +19,10 @@ from spine.application.persistence.ask_admission import (
     AskAdmissionResult,
 )
 from spine.application.persistence.idempotency import IdempotencyKey
+from spine.application.persistence.answer_question_runs import (
+    AnswerQuestionAttemptAllocationResult,
+    AnswerQuestionAttemptTerminalResult,
+)
 from spine.application.qa_sessions import (
     QAMessage,
     QAMessageState,
@@ -31,6 +35,7 @@ from spine.domain.capabilities import (
     AnswerQuestionOutcome,
     AnswerQuestionOutput,
 )
+from spine.domain.capabilities.answer_question_runs import AnswerQuestionAttemptState
 from spine.domain.common import ActorKind, ActorRef, EnvironmentKind
 
 
@@ -146,6 +151,7 @@ class AskExecutionCommand:
     run_id: UUID
     question: str
     idempotency_key: IdempotencyKey
+    logical_execution_key: str | None = None
 
     def __post_init__(self) -> None:
         if any(
@@ -160,6 +166,14 @@ class AskExecutionCommand:
             raise ValueError("admitted Ask identities must be non-zero")
         if not self.question.strip():
             raise ValueError("admitted Ask question must not be blank")
+        if self.logical_execution_key is not None and not (
+            1 <= len(self.logical_execution_key) <= 255
+            and all(
+                character.isalnum() or character in "._:-"
+                for character in self.logical_execution_key
+            )
+        ):
+            raise ValueError("logical execution key is invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,6 +189,8 @@ class AnswerQuestionCapabilityCommand:
     idempotency_key: IdempotencyKey
     clarification_of_message_id: UUID | None = None
     command_id: UUID | None = None
+    attempt_id: UUID | None = None
+    attempt_number: int | None = None
 
     def __post_init__(self) -> None:
         if self.run_id is None:
@@ -184,6 +200,14 @@ class AnswerQuestionCapabilityCommand:
             raise ValueError("answer capability run identity must be non-zero")
         if self.command_id is not None and self.command_id.int == 0:
             raise ValueError("answer capability command identity must be non-zero")
+        if (self.attempt_id is None) != (self.attempt_number is None):
+            raise ValueError("answer capability attempt identity is incomplete")
+        if self.attempt_id is not None and (
+            self.attempt_id.int == 0
+            or self.attempt_number is None
+            or self.attempt_number < 1
+        ):
+            raise ValueError("answer capability attempt identity is invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,6 +263,24 @@ class AskTerminalPersistence(Protocol):
         command: AskExecutionCommand,
         capability: AnswerQuestionCapabilityResult,
     ) -> AuthorizedAskResult: ...
+
+
+class AnswerQuestionAttemptApplication(Protocol):
+    async def allocate_or_resume(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        run_id: UUID,
+        logical_execution_key: str,
+    ) -> AnswerQuestionAttemptAllocationResult: ...
+
+    async def resolve_terminal_result(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        run_id: UUID,
+        attempt_id: UUID,
+    ) -> AnswerQuestionAttemptTerminalResult: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,6 +348,7 @@ class PersistedAuthorizedAskService:
     capability: AnswerQuestionCapability
     sessions: QASessionService
     admission: AskAdmissionApplication | None = None
+    attempts: AnswerQuestionAttemptApplication | None = None
     environment: EnvironmentKind = EnvironmentKind.PRODUCTION
 
     async def ask(self, command: AskCommand) -> AuthorizedAskResult:
@@ -371,6 +414,35 @@ class PersistedAuthorizedAskService:
     ) -> AuthorizedAskResult:
         """Execute one persisted admission without creating another message."""
 
+        allocated = None
+        if command.logical_execution_key is not None:
+            if self.attempts is None:
+                raise AuthorizedAskServiceUnavailable()
+            allocated = await self.attempts.allocate_or_resume(
+                context=command.persistence_context,
+                run_id=command.run_id,
+                logical_execution_key=command.logical_execution_key,
+            )
+            if allocated.attempt.state is not AnswerQuestionAttemptState.RUNNING:
+                terminal = await self.attempts.resolve_terminal_result(
+                    context=command.persistence_context,
+                    run_id=command.run_id,
+                    attempt_id=allocated.attempt.attempt_id,
+                )
+                replay = AnswerQuestionCapabilityResult(
+                    command_id=command.command_id,
+                    session_id=command.session_id,
+                    message_id=command.message_id,
+                    output=terminal.output,
+                    accepted_answer=terminal.accepted_answer,
+                    replay=True,
+                )
+                _validate_capability_scope(command.request_context, replay)
+                if replay.output.correlation.attempt_id != allocated.attempt.attempt_id:
+                    raise InvalidAuthorizedAskRequest(
+                        "persisted terminal result has mismatched attempt identity"
+                    )
+                return await self.persist_terminal(command, replay)
         capability = await self.capability.answer(
             AnswerQuestionCapabilityCommand(
                 request_context=command.request_context,
@@ -381,6 +453,12 @@ class PersistedAuthorizedAskService:
                 run_id=command.run_id,
                 idempotency_key=command.idempotency_key,
                 command_id=command.command_id,
+                attempt_id=(
+                    allocated.attempt.attempt_id if allocated is not None else None
+                ),
+                attempt_number=(
+                    allocated.attempt.attempt_number if allocated is not None else None
+                ),
             )
         )
         _validate_capability_scope(command.request_context, capability)
@@ -389,6 +467,11 @@ class PersistedAuthorizedAskService:
             or capability.session_id != command.session_id
             or capability.message_id != command.message_id
             or capability.output.correlation.run_id != command.run_id
+            or (
+                allocated is not None
+                and capability.output.correlation.attempt_id
+                != allocated.attempt.attempt_id
+            )
         ):
             raise InvalidAuthorizedAskRequest(
                 "answer capability returned mismatched admitted identity"
@@ -586,6 +669,7 @@ __all__ = [
     "AnswerQuestionCapability",
     "AnswerQuestionCapabilityCommand",
     "AnswerQuestionCapabilityResult",
+    "AnswerQuestionAttemptApplication",
     "AskTerminalPersistence",
     "AskCancellationCommand",
     "AskExecutionCommand",

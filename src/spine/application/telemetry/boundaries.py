@@ -6,6 +6,8 @@ from uuid import UUID
 
 from spine.application.diagnostics import DiagnosticContext
 from spine.application.persistence.answer_question_runs import (
+    AnswerQuestionAttemptAllocation,
+    AnswerQuestionAttemptAllocationResult,
     AnswerQuestionRunCommand,
     AnswerQuestionRunMessageLink,
     AnswerQuestionRunMutationResult,
@@ -161,6 +163,11 @@ class ObservedAnswerQuestionRunRepository:
 
     async def start_attempt(self, attempt: AnswerQuestionAttempt) -> AnswerQuestionAttempt:
         return await self._repository.start_attempt(attempt)
+
+    async def allocate_or_resume_attempt(
+        self, allocation: AnswerQuestionAttemptAllocation
+    ) -> AnswerQuestionAttemptAllocationResult:
+        return await self._repository.allocate_or_resume_attempt(allocation)
 
     async def complete_attempt(self, attempt: AnswerQuestionAttempt) -> AnswerQuestionAttempt:
         return await self._repository.complete_attempt(attempt)

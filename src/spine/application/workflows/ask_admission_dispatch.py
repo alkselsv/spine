@@ -469,6 +469,7 @@ class AskAdmissionWorkflowExecutor:
                 run_id=workflow_input.run_id,
                 question=command.question,
                 idempotency_key=IdempotencyKey(command.idempotency_key),
+                logical_execution_key=f"durable-ask:{workflow_input.command_id}",
             )
         )
         finished_at = self._monotonic_ns() if started_at is not None else None
