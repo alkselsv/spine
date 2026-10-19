@@ -55,6 +55,16 @@ class RealBenchmarkProductionObserver:
             else "r1-local-benchmark-report:v1"
         )
 
+    @property
+    def uses_durable_production_flow(self) -> bool:
+        """True only for the shared durable API/Temporal observer flow."""
+        from spine.evals.durable_qa_observer import DurableProductionQAAFlow
+
+        return (
+            type(self._observer) is DurableProductionQAAFlow
+            and self._observer.has_production_composition
+        )
+
     async def observe(
         self, *, resolution: RealRuntimeCaseResolution
     ) -> RealObserverResult:

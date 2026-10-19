@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
 from spine.api.composition import compose_durable_ask
 from spine.application.persistence.delivery import OutboxDeliveryRouteRegistry
+from spine.application.production_qa_composition import ProductionQAACompositionEvidence
 from spine.application.workflows.ask_admission_dispatch import (
     ASK_ADMISSION_WORKFLOW_TYPE,
 )
@@ -42,6 +45,7 @@ def test_durable_ask_composition_wires_api_outbox_and_temporal_executor(
     )
     assert len(composition.activity_bindings) == 2
     assert composition.workflow_executor is not None
+    assert composition.real_qualification_evidence is None
     assert ASK_ADMISSION_WORKFLOW_TYPE == "spine.qa.ask-admission:v1"
 
     from spine.api import main
@@ -60,6 +64,13 @@ def test_durable_ask_composition_wires_api_outbox_and_temporal_executor(
     assert received["ask_admission_service"] is composition.admission
     assert received["authorized_ask_service"] is composition.api_ask_service
     assert received["clock"] is injected_clock
+
+
+def test_production_qualification_evidence_cannot_be_forged_by_a_fake_composition() -> None:
+    fake = object()
+
+    with pytest.raises(TypeError, match="API composition root"):
+        ProductionQAACompositionEvidence(fake, object())  # type: ignore[arg-type]
 
 
 class ElapsedPort:

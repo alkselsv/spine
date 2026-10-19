@@ -106,12 +106,18 @@ def test_real_benchmark_report_serialization_has_only_metadata() -> None:
         assert forbidden not in serialized
 
 
-def test_real_benchmark_cli_writes_runner_metadata_report(
-    tmp_path, monkeypatch
+def test_real_benchmark_cli_reports_exact_missing_preflight_prerequisite(
+    tmp_path, monkeypatch, capsys
 ) -> None:
-    from types import SimpleNamespace
-
     from tests.evals.test_real_benchmark_runner import _scenario
+    from spine.evals.real_benchmark_qualification import (
+        PrerequisiteState,
+        RealBenchmarkPreflight,
+        RealBenchmarkQualificationRuntime,
+        RuntimePrerequisiteCheck,
+        RuntimePrerequisite,
+    )
+    from spine.evals.real_benchmark_runner import RealBenchmarkRunner
 
     loaded, manifest, _resolution = _scenario()
     dataset_dir = tmp_path / "dataset"
@@ -124,20 +130,35 @@ def test_real_benchmark_cli_writes_runner_metadata_report(
 
     class Mapping:
         async def resolve(self, **_kwargs):
-            raise ValueError("mapping unavailable")
+            raise AssertionError("preflight must run before mapping")
 
     class Readiness:
         async def inspect(self, **_kwargs):
-            raise AssertionError("mapping failure must precede readiness")
+            raise AssertionError("preflight must run before readiness")
+
+    class Preflight:
+        async def inspect(self):
+            return RealBenchmarkPreflight(
+                workspace_id=UUID(int=1),
+                environment_id=UUID(int=2),
+                prerequisites=tuple(
+                    RuntimePrerequisiteCheck(
+                        prerequisite=prerequisite,
+                        state=PrerequisiteState.READY,
+                    )
+                    for prerequisite in RuntimePrerequisite
+                    if prerequisite is not RuntimePrerequisite.POSTGRESQL
+                ),
+            )
 
     def runner_factory(dataset, workspace_id, environment_id):
         assert dataset is loaded
-        return real_benchmark_cli.RealBenchmarkRunner(
+        runner = RealBenchmarkRunner(
             mapping=Mapping(),
             readiness=Readiness(),
             trusted_persistence_context=object(),
-            observer=SimpleNamespace(),
-            gold=SimpleNamespace(population=None),
+            observer=object(),
+            gold=type("Gold", (), {"population": None})(),
             pins=RuntimeVersionPins(
                 observer_seam_version="observer:v1",
                 application_version="app:v1",
@@ -150,6 +171,7 @@ def test_real_benchmark_cli_writes_runner_metadata_report(
             workspace_selector=workspace_id,
             environment_selector=environment_id,
         )
+        return RealBenchmarkQualificationRuntime(runner=runner, preflight=Preflight())
 
     monkeypatch.setattr(real_benchmark_cli, "load_real_r1_dataset", lambda *_args, **_kwargs: loaded)
     monkeypatch.setattr(real_benchmark_cli, "_load_factory", lambda _spec: runner_factory)
@@ -166,11 +188,9 @@ def test_real_benchmark_cli_writes_runner_metadata_report(
         ]
     )
 
-    serialized = output.read_text(encoding="utf-8")
-    report = json.loads(serialized)
-    assert result == 0
-    assert report["structural_validation_status"] == "passed"
-    assert report["case_counts"]["mapping_unavailable"] == 1
-    assert report["run"]["runtime_pins"]["model_version"] == "model:v1"
-    for forbidden in ("case_id", "source_id", "filename", "question", "answer", "evidence_text"):
-        assert forbidden not in serialized
+    assert result == 2
+    assert not output.exists()
+    failure = json.loads(capsys.readouterr().err)
+    assert failure["schema_version"] == "r1-benchmark-qualification:v1"
+    assert failure["reason_codes"] == ["missing:postgresql"]
+    assert failure["production_observation_status"] == "not_run"

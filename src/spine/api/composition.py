@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import inspect
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import httpx
@@ -69,6 +71,9 @@ from spine.workflows.temporal.bootstrap import (
 )
 from spine.workers.composition import OutboxConsumerBinding
 
+if TYPE_CHECKING:
+    from spine.application.production_qa_composition import ProductionQAACompositionEvidence
+
 
 @dataclass(frozen=True, slots=True)
 class DurableAskComposition:
@@ -83,6 +88,114 @@ class DurableAskComposition:
     observer_admission: ObserverAskAdmission | None = None
     sessions: QASessionService | None = None
     capture_channel: CaptureChannel | None = None
+
+    @property
+    def real_qualification_evidence(self) -> ProductionQAACompositionEvidence | None:
+        """Attest the production adapter graph for the local qualification gate."""
+        from spine.application.ask_admission import PersistedAskAdmissionService
+        from spine.application.authorized_ask import PersistedAuthorizedAskService
+        from spine.application.production_qa_capability import ProductionAnswerQuestionCapability
+        from spine.application.production_qa_capability import (
+            PersistedAnswerQuestionCandidateRunner,
+            ExistingAnswerQuestionCandidateValidator,
+        )
+        from spine.application.answer_question_context import AnswerQuestionContextService
+        from spine.application.answer_disclosure import AnswerDisclosureGate
+        from spine.application.authorized_context_broker import AuthorizedContextBrokerApplicationService
+        from spine.application.qa_observation.admission import ObserverAskAdmission
+        from spine.application.qa_sessions import PersistedQASessionService
+        from spine.application.production_qa_composition import (
+            ProductionQAACompositionEvidence,
+            _issue_production_qa_composition_evidence,
+        )
+        from spine.application.answer_question_execution import AnswerQuestionExecutionBoundary
+        from spine.application.workflows.ask_admission_dispatch import AskAdmissionWorkflowExecutor
+        from spine.infrastructure.auth.trusted_context import TrustedRequestContextBoundary
+        from spine.infrastructure.persistence.postgresql import PostgreSQLTenantUnitOfWorkFactory
+        from spine.infrastructure.qa_observation_capture.http import HttpCaptureChannel
+        from spine.application.workflows.ask_admission_dispatch import (
+            AskAdmissionDispatchConsumer,
+            AskCancellationDispatchConsumer,
+        )
+        from spine.workflows.temporal.client import TemporalSdkWorkflowClient
+
+        service = self.api_ask_service
+        sessions = self.sessions
+        channel = self.capture_channel
+        observer_admission = self.observer_admission
+        executor = self.workflow_executor
+        if type(self.admission) is not PersistedAskAdmissionService:
+            return None
+        if type(self.admission.uow_factory) is not PostgreSQLTenantUnitOfWorkFactory:
+            return None
+        if type(self.admission.uow_factory._context_verifier) is not TrustedRequestContextBoundary:
+            return None
+        if type(service) is not PersistedAuthorizedAskService:
+            return None
+        if type(service.capability) is not ProductionAnswerQuestionCapability:
+            return None
+        if type(service.capability.execution) is not AnswerQuestionExecutionBoundary:
+            return None
+        capability = service.capability
+        if (
+            type(capability.context) is not AnswerQuestionContextService
+            or type(capability.context._broker) is not AuthorizedContextBrokerApplicationService
+            or type(capability.disclosure_gate) is not AnswerDisclosureGate
+            or type(capability.candidate_runner) is not PersistedAnswerQuestionCandidateRunner
+            or type(capability.validator) is not ExistingAnswerQuestionCandidateValidator
+        ):
+            return None
+        if type(sessions) is not PersistedQASessionService:
+            return None
+        if type(channel) is not HttpCaptureChannel:
+            return None
+        if type(observer_admission) is not ObserverAskAdmission:
+            return None
+        if (
+            observer_admission._admission is not self.admission
+            or observer_admission._channel is not channel
+        ):
+            return None
+        if type(executor) is not AskAdmissionWorkflowExecutor:
+            return None
+        if executor._service is not service:
+            return None
+        if self.workflow_definition is not build_ask_admission_workflow_definition():
+            return None
+        expected_activity_bindings = build_ask_admission_activity_bindings(executor)
+        if len(self.activity_bindings) != 2 or any(
+            not callable(binding)
+            or binding.__code__ is not expected.__code__
+            or inspect.getclosurevars(binding).nonlocals.get("service") is not executor
+            for binding, expected in zip(
+                self.activity_bindings,
+                expected_activity_bindings,
+                strict=True,
+            )
+        ):
+            return None
+        if len(self.delivery_bindings) != 2:
+            return None
+        admission_binding, cancellation_binding = self.delivery_bindings
+        if (
+            type(admission_binding.consumer) is not AskAdmissionDispatchConsumer
+            or type(cancellation_binding.consumer) is not AskCancellationDispatchConsumer
+        ):
+            return None
+        temporal_client = admission_binding.consumer._launcher._client
+        if (
+            type(temporal_client) is not TemporalSdkWorkflowClient
+            or cancellation_binding.consumer._client is not temporal_client
+        ):
+            return None
+        from temporalio.client import Client
+
+        if type(temporal_client._client) is not Client:
+            return None
+        return _issue_production_qa_composition_evidence(
+            self,
+            self.admission.uow_factory._context_verifier,
+        )
 
     def create_api_app(self, **dependencies: object) -> FastAPI:
         """Create the public API with the admission-only durable ask route."""
