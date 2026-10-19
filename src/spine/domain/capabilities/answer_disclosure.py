@@ -264,6 +264,7 @@ class AnswerDisclosureRecord(DefinitionModel):
     validation: AnswerDisclosureValidation | None = None
     accepted_answer: AcceptedGroundedAnswer | None = None
     safe_output: AnswerQuestionOutput | None = None
+    terminal_output: AnswerQuestionOutput | None = None
     created_at: datetime
 
     @model_validator(mode="after")
@@ -297,6 +298,24 @@ class AnswerDisclosureRecord(DefinitionModel):
             payload_environment_id = self.safe_output.scope.environment_id
             payload_run_id = self.safe_output.correlation.run_id
             payload_attempt_id = self.safe_output.correlation.attempt_id
+        if self.terminal_output is not None:
+            terminal = self.terminal_output
+            if (
+                terminal.outcome is not self.outcome
+                or terminal.scope.workspace_id != self.workspace_id
+                or terminal.scope.environment_id != self.environment_id
+                or terminal.correlation.run_id != self.run_id
+                or terminal.correlation.attempt_id != self.attempt_id
+                or (
+                    self.accepted_answer is not None
+                    and terminal.answer != self.accepted_answer.answer
+                )
+                or (
+                    self.safe_output is not None
+                    and terminal != self.safe_output
+                )
+            ):
+                raise ValueError("terminal disclosure output does not match its record")
         if (
             payload_workspace_id != self.workspace_id
             or payload_environment_id != self.environment_id
@@ -305,6 +324,12 @@ class AnswerDisclosureRecord(DefinitionModel):
         ):
             raise ValueError("disclosure result scope does not match its record")
         return self
+
+    @property
+    def output(self) -> AnswerQuestionOutput | None:
+        """Return the exact persisted terminal output when it is available."""
+
+        return self.terminal_output or self.safe_output
 
 
 def compose_answer_disclosure(

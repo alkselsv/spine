@@ -21,6 +21,7 @@ from spine.application.persistence.ask_admission import (
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.persistence.answer_question_runs import (
     AnswerQuestionAttemptAllocationResult,
+    AnswerQuestionAttemptTerminalResult,
 )
 from spine.application.qa_sessions import (
     QAMessage,
@@ -273,6 +274,14 @@ class AnswerQuestionAttemptApplication(Protocol):
         logical_execution_key: str,
     ) -> AnswerQuestionAttemptAllocationResult: ...
 
+    async def resolve_terminal_result(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        run_id: UUID,
+        attempt_id: UUID,
+    ) -> AnswerQuestionAttemptTerminalResult: ...
+
 
 @dataclass(frozen=True, slots=True)
 class AuthorizedAskResult:
@@ -415,9 +424,25 @@ class PersistedAuthorizedAskService:
                 logical_execution_key=command.logical_execution_key,
             )
             if allocated.attempt.state is not AnswerQuestionAttemptState.RUNNING:
-                # The canonical terminal attempt must be read through status;
-                # never repeat retrieval or generation for an activity replay.
-                raise AuthorizedAskServiceUnavailable()
+                terminal = await self.attempts.resolve_terminal_result(
+                    context=command.persistence_context,
+                    run_id=command.run_id,
+                    attempt_id=allocated.attempt.attempt_id,
+                )
+                replay = AnswerQuestionCapabilityResult(
+                    command_id=command.command_id,
+                    session_id=command.session_id,
+                    message_id=command.message_id,
+                    output=terminal.output,
+                    accepted_answer=terminal.accepted_answer,
+                    replay=True,
+                )
+                _validate_capability_scope(command.request_context, replay)
+                if replay.output.correlation.attempt_id != allocated.attempt.attempt_id:
+                    raise InvalidAuthorizedAskRequest(
+                        "persisted terminal result has mismatched attempt identity"
+                    )
+                return await self.persist_terminal(command, replay)
         capability = await self.capability.answer(
             AnswerQuestionCapabilityCommand(
                 request_context=command.request_context,

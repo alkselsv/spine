@@ -19,6 +19,8 @@ from spine.domain.capabilities.answer_question_runs import (
     AnswerQuestionRun,
     AnswerQuestionRunState,
 )
+from spine.domain.capabilities.answer_question import AnswerQuestionOutput
+from spine.domain.capabilities.answer_disclosure import AcceptedGroundedAnswer
 from spine.domain.capabilities.answer_question_execution import AnswerQuestionExecutionPin
 from spine.domain.context_bundles import ContextBundle
 
@@ -131,6 +133,14 @@ class AnswerQuestionAttemptAllocation:
 class AnswerQuestionAttemptAllocationResult:
     attempt: AnswerQuestionAttempt
     replay: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerQuestionAttemptTerminalResult:
+    """Canonical terminal payload associated with one persisted attempt."""
+
+    output: AnswerQuestionOutput
+    accepted_answer: AcceptedGroundedAnswer | None
 
 
 class AnswerQuestionRunRepository(Protocol):
@@ -335,6 +345,7 @@ __all__ = [
     "AnswerQuestionRunCommand",
     "AnswerQuestionAttemptAllocation",
     "AnswerQuestionAttemptAllocationResult",
+    "AnswerQuestionAttemptTerminalResult",
     "AnswerQuestionRunMutationResult",
     "AnswerQuestionRunMessageLink",
     "AnswerQuestionRunPage",
