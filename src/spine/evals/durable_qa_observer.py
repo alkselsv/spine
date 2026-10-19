@@ -24,6 +24,7 @@ from spine.application.persistence.context import (
     TrustedPersistenceContext,
 )
 from spine.application.persistence.idempotency import IdempotencyKey
+from spine.application.production_qa_composition import ProductionQAACompositionEvidence
 from spine.application.qa_observation.channel import (
     CaptureChannel,
     CaptureDisposition,
@@ -96,6 +97,21 @@ class DurableProductionQAAFlow(ProductionContractApplicationFlow):
         if self.capture_timeout <= timedelta(0) or self.capture_timeout > timedelta(seconds=30):
             raise ValueError("durable observer capture timeout must be within thirty seconds")
 
+    @property
+    def has_production_composition(self) -> bool:
+        """Require API-composition evidence and correctly bound readback."""
+        from spine.application.ask_terminal_waiter import TerminalAskWaiter
+        from spine.application.production_qa_composition import ProductionQAACompositionEvidence
+
+        evidence = getattr(self.composition, "real_qualification_evidence", None)
+        return (
+            type(evidence) is ProductionQAACompositionEvidence
+            and evidence.matches(self.composition)
+            and type(self.waiter) is TerminalAskWaiter
+            and self.waiter.admission is self.composition.admission
+            and self.waiter.sessions is self.composition.sessions
+        )
+
     async def execute(
         self, request: ProductionContractCaseRequest
     ) -> ProductionContractObservation | ProductionContractFlowResult:
@@ -116,6 +132,12 @@ class DurableProductionQAAFlow(ProductionContractApplicationFlow):
             raise ProductionContractUnavailable() from None
 
         context = authorized.context
+        evidence = getattr(composition, "real_qualification_evidence", None)
+        if type(evidence) is ProductionQAACompositionEvidence and evidence.matches(composition):
+            try:
+                context = evidence.verify_context(context)
+            except Exception:
+                raise ProductionContractAuthorizationDenied() from None
         scope = context.scope
         subject_id = context.acting_subject_id
         if (

@@ -14,6 +14,7 @@ from uuid import UUID
 
 from pydantic import Field, model_validator
 
+from spine.application.production_qa_composition import ProductionQAACompositionEvidence
 from spine.application.corpus_readiness import (
     CanonicalCorpusReadinessService,
     CorpusReadinessRequest,
@@ -253,6 +254,23 @@ class RealBenchmarkRunner:
             REAL_BENCHMARK_REPORT_V2_SCHEMA,
         }:
             raise RealBenchmarkContractError("observer report schema version is unsupported")
+
+    @property
+    def supports_real_qualification(self) -> bool:
+        """Whether the runner is bound to the trusted durable production observer."""
+        from spine.evals.real_benchmark_production import RealBenchmarkProductionObserver
+
+        return (
+            type(self._observer) is RealBenchmarkProductionObserver
+            and self._observer.uses_durable_production_flow
+        )
+
+    @property
+    def production_qualification_evidence(self) -> ProductionQAACompositionEvidence | None:
+        """Evidence bound to the production composition used by the observer."""
+        if not self.supports_real_qualification:
+            return None
+        return self._observer._observer.composition.real_qualification_evidence
 
     async def run(
         self,

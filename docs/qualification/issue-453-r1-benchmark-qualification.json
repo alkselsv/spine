@@ -1,0 +1,45 @@
+{
+  "schema_version": "r1-benchmark-qualification-evidence:v1",
+  "ticket": 453,
+  "qualification_contract": "r1-benchmark-qualification:v1",
+  "deterministic_contract": {
+    "status": "implemented",
+    "prerequisites": [
+      "postgresql",
+      "temporal",
+      "trusted_authentication",
+      "authorization_scope",
+      "production_composition",
+      "capture_channel",
+      "canonical_corpus_permission",
+      "canonical_corpus",
+      "active_projection",
+      "approved_dataset",
+      "local_inputs"
+    ],
+    "evidence": [
+      "tests/evals/test_real_benchmark_qualification.py",
+      "tests/evals/test_real_benchmark_cli.py"
+    ]
+  },
+  "real_opt_in_qualification": {
+    "status": "not_exercised",
+    "reason": "Requires separately authorized private corpus and operator-owned PostgreSQL, Temporal, trusted authorization, production composition, and capture channel configuration.",
+    "ci_execution": false,
+    "synthetic_or_fake_counts_as_real": false
+  },
+  "status_boundaries": {
+    "structural_validation": "separate",
+    "production_observation": "separate",
+    "evaluation": "separate",
+    "release_qualification": "not_run",
+    "issue_17_thresholds_asserted": false
+  },
+  "qualification_record_scope": ["trusted workspace_id", "trusted environment_id"],
+  "report_safety": {
+    "case_or_source_identifiers": false,
+    "questions_or_answers": false,
+    "evidence_or_filenames": false,
+    "credentials": false
+  }
+}

@@ -11,7 +11,9 @@ import sys
 from typing import Callable
 from uuid import UUID
 
-from spine.evals.real_benchmark_runner import RealBenchmarkRunner
+from spine.evals.real_benchmark_qualification import (
+    RealBenchmarkQualificationRuntime,
+)
 from spine.evals.real_qa_r1 import (
     LoadedRealDataset,
     RealRuntimeMappingManifest,
@@ -65,17 +67,37 @@ def main(argv: list[str] | None = None) -> int:
             manifest_path.read_text(encoding="utf-8")
         )
         factory = _load_factory(args.composition)
-        runner = factory(loaded, args.workspace_id, args.environment_id)
-        if type(runner) is not RealBenchmarkRunner:
-            raise ValueError("composition factory did not return a RealBenchmarkRunner")
-        report = asyncio.run(runner.run(loaded=loaded, manifest=manifest))
+        runtime = factory(loaded, args.workspace_id, args.environment_id)
+        if type(runtime) is not RealBenchmarkQualificationRuntime:
+            raise ValueError(
+                "composition factory did not return a qualified production runtime"
+            )
+        qualification, report = asyncio.run(runtime.run(loaded=loaded, manifest=manifest))
     except Exception:
         print(
             "real benchmark could not run: check the selected real inputs and local runtime composition",
             file=sys.stderr,
         )
         return 2
-    serialized = json.dumps(report.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n"
+    if report is None:
+        if qualification is None:
+            print(
+                "real benchmark unavailable: trusted runtime preflight did not return a valid report",
+                file=sys.stderr,
+            )
+            return 2
+        sys.stderr.write(
+            json.dumps(qualification.model_dump(mode="json"), ensure_ascii=False) + "\n"
+        )
+        return 2
+    serialized = json.dumps(
+        {
+            "qualification": qualification.model_dump(mode="json"),
+            "benchmark": report.model_dump(mode="json"),
+        },
+        ensure_ascii=False,
+        indent=2,
+    ) + "\n"
     if args.output is None:
         sys.stdout.write(serialized)
     else:
