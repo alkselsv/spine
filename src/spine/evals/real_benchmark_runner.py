@@ -66,7 +66,7 @@ class RealObserverResult(DefinitionModel):
     worker_execution_elapsed_ns: int | None = Field(default=None, ge=0)
     worker_execution_attempt_id: UUID | None = None
     execution_record_schema_version: Literal[
-        "r1-case-execution-record:v2"
+        "r1-case-execution-record:v1", "r1-case-execution-record:v2"
     ] | None = None
     failure_category: str | None = Field(
         default=None,
@@ -81,11 +81,16 @@ class RealObserverResult(DefinitionModel):
                 raise RealBenchmarkContractError("observer did not return a typed observation")
         elif self.status != "partial" and self.observation is not None:
             raise RealBenchmarkContractError("unavailable observer result cannot carry observation")
-        if self.execution_record_schema_version is not None and (
+        if self.execution_record_schema_version == "r1-case-execution-record:v2" and (
             self.observer_elapsed_ms is None
             and self.status == "observed"
         ):
             raise RealBenchmarkContractError("observed v2 result requires observer elapsed time")
+        if self.execution_record_schema_version == "r1-case-execution-record:v1" and (
+            self.worker_execution_elapsed_ns is not None
+            or self.worker_execution_attempt_id is not None
+        ):
+            raise RealBenchmarkContractError("v1 execution record cannot carry worker timing")
         if (self.worker_execution_elapsed_ns is None) != (
             self.worker_execution_attempt_id is None
         ):
@@ -176,7 +181,7 @@ class RealBenchmarkReport(DefinitionModel):
 
 
 class RealBenchmarkExecutionTiming(DefinitionModel):
-    """Identity-free v2 timing metadata for one observer invocation."""
+    """V2 timing metadata without case or source identities."""
 
     observer_elapsed_ms: int | None = Field(default=None, ge=0)
     worker_execution_elapsed_ns: int | None = Field(default=None, ge=0)
@@ -448,9 +453,10 @@ class RealBenchmarkRunner:
                         )
                     )
                 elif result.execution_record_schema_version is not None:
-                    raise RealBenchmarkContractError(
-                        "v1 report cannot consume a versioned execution record"
-                    )
+                    if result.execution_record_schema_version != "r1-case-execution-record:v1":
+                        raise RealBenchmarkContractError(
+                            "v1 report cannot consume this execution record version"
+                        )
             except Exception:
                 counts["failed"] += 1
                 failures += 1

@@ -5,8 +5,10 @@ from uuid import UUID
 import pytest
 
 from spine.evals.production_contract import (
+    CASE_EXECUTION_RECORD_SCHEMA,
     CASE_EXECUTION_RECORD_V2_SCHEMA,
     CaseExecutionDisposition,
+    CaseExecutionRecord,
     CaseExecutionRecordV2,
 )
 from spine.evals.real_benchmark_production import (
@@ -82,6 +84,50 @@ async def test_production_adapter_returns_validated_observation_and_distinct_v2_
         worker_execution_attempt_id=attempt_id,
         execution_record_schema_version=CASE_EXECUTION_RECORD_V2_SCHEMA,
     )
+
+
+@pytest.mark.asyncio
+async def test_production_adapter_preserves_v1_execution_record_compatibility() -> None:
+    _loaded, _manifest, resolution = _scenario()
+    source_case = load_r1_dataset().cases[1]
+    case = source_case.model_copy(
+        update={
+            "case_id": resolution.request.case_id,
+            "question": resolution.request.question,
+            "workspace_id": resolution.request.workspace_id,
+            "environment_id": resolution.request.environment_id,
+            "principal_id": resolution.request.principal_id,
+            "available_revision_ids": resolution.request.available_revision_ids,
+        }
+    )
+    observation = _safe_observation(case)
+    record = CaseExecutionRecord(
+        case_id=resolution.request.case_id,
+        workspace_id=resolution.request.workspace_id,
+        environment_id=resolution.request.environment_id,
+        disposition=CaseExecutionDisposition.OBSERVED,
+        observation=observation,
+        correlation_id=(
+            observation.question.correlation.correlation_id
+            or observation.question.correlation.trace_id
+        ),
+        observer_elapsed_ms=321,
+    )
+
+    class Observer:
+        async def observe(self, *, request):
+            assert request is resolution.request
+            return record
+
+    adapter = RealBenchmarkProductionObserver(observer=Observer())
+    result = await adapter.observe(resolution=resolution)
+
+    assert adapter.report_schema_version == "r1-local-benchmark-report:v1"
+    assert result.observation == observation
+    assert result.observer_elapsed_ms == 321
+    assert result.worker_execution_elapsed_ns is None
+    assert result.worker_execution_attempt_id is None
+    assert result.execution_record_schema_version == CASE_EXECUTION_RECORD_SCHEMA
 
 
 @pytest.mark.asyncio

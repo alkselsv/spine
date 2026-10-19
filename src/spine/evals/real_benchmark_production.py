@@ -5,8 +5,10 @@ from __future__ import annotations
 from typing import Protocol
 
 from spine.evals.production_contract import (
+    CASE_EXECUTION_RECORD_SCHEMA,
     CASE_EXECUTION_RECORD_V2_SCHEMA,
     CaseExecutionDisposition,
+    CaseExecutionRecord,
     CaseExecutionRecordV2,
     ProductionContractCaseRequest,
     ProductionContractObserver,
@@ -20,6 +22,10 @@ from spine.evals.real_qa_r1 import RealRuntimeCaseResolution
 
 
 class _ProductionObserverPort(Protocol):
+    async def observe(
+        self, *, request: ProductionContractCaseRequest
+    ) -> CaseExecutionRecord: ...
+
     async def observe_v2(
         self, *, request: ProductionContractCaseRequest
     ) -> CaseExecutionRecordV2: ...
@@ -32,10 +38,14 @@ class RealBenchmarkProductionObserver:
     never invokes retrieval, generation, persistence, or disclosure itself.
     """
 
-    report_schema_version = REAL_BENCHMARK_REPORT_V2_SCHEMA
-
     def __init__(self, *, observer: ProductionContractObserver | _ProductionObserverPort) -> None:
         self._observer = observer
+        self._use_v2 = callable(getattr(observer, "observe_v2", None))
+        self.report_schema_version = (
+            REAL_BENCHMARK_REPORT_V2_SCHEMA
+            if self._use_v2
+            else "r1-local-benchmark-report:v1"
+        )
 
     async def observe(
         self, *, resolution: RealRuntimeCaseResolution
@@ -43,11 +53,17 @@ class RealBenchmarkProductionObserver:
         if type(resolution) is not RealRuntimeCaseResolution:
             raise RealBenchmarkContractError("production benchmark resolution is invalid")
         request = resolution.request
-        record = await self._observer.observe_v2(request=request)
-        if type(record) is not CaseExecutionRecordV2:
-            raise RealBenchmarkContractError("production observer did not return a v2 record")
-        record = CaseExecutionRecordV2.model_validate(record.model_dump())
-        if record.schema_version != CASE_EXECUTION_RECORD_V2_SCHEMA:
+        record_value = (
+            await self._observer.observe_v2(request=request)
+            if self._use_v2
+            else await self._observer.observe(request=request)
+        )
+        schema_version = getattr(record_value, "schema_version", None)
+        if schema_version == CASE_EXECUTION_RECORD_V2_SCHEMA and type(record_value) is CaseExecutionRecordV2:
+            record = CaseExecutionRecordV2.model_validate(record_value.model_dump())
+        elif schema_version == CASE_EXECUTION_RECORD_SCHEMA and type(record_value) is CaseExecutionRecord:
+            record = CaseExecutionRecord.model_validate(record_value.model_dump())
+        else:
             raise RealBenchmarkContractError("production observer record schema is unsupported")
         if (
             record.case_id != request.case_id
@@ -94,8 +110,16 @@ class RealBenchmarkProductionObserver:
                 record.failure_category.value if record.failure_category is not None else None
             ),
             observer_elapsed_ms=record.observer_elapsed_ms,
-            worker_execution_elapsed_ns=record.worker_execution_elapsed_ns,
-            worker_execution_attempt_id=record.worker_execution_attempt_id,
+            worker_execution_elapsed_ns=(
+                record.worker_execution_elapsed_ns
+                if isinstance(record, CaseExecutionRecordV2)
+                else None
+            ),
+            worker_execution_attempt_id=(
+                record.worker_execution_attempt_id
+                if isinstance(record, CaseExecutionRecordV2)
+                else None
+            ),
             execution_record_schema_version=record.schema_version,
         )
 
