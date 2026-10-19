@@ -141,6 +141,7 @@ answer_question_attempts = Table(
     Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("run_id", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("attempt_number", Integer, nullable=False),
+    Column("logical_execution_key", Text, nullable=True),
     Column("state", Text, nullable=False),
     Column("outcome", Text, nullable=True),
     Column("context_bundle_id", PostgreSQLUUID(as_uuid=True), nullable=True),

@@ -79,6 +79,7 @@ class PersistedAskAdmissionService:
             if link is None or link.session_id != result.session_id or link.message_id != result.message_id:
                 raise ValueError("Ask admission status lineage is invalid")
             attempt_id = None
+            attempt_number = None
             if run.state is AnswerQuestionRunState.RUNNING:
                 attempts = await uow.answer_question_runs.list_attempts(run.run_id)
                 active_attempts = tuple(
@@ -90,6 +91,15 @@ class PersistedAskAdmissionService:
                     raise ValueError("Ask admission status attempt lineage is ambiguous")
                 if active_attempts:
                     attempt_id = active_attempts[0].attempt_id
+                    attempt_number = active_attempts[0].attempt_number
+            elif run.final_attempt_id is not None:
+                final_attempt = await uow.answer_question_runs.resolve_attempt(
+                    run.final_attempt_id
+                )
+                if final_attempt.run_id != run.run_id:
+                    raise ValueError("Ask admission status attempt lineage is invalid")
+                attempt_id = final_attempt.attempt_id
+                attempt_number = final_attempt.attempt_number
             await uow.commit()
         if run.state is AnswerQuestionRunState.COMPLETED:
             return AskAdmissionStatus(
@@ -100,6 +110,7 @@ class PersistedAskAdmissionService:
                 status=AskAdmissionLifecycle.TERMINAL,
                 outcome=run.outcome,
                 attempt_id=run.final_attempt_id,
+                attempt_number=attempt_number,
             )
         return AskAdmissionStatus(
             command_id=result.command_id,
@@ -112,6 +123,7 @@ class PersistedAskAdmissionService:
                 else AskAdmissionLifecycle.ADMITTED
             ),
             attempt_id=attempt_id,
+            attempt_number=attempt_number,
         )
 
     async def request_cancellation(

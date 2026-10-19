@@ -7,7 +7,10 @@ import pytest
 
 from spine.application.diagnostics import DiagnosticContext
 from spine.domain.agents import AgentResult, AgentRunStatus
-from spine.application.persistence.answer_question_runs import AnswerQuestionRunCommand
+from spine.application.persistence.answer_question_runs import (
+    AnswerQuestionAttemptAllocation,
+    AnswerQuestionRunCommand,
+)
 from spine.application.persistence.errors import (
     AnswerQuestionAttemptImmutableError,
     AnswerQuestionRunConflictError,
@@ -103,8 +106,14 @@ async def test_answer_question_run_create_and_replay_are_canonical_and_idempoten
     workspace_id = synthetic_uuid(4110)
     environment_id = synthetic_uuid(4111)
     await persist_scope(persistence_adapter, workspace_id, environment_id)
-    command = run_command(run_record(workspace_id, environment_id))
     context = qa_context(persistence_adapter, workspace_id, environment_id)
+    command = run_command(
+        run_record(
+            workspace_id,
+            environment_id,
+            diagnostic_context=DiagnosticContext(trace_id=context.trace_id),
+        )
+    )
 
     async with persistence_adapter.uow_factory(context) as uow:
         created = await uow.answer_question_runs.create_run(command)
@@ -218,6 +227,113 @@ async def test_answer_question_run_conflicting_command_key_fails_closed(
     with pytest.raises(IdempotencyConflictError):
         async with persistence_adapter.uow_factory(context) as uow:
             await uow.answer_question_runs.create_run(run_command(changed))
+
+
+@pytest.mark.asyncio
+async def test_answer_question_attempt_allocation_resumes_and_orders_logical_attempts(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(4124)
+    environment_id = synthetic_uuid(4125)
+    await persist_scope(persistence_adapter, workspace_id, environment_id)
+    command = run_command(run_record(workspace_id, environment_id))
+    context = qa_context(persistence_adapter, workspace_id, environment_id)
+    first_request = AnswerQuestionAttemptAllocation(
+        run_id=command.run.run_id,
+        logical_execution_key="durable-ask:logical-1",
+        execution_pin=_pin(workspace_id, environment_id),
+        input_artifact_ids=command.run.input_artifact_ids,
+    )
+
+    async with persistence_adapter.uow_factory(context) as uow:
+        await uow.answer_question_runs.create_run(command)
+        first = await uow.answer_question_runs.allocate_or_resume_attempt(first_request)
+        await uow.commit()
+    async with persistence_adapter.uow_factory(context) as uow:
+        replay = await uow.answer_question_runs.allocate_or_resume_attempt(first_request)
+        await uow.commit()
+
+    assert first.replay is False
+    assert replay.replay is True
+    assert replay.attempt == first.attempt
+    assert first.attempt.attempt_number == 1
+    assert first.attempt.logical_execution_key == "durable-ask:logical-1"
+
+    with pytest.raises(AnswerQuestionRunConflictError):
+        async with persistence_adapter.uow_factory(context) as uow:
+            await uow.answer_question_runs.allocate_or_resume_attempt(
+                AnswerQuestionAttemptAllocation(
+                    run_id=command.run.run_id,
+                    logical_execution_key="durable-ask:logical-1",
+                    execution_pin=_pin(workspace_id, environment_id),
+                    input_artifact_ids=(synthetic_uuid(4126),),
+                )
+            )
+
+    failed = first.attempt.complete(
+        state=AnswerQuestionAttemptState.FAILED,
+        outcome=AnswerQuestionOutcome.FAILED,
+        reason=SafeAttemptReason.PROVIDER_UNAVAILABLE,
+        usage=AnswerQuestionUsage(),
+        terminal_event=AnswerQuestionAttemptEvent(
+            event_id=synthetic_uuid(4127),
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            environment=EnvironmentKind.PRODUCTION,
+            kind=AnswerQuestionAttemptEventKind.FAILED,
+            reason=SafeAttemptReason.PROVIDER_UNAVAILABLE,
+            occurred_at=first.attempt.started_at + timedelta(seconds=1),
+        ),
+    )
+    async with persistence_adapter.uow_factory(context) as uow:
+        await uow.answer_question_runs.complete_attempt(failed)
+        second = await uow.answer_question_runs.allocate_or_resume_attempt(
+            AnswerQuestionAttemptAllocation(
+                run_id=command.run.run_id,
+                logical_execution_key="durable-ask:logical-2",
+                execution_pin=_pin(workspace_id, environment_id),
+                input_artifact_ids=command.run.input_artifact_ids,
+            )
+        )
+        await uow.commit()
+
+    assert second.attempt.attempt_number == 2
+    assert second.attempt.attempt_id != first.attempt.attempt_id
+
+
+@pytest.mark.asyncio
+async def test_answer_question_attempt_allocation_rejects_cancellation_winner(
+    persistence_adapter: PersistenceAdapter,
+) -> None:
+    workspace_id = synthetic_uuid(4128)
+    environment_id = synthetic_uuid(4129)
+    await persist_scope(persistence_adapter, workspace_id, environment_id)
+    context = qa_context(persistence_adapter, workspace_id, environment_id)
+    command = run_command(
+        run_record(
+            workspace_id,
+            environment_id,
+            diagnostic_context=DiagnosticContext(trace_id=context.trace_id),
+        )
+    )
+    async with persistence_adapter.uow_factory(context) as uow:
+        await uow.answer_question_runs.create_run(command)
+        await uow.answer_question_runs.request_cancellation(
+            run_id=command.run.run_id,
+            requested_at=command.run.created_at + timedelta(seconds=1),
+        )
+        await uow.commit()
+
+    with pytest.raises(AnswerQuestionRunConflictError):
+        async with persistence_adapter.uow_factory(context) as uow:
+            await uow.answer_question_runs.allocate_or_resume_attempt(
+                AnswerQuestionAttemptAllocation(
+                    run_id=command.run.run_id,
+                    logical_execution_key="durable-ask:cancelled",
+                    execution_pin=_pin(workspace_id, environment_id),
+                    input_artifact_ids=command.run.input_artifact_ids,
+                )
+            )
 
 
 @pytest.mark.asyncio

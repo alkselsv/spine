@@ -369,6 +369,12 @@ class AnswerQuestionAttempt(ValidatedDefinitionModel):
     attempt_id: UUID
     run_id: UUID
     attempt_number: int = Field(ge=1)
+    # Null identifies attempts written through the legacy caller-supplied
+    # ``start_attempt`` seam. New durable executions receive an opaque key from
+    # their orchestration boundary and persistence owns its identity.
+    logical_execution_key: str | None = Field(
+        default=None, min_length=1, max_length=255, pattern=r"^[A-Za-z0-9._:-]+$"
+    )
     workspace_id: UUID
     environment_id: UUID
     environment: EnvironmentKind
@@ -394,6 +400,7 @@ class AnswerQuestionAttempt(ValidatedDefinitionModel):
         attempt_id: UUID,
         run: AnswerQuestionRun,
         attempt_number: int,
+        logical_execution_key: str | None = None,
         execution_pin: AnswerQuestionExecutionPin,
         input_artifact_ids: tuple[UUID, ...],
         diagnostic_context: DiagnosticIdentity,
@@ -403,6 +410,7 @@ class AnswerQuestionAttempt(ValidatedDefinitionModel):
             attempt_id=attempt_id,
             run_id=run.run_id,
             attempt_number=attempt_number,
+            logical_execution_key=logical_execution_key,
             workspace_id=run.workspace_id,
             environment_id=run.environment_id,
             environment=run.environment,

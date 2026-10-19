@@ -19,6 +19,7 @@ from spine.domain.capabilities.answer_question_runs import (
     AnswerQuestionRun,
     AnswerQuestionRunState,
 )
+from spine.domain.capabilities.answer_question_execution import AnswerQuestionExecutionPin
 from spine.domain.context_bundles import ContextBundle
 
 
@@ -101,6 +102,37 @@ class AnswerQuestionRunMutationResult:
     result_reference: OpaqueResultReference
 
 
+@dataclass(frozen=True, slots=True)
+class AnswerQuestionAttemptAllocation:
+    """Immutable lineage for one intended domain attempt.
+
+    The key is opaque and retry-stable. It must never contain a question,
+    answer, retrieval payload, or another protected value.
+    """
+
+    run_id: UUID
+    logical_execution_key: str
+    execution_pin: AnswerQuestionExecutionPin
+    input_artifact_ids: tuple[UUID, ...]
+
+    def __post_init__(self) -> None:
+        key = self.logical_execution_key
+        if (
+            self.run_id.int == 0
+            or not 1 <= len(key) <= 255
+            or any(not (character.isalnum() or character in "._:-") for character in key)
+            or any(identifier.int == 0 for identifier in self.input_artifact_ids)
+            or len(set(self.input_artifact_ids)) != len(self.input_artifact_ids)
+        ):
+            raise ValueError("Q&A attempt allocation is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerQuestionAttemptAllocationResult:
+    attempt: AnswerQuestionAttempt
+    replay: bool
+
+
 class AnswerQuestionRunRepository(Protocol):
     async def create_run(
         self, command: AnswerQuestionRunCommand
@@ -129,6 +161,10 @@ class AnswerQuestionRunRepository(Protocol):
     async def start_attempt(
         self, attempt: AnswerQuestionAttempt
     ) -> AnswerQuestionAttempt: ...
+
+    async def allocate_or_resume_attempt(
+        self, allocation: AnswerQuestionAttemptAllocation
+    ) -> AnswerQuestionAttemptAllocationResult: ...
 
     async def complete_attempt(
         self, attempt: AnswerQuestionAttempt
@@ -181,6 +217,7 @@ def validate_answer_question_attempt_completion(
         "attempt_id",
         "run_id",
         "attempt_number",
+        "logical_execution_key",
         "workspace_id",
         "environment_id",
         "environment",
@@ -296,6 +333,8 @@ __all__ = [
     "ANSWER_QUESTION_RUN_OPERATION_SCHEMA_VERSION",
     "ANSWER_QUESTION_RUN_RESULT_TYPE",
     "AnswerQuestionRunCommand",
+    "AnswerQuestionAttemptAllocation",
+    "AnswerQuestionAttemptAllocationResult",
     "AnswerQuestionRunMutationResult",
     "AnswerQuestionRunMessageLink",
     "AnswerQuestionRunPage",

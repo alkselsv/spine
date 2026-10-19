@@ -128,6 +128,8 @@ from spine.application.persistence.answer_question_runs import (
     ANSWER_QUESTION_RUN_OPERATION_SCHEMA_VERSION,
     ANSWER_QUESTION_RUN_RESULT_TYPE,
     AnswerQuestionRunCommand,
+    AnswerQuestionAttemptAllocation,
+    AnswerQuestionAttemptAllocationResult,
     AnswerQuestionRunMutationResult,
     AnswerQuestionRunMessageLink,
     AnswerQuestionRunPage,
@@ -1027,6 +1029,7 @@ class _PostgreSQLAnswerQuestionRunRepository:
             "environment_id": attempt.environment_id,
             "run_id": attempt.run_id,
             "attempt_number": attempt.attempt_number,
+            "logical_execution_key": attempt.logical_execution_key,
             "state": attempt.state.value,
             "outcome": attempt.outcome.value if attempt.outcome is not None else None,
             "context_bundle_id": bundle.bundle_id if bundle is not None else None,
@@ -1072,6 +1075,7 @@ class _PostgreSQLAnswerQuestionRunRepository:
                 or attempt.environment_id != row["environment_id"]
                 or attempt.run_id != row["run_id"]
                 or attempt.attempt_number != row["attempt_number"]
+                or attempt.logical_execution_key != row["logical_execution_key"]
                 or attempt.state.value != row["state"]
                 or (attempt.outcome.value if attempt.outcome is not None else None)
                 != row["outcome"]
@@ -1499,6 +1503,65 @@ class _PostgreSQLAnswerQuestionRunRepository:
             insert(_ANSWER_QUESTION_ATTEMPTS).values(self._attempt_values(attempt))
         )
         return attempt
+
+    async def allocate_or_resume_attempt(
+        self, allocation: AnswerQuestionAttemptAllocation
+    ) -> AnswerQuestionAttemptAllocationResult:
+        self._uow._guard_active()
+        scope = self._scope()
+        run_row = await self._find_run(run_id=allocation.run_id, for_update=True)
+        if run_row is None:
+            await self._uow._fail(
+                AnswerQuestionRunNotFoundError("Q&A run is unavailable.")
+            )
+        run = self._restore_run(run_row)
+        result = await self._uow._execute(
+            select(_ANSWER_QUESTION_ATTEMPTS).where(
+                _ANSWER_QUESTION_ATTEMPTS.c.workspace_id == scope.workspace_id,
+                _ANSWER_QUESTION_ATTEMPTS.c.environment_id == scope.environment_id,
+                _ANSWER_QUESTION_ATTEMPTS.c.run_id == allocation.run_id,
+                _ANSWER_QUESTION_ATTEMPTS.c.logical_execution_key
+                == allocation.logical_execution_key,
+            )
+        )
+        existing_row = result.mappings().one_or_none()
+        if existing_row is not None:
+            existing = self._restore_attempt(existing_row)
+            if (
+                existing.execution_pin != allocation.execution_pin
+                or existing.input_artifact_ids != allocation.input_artifact_ids
+            ):
+                await self._uow._fail(
+                    AnswerQuestionRunConflictError(
+                        "Q&A attempt allocation lineage conflicts with history."
+                    )
+                )
+            return AnswerQuestionAttemptAllocationResult(attempt=existing, replay=True)
+        attempts = await self.list_attempts(allocation.run_id)
+        if (
+            run.state is not AnswerQuestionRunState.RUNNING
+            or run.cancellation_requested_at is not None
+            or any(
+                attempt.state is AnswerQuestionAttemptState.RUNNING
+                and attempt.logical_execution_key is not None
+                for attempt in attempts
+            )
+        ):
+            await self._uow._fail(
+                AnswerQuestionRunConflictError("Q&A run cannot allocate an attempt.")
+            )
+        attempt = AnswerQuestionAttempt.start(
+            attempt_id=uuid4(),
+            run=run,
+            attempt_number=max((item.attempt_number for item in attempts), default=0) + 1,
+            logical_execution_key=allocation.logical_execution_key,
+            execution_pin=allocation.execution_pin,
+            input_artifact_ids=allocation.input_artifact_ids,
+            diagnostic_context=run.diagnostic_context,
+            started_at=datetime.now(timezone.utc),
+        )
+        stored = await self.start_attempt(attempt)
+        return AnswerQuestionAttemptAllocationResult(attempt=stored, replay=False)
 
     async def complete_attempt(self, attempt: AnswerQuestionAttempt) -> AnswerQuestionAttempt:
         self._uow._guard_active()

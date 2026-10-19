@@ -20,6 +20,7 @@ def test_durable_ask_composition_wires_api_outbox_and_temporal_executor(
         capability=object(),  # type: ignore[arg-type]
         sessions=object(),  # type: ignore[arg-type]
         admission=object(),  # type: ignore[arg-type]
+        attempts=object(),  # type: ignore[arg-type]
         command_loader=object(),  # type: ignore[arg-type]
         persistence_context_factory=lambda _workflow: object(),  # type: ignore[arg-type]
         temporal_client=object(),  # type: ignore[arg-type]
