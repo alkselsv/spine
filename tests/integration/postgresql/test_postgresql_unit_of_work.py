@@ -4674,6 +4674,57 @@ async def _assert_postgresql_runtime_role_is_rls_restricted(
     }
 
 
+async def _assert_postgresql_runtime_role_cannot_read_terminalization_case(
+    postgresql_contract_database: PostgreSQLContractDatabase,
+    case,
+    *,
+    workspace_id: UUID,
+    environment_id: UUID,
+) -> None:
+    """Probe RLS directly, without application scope predicates."""
+    engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    try:
+        async with engine.begin() as connection:
+            identity = await connection.scalar(text("SELECT current_user"))
+            await connection.execute(
+                text(
+                    "SELECT set_config('spine.workspace_id', :workspace_id, true), "
+                    "set_config('spine.environment_id', :environment_id, true)"
+                ),
+                {
+                    "workspace_id": str(workspace_id),
+                    "environment_id": str(environment_id),
+                },
+            )
+            visible_rows = await connection.execute(
+                text(
+                    "SELECT "
+                    "(SELECT count(*) FROM spine.answer_question_runs WHERE run_id = :run_id), "
+                    "(SELECT count(*) FROM spine.answer_question_attempts WHERE attempt_id = :attempt_id), "
+                    "(SELECT count(*) FROM spine.qa_session_versions WHERE session_id = :session_id), "
+                    "(SELECT count(*) FROM spine.qa_message_versions WHERE message_id = :message_id), "
+                    "(SELECT count(*) FROM spine.qa_answer_disclosure_records WHERE request_id = :request_id)"
+                ),
+                {
+                    "run_id": case.run_id,
+                    "attempt_id": case.attempt_id,
+                    "session_id": case.session_id,
+                    "message_id": case.message_id,
+                    "request_id": case.disclosure.request_id,
+                },
+            )
+            counts = visible_rows.one()
+    finally:
+        await engine.dispose()
+
+    assert identity == RUNTIME_ROLE
+    assert counts == (0, 0, 0, 0, 0)
+
+
 async def _assert_postgresql_terminalization_case_running(adapter: PersistenceAdapter, case) -> None:
     async with adapter.uow_factory(case.context) as uow:
         run = await uow.answer_question_runs.resolve_run(case.run_id)
@@ -5021,6 +5072,12 @@ async def test_postgresql_terminalizer_enforces_runtime_rls_for_cross_scope(
         )
     assert "synthetic private question" not in str(error.value)
     assert str(case.workspace_id) not in str(error.value)
+    await _assert_postgresql_runtime_role_cannot_read_terminalization_case(
+        postgresql_contract_database,
+        case,
+        workspace_id=other_workspace_id,
+        environment_id=other_environment_id,
+    )
     await _assert_postgresql_terminalization_case_running(postgresql_adapter, case)
 
     result = await case.terminalizer.terminalize(
