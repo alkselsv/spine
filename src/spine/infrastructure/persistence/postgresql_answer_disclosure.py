@@ -11,6 +11,10 @@ from sqlalchemy.dialects.postgresql import insert
 
 from spine.application.answer_disclosure import AnswerDisclosureIdempotencyConflict
 from spine.domain.capabilities import AcceptedGroundedAnswer, AnswerDisclosureRecord
+from spine.domain.capabilities.answer_disclosure import (
+    execution_checkpoint_for_disclosure,
+    parse_answer_disclosure_record,
+)
 from spine.infrastructure.persistence.postgresql_mappings import (
     qa_answer_disclosure_deliveries,
     qa_answer_disclosure_records,
@@ -65,7 +69,11 @@ class PostgreSQLAnswerDisclosureRepository:
             request_id=record.request_id,
         )
         if current is not None:
-            if current.request_digest != record.request_digest:
+            if (
+                current.request_digest != record.request_digest
+                or execution_checkpoint_for_disclosure(current)
+                != execution_checkpoint_for_disclosure(record)
+            ):
                 raise AnswerDisclosureIdempotencyConflict(
                     "Disclosure request conflicts with an immutable result."
                 )
@@ -96,7 +104,11 @@ class PostgreSQLAnswerDisclosureRepository:
             request_id=record.request_id,
         )
         assert stored is not None
-        if stored.request_digest != record.request_digest:
+        if (
+            stored.request_digest != record.request_digest
+            or execution_checkpoint_for_disclosure(stored)
+            != execution_checkpoint_for_disclosure(record)
+        ):
             raise AnswerDisclosureIdempotencyConflict(
                 "Disclosure request conflicts with an immutable result."
             )
@@ -175,7 +187,7 @@ class PostgreSQLAnswerDisclosureRepository:
             )
         )
         for row in result.mappings().all():
-            payload = AnswerDisclosureRecord.model_validate(row["payload"])
+            payload = parse_answer_disclosure_record(row["payload"])
             accepted = payload.accepted_answer
             if accepted is not None and any(
                 citation.citation_id == citation_id
@@ -186,7 +198,7 @@ class PostgreSQLAnswerDisclosureRepository:
 
     @staticmethod
     def _restore(row: Any) -> AnswerDisclosureRecord:
-        payload = AnswerDisclosureRecord.model_validate(row["payload"])
+        payload = parse_answer_disclosure_record(row["payload"])
         if (
             payload.workspace_id != row["workspace_id"]
             or payload.environment_id != row["environment_id"]

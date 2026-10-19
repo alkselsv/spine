@@ -20,6 +20,7 @@ from spine.agents.runtime.artifacts import (
     CapabilityArtifactSchema,
     InvocationOutputCheckpoint,
     InvocationReplayRecord,
+    PersistedAgentInvocationResult,
 )
 from spine.agents.runtime.contracts import (
     AgentExecutionContext,
@@ -144,6 +145,23 @@ class LocalAgentRuntime:
             audit_writer=audit_writer,
             clock=clock,
             operational_observer=operational_observer,
+        )
+
+    async def invoke_with_reference(
+        self,
+        version: AgentVersion,
+        invocation: AgentInvocation,
+    ) -> PersistedAgentInvocationResult:
+        """Return the exact runtime-owned invocation reference with its result."""
+
+        result = await self.invoke(version, invocation)
+        return PersistedAgentInvocationResult(
+            result=result,
+            reference=OpaqueResultReference(
+                result_type="agent_invocation",
+                result_id=self._context.agent_run_id,
+                schema_version=AGENT_INVOCATION_RECORD_SCHEMA_VERSION,
+            ),
         )
 
     async def invoke(

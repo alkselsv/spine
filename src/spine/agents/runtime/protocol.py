@@ -5,6 +5,7 @@ from uuid import UUID
 
 from spine.agents.runtime.cancellation import CancellationScope
 from spine.agents.runtime.contracts import AgentExecutionContext, AgentRequest, AgentResponse
+from spine.agents.runtime.artifacts import PersistedAgentInvocationResult
 from spine.domain.agents.contracts import AgentInvocation, AgentResult
 from spine.domain.agents.models import AgentVersion
 
@@ -31,6 +32,12 @@ class AgentRuntime(Protocol):
         version: AgentVersion,
         invocation: AgentInvocation,
     ) -> AgentResult: ...
+
+    async def invoke_with_reference(
+        self,
+        version: AgentVersion,
+        invocation: AgentInvocation,
+    ) -> PersistedAgentInvocationResult: ...
 
     async def cancel(
         self,

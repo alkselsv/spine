@@ -502,8 +502,39 @@ class PersistedQASessionService:
         idempotency_key: IdempotencyKey,
         disclosure_dependencies: DisclosureDependencySet | None = None,
     ) -> QAMutationResult[QAMessage]:
+        return await self.complete_message_in_transaction(
+            repository=self.repository,
+            context=context,
+            session_id=session_id,
+            message_id=message_id,
+            answer=answer,
+            outcome=outcome,
+            cancelled=cancelled,
+            idempotency_key=idempotency_key,
+            disclosure_dependencies=disclosure_dependencies,
+        )
+
+    async def complete_message_in_transaction(
+        self,
+        *,
+        repository: QASessionRepository,
+        context: TrustedPersistenceContext,
+        session_id: UUID,
+        message_id: UUID,
+        answer: str | None,
+        outcome: AnswerQuestionOutcome,
+        cancelled: bool,
+        idempotency_key: IdempotencyKey,
+        disclosure_dependencies: DisclosureDependencySet | None = None,
+    ) -> QAMutationResult[QAMessage]:
+        """Complete a message using a caller-owned repository transaction.
+
+        The same command digest, command identity and repository checks used by
+        the ordinary service path are retained; the caller controls commit.
+        """
+
         workspace_id, environment_id = _scope(context)
-        return await self.repository.complete_message(
+        return await repository.complete_message(
             workspace_id=workspace_id, environment_id=environment_id,
             session_id=session_id, message_id=message_id, answer=answer,
             disclosure_dependencies=disclosure_dependencies,

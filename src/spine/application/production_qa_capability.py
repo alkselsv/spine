@@ -36,8 +36,10 @@ from spine.application.authorized_ask import (
     AuthorizedAskServiceUnavailable,
 )
 from spine.application.persistence.context import EnvironmentScope
+from spine.application.persistence.answer_question_runs import CanonicalQATerminalizationReceipt
 from spine.agents.runtime import ArtifactPersistence
 from spine.domain.capabilities import (
+    AcceptedAnswerPresentation,
     AcceptedGroundedAnswer,
     AnswerAuthorizationOutcome,
     AnswerQuestionInput,
@@ -51,6 +53,10 @@ from spine.domain.capabilities import (
     RetrievalOutcome,
     RunAttemptCorrelation,
 )
+from spine.domain.capabilities.answer_disclosure import (
+    AnswerDisclosureRecord,
+    AnswerExecutionCheckpoint,
+)
 from spine.domain.capabilities.answer_question_candidate import (
     AnswerQuestionCandidateInput,
     AnswerQuestionCandidateOutput,
@@ -59,6 +65,7 @@ from spine.domain.capabilities.answer_question_candidate import (
 from spine.domain.capabilities.answer_question_execution import (
     AnswerQuestionExecutionPin,
 )
+from spine.domain.capabilities.answer_question_runs import AgentResultRef
 from spine.domain.capabilities.answer_evaluation import AnswerEvaluationDecision
 from spine.domain.capabilities.semantic_support import (
     SemanticSupportOutcome,
@@ -68,7 +75,7 @@ from spine.application.semantic_support import SemanticSupportValidationService
 from spine.application.answer_question_candidate import (
     generate_answer_question_candidate,
 )
-from spine.domain.agents import AgentInvocation, AgentRetrySafety, AgentRunStatus
+from spine.domain.agents import AgentInvocation, AgentRetrySafety, AgentRunStatus, AgentResult
 from spine.domain.artifacts import Artifact, ArtifactState
 from spine.domain.common import ActorKind, ActorRef, ContextOrigin, EnvironmentKind
 
@@ -111,6 +118,18 @@ class AnswerQuestionCandidateRunner(Protocol):
         idempotency_key: str,
     ) -> AnswerQuestionCandidateOutput: ...
 
+    async def generate_persisted(
+        self,
+        *,
+        question: AnswerQuestionInput,
+        requester_id: UUID,
+        authorized_context: AnswerQuestionAuthorizedContext,
+        execution: AnswerQuestionExecutionBoundary,
+        execution_request: AnswerQuestionExecutionRequest,
+        expected_execution_pin: AnswerQuestionExecutionPin,
+        idempotency_key: str,
+    ) -> "PersistedCandidateExecution": ...
+
     async def cancel(
         self, command: AnswerQuestionCapabilityCommand
     ) -> AnswerQuestionCapabilityResult: ...
@@ -142,6 +161,17 @@ class CandidateInputArtifactWriter(Protocol):
     ) -> UUID: ...
 
 
+@dataclass(frozen=True, slots=True)
+class PersistedCandidateExecution:
+    """Actual candidate and persisted runtime/artifact lineage from one run."""
+
+    candidate: AnswerQuestionCandidateOutput
+    candidate_input_artifact_id: UUID
+    agent_result_ref: AgentResultRef
+    agent_result: AgentResult
+    output_artifacts: tuple[Artifact, ...]
+
+
 class AnswerQuestionRunCanceller(Protocol):
     """Delegate cancellation to the admitted durable execution owner."""
 
@@ -169,6 +199,51 @@ class PersistedAnswerQuestionCandidateRunner:
         expected_execution_pin: AnswerQuestionExecutionPin,
         idempotency_key: str,
     ) -> AnswerQuestionCandidateOutput:
+        return (await self._generate_persisted(
+            question=question,
+            requester_id=requester_id,
+            authorized_context=authorized_context,
+            execution=execution,
+            execution_request=execution_request,
+            expected_execution_pin=expected_execution_pin,
+            idempotency_key=idempotency_key,
+            require_persisted_reference=False,
+        )).candidate
+
+    async def generate_persisted(
+        self,
+        *,
+        question: AnswerQuestionInput,
+        requester_id: UUID,
+        authorized_context: AnswerQuestionAuthorizedContext,
+        execution: AnswerQuestionExecutionBoundary,
+        execution_request: AnswerQuestionExecutionRequest,
+        expected_execution_pin: AnswerQuestionExecutionPin,
+        idempotency_key: str,
+    ) -> PersistedCandidateExecution:
+        return await self._generate_persisted(
+            question=question,
+            requester_id=requester_id,
+            authorized_context=authorized_context,
+            execution=execution,
+            execution_request=execution_request,
+            expected_execution_pin=expected_execution_pin,
+            idempotency_key=idempotency_key,
+            require_persisted_reference=True,
+        )
+
+    async def _generate_persisted(
+        self,
+        *,
+        question: AnswerQuestionInput,
+        requester_id: UUID,
+        authorized_context: AnswerQuestionAuthorizedContext,
+        execution: AnswerQuestionExecutionBoundary,
+        execution_request: AnswerQuestionExecutionRequest,
+        expected_execution_pin: AnswerQuestionExecutionPin,
+        idempotency_key: str,
+        require_persisted_reference: bool,
+    ) -> PersistedCandidateExecution:
         input_id = await self.input_artifacts.persist_input(
             input_value=authorized_context.candidate_input,
             workspace_id=question.scope.workspace_id,
@@ -193,6 +268,8 @@ class PersistedAnswerQuestionCandidateRunner:
         if executed.pin != expected_execution_pin:
             raise RuntimeError("answer candidate execution pin changed")
         result = executed.result
+        if executed.agent_result_ref is None and require_persisted_reference:
+            raise RuntimeError("persisted AgentResult reference is unavailable")
         if (
             result.status is not AgentRunStatus.SUCCEEDED
             or len(result.output_artifact_ids) != 1
@@ -218,7 +295,13 @@ class PersistedAnswerQuestionCandidateRunner:
             or candidate.context_bundle != authorized_context.bundle.lineage_reference
         ):
             raise ValueError("persisted answer candidate has mismatched identity")
-        return candidate
+        return PersistedCandidateExecution(
+            candidate=candidate,
+            candidate_input_artifact_id=input_id,
+            agent_result_ref=executed.agent_result_ref,
+            agent_result=result,
+            output_artifacts=(artifact,),
+        )
 
     async def cancel(
         self, command: AnswerQuestionCapabilityCommand
@@ -333,6 +416,12 @@ class ProductionAnswerQuestionCapability:
             )
             execution_request = self._execution_request(request.question)
             _, pin = self.execution.resolve(execution_request)
+            if command.execution_pin is not None and command.execution_pin != pin:
+                # The allocated pin is canonical. Do not retrieve under a newly
+                # resolved configuration when the runtime cannot honor it.
+                return self._failed(command, request)
+            if command.execution_pin is not None:
+                pin = command.execution_pin
             if request.references is None:
                 return self._failed(command, request)
             context_resolution = await self.context.prepare(
@@ -353,14 +442,74 @@ class ProductionAnswerQuestionCapability:
                     if context_resolution.failure is not None
                     else AnswerQuestionCapabilityAvailability.AVAILABLE
                 )
+                if availability is AnswerQuestionCapabilityAvailability.UNAVAILABLE:
+                    return self._result(
+                        command, request, output, None, availability=availability
+                    )
+                receipt = None
+                if command.attempt_id is not None:
+                    disclosed = await self.context.prepare_terminal_disclosure(
+                        question=request.question,
+                        retrieval_outcome=context_resolution.retrieval_outcome,
+                        authorization=context_resolution.authorization,
+                        request_id=request.request_id,
+                        disclosure_gate=self.disclosure_gate,
+                        cancelled=output.outcome is AnswerQuestionOutcome.CANCELLED,
+                        execution_checkpoint=AnswerExecutionCheckpoint(
+                            execution_pin_digest=pin.pin_digest,
+                        ),
+                    )
+                    persisted_output = disclosed.record.output
+                    if persisted_output is None:
+                        return self._failed(command, request)
+                    self._validate_output(request.question, persisted_output)
+                    if persisted_output.outcome is not output.outcome:
+                        return self._failed(command, request)
+                    output = persisted_output
+                    receipt = CanonicalQATerminalizationReceipt(
+                        run_id=command.run_id,
+                        attempt_id=command.attempt_id,
+                        attempt_number=command.attempt_number,
+                        execution_pin=pin,
+                        output=output,
+                        context_bundle_ref=None,
+                        agent_result_ref=None,
+                        agent_result=None,
+                        output_artifact_ids=(),
+                        candidate_input_artifact_id=None,
+                        candidate_output_artifacts=(),
+                        disclosure_record=disclosed.record,
+                        authorization=context_resolution.authorization,
+                    )
                 return self._result(
-                    command, request, output, None, availability=availability
+                    command,
+                    request,
+                    output,
+                    None,
+                    availability=availability,
+                    terminalization_receipt=receipt,
                 )
             authorized = context_resolution.context
             if authorized is None:
                 return self._failed(command, request)
 
-            candidate = await self.candidate_runner.generate(
+            persisted_candidate = None
+            generate_persisted = getattr(self.candidate_runner, "generate_persisted", None)
+            if command.attempt_id is not None and callable(generate_persisted):
+                persisted_candidate = await generate_persisted(
+                    question=request.question,
+                    requester_id=command.request_context.subject_id,
+                    authorized_context=authorized,
+                    execution=self.execution,
+                    execution_request=execution_request,
+                    expected_execution_pin=pin,
+                    idempotency_key=request.idempotency_key,
+                )
+                if type(persisted_candidate) is not PersistedCandidateExecution:
+                    raise ValueError("persisted candidate execution is invalid")
+                candidate = persisted_candidate.candidate
+            else:
+                candidate = await self.candidate_runner.generate(
                 question=request.question,
                 requester_id=command.request_context.subject_id,
                 authorized_context=authorized,
@@ -368,7 +517,7 @@ class ProductionAnswerQuestionCapability:
                 execution_request=execution_request,
                 expected_execution_pin=pin,
                 idempotency_key=request.idempotency_key,
-            )
+                )
             candidate = AnswerQuestionCandidateOutput.model_validate(
                 candidate.model_dump(mode="python"), strict=True
             )
@@ -376,6 +525,10 @@ class ProductionAnswerQuestionCapability:
                 candidate.question != request.question
                 or candidate.context_bundle != authorized.bundle.lineage_reference
             ):
+                if command.attempt_id is not None:
+                    return await self._persist_validation_failure(
+                        command, request, authorized, pin, persisted_candidate
+                    )
                 return self._failed(
                     command,
                     request,
@@ -387,10 +540,23 @@ class ProductionAnswerQuestionCapability:
                 candidate=candidate,
             )
             if type(facts) is not AnswerOutcomeFacts or facts.candidate != candidate:
+                if command.attempt_id is not None:
+                    return await self._persist_validation_failure(
+                        command, request, authorized, pin, persisted_candidate
+                    )
                 return self._failed(
                     command,
                     request,
                     availability=AnswerQuestionCapabilityAvailability.AVAILABLE,
+                )
+            if command.attempt_id is not None and persisted_candidate is None:
+                # Durable completion requires the actual runtime-owned result
+                # reference and artifact lineage; a transient candidate cannot
+                # be converted into a canonical answered receipt.
+                return self._failed(
+                    command,
+                    request,
+                    availability=AnswerQuestionCapabilityAvailability.UNAVAILABLE,
                 )
             disclosed = await self.context.disclose(
                 context=authorized,
@@ -398,6 +564,30 @@ class ProductionAnswerQuestionCapability:
                 request_id=request.request_id,
                 requester_id=command.request_context.subject_id,
                 disclosure_gate=self.disclosure_gate,
+                defer_delivery=command.attempt_id is not None,
+                execution_checkpoint=(
+                    AnswerExecutionCheckpoint(
+                        execution_pin_digest=pin.pin_digest,
+                        context_bundle_ref=authorized.bundle.reference,
+                        candidate_input_artifact_id=(
+                            None
+                            if persisted_candidate is None
+                            else persisted_candidate.candidate_input_artifact_id
+                        ),
+                        agent_result_ref=(
+                            None
+                            if persisted_candidate is None
+                            else persisted_candidate.agent_result_ref
+                        ),
+                        output_artifact_ids=(
+                            ()
+                            if persisted_candidate is None
+                            else persisted_candidate.agent_result.output_artifact_ids
+                        ),
+                    )
+                    if command.attempt_id is not None
+                    else None
+                ),
             )
             output = disclosed.safe_output
             if output is None and disclosed.accepted_answer is not None:
@@ -408,6 +598,24 @@ class ProductionAnswerQuestionCapability:
             if output is None:
                 return self._failed(command, request)
             self._validate_output(request.question, output)
+            receipt = None
+            if command.attempt_id is not None and persisted_candidate is not None:
+                receipt = CanonicalQATerminalizationReceipt(
+                    run_id=command.run_id,
+                    attempt_id=command.attempt_id,
+                    attempt_number=command.attempt_number,
+                    execution_pin=pin,
+                    output=output,
+                    context_bundle_ref=authorized.bundle.reference,
+                    agent_result_ref=persisted_candidate.agent_result_ref,
+                    agent_result=persisted_candidate.agent_result,
+                    output_artifact_ids=persisted_candidate.agent_result.output_artifact_ids,
+                    candidate_input_artifact_id=persisted_candidate.candidate_input_artifact_id,
+                    candidate_output_artifacts=persisted_candidate.output_artifacts,
+                    disclosure_record=disclosed.record,
+                    authorization=facts.authorization,
+                    disclosure_dependencies=authorized.disclosure_dependencies,
+                )
             return self._result(
                 command,
                 request,
@@ -417,9 +625,9 @@ class ProductionAnswerQuestionCapability:
                 availability=(
                     AnswerQuestionCapabilityAvailability.UNAVAILABLE
                     if _validator_unavailable(facts)
-                    or output.outcome is AnswerQuestionOutcome.FAILED
                     else AnswerQuestionCapabilityAvailability.AVAILABLE
                 ),
+                terminalization_receipt=receipt,
             )
         except asyncio.CancelledError:
             raise
@@ -449,6 +657,121 @@ class ProductionAnswerQuestionCapability:
         ):
             raise ValueError("answer cancellation returned mismatched identity")
         return result
+
+    async def _persist_validation_failure(
+        self,
+        command: AnswerQuestionCapabilityCommand,
+        request: "_CapabilityRequest",
+        authorized: AnswerQuestionAuthorizedContext,
+        pin: AnswerQuestionExecutionPin,
+        persisted_candidate: PersistedCandidateExecution | None,
+    ) -> AnswerQuestionCapabilityResult:
+        """Persist a safe terminal failure for deterministic output mismatches."""
+
+        if command.attempt_id is None or command.run_id is None or command.attempt_number is None:
+            raise ValueError("durable validation failure lacks canonical attempt identity")
+        from spine.application.answer_question_context import (
+            map_context_outcome_to_retrieval_outcome,
+        )
+
+        failed = self._failed(
+            command,
+            request,
+            availability=AnswerQuestionCapabilityAvailability.AVAILABLE,
+        )
+        checkpoint = AnswerExecutionCheckpoint(
+            execution_pin_digest=pin.pin_digest,
+            context_bundle_ref=authorized.bundle.reference,
+            candidate_input_artifact_id=(
+                None
+                if persisted_candidate is None
+                else persisted_candidate.candidate_input_artifact_id
+            ),
+            agent_result_ref=(
+                None
+                if persisted_candidate is None
+                else persisted_candidate.agent_result_ref
+            ),
+            output_artifact_ids=(
+                ()
+                if persisted_candidate is None
+                else persisted_candidate.agent_result.output_artifact_ids
+            ),
+        )
+        disclosed = await self.context.disclose(
+            context=authorized,
+            outcome_facts=AnswerOutcomeFacts(
+                question=request.question,
+                retrieval_outcome=map_context_outcome_to_retrieval_outcome(
+                    authorized.response.outcome
+                ),
+                authorization=AnswerAuthorizationOutcome.ALLOWED,
+            ),
+            request_id=request.request_id,
+            requester_id=command.request_context.subject_id,
+            disclosure_gate=self.disclosure_gate,
+            defer_delivery=True,
+            execution_checkpoint=checkpoint,
+            safe_terminal_output=failed.output,
+        )
+        output = disclosed.record.output
+        if output != failed.output:
+            raise ValueError("persisted safe validation failure changed identity")
+        receipt = CanonicalQATerminalizationReceipt(
+            run_id=command.run_id,
+            attempt_id=command.attempt_id,
+            attempt_number=command.attempt_number,
+            execution_pin=pin,
+            output=output,
+            context_bundle_ref=authorized.bundle.reference,
+            agent_result_ref=(
+                None
+                if persisted_candidate is None
+                else persisted_candidate.agent_result_ref
+            ),
+            agent_result=(
+                None if persisted_candidate is None else persisted_candidate.agent_result
+            ),
+            output_artifact_ids=(
+                ()
+                if persisted_candidate is None
+                else persisted_candidate.agent_result.output_artifact_ids
+            ),
+            candidate_input_artifact_id=(
+                None
+                if persisted_candidate is None
+                else persisted_candidate.candidate_input_artifact_id
+            ),
+            candidate_output_artifacts=(
+                ()
+                if persisted_candidate is None
+                else persisted_candidate.output_artifacts
+            ),
+            disclosure_record=disclosed.record,
+            authorization=AnswerAuthorizationOutcome.ALLOWED,
+            disclosure_dependencies=authorized.disclosure_dependencies,
+        )
+        return self._result(
+            command,
+            request,
+            output,
+            None,
+            disclosed.replay,
+            availability=AnswerQuestionCapabilityAvailability.AVAILABLE,
+            terminalization_receipt=receipt,
+        )
+
+    async def deliver_committed(
+        self,
+        record: AnswerDisclosureRecord,
+        presentation: AcceptedAnswerPresentation,
+    ) -> None:
+        """Perform accepted-answer output only after canonical terminal commit."""
+
+        delivery = getattr(self.disclosure_gate, "deliver_committed", None)
+        if not callable(delivery):
+            raise RuntimeError("committed disclosure delivery is unavailable")
+        await delivery(record, presentation)
 
     def _request(
         self,
@@ -483,6 +806,10 @@ class ProductionAnswerQuestionCapability:
             raise ValueError("answer request requires the admitted session and message")
         if command.question is None:
             raise ValueError("answer request requires question text")
+        if command.attempt_id is not None and (
+            command.run_id is None or command.attempt_number is None
+        ):
+            raise ValueError("durable answer request lacks canonical attempt identity")
         key = command.idempotency_key.value
         stable_id = uuid5(
             NAMESPACE_URL,
@@ -562,6 +889,7 @@ class ProductionAnswerQuestionCapability:
         availability: AnswerQuestionCapabilityAvailability = (
             AnswerQuestionCapabilityAvailability.AVAILABLE
         ),
+        terminalization_receipt: CanonicalQATerminalizationReceipt | None = None,
     ) -> AnswerQuestionCapabilityResult:
         return AnswerQuestionCapabilityResult(
             command_id=request.command_id,
@@ -569,6 +897,7 @@ class ProductionAnswerQuestionCapability:
             message_id=command.message_id,
             output=output,
             accepted_answer=accepted_answer,
+            terminalization_receipt=terminalization_receipt,
             replay=replay,
             availability=availability,
         )

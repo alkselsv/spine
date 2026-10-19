@@ -382,6 +382,32 @@ async def test_retry_after_partial_revalidation_failure_reuses_the_same_bundle()
 
 
 @pytest.mark.asyncio
+async def test_retryable_revalidation_disposition_is_not_a_terminal_failure() -> None:
+    bundle = context_bundle()
+    store = InMemoryContextBundleStore()
+    await store.create_or_replay(bundle)
+    revalidator = Revalidator(disposition=RevalidationDisposition.RETRYABLE_FAILURE)
+    service = AnswerQuestionContextService(
+        broker=Broker(
+            ContextResponse(
+                outcome=ContextOutcome.ALLOWED,
+                context_bundle_ref=bundle.reference,
+                reason_code=ContextReasonCode.ALLOWED,
+                publication_pin_id=bundle.publication_pin_id,
+            )
+        ),
+        bundles=SavedContextBundleAccess(store=store, revalidator=revalidator),
+        revalidator=revalidator,
+    )
+
+    result = await service.prepare(request())
+
+    assert result.output is not None
+    assert result.output.outcome is AnswerQuestionOutcome.FAILED
+    assert result.failure is not None
+
+
+@pytest.mark.asyncio
 async def test_disclose_delegates_to_aq11_gate_only_after_context_checkpoint() -> None:
     bundle = context_bundle()
     store = InMemoryContextBundleStore()

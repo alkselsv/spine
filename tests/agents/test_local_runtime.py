@@ -290,6 +290,25 @@ class FakeArtifactPersistence:
             raise ArtifactReadError("protected record exists")
         return self.records.get(artifact_id)
 
+    async def load_agent_result(
+        self,
+        result_id: UUID,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        work_item_id: UUID,
+    ) -> AgentResult | None:
+        del work_item_id
+        for receipt_key, (_, reference, record) in self.receipts.items():
+            if (
+                receipt_key[0] == workspace_id
+                and receipt_key[1] == environment_id
+                and reference.result_id == result_id
+                and record.state == "completed"
+            ):
+                return record.result
+        return None
+
     async def verify_lineage(
         self,
         artifact: Artifact,
@@ -761,6 +780,19 @@ async def test_valid_artifact_handoff_persists_lineage_before_reporting_success(
     assert draft.content == {"answer": "42"}
     assert draft.evidence_refs == ("source:revision:page=1",)
     assert draft.upstream_artifact_ids == (uid(50),)
+
+
+@pytest.mark.asyncio
+async def test_persisted_invocation_result_returns_the_runtime_owned_reference() -> None:
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+    runtime = local_runtime(persistence, RecordingHandler())
+
+    persisted = await runtime.invoke_with_reference(version(), invocation())
+
+    assert persisted.result.status is AgentRunStatus.SUCCEEDED
+    assert persisted.reference.result_type == "agent_invocation"
+    assert persisted.reference.result_id == uid(33)
+    assert persisted.reference.schema_version == 1
 
 
 @pytest.mark.asyncio

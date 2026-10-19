@@ -16,7 +16,9 @@ from spine.agents.catalog import (
     ResolvedAgentBinding,
 )
 from spine.agents.runtime import AgentHandler, AgentRuntime
+from spine.agents.runtime.artifacts import PersistedAgentInvocationResult
 from spine.domain.agents import AgentInvocation, AgentResult, AgentVersion
+from spine.domain.capabilities.answer_question_runs import AgentResultRef
 from spine.domain.capabilities import CapabilityDefinition
 from spine.domain.capabilities.answer_question_execution import (
     AnswerQuestionExecutionPin,
@@ -118,6 +120,7 @@ class AnswerQuestionRuntimeProvider(Protocol):
 class AnswerQuestionExecutionResult:
     pin: AnswerQuestionExecutionPin
     result: AgentResult
+    agent_result_ref: AgentResultRef | None = None
 
 
 class AnswerQuestionExecutionBoundary:
@@ -236,7 +239,24 @@ class AnswerQuestionExecutionBoundary:
                 getattr(runtime, "cancel", None)
             ):
                 raise TypeError
-            result = await runtime.invoke(resolved.agent_version, runtime_invocation)
+            persisted_invoke = getattr(runtime, "invoke_with_reference", None)
+            persisted = (
+                await persisted_invoke(resolved.agent_version, runtime_invocation)
+                if callable(persisted_invoke)
+                else None
+            )
+            if persisted is not None:
+                if type(persisted) is not PersistedAgentInvocationResult:
+                    raise TypeError
+                result = persisted.result
+                agent_result_ref = AgentResultRef(
+                    result_id=persisted.reference.result_id,
+                    result_type=persisted.reference.result_type,
+                    schema_version=persisted.reference.schema_version,
+                )
+            else:
+                result = await runtime.invoke(resolved.agent_version, runtime_invocation)
+                agent_result_ref = None
         except AnswerQuestionExecutionError:
             raise
         except Exception:
@@ -247,7 +267,9 @@ class AnswerQuestionExecutionBoundary:
             raise AnswerQuestionExecutionError(
                 AnswerQuestionExecutionErrorCode.RUNTIME_UNAVAILABLE
             )
-        return AnswerQuestionExecutionResult(pin=pin, result=result)
+        return AnswerQuestionExecutionResult(
+            pin=pin, result=result, agent_result_ref=agent_result_ref
+        )
 
     def _validate_configuration(
         self,

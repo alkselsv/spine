@@ -131,6 +131,14 @@ class InvocationReplayRecord(BaseModel):
         return cls(state="completed", result=result)
 
 
+@dataclass(frozen=True, slots=True)
+class PersistedAgentInvocationResult:
+    """Actual runtime result and its canonical persisted invocation reference."""
+
+    result: AgentResult
+    reference: OpaqueResultReference
+
+
 @runtime_checkable
 class ArtifactPersistence(Protocol):
     """Narrow canonical Artifact boundary used by a single runtime attempt.
@@ -153,6 +161,17 @@ class ArtifactPersistence(Protocol):
         environment_id: UUID,
         work_item_id: UUID,
     ) -> Artifact | None: ...
+
+    async def load_agent_result(
+        self,
+        result_id: UUID,
+        *,
+        workspace_id: UUID,
+        environment_id: UUID,
+        work_item_id: UUID,
+    ) -> AgentResult | None:
+        """Resolve a persisted invocation result under its owning scope."""
+        ...
 
     async def verify_lineage(
         self,
