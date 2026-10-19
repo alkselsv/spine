@@ -1551,14 +1551,14 @@ class _PostgreSQLAnswerQuestionRunRepository:
                 AnswerQuestionRunConflictError("Q&A run cannot allocate an attempt.")
             )
         attempt = AnswerQuestionAttempt.start(
-            attempt_id=uuid4(),
+            attempt_id=self._uow._answer_question_attempt_id_factory(),
             run=run,
             attempt_number=max((item.attempt_number for item in attempts), default=0) + 1,
             logical_execution_key=allocation.logical_execution_key,
             execution_pin=allocation.execution_pin,
             input_artifact_ids=allocation.input_artifact_ids,
             diagnostic_context=run.diagnostic_context,
-            started_at=datetime.now(timezone.utc),
+            started_at=self._uow._answer_question_attempt_clock(),
         )
         stored = await self.start_attempt(attempt)
         return AnswerQuestionAttemptAllocationResult(attempt=stored, replay=False)
@@ -6089,6 +6089,8 @@ class PostgreSQLTenantUnitOfWork:
         ask_admission_run_id_factory: Callable[[], UUID],
         ask_admission_message_id_factory: Callable[[], UUID],
         ask_admission_clock: Callable[[], datetime],
+        answer_question_attempt_id_factory: Callable[[], UUID],
+        answer_question_attempt_clock: Callable[[], datetime],
     ) -> None:
         self._session_factory = session_factory
         self._source_context = source_context
@@ -6100,6 +6102,8 @@ class PostgreSQLTenantUnitOfWork:
         self._transaction_probe = transaction_probe
         self._boundary_id_factory = boundary_id_factory
         self._boundary_clock = boundary_clock
+        self._answer_question_attempt_id_factory = answer_question_attempt_id_factory
+        self._answer_question_attempt_clock = answer_question_attempt_clock
         self._scope: PersistenceScope | None = None
         self._operation: PersistenceOperation | None = None
         self._trace_id: UUID | None = None
@@ -6627,6 +6631,8 @@ class PostgreSQLTenantUnitOfWorkFactory:
         ask_admission_run_id_factory: Callable[[], UUID] = uuid4,
         ask_admission_message_id_factory: Callable[[], UUID] = uuid4,
         ask_admission_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        answer_question_attempt_id_factory: Callable[[], UUID] = uuid4,
+        answer_question_attempt_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self._session_factory = session_factory
         self._context_verifier = context_verifier
@@ -6639,6 +6645,8 @@ class PostgreSQLTenantUnitOfWorkFactory:
         self._ask_admission_run_id_factory = ask_admission_run_id_factory
         self._ask_admission_message_id_factory = ask_admission_message_id_factory
         self._ask_admission_clock = ask_admission_clock
+        self._answer_question_attempt_id_factory = answer_question_attempt_id_factory
+        self._answer_question_attempt_clock = answer_question_attempt_clock
 
     def __call__(
         self, context: TrustedPersistenceContext
@@ -6660,6 +6668,8 @@ class PostgreSQLTenantUnitOfWorkFactory:
             ask_admission_run_id_factory=self._ask_admission_run_id_factory,
             ask_admission_message_id_factory=self._ask_admission_message_id_factory,
             ask_admission_clock=self._ask_admission_clock,
+            answer_question_attempt_id_factory=self._answer_question_attempt_id_factory,
+            answer_question_attempt_clock=self._answer_question_attempt_clock,
         )
 
 
@@ -6697,6 +6707,8 @@ class PostgreSQLPersistence:
         ask_admission_run_id_factory: Callable[[], UUID] = uuid4,
         ask_admission_message_id_factory: Callable[[], UUID] = uuid4,
         ask_admission_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        answer_question_attempt_id_factory: Callable[[], UUID] = uuid4,
+        answer_question_attempt_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         selected_audit_events = (
             audit_events or AuditEventRegistry.with_default_families()
@@ -6716,6 +6728,8 @@ class PostgreSQLPersistence:
             ask_admission_run_id_factory=ask_admission_run_id_factory,
             ask_admission_message_id_factory=ask_admission_message_id_factory,
             ask_admission_clock=ask_admission_clock,
+            answer_question_attempt_id_factory=answer_question_attempt_id_factory,
+            answer_question_attempt_clock=answer_question_attempt_clock,
         )
         self.uow_factory = self.tenant_uow_factory
         self.audit_reader = PostgreSQLAuditReader(self.tenant_uow_factory)
