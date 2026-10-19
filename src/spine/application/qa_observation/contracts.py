@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Literal
 from uuid import UUID
@@ -10,6 +9,7 @@ from uuid import UUID
 from pydantic import Field, field_validator, model_validator
 
 from spine.application.workflows.ask_admission_dispatch import AskAdmissionWorkflowInput
+from spine.application.persistence.ask_admission import AskCaptureSubscription
 from spine.domain.capabilities import (
     AnswerQuestionInput,
     AnswerQuestionOutcome,
@@ -25,7 +25,9 @@ from spine.memory.contracts import (
 )
 
 EXECUTION_IDENTITY_SCHEMA = "r1-qa-admitted-execution-identity:v1"
+ADMITTED_RUN_IDENTITY_SCHEMA = "r1-qa-admitted-run-identity:v1"
 TERMINAL_WAIT_SCHEMA = "r1-qa-terminal-wait:v1"
+TERMINAL_RUN_WAIT_SCHEMA = "r1-qa-terminal-run-wait:v1"
 CAPTURE_SUBSCRIPTION_SCHEMA = "r1-qa-observer-subscription:v1"
 CAPTURE_ENVELOPE_SCHEMA = "r1-qa-observer-capture:v1"
 OBSERVER_WORKFLOW_ROUTING_SCHEMA = "spine.qa.ask-admission-observer-routing:v1"
@@ -87,6 +89,61 @@ class AdmittedExecutionIdentity(ValidatedDefinitionModel):
         return type(other) is AdmittedExecutionIdentity and self == other
 
 
+class AdmittedRunIdentity(ValidatedDefinitionModel):
+    """Canonical admitted identity before execution resolves an attempt."""
+
+    schema_version: Literal[ADMITTED_RUN_IDENTITY_SCHEMA] = ADMITTED_RUN_IDENTITY_SCHEMA
+    command_id: UUID
+    run_id: UUID
+    session_id: UUID
+    message_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    requester: ActorRef
+
+    @field_validator(
+        "command_id", "run_id", "session_id", "message_id", "workspace_id", "environment_id"
+    )
+    @classmethod
+    def require_non_zero_id(cls, value: UUID) -> UUID:
+        if value.int == 0:
+            raise ValueError("admitted run identity identifiers must be non-zero")
+        return value
+
+    @model_validator(mode="after")
+    def validate_requester(self) -> "AdmittedRunIdentity":
+        if self.requester.id.int == 0:
+            raise ValueError("requester identity must be non-zero")
+        return self
+
+    def matches_execution(self, other: AdmittedExecutionIdentity) -> bool:
+        return (
+            type(other) is AdmittedExecutionIdentity
+            and self.command_id == other.command_id
+            and self.run_id == other.run_id
+            and self.session_id == other.session_id
+            and self.message_id == other.message_id
+            and self.workspace_id == other.workspace_id
+            and self.environment_id == other.environment_id
+            and self.requester == other.requester
+        )
+
+    def with_attempt(
+        self, *, attempt_id: UUID, attempt_number: int
+    ) -> AdmittedExecutionIdentity:
+        return AdmittedExecutionIdentity(
+            command_id=self.command_id,
+            run_id=self.run_id,
+            session_id=self.session_id,
+            message_id=self.message_id,
+            workspace_id=self.workspace_id,
+            environment_id=self.environment_id,
+            requester=self.requester,
+            attempt_id=attempt_id,
+            attempt_number=attempt_number,
+        )
+
+
 class TerminalWaitResult(ValidatedDefinitionModel):
     """Bounded, identity-correlated status readback for one admitted run."""
 
@@ -109,27 +166,43 @@ class TerminalWaitResult(ValidatedDefinitionModel):
         return self
 
 
-class CaptureSubscription(ValidatedDefinitionModel):
-    """Pre-admission routing identity with a server-bounded expiry."""
+class TerminalRunWaitResult(ValidatedDefinitionModel):
+    """Canonical run readback that resolves its attempt from persisted status."""
 
-    schema_version: Literal[CAPTURE_SUBSCRIPTION_SCHEMA] = CAPTURE_SUBSCRIPTION_SCHEMA
-    capture_id: UUID
-    subscription_id: UUID
-    expires_at: datetime
+    schema_version: Literal[TERMINAL_RUN_WAIT_SCHEMA] = TERMINAL_RUN_WAIT_SCHEMA
+    identity: AdmittedRunIdentity
+    state: ExecutionWaitState
+    outcome: AnswerQuestionOutcome | None = None
+    unavailable_reason: SafeWaitUnavailableReason | None = None
+    execution_identity: AdmittedExecutionIdentity | None = None
 
-    @field_validator("capture_id", "subscription_id")
-    @classmethod
-    def require_non_zero_id(cls, value: UUID) -> UUID:
-        if value.int == 0:
-            raise ValueError("capture routing identifiers must be non-zero")
-        return value
+    @model_validator(mode="after")
+    def validate_state_payload(self) -> "TerminalRunWaitResult":
+        if self.state is ExecutionWaitState.TERMINAL:
+            if (
+                self.outcome is None
+                or self.unavailable_reason is not None
+                or self.execution_identity is None
+                or not self.identity.matches_execution(self.execution_identity)
+            ):
+                raise ValueError("terminal run state requires its canonical attempt identity")
+        elif self.state is ExecutionWaitState.UNAVAILABLE:
+            if (
+                self.unavailable_reason is None
+                or self.outcome is not None
+                or self.execution_identity is not None
+            ):
+                raise ValueError("unavailable run state requires a safe reason only")
+        elif (
+            self.outcome is not None
+            or self.unavailable_reason is not None
+            or self.execution_identity is not None
+        ):
+            raise ValueError("pending and running states have no terminal payload")
+        return self
 
-    @field_validator("expires_at")
-    @classmethod
-    def require_aware_utc(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset() != timedelta(0):
-            raise ValueError("expires_at must be an aware UTC timestamp")
-        return value.astimezone(timezone.utc)
+
+CaptureSubscription = AskCaptureSubscription
 
 
 class ObserverRoutedAskAdmissionWorkflowInput(ValidatedDefinitionModel):

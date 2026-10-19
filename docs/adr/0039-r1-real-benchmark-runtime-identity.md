@@ -262,13 +262,62 @@ canonical ingestion, projection build/activation, gold join, metric calculation
 and report writing. Preflight mapping or projection failures and authorization
 denial detected before the flow call are represented by the outer execution
 record and have no observer latency because execution did not start. An in-flow
-Q&A denial or abstention retains the existing terminal outcome inside the
-observation. For durable admission, report dispatch/queue wait separately
+Q&A denial or abstention is represented inside the observation only when the
+actual authorized execution supplied all typed records required by
+`ProductionContractObservation:v1` and the complete identity validates. When
+denial occurs before retrieval and those records do not exist, use outer
+`denied` only after canonical authorization denial is confirmed. Missing
+capture alone is never evidence of denial; other missing required records use
+a safe non-success outer disposition. In every case the persisted Q&A outcome
+remains unchanged, and a disposition without a validated observation is not a
+successful quality evaluation. For durable admission, report dispatch/queue wait separately
 and retain per-attempt `started_at`/`completed_at` from
 `AnswerQuestionAttempt`; retries are separate attempt measurements, not
 silently folded into one attempt. Cancellation and partial failure record
 elapsed time to their terminal event. Use monotonic clock duration for observer
 elapsed time; no latency is imputed when execution never starts.
+
+**D7 — additive timing contract.** Preserve the v1 schema and its
+`observer_elapsed_ms` value and meaning. In v2, `observer_elapsed_ms` remains
+wall time around `ProductionContractApplicationFlow.execute`; it includes
+admission/queue wait, Temporal scheduling, and terminal readback/capture waiting
+that occur inside that call. Corpus preparation before `execute` and evaluation
+after it remain outside this interval. Durable observers that also have a
+worker-local sample emit `r1-case-execution-record:v2`, with that same
+`observer_elapsed_ms` plus nullable `worker_execution_elapsed_ns` and
+`worker_execution_attempt_id`. The two worker fields are either both null or
+both present; the duration is a non-negative integer measured by the worker's
+monotonic clock for one canonical Q&A attempt. For an observed record, the
+worker attempt ID must equal the observation's canonical correlation attempt ID.
+The worker duration excludes dispatch queue wait, Temporal scheduling and retry
+delay, terminal readback and capture wait, corpus preparation, and evaluation.
+Do not subtract clock readings from different processes, sum retry samples, or
+invent an aggregate if any sample is unavailable. A missing sample serializes as
+JSON `null`; v1 does not acquire v2 fields during serialization. The
+`ProductionContractObservation:v1` payload and Q&A terminal enums remain
+unchanged.
+
+Consumers must discriminate on `schema_version`, continue reading v1 without
+inferring a worker duration, and preserve the two v2 durations as distinct
+measurements. A metadata report that accepts v2 must version its own schema and
+carry both nullable values plus the worker attempt reference; it must not
+silently map worker duration onto the legacy latency field. #479 remains the
+deterministic v1 runner; #480 owns adapting downstream production-runner and
+metadata-report consumers to v2, while #453 owns final opt-in end-to-end
+qualification.
+
+**D10 — Preserve observation v1 and use safe outer dispositions.** Keep
+`ProductionContractObservation:v1`'s schema and meaning unchanged. Construct a
+validated observation only from actual execution values: `ContextResponse`,
+`ProjectionRetrievalResult`, `RetrievalResult`, any `ContextBundle` required by
+the response, `AnswerQuestionOutput`, `AnswerDisclosureRecord`, and full
+canonical execution identity. Do not fabricate, reconstruct from run history,
+or re-retrieve missing values. If required values are absent or invalid, return
+a safe non-success outer execution disposition and preserve the canonical Q&A
+outcome. Outer `denied` requires a confirmed canonical authorization denial;
+missing capture is not denial. Unobserved eligible cases do not pass evaluation
+and do not contribute a fabricated quality score. This decision changes no
+metric formula, v1 schema, or release qualification rule.
 
 ### F. Gold join and metric semantics
 

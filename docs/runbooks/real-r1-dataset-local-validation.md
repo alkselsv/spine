@@ -100,14 +100,34 @@ and readiness therefore keep observation/evaluation/release fields at
 извлечённый текст в Git, CI artifacts, Issues, PR, логи или сторонние сервисы.
 В CI оставляйте только маленькие безопасные synthetic contract fixtures.
 
-## Ограничение end-to-end evaluation
+## Production observer integration
 
-У существующего offline runner есть production-contract observation seam, но в
-приложении ещё нет production observer, который извлекает реальные наблюдения
-и связывает workspace, principal и source revisions с реальными кейсами.
-Передавать golden answer как observation запрещено. Поэтому эта команда
-подтверждает целостность и пригодность формата, но не является R1 evaluation.
-Полноценный прогон зависит от отдельного blocker [#443](https://github.com/alkselsv/spine/issues/443):
-реализации и квалификации production application observer. Первый этап
-интеграции остаётся local-first; удалённое приватное CI-хранилище не входит в
-scope.
+`DurableProductionQAAFlow` связывает `ProductionContractObserver` с
+`DurableAskComposition`: он повторно разрешает authority, регистрирует
+одноразовый capture до admission, использует канонический waiter и принимает
+typed capture только от совпавшего execution identity. Он не вызывает retrieval
+или capability отдельно и не восстанавливает отсутствующие данные из run history.
+
+Финальная real opt-in end-to-end qualification принадлежит #453 и выполняется
+через интегрированный runner #480 с observer adapter #478 и production
+composition из #469. #480 подключает runner, но не подтверждает качество
+production runtime. Запуск остаётся явным локальным действием уполномоченного
+оператора. В factory, переданной через `--composition` в
+`spine-eval-real-benchmark`, настройте `RealBenchmarkRunner` на production
+observer, который вызывает `DurableProductionQAAFlow`; fake flow разрешён только
+для deterministic contract tests. Запускайте команду с approved local dataset,
+manifest и source root, когда включены PostgreSQL, trusted authorization,
+Temporal/worker и аутентифицированный CaptureChannel. Эта команда не запускается
+в CI: private corpus и credentials остаются локальными.
+
+Если runtime composition или любая из этих зависимостей не настроена, результат
+должен быть safe `unavailable`/`failed`; fake успех не считается production
+qualification. Подготовка и readiness остаются отдельными этапами до observer,
+а evaluator не получает gold labels до финализации валидного observation.
+
+В execution record v2 `observer_elapsed_ms` измеряет wall time вокруг
+`execute` и включает admission/queue, Temporal scheduling и terminal
+readback/capture waits, произошедшие внутри вызова. Отдельный
+`worker_execution_elapsed_ns` исключает эти ожидания, corpus preparation и
+evaluation и остаётся связан с canonical attempt identity. V1 сохраняет
+прежнюю семантику без новых полей.

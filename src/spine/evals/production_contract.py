@@ -46,6 +46,7 @@ PRODUCTION_CONTRACT_CASE_REQUEST_SCHEMA: Final[str] = (
     "r1-production-contract-case-request:v1"
 )
 CASE_EXECUTION_RECORD_SCHEMA: Final[str] = "r1-case-execution-record:v1"
+CASE_EXECUTION_RECORD_V2_SCHEMA: Final[str] = "r1-case-execution-record:v2"
 
 
 class ProductionContractObservationError(ValueError):
@@ -255,7 +256,30 @@ class ProductionContractApplicationFlow(Protocol):
 
     async def execute(
         self, request: ProductionContractCaseRequest
-    ) -> ProductionContractObservation: ...
+    ) -> ProductionContractObservation | "ProductionContractFlowResult": ...
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionContractFlowResult:
+    """Observation and optional worker-local timing from the same execution."""
+
+    observation: ProductionContractObservation
+    worker_execution_elapsed_ns: int | None = None
+    worker_execution_attempt_id: UUID | None = None
+
+    def __post_init__(self) -> None:
+        if self.worker_execution_elapsed_ns is not None and (
+            not isinstance(self.worker_execution_elapsed_ns, int)
+            or isinstance(self.worker_execution_elapsed_ns, bool)
+            or self.worker_execution_elapsed_ns < 0
+        ):
+            raise ValueError("worker execution duration must be a non-negative integer")
+        if (self.worker_execution_elapsed_ns is None) != (
+            self.worker_execution_attempt_id is None
+        ):
+            raise ValueError("worker timing duration and attempt identity must be paired")
+        if self.worker_execution_attempt_id is not None and self.worker_execution_attempt_id.int == 0:
+            raise ValueError("worker execution attempt identity must be non-zero")
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,7 +292,33 @@ class ProductionContractObservationBridge:
     async def observe(
         self, *, request: ProductionContractCaseRequest
     ) -> ProductionContractObservation:
-        observation = await self.flow.execute(request)
+        result = await self._execute(request)
+        observation = result.observation
+        return self._validate_observation(request=request, observation=observation)
+
+    async def observe_with_timing(
+        self, *, request: ProductionContractCaseRequest
+    ) -> ProductionContractFlowResult:
+        result = await self._execute(request)
+        observation = self._validate_observation(
+            request=request, observation=result.observation
+        )
+        if (
+            result.worker_execution_attempt_id is not None
+            and result.worker_execution_attempt_id
+            != observation.question.correlation.attempt_id
+        ):
+            raise ProductionContractObservationError(
+                "worker execution timing belongs to another attempt"
+            )
+        return result
+
+    def _validate_observation(
+        self,
+        *,
+        request: ProductionContractCaseRequest,
+        observation: object,
+    ) -> ProductionContractObservation:
         if not isinstance(observation, ProductionContractObservation):
             raise ProductionContractObservationError("application flow returned an invalid observation")
         if observation.case_id != request.case_id:
@@ -289,6 +339,16 @@ class ProductionContractObservationBridge:
                 "observed retrieval index version is not pinned"
             )
         return observation.validate()
+
+    async def _execute(
+        self, request: ProductionContractCaseRequest
+    ) -> ProductionContractFlowResult:
+        value = await self.flow.execute(request)
+        if isinstance(value, ProductionContractFlowResult):
+            return value
+        if isinstance(value, ProductionContractObservation):
+            return ProductionContractFlowResult(observation=value)
+        raise ProductionContractObservationError("application flow returned an invalid observation")
 
 
 class CaseExecutionDisposition(str, Enum):
@@ -375,6 +435,106 @@ class CaseExecutionRecord(DefinitionModel):
         return self
 
 
+class CaseExecutionRecordV2(DefinitionModel):
+    """Execution result with distinct observer and worker duration semantics."""
+
+    schema_version: Literal[CASE_EXECUTION_RECORD_V2_SCHEMA] = CASE_EXECUTION_RECORD_V2_SCHEMA
+    case_id: str = Field(min_length=1, max_length=128)
+    workspace_id: UUID
+    environment_id: UUID
+    disposition: CaseExecutionDisposition
+    observation: ProductionContractObservation | None = None
+    failure_category: CaseExecutionFailureCategory | None = None
+    correlation_id: UUID | None = None
+    failure_type: str | None = Field(
+        default=None,
+        max_length=128,
+        pattern=r"^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$",
+    )
+    completed_attempt_id: UUID | None = None
+    completed_attempt_number: int | None = Field(default=None, ge=1)
+    observer_elapsed_ms: int | None = Field(default=None, ge=0)
+    worker_execution_elapsed_ns: int | None = Field(default=None, ge=0)
+    worker_execution_attempt_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_disposition(self) -> "CaseExecutionRecordV2":
+        if self.disposition is CaseExecutionDisposition.OBSERVED:
+            if (
+                self.observation is None
+                or self.failure_category is not None
+                or self.failure_type is not None
+            ):
+                raise ValueError("observed record requires only a validated observation")
+            if self.observer_elapsed_ms is None:
+                raise ValueError("observed record requires observer elapsed time")
+            try:
+                self.observation.validate()
+            except ProductionContractObservationError as error:
+                raise ValueError("observed record contains an invalid observation") from error
+            if self.observation.case_id != self.case_id:
+                raise ValueError("observed record case identity is inconsistent")
+            if (
+                self.observation.question.scope.workspace_id != self.workspace_id
+                or self.observation.question.scope.environment_id != self.environment_id
+            ):
+                raise ValueError("observed record scope is inconsistent")
+            if self.correlation_id != _observation_correlation_id(self.observation):
+                raise ValueError("observed record correlation is inconsistent")
+            if self.worker_execution_attempt_id is not None and (
+                self.worker_execution_attempt_id
+                != self.observation.question.correlation.attempt_id
+            ):
+                raise ValueError("worker timing attempt does not match observation")
+        elif self.observation is not None or self.failure_category is None:
+            raise ValueError("safe disposition cannot carry an observation")
+        if self.correlation_id is not None and self.correlation_id.int == 0:
+            raise ValueError("correlation_id must be non-zero")
+        if self.completed_attempt_id is not None and self.completed_attempt_id.int == 0:
+            raise ValueError("completed_attempt_id must be non-zero")
+        if (self.completed_attempt_id is None) != (self.completed_attempt_number is None):
+            raise ValueError("completed attempt metadata must be complete")
+        if (self.worker_execution_elapsed_ns is None) != (
+            self.worker_execution_attempt_id is None
+        ):
+            raise ValueError("worker timing duration and attempt identity must be paired")
+        if self.worker_execution_attempt_id is not None and self.worker_execution_attempt_id.int == 0:
+            raise ValueError("worker timing attempt identity must be non-zero")
+        if (
+            self.disposition is not CaseExecutionDisposition.OBSERVED
+            and self.worker_execution_attempt_id is not None
+            and self.worker_execution_attempt_id != self.completed_attempt_id
+        ):
+            raise ValueError("worker timing attempt must match completed attempt metadata")
+        return self
+
+    @classmethod
+    def from_v1(
+        cls,
+        record: CaseExecutionRecord,
+        *,
+        worker_execution_elapsed_ns: int | None = None,
+        worker_execution_attempt_id: UUID | None = None,
+    ) -> "CaseExecutionRecordV2":
+        """Upgrade metadata without changing the accepted v1 elapsed value."""
+
+        return cls(
+            case_id=record.case_id,
+            workspace_id=record.workspace_id,
+            environment_id=record.environment_id,
+            disposition=record.disposition,
+            observation=record.observation,
+            failure_category=record.failure_category,
+            correlation_id=record.correlation_id,
+            failure_type=record.failure_type,
+            completed_attempt_id=record.completed_attempt_id,
+            completed_attempt_number=record.completed_attempt_number,
+            observer_elapsed_ms=record.observer_elapsed_ms,
+            worker_execution_elapsed_ns=worker_execution_elapsed_ns,
+            worker_execution_attempt_id=worker_execution_attempt_id,
+        )
+
+
 class ProductionContractObserverFailure(RuntimeError):
     """Base class for safe application-flow dispositions."""
 
@@ -421,9 +581,28 @@ class ProductionContractObserver:
     async def observe(
         self, *, request: ProductionContractCaseRequest
     ) -> CaseExecutionRecord:
+        result = await self._observe(request=request, versioned_timing=False)
+        assert isinstance(result, CaseExecutionRecord)
+        return result
+
+    async def observe_v2(
+        self, *, request: ProductionContractCaseRequest
+    ) -> CaseExecutionRecordV2:
+        """Return the additive timing contract for durable production flows."""
+
+        result = await self._observe(request=request, versioned_timing=True)
+        assert isinstance(result, CaseExecutionRecordV2)
+        return result
+
+    async def _observe(
+        self,
+        *,
+        request: ProductionContractCaseRequest,
+        versioned_timing: bool,
+    ) -> CaseExecutionRecord | CaseExecutionRecordV2:
         preflight_failure = _validate_observer_request(request)
         if preflight_failure is not None:
-            return CaseExecutionRecord(
+            record = CaseExecutionRecord(
                 case_id=_safe_case_id(request),
                 workspace_id=_safe_scope_id(request, "workspace_id"),
                 environment_id=_safe_scope_id(request, "environment_id"),
@@ -432,37 +611,51 @@ class ProductionContractObserver:
                 correlation_id=_safe_correlation_id(request),
                 failure_type="preflight_validation",
             )
+            return CaseExecutionRecordV2.from_v1(record) if versioned_timing else record
 
         try:
             started_at = self.clock()
         except Exception:
-            return self._failed(
+            record = self._failed(
                 request,
                 CaseExecutionFailureCategory.INVALID_TIMING,
                 failure_type="clock_error",
                 elapsed_ms=None,
             )
+            return CaseExecutionRecordV2.from_v1(record) if versioned_timing else record
         if not isfinite(started_at):
-            return self._failed(
+            record = self._failed(
                 request,
                 CaseExecutionFailureCategory.INVALID_TIMING,
                 failure_type="clock_error",
                 elapsed_ms=None,
             )
+            return CaseExecutionRecordV2.from_v1(record) if versioned_timing else record
 
         try:
-            observation = await ProductionContractObservationBridge(
+            bridge = ProductionContractObservationBridge(
                 self.flow,
                 index_version=self.index_version,
-            ).observe(request=request)
+            )
+            flow_result = (
+                await bridge.observe_with_timing(request=request)
+                if versioned_timing
+                else None
+            )
+            observation = (
+                flow_result.observation
+                if flow_result is not None
+                else await bridge.observe(request=request)
+            )
             elapsed_ms = self._elapsed_ms(started_at)
             if elapsed_ms is None:
-                return self._failed(
+                record = self._failed(
                     request,
                     CaseExecutionFailureCategory.INVALID_TIMING,
                     elapsed_ms=None,
                 )
-            return CaseExecutionRecord(
+                return CaseExecutionRecordV2.from_v1(record) if versioned_timing else record
+            values = dict(
                 case_id=request.case_id,
                 workspace_id=request.workspace_id,
                 environment_id=request.environment_id,
@@ -471,8 +664,16 @@ class ProductionContractObserver:
                 correlation_id=_observation_correlation_id(observation),
                 observer_elapsed_ms=elapsed_ms,
             )
+            if versioned_timing:
+                assert flow_result is not None
+                return CaseExecutionRecordV2(
+                    **values,
+                    worker_execution_elapsed_ns=flow_result.worker_execution_elapsed_ns,
+                    worker_execution_attempt_id=flow_result.worker_execution_attempt_id,
+                )
+            return CaseExecutionRecord(**values)
         except ProductionContractObserverFailure as error:
-            return self._failed(
+            record = self._failed(
                 request,
                 error.category,
                 disposition=error.disposition,
@@ -482,20 +683,23 @@ class ProductionContractObserver:
                 completed_attempt_number=error.completed_attempt_number,
                 elapsed_ms=self._elapsed_ms(started_at),
             )
+            return CaseExecutionRecordV2.from_v1(record) if versioned_timing else record
         except ProductionContractObservationError as error:
-            return self._failed(
+            record = self._failed(
                 request,
                 _observation_failure_category(error),
                 failure_type=_safe_failure_type(error),
                 elapsed_ms=self._elapsed_ms(started_at),
             )
+            return CaseExecutionRecordV2.from_v1(record) if versioned_timing else record
         except Exception as error:
-            return self._failed(
+            record = self._failed(
                 request,
                 CaseExecutionFailureCategory.APPLICATION_FAILURE,
                 failure_type=_safe_failure_type(error),
                 elapsed_ms=self._elapsed_ms(started_at),
             )
+            return CaseExecutionRecordV2.from_v1(record) if versioned_timing else record
 
     def _elapsed_ms(self, started_at: float) -> int | None:
         try:
@@ -695,9 +899,12 @@ def _validate_projection_retrieval(
 
 __all__ = [
     "CASE_EXECUTION_RECORD_SCHEMA",
+    "CASE_EXECUTION_RECORD_V2_SCHEMA",
     "CaseExecutionDisposition",
     "CaseExecutionFailureCategory",
     "CaseExecutionRecord",
+    "CaseExecutionRecordV2",
+    "ProductionContractFlowResult",
     "ProductionContractExecutionRecord",
     "PRODUCTION_CONTRACT_INDEX_VERSION",
     "PRODUCTION_CONTRACT_CASE_REQUEST_SCHEMA",

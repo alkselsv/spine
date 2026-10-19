@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 from uuid import UUID
 
 from spine.application.persistence.context import TrustedPersistenceContext
@@ -17,8 +17,12 @@ from spine.application.persistence.ask_admission import (
     AskAdmissionApplication,
     AskAdmissionCommand,
     AskAdmissionResult,
+    AskCaptureSubscription,
 )
 from spine.application.persistence.idempotency import IdempotencyKey
+
+if TYPE_CHECKING:
+    from spine.application.qa_observation.contracts import SameExecutionCapture
 from spine.application.persistence.answer_question_runs import (
     AnswerQuestionAttemptAllocationResult,
     AnswerQuestionAttemptTerminalResult,
@@ -154,6 +158,7 @@ class AskExecutionCommand:
     question: str
     idempotency_key: IdempotencyKey
     logical_execution_key: str | None = None
+    capture_subscription: AskCaptureSubscription | None = None
 
     def __post_init__(self) -> None:
         if any(
@@ -176,6 +181,8 @@ class AskExecutionCommand:
             )
         ):
             raise ValueError("logical execution key is invalid")
+        if self.capture_subscription is not None and not self.logical_execution_key:
+            raise ValueError("observer capture requires canonical attempt allocation")
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +201,7 @@ class AnswerQuestionCapabilityCommand:
     attempt_id: UUID | None = None
     attempt_number: int | None = None
     execution_pin: AnswerQuestionExecutionPin | None = None
+    capture_subscription: AskCaptureSubscription | None = None
 
     def __post_init__(self) -> None:
         if self.run_id is None:
@@ -213,6 +221,8 @@ class AnswerQuestionCapabilityCommand:
             raise ValueError("answer capability attempt identity is invalid")
         if self.execution_pin is not None and self.attempt_id is None:
             raise ValueError("answer capability execution pin requires an allocated attempt")
+        if self.capture_subscription is not None and self.attempt_id is None:
+            raise ValueError("observer capture requires canonical attempt identity")
         if self.execution_pin is not None and (
             self.execution_pin.workspace_id != self.request_context.workspace_id
             or self.execution_pin.environment_id != self.request_context.environment_id
@@ -230,6 +240,7 @@ class AnswerQuestionCapabilityResult:
     output: AnswerQuestionOutput
     accepted_answer: AcceptedGroundedAnswer | None
     terminalization_receipt: CanonicalQATerminalizationReceipt | None = None
+    same_execution_capture: SameExecutionCapture | None = None
     replay: bool = False
     availability: AnswerQuestionCapabilityAvailability = (
         AnswerQuestionCapabilityAvailability.AVAILABLE
@@ -326,6 +337,9 @@ class AuthorizedAskResult:
     output: AnswerQuestionOutput
     accepted_answer: AcceptedGroundedAnswer | None
     replay: bool = False
+    same_execution_capture: SameExecutionCapture | None = None
+    capture_subscription: AskCaptureSubscription | None = None
+    attempt_number: int | None = None
     availability: AnswerQuestionCapabilityAvailability = (
         AnswerQuestionCapabilityAvailability.AVAILABLE
     )
@@ -348,6 +362,12 @@ class AuthorizedAskResult:
                 )
         elif self.accepted_answer is not None:
             raise ValueError("safe ask result cannot carry accepted answer content")
+        if self.attempt_number is not None and self.attempt_number < 1:
+            raise ValueError("authorized ask attempt number must be positive")
+        if self.same_execution_capture is not None and (
+            self.capture_subscription is None or self.attempt_number is None
+        ):
+            raise ValueError("observer capture requires canonical routing and attempt")
 
     @property
     def run_id(self) -> UUID:
@@ -516,6 +536,7 @@ class PersistedAuthorizedAskService:
                 execution_pin=(
                     allocated.attempt.execution_pin if allocated is not None else None
                 ),
+                capture_subscription=command.capture_subscription,
             )
         )
         _validate_capability_scope(command.request_context, capability)
@@ -613,6 +634,22 @@ class PersistedAuthorizedAskService:
                 accepted_answer=terminal.accepted_answer,
                 replay=capability.replay or message.state is QAMessageState.TERMINAL,
                 availability=capability.availability,
+                same_execution_capture=(
+                    capability.same_execution_capture
+                    if capability.terminalization_receipt is not None
+                    and terminal.output == capability.output
+                    else None
+                ),
+                capture_subscription=(
+                    command.capture_subscription
+                    if capability.same_execution_capture is not None
+                    else None
+                ),
+                attempt_number=(
+                    getattr(capability.terminalization_receipt, "attempt_number", None)
+                    if capability.terminalization_receipt is not None
+                    else None
+                ),
             )
         if message.state is not QAMessageState.TERMINAL:
             await self.sessions.complete_message(

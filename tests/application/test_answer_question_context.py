@@ -5,6 +5,16 @@ from uuid import UUID
 
 import pytest
 
+from spine.application.qa_observation.context_capture import (
+    AuthorizedContextCaptureContext,
+    AuthorizedContextCaptureResult,
+    CaptureDisposition,
+)
+from spine.application.qa_observation.contracts import (
+    AdmittedExecutionIdentity,
+    CaptureSubscription,
+)
+
 from spine.application.answer_question_context import (
     AnswerQuestionContextRequest,
     AnswerQuestionContextService,
@@ -50,6 +60,7 @@ from spine.domain.disclosure import (
 )
 from spine.memory.contracts import ContextOutcome, ContextReasonCode, ContextResponse
 from spine.domain.common import EnvironmentKind
+from spine.domain.common import ActorKind, ActorRef
 
 from tests.domain.context_bundle.test_context_bundle_models import context_bundle
 from tests.application.test_answer_question_execution import configuration
@@ -224,7 +235,7 @@ def eligible_disclosure_result() -> DisclosureRevalidationResult:
     )
 
 
-def request(*, cancelled: bool = False) -> AnswerQuestionContextRequest:
+def request(*, cancelled: bool = False, capture_context=None) -> AnswerQuestionContextRequest:
     bundle = context_bundle()
     return AnswerQuestionContextRequest(
         question=question(),
@@ -234,6 +245,7 @@ def request(*, cancelled: bool = False) -> AnswerQuestionContextRequest:
         authorization_context_ref=bundle.authorization_context_ref,
         idempotency_key=bundle.idempotency_key,
         cancelled=cancelled,
+        capture_context=capture_context,
     )
 
 
@@ -294,6 +306,70 @@ async def test_denied_context_returns_safe_denial_without_loading_bundle() -> No
     assert result.output.outcome is AnswerQuestionOutcome.DENIED
     assert result.output.reason.code.value == "authorization_denied"
     assert "protected" not in result.output.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_capture_enabled_context_uses_one_broker_call_without_fabricating_evidence() -> None:
+    denied = ContextResponse(
+        outcome=ContextOutcome.DENIED,
+        reason_code=ContextReasonCode.AUTHORIZATION_DENIED,
+    )
+
+    class CaptureBroker:
+        retrieve_calls = 0
+        capture_calls = 0
+
+        async def retrieve(self, request):
+            self.retrieve_calls += 1
+            raise AssertionError("capture path must not issue a second retrieval")
+
+        async def retrieve_with_capture(
+            self, request, *, capture_context, capture_sink
+        ):
+            del request, capture_context, capture_sink
+            self.capture_calls += 1
+            return AuthorizedContextCaptureResult(
+                response=denied,
+                disposition=CaptureDisposition.NOT_ELIGIBLE,
+            )
+
+    capture_context = AuthorizedContextCaptureContext(
+        identity=AdmittedExecutionIdentity(
+            command_id=UUID(int=70),
+            run_id=RUN,
+            session_id=UUID(int=71),
+            message_id=UUID(int=72),
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+            requester=ActorRef(kind=ActorKind.HUMAN, id=UUID(int=73)),
+            attempt_id=ATTEMPT,
+            attempt_number=1,
+        ),
+        subscription=CaptureSubscription(
+            capture_id=UUID(int=74),
+            subscription_id=UUID(int=75),
+            expires_at=datetime(2027, 1, 1, tzinfo=timezone.utc),
+        ),
+        question=question(),
+    )
+    broker = CaptureBroker()
+    service = AnswerQuestionContextService(
+        broker=broker,
+        bundles=SavedContextBundleAccess(
+            store=InMemoryContextBundleStore(), revalidator=Revalidator()
+        ),
+        revalidator=Revalidator(),
+    )
+
+    result = await service.prepare(
+        request(capture_context=capture_context)
+    )
+
+    assert broker.capture_calls == 1
+    assert broker.retrieve_calls == 0
+    assert result.output is not None
+    assert result.output.outcome is AnswerQuestionOutcome.DENIED
+    assert result.broker_capture is None
 
 
 @pytest.mark.asyncio

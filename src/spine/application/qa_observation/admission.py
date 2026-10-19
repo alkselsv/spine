@@ -13,8 +13,11 @@ from spine.application.persistence.ask_admission import (
     AskAdmissionResult,
 )
 from spine.application.persistence.context import TrustedPersistenceContext
-from spine.application.qa_observation.channel import CaptureChannel, CaptureDisposition
-from spine.application.qa_observation.contracts import AdmittedExecutionIdentity
+from spine.application.qa_observation.channel import CaptureChannel
+from spine.application.qa_observation.contracts import (
+    AdmittedRunIdentity,
+    CaptureSubscription,
+)
 from spine.domain.common import ActorKind, ActorRef
 
 
@@ -27,6 +30,8 @@ class ObserverAskAdmissionResult:
     admission: AskAdmissionResult
     capture_id: UUID
     subscription_id: UUID
+    run_identity: AdmittedRunIdentity
+    capture_subscription: CaptureSubscription | None = None
 
 
 class ObserverAskAdmission:
@@ -78,9 +83,10 @@ class ObserverAskAdmission:
                     idempotency_key=command.idempotency_key,
                     clarification_of_message_id=command.clarification_of_message_id,
                     capture_id=capture_id,
+                    capture_subscription=subscription,
                 ),
             )
-            identity = AdmittedExecutionIdentity(
+            run_identity = AdmittedRunIdentity(
                 command_id=admitted.command_id,
                 run_id=admitted.run_id,
                 session_id=admitted.session_id,
@@ -88,22 +94,13 @@ class ObserverAskAdmission:
                 workspace_id=command.workspace_id,
                 environment_id=command.environment_id,
                 requester=ActorRef(kind=ActorKind.HUMAN, id=command.subject.id),
-                attempt_id=uuid5(admitted.run_id, "attempt:1"),
-                attempt_number=1,
             )
-            disposition = await self._channel.bind(
-                subscription_id=subscription.subscription_id,
-                identity=identity,
-            )
-            if disposition not in {
-                CaptureDisposition.BOUND,
-                CaptureDisposition.ALREADY_BOUND,
-            }:
-                raise ObserverAskAdmissionUnavailable()
             return ObserverAskAdmissionResult(
                 admission=admitted,
                 capture_id=capture_id,
                 subscription_id=subscription.subscription_id,
+                run_identity=run_identity,
+                capture_subscription=subscription,
             )
         except Exception:
             await self._channel.cleanup(

@@ -51,6 +51,8 @@ class Admission:
         del context
         self.calls.append("admit")
         assert command.capture_id == CAPTURE_ID
+        assert command.capture_subscription is not None
+        assert command.capture_subscription.capture_id == CAPTURE_ID
         self.count += 1
         return AskAdmissionResult(
             command_id=COMMAND_ID,
@@ -122,7 +124,7 @@ class Channel:
 
 
 @pytest.mark.asyncio
-async def test_observer_registers_before_admission_and_binds_canonical_identity() -> None:
+async def test_observer_registers_before_admission_and_keeps_attempt_unresolved() -> None:
     calls: list[str] = []
     channel = Channel(calls)
     service = ObserverAskAdmission(
@@ -142,18 +144,22 @@ async def test_observer_registers_before_admission_and_binds_canonical_identity(
     result = await service.admit(context=object(), command=command)
     replay = await service.admit(context=object(), command=command)
 
-    assert calls == ["register", "admit", "bind", "register", "admit", "bind"]
+    assert calls == ["register", "admit", "register", "admit"]
     assert result.admission.run_id == RUN_ID
     assert result.capture_id == CAPTURE_ID
-    assert channel.identity.command_id == COMMAND_ID
-    assert channel.identity.run_id == RUN_ID
-    assert channel.identity.session_id == SESSION_ID
-    assert channel.identity.message_id == MESSAGE_ID
-    assert channel.identity.workspace_id == WORKSPACE_ID
-    assert channel.identity.environment_id == ENVIRONMENT_ID
-    assert channel.identity.requester.id == SUBJECT_ID
-    assert channel.identity.attempt_id == uuid5(RUN_ID, "attempt:1")
+    assert result.capture_subscription is not None
+    assert result.capture_subscription == replay.capture_subscription
+    assert result.run_identity is not None
+    assert result.run_identity.command_id == COMMAND_ID
+    assert result.run_identity.run_id == RUN_ID
+    assert result.run_identity.session_id == SESSION_ID
+    assert result.run_identity.message_id == MESSAGE_ID
+    assert result.run_identity.workspace_id == WORKSPACE_ID
+    assert result.run_identity.environment_id == ENVIRONMENT_ID
+    assert result.run_identity.requester.id == SUBJECT_ID
+    assert channel.identity is None
     assert replay.admission.replay is True
+    assert replay.run_identity == result.run_identity
     assert replay.capture_id == result.capture_id
     assert replay.subscription_id == result.subscription_id
 

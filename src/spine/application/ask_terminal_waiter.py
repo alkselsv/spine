@@ -18,9 +18,11 @@ from spine.application.persistence.ask_admission import (
 from spine.application.persistence.context import EnvironmentScope, TrustedPersistenceContext
 from spine.application.qa_observation.contracts import (
     AdmittedExecutionIdentity,
+    AdmittedRunIdentity,
     ExecutionWaitState,
     SafeWaitUnavailableReason,
     TerminalWaitResult,
+    TerminalRunWaitResult,
 )
 from spine.application.qa_sessions import QAMessageRead, QASessionRequester, QASessionService
 from spine.domain.capabilities.answer_question import AnswerQuestionOutcome
@@ -34,7 +36,7 @@ MAX_TERMINAL_ASK_POLL_INTERVAL_SECONDS = 5.0
 class TerminalAskWaitResult:
     """Wait disposition, last canonical lifecycle, and authorized message."""
 
-    wait: TerminalWaitResult
+    wait: TerminalWaitResult | TerminalRunWaitResult
     message: QAMessageRead | None = None
     last_observed_state: ExecutionWaitState | None = None
 
@@ -65,8 +67,48 @@ class TerminalAskWaiter:
         deadline: float,
         poll_interval: float = 0.05,
     ) -> TerminalAskWaitResult:
-        """Poll canonical status until terminal or the bounded monotonic deadline."""
+        """Wait for one expected canonical attempt and read its persisted message."""
 
+        return await self._wait(
+            identity=identity,
+            context=context,
+            admission_result=admission_result,
+            requester=requester,
+            deadline=deadline,
+            poll_interval=poll_interval,
+        )
+
+    async def wait_for_run(
+        self,
+        *,
+        identity: AdmittedRunIdentity,
+        context: TrustedPersistenceContext,
+        admission_result: AskAdmissionResult,
+        requester: QASessionRequester,
+        deadline: float,
+        poll_interval: float = 0.05,
+    ) -> TerminalAskWaitResult:
+        """Wait by admitted run identity, resolving the attempt from canonical status."""
+
+        return await self._wait(
+            identity=identity,
+            context=context,
+            admission_result=admission_result,
+            requester=requester,
+            deadline=deadline,
+            poll_interval=poll_interval,
+        )
+
+    async def _wait(
+        self,
+        *,
+        identity: AdmittedExecutionIdentity | AdmittedRunIdentity,
+        context: TrustedPersistenceContext,
+        admission_result: AskAdmissionResult,
+        requester: QASessionRequester,
+        deadline: float,
+        poll_interval: float,
+    ) -> TerminalAskWaitResult:
         if not isfinite(poll_interval) or not (
             0 < poll_interval <= MAX_TERMINAL_ASK_POLL_INTERVAL_SECONDS
         ):
@@ -75,16 +117,21 @@ class TerminalAskWaiter:
         if not isfinite(deadline) or not isfinite(started_at):
             raise ValueError("deadline and monotonic clock must be finite")
         if deadline <= started_at:
-            return self._unavailable(identity, SafeWaitUnavailableReason.DEADLINE_EXCEEDED)
+            return self._identity_unavailable(
+                identity, SafeWaitUnavailableReason.DEADLINE_EXCEEDED
+            )
         bounded_deadline = min(deadline, started_at + self.max_wait_seconds)
         last_observed_state: ExecutionWaitState | None = None
 
         while True:
+            is_run_identity = isinstance(identity, AdmittedRunIdentity)
             if not self._request_matches(identity, context, admission_result, requester):
-                return self._unavailable(identity, SafeWaitUnavailableReason.CORRELATION_MISMATCH)
+                return self._identity_unavailable(
+                    identity, SafeWaitUnavailableReason.CORRELATION_MISMATCH
+                )
             read_timeout = self._remaining(bounded_deadline)
             if read_timeout <= 0:
-                return self._unavailable(
+                return self._identity_unavailable(
                     identity,
                     SafeWaitUnavailableReason.DEADLINE_EXCEEDED,
                     last_observed_state=last_observed_state,
@@ -95,44 +142,84 @@ class TerminalAskWaiter:
                     timeout=read_timeout,
                 )
             except asyncio.TimeoutError:
-                return self._unavailable(
+                return self._identity_unavailable(
                     identity,
                     SafeWaitUnavailableReason.DEADLINE_EXCEEDED,
                     last_observed_state=last_observed_state,
                 )
             except Exception:
-                return self._unavailable(
+                return self._identity_unavailable(
                     identity,
                     SafeWaitUnavailableReason.READBACK_UNAVAILABLE,
                     last_observed_state=last_observed_state,
                 )
-
-            if not self._status_matches(identity, status):
-                return self._unavailable(identity, SafeWaitUnavailableReason.CORRELATION_MISMATCH)
+            status_matches = (
+                self._status_matches_run(identity, status)
+                if is_run_identity
+                else self._status_matches(identity, status)
+            )
+            if not status_matches:
+                return self._identity_unavailable(
+                    identity, SafeWaitUnavailableReason.CORRELATION_MISMATCH
+                )
             if status.status is AskAdmissionLifecycle.TERMINAL:
-                return await self._read_terminal_message(
-                    identity=identity,
+                if not is_run_identity:
+                    return await self._read_terminal_message(
+                        identity=identity,
+                        context=context,
+                        requester=requester,
+                        status=status,
+                        deadline=bounded_deadline,
+                    )
+                if status.attempt_id is None or status.attempt_number is None:
+                    return self._identity_unavailable(
+                        identity,
+                        SafeWaitUnavailableReason.INCOMPLETE_TERMINAL_STATE,
+                        last_observed_state=ExecutionWaitState.TERMINAL,
+                    )
+                execution_identity = identity.with_attempt(
+                    attempt_id=status.attempt_id,
+                    attempt_number=status.attempt_number,
+                )
+                terminal = await self._read_terminal_message(
+                    identity=execution_identity,
                     context=context,
                     requester=requester,
                     status=status,
                     deadline=bounded_deadline,
+                )
+                if terminal.wait.state is not ExecutionWaitState.TERMINAL:
+                    return self._identity_unavailable(
+                        identity,
+                        terminal.wait.unavailable_reason
+                        or SafeWaitUnavailableReason.READBACK_UNAVAILABLE,
+                        last_observed_state=terminal.last_observed_state,
+                    )
+                return TerminalAskWaitResult(
+                    wait=TerminalRunWaitResult(
+                        identity=identity,
+                        state=ExecutionWaitState.TERMINAL,
+                        outcome=terminal.wait.outcome,
+                        execution_identity=execution_identity,
+                    ),
+                    message=terminal.message,
+                    last_observed_state=terminal.last_observed_state,
                 )
             last_observed_state = (
                 ExecutionWaitState.RUNNING
                 if status.status is AskAdmissionLifecycle.RUNNING
                 else ExecutionWaitState.PENDING
             )
-
             now = self.clock()
             if not isfinite(now):
-                return self._unavailable(
+                return self._identity_unavailable(
                     identity,
                     SafeWaitUnavailableReason.READBACK_UNAVAILABLE,
                     last_observed_state=last_observed_state,
                 )
             remaining = bounded_deadline - now
             if remaining <= 0:
-                return self._unavailable(
+                return self._identity_unavailable(
                     identity,
                     SafeWaitUnavailableReason.DEADLINE_EXCEEDED,
                     last_observed_state=last_observed_state,
@@ -140,7 +227,7 @@ class TerminalAskWaiter:
             try:
                 await self.sleeper(min(poll_interval, remaining))
             except Exception:
-                return self._unavailable(
+                return self._identity_unavailable(
                     identity,
                     SafeWaitUnavailableReason.READBACK_UNAVAILABLE,
                     last_observed_state=last_observed_state,
@@ -156,13 +243,20 @@ class TerminalAskWaiter:
         deadline: float,
     ) -> TerminalAskWaitResult:
         terminal_state = ExecutionWaitState.TERMINAL
-        if status.outcome is None or status.attempt_id is None:
+        if (
+            status.outcome is None
+            or status.attempt_id is None
+            or status.attempt_number is None
+        ):
             return self._unavailable(
                 identity,
                 SafeWaitUnavailableReason.INCOMPLETE_TERMINAL_STATE,
                 last_observed_state=terminal_state,
             )
-        if status.attempt_id != identity.attempt_id:
+        if (
+            status.attempt_id != identity.attempt_id
+            or status.attempt_number != identity.attempt_number
+        ):
             return self._unavailable(
                 identity,
                 SafeWaitUnavailableReason.CORRELATION_MISMATCH,
@@ -260,7 +354,7 @@ class TerminalAskWaiter:
 
     @staticmethod
     def _request_matches(
-        identity: AdmittedExecutionIdentity,
+        identity: AdmittedExecutionIdentity | AdmittedRunIdentity,
         context: TrustedPersistenceContext,
         admission_result: AskAdmissionResult,
         requester: QASessionRequester,
@@ -281,21 +375,40 @@ class TerminalAskWaiter:
         )
 
     @staticmethod
+    def _status_matches_run(identity: AdmittedRunIdentity, status: AskAdmissionStatus) -> bool:
+        return (
+            TerminalAskWaiter._status_matches_admission(identity, status)
+            and ((status.attempt_id is None) == (status.attempt_number is None))
+        )
+
+    @staticmethod
+    def _status_matches_admission(
+        identity: AdmittedExecutionIdentity | AdmittedRunIdentity,
+        status: AskAdmissionStatus,
+    ) -> bool:
+        return (
+            isinstance(status, AskAdmissionStatus)
+            and status.command_id == identity.command_id
+            and status.run_id == identity.run_id
+            and status.session_id == identity.session_id
+            and status.message_id == identity.message_id
+        )
+
+    @staticmethod
     def _status_matches(
         identity: AdmittedExecutionIdentity, status: AskAdmissionStatus
     ) -> bool:
-        if not isinstance(status, AskAdmissionStatus):
-            return False
-        if (
-            status.command_id != identity.command_id
-            or status.run_id != identity.run_id
-            or status.session_id != identity.session_id
-            or status.message_id != identity.message_id
-        ):
+        if not TerminalAskWaiter._status_matches_admission(identity, status):
             return False
         if status.status is AskAdmissionLifecycle.RUNNING:
-            return status.attempt_id == identity.attempt_id
-        return status.attempt_id in (None, identity.attempt_id)
+            return (
+                status.attempt_id == identity.attempt_id
+                and status.attempt_number == identity.attempt_number
+            )
+        return (
+            status.attempt_id in (None, identity.attempt_id)
+            and status.attempt_number in (None, identity.attempt_number)
+        )
 
     def _remaining(self, deadline: float) -> float:
         now = self.clock()
@@ -317,6 +430,38 @@ class TerminalAskWaiter:
                 unavailable_reason=reason,
             ),
             last_observed_state=last_observed_state,
+        )
+
+    @staticmethod
+    def _run_unavailable(
+        identity: AdmittedRunIdentity,
+        reason: SafeWaitUnavailableReason,
+        *,
+        last_observed_state: ExecutionWaitState | None = None,
+    ) -> TerminalAskWaitResult:
+        return TerminalAskWaitResult(
+            wait=TerminalRunWaitResult(
+                identity=identity,
+                state=ExecutionWaitState.UNAVAILABLE,
+                unavailable_reason=reason,
+            ),
+            last_observed_state=last_observed_state,
+        )
+
+    @classmethod
+    def _identity_unavailable(
+        cls,
+        identity: AdmittedExecutionIdentity | AdmittedRunIdentity,
+        reason: SafeWaitUnavailableReason,
+        *,
+        last_observed_state: ExecutionWaitState | None = None,
+    ) -> TerminalAskWaitResult:
+        if isinstance(identity, AdmittedRunIdentity):
+            return cls._run_unavailable(
+                identity, reason, last_observed_state=last_observed_state
+            )
+        return cls._unavailable(
+            identity, reason, last_observed_state=last_observed_state
         )
 
 

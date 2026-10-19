@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from dataclasses import replace
 from datetime import datetime, timezone
-from uuid import UUID, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import pytest
 
@@ -925,8 +925,16 @@ async def test_supported_answer_revalidates_and_persists_through_disclosure_gate
     None
 ):
     request_id = uuid5(RUN, "context-request")
-    attempt_id = uuid5(RUN, "attempt:1")
     idempotency_key = "admitted-key"
+    stable_id = uuid5(
+        NAMESPACE_URL,
+        "spine:answer-question:command:v1:"
+        f"{WORKSPACE}:{ENVIRONMENT}:{SESSION}:{MESSAGE}:{idempotency_key}",
+    )
+    attempt_id = uuid5(
+        stable_id,
+        f"legacy-ephemeral-attempt:v1:{SESSION}:{MESSAGE}:{idempotency_key}",
+    )
     bundle_values = base_context_bundle().model_dump(mode="python")
     bundle_values.update(
         {

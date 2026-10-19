@@ -11,6 +11,7 @@ from spine.application.outbox.dispatch import TerminalOutboxConsumerFailure
 from spine.application.outbox.dispatch import RetryableOutboxConsumerFailure
 from spine.application.persistence.ask_admission import (
     AskAdmissionDispatchPayload,
+    AskCaptureSubscription,
     AskCancellationDispatchPayload,
     QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION,
     QA_ASK_ADMISSION_EVENT_TYPE,
@@ -38,6 +39,12 @@ from spine.application.workflows.ask_admission_dispatch import (
     TemporalWorkflowAlreadyStarted,
     reconcile_ask_admissions,
     workflow_id_for_run,
+)
+from spine.application.authorized_ask import AuthorizedAskResult
+from spine.application.qa_observation.contracts import CaptureEnvelope
+from tests.application.qa_observation.factories import (
+    execution_identity,
+    same_execution_capture,
 )
 
 WORKSPACE_ID = UUID("10000000-0000-0000-0000-000000000427")
@@ -128,6 +135,51 @@ def test_capture_enabled_dispatch_uses_compatible_v2_workflow_metadata() -> None
     assert restored.schema_version == 2
     assert restored.capture_id == capture_id
     assert "question" not in restored.model_dump(mode="json")
+
+
+def test_observer_subscription_dispatch_uses_typed_v3_routing_metadata() -> None:
+    subscription = AskCaptureSubscription(
+        capture_id=UUID("90000000-0000-0000-0000-000000000427"),
+        subscription_id=UUID("91000000-0000-0000-0000-000000000427"),
+        expires_at=NOW + timedelta(minutes=5),
+    )
+    registry = OutboxEventRegistry()
+    from spine.application.persistence.ask_admission import (
+        register_ask_admission_outbox_event,
+    )
+
+    register_ask_admission_outbox_event(registry)
+    intent = registry.build_intent(
+        event_id=UUID("80000000-0000-0000-0000-000000000427"),
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        event_type=QA_ASK_ADMISSION_EVENT_TYPE,
+        schema_version=QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION,
+        payload=AskAdmissionDispatchPayload(
+            command_id=COMMAND_ID,
+            session_id=SESSION_ID,
+            message_id=MESSAGE_ID,
+            run_id=RUN_ID,
+            capture_id=subscription.capture_id,
+            capture_subscription=subscription,
+            schema_version=3,
+        ),
+        aggregate=OpaqueObjectReference(
+            object_type="answer_question_run", object_id=RUN_ID, schema_version=1
+        ),
+        producer_deduplication_id="qa-ask-admission:observer-subscription-427",
+        trace_id=TRACE_ID,
+    )
+
+    workflow = AskAdmissionWorkflowInput.from_intent(intent)
+    restored = AskAdmissionWorkflowInput.model_validate_json(workflow.model_dump_json())
+
+    assert restored.schema_version == 3
+    assert restored.capture_id == subscription.capture_id
+    assert restored.capture_subscription == subscription
+    assert "question" not in restored.model_dump(mode="json")
+    assert "answer" not in restored.model_dump(mode="json")
+    assert "context_bundle" not in restored.model_dump(mode="json")
 
 
 class FakeTemporal:
@@ -446,6 +498,92 @@ async def test_workflow_executor_does_not_emit_duration_for_incomplete_attempt()
         await executor.execute(workflow_input())
 
     assert timings == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("publish_fails", [False, True])
+async def test_observer_capture_publishes_only_after_canonical_terminal_commit(
+    publish_fails: bool,
+) -> None:
+    identity = execution_identity()
+    capture = same_execution_capture()
+    subscription = AskCaptureSubscription(
+        capture_id=UUID("a1000000-0000-0000-0000-000000000427"),
+        subscription_id=UUID("a2000000-0000-0000-0000-000000000427"),
+        expires_at=NOW + timedelta(minutes=5),
+    )
+    workflow = AskAdmissionWorkflowInput(
+        command_id=identity.command_id,
+        workspace_id=identity.workspace_id,
+        environment_id=identity.environment_id,
+        session_id=identity.session_id,
+        message_id=identity.message_id,
+        run_id=identity.run_id,
+        trace_id=capture.question.correlation.trace_id,
+        capture_id=subscription.capture_id,
+        capture_subscription=subscription,
+        schema_version=3,
+    )
+    command = AskAdmissionCommandData(
+        command_id=identity.command_id,
+        workspace_id=identity.workspace_id,
+        environment_id=identity.environment_id,
+        session_id=identity.session_id,
+        message_id=identity.message_id,
+        run_id=identity.run_id,
+        question=capture.question.subject.text,
+        subject=identity.requester,
+        environment=EnvironmentKind.PRODUCTION,
+        idempotency_key="observer-command",
+    )
+    committed = False
+    publications: list[CaptureEnvelope] = []
+
+    class Loader:
+        async def load(self, workflow_input):
+            assert workflow_input.capture_subscription == subscription
+            return command
+
+    class Service:
+        async def execute_admitted(self, execution):
+            nonlocal committed
+            assert execution.capture_subscription == subscription
+            committed = True
+            return AuthorizedAskResult(
+                command_id=identity.command_id,
+                session_id=identity.session_id,
+                message_id=identity.message_id,
+                output=capture.answer,
+                accepted_answer=None,
+                same_execution_capture=capture,
+                capture_subscription=subscription,
+                attempt_number=identity.attempt_number,
+            )
+
+    class Publisher:
+        async def publish(self, envelope: CaptureEnvelope):
+            assert committed
+            publications.append(envelope)
+            if publish_fails:
+                raise RuntimeError("transport failure")
+
+    executor = AskAdmissionWorkflowExecutor(
+        loader=Loader(),
+        service=Service(),
+        persistence_context_factory=lambda workflow_input: object(),
+        monotonic_ns=iter((1_000, 1_250)).__next__,
+        capture_publisher=Publisher(),
+    )
+
+    result = await executor.execute(workflow)
+
+    assert result.output == capture.answer
+    assert len(publications) == 1
+    envelope = publications[0]
+    assert envelope.capture == capture
+    assert envelope.identity.attempt_id == identity.attempt_id
+    assert envelope.identity.attempt_number == identity.attempt_number
+    assert envelope.worker_execution_elapsed_ns == 250
 
 
 @pytest.mark.asyncio

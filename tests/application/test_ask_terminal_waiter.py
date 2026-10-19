@@ -20,6 +20,7 @@ from spine.application.persistence.context import (
     PersistencePurpose,
 )
 from spine.application.qa_observation.contracts import (
+    AdmittedRunIdentity,
     ExecutionWaitState,
     SafeWaitUnavailableReason,
 )
@@ -103,7 +104,7 @@ def _admission_result(identity) -> AskAdmissionResult:
     )
 
 
-def _status(identity, lifecycle, outcome=None, attempt_id=None):
+def _status(identity, lifecycle, outcome=None, attempt_id=None, attempt_number=None):
     return AskAdmissionStatus(
         command_id=identity.command_id,
         session_id=identity.session_id,
@@ -112,6 +113,11 @@ def _status(identity, lifecycle, outcome=None, attempt_id=None):
         status=lifecycle,
         outcome=outcome,
         attempt_id=attempt_id,
+        attempt_number=(
+            (identity.attempt_number if attempt_number is None else attempt_number)
+            if attempt_id is not None
+            else None
+        ),
     )
 
 
@@ -466,6 +472,55 @@ async def test_waiter_does_not_return_answer_after_disclosure_revocation():
     assert result.wait.state is ExecutionWaitState.UNAVAILABLE
     assert result.wait.unavailable_reason is SafeWaitUnavailableReason.AUTHORIZATION_CHANGED
     assert result.message is None
+
+
+@pytest.mark.asyncio
+async def test_waiter_resolves_retry_attempt_from_canonical_terminal_status() -> None:
+    admitted = execution_identity()
+    run_identity = AdmittedRunIdentity(
+        command_id=admitted.command_id,
+        run_id=admitted.run_id,
+        session_id=admitted.session_id,
+        message_id=admitted.message_id,
+        workspace_id=admitted.workspace_id,
+        environment_id=admitted.environment_id,
+        requester=admitted.requester,
+    )
+    canonical_attempt_id = UUID("f3000000-0000-0000-0000-000000000475")
+    canonical_identity = run_identity.with_attempt(
+        attempt_id=canonical_attempt_id,
+        attempt_number=2,
+    )
+    admission = _Admission(
+        [
+            _status(
+                admitted,
+                AskAdmissionLifecycle.TERMINAL,
+                AnswerQuestionOutcome.ABSTAINED,
+                canonical_attempt_id,
+                attempt_number=2,
+            )
+        ]
+    )
+    sessions = _Sessions(_message(canonical_identity, AnswerQuestionOutcome.ABSTAINED))
+    waiter = TerminalAskWaiter(
+        admission=admission,
+        sessions=sessions,
+        clock=lambda: 0.0,
+        sleeper=lambda _duration: None,
+    )
+
+    result = await waiter.wait_for_run(
+        identity=run_identity,
+        context=_context(admitted),
+        admission_result=_admission_result(admitted),
+        requester=QASessionRequester(admitted.requester.id),
+        deadline=1.0,
+    )
+
+    assert result.wait.state is ExecutionWaitState.TERMINAL
+    assert result.wait.execution_identity == canonical_identity
+    assert result.message == sessions.message
 
 
 @pytest.mark.asyncio

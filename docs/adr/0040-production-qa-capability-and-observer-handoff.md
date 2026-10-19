@@ -120,6 +120,16 @@ is lost. The existing authorized Context Broker/execution is the sole source
 of the typed records; no second retrieval or reconstruction from run history
 or gold labels is allowed.
 
+The observer retains the canonical command/run/session/message/scope/requester
+identity returned by admission. The canonical attempt is not guessed from
+`run_id`: the bounded waiter resolves `attempt_id` and `attempt_number` from
+PostgreSQL terminal status, then binds the complete execution identity before
+it accepts the capture. The channel may hold one bounded, TTL-limited pre-bind envelope;
+the later bind rejects and discards it if any run or attempt field differs.
+Unavailable status without complete attempt identity fails closed. This keeps
+Temporal Activity retries and later Q&A attempts from being treated as the
+same observer attempt.
+
 ### D5 — bounded canonical terminal readback
 
 The application waiter is read-only and bounded. It polls canonical admission
@@ -159,11 +169,76 @@ samples do not produce fabricated aggregate latency. Preserve
 `ProductionContractApplicationFlow.execute` latency boundary in ADR-0039. Map
 worker invocation duration into the existing execution-record boundary only
 when meanings match; otherwise require a separately versioned execution-record
-contract. Include the non-negative `worker_elapsed_ns` scalar and its
-`activity_attempt_id` in the ephemeral execution/capture envelope; do not
+contract. Include the non-negative `worker_execution_elapsed_ns` scalar and its
+canonical `attempt_id` in the ephemeral execution/capture envelope; do not
 transmit worker timestamps.
 
-### D7 — canonical durable Q&A terminalization
+### D7 execution-record compatibility
+
+The selected v2 record is `r1-case-execution-record:v2`. It retains
+`observer_elapsed_ms` with the exact v1 boundary: wall time around
+`ProductionContractApplicationFlow.execute`, including queue/admission wait,
+Temporal scheduling, and terminal readback/capture waits that occur inside that
+call. Corpus preparation before the call and evaluation after it are excluded.
+V2 adds nullable
+`worker_execution_elapsed_ns` and `worker_execution_attempt_id`. Both worker
+fields must be null together or present together; a present duration is one
+non-negative worker-local monotonic sample and its ID is the canonical Q&A
+attempt ID from that execution's typed capture. The sample excludes queue wait,
+Temporal scheduling/retry delay, observer readback/capture waiting, corpus
+preparation, and evaluation. No cross-process monotonic timestamp or aggregate
+across incomplete/retried samples is allowed. V1 serialization and
+`ProductionContractObservation:v1` remain unchanged. Downstream consumers
+dispatch on `schema_version`; #480 owns v2 report serialization and keeps both
+measurements distinct.
+
+### D8 — Versioned observer capture routing
+
+Observer-routed executions may use the existing strictly typed
+`ObserverRoutedAskAdmissionWorkflowInput` wrapper, or an equivalent
+backward-compatible versioned wrapper. Outbox metadata v3 carries the typed
+`capture_id`, `subscription_id`, and UTC expiry through admission and Temporal
+to the worker publisher; v1 and capture-id-only v2 remain readable.
+These values are opaque routing metadata, not authorization credentials.
+The existing application and authenticated `CaptureChannel` boundaries remain
+responsible for authorization and full canonical execution identity checks.
+Legacy Ask Admission v1 without observer capture remains supported. Protected
+retrieval, context bundle, answer, and disclosure values remain in worker
+memory and the authenticated ephemeral capture channel; they are not included
+in Temporal input, result, history, or durable metadata. This refines #476's
+capture-enabled metadata contract, which previously named only `capture_id`.
+
+### D9 — Canonical persisted Q&A attempt identity
+
+The canonical Q&A domain attempt identity and attempt number are allocated and
+persisted before authorized retrieval begins. A retry of the same logical
+execution, including a Temporal Activity retry, resumes the same persisted
+attempt identity. A new Q&A domain attempt is allocated through the canonical
+run/attempt persistence lifecycle and receives a distinct identity. Temporal
+Activity attempt numbers and Q&A domain attempt numbers remain separate.
+Capability input, Context Broker capture, terminal status, `CaptureEnvelope`,
+and observer validation all use the persisted Q&A attempt identity. The
+observer does not derive an attempt identity from `run_id` or assume an
+attempt ordinal. Capture publication failure does not start another retrieval
+or change the canonical Q&A result; `CaptureChannel` binding remains one-shot.
+
+### D10 — Preserve observation v1 with safe outer dispositions
+
+Keep `ProductionContractObservation:v1`'s schema and meaning unchanged. Build
+an observation only when the actual authorized execution provides the required
+typed `ContextResponse`, `ProjectionRetrievalResult`, `RetrievalResult`, any
+`ContextBundle` required by that response, `AnswerQuestionOutput`,
+`AnswerDisclosureRecord`, and full canonical execution identity. Never invent
+typed records, reconstruct them from run history, or perform a second
+retrieval. If records are missing or fail validation, return a safe
+non-success outer execution disposition and leave the persisted Q&A outcome
+unchanged. In-flow denial may remain inside a validated observation when all
+required records exist. A pre-retrieval denial maps to outer `denied` only
+after canonical authorization denial is confirmed; missing capture by itself
+is not denial. An unobserved eligible case does not pass evaluation. This does
+not alter v1, metric formulas, or release qualification rules.
+
+### Canonical durable Q&A terminalization (#496)
 
 Durable production Q&A carries an ephemeral typed execution receipt from the
 capability to the persistence boundary. It references only the canonical
@@ -197,6 +272,16 @@ the v1 decoder remains for already-recorded histories.
   it does not own Q&A execution composition.
 - #452 owns benchmark orchestration and readiness preflight; it does not own
   Q&A composition or projection writes.
+- #478 owns the production observer adapter, real application-contract
+  composition checks, canonical identity and terminal/capture/disclosure
+  validation, retry/cancellation safety, fail-closed behavior, and deterministic
+  composition tests. It does not own final opt-in end-to-end qualification.
+- #480 owns connecting the observer to the deterministic runner and adapting
+  metadata-only reports to v2; it does not own final production-runtime
+  qualification.
+- #453 owns the final operator-triggered opt-in end-to-end qualification through
+  the integrated #480 runner and configured production composition. Fake tests
+  never qualify production runtime.
 - #469 specifies the bounded waiter and `CaptureChannel` port, schemas,
   lifecycle, and deterministic failure semantics. Runtime authentication and
   deployment security configuration remain operational prerequisites owned by

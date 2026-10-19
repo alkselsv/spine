@@ -8,11 +8,13 @@ from spine.application.qa_observation.admission import (
 
 from spine.application.qa_observation.contracts import (
     AdmittedExecutionIdentity,
+    AdmittedRunIdentity,
     CaptureEnvelope,
     CaptureSubscription,
     ObserverRoutedAskAdmissionWorkflowInput,
     SameExecutionCapture,
     TerminalWaitResult,
+    TerminalRunWaitResult,
 )
 from spine.application.qa_observation.context_capture import (
     AuthorizedContextCapture,
@@ -24,6 +26,7 @@ from spine.application.qa_observation.context_capture import (
 
 __all__ = [
     "AdmittedExecutionIdentity",
+    "AdmittedRunIdentity",
     "AuthorizedContextCapture",
     "AuthorizedContextCaptureContext",
     "AuthorizedContextCaptureResult",
@@ -37,4 +40,5 @@ __all__ = [
     "ObserverRoutedAskAdmissionWorkflowInput",
     "SameExecutionCapture",
     "TerminalWaitResult",
+    "TerminalRunWaitResult",
 ]
