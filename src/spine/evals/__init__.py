@@ -31,6 +31,11 @@ from spine.evals.baseline_comparison import (
     SafetyFailure,
     compare_r1_reports,
 )
+from spine.evals.real_baseline import (
+    R1BaselineReport,
+    BaselineMetricAggregate,
+    BaselineOperationalMeasurement,
+)
 from spine.evals.production_contract import (
     CASE_EXECUTION_RECORD_SCHEMA,
     CASE_EXECUTION_RECORD_V2_SCHEMA,
@@ -254,4 +259,7 @@ __all__ = [
     "MetricDelta",
     "SafetyFailure",
     "compare_r1_reports",
+    "R1BaselineReport",
+    "BaselineMetricAggregate",
+    "BaselineOperationalMeasurement",
 ]

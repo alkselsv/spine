@@ -29,16 +29,24 @@ from spine.evals.real_evaluation import (
     FinalizedRealObservation,
     RealEvaluationAdapter,
     RealEvaluationResult,
+    RealCaseEvaluationResult,
     RealGoldCasePort,
     RealEvaluationRuntimeIdentity,
     REAL_EVALUATOR_VERSION,
     aggregate_real_evaluations,
     evaluate_real_case,
 )
+from spine.evals.real_baseline import (
+    BaselineCaseInput,
+    BaselineMetricInput,
+    R1BaselineReport,
+    build_r1_baseline_report,
+)
 from spine.evals.real_qa_r1 import (
     REAL_R1_DATASET_DIGEST,
     REAL_R1_DATASET_VERSION,
     LoadedRealDataset,
+    RealQACase,
     RealCaseObservationInput,
     RealRuntimeCaseResolution,
     RealRuntimeMappingManifest,
@@ -51,6 +59,7 @@ from spine.evals.real_qa_r1 import (
 REAL_BENCHMARK_RUN_SCHEMA = "r1-local-benchmark-run:v1"
 REAL_BENCHMARK_REPORT_SCHEMA = "r1-local-benchmark-report:v1"
 REAL_BENCHMARK_REPORT_V2_SCHEMA = "r1-local-benchmark-report:v2"
+REAL_BENCHMARK_REPORT_V3_SCHEMA = "r1-local-benchmark-report:v3"
 REAL_BENCHMARK_REPORT_VERSION = "v1"
 
 
@@ -206,6 +215,15 @@ class RealBenchmarkReportV2(RealBenchmarkReport):
     execution_timings: tuple[RealBenchmarkExecutionTiming, ...] = ()
 
 
+class RealBenchmarkReportV3(RealBenchmarkReportV2):
+    """Metadata report with versioned R1 baseline coverage and strata."""
+
+    schema_version: Literal["r1-local-benchmark-report:v3"] = (
+        REAL_BENCHMARK_REPORT_V3_SCHEMA
+    )
+    baseline: R1BaselineReport
+
+
 class _MappingPort(Protocol):
     async def resolve(
         self,
@@ -252,6 +270,7 @@ class RealBenchmarkRunner:
         if self._report_schema not in {
             REAL_BENCHMARK_REPORT_SCHEMA,
             REAL_BENCHMARK_REPORT_V2_SCHEMA,
+            REAL_BENCHMARK_REPORT_V3_SCHEMA,
         }:
             raise RealBenchmarkContractError("observer report schema version is unsupported")
 
@@ -442,6 +461,8 @@ class RealBenchmarkRunner:
 
         counts: Counter[str] = Counter()
         scored = []
+        scored_by_case: dict[str, RealCaseEvaluationResult] = {}
+        observation_status_by_case: dict[str, str] = {}
         execution_timings: list[RealBenchmarkExecutionTiming] = []
         failures = 0
         for case in cases:
@@ -458,7 +479,11 @@ class RealBenchmarkRunner:
                 if type(result) is not RealObserverResult:
                     raise RealBenchmarkContractError("observer result is invalid")
                 result.validate_disposition()
-                if self._report_schema == REAL_BENCHMARK_REPORT_V2_SCHEMA:
+                observation_status_by_case[case.case_id] = result.status
+                if self._report_schema in {
+                    REAL_BENCHMARK_REPORT_V2_SCHEMA,
+                    REAL_BENCHMARK_REPORT_V3_SCHEMA,
+                }:
                     if result.execution_record_schema_version != "r1-case-execution-record:v2":
                         raise RealBenchmarkContractError(
                             "v2 report observer did not return a v2 execution record"
@@ -476,6 +501,7 @@ class RealBenchmarkRunner:
                             "v1 report cannot consume this execution record version"
                         )
             except Exception:
+                observation_status_by_case[case.case_id] = "failed"
                 counts["failed"] += 1
                 failures += 1
                 failure_reasons["observer_failed"] += 1
@@ -505,6 +531,7 @@ class RealBenchmarkRunner:
                         finalized, evaluation_case, runtime_identity=identity
                     )
                 )
+                scored_by_case[case.case_id] = scored[-1]
             except Exception:
                 failures += 1
                 failure_reasons["evaluation_failed"] += 1
@@ -563,7 +590,42 @@ class RealBenchmarkRunner:
             ),
             evaluation=evaluation,
         )
-        if self._report_schema == REAL_BENCHMARK_REPORT_V2_SCHEMA:
+        if self._report_schema in {
+            REAL_BENCHMARK_REPORT_V2_SCHEMA,
+            REAL_BENCHMARK_REPORT_V3_SCHEMA,
+        }:
+            if self._report_schema == REAL_BENCHMARK_REPORT_V3_SCHEMA:
+                case_inputs = tuple(
+                    _baseline_case_input(
+                        case,
+                        scored_by_case.get(case.case_id),
+                        observation_status_by_case.get(case.case_id),
+                        {
+                            source.source_id: source.format
+                            for source in loaded.dataset.source_objects
+                        },
+                    )
+                    for case in cases
+                )
+                timing_values = tuple(execution_timings)
+                baseline = build_r1_baseline_report(
+                    cases=case_inputs,
+                    observer_latencies_ms=tuple(
+                        item.observer_elapsed_ms for item in timing_values
+                        if item.observer_elapsed_ms is not None
+                    ),
+                    worker_latencies_ns=tuple(
+                        item.worker_execution_elapsed_ns for item in timing_values
+                        if item.worker_execution_elapsed_ns is not None
+                    ),
+                    observer_attempt_count=observer_attempts,
+                    failure_counts=dict(failure_reasons),
+                )
+                return RealBenchmarkReportV3(
+                    **report_values,
+                    execution_timings=tuple(execution_timings),
+                    baseline=baseline,
+                )
             return RealBenchmarkReportV2(
                 **report_values,
                 execution_timings=tuple(execution_timings),
@@ -605,6 +667,7 @@ class RealBenchmarkRunner:
 __all__ = [
     "REAL_BENCHMARK_REPORT_SCHEMA",
     "REAL_BENCHMARK_REPORT_V2_SCHEMA",
+    "REAL_BENCHMARK_REPORT_V3_SCHEMA",
     "REAL_BENCHMARK_REPORT_VERSION",
     "REAL_BENCHMARK_RUN_SCHEMA",
     "RealBenchmarkCaseCounts",
@@ -613,8 +676,96 @@ __all__ = [
     "RealBenchmarkObserverPort",
     "RealBenchmarkReport",
     "RealBenchmarkReportV2",
+    "RealBenchmarkReportV3",
     "RealBenchmarkRun",
     "RealBenchmarkRunner",
     "RealObserverResult",
     "RuntimeVersionPins",
 ]
+
+
+def _baseline_case_input(
+    case: RealQACase,
+    result: RealCaseEvaluationResult | None,
+    observed_status: str | None,
+    source_formats_by_id: dict[str, Literal["pdf", "docx", "xlsx", "txt", "markdown"]],
+) -> BaselineCaseInput:
+    source_formats = tuple(sorted({
+            source_formats_by_id[source_id]
+            for source_id in case.source_ids
+            if source_id in source_formats_by_id
+        }))
+    if not source_formats:
+        raise RealBenchmarkContractError("baseline source format metadata is unavailable")
+    metric_eligibility = {
+        "qa.answer_outcome": int(case.expected_outcome in {"answered", "abstained"}),
+        "qa.abstention_quality": int(case.expected_outcome == "abstained"),
+        "qa.denial_quality": int(case.expected_outcome == "denied"),
+    }
+    if case.expected_outcome == "answered":
+        metric_eligibility.update(
+            {
+                "retrieval.recall_at_k": len(case.citations),
+                "retrieval.mrr": 1,
+                "qa.citations": 1,
+                "qa.citation_precision": 1,
+                "qa.citation_recall": len(case.citations),
+                "qa.locator_validity": 1,
+                "qa.groundedness": sum(
+                    len(claim.evidence_ids) for claim in case.expected_claims
+                ),
+            }
+        )
+    fully_observed = (
+        result is not None
+        and result.evaluation_status == "completed"
+        and observed_status == "observed"
+    )
+    metric_values = []
+    if fully_observed and result is not None:
+        for metric in result.metrics:
+            if metric.score is None:
+                continue
+            metric_values.append(
+                BaselineMetricInput(
+                    metric=metric.evaluator_key,
+                    version=metric.evaluator_version,
+                    value=metric.score,
+                    eligible_count=metric_eligibility.get(
+                        metric.evaluator_key, metric.eligible_count
+                    ),
+                    measured_denominator=metric.eligible_count,
+                    matched_count=metric.matched_count,
+                    failure_counts=metric.failure_counts,
+                )
+            )
+            if (
+                metric.evaluator_key == "qa.answer_outcome"
+                and case.expected_outcome == "abstained"
+            ):
+                metric_values.append(
+                    BaselineMetricInput(
+                        metric="qa.abstention_quality",
+                        version=metric.evaluator_version,
+                        value=metric.score,
+                        eligible_count=1,
+                        measured_denominator=1,
+                        matched_count=metric.matched_count,
+                        failure_counts=metric.failure_counts,
+                    )
+                )
+    return BaselineCaseInput(
+        case_key=case.case_id,
+        source_formats=source_formats,
+        expected_outcome=case.expected_outcome,
+        scenario_tags=case.scenario_tags,
+        observation_status=(
+            "measured"
+            if fully_observed
+            else "partial"
+            if observed_status == "partial"
+            else "unavailable"
+        ),
+        metric_eligibility=metric_eligibility,
+        metrics=tuple(metric_values),
+    )

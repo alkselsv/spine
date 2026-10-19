@@ -14,7 +14,7 @@ from spine.evals.production_contract import (
     ProductionContractObserver,
 )
 from spine.evals.real_benchmark_runner import (
-    REAL_BENCHMARK_REPORT_V2_SCHEMA,
+    REAL_BENCHMARK_REPORT_V3_SCHEMA,
     RealBenchmarkContractError,
     RealObserverResult,
 )
@@ -50,7 +50,7 @@ class RealBenchmarkProductionObserver:
         self._observer = observer
         self._use_v2 = callable(getattr(observer, "observe_v2", None))
         self.report_schema_version = (
-            REAL_BENCHMARK_REPORT_V2_SCHEMA
+            REAL_BENCHMARK_REPORT_V3_SCHEMA
             if self._use_v2
             else "r1-local-benchmark-report:v1"
         )

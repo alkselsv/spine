@@ -16,7 +16,7 @@ from spine.evals.real_benchmark_production import (
 )
 from spine.evals.real_benchmark_runner import RealObserverResult
 from spine.evals.real_benchmark_runner import (
-    REAL_BENCHMARK_REPORT_V2_SCHEMA,
+    REAL_BENCHMARK_REPORT_V3_SCHEMA,
     RealBenchmarkRunner,
     RuntimeVersionPins,
 )
@@ -180,7 +180,7 @@ async def test_production_adapter_rejects_record_scope_mismatch_without_exposing
 
 
 @pytest.mark.asyncio
-async def test_runner_writes_v2_report_with_nullable_timings_and_no_case_identity(
+async def test_runner_writes_v3_report_with_nullable_timings_and_no_case_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     loaded, manifest, resolution = _scenario()
@@ -200,7 +200,7 @@ async def test_runner_writes_v2_report_with_nullable_timings_and_no_case_identit
             return _readiness_report(CorpusReadinessStatus.READY, CorpusReadinessReason.READY)
 
     class Observer:
-        report_schema_version = REAL_BENCHMARK_REPORT_V2_SCHEMA
+        report_schema_version = REAL_BENCHMARK_REPORT_V3_SCHEMA
 
         async def observe(self, *, resolution):
             assert resolution is not None
@@ -235,11 +235,19 @@ async def test_runner_writes_v2_report_with_nullable_timings_and_no_case_identit
     report = await runner.run(loaded=loaded, manifest=manifest)
     serialized = report.model_dump_json()
 
-    assert report.schema_version == REAL_BENCHMARK_REPORT_V2_SCHEMA
-    assert report.run.report_schema_version == REAL_BENCHMARK_REPORT_V2_SCHEMA
+    assert report.schema_version == REAL_BENCHMARK_REPORT_V3_SCHEMA
+    assert report.run.report_schema_version == REAL_BENCHMARK_REPORT_V3_SCHEMA
     assert len(report.execution_timings) == 1
     assert report.execution_timings[0].observer_elapsed_ms == 12_345
     assert report.execution_timings[0].worker_execution_elapsed_ns == 678_901
     assert report.execution_timings[0].worker_execution_attempt_id == UUID(int=55)
-    for forbidden in ("case:opaque-3", "source:opaque-7", "question", "answer"):
+    assert report.baseline.baseline_status == "unavailable"
+    assert report.baseline.observer_latency.median == 12_345
+    assert report.baseline.worker_latency.median == 678_901
+    assert report.baseline.operational_measurements[0].status == "unavailable"
+    for forbidden in (
+        "case:opaque-3",
+        "source:opaque-7",
+        "Which approved fact is present?",
+    ):
         assert forbidden not in serialized
