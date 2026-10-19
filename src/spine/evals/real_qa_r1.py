@@ -25,6 +25,7 @@ from spine.evals.production_contract import ProductionContractCaseRequest
 
 REAL_R1_DATASET_VERSION = "0.3.9-user-approved"
 REAL_R1_DATASET_DIGEST = "7c2787272fd34643ff5168a46f5672b5a091f3070888546fa7b6ed0c918b3a62"
+REAL_R1_DATASET_CASE_COUNT = 149
 REAL_R1_VALIDATOR_VERSION = "1.0.1"
 REAL_R1_SCHEMA_VERSION = "qa-manifest:v1"
 REAL_R1_CASE_SCHEMA_VERSION = "qa-case:v1"
