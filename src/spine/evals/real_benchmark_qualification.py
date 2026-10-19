@@ -13,6 +13,7 @@ from spine.application.production_qa_composition import ProductionQAAComposition
 
 
 R1_BENCHMARK_QUALIFICATION_SCHEMA = "r1-benchmark-qualification:v1"
+_TRUSTED_PREFLIGHT_ISSUER = object()
 
 
 class RuntimePrerequisite(str, Enum):
@@ -88,16 +89,34 @@ class TrustedRealBenchmarkPreflight:
         *,
         inspector: RealBenchmarkPreflightPort,
         production_evidence: ProductionQAACompositionEvidence,
+        _issuer: object = None,
     ) -> None:
+        if _issuer is not _TRUSTED_PREFLIGHT_ISSUER:
+            raise TypeError("trusted preflight must be issued by the production composition")
         if type(production_evidence) is not ProductionQAACompositionEvidence:
             raise TypeError("production preflight requires verified composition evidence")
-        if getattr(inspector, "is_fake", False) is True:
-            raise TypeError("fake preflight inspectors cannot be trusted for real qualification")
+        if getattr(inspector, "is_fake", None) is not False:
+            raise TypeError(
+                "trusted preflight inspectors must explicitly declare is_fake=False"
+            )
         self._inspector = inspector
         self.production_evidence = production_evidence
 
     async def inspect(self) -> RealBenchmarkPreflight:
         return await self._inspector.inspect()
+
+
+def _issue_trusted_real_benchmark_preflight(
+    *,
+    inspector: RealBenchmarkPreflightPort,
+    production_evidence: ProductionQAACompositionEvidence,
+) -> TrustedRealBenchmarkPreflight:
+    """Issue the wrapper only from a trusted local production composition factory."""
+    return TrustedRealBenchmarkPreflight(
+        inspector=inspector,
+        production_evidence=production_evidence,
+        _issuer=_TRUSTED_PREFLIGHT_ISSUER,
+    )
 
 
 class RealBenchmarkQualificationGate:

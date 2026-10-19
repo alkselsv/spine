@@ -19,6 +19,7 @@ from spine.evals.real_benchmark_qualification import (
     TrustedRealBenchmarkPreflight,
     RuntimePrerequisiteCheck,
     RuntimePrerequisite,
+    _issue_trusted_real_benchmark_preflight,
 )
 from spine.evals.real_benchmark_runner import RealBenchmarkRunner, RuntimeVersionPins
 
@@ -167,13 +168,13 @@ def test_ready_fake_preflight_cannot_enable_real_qualification(monkeypatch) -> N
     assert report is None
 
 
-def test_trusted_preflight_requires_composition_evidence() -> None:
+def test_trusted_preflight_issuer_requires_composition_evidence() -> None:
     class Preflight:
         async def inspect(self):
             return _ready_preflight()
 
     with pytest.raises(TypeError, match="verified composition evidence"):
-        TrustedRealBenchmarkPreflight(
+        _issue_trusted_real_benchmark_preflight(
             inspector=Preflight(),
             production_evidence=object(),  # type: ignore[arg-type]
         )
@@ -187,9 +188,37 @@ def test_trusted_preflight_rejects_explicit_fake_inspector() -> None:
             return _ready_preflight()
 
     evidence = _issue_production_qa_composition_evidence(object(), object())  # type: ignore[arg-type]
-    with pytest.raises(TypeError, match="fake preflight inspectors"):
-        TrustedRealBenchmarkPreflight(
+    with pytest.raises(TypeError, match="is_fake=False"):
+        _issue_trusted_real_benchmark_preflight(
             inspector=FakePreflight(),
+            production_evidence=evidence,
+        )
+
+
+def test_trusted_preflight_rejects_unattested_inspector() -> None:
+    class UnattestedPreflight:
+        async def inspect(self):
+            return _ready_preflight()
+
+    evidence = _issue_production_qa_composition_evidence(object(), object())  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="is_fake=False"):
+        _issue_trusted_real_benchmark_preflight(
+            inspector=UnattestedPreflight(),
+            production_evidence=evidence,
+        )
+
+
+def test_trusted_preflight_cannot_be_constructed_by_a_caller() -> None:
+    class ProductionPreflight:
+        is_fake = False
+
+        async def inspect(self):
+            return _ready_preflight()
+
+    evidence = _issue_production_qa_composition_evidence(object(), object())  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="issued by the production composition"):
+        TrustedRealBenchmarkPreflight(
+            inspector=ProductionPreflight(),
             production_evidence=evidence,
         )
 

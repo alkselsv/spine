@@ -33,6 +33,9 @@ from spine.application.qa_observation.contracts import (
 )
 from spine.application.ask_terminal_waiter import TerminalAskWaitResult
 from spine.application.qa_sessions import QAMessageRead
+from spine.application.production_qa_composition import (
+    _issue_production_qa_composition_evidence,
+)
 from spine.domain.capabilities import (
     AcceptedGroundedAnswer,
     AnswerDisclosureValidation,
@@ -60,6 +63,7 @@ from spine.evals.production_contract import (
     ProductionContractCaseRequest,
     ProductionContractObserver,
     CaseExecutionRecordV2,
+    ProductionContractAuthorizationDenied,
 )
 from spine.evals.qa_r1 import load_r1_dataset
 from tests.evals.test_production_observer import _request
@@ -462,6 +466,47 @@ async def test_durable_observer_without_capture_composition_fails_closed() -> No
     assert record.disposition is CaseExecutionDisposition.UNAVAILABLE
     assert record.observation is None
     assert "protected" not in record.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_production_evidence_rejects_untrusted_context_before_session_or_admission() -> None:
+    request = _allowed_request()
+    calls: list[str] = []
+
+    class RejectingContextVerifier:
+        def verify(self, context):
+            calls.append("verify")
+            raise ValueError("untrusted context")
+
+    class RecordingSessions:
+        async def create_session(self, **_kwargs):
+            calls.append("session")
+            raise AssertionError("session creation must not follow context rejection")
+
+    class RecordingAdmission:
+        async def admit(self, **_kwargs):
+            calls.append("admission")
+            raise AssertionError("admission must not follow context rejection")
+
+    composition = SimpleNamespace(
+        sessions=RecordingSessions(),
+        observer_admission=RecordingAdmission(),
+        capture_channel=_Channel(),
+    )
+    composition.real_qualification_evidence = _issue_production_qa_composition_evidence(
+        composition,
+        RejectingContextVerifier(),  # type: ignore[arg-type]
+    )
+    flow = DurableProductionQAAFlow(
+        composition=composition,
+        authorization=_RequestAuthorization(),
+        waiter=object(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ProductionContractAuthorizationDenied):
+        await flow.execute(request)
+
+    assert calls == ["verify"]
 
 
 @pytest.mark.asyncio
