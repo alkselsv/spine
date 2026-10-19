@@ -103,6 +103,12 @@ async def test_terminal_activity_replay_returns_persisted_result_without_capabil
                 output=_terminal_output(), accepted_answer=None
             )
 
+        async def terminalize(self, **values: object):
+            assert values["receipt"] is None
+            return await self.resolve_terminal_result(
+                run_id=RUN_ID, attempt_id=ATTEMPT_ID
+            )
+
     class Capability:
         async def answer(self, _: AnswerQuestionCapabilityCommand):
             pytest.fail("terminal replay must not repeat retrieval or generation")
@@ -141,6 +147,6 @@ async def test_terminal_activity_replay_returns_persisted_result_without_capabil
         )
     )
 
-    assert attempts.resolved == [(RUN_ID, ATTEMPT_ID)]
+    assert attempts.resolved == [(RUN_ID, ATTEMPT_ID), (RUN_ID, ATTEMPT_ID)]
     assert result.replay is True
     assert result.output == _terminal_output()

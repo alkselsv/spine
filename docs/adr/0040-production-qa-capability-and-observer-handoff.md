@@ -163,6 +163,32 @@ contract. Include the non-negative `worker_elapsed_ns` scalar and its
 `activity_attempt_id` in the ephemeral execution/capture envelope; do not
 transmit worker timestamps.
 
+### D7 — canonical durable Q&A terminalization
+
+Durable production Q&A carries an ephemeral typed execution receipt from the
+capability to the persistence boundary. It references only the canonical
+run/attempt identity and execution pin, the actual persisted ContextBundle,
+AgentResult and artifact lineage, the terminal output, and the immutable
+disclosure record. The receipt is an in-process handoff; it is not placed in a
+public response, Temporal payload/history, logs, or a durable artifact.
+
+The disclosure decision is persisted before terminalization. A single
+caller-owned tenant Unit of Work verifies the receipt and disclosure, completes
+the attempt, completes the run with that exact final attempt, and completes the
+linked Q&A message with the same outcome. The run row is the serialization
+fence for concurrent terminal writers; existing terminal compare-and-set
+validation selects the winner. A conflict rolls back the entire terminal
+transaction. Replay after terminal commit reads the canonical disclosure and
+does not repeat retrieval or generation.
+
+Accepted-answer delivery is an idempotent post-commit action keyed by the
+persisted disclosure identity. Before delivery, the application re-reads the
+message through current authorization and verifies its content-free accepted
+presentation against the immutable disclosure. Delivery failure can retry the
+same disclosure and cannot replace the canonical outcome. Temporal stores only
+a content-free terminal acknowledgement in the new activity-result version;
+the v1 decoder remains for already-recorded histories.
+
 ## Consequences
 
 - #469 owns the concrete production capability, dependency wiring, durable

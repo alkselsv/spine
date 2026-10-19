@@ -47,6 +47,7 @@ from spine.application.production_qa_capability import (
     ProductionAnswerQuestionCapability,
 )
 from spine.application.answer_question_execution import AnswerQuestionExecutionResult
+from spine.domain.capabilities.answer_question_runs import AgentResultRef
 from spine.domain.agents import AgentResult, AgentRunStatus
 from spine.domain.artifacts import Artifact
 from spine.domain.capabilities.answer_question_candidate import (
@@ -873,6 +874,7 @@ async def test_persisted_candidate_runner_uses_the_governed_runtime_and_lineage(
                 status=AgentRunStatus.SUCCEEDED,
                 output_artifact_ids=(output_artifact.id,),
             ),
+            agent_result_ref=AgentResultRef(result_id=UUID(int=22)),
         )
     )
     authorized_context = SimpleNamespace(
@@ -885,7 +887,7 @@ async def test_persisted_candidate_runner_uses_the_governed_runtime_and_lineage(
         canceller=UnexpectedCanceller(),
     )
 
-    result = await runner.generate(
+    result = await runner.generate_persisted(
         question=question,
         requester_id=SUBJECT,
         authorized_context=authorized_context,
@@ -899,7 +901,11 @@ async def test_persisted_candidate_runner_uses_the_governed_runtime_and_lineage(
         idempotency_key="safe-idempotency-key",
     )
 
-    assert result == output_value
+    assert result.candidate == output_value
+    assert result.candidate_input_artifact_id == UUID(int=20)
+    assert result.agent_result_ref.result_id == UUID(int=22)
+    assert result.agent_result.output_artifact_ids == (output_artifact.id,)
+    assert result.output_artifacts == (output_artifact,)
     assert len(execution.invocations) == 1
     assert execution.invocations[0].input_artifact_ids == (UUID(int=20),)
     assert execution.invocations[0].work_item_id == question.correlation.run_id

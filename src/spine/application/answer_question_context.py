@@ -47,6 +47,8 @@ from spine.domain.context_bundles import (
     RevalidationRequest,
 )
 from spine.domain.capabilities.answer_disclosure import CurrentDisclosureEligibility
+from spine.domain.capabilities.answer_disclosure import AnswerDisclosureRecord
+from spine.domain.capabilities import AcceptedAnswerPresentation
 from spine.domain.common import ValidatedDefinitionModel
 from spine.domain.disclosure import (
     DisclosureDependencySet,
@@ -75,6 +77,14 @@ class AnswerQuestionDisclosureGate(Protocol):
     """The existing AQ-11 gate used after all candidate validators finish."""
 
     async def disclose_facts(self, facts: AnswerDisclosureFacts) -> AnswerDisclosureResult: ...
+
+    async def prepare_facts(self, facts: AnswerDisclosureFacts) -> AnswerDisclosureResult: ...
+
+    async def deliver_committed(
+        self,
+        record: AnswerDisclosureRecord,
+        presentation: AcceptedAnswerPresentation,
+    ) -> UUID | None: ...
 
 
 class ContextRevalidationFailure(str, Enum):
@@ -402,6 +412,7 @@ class AnswerQuestionContextService:
         requester_id: UUID,
         disclosure_gate: AnswerQuestionDisclosureGate,
         cancelled: bool = False,
+        defer_delivery: bool = False,
     ) -> AnswerDisclosureResult:
         """Run AQ-11 disclosure only after the same bundle is revalidated.
 
@@ -427,13 +438,37 @@ class AnswerQuestionContextService:
             disclosure_eligible=checkpoint.eligibility.can_disclose,
             cancellation_requested=outcome_facts.cancellation_requested or cancelled,
         )
-        return await disclosure_gate.disclose_facts(
-            AnswerDisclosureFacts(
-                request_id=request_id,
-                outcome_facts=final_facts,
-                current_eligibility=checkpoint.eligibility,
-            )
+        facts = AnswerDisclosureFacts(
+            request_id=request_id,
+            outcome_facts=final_facts,
+            current_eligibility=checkpoint.eligibility,
         )
+        if defer_delivery:
+            return await disclosure_gate.prepare_facts(facts)
+        return await disclosure_gate.disclose_facts(facts)
+
+    async def prepare_terminal_disclosure(
+        self,
+        *,
+        question: AnswerQuestionInput,
+        retrieval_outcome: RetrievalOutcome,
+        authorization: AnswerAuthorizationOutcome,
+        request_id: UUID,
+        disclosure_gate: AnswerQuestionDisclosureGate,
+        cancelled: bool = False,
+    ) -> AnswerDisclosureResult:
+        """Persist a safe early terminal output without evidence fabrication."""
+
+        facts = AnswerDisclosureFacts(
+            request_id=request_id,
+            outcome_facts=AnswerOutcomeFacts(
+                question=question,
+                retrieval_outcome=retrieval_outcome,
+                authorization=authorization,
+                cancellation_requested=cancelled,
+            ),
+        )
+        return await disclosure_gate.prepare_facts(facts)
 
     async def _revalidate(
         self,

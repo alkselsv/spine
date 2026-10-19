@@ -131,6 +131,14 @@ class InvocationReplayRecord(BaseModel):
         return cls(state="completed", result=result)
 
 
+@dataclass(frozen=True, slots=True)
+class PersistedAgentInvocationResult:
+    """Actual runtime result and its canonical persisted invocation reference."""
+
+    result: AgentResult
+    reference: OpaqueResultReference
+
+
 @runtime_checkable
 class ArtifactPersistence(Protocol):
     """Narrow canonical Artifact boundary used by a single runtime attempt.

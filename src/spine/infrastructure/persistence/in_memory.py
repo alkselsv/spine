@@ -1059,6 +1059,11 @@ class _AnswerQuestionRunRepository:
             self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
         return await self.resolve_run(run_id)
 
+    async def resolve_run_for_update(self, run_id: UUID) -> AnswerQuestionRun:
+        """Read the canonical run before terminal CAS in this optimistic UoW."""
+
+        return await self.resolve_run(run_id)
+
     async def resolve_run_by_key(self, idempotency_key: str) -> AnswerQuestionRun:
         self._uow._guard_active()
         scope = self._scope()

@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from hashlib import sha256
 from typing import Protocol
 from uuid import UUID, uuid4
 
@@ -19,6 +20,7 @@ from spine.domain.capabilities.answer_disclosure import (
     DisclosureEligibilityStatus,
     compose_answer_disclosure,
 )
+from spine.domain.capabilities import AcceptedAnswerPresentation
 from spine.domain.capabilities.answer_question import (
     AnswerQuestionOutput,
     AnswerQuestionOutcome,
@@ -190,6 +192,83 @@ class AnswerDisclosureGate:
     failure_observer: DisclosureFailureObserver | None = None
 
     async def disclose(self, request: AnswerDisclosureRequest) -> AnswerDisclosureResult:
+        """Preserve the legacy prepare-and-deliver operation.
+
+        Durable Q&A must call :meth:`prepare_facts`, commit its canonical
+        attempt/run/message transaction, and only then deliver the accepted
+        result through the authorized message-read boundary.
+        """
+
+        prepared = await self._prepare(request)
+        if prepared.accepted_answer is None:
+            return prepared
+        reference = await self.repository.resolve_delivery(
+            workspace_id=prepared.record.workspace_id,
+            environment_id=prepared.record.environment_id,
+            request_id=prepared.record.request_id,
+        )
+        if reference is None:
+            reference = await self._publish_and_record(prepared.record)
+        return AnswerDisclosureResult(
+            record=prepared.record,
+            replay=prepared.replay,
+            output_reference=reference,
+        )
+
+    async def prepare_facts(self, facts: AnswerDisclosureFacts) -> AnswerDisclosureResult:
+        """Persist the immutable gate decision without external delivery."""
+
+        return await self._prepare(facts.to_request())
+
+    async def prepare(self, request: AnswerDisclosureRequest) -> AnswerDisclosureResult:
+        """Persist a precomposed gate request without external delivery."""
+
+        return await self._prepare(request)
+
+    async def deliver_committed(
+        self,
+        record: AnswerDisclosureRecord,
+        presentation: AcceptedAnswerPresentation,
+    ) -> UUID | None:
+        """Publish accepted content only after its canonical message is committed.
+
+        ``presentation`` is produced by a fresh authorized Q&A message read.
+        This method binds it to the immutable disclosure before using the
+        existing idempotent output port.
+        """
+
+        if record.accepted_answer is None:
+            return None
+        answer = record.accepted_answer.answer
+        if (
+            presentation.run_id != record.run_id
+            or presentation.attempt_id != record.attempt_id
+            or presentation.answer_id != answer.answer_id
+            or presentation.answer_text_sha256
+            != sha256(answer.text.encode("utf-8")).hexdigest()
+        ):
+            raise AnswerDisclosureIdempotencyConflict(
+                "Committed Q&A presentation conflicts with its disclosure."
+            )
+        persisted = await self.repository.resolve(
+            workspace_id=record.workspace_id,
+            environment_id=record.environment_id,
+            request_id=record.request_id,
+        )
+        if persisted != record:
+            raise AnswerDisclosureIdempotencyConflict(
+                "Committed Q&A disclosure is unavailable."
+            )
+        reference = await self.repository.resolve_delivery(
+            workspace_id=record.workspace_id,
+            environment_id=record.environment_id,
+            request_id=record.request_id,
+        )
+        if reference is None:
+            reference = await self._publish_and_record(record)
+        return reference
+
+    async def _prepare(self, request: AnswerDisclosureRequest) -> AnswerDisclosureResult:
         existing = await self.repository.resolve(
             workspace_id=request.decision.question.scope.workspace_id,
             environment_id=request.decision.question.scope.environment_id,
@@ -211,15 +290,8 @@ class AnswerDisclosureGate:
                 )
             if existing.accepted_answer is None:
                 return AnswerDisclosureResult(record=existing, replay=True)
-            reference = await self.repository.resolve_delivery(
-                workspace_id=existing.workspace_id,
-                environment_id=existing.environment_id,
-                request_id=existing.request_id,
-            )
-            if reference is None:
-                reference = await self._publish_and_record(existing)
             return AnswerDisclosureResult(
-                record=existing, replay=True, output_reference=reference
+                record=existing, replay=True
             )
 
         try:
@@ -237,8 +309,7 @@ class AnswerDisclosureGate:
         stored = await self.repository.save(record)
         if stored.accepted_answer is None:
             return AnswerDisclosureResult(record=stored, replay=False)
-        reference = await self._publish_and_record(stored)
-        return AnswerDisclosureResult(record=stored, replay=False, output_reference=reference)
+        return AnswerDisclosureResult(record=stored, replay=False)
 
     async def _publish_and_record(self, record: AnswerDisclosureRecord) -> UUID:
         assert record.accepted_answer is not None

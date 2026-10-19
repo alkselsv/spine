@@ -22,6 +22,7 @@ from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.persistence.answer_question_runs import (
     AnswerQuestionAttemptAllocationResult,
     AnswerQuestionAttemptTerminalResult,
+    CanonicalQATerminalizationReceipt,
 )
 from spine.application.qa_sessions import (
     QAMessage,
@@ -219,6 +220,7 @@ class AnswerQuestionCapabilityResult:
     message_id: UUID
     output: AnswerQuestionOutput
     accepted_answer: AcceptedGroundedAnswer | None
+    terminalization_receipt: CanonicalQATerminalizationReceipt | None = None
     replay: bool = False
     availability: AnswerQuestionCapabilityAvailability = (
         AnswerQuestionCapabilityAvailability.AVAILABLE
@@ -241,6 +243,13 @@ class AnswerQuestionCapabilityResult:
                 raise ValueError("answered capability result requires accepted content")
         elif self.accepted_answer is not None:
             raise ValueError("safe capability result cannot carry accepted content")
+        if self.terminalization_receipt is not None and (
+            self.terminalization_receipt.run_id != self.output.correlation.run_id
+            or self.terminalization_receipt.attempt_id
+            != self.output.correlation.attempt_id
+            or self.terminalization_receipt.output != self.output
+        ):
+            raise ValueError("terminalization receipt does not match capability output")
 
 
 class AnswerQuestionCapability(Protocol):
@@ -280,6 +289,17 @@ class AnswerQuestionAttemptApplication(Protocol):
         context: TrustedPersistenceContext,
         run_id: UUID,
         attempt_id: UUID,
+    ) -> AnswerQuestionAttemptTerminalResult: ...
+
+    async def terminalize(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        session_id: UUID,
+        message_id: UUID,
+        idempotency_key: str,
+        sessions: QASessionService,
+        receipt: CanonicalQATerminalizationReceipt | None,
     ) -> AnswerQuestionAttemptTerminalResult: ...
 
 
@@ -463,6 +483,13 @@ class PersistedAuthorizedAskService:
         )
         _validate_capability_scope(command.request_context, capability)
         if (
+            command.logical_execution_key is not None
+            and capability.availability is AnswerQuestionCapabilityAvailability.UNAVAILABLE
+        ):
+            # Infrastructure-unavailable outputs are retryable, not canonical
+            # FAILED outcomes. No terminal transaction is attempted.
+            raise AuthorizedAskServiceUnavailable()
+        if (
             capability.command_id != command.command_id
             or capability.session_id != command.session_id
             or capability.message_id != command.message_id
@@ -506,6 +533,50 @@ class PersistedAuthorizedAskService:
         )
         if message is None:
             raise AuthorizedAskServiceUnavailable()
+        if command.logical_execution_key is not None:
+            if self.attempts is None:
+                raise AuthorizedAskServiceUnavailable()
+            terminal = await self.attempts.terminalize(
+                context=command.persistence_context,
+                session_id=command.session_id,
+                message_id=command.message_id,
+                idempotency_key=command.idempotency_key.value,
+                sessions=self.sessions,
+                receipt=capability.terminalization_receipt,
+            )
+            if terminal.output != capability.output:
+                raise InvalidAuthorizedAskRequest(
+                    "canonical terminal output conflicts with the capability result"
+                )
+            if terminal.accepted_answer is not None and terminal.disclosure_record is not None:
+                committed_message = await self.sessions.get_message(
+                    context=command.persistence_context,
+                    requester=QASessionRequester(
+                        subject_id=command.request_context.subject_id,
+                        authorization_generation=command.request_context.authorization_generation,
+                    ),
+                    session_id=command.session_id,
+                    message_id=command.message_id,
+                )
+                presentation = (
+                    None if committed_message is None else committed_message.accepted_presentation
+                )
+                deliver = getattr(self.capability, "deliver_committed", None)
+                if presentation is not None and callable(deliver):
+                    # A delivery error escapes to Temporal for retry. The
+                    # canonical terminal records are already committed; replay
+                    # will redeliver the same disclosure ID without re-running
+                    # retrieval/generation or changing the outcome.
+                    await deliver(terminal.disclosure_record, presentation)
+            return AuthorizedAskResult(
+                command_id=command.command_id,
+                session_id=command.session_id,
+                message_id=command.message_id,
+                output=terminal.output,
+                accepted_answer=terminal.accepted_answer,
+                replay=capability.replay or message.state is QAMessageState.TERMINAL,
+                availability=capability.availability,
+            )
         if message.state is not QAMessageState.TERMINAL:
             await self.sessions.complete_message(
                 context=command.persistence_context,
@@ -545,6 +616,48 @@ class PersistedAuthorizedAskService:
             )
         )
         _validate_capability_scope(command.request_context, capability)
+        if self.attempts is not None:
+            if capability.output.correlation.run_id != command.run_id:
+                raise InvalidAuthorizedAskRequest(
+                    "cancellation result returned a different canonical run"
+                )
+            terminal = await self.attempts.terminalize(
+                context=command.persistence_context,
+                session_id=capability.session_id,
+                message_id=capability.message_id,
+                idempotency_key=command.idempotency_key.value,
+                sessions=self.sessions,
+                receipt=capability.terminalization_receipt,
+            )
+            if terminal.output != capability.output:
+                raise InvalidAuthorizedAskRequest(
+                    "canonical cancellation outcome conflicts with the capability result"
+                )
+            if terminal.accepted_answer is not None and terminal.disclosure_record is not None:
+                committed_message = await self.sessions.get_message(
+                    context=command.persistence_context,
+                    requester=QASessionRequester(
+                        subject_id=command.request_context.subject_id,
+                        authorization_generation=command.request_context.authorization_generation,
+                    ),
+                    session_id=capability.session_id,
+                    message_id=capability.message_id,
+                )
+                presentation = (
+                    None if committed_message is None else committed_message.accepted_presentation
+                )
+                deliver = getattr(self.capability, "deliver_committed", None)
+                if presentation is not None and callable(deliver):
+                    await deliver(terminal.disclosure_record, presentation)
+            return AuthorizedAskResult(
+                command_id=capability.command_id,
+                session_id=capability.session_id,
+                message_id=capability.message_id,
+                output=terminal.output,
+                accepted_answer=terminal.accepted_answer,
+                replay=capability.replay,
+                availability=capability.availability,
+            )
         message = await self.sessions.get_message(
             context=command.persistence_context,
             requester=QASessionRequester(

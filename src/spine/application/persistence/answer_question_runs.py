@@ -13,16 +13,23 @@ from spine.application.persistence.idempotency import (
     IdempotencyKey,
     OpaqueResultReference,
 )
+from spine.domain.agents import AgentResult
+from spine.domain.artifacts import Artifact
 from spine.domain.capabilities.answer_question_runs import (
+    AgentResultRef,
     AnswerQuestionAttempt,
     AnswerQuestionAttemptState,
     AnswerQuestionRun,
     AnswerQuestionRunState,
+    AnswerQuestionUsage,
 )
 from spine.domain.capabilities.answer_question import AnswerQuestionOutput
+from spine.domain.capabilities.answer_outcomes import AnswerAuthorizationOutcome
 from spine.domain.capabilities.answer_disclosure import AcceptedGroundedAnswer
+from spine.domain.capabilities.answer_disclosure import AnswerDisclosureRecord
 from spine.domain.capabilities.answer_question_execution import AnswerQuestionExecutionPin
-from spine.domain.context_bundles import ContextBundle
+from spine.domain.context_bundles import ContextBundle, ContextBundleRef
+from spine.domain.disclosure import DisclosureDependencySet
 
 
 ANSWER_QUESTION_RUN_OPERATION = PersistenceOperation("answer_question_run")
@@ -141,6 +148,84 @@ class AnswerQuestionAttemptTerminalResult:
 
     output: AnswerQuestionOutput
     accepted_answer: AcceptedGroundedAnswer | None
+    disclosure_record: AnswerDisclosureRecord | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalQATerminalizationReceipt:
+    """Ephemeral proof of one real production Q&A execution's persisted lineage."""
+
+    run_id: UUID
+    attempt_id: UUID
+    attempt_number: int
+    execution_pin: AnswerQuestionExecutionPin
+    output: AnswerQuestionOutput
+    context_bundle_ref: ContextBundleRef | None
+    agent_result_ref: AgentResultRef | None
+    agent_result: AgentResult | None
+    output_artifact_ids: tuple[UUID, ...]
+    candidate_input_artifact_id: UUID | None
+    candidate_output_artifacts: tuple[Artifact, ...]
+    disclosure_record: AnswerDisclosureRecord
+    authorization: AnswerAuthorizationOutcome
+    disclosure_dependencies: DisclosureDependencySet = DisclosureDependencySet()
+    usage: AnswerQuestionUsage | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            self.run_id.int == 0
+            or self.attempt_id.int == 0
+            or self.attempt_number < 1
+            or self.output.correlation.run_id != self.run_id
+            or self.output.correlation.attempt_id != self.attempt_id
+            or self.output.scope.workspace_id != self.execution_pin.workspace_id
+            or self.output.scope.environment_id != self.execution_pin.environment_id
+            or self.disclosure_record.workspace_id != self.execution_pin.workspace_id
+            or self.disclosure_record.environment_id != self.execution_pin.environment_id
+            or self.disclosure_record.run_id != self.run_id
+            or self.disclosure_record.attempt_id != self.attempt_id
+            or self.disclosure_record.outcome is not self.output.outcome
+            or self.disclosure_record.output != self.output
+            or (
+                self.output.outcome.value == "denied"
+                and self.authorization.value != "denied"
+            )
+            or (
+                self.authorization.value == "denied"
+                and self.output.outcome.value != "denied"
+            )
+        ):
+            raise ValueError("canonical Q&A terminalization receipt identity is invalid")
+        if (self.agent_result_ref is None) != (self.agent_result is None):
+            raise ValueError("AgentResult reference and value must be supplied together")
+        if self.agent_result is None:
+            if self.output_artifact_ids or self.candidate_output_artifacts:
+                raise ValueError("artifact lineage requires a persisted AgentResult")
+        elif (
+            self.agent_result.output_artifact_ids != self.output_artifact_ids
+            or tuple(item.id for item in self.candidate_output_artifacts)
+            != self.output_artifact_ids
+        ):
+            raise ValueError("AgentResult artifact lineage is inconsistent")
+        if self.output_artifact_ids:
+            if self.candidate_input_artifact_id is None or any(
+                item.workspace_id != self.execution_pin.workspace_id
+                or item.environment_id != self.execution_pin.environment_id
+                or item.work_item_id != self.run_id
+                or self.candidate_input_artifact_id not in item.upstream_artifact_ids
+                for item in self.candidate_output_artifacts
+            ):
+                raise ValueError("candidate input artifact lineage is invalid")
+        elif self.candidate_input_artifact_id is not None or self.candidate_output_artifacts:
+            raise ValueError("candidate input cannot exist without output artifacts")
+        if self.disclosure_record.accepted_answer is not None:
+            validation = self.disclosure_record.validation
+            if (
+                validation is None
+                or tuple(validation.dependency_ids)
+                != tuple(item.dependency_id for item in self.disclosure_dependencies.dependencies)
+            ):
+                raise ValueError("accepted disclosure dependencies are inconsistent")
 
 
 class AnswerQuestionRunRepository(Protocol):
@@ -165,6 +250,8 @@ class AnswerQuestionRunRepository(Protocol):
         environment_id: UUID,
         run_id: UUID,
     ) -> AnswerQuestionRun: ...
+
+    async def resolve_run_for_update(self, run_id: UUID) -> AnswerQuestionRun: ...
 
     async def resolve_run_by_key(self, idempotency_key: str) -> AnswerQuestionRun: ...
 
@@ -346,6 +433,7 @@ __all__ = [
     "AnswerQuestionAttemptAllocation",
     "AnswerQuestionAttemptAllocationResult",
     "AnswerQuestionAttemptTerminalResult",
+    "CanonicalQATerminalizationReceipt",
     "AnswerQuestionRunMutationResult",
     "AnswerQuestionRunMessageLink",
     "AnswerQuestionRunPage",

@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -9,6 +10,7 @@ from spine.application.answer_disclosure import (
     InMemoryAcceptedAnswerOutputPort,
     InMemoryAnswerDisclosureRepository,
 )
+from spine.application.qa_sessions import _accepted_answer_presentation
 from spine.domain.capabilities import (
     AnswerAuthorizationOutcome,
     AnswerDisclosureRequest,
@@ -93,6 +95,59 @@ async def test_gate_publishes_and_persists_only_accepted_grounded_answer() -> No
     assert result.safe_output is None
     assert result.output_reference == uid(905)
     assert len(sink.published) == 1
+
+
+@pytest.mark.asyncio
+async def test_gate_persists_accepted_disclosure_without_publishing_before_terminal_commit() -> None:
+    sink = InMemoryAcceptedAnswerOutputPort(reference_factory=lambda: uid(905))
+    gate = AnswerDisclosureGate(
+        repository=InMemoryAnswerDisclosureRepository(), accepted_output=sink,
+        clock=lambda: datetime(2026, 10, 16, tzinfo=timezone.utc),
+    )
+
+    result = await gate.prepare(disclosure_request())
+
+    assert result.record.outcome is AnswerQuestionOutcome.ANSWERED
+    assert result.record.accepted_answer is not None
+    assert result.output_reference is None
+    assert sink.published == []
+
+
+@pytest.mark.asyncio
+async def test_committed_delivery_requires_matching_authorized_presentation() -> None:
+    repository = InMemoryAnswerDisclosureRepository()
+    sink = InMemoryAcceptedAnswerOutputPort(reference_factory=lambda: uid(906))
+    gate = AnswerDisclosureGate(repository=repository, accepted_output=sink)
+    prepared = await gate.prepare(disclosure_request())
+    accepted = prepared.record.accepted_answer
+    assert accepted is not None
+    answer = accepted.answer
+    presentation = _accepted_answer_presentation(
+        SimpleNamespace(message_id=uid(908), run_id=answer.run_id), answer
+    )
+
+    reference = await gate.deliver_committed(prepared.record, presentation)
+
+    assert reference == uid(906)
+    assert sink.published == [accepted]
+    assert await gate.deliver_committed(prepared.record, presentation) == uid(906)
+    assert len(sink.published) == 1
+
+
+@pytest.mark.asyncio
+async def test_committed_delivery_rejects_conflicting_presentation() -> None:
+    repository = InMemoryAnswerDisclosureRepository()
+    sink = InMemoryAcceptedAnswerOutputPort()
+    gate = AnswerDisclosureGate(repository=repository, accepted_output=sink)
+    prepared = await gate.prepare(disclosure_request())
+    answer = prepared.record.accepted_answer.answer
+    presentation = _accepted_answer_presentation(
+        SimpleNamespace(message_id=uid(908), run_id=answer.run_id), answer
+    ).model_copy(update={"attempt_id": uid(909)})
+
+    with pytest.raises(AnswerDisclosureIdempotencyConflict):
+        await gate.deliver_committed(prepared.record, presentation)
+    assert sink.published == []
 
 
 @pytest.mark.asyncio

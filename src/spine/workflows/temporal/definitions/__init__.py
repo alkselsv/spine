@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import timedelta
-from typing import Literal, Protocol
+from typing import Literal, Protocol, Union
 from uuid import UUID
 
 from pydantic import ConfigDict
@@ -23,6 +23,7 @@ from spine.application.workflows.ask_admission_dispatch import (
 )
 from spine.domain.capabilities.answer_disclosure import AcceptedGroundedAnswer
 from spine.domain.capabilities.answer_question import AnswerQuestionOutput
+from spine.domain.capabilities.answer_question import AnswerQuestionOutcome
 from spine.domain.common import DefinitionModel
 
 ASK_EXECUTE_ACTIVITY_NAME = "spine.qa.ask.execute:v1"
@@ -31,7 +32,7 @@ _ACTIVITY_START_TO_CLOSE_TIMEOUT = timedelta(minutes=15)
 
 
 class AskAdmissionActivityResult(DefinitionModel):
-    """Versioned result contract serialized across the Temporal activity boundary."""
+    """Legacy v1 payload retained only to decode already-recorded histories."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -46,15 +47,33 @@ class AskAdmissionActivityResult(DefinitionModel):
     replay: bool
 
 
+class SafeAskActivityResult(DefinitionModel):
+    """Content-free terminal acknowledgement safe for Temporal history."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["spine.qa.ask-activity-result:v2"] = (
+        "spine.qa.ask-activity-result:v2"
+    )
+    command_id: UUID
+    session_id: UUID
+    message_id: UUID
+    run_id: UUID
+    attempt_id: UUID
+    outcome: AnswerQuestionOutcome
+    replay: bool
+
+
 def _serialize_ask_admission_activity_result(
     result: AuthorizedAskResult,
 ) -> dict[str, object]:
-    payload = AskAdmissionActivityResult(
+    payload = SafeAskActivityResult(
         command_id=result.command_id,
         session_id=result.session_id,
         message_id=result.message_id,
-        output=result.output,
-        accepted_answer=result.accepted_answer,
+        run_id=result.run_id,
+        attempt_id=result.attempt_id,
+        outcome=result.output.outcome,
         replay=result.replay,
     )
     return payload.model_dump(mode="json")
@@ -62,16 +81,18 @@ def _serialize_ask_admission_activity_result(
 
 def _deserialize_ask_admission_activity_result(
     payload: dict[str, object],
-) -> AuthorizedAskResult:
-    result = AskAdmissionActivityResult.model_validate_json(json.dumps(payload))
-    return AuthorizedAskResult(
-        command_id=result.command_id,
-        session_id=result.session_id,
-        message_id=result.message_id,
-        output=result.output,
-        accepted_answer=result.accepted_answer,
-        replay=result.replay,
-    )
+) -> Union[AuthorizedAskResult, SafeAskActivityResult]:
+    if payload.get("schema_version") == "spine.qa.ask-activity-result:v1":
+        result = AskAdmissionActivityResult.model_validate_json(json.dumps(payload))
+        return AuthorizedAskResult(
+            command_id=result.command_id,
+            session_id=result.session_id,
+            message_id=result.message_id,
+            output=result.output,
+            accepted_answer=result.accepted_answer,
+            replay=result.replay,
+        )
+    return SafeAskActivityResult.model_validate_json(json.dumps(payload))
 
 
 class AskAdmissionActivity(Protocol):
@@ -96,7 +117,9 @@ class AskAdmissionWorkflowDefinition:
         self._lifecycle.request_cancellation()
 
     @workflow.run
-    async def run(self, workflow_input: AskAdmissionWorkflowInput) -> AuthorizedAskResult:
+    async def run(
+        self, workflow_input: AskAdmissionWorkflowInput
+    ) -> Union[AuthorizedAskResult, SafeAskActivityResult]:
         if self._lifecycle.cancellation_requested:
             cancelled = await workflow.execute_activity(
                 ASK_CANCEL_ACTIVITY_NAME,

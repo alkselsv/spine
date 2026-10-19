@@ -764,6 +764,19 @@ async def test_valid_artifact_handoff_persists_lineage_before_reporting_success(
 
 
 @pytest.mark.asyncio
+async def test_persisted_invocation_result_returns_the_runtime_owned_reference() -> None:
+    persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
+    runtime = local_runtime(persistence, RecordingHandler())
+
+    persisted = await runtime.invoke_with_reference(version(), invocation())
+
+    assert persisted.result.status is AgentRunStatus.SUCCEEDED
+    assert persisted.reference.result_type == "agent_invocation"
+    assert persisted.reference.result_id == uid(33)
+    assert persisted.reference.schema_version == 1
+
+
+@pytest.mark.asyncio
 async def test_legacy_invoke_runs_synthetic_answer_question_with_typed_lineage() -> None:
     persistence = FakeArtifactPersistence(records={uid(50): input_artifact()})
     runtime = local_runtime(
