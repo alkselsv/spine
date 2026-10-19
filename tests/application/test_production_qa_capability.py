@@ -323,8 +323,9 @@ class SuccessfulContext:
         request_id,
         requester_id,
         disclosure_gate,
+        defer_delivery=False,
     ):
-        del context, requester_id, disclosure_gate
+        del context, requester_id, disclosure_gate, defer_delivery
         try:
             resolution = resolve_answer_outcome(
                 replace(outcome_facts, disclosure_eligible=True)

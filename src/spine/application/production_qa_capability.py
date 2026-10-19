@@ -53,6 +53,7 @@ from spine.domain.capabilities import (
     RetrievalOutcome,
     RunAttemptCorrelation,
 )
+from spine.domain.capabilities.answer_disclosure import AnswerDisclosureRecord
 from spine.domain.capabilities.answer_question_candidate import (
     AnswerQuestionCandidateInput,
     AnswerQuestionCandidateOutput,
@@ -114,7 +115,17 @@ class AnswerQuestionCandidateRunner(Protocol):
         idempotency_key: str,
     ) -> AnswerQuestionCandidateOutput: ...
 
-    async def generate_persisted(self, **kwargs: object) -> "PersistedCandidateExecution": ...
+    async def generate_persisted(
+        self,
+        *,
+        question: AnswerQuestionInput,
+        requester_id: UUID,
+        authorized_context: AnswerQuestionAuthorizedContext,
+        execution: AnswerQuestionExecutionBoundary,
+        execution_request: AnswerQuestionExecutionRequest,
+        expected_execution_pin: AnswerQuestionExecutionPin,
+        idempotency_key: str,
+    ) -> "PersistedCandidateExecution": ...
 
     async def cancel(
         self, command: AnswerQuestionCapabilityCommand
@@ -518,16 +529,14 @@ class ProductionAnswerQuestionCapability:
                     request,
                     availability=AnswerQuestionCapabilityAvailability.AVAILABLE,
                 )
-            disclosure_arguments = {
-                "context": authorized,
-                "outcome_facts": facts,
-                "request_id": request.request_id,
-                "requester_id": command.request_context.subject_id,
-                "disclosure_gate": self.disclosure_gate,
-            }
-            if command.attempt_id is not None:
-                disclosure_arguments["defer_delivery"] = True
-            disclosed = await self.context.disclose(**disclosure_arguments)
+            disclosed = await self.context.disclose(
+                context=authorized,
+                outcome_facts=facts,
+                request_id=request.request_id,
+                requester_id=command.request_context.subject_id,
+                disclosure_gate=self.disclosure_gate,
+                defer_delivery=command.attempt_id is not None,
+            )
             output = disclosed.safe_output
             if output is None and disclosed.accepted_answer is not None:
                 resolution = resolve_answer_outcome(
@@ -599,7 +608,7 @@ class ProductionAnswerQuestionCapability:
 
     async def deliver_committed(
         self,
-        record,
+        record: AnswerDisclosureRecord,
         presentation: AcceptedAnswerPresentation,
     ) -> None:
         """Perform accepted-answer output only after canonical terminal commit."""
