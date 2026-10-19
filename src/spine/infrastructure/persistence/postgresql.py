@@ -1214,6 +1214,15 @@ class _PostgreSQLAnswerQuestionRunRepository:
             await self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
         return self._restore_run(row)
 
+    async def resolve_run_for_update(self, run_id: UUID) -> AnswerQuestionRun:
+        """Lock the tenant-scoped canonical run through terminalization commit."""
+
+        self._uow._guard_active()
+        row = await self._find_run(run_id=run_id, for_update=True)
+        if row is None:
+            await self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
+        return self._restore_run(row)
+
     async def resolve_run_by_key(self, idempotency_key: str) -> AnswerQuestionRun:
         self._uow._guard_active()
         row = await self._find_run(idempotency_key=idempotency_key)

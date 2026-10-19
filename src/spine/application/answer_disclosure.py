@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from hashlib import sha256
 from typing import Protocol
 from uuid import UUID, uuid4
 
@@ -14,11 +15,16 @@ from spine.domain.capabilities.answer_disclosure import (
     AnswerDisclosureRequest,
     AnswerDisclosureDecision,
     AcceptedGroundedAnswer,
+    AnswerDisclosureRecordV2,
+    AnswerExecutionCheckpoint,
+    execution_checkpoint_for_disclosure,
     CurrentDisclosureEligibility,
     DisclosureEligibilityReason,
     DisclosureEligibilityStatus,
     compose_answer_disclosure,
 )
+from spine.domain.capabilities.answer_outcomes import AnswerOutcomeResolution
+from spine.domain.capabilities import AcceptedAnswerPresentation
 from spine.domain.capabilities.answer_question import (
     AnswerQuestionOutput,
     AnswerQuestionOutcome,
@@ -70,6 +76,7 @@ class AnswerDisclosureFacts:
     request_id: UUID
     outcome_facts: AnswerOutcomeFacts
     current_eligibility: CurrentDisclosureEligibility | None = None
+    safe_terminal_output: AnswerQuestionOutput | None = None
 
     def to_request(self) -> AnswerDisclosureRequest:
         return AnswerDisclosureRequest(
@@ -95,7 +102,11 @@ class InMemoryAnswerDisclosureRepository:
         key = (record.workspace_id, record.environment_id, record.request_id)
         current = self._records.get(key)
         if current is not None:
-            if current.request_digest != record.request_digest:
+            if (
+                current.request_digest != record.request_digest
+                or execution_checkpoint_for_disclosure(current)
+                != execution_checkpoint_for_disclosure(record)
+            ):
                 raise AnswerDisclosureIdempotencyConflict(
                     "Disclosure request conflicts with an immutable result."
                 )
@@ -190,40 +201,160 @@ class AnswerDisclosureGate:
     failure_observer: DisclosureFailureObserver | None = None
 
     async def disclose(self, request: AnswerDisclosureRequest) -> AnswerDisclosureResult:
+        """Preserve the legacy prepare-and-deliver operation.
+
+        Durable Q&A must call :meth:`prepare_facts`, commit its canonical
+        attempt/run/message transaction, and only then deliver the accepted
+        result through the authorized message-read boundary.
+        """
+
+        prepared = await self._prepare(request)
+        if prepared.accepted_answer is None:
+            return prepared
+        reference = await self.repository.resolve_delivery(
+            workspace_id=prepared.record.workspace_id,
+            environment_id=prepared.record.environment_id,
+            request_id=prepared.record.request_id,
+        )
+        if reference is None:
+            reference = await self._publish_and_record(prepared.record)
+        return AnswerDisclosureResult(
+            record=prepared.record,
+            replay=prepared.replay,
+            output_reference=reference,
+        )
+
+    async def prepare_facts(
+        self,
+        facts: AnswerDisclosureFacts,
+        *,
+        execution_checkpoint: AnswerExecutionCheckpoint | None = None,
+    ) -> AnswerDisclosureResult:
+        """Persist the immutable gate decision without external delivery."""
+
+        return await self._prepare(
+            facts.to_request(),
+            execution_checkpoint=execution_checkpoint,
+            safe_terminal_output=facts.safe_terminal_output,
+        )
+
+    async def prepare(
+        self,
+        request: AnswerDisclosureRequest,
+        *,
+        execution_checkpoint: AnswerExecutionCheckpoint | None = None,
+    ) -> AnswerDisclosureResult:
+        """Persist a precomposed gate request without external delivery."""
+
+        return await self._prepare(request, execution_checkpoint=execution_checkpoint)
+
+    async def deliver_committed(
+        self,
+        record: AnswerDisclosureRecord,
+        presentation: AcceptedAnswerPresentation,
+    ) -> UUID | None:
+        """Publish accepted content only after its canonical message is committed.
+
+        ``presentation`` is produced by a fresh authorized Q&A message read.
+        This method binds it to the immutable disclosure before using the
+        existing idempotent output port.
+        """
+
+        if record.accepted_answer is None:
+            return None
+        answer = record.accepted_answer.answer
+        if (
+            presentation.run_id != record.run_id
+            or presentation.attempt_id != record.attempt_id
+            or presentation.answer_id != answer.answer_id
+            or presentation.answer_text_sha256
+            != sha256(answer.text.encode("utf-8")).hexdigest()
+        ):
+            raise AnswerDisclosureIdempotencyConflict(
+                "Committed Q&A presentation conflicts with its disclosure."
+            )
+        persisted = await self.repository.resolve(
+            workspace_id=record.workspace_id,
+            environment_id=record.environment_id,
+            request_id=record.request_id,
+        )
+        if persisted != record:
+            raise AnswerDisclosureIdempotencyConflict(
+                "Committed Q&A disclosure is unavailable."
+            )
+        reference = await self.repository.resolve_delivery(
+            workspace_id=record.workspace_id,
+            environment_id=record.environment_id,
+            request_id=record.request_id,
+        )
+        if reference is None:
+            reference = await self._publish_and_record(record)
+        return reference
+
+    async def _prepare(
+        self,
+        request: AnswerDisclosureRequest,
+        *,
+        execution_checkpoint: AnswerExecutionCheckpoint | None = None,
+        safe_terminal_output: AnswerQuestionOutput | None = None,
+    ) -> AnswerDisclosureResult:
+        if safe_terminal_output is not None and (
+            safe_terminal_output.outcome
+            not in {AnswerQuestionOutcome.FAILED, AnswerQuestionOutcome.CANCELLED}
+            or safe_terminal_output.answer is not None
+            or safe_terminal_output.scope != request.decision.question.scope
+            or safe_terminal_output.correlation != request.decision.question.correlation
+            or safe_terminal_output.reason is None
+        ):
+            raise ValueError("safe terminal disclosure output is invalid")
         existing = await self.repository.resolve(
             workspace_id=request.decision.question.scope.workspace_id,
             environment_id=request.decision.question.scope.environment_id,
             request_id=request.request_id,
         )
         if existing is not None:
-            if existing.accepted_answer is not None and (
+            if execution_checkpoint is not None and (
+                not isinstance(existing, AnswerDisclosureRecordV2)
+                or existing.execution_checkpoint != execution_checkpoint
+            ):
+                raise AnswerDisclosureIdempotencyConflict(
+                    "Persisted disclosure execution checkpoint conflicts with this retry."
+                )
+            if execution_checkpoint is None and existing.accepted_answer is not None and (
                 request.current_eligibility is None
                 or not request.current_eligibility.can_disclose
             ):
                 decision = compose_answer_disclosure(
                     request, accepted_at=self.clock()
                 )
-                safe_record = _record(request, decision, self.clock())
+                safe_record = _record(
+                    request, decision, self.clock(), execution_checkpoint
+                )
                 return AnswerDisclosureResult(record=safe_record, replay=True)
             if existing.request_digest != request.command_digest:
                 raise AnswerDisclosureIdempotencyConflict(
                     "Disclosure request conflicts with an immutable result."
                 )
+            if safe_terminal_output is not None and existing.output != safe_terminal_output:
+                raise AnswerDisclosureIdempotencyConflict(
+                    "Persisted safe terminal output conflicts with this retry."
+                )
             if existing.accepted_answer is None:
                 return AnswerDisclosureResult(record=existing, replay=True)
-            reference = await self.repository.resolve_delivery(
-                workspace_id=existing.workspace_id,
-                environment_id=existing.environment_id,
-                request_id=existing.request_id,
-            )
-            if reference is None:
-                reference = await self._publish_and_record(existing)
             return AnswerDisclosureResult(
-                record=existing, replay=True, output_reference=reference
+                record=existing, replay=True
             )
 
         try:
-            decision = compose_answer_disclosure(request, accepted_at=self.clock())
+            if safe_terminal_output is None:
+                decision = compose_answer_disclosure(request, accepted_at=self.clock())
+            else:
+                decision = AnswerDisclosureDecision(
+                    resolution=AnswerOutcomeResolution(
+                        outcome=safe_terminal_output.outcome,
+                        output=safe_terminal_output,
+                    )
+                )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -233,12 +364,15 @@ class AnswerDisclosureGate:
                 except Exception:
                     pass
             decision = _safe_failure(request)
-        record = _record(request, decision, self.clock())
+        record = _record(request, decision, self.clock(), execution_checkpoint)
         stored = await self.repository.save(record)
+        if safe_terminal_output is not None and stored.output != safe_terminal_output:
+            raise AnswerDisclosureIdempotencyConflict(
+                "Persisted safe terminal output conflicts with this retry."
+            )
         if stored.accepted_answer is None:
             return AnswerDisclosureResult(record=stored, replay=False)
-        reference = await self._publish_and_record(stored)
-        return AnswerDisclosureResult(record=stored, replay=False, output_reference=reference)
+        return AnswerDisclosureResult(record=stored, replay=False)
 
     async def _publish_and_record(self, record: AnswerDisclosureRecord) -> UUID:
         assert record.accepted_answer is not None
@@ -293,8 +427,9 @@ def _record(
     request: AnswerDisclosureRequest,
     decision: AnswerDisclosureDecision,
     created_at: datetime,
+    execution_checkpoint: AnswerExecutionCheckpoint | None = None,
 ) -> AnswerDisclosureRecord:
-    return AnswerDisclosureRecord(
+    record_fields = dict(
         request_id=request.request_id,
         request_digest=request.command_digest,
         workspace_id=request.decision.question.scope.workspace_id,
@@ -308,6 +443,11 @@ def _record(
         terminal_output=decision.output,
         created_at=created_at,
     )
+    if execution_checkpoint is not None:
+        return AnswerDisclosureRecordV2(
+            **record_fields, execution_checkpoint=execution_checkpoint
+        )
+    return AnswerDisclosureRecord(**record_fields)
 
 
 def _safe_failure(request: AnswerDisclosureRequest) -> AnswerDisclosureDecision:
