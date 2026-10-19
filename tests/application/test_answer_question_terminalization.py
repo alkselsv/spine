@@ -69,33 +69,35 @@ class _PersistedArtifactReader:
         self.reads.append(("lineage", artifact.id))
 
 
-def _answered_execution(admitted, attempt, pin):
+def _answered_execution(admitted, attempt, pin, *, bundle=None):
     from tests.domain.capabilities.test_answer_question_candidate import candidate_output
-    from tests.domain.context_bundle.test_context_bundle_models import context_bundle
 
-    source_bundle = context_bundle()
-    bundle_values = source_bundle.model_dump(mode="python")
-    identity_map = {
-        UUID(int=1): WORKSPACE_ID,
-        UUID(int=2): ENVIRONMENT_ID,
-        UUID(int=8): admitted.run_id,
-        UUID(int=9): attempt.attempt_id,
-    }
+    if bundle is None:
+        from tests.domain.context_bundle.test_context_bundle_models import context_bundle
 
-    def replace_identity(value):
-        if isinstance(value, UUID):
-            return identity_map.get(value, value)
-        if isinstance(value, dict):
-            return {key: replace_identity(item) for key, item in value.items()}
-        if isinstance(value, tuple):
-            return tuple(replace_identity(item) for item in value)
-        if isinstance(value, list):
-            return [replace_identity(item) for item in value]
-        return value
+        source_bundle = context_bundle()
+        bundle_values = source_bundle.model_dump(mode="python")
+        identity_map = {
+            UUID(int=1): WORKSPACE_ID,
+            UUID(int=2): ENVIRONMENT_ID,
+            UUID(int=8): admitted.run_id,
+            UUID(int=9): attempt.attempt_id,
+        }
 
-    bundle_values = replace_identity(bundle_values)
-    bundle_values["idempotency_key"] = "durable-answer-context"
-    bundle = type(source_bundle).create(**bundle_values)
+        def replace_identity(value):
+            if isinstance(value, UUID):
+                return identity_map.get(value, value)
+            if isinstance(value, dict):
+                return {key: replace_identity(item) for key, item in value.items()}
+            if isinstance(value, tuple):
+                return tuple(replace_identity(item) for item in value)
+            if isinstance(value, list):
+                return [replace_identity(item) for item in value]
+            return value
+
+        bundle_values = replace_identity(bundle_values)
+        bundle_values["idempotency_key"] = "durable-answer-context"
+        bundle = type(source_bundle).create(**bundle_values)
 
     candidate_values = candidate_output().model_dump(mode="python")
     question = candidate_values["question"]
