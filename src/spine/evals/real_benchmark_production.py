@@ -21,11 +21,13 @@ from spine.evals.real_benchmark_runner import (
 from spine.evals.real_qa_r1 import RealRuntimeCaseResolution
 
 
-class _ProductionObserverPort(Protocol):
+class _ProductionObserverV1Port(Protocol):
     async def observe(
         self, *, request: ProductionContractCaseRequest
     ) -> CaseExecutionRecord: ...
 
+
+class _ProductionObserverV2Port(Protocol):
     async def observe_v2(
         self, *, request: ProductionContractCaseRequest
     ) -> CaseExecutionRecordV2: ...
@@ -38,7 +40,13 @@ class RealBenchmarkProductionObserver:
     never invokes retrieval, generation, persistence, or disclosure itself.
     """
 
-    def __init__(self, *, observer: ProductionContractObserver | _ProductionObserverPort) -> None:
+    def __init__(
+        self,
+        *,
+        observer: ProductionContractObserver
+        | _ProductionObserverV1Port
+        | _ProductionObserverV2Port,
+    ) -> None:
         self._observer = observer
         self._use_v2 = callable(getattr(observer, "observe_v2", None))
         self.report_schema_version = (
