@@ -179,6 +179,21 @@ def test_trusted_preflight_requires_composition_evidence() -> None:
         )
 
 
+def test_trusted_preflight_rejects_explicit_fake_inspector() -> None:
+    class FakePreflight:
+        is_fake = True
+
+        async def inspect(self):
+            return _ready_preflight()
+
+    evidence = _issue_production_qa_composition_evidence(object(), object())  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="fake preflight inspectors"):
+        TrustedRealBenchmarkPreflight(
+            inspector=FakePreflight(),
+            production_evidence=evidence,
+        )
+
+
 def test_durable_flow_with_fake_ports_cannot_qualify() -> None:
     flow = DurableProductionQAAFlow(
         composition=SimpleNamespace(),

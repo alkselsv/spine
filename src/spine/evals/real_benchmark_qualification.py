@@ -91,6 +91,8 @@ class TrustedRealBenchmarkPreflight:
     ) -> None:
         if type(production_evidence) is not ProductionQAACompositionEvidence:
             raise TypeError("production preflight requires verified composition evidence")
+        if getattr(inspector, "is_fake", False) is True:
+            raise TypeError("fake preflight inspectors cannot be trusted for real qualification")
         self._inspector = inspector
         self.production_evidence = production_evidence
 
