@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from spine.api.authorization import ApiAuthorizationReadiness, ApiAuthorizationRuntime
 from spine.application.authorized_ask import (
+    AnswerQuestionAttemptApplication,
     AnswerQuestionCapability,
     AuthorizedAskService,
     PersistedAuthorizedAskService,
@@ -98,6 +99,7 @@ def compose_durable_ask(
     capability: AnswerQuestionCapability,
     sessions: QASessionService,
     admission: AskAdmissionApplication,
+    attempts: AnswerQuestionAttemptApplication,
     command_loader: AskAdmissionCommandLoader,
     persistence_context_factory: Callable[
         [AskAdmissionWorkflowInput], TrustedPersistenceContext
@@ -123,6 +125,7 @@ def compose_durable_ask(
         capability=capability,
         sessions=sessions,
         admission=None,
+        attempts=attempts,
         environment=environment,
     )
     executor = AskAdmissionWorkflowExecutor(

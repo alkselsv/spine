@@ -34,6 +34,7 @@ def test_answer_question_attempt_mapping_keeps_run_and_context_bundle_lineage() 
     assert {
         "run_id",
         "attempt_number",
+        "logical_execution_key",
         "state",
         "outcome",
         "context_bundle_id",
@@ -52,3 +53,12 @@ def test_answer_question_run_migration_follows_context_bundle_head() -> None:
 
     assert migration.revision == "20261026_30"
     assert migration.down_revision == "20261025_29"
+
+
+def test_canonical_attempt_allocation_migration_follows_current_head() -> None:
+    migration = importlib.import_module(
+        "migrations.versions.20261110_47_canonical_qa_attempt_allocation"
+    )
+
+    assert migration.revision == "20261110_47"
+    assert migration.down_revision == "20261109_46"

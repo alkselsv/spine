@@ -1817,11 +1817,13 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "fk_answer_question_attempts_run",
         "fk_answer_question_attempts_context_bundle",
         "uq_answer_question_attempts_number",
+        "uq_answer_question_attempts_logical_key",
         "ck_answer_question_attempts_positive",
         "ck_answer_question_attempts_state",
         "ck_answer_question_attempts_outcome",
         "ck_answer_question_attempts_terminal",
         "ck_answer_question_attempts_bundle_ref",
+        "ck_answer_question_attempts_logical_key",
         "pk_qa_session_versions",
         "fk_qa_session_versions_environment",
         "ck_qa_session_versions_version_positive",
@@ -2211,7 +2213,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "uq_answer_question_runs_idempotency",
         "pk_answer_question_attempts",
         "uq_answer_question_attempts_number",
+        "uq_answer_question_attempts_logical_key",
         "ix_answer_question_attempts_run",
+        "uq_answer_question_attempts_one_allocated_running",
         "pk_qa_session_versions",
         "pk_qa_message_versions",
         "pk_qa_disclosure_validation_results",
@@ -4780,13 +4784,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261107_44_answer_question_admission_state.py",
         "20261108_45_qa_cancellation_intent.py",
         "20261109_46_qa_message_row_lock_privilege.py",
+        "20261110_47_canonical_qa_attempt_allocation.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261109_47_injected_failure.py").write_text(
+    (target / "versions" / "20261110_48_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261109_47'\n"
-        "down_revision = '20261109_46'\n"
+        "revision = '20261110_48'\n"
+        "down_revision = '20261110_47'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

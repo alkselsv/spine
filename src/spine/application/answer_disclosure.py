@@ -305,6 +305,7 @@ def _record(
         validation=decision.validation,
         accepted_answer=decision.accepted_answer,
         safe_output=None if decision.accepted_answer is not None else decision.output,
+        terminal_output=decision.output,
         created_at=created_at,
     )
 

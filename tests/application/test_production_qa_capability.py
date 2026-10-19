@@ -113,7 +113,11 @@ COMMAND_ID = UUID(int=8)
 
 
 def command(
-    *, run_id: UUID | None = RUN, worker: bool = False
+    *,
+    run_id: UUID | None = RUN,
+    worker: bool = False,
+    attempt_id: UUID | None = None,
+    attempt_number: int | None = None,
 ) -> AnswerQuestionCapabilityCommand:
     return AnswerQuestionCapabilityCommand(
         request_context=AskRequestContext(
@@ -144,6 +148,8 @@ def command(
         run_id=run_id,
         idempotency_key=IdempotencyKey("admitted-key"),
         command_id=COMMAND_ID,
+        attempt_id=attempt_id,
+        attempt_number=attempt_number,
     )
 
 
@@ -510,6 +516,32 @@ async def test_unadmitted_command_identity_is_stable_for_idempotent_retry() -> N
     assert first.output.correlation.run_id.int != 0
     assert first.output.correlation.run_id == retry.output.correlation.run_id
     assert first.output.correlation.attempt_id == retry.output.correlation.attempt_id
+
+
+@pytest.mark.asyncio
+async def test_persisted_attempt_identity_is_used_before_context_retrieval() -> None:
+    canonical_attempt_id = UUID(int=99)
+    context = TerminalContext(AnswerQuestionOutcome.ABSTAINED)
+    capability = ProductionAnswerQuestionCapability(
+        context=context,
+        execution=BoundExecution(),
+        context_references=References(),
+        disclosure_gate=object(),
+        candidate_runner=UnexpectedCandidateStage(),
+        validator=object(),
+        disclosure_environment=EnvironmentKind.DEVELOPMENT,
+    )
+
+    result = await capability.answer(
+        command(
+            worker=True,
+            attempt_id=canonical_attempt_id,
+            attempt_number=3,
+        )
+    )
+
+    assert result.output.correlation.attempt_id == canonical_attempt_id
+    assert context.prepared == 1
 
 
 @pytest.mark.asyncio

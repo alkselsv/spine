@@ -206,6 +206,7 @@ class AskAdmissionStatus:
     status: AskAdmissionLifecycle
     outcome: AnswerQuestionOutcome | None = None
     attempt_id: UUID | None = None
+    attempt_number: int | None = None
 
     def __post_init__(self) -> None:
         if any(
@@ -224,6 +225,8 @@ class AskAdmissionStatus:
             raise ValueError("non-terminal Ask admission status cannot carry an outcome")
         if self.attempt_id is not None and self.attempt_id.int == 0:
             raise ValueError("Ask admission attempt identity must be non-zero")
+        if self.attempt_number is not None and self.attempt_number < 1:
+            raise ValueError("Ask admission attempt number must be positive")
 
 
 class AskCancellationLifecycle(str, Enum):

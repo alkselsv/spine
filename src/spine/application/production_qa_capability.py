@@ -490,7 +490,7 @@ class ProductionAnswerQuestionCapability:
             f"{command.session_id}:{command.message_id}:{key}",
         )
         run_id = command.run_id or uuid5(stable_id, "run")
-        attempt_id = uuid5(run_id, "attempt:1")
+        attempt_id = command.attempt_id or uuid5(run_id, "attempt:1")
         command_id = command.command_id or stable_id
         question = AnswerQuestionInput(
             subject=QuestionSubject(text=command.question),

@@ -128,6 +128,8 @@ from spine.application.persistence.answer_question_runs import (
     ANSWER_QUESTION_RUN_OPERATION_SCHEMA_VERSION,
     ANSWER_QUESTION_RUN_RESULT_TYPE,
     AnswerQuestionRunCommand,
+    AnswerQuestionAttemptAllocation,
+    AnswerQuestionAttemptAllocationResult,
     AnswerQuestionRunMutationResult,
     AnswerQuestionRunMessageLink,
     AnswerQuestionRunPage,
@@ -1027,6 +1029,7 @@ class _PostgreSQLAnswerQuestionRunRepository:
             "environment_id": attempt.environment_id,
             "run_id": attempt.run_id,
             "attempt_number": attempt.attempt_number,
+            "logical_execution_key": attempt.logical_execution_key,
             "state": attempt.state.value,
             "outcome": attempt.outcome.value if attempt.outcome is not None else None,
             "context_bundle_id": bundle.bundle_id if bundle is not None else None,
@@ -1072,6 +1075,7 @@ class _PostgreSQLAnswerQuestionRunRepository:
                 or attempt.environment_id != row["environment_id"]
                 or attempt.run_id != row["run_id"]
                 or attempt.attempt_number != row["attempt_number"]
+                or attempt.logical_execution_key != row["logical_execution_key"]
                 or attempt.state.value != row["state"]
                 or (attempt.outcome.value if attempt.outcome is not None else None)
                 != row["outcome"]
@@ -1499,6 +1503,65 @@ class _PostgreSQLAnswerQuestionRunRepository:
             insert(_ANSWER_QUESTION_ATTEMPTS).values(self._attempt_values(attempt))
         )
         return attempt
+
+    async def allocate_or_resume_attempt(
+        self, allocation: AnswerQuestionAttemptAllocation
+    ) -> AnswerQuestionAttemptAllocationResult:
+        self._uow._guard_active()
+        scope = self._scope()
+        run_row = await self._find_run(run_id=allocation.run_id, for_update=True)
+        if run_row is None:
+            await self._uow._fail(
+                AnswerQuestionRunNotFoundError("Q&A run is unavailable.")
+            )
+        run = self._restore_run(run_row)
+        result = await self._uow._execute(
+            select(_ANSWER_QUESTION_ATTEMPTS).where(
+                _ANSWER_QUESTION_ATTEMPTS.c.workspace_id == scope.workspace_id,
+                _ANSWER_QUESTION_ATTEMPTS.c.environment_id == scope.environment_id,
+                _ANSWER_QUESTION_ATTEMPTS.c.run_id == allocation.run_id,
+                _ANSWER_QUESTION_ATTEMPTS.c.logical_execution_key
+                == allocation.logical_execution_key,
+            )
+        )
+        existing_row = result.mappings().one_or_none()
+        if existing_row is not None:
+            existing = self._restore_attempt(existing_row)
+            if (
+                existing.execution_pin != allocation.execution_pin
+                or existing.input_artifact_ids != allocation.input_artifact_ids
+            ):
+                await self._uow._fail(
+                    AnswerQuestionRunConflictError(
+                        "Q&A attempt allocation lineage conflicts with history."
+                    )
+                )
+            return AnswerQuestionAttemptAllocationResult(attempt=existing, replay=True)
+        attempts = await self.list_attempts(allocation.run_id)
+        if (
+            run.state is not AnswerQuestionRunState.RUNNING
+            or run.cancellation_requested_at is not None
+            or any(
+                attempt.state is AnswerQuestionAttemptState.RUNNING
+                and attempt.logical_execution_key is not None
+                for attempt in attempts
+            )
+        ):
+            await self._uow._fail(
+                AnswerQuestionRunConflictError("Q&A run cannot allocate an attempt.")
+            )
+        attempt = AnswerQuestionAttempt.start(
+            attempt_id=self._uow._answer_question_attempt_id_factory(),
+            run=run,
+            attempt_number=max((item.attempt_number for item in attempts), default=0) + 1,
+            logical_execution_key=allocation.logical_execution_key,
+            execution_pin=allocation.execution_pin,
+            input_artifact_ids=allocation.input_artifact_ids,
+            diagnostic_context=run.diagnostic_context,
+            started_at=self._uow._answer_question_attempt_clock(),
+        )
+        stored = await self.start_attempt(attempt)
+        return AnswerQuestionAttemptAllocationResult(attempt=stored, replay=False)
 
     async def complete_attempt(self, attempt: AnswerQuestionAttempt) -> AnswerQuestionAttempt:
         self._uow._guard_active()
@@ -6026,6 +6089,8 @@ class PostgreSQLTenantUnitOfWork:
         ask_admission_run_id_factory: Callable[[], UUID],
         ask_admission_message_id_factory: Callable[[], UUID],
         ask_admission_clock: Callable[[], datetime],
+        answer_question_attempt_id_factory: Callable[[], UUID],
+        answer_question_attempt_clock: Callable[[], datetime],
     ) -> None:
         self._session_factory = session_factory
         self._source_context = source_context
@@ -6037,6 +6102,8 @@ class PostgreSQLTenantUnitOfWork:
         self._transaction_probe = transaction_probe
         self._boundary_id_factory = boundary_id_factory
         self._boundary_clock = boundary_clock
+        self._answer_question_attempt_id_factory = answer_question_attempt_id_factory
+        self._answer_question_attempt_clock = answer_question_attempt_clock
         self._scope: PersistenceScope | None = None
         self._operation: PersistenceOperation | None = None
         self._trace_id: UUID | None = None
@@ -6564,6 +6631,8 @@ class PostgreSQLTenantUnitOfWorkFactory:
         ask_admission_run_id_factory: Callable[[], UUID] = uuid4,
         ask_admission_message_id_factory: Callable[[], UUID] = uuid4,
         ask_admission_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        answer_question_attempt_id_factory: Callable[[], UUID] = uuid4,
+        answer_question_attempt_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self._session_factory = session_factory
         self._context_verifier = context_verifier
@@ -6576,6 +6645,8 @@ class PostgreSQLTenantUnitOfWorkFactory:
         self._ask_admission_run_id_factory = ask_admission_run_id_factory
         self._ask_admission_message_id_factory = ask_admission_message_id_factory
         self._ask_admission_clock = ask_admission_clock
+        self._answer_question_attempt_id_factory = answer_question_attempt_id_factory
+        self._answer_question_attempt_clock = answer_question_attempt_clock
 
     def __call__(
         self, context: TrustedPersistenceContext
@@ -6597,6 +6668,8 @@ class PostgreSQLTenantUnitOfWorkFactory:
             ask_admission_run_id_factory=self._ask_admission_run_id_factory,
             ask_admission_message_id_factory=self._ask_admission_message_id_factory,
             ask_admission_clock=self._ask_admission_clock,
+            answer_question_attempt_id_factory=self._answer_question_attempt_id_factory,
+            answer_question_attempt_clock=self._answer_question_attempt_clock,
         )
 
 
@@ -6634,6 +6707,8 @@ class PostgreSQLPersistence:
         ask_admission_run_id_factory: Callable[[], UUID] = uuid4,
         ask_admission_message_id_factory: Callable[[], UUID] = uuid4,
         ask_admission_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        answer_question_attempt_id_factory: Callable[[], UUID] = uuid4,
+        answer_question_attempt_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         selected_audit_events = (
             audit_events or AuditEventRegistry.with_default_families()
@@ -6653,6 +6728,8 @@ class PostgreSQLPersistence:
             ask_admission_run_id_factory=ask_admission_run_id_factory,
             ask_admission_message_id_factory=ask_admission_message_id_factory,
             ask_admission_clock=ask_admission_clock,
+            answer_question_attempt_id_factory=answer_question_attempt_id_factory,
+            answer_question_attempt_clock=answer_question_attempt_clock,
         )
         self.uow_factory = self.tenant_uow_factory
         self.audit_reader = PostgreSQLAuditReader(self.tenant_uow_factory)

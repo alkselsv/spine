@@ -72,6 +72,8 @@ from spine.application.persistence.answer_question_runs import (
     ANSWER_QUESTION_RUN_OPERATION_SCHEMA_VERSION,
     ANSWER_QUESTION_RUN_RESULT_TYPE,
     AnswerQuestionRunCommand,
+    AnswerQuestionAttemptAllocation,
+    AnswerQuestionAttemptAllocationResult,
     AnswerQuestionRunMutationResult,
     AnswerQuestionRunMessageLink,
     AnswerQuestionRunPage,
@@ -1305,6 +1307,62 @@ class _AnswerQuestionRunRepository:
         )
         self._uow._pending_answer_question_attempts[key] = attempt.model_copy(deep=True)
         return attempt.model_copy(deep=True)
+
+    async def allocate_or_resume_attempt(
+        self, allocation: AnswerQuestionAttemptAllocation
+    ) -> AnswerQuestionAttemptAllocationResult:
+        self._uow._guard_active()
+        run = self._runs().get(self._run_key(allocation.run_id))
+        if run is None:
+            self._uow._fail(AnswerQuestionRunNotFoundError("Q&A run is unavailable."))
+        attempts = tuple(
+            attempt for attempt in self._attempts().values()
+            if attempt.run_id == allocation.run_id
+        )
+        existing = next(
+            (
+                attempt for attempt in attempts
+                if attempt.logical_execution_key == allocation.logical_execution_key
+            ),
+            None,
+        )
+        if existing is not None:
+            if (
+                existing.execution_pin != allocation.execution_pin
+                or existing.input_artifact_ids != allocation.input_artifact_ids
+            ):
+                self._uow._fail(
+                    AnswerQuestionRunConflictError(
+                        "Q&A attempt allocation lineage conflicts with history."
+                    )
+                )
+            return AnswerQuestionAttemptAllocationResult(
+                attempt=existing.model_copy(deep=True), replay=True
+            )
+        if (
+            run.state is not AnswerQuestionRunState.RUNNING
+            or run.cancellation_requested_at is not None
+            or any(
+                attempt.state is AnswerQuestionAttemptState.RUNNING
+                and attempt.logical_execution_key is not None
+                for attempt in attempts
+            )
+        ):
+            self._uow._fail(
+                AnswerQuestionRunConflictError("Q&A run cannot allocate an attempt.")
+            )
+        attempt = AnswerQuestionAttempt.start(
+            attempt_id=self._uow._answer_question_attempt_id_factory(),
+            run=run,
+            attempt_number=max((item.attempt_number for item in attempts), default=0) + 1,
+            logical_execution_key=allocation.logical_execution_key,
+            execution_pin=allocation.execution_pin,
+            input_artifact_ids=allocation.input_artifact_ids,
+            diagnostic_context=run.diagnostic_context,
+            started_at=self._uow._answer_question_attempt_clock(),
+        )
+        stored = await self.start_attempt(attempt)
+        return AnswerQuestionAttemptAllocationResult(attempt=stored, replay=False)
 
     async def complete_attempt(
         self, attempt: AnswerQuestionAttempt
@@ -3528,6 +3586,8 @@ class InMemoryUnitOfWork:
         ask_admission_run_id_factory: Callable[[], UUID],
         ask_admission_message_id_factory: Callable[[], UUID],
         ask_admission_clock: Callable[[], datetime],
+        answer_question_attempt_id_factory: Callable[[], UUID],
+        answer_question_attempt_clock: Callable[[], datetime],
     ) -> None:
         if not isinstance(source_context, TrustedPersistenceContext):
             raise InvalidPersistenceContextError("Persistence context is invalid.")
@@ -3544,6 +3604,8 @@ class InMemoryUnitOfWork:
         self._ask_admission_run_id_factory = ask_admission_run_id_factory
         self._ask_admission_message_id_factory = ask_admission_message_id_factory
         self._ask_admission_clock = ask_admission_clock
+        self._answer_question_attempt_id_factory = answer_question_attempt_id_factory
+        self._answer_question_attempt_clock = answer_question_attempt_clock
         self._scope: PersistenceScope | None = None
         self._operation: PersistenceOperation | None = None
         self._trace_id: UUID | None = None
@@ -5018,6 +5080,8 @@ class _InMemoryUnitOfWorkFactory:
         ask_admission_run_id_factory: Callable[[], UUID],
         ask_admission_message_id_factory: Callable[[], UUID],
         ask_admission_clock: Callable[[], datetime],
+        answer_question_attempt_id_factory: Callable[[], UUID],
+        answer_question_attempt_clock: Callable[[], datetime],
     ) -> None:
         self._store = store
         self._context_verifier = context_verifier
@@ -5029,6 +5093,8 @@ class _InMemoryUnitOfWorkFactory:
         self._ask_admission_run_id_factory = ask_admission_run_id_factory
         self._ask_admission_message_id_factory = ask_admission_message_id_factory
         self._ask_admission_clock = ask_admission_clock
+        self._answer_question_attempt_id_factory = answer_question_attempt_id_factory
+        self._answer_question_attempt_clock = answer_question_attempt_clock
 
     def __call__(self, context: TrustedPersistenceContext) -> InMemoryUnitOfWork:
         if not isinstance(context, TrustedPersistenceContext):
@@ -5047,6 +5113,8 @@ class _InMemoryUnitOfWorkFactory:
             self._ask_admission_run_id_factory,
             self._ask_admission_message_id_factory,
             self._ask_admission_clock,
+            self._answer_question_attempt_id_factory,
+            self._answer_question_attempt_clock,
         )
 
 
@@ -5464,6 +5532,8 @@ class InMemoryPersistence:
         ask_admission_run_id_factory: Callable[[], UUID] = uuid4,
         ask_admission_message_id_factory: Callable[[], UUID] = uuid4,
         ask_admission_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        answer_question_attempt_id_factory: Callable[[], UUID] = uuid4,
+        answer_question_attempt_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         selected_audit_events = (
             audit_events or AuditEventRegistry.with_default_families()
@@ -5489,6 +5559,8 @@ class InMemoryPersistence:
             ask_admission_run_id_factory,
             ask_admission_message_id_factory,
             ask_admission_clock,
+            answer_question_attempt_id_factory,
+            answer_question_attempt_clock,
         )
         self.initial_workspace_bootstrap = _InMemoryInitialWorkspaceBootstrap(
             store, bootstrap_authority
