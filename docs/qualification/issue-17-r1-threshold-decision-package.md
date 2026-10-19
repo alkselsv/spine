@@ -1,6 +1,6 @@
 # Issue #17 R1 threshold decision package
 
-Status: local decision package; not published to GitHub.
+Status: published for review in [documentation PR #500](https://github.com/alkselsv/spine/pull/500); not yet integrated into `main`.
 
 ## Decisions recorded
 
@@ -21,18 +21,19 @@ Status: local decision package; not published to GitHub.
 
 ## Current issue and workflow
 
-Issue #17 remains open with `wayfinder:grilling`, no assignee, no
-`ready-for-agent`, no `in-progress`, and no comments. Its native blockers #19,
-#20, and #25 are closed; Issue #16 remains open and is blocked by #17. No
-ownership claim or GitHub mutation has been made.
+Issue #17 remains open with `wayfinder:task`, no assignee, `ready-for-agent`, or
+`in-progress`. It has two native child issues: #501 and #502. Issue #502 is
+natively blocked by #501. Both children are open, unassigned, and not marked
+`ready-for-agent` because documentation PR #500 is not yet integrated; #502 is
+also blocked by #501. Issue #16 remains open and is blocked by #17.
 
-The product decisions and technical seam needed to finish grilling are now
-settled. The implementation-ready spec and two approved ticket drafts are
-prepared locally. Numerical threshold decisions are not required to implement
-the policy/evaluation infrastructure; they require a future valid real
-baseline. No architectural or product question currently blocks publication.
-The package preserves a separate release-gate decision from full R1 end-to-end
-qualification in Issue #16.
+The product decisions and technical seam needed to finish grilling are settled.
+The implementation-ready spec and two approved ticket bodies are published in
+PR #500 and issues #501/#502. Numerical threshold decisions are not required to
+implement the policy/evaluation infrastructure; they require a future valid
+real baseline. No architectural or product question remains open. This package
+preserves a separate release-gate decision from full R1 end-to-end qualification
+in Issue #16.
 
 ## Dataset check and runtime preflight
 
@@ -108,120 +109,31 @@ comparable real baseline.
   unavailable required measurements must block a positive decision.
 - A benchmark gate result does not qualify R1 end-to-end or close Issue #16.
 
-## Local implementation ticket drafts
+## Implementation tickets
 
-The Product Owner approved a two-ticket breakdown. Ticket 2 is explicitly
-blocked by ticket 1 so the decision gate consumes the finalized metadata-only
-evidence contract. These are local drafts only; no GitHub issues or dependency
-records have been created.
+The Product Owner approved the two-ticket breakdown:
 
-### Ticket 1 — Produce reproducible metadata-only R1 baseline aggregates
+| Ticket | Scope | Dependency | Status |
+| --- | --- | --- | --- |
+| [#501 — Baseline measurement and coverage aggregates](https://github.com/alkselsv/spine/issues/501) | Metadata-only real baseline, strata, metric applicability/denominators/coverage, latency, existing operational measurements, and privacy-safe failure clusters | None | Open; unassigned; no `ready-for-agent` while PR #500 is unintegrated |
+| [#502 — Versioned approved thresholds and pure release gate](https://github.com/alkselsv/spine/issues/502) | Immutable policy, Product Owner approval provenance, compatibility checks, safety-first deterministic decision, and metadata-only results | Natively `blocked by #501` | Open; unassigned; no `ready-for-agent` while PR #500 is unintegrated and #501 is open |
 
-**Goal:** Extend the existing real benchmark report/evaluator output to expose
-the privacy-safe strata, failure-cluster summaries, exact eligible and measured
-denominators, coverage limitations, and linked operational measurements that
-the Product Owner needs to decide thresholds.
+Both are native sub-issues of #17. Ticket 1 can become claimable after the
+documentation PR is integrated and the normal ownership check passes. Ticket 2
+also requires #501 to be completed and closed.
 
-**Scope:** Reuse the approved dataset and existing evaluator, benchmark runner,
-observer, and operational metric contracts. Report unavailable measurements as
-`unavailable`; do not add a telemetry platform or new evaluation/execution
-path. Include evaluator/observer/application and runtime pins and benchmark
-execution scope. Keep reports metadata-only.
+## Publication and current-state record
 
-**Acceptance criteria:**
+Read-only GitHub refresh on 2026-10-19 found no open duplicate implementation
+tickets. The documents are published for review in PR #500. Issues #501 and
+#502 were created and linked as native sub-issues; the native dependency #502
+blocked by #501 was written and read back successfully. Parent #17 remains open
+and now carries `wayfinder:task` instead of `wayfinder:grilling`. No assignee
+or `in-progress` claim was added. PR #500 remains open and unmerged.
 
-- Aggregates identify metric version, statistic, eligible count, measured
-  denominator, unavailable count, applicability, and coverage.
-- Supported strata include PDF/DOCX/XLSX and existing expected-outcome or
-  scenario labels, without publishing private content or opaque identities.
-- Abstention metrics use the 13 eligible cases; denial quality is
-  `not_applicable` with eligible count 0; missing PDF/DOCX abstention coverage
-  is explicit.
-- Citation recall uses all 177 approved case-citation references, including 19
-  supplementary citations. Those supplementary citations do not become
-  claim-evidence relationships; groundedness uses the separate 158 approved
-  relationships.
-- Observer and worker latency remain separately measured. Cost,
-  indexing/freshness, and administrator usefulness are reported as
-  `unavailable` unless their existing contracts provide complete applicable
-  populations and measurements.
-- Partial, failed, or unavailable observations cannot be reported as a
-  completed baseline. No metric deltas are emitted without a comparable real
-  run.
-- Deterministic tests cover denominator, applicability, coverage, supported
-  strata, incomplete observations, and metadata-only serialization.
-- The approved private benchmark is run locally only after successful #453
-  preflight; it is not run in CI.
-
-**Blocked by:** none. Existing authorized real benchmark execution still
-requires a successful runtime preflight.
-
-### Ticket 2 — Add versioned approved R1 threshold policy and decision gate
-
-**Goal:** Add a pure deterministic decision seam under the existing
-`src/spine/evaluations/release_gates/` package that evaluates an explicitly
-approved immutable policy against compatible baseline and operational evidence
-after mandatory hard safety gates pass.
-
-**Scope:** Define the smallest typed policy and result contracts that bind
-policy version/status and approval provenance; dataset identity/version/digest;
-metric/evaluator versions; direction and comparison semantics; population,
-denominator and coverage requirements; runtime/scope constraints; and safe,
-metadata-only gate outcomes. Do not duplicate the evaluator, benchmark runner,
-or qualification gate.
-
-**Acceptance criteria:**
-
-- Draft and proposed policies remain inactive. Missing or invalid Product Owner
-  approval produces `not_approved`; only explicit attributable, versioned
-  approval activates policy.
-- Quality thresholds are evaluated only after mandatory hard-safety evidence
-  passes. No threshold can override or weaken a safety invariant.
-- Per-metric and overall outcomes distinguish `passed`, `failed`,
-  `not_applicable`, `insufficient_evidence`, `not_approved`, and `unavailable`.
-- Missing values, incompatible dataset/evaluator/metric/runtime pins, partial
-  populations, or unmet coverage requirements cannot yield a positive result.
-- Zero eligible denial cases produce `not_applicable`, never a pass; required
-  abstention and citation-recall populations follow ticket 1's report
-  contract.
-- The decision is deterministic and records policy/evidence versions,
-  thresholds applied, coverage, and safe reason codes without private content.
-- Focused tests cover min/max and boundary semantics, unavailable and partial
-  evidence, approval, applicability/denominators, runtime identity, safety
-  priority, determinism, and metadata-only output.
-- A threshold-gate result does not imply R1 end-to-end qualification or close
-  Issue #16.
-
-**Blocked by:** ticket 1, because the gate must bind to the finalized baseline
-report and evidence contract. Numeric values remain `decision_required` until
-the Product Owner reviews real measurements; implementation must support
-inactive thresholds without manufacturing values or approval.
-
-## Publication and current-state caveat
-
-Read-only GitHub refresh on 2026-10-19 confirmed Issue #17 remains open with
-`wayfinder:grilling`, no assignee, no comments, and no `ready-for-agent` or
-`in-progress` label. An issue search found no open duplicate for either drafted
-ticket. Related prior-art issues #358, #370, #452, #453, #469, and #478 are
-closed; they do not establish a real baseline. No issue, label, ownership, or
-dependency mutation was attempted.
-
-The specification and ticket bodies are now locally publication-ready. Before
-publishing, create Ticket 1 first and apply `ready-for-agent` only if it is
-claimable under the issue tracker policy. Create Ticket 2 with a native
-`blocked by Ticket 1` relationship; leave it unclaimable until Ticket 1 closes.
-Then update the parent #17 with both child links and the dependency, remove
-`wayfinder:grilling`, and apply the agreed parent tracking label (recommended:
-`wayfinder:map`) while leaving #17 open. The parent update should state that
-the threshold question is decomposed into baseline measurement and executable
-policy work, that numeric values and release approval remain outstanding, and
-that #16 remains the end-to-end release qualification. Do not self-assign or apply
-`in-progress` absent the documented claim transition. Ticket implementation
-must start only after the ticket is open, `ready-for-agent`, unassigned, has no
-open blocker, and is explicitly claimed.
-
-The two implementation tickets will be linked here after publication. The
-operator retry checklist is published alongside this package.
+The three published documents are the specification, this decision package,
+and the operator retry checklist. The issue drafts remain outside the docs
+commit; no protected dataset artifacts were published.
 
 ## Remaining blockers
 
@@ -239,7 +151,7 @@ operator retry checklist is published alongside this package.
    or must remain `unavailable`.
 5. The Product Owner must review the actual evidence and explicitly approve or
    reject proposed numerical thresholds and the versioned release policy.
-6. The local spec and two-ticket drafts need the repository's `to-spec` and
-   `to-tickets` publication steps. No issue mutation or publication has been
-   made under this authorization. Implementation only starts after the valid
-   claim transition.
+6. Documentation PR #500 needs review and integration under the repository's
+   documentation review process. No merge was performed. Ticket #501 is the
+   first implementation candidate after PR integration and a valid claim;
+   #502 additionally waits for #501 to close.

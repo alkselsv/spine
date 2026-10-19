@@ -1,7 +1,6 @@
 # Issue #17: R1 threshold decision and executable release gate
 
-Status: implementation-ready; published for review in the documentation PR and
-not yet integrated into `main`.
+Status: implementation-ready; published for review in [documentation PR #500](https://github.com/alkselsv/spine/pull/500) and not yet integrated into `main`.
 
 Originating issue: GitHub Issue #17, `[Release gate] Baseline quality and approve final R1 thresholds`.
 
