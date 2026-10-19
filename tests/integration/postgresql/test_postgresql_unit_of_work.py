@@ -3551,7 +3551,7 @@ asyncio.run(main())
             )
             terminal = await asyncio.wait_for(handle.result(), timeout=15)
 
-    assert terminal["output"]["outcome"] == AnswerQuestionOutcome.CANCELLED.value
+    assert terminal["outcome"] == AnswerQuestionOutcome.CANCELLED.value
     assert recovered_activity.cancel_calls == 1
 
 
@@ -4341,7 +4341,7 @@ async def test_temporal_retry_after_terminal_commit_failure_persists_one_postgre
     assert activity.calls >= 2
     assert activity.retried.is_set()
     assert activity.last_error == "UnexpectedPersistenceError"
-    assert result["output"]["outcome"] == AnswerQuestionOutcome.ABSTAINED.value
+    assert result["outcome"] == AnswerQuestionOutcome.ABSTAINED.value
     async with postgresql_adapter.uow_factory(context) as uow:
         persisted = await uow.answer_question_runs.resolve_run(RUN_ID)
     assert persisted == terminal_run
@@ -4552,7 +4552,7 @@ async def test_postgresql_application_terminalizer_commits_attempt_run_and_messa
             command_id=synthetic_uuid(49708),
             idempotency_key=IdempotencyKey("issue-496-postgresql-session"),
             digest=digest_command(
-                operation=PersistenceOperation("qa_sessions"),
+                operation=context.operation,
                 operation_schema_version=1,
                 payload={"session_id": session_id, "subject_id": subject_id},
             ),
@@ -4562,7 +4562,7 @@ async def test_postgresql_application_terminalizer_commits_attempt_run_and_messa
             command_id=synthetic_uuid(49709),
             idempotency_key=IdempotencyKey("issue-496-postgresql-message"),
             digest=digest_command(
-                operation=PersistenceOperation("qa_sessions"),
+                operation=context.operation,
                 operation_schema_version=1,
                 payload={"session_id": session_id, "message_id": message_id, "run_id": run_id},
             ),

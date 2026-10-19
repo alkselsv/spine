@@ -190,7 +190,7 @@ async def test_temporal_duplicate_admission_delivery_converges_on_one_run() -> N
             await handle.signal("request_cancellation")
             result = await asyncio.wait_for(handle.result(), timeout=10)
 
-    assert result["output"]["outcome"] == AnswerQuestionOutcome.CANCELLED.value
+    assert result["outcome"] == AnswerQuestionOutcome.CANCELLED.value
     assert activity.execute_calls >= 1
     assert activity.cancel_calls == 1
     assert recording_client.start_ids == [str(RUN_ID), str(RUN_ID)]
@@ -223,7 +223,7 @@ async def test_temporal_ask_workflow_cancellation_signal_returns_terminal_result
             await handle.signal("request_cancellation")
             result = await asyncio.wait_for(handle.result(), timeout=10)
 
-    assert result["output"]["outcome"] == AnswerQuestionOutcome.CANCELLED.value
+    assert result["outcome"] == AnswerQuestionOutcome.CANCELLED.value
     assert activity.execute_calls >= 1
     assert activity.cancel_calls == 1
 
@@ -274,7 +274,7 @@ async def test_temporal_ask_workflow_resumes_after_worker_restart() -> None:
             await asyncio.wait_for(activity.recovered_attempt.wait(), timeout=10)
             result = await asyncio.wait_for(handle.result(), timeout=10)
 
-    assert result["output"]["outcome"] == AnswerQuestionOutcome.ABSTAINED.value
+    assert result["outcome"] == AnswerQuestionOutcome.ABSTAINED.value
     assert activity.execute_calls == 1
 
 
@@ -358,7 +358,7 @@ async def test_temporal_ask_cancellation_resumes_after_worker_restart() -> None:
             await dispatch.consume(cancellation_intent, diagnostic_context)
             result = await asyncio.wait_for(handle.result(), timeout=10)
 
-    assert result["output"]["outcome"] == AnswerQuestionOutcome.CANCELLED.value
+    assert result["outcome"] == AnswerQuestionOutcome.CANCELLED.value
     assert activity.execute_calls >= 1
     assert activity.cancel_calls == 1
 
