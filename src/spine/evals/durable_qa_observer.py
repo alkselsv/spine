@@ -179,6 +179,7 @@ class DurableProductionQAAFlow(ProductionContractApplicationFlow):
             raise ProductionContractUnavailable()
         correlation_id = run_identity.run_id
         subscription_id = admitted.subscription_id
+        identity: AdmittedExecutionIdentity | None = None
         try:
             deadline = self.monotonic() + self.wait_timeout.total_seconds()
             terminal = await self.waiter.wait_for_run(
@@ -289,6 +290,10 @@ class DurableProductionQAAFlow(ProductionContractApplicationFlow):
         except asyncio.CancelledError:
             raise
         except Exception:
+            if identity is None:
+                raise ProductionContractUnavailable(
+                    correlation_id=correlation_id
+                ) from None
             raise _partial_failure(identity) from None
         finally:
             # Cleanup is best-effort and never turns a safe outcome into a

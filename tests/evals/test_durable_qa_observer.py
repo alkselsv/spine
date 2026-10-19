@@ -194,6 +194,34 @@ class _TerminalWaiter:
             if self.answered
             else _safe_observation(case)
         )
+        if not self.answered:
+            correlation = observed.question.correlation.model_copy(
+                update={
+                    "run_id": execution_identity.run_id,
+                    "attempt_id": execution_identity.attempt_id,
+                }
+            )
+            question = observed.question.model_copy(update={"correlation": correlation})
+            answer = observed.answer.model_copy(
+                update={"correlation": correlation}
+            )
+            disclosure = observed.disclosure.model_copy(
+                update={
+                    "run_id": execution_identity.run_id,
+                    "attempt_id": execution_identity.attempt_id,
+                    "safe_output": answer,
+                }
+            )
+            observed = observed.model_copy(
+                update={
+                    "question": question,
+                    "answer": answer,
+                    "disclosure": disclosure,
+                    "retrieval": observed.retrieval.model_copy(
+                        update={"index_version": UNAUTHORIZED_RETRIEVAL_SAFETY_SEAM}
+                    ),
+                }
+            )
         question = observed.question
         answer = observed.answer
         disclosure = observed.disclosure
@@ -496,6 +524,49 @@ async def test_durable_observer_freezes_same_execution_terminal_capture() -> Non
 
 
 @pytest.mark.asyncio
+async def test_durable_observer_freezes_canonical_abstention_capture() -> None:
+    channel = _Channel()
+    abstention_case = next(
+        case
+        for case in load_r1_dataset().cases
+        if case.case_id == "absent-evidence-abstention"
+    )
+    waiter = _TerminalWaiter()
+    waiter.case_id = abstention_case.case_id
+    waiter.answered = False
+    waiter.channel = channel
+    composition = DurableAskComposition(
+        admission=object(),
+        api_ask_service=object(),
+        workflow_executor=object(),
+        delivery_bindings=(),
+        workflow_definition=object,
+        activity_bindings=(object(), object()),
+        observer_admission=_Admission(),  # type: ignore[arg-type]
+        sessions=_SessionService(),  # type: ignore[arg-type]
+        capture_channel=channel,  # type: ignore[arg-type]
+    )
+    flow = DurableProductionQAAFlow(
+        composition=composition,
+        authorization=_RequestAuthorization(),
+        waiter=waiter,  # type: ignore[arg-type]
+        invocation_id_source=lambda: UUID("4e000000-0000-0000-0000-000000000478"),
+    )
+
+    record = await ProductionContractObserver(
+        flow=flow,
+        index_version=UNAUTHORIZED_RETRIEVAL_SAFETY_SEAM,
+    ).observe_v2(request=ProductionContractCaseRequest.from_case(abstention_case))
+
+    assert record.disposition is CaseExecutionDisposition.OBSERVED
+    assert record.observation is not None
+    assert record.observation.answer.outcome is AnswerQuestionOutcome.ABSTAINED
+    assert record.observation.answer.answer is None
+    assert channel.bind_calls == channel.receive_calls == channel.acknowledge_calls == 1
+    assert channel.cleanup_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_durable_observer_maps_canonical_denial_without_capture_to_denied() -> None:
     channel = _Channel()
 
@@ -543,6 +614,92 @@ async def test_durable_observer_maps_canonical_denial_without_capture_to_denied(
     assert record.completed_attempt_id == UUID("4f000000-0000-0000-0000-000000000478")
     assert record.observation is None
     assert channel.bind_calls == channel.receive_calls == 0
+    assert channel.cleanup_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome", [AnswerQuestionOutcome.FAILED, AnswerQuestionOutcome.CANCELLED]
+)
+async def test_durable_observer_fails_closed_for_failed_or_cancelled_terminal_without_capture(
+    outcome,
+) -> None:
+    class MissingCaptureChannel(_Channel):
+        async def receive(self, *, identity, **kwargs):
+            del identity, kwargs
+            self.receive_calls += 1
+            return CaptureReceiveResult(state=CaptureReceiveState.UNAVAILABLE)
+
+    class TerminalOutcomeWaiter:
+        async def wait_for_run(self, *, identity, **kwargs):
+            del kwargs
+            execution_identity = identity.with_attempt(
+                attempt_id=UUID("4f000000-0000-0000-0000-000000000478"),
+                attempt_number=3,
+            )
+            message = QAMessageRead(
+                message_id=execution_identity.message_id,
+                session_id=execution_identity.session_id,
+                workspace_id=execution_identity.workspace_id,
+                environment_id=execution_identity.environment_id,
+                version=1,
+                ordinal=1,
+                trace_id=UUID("4e000000-0000-0000-0000-000000000478"),
+                run_id=execution_identity.run_id,
+                state=QAMessageState.TERMINAL,
+                terminal_outcome=outcome,
+                cancelled=outcome is AnswerQuestionOutcome.CANCELLED,
+                disclosure_eligibility=QAMessageDisclosureEligibility.UNKNOWN,
+                question="protected question",
+                answer=None,
+                accepted_presentation=None,
+                created_at=datetime(2026, 10, 18, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 10, 18, tzinfo=timezone.utc),
+            )
+            return TerminalAskWaitResult(
+                wait=TerminalRunWaitResult(
+                    identity=identity,
+                    state=ExecutionWaitState.TERMINAL,
+                    outcome=outcome,
+                    execution_identity=execution_identity,
+                ),
+                message=message,
+            )
+
+    channel = MissingCaptureChannel()
+    composition = DurableAskComposition(
+        admission=object(),
+        api_ask_service=object(),
+        workflow_executor=object(),
+        delivery_bindings=(),
+        workflow_definition=object,
+        activity_bindings=(object(), object()),
+        observer_admission=_Admission(),  # type: ignore[arg-type]
+        sessions=_SessionService(),  # type: ignore[arg-type]
+        capture_channel=channel,  # type: ignore[arg-type]
+    )
+    flow = DurableProductionQAAFlow(
+        composition=composition,
+        authorization=_RequestAuthorization(),
+        waiter=TerminalOutcomeWaiter(),  # type: ignore[arg-type]
+        invocation_id_source=lambda: UUID("4e000000-0000-0000-0000-000000000478"),
+    )
+    request = _allowed_request()
+
+    record = await ProductionContractObserver(
+        flow=flow,
+        index_version=UNAUTHORIZED_RETRIEVAL_SAFETY_SEAM,
+    ).observe_v2(request=request)
+
+    assert record.disposition is CaseExecutionDisposition.FAILED
+    assert record.failure_category is CaseExecutionFailureCategory.PARTIAL_FAILURE
+    assert record.observation is None
+    assert request.question not in record.model_dump_json()
+    assert "protected question" not in record.model_dump_json()
+    assert record.completed_attempt_id == UUID("4f000000-0000-0000-0000-000000000478")
+    assert record.completed_attempt_number == 3
+    assert channel.receive_calls == 1
+    assert channel.acknowledge_calls == 0
     assert channel.cleanup_calls == 1
 
 
@@ -609,6 +766,47 @@ async def test_durable_observer_maps_wait_timeout_and_disclosure_revocation_safe
     assert request.question not in record.model_dump_json()
     assert channel.bind_calls == channel.receive_calls == 0
     assert channel.acknowledge_calls == 0
+    assert channel.cleanup_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_durable_observer_maps_waiter_exception_to_safe_unavailable() -> None:
+    channel = _Channel()
+
+    class FailingWaiter:
+        async def wait_for_run(self, **kwargs):
+            del kwargs
+            raise RuntimeError("internal waiter detail")
+
+    composition = DurableAskComposition(
+        admission=object(),
+        api_ask_service=object(),
+        workflow_executor=object(),
+        delivery_bindings=(),
+        workflow_definition=object,
+        activity_bindings=(object(), object()),
+        observer_admission=_Admission(),  # type: ignore[arg-type]
+        sessions=_SessionService(),  # type: ignore[arg-type]
+        capture_channel=channel,  # type: ignore[arg-type]
+    )
+    flow = DurableProductionQAAFlow(
+        composition=composition,
+        authorization=_RequestAuthorization(),
+        waiter=FailingWaiter(),  # type: ignore[arg-type]
+        invocation_id_source=lambda: UUID("4e000000-0000-0000-0000-000000000478"),
+    )
+
+    request = _allowed_request()
+    record = await ProductionContractObserver(
+        flow=flow,
+        index_version=UNAUTHORIZED_RETRIEVAL_SAFETY_SEAM,
+    ).observe_v2(request=request)
+
+    assert record.disposition is CaseExecutionDisposition.UNAVAILABLE
+    assert record.failure_category is CaseExecutionFailureCategory.RUNTIME_UNAVAILABLE
+    assert record.observation is None
+    assert request.question not in record.model_dump_json()
+    assert "internal waiter detail" not in record.model_dump_json()
     assert channel.cleanup_calls == 1
 
 
