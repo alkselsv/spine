@@ -49,6 +49,7 @@ from spine.evals.real_qa_r1 import (
 
 REAL_BENCHMARK_RUN_SCHEMA = "r1-local-benchmark-run:v1"
 REAL_BENCHMARK_REPORT_SCHEMA = "r1-local-benchmark-report:v1"
+REAL_BENCHMARK_REPORT_V2_SCHEMA = "r1-local-benchmark-report:v2"
 REAL_BENCHMARK_REPORT_VERSION = "v1"
 
 
@@ -61,6 +62,12 @@ class RealObserverResult(DefinitionModel):
 
     status: Literal["observed", "partial", "unavailable", "denied", "failed"]
     observation: ProductionContractObservation | None = None
+    observer_elapsed_ms: int | None = Field(default=None, ge=0)
+    worker_execution_elapsed_ns: int | None = Field(default=None, ge=0)
+    worker_execution_attempt_id: UUID | None = None
+    execution_record_schema_version: Literal[
+        "r1-case-execution-record:v2"
+    ] | None = None
     failure_category: str | None = Field(
         default=None,
         min_length=1,
@@ -69,11 +76,23 @@ class RealObserverResult(DefinitionModel):
     )
 
     def validate_disposition(self) -> "RealObserverResult":
-        if self.status in {"observed", "partial"}:
+        if self.status == "observed":
             if type(self.observation) is not ProductionContractObservation:
                 raise RealBenchmarkContractError("observer did not return a typed observation")
-        elif self.observation is not None:
+        elif self.status != "partial" and self.observation is not None:
             raise RealBenchmarkContractError("unavailable observer result cannot carry observation")
+        if self.execution_record_schema_version is not None and (
+            self.observer_elapsed_ms is None
+            and self.status == "observed"
+        ):
+            raise RealBenchmarkContractError("observed v2 result requires observer elapsed time")
+        if (self.worker_execution_elapsed_ns is None) != (
+            self.worker_execution_attempt_id is None
+        ):
+            raise RealBenchmarkContractError("worker timing fields must be paired")
+        if self.worker_execution_attempt_id is not None and self.observation is not None:
+            if self.worker_execution_attempt_id != self.observation.question.correlation.attempt_id:
+                raise RealBenchmarkContractError("worker timing belongs to another attempt")
         return self
 
 
@@ -156,6 +175,31 @@ class RealBenchmarkReport(DefinitionModel):
     evaluation: RealEvaluationResult | None = None
 
 
+class RealBenchmarkExecutionTiming(DefinitionModel):
+    """Identity-free v2 timing metadata for one observer invocation."""
+
+    observer_elapsed_ms: int | None = Field(default=None, ge=0)
+    worker_execution_elapsed_ns: int | None = Field(default=None, ge=0)
+    worker_execution_attempt_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_worker_timing(self) -> "RealBenchmarkExecutionTiming":
+        if (self.worker_execution_elapsed_ns is None) != (
+            self.worker_execution_attempt_id is None
+        ):
+            raise ValueError("worker timing duration and attempt identity must be paired")
+        return self
+
+
+class RealBenchmarkReportV2(RealBenchmarkReport):
+    """Versioned metadata report that retains the observer's two time domains."""
+
+    schema_version: Literal["r1-local-benchmark-report:v2"] = (
+        REAL_BENCHMARK_REPORT_V2_SCHEMA
+    )
+    execution_timings: tuple[RealBenchmarkExecutionTiming, ...] = ()
+
+
 class _MappingPort(Protocol):
     async def resolve(
         self,
@@ -196,6 +240,14 @@ class RealBenchmarkRunner:
         self._pins = pins
         self._workspace = workspace_selector
         self._environment = environment_selector
+        self._report_schema = getattr(
+            observer, "report_schema_version", REAL_BENCHMARK_REPORT_SCHEMA
+        )
+        if self._report_schema not in {
+            REAL_BENCHMARK_REPORT_SCHEMA,
+            REAL_BENCHMARK_REPORT_V2_SCHEMA,
+        }:
+            raise RealBenchmarkContractError("observer report schema version is unsupported")
 
     async def run(
         self,
@@ -224,7 +276,7 @@ class RealBenchmarkRunner:
             raise RealBenchmarkContractError("mapping manifest does not match selected dataset")
 
         manifest_digest = runtime_mapping_manifest_digest(manifest)
-        run = self._run_identity(loaded, manifest_digest)
+        run = self._run_identity(loaded, manifest_digest, self._report_schema)
         cases = loaded.dataset.cases
         resolutions: dict[str, RealRuntimeCaseResolution] = {}
         mapping_failures = 0
@@ -367,6 +419,7 @@ class RealBenchmarkRunner:
 
         counts: Counter[str] = Counter()
         scored = []
+        execution_timings: list[RealBenchmarkExecutionTiming] = []
         failures = 0
         for case in cases:
             resolution = resolutions.get(case.case_id)
@@ -382,6 +435,22 @@ class RealBenchmarkRunner:
                 if type(result) is not RealObserverResult:
                     raise RealBenchmarkContractError("observer result is invalid")
                 result.validate_disposition()
+                if self._report_schema == REAL_BENCHMARK_REPORT_V2_SCHEMA:
+                    if result.execution_record_schema_version != "r1-case-execution-record:v2":
+                        raise RealBenchmarkContractError(
+                            "v2 report observer did not return a v2 execution record"
+                        )
+                    execution_timings.append(
+                        RealBenchmarkExecutionTiming(
+                            observer_elapsed_ms=result.observer_elapsed_ms,
+                            worker_execution_elapsed_ns=result.worker_execution_elapsed_ns,
+                            worker_execution_attempt_id=result.worker_execution_attempt_id,
+                        )
+                    )
+                elif result.execution_record_schema_version is not None:
+                    raise RealBenchmarkContractError(
+                        "v1 report cannot consume a versioned execution record"
+                    )
             except Exception:
                 counts["failed"] += 1
                 failures += 1
@@ -450,7 +519,7 @@ class RealBenchmarkRunner:
             if observer_attempts
             else "not_run"
         )
-        return RealBenchmarkReport(
+        report_values = dict(
             run=run,
             structural_validation_status="passed",
             production_observation_status=production_status,
@@ -470,9 +539,18 @@ class RealBenchmarkRunner:
             ),
             evaluation=evaluation,
         )
+        if self._report_schema == REAL_BENCHMARK_REPORT_V2_SCHEMA:
+            return RealBenchmarkReportV2(
+                **report_values,
+                execution_timings=tuple(execution_timings),
+            )
+        return RealBenchmarkReport(**report_values)
 
     def _run_identity(
-        self, loaded: LoadedRealDataset, mapping_digest: str
+        self,
+        loaded: LoadedRealDataset,
+        mapping_digest: str,
+        report_schema_version: str,
     ) -> RealBenchmarkRun:
         identity = {
             "workspace_id": str(self._workspace),
@@ -482,7 +560,7 @@ class RealBenchmarkRunner:
             "mapping_sha256": mapping_digest,
             "pins": self._pins.model_dump(mode="json"),
             "evaluator_version": REAL_EVALUATOR_VERSION,
-            "report_schema_version": REAL_BENCHMARK_REPORT_SCHEMA,
+            "report_schema_version": report_schema_version,
         }
         run_id = hashlib.sha256(
             json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
@@ -496,17 +574,21 @@ class RealBenchmarkRunner:
             mapping_sha256=mapping_digest,
             runtime_pins=self._pins,
             evaluator_version=REAL_EVALUATOR_VERSION,
+            report_schema_version=report_schema_version,
         )
 
 
 __all__ = [
     "REAL_BENCHMARK_REPORT_SCHEMA",
+    "REAL_BENCHMARK_REPORT_V2_SCHEMA",
     "REAL_BENCHMARK_REPORT_VERSION",
     "REAL_BENCHMARK_RUN_SCHEMA",
     "RealBenchmarkCaseCounts",
+    "RealBenchmarkExecutionTiming",
     "RealBenchmarkContractError",
     "RealBenchmarkObserverPort",
     "RealBenchmarkReport",
+    "RealBenchmarkReportV2",
     "RealBenchmarkRun",
     "RealBenchmarkRunner",
     "RealObserverResult",

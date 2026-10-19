@@ -59,6 +59,7 @@ from spine.evals.durable_qa_observer import (
     ObserverAuthorization,
     ObserverAuthorizationPort,
 )
+from spine.evals.real_benchmark_production import RealBenchmarkProductionObserver
 from spine.evals.real_qa_r1 import (
     REAL_RUNTIME_CASE_INPUT_SCHEMA,
     REAL_RUNTIME_MAPPING_MANIFEST_SCHEMA,
@@ -164,6 +165,7 @@ __all__ = [
     "DurableAskObservationComposition",
     "ObserverAuthorization",
     "ObserverAuthorizationPort",
+    "RealBenchmarkProductionObserver",
     "REAL_RUNTIME_CASE_INPUT_SCHEMA",
     "REAL_RUNTIME_MAPPING_MANIFEST_SCHEMA",
     "REAL_RUNTIME_REVISION_BINDING_SCHEMA",
