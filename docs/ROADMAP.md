@@ -66,7 +66,8 @@ platform.
       `implemented: provider-neutral projection and authorized retrieval contracts`;
       `integrated and qualified: deterministic offline Context Broker flow`;
       `production qualification: no-go` для PostgreSQL + Neo4j + PGVector
-      (#212); configured physical provider и deployment profile не проверены.
+      (#212): configured physical provider проверен локально, 9 из 10 gates
+      пройдены; canonical lifecycle gate не пройден, deployment profile не проверен.
 - [x] Единые trace ID, structured errors и audit events.
       `implemented`, `qualified: offline diagnostics/delivery foundation`,
       `integrated: API, outbox, workers, projection, Q&A and no-log diagnosis`;

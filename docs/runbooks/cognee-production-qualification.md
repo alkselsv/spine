@@ -91,20 +91,22 @@ through Cognee's public `forget` API.
 
 The orchestrated target continues through independent failures so the report
 contains one observation for every required gate. The canonical-lifecycle gate
-is intentionally emitted as `not_run` until a PostgreSQL-backed projection
-request resolver composition exists and can be instrumented. The target fails
-at the end if any gate failed or was not run; provider exception text is never
-serialized.
+uses the production PostgreSQL request resolver and fails closed until Issues
+#514, #515 and #516 provide the remaining production composition. It does not
+substitute an in-memory parsed-artifact repository or fabricate a Cognee
+adapter receipt from fixture input. The target fails at the end if any gate
+failed or was not run; provider exception text is never serialized.
 
 ## Interpreting the result
 
 The current committed result is **no-go** from coherent live run
-`issue212-docker-013`. All nine real PostgreSQL + Neo4j + PGVector gates passed,
-including public SDK compatibility, structured provenance, isolation,
-update/remove, rebuild/recovery and concurrency cleanup. Production approval is
-still withheld because the PostgreSQL-backed projection-request resolver needed
-to observe canonical lifecycle separation does not exist yet; that gate remains
-explicitly `not_run` rather than being inferred from architecture.
+`issue507-blocked-001`. Nine physical PostgreSQL + Neo4j + PGVector gates
+passed, including public SDK compatibility, structured provenance, isolation,
+update/remove, rebuild/recovery and concurrency cleanup. The production
+canonical-lifecycle composition failed closed with bounded code
+`configuration_mismatch`; Issues #514 and #515 track the discovered contract
+defects, and Issue #516 tracks the missing production PostgreSQL parsed-artifact
+and observed Cognee receipt composition. Production approval remains withheld.
 
 Do not convert a partial pass, skipped test, local Cognee profile or Issue #211
 fake-backed result into production approval. A future `go` requires every gate
