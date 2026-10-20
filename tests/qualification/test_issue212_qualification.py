@@ -44,7 +44,7 @@ def test_issue212_report_is_explicit_no_go_from_one_complete_live_run() -> None:
 
     assert report.schema_version == "cognee-production-qualification:v2"
     assert report.ticket == 212
-    assert report.qualification_run_id == "issue507-blocked-001"
+    assert report.qualification_run_id == "issue507-resume-001"
     assert report.profile.model_dump() == {
         "relational": "postgresql",
         "graph": "neo4j",

@@ -17,7 +17,7 @@ import logging
 import os
 from pathlib import Path
 import re
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import pytest
 
@@ -1310,8 +1310,26 @@ async def _canonical_projection_request(
 
 async def _assert_canonical_lifecycle_separation(
     adapter: PersistenceAdapter,
+    postgresql_contract_database,
 ) -> None:
     from spine.memory.cognee_memory import configure_environment
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from spine.application.persistence.context import (
+        EnvironmentScope,
+        PersistenceOperation,
+        PersistencePurpose,
+        TrustedPersistenceContext,
+    )
+    from spine.application.persistence.parsed_artifacts import ParsedArtifactCommand
+    from spine.application.diagnostics import DiagnosticContext
+    from spine.infrastructure.persistence.parsed_artifacts import (
+        PostgreSQLParsedArtifactRepository,
+    )
+    from spine.infrastructure.persistence.contexts import TrustedContextBoundary
+    from spine.infrastructure.persistence.projection_composition import (
+        build_postgresql_cognee_projection_request_consumer,
+    )
 
     intent, document = await _canonical_projection_request(adapter)
     request = ProjectionRequestEnvelope(
@@ -1388,45 +1406,132 @@ async def _assert_canonical_lifecycle_separation(
     extraction_payload = extraction.model_dump(mode="python")
     extraction_payload.pop("result_digest")
     extraction = type(base_extraction).model_validate(extraction_payload)
-    sdk = CogneePublicSdk()
-    chunks = CogneeChunkProjectionStore(
-        sdk=sdk,
+    physical_projection = create_cognee_context_projection(
         artifacts={source.source_revision_id: document},
-    )
-    graph = CogneeGraphEffectStore(
-        writer=CogneeGraphProjectionWriter(sdk=sdk),
         extraction_results={source.source_revision_id: extraction},
-    )
-    projection = CogneeContextProjection(
-        effect_store=chunks,
-        graph_effect_store=graph,
-        retrieval=CogneeStructuredRetrieval(),
     )
     dataset_name = CogneeChunkProjectionStore.dataset_name(
         canonical.physical_namespace
     )
-    command = ProjectCommand(
-        workspace_id=canonical.workspace_id,
-        environment_id=canonical.environment_id,
-        projection_run_id=canonical.projection_run_id,
-        projection_candidate=canonical.projection_candidate,
-        projection_config=canonical.projection_config,
-        canonical_boundary=canonical.canonical_boundary,
-        source_revisions=(canonical.source_revision,),
-        physical_namespace=canonical.physical_namespace,
-        command_identity=canonical.command_identity,
-        command_digest=canonical.command_digest,
-    )
     await _forget_existing_datasets(cognee, (dataset_name,))
+
+    runtime_engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        pool_size=2,
+        max_overflow=0,
+        pool_pre_ping=True,
+        pool_reset_on_return="rollback",
+        hide_parameters=True,
+        connect_args={"options": "-csearch_path=spine,public"},
+    )
+    context_boundary = TrustedContextBoundary.for_testing(
+        issuer_id=synthetic_uuid(507_030),
+        secret=b"issue-507-cognee-composition-context-secret-001",
+    )
+
+    def parsed_artifact_context(
+        workspace_id: UUID, environment_id: UUID
+    ) -> TrustedPersistenceContext:
+        return context_boundary.worker(
+            scope=EnvironmentScope(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+            ),
+            service_principal_id=synthetic_uuid(507_031),
+            purpose=PersistencePurpose("parsed_artifact_repository"),
+            operation=PersistenceOperation("parsed_artifact_read"),
+            trace_id=synthetic_uuid(507_032),
+        )
+
+    async_session_factory = async_sessionmaker(
+        runtime_engine,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+    parsed_artifacts = PostgreSQLParsedArtifactRepository(
+        async_session_factory,
+        context_factory=parsed_artifact_context,
+        context_verifier=context_boundary,
+    )
+    await parsed_artifacts.persist(
+        ParsedArtifactCommand.create(
+            document,
+            command_identity=(
+                "issue507:"
+                f"{os.environ.get('SPINE_COGNEE_QUALIFICATION_RUN_ID', 'not-run')}"
+                ":parsed"
+            ),
+        )
+    )
+
+    class ObservedProjection:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.uow_active_during_call: bool | None = None
+
+        async def project(self, command):
+            self.calls += 1
+            self.uow_active_during_call = unit_of_work_is_active()
+            return await physical_projection.project(command)
+
+    observed_projection = ObservedProjection()
+
+    def projection_context(command) -> TrustedPersistenceContext:
+        return adapter.ingestion_context(
+            command.workspace_id,
+            command.environment_id,
+            "projection_receipt",
+        )
+
+    consumer = build_postgresql_cognee_projection_request_consumer(
+        session_factory=async_session_factory,
+        parsed_artifact_context_factory=parsed_artifact_context,
+        context_verifier=context_boundary,
+        uow_factory=adapter.uow_factory,
+        request_context_factory=lambda value: adapter.ingestion_context(
+            value.workspace_id,
+            value.environment_id,
+            "projection_request",
+        ),
+        projection_context_factory=projection_context,
+        projection=observed_projection,
+        clock=lambda: datetime(2026, 10, 20, 12, 6, tzinfo=timezone.utc),
+        reference_id_source=lambda: synthetic_uuid(507_033),
+    )
+    diagnostic_context = DiagnosticContext(
+        trace_id=intent.trace_id,
+        correlation_id=intent.correlation_id,
+        causation_id=intent.event_id,
+    )
     try:
-        result = await projection.project(command)
+        await consumer.consume(intent, diagnostic_context)
         assert unit_of_work_is_active() is False
-        assert result.failure is None
-        raise RuntimeError(
-            "production parsed-artifact and Cognee receipt composition is unavailable; "
-            "see Issue #516"
+        assert observed_projection.calls == 1
+        assert observed_projection.uow_active_during_call is False
+        async with adapter.uow_factory(
+            adapter.ingestion_context(
+                canonical.workspace_id,
+                canonical.environment_id,
+                "projection_receipt",
+            )
+        ) as uow:
+            persisted_receipts = await uow.projections.list_receipts(
+                canonical.projection_run_id
+            )
+            persisted_references = await uow.projections.list_source_references(
+                canonical.projection_run_id
+            )
+        assert any(
+            receipt.command_identity == canonical.command_identity
+            for receipt in persisted_receipts
+        )
+        assert any(
+            reference.projected_object_id
+            == f"segment-{document.segments[0].segment_id.hex}"
+            for reference in persisted_references
         )
     finally:
+        await runtime_engine.dispose()
         await _forget_existing_datasets(cognee, (dataset_name,))
 
 
@@ -1437,13 +1542,18 @@ async def _assert_canonical_lifecycle_separation(
 @pytest.mark.asyncio
 async def test_canonical_lifecycle_resolves_postgresql_before_physical_projection(
     postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database,
 ) -> None:
-    await _assert_canonical_lifecycle_separation(postgresql_adapter)
+    await _assert_canonical_lifecycle_separation(
+        postgresql_adapter,
+        postgresql_contract_database,
+    )
 
 
 @pytest.mark.asyncio
 async def test_production_qualification_records_one_coherent_run(
     postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database,
 ) -> None:
     run_id = os.environ.get("SPINE_COGNEE_QUALIFICATION_RUN_ID", "not-run")
 
@@ -1499,7 +1609,10 @@ async def test_production_qualification_records_one_coherent_run(
                 )
             ),
             "canonical_lifecycle_separation": lambda: (
-                _assert_canonical_lifecycle_separation(postgresql_adapter)
+                _assert_canonical_lifecycle_separation(
+                    postgresql_adapter,
+                    postgresql_contract_database,
+                )
             ),
         }
     )

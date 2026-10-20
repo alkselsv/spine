@@ -67,7 +67,7 @@
   "not_run_gate_ids": [],
   "fallback": "owned_postgresql_projection_mapping",
   "ticket": 212,
-  "qualification_run_id": "issue507-blocked-001",
+  "qualification_run_id": "issue507-resume-001",
   "issue_211_fake_qualification": "not_production_evidence",
   "postgres_demo": "rejected",
   "canonical_lifecycle_owner": "postgresql",

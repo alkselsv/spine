@@ -91,22 +91,26 @@ through Cognee's public `forget` API.
 
 The orchestrated target continues through independent failures so the report
 contains one observation for every required gate. The canonical-lifecycle gate
-uses the production PostgreSQL request resolver and fails closed until Issues
-#514, #515 and #516 provide the remaining production composition. It does not
-substitute an in-memory parsed-artifact repository or fabricate a Cognee
-adapter receipt from fixture input. The target fails at the end if any gate
-failed or was not run; provider exception text is never serialized.
+uses the production PostgreSQL request resolver, PostgreSQL parsed-artifact
+repository and Cognee receipt composition. It observes the physical provider
+call outside the UnitOfWork, then persists the receipt and references through
+PostgreSQL. It does not substitute an in-memory parsed-artifact repository or
+fabricate a Cognee adapter receipt from fixture input. The target fails at the
+end if any gate failed or was not run; provider exception text is never
+serialized.
 
 ## Interpreting the result
 
 The current committed result is **no-go** from coherent live run
-`issue507-blocked-001`. Nine physical PostgreSQL + Neo4j + PGVector gates
+`issue507-resume-001`. Nine physical PostgreSQL + Neo4j + PGVector gates
 passed, including public SDK compatibility, structured provenance, isolation,
-update/remove, rebuild/recovery and concurrency cleanup. The production
-canonical-lifecycle composition failed closed with bounded code
-`configuration_mismatch`; Issues #514 and #515 track the discovered contract
-defects, and Issue #516 tracks the missing production PostgreSQL parsed-artifact
-and observed Cognee receipt composition. Production approval remains withheld.
+update/remove, rebuild/recovery and concurrency cleanup. The canonical gate
+resolved the PostgreSQL request and observed one physical Cognee call outside
+the UnitOfWork, but failed closed when the receipt builder could not map the
+observed graph locator to the persisted parsed segment. The report records
+bounded code `configuration_mismatch`; a narrow adapter follow-up is required.
+Issues #514, #515 and #516 are integrated. Production approval remains
+withheld.
 
 Do not convert a partial pass, skipped test, local Cognee profile or Issue #211
 fake-backed result into production approval. A future `go` requires every gate
@@ -115,7 +119,7 @@ coherent run, including two simultaneously present active/shadow datasets,
 provenance, explicit snapshot/boundary/namespace context, tombstones,
 rebuild/recovery, diagnostics, concurrency, failure injection and cleanup.
 
-If the complete profile fails those gates, retain the no-go decision and open a
-separately approved implementation ticket for the owned PostgreSQL projection
-mapping fallback. PostgreSQL remains canonical; physical Cognee calls must stay
-outside its UnitOfWork.
+If the complete profile fails a gate, retain the no-go decision and raise a
+narrow follow-up for the observed defect. Do not use the unapproved PostgreSQL
+projection-mapping fallback. PostgreSQL remains canonical; physical Cognee calls
+must stay outside its UnitOfWork.

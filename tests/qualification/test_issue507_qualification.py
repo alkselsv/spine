@@ -41,6 +41,8 @@ def test_issue507_traceability_covers_every_acceptance_criterion() -> None:
         "Issue #514",
         "Issue #515",
         "Issue #516",
+        "stable-locator:r1",
+        "stable-locator:v1",
     ):
         assert reference in content
 
@@ -50,7 +52,7 @@ def test_issue507_physical_report_is_one_complete_safe_no_go_run() -> None:
         PHYSICAL_REPORT.read_text(encoding="utf-8")
     )
 
-    assert report.qualification_run_id == "issue507-blocked-001"
+    assert report.qualification_run_id == "issue507-resume-001"
     assert report.decision.value == "no_go"
     assert report.production_approval is False
     assert report.failed_gate_ids == ("canonical_lifecycle_separation",)
@@ -64,6 +66,13 @@ def test_issue507_physical_report_is_one_complete_safe_no_go_run() -> None:
     )
     assert statuses["canonical_lifecycle_separation"] == "failed"
     assert report.canonical_lifecycle_separation == "not_verified"
+    assert report.safe_reason_code == "gate_failure_or_missing_evidence"
+    canonical = next(
+        item
+        for item in report.observations
+        if item.gate_id == "canonical_lifecycle_separation"
+    )
+    assert canonical.safe_code == "configuration_mismatch"
 
 
 def test_issue507_traceability_names_exact_runtime_without_sensitive_values() -> None:
