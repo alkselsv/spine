@@ -1,0 +1,12 @@
+.git
+.github
+.venv
+.spine
+data/private
+data/incoming
+**/__pycache__
+**/*.py[cod]
+*.log
+htmlcov
+.pytest_cache
+web/node_modules
