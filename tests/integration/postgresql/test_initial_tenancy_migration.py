@@ -2550,6 +2550,12 @@ async def test_ingestion_ledger_catalog_has_immutable_and_deferred_integrity_tri
     assert original_validator is not None
     assert "Original receipt verification unavailable" in original_validator
     assert "source_revisions" in original_validator
+    assert "revision.revision_id = NEW.source_revision_id" in original_validator
+    assert "FOR KEY SHARE" not in original_validator
+    assert "idempotency_receipts" in original_validator
+    assert "result_type IS NOT NULL" in original_validator
+    assert "result_id IS NOT NULL" in original_validator
+    assert "result_schema_version IS NOT NULL" in original_validator
 
 
 @pytest.mark.asyncio(loop_scope="session")
