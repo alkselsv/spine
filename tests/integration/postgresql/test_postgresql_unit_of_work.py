@@ -53,7 +53,10 @@ from spine.application.persistence.errors import (
     PersistenceUnavailableError,
     UnexpectedPersistenceError,
 )
-from spine.application.persistence.ingestion import IngestionRunCommand
+from spine.application.persistence.ingestion import (
+    ExistingRevisionBindingCommand,
+    IngestionRunCommand,
+)
 from spine.application.persistence.idempotency import (
     IdempotencyKey,
     IdempotencyReplay,
@@ -95,6 +98,8 @@ from spine.domain.context_bundles import (
 from spine.domain.context_profiles import ContextProfileRef
 from spine.domain.ingestion import (
     IngestionRun,
+    IngestionRunSource,
+    IngestionRunSourceBinding,
     IngestionRunState,
     IngestionTargetKind,
     IngestionTransition,
@@ -208,8 +213,10 @@ from tests.contracts.persistence.test_canonical_boundary_contract import (
 from tests.contracts.persistence.test_ingestion_repository_contract import (
     exercise_ingestion_run_item_contract,
     exercise_ingestion_binding_race,
-    test_ingestion_binding_requires_a_scoped_original_receipt as contract_ingestion_binding_receipt,
+    test_ingestion_binding_requires_a_completed_scoped_original_receipt as contract_ingestion_binding_receipt,
+    NOW as INGESTION_CONTRACT_NOW,
 )
+from spine.domain.sources.original_reference import ObjectReference
 from tests.contracts.persistence.test_idempotency_repository_contract import (
     OPERATION_SCHEMA_VERSION,
     command_digest as idempotency_command_digest,
@@ -1523,9 +1530,88 @@ async def test_postgresql_admission_change_wins_before_acceptance_and_fails_clos
 
 async def test_postgresql_adapter_satisfies_ingestion_repository_contract(
     postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
 ) -> None:
     await exercise_ingestion_run_item_contract(postgresql_adapter)
     await contract_ingestion_binding_receipt(postgresql_adapter)
+
+    incomplete_receipt_id = synthetic_uuid(1831)
+    workspace_id = synthetic_uuid(1811)
+    environment_id = synthetic_uuid(1812)
+    engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.idempotency_receipts ("
+                    "receipt_id, workspace_id, environment_id, operation_name, "
+                    "operation_schema_version, idempotency_key, "
+                    "digest_algorithm_version, command_digest) VALUES ("
+                    ":receipt_id, :workspace_id, :environment_id, 'original.upload', "
+                    "1, 'incomplete-original-upload', 'spine.command-digest.v1', :digest)"
+                ),
+                {
+                    "receipt_id": incomplete_receipt_id,
+                    "workspace_id": workspace_id,
+                    "environment_id": environment_id,
+                    "digest": "3" * 64,
+                },
+            )
+    finally:
+        await engine.dispose()
+
+    denied_item = IngestionRunSource(
+        ingestion_run_source_id=synthetic_uuid(1826),
+        ingestion_run_id=synthetic_uuid(1813),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        input_ordinal=2,
+        input_identity="contract-binding-denied-input",
+        input_digest="1" * 64,
+        command_identity="contract-binding-denied-item",
+        command_digest="2" * 64,
+        created_at=INGESTION_CONTRACT_NOW,
+    )
+    incomplete_binding = IngestionRunSourceBinding(
+        binding_id=synthetic_uuid(1832),
+        ingestion_run_source_id=denied_item.ingestion_run_source_id,
+        source_object_id=synthetic_uuid(1815),
+        source_revision_id=synthetic_uuid(1816),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        binding_command_identity="incomplete-receipt-binding",
+        binding_command_digest="4" * 64,
+        original_reference=ObjectReference(
+            schema_version=1,
+            object_id=synthetic_uuid(1817),
+            storage_generation=synthetic_uuid(1818),
+            digest_algorithm="sha256",
+            digest_hex="e" * 64,
+            byte_length=4,
+        ),
+        original_receipt_kind="issue6.write_receipt",
+        original_receipt_id=incomplete_receipt_id,
+        original_receipt_digest="e" * 64,
+        bound_at=INGESTION_CONTRACT_NOW,
+    )
+    incomplete_command = ExistingRevisionBindingCommand.create(
+        item=denied_item,
+        binding=incomplete_binding,
+        idempotency_key=IdempotencyKey("contract-binding-incomplete-receipt"),
+    )
+    assert postgresql_adapter.ingestion_context is not None
+    with pytest.raises(ConstraintConflictError):
+        async with postgresql_adapter.uow_factory(
+            postgresql_adapter.ingestion_context(
+                workspace_id, environment_id, "ingestion_binding"
+            )
+        ) as uow:
+            await uow.ingestion.bind_existing_revision(incomplete_command)
+            await uow.commit()
+
     await exercise_ingestion_binding_race(postgresql_adapter)
 
 

@@ -108,7 +108,7 @@ async def exercise_ingestion_run_item_contract(adapter: PersistenceAdapter) -> N
 
 
 @pytest.mark.asyncio
-async def test_ingestion_binding_requires_a_scoped_original_receipt(
+async def test_ingestion_binding_requires_a_completed_scoped_original_receipt(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
     assert persistence_adapter.ingestion_context is not None
