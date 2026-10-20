@@ -37,33 +37,27 @@ def test_issue507_traceability_covers_every_acceptance_criterion() -> None:
         "issue-364-projection-recovery-report.json",
         "issue-212-cognee-production-report.json",
         "test_production_qualification_records_one_coherent_run",
+        "build_postgresql_cognee_projection_request_consumer",
         "ADR-0030",
-        "Issue #514",
-        "Issue #515",
-        "Issue #516",
+        "Issue #520",
     ):
         assert reference in content
 
 
-def test_issue507_physical_report_is_one_complete_safe_no_go_run() -> None:
+def test_issue507_physical_report_is_one_complete_safe_go_run() -> None:
     report = Issue212QualificationReport.model_validate_json(
         PHYSICAL_REPORT.read_text(encoding="utf-8")
     )
 
-    assert report.qualification_run_id == "issue507-blocked-001"
-    assert report.decision.value == "no_go"
-    assert report.production_approval is False
-    assert report.failed_gate_ids == ("canonical_lifecycle_separation",)
+    assert report.qualification_run_id == "issue507-composed-002"
+    assert report.decision.value == "go"
+    assert report.production_approval is True
+    assert report.failed_gate_ids == ()
     assert report.not_run_gate_ids == ()
     assert tuple(item.gate_id for item in report.observations) == required_gate_ids()
     statuses = {item.gate_id: item.status.value for item in report.observations}
-    assert all(
-        statuses[gate_id] == "passed"
-        for gate_id in required_gate_ids()
-        if gate_id != "canonical_lifecycle_separation"
-    )
-    assert statuses["canonical_lifecycle_separation"] == "failed"
-    assert report.canonical_lifecycle_separation == "not_verified"
+    assert all(statuses[gate_id] == "passed" for gate_id in required_gate_ids())
+    assert report.canonical_lifecycle_separation == "verified_outside_unit_of_work"
 
 
 def test_issue507_traceability_names_exact_runtime_without_sensitive_values() -> None:

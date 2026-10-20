@@ -24,12 +24,19 @@ from spine.application.persistence.unit_of_work_activity import unit_of_work_is_
 from spine.application.projection_result_persistence import stable_locator_from_parsed_locator
 from spine.application.persistence.unit_of_work import UnitOfWork, UnitOfWorkFactory
 from spine.domain.artifacts import (
+    OoxmlTextLocator,
+    PageTextLocator,
     ParsedDocument,
     ParsedSegment,
+    PhysicalLineLocator,
+    XlsxCellLocator,
 )
 from spine.domain.ingestion import ProcessingReceipt
 from spine.domain.projections import ProjectionPartition
 from spine.memory.cognee.indexing.store import CogneeChunkProjectionStore
+from spine.memory.cognee.models.baseline import (
+    StableLocator as CogneeGraphStableLocator,
+)
 from spine.memory.contracts import (
     ProjectCommand,
     ProjectionNamespaceState,
@@ -319,16 +326,15 @@ class CogneeProjectionReceiptBuilder(AdapterProjectionReceiptBuilder):
             locator_raw = raw.get("locator")
             if not isinstance(evidence_id, str) or not isinstance(locator_raw, Mapping):
                 raise ProjectionMappingError("Cognee graph evidence is malformed")
-            try:
-                locator = StableLocator.model_validate(locator_raw)
-            except ValueError:
-                raise ProjectionMappingError("Cognee graph locator is malformed") from None
-            matches = segments_by_locator.get(
-                (source_key, _locator_identity(locator)),
-                [],
+            locator, matches = _resolve_graph_locator(
+                locator_raw=locator_raw,
+                source_key=source_key,
+                segments_by_locator=segments_by_locator,
             )
             if len(matches) != 1:
                 raise ProjectionMappingError("Cognee graph evidence is missing or ambiguous")
+            if locator is None:
+                raise ProjectionMappingError("Cognee graph locator is malformed")
             segment_id, segment = matches[0]
             if locator != stable_locator_from_parsed_locator(segment.locator):
                 raise ProjectionMappingError("Cognee graph locator does not match parsed evidence")
@@ -438,6 +444,59 @@ def _required_string(metadata: Mapping[str, object], key: str) -> str:
     if not isinstance(value, str) or not value:
         raise ProjectionMappingError("Cognee physical metadata is incomplete")
     return value
+
+
+def _resolve_graph_locator(
+    *,
+    locator_raw: Mapping[str, object],
+    source_key: tuple[UUID, UUID],
+    segments_by_locator: Mapping[
+        tuple[tuple[UUID, UUID], str], list[tuple[str, ParsedSegment]]
+    ],
+) -> tuple[StableLocator | None, list[tuple[str, ParsedSegment]]]:
+    try:
+        locator = StableLocator.model_validate(locator_raw)
+    except ValueError:
+        try:
+            graph_locator = CogneeGraphStableLocator.model_validate(locator_raw)
+        except ValueError:
+            raise ProjectionMappingError("Cognee graph locator is malformed") from None
+        matches = [
+            item
+            for (candidate_source, _identity), candidates in segments_by_locator.items()
+            if candidate_source == source_key
+            for item in candidates
+            if _graph_locator_matches_segment(graph_locator, item[1])
+        ]
+        if len(matches) != 1:
+            return None, matches
+        return stable_locator_from_parsed_locator(matches[0][1].locator), matches
+    return locator, segments_by_locator.get(
+        (source_key, _locator_identity(locator)),
+        [],
+    )
+
+
+def _graph_locator_matches_segment(
+    locator: CogneeGraphStableLocator,
+    segment: ParsedSegment,
+) -> bool:
+    parsed = segment.locator
+    if locator.kind == "pdf_page":
+        return isinstance(parsed, PageTextLocator) and parsed.page_number == locator.page
+    if locator.kind == "text_range":
+        return (
+            isinstance(parsed, (PhysicalLineLocator, PageTextLocator, OoxmlTextLocator))
+            and parsed.start_codepoint == locator.start
+            and parsed.end_codepoint == locator.end
+        )
+    if locator.kind == "xlsx_row":
+        return (
+            isinstance(parsed, XlsxCellLocator)
+            and parsed.sheet == locator.sheet
+            and parsed.row == locator.row
+        )
+    return False
 
 
 def _safe_metadata(metadata: Mapping[str, object]) -> dict[str, object]:

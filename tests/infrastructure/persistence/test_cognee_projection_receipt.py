@@ -176,6 +176,38 @@ def _chunk_row(command) -> CogneeDataMetadata:
     return CogneeDataMetadata(data_id=str(segment.segment_id), external_metadata=metadata)
 
 
+def _graph_row(command) -> CogneeDataMetadata:
+    segment = _document().segments[0]
+    metadata = dict(_chunk_row(command).external_metadata)
+    for key in ("segment_id", "segment_digest", "locator"):
+        metadata.pop(key)
+    metadata.update(
+        {
+            "spine_schema": "graph-artifact:v1",
+            "artifact_kind": "entity",
+            "artifact_id": "entity-synthetic",
+            "evidence": [
+                {
+                    "evidence_id": "evidence-synthetic",
+                    "source_revision_id": str(REVISION),
+                    "locator": {
+                        "schema_version": "stable-locator:r1",
+                        "kind": "text_range",
+                        "page": None,
+                        "start": segment.locator.start_codepoint,
+                        "end": segment.locator.end_codepoint,
+                        "sheet": None,
+                        "row": None,
+                        "message_id": None,
+                    },
+                    "quality": "accepted",
+                }
+            ],
+        }
+    )
+    return CogneeDataMetadata(data_id=str(UUID(int=99)), external_metadata=metadata)
+
+
 @pytest.mark.asyncio
 async def test_receipt_builder_uses_observed_cognee_data_and_canonical_segments() -> None:
     document = _document()
@@ -205,6 +237,34 @@ async def test_receipt_builder_uses_observed_cognee_data_and_canonical_segments(
     assert reference.segment_id == f"segment-{document.segments[0].segment_id.hex}"
     assert reference.locator.kind == "character_range"
     assert reference.security_domain_reference == "security-domain:1"
+
+
+@pytest.mark.asyncio
+async def test_receipt_builder_maps_graph_writer_locator_to_canonical_segment() -> None:
+    document = _document()
+    command = _command_for_document(document)
+    repository = InMemoryParsedArtifactRepository()
+    await repository.persist(
+        ParsedArtifactCommand.create(document=document, command_identity="parsed:1")
+    )
+    builder = CogneeProjectionReceiptBuilder(
+        physical_reader=_PhysicalReader((_chunk_row(command), _graph_row(command))),
+        parsed_artifacts=repository,
+        uow_factory=lambda _context: _UnitOfWork(),
+        context_factory=lambda _command: object(),
+        clock=lambda: NOW,
+        adapter_version="1.5.4",
+    )
+
+    receipt = await builder.build(command, _successful_result())
+
+    assert [(item.kind, item.object_id) for item in receipt.emitted_objects] == [
+        ("chunk", str(document.segments[0].segment_id)),
+        ("entity", "entity-synthetic"),
+    ]
+    graph_reference = receipt.source_references[1]
+    assert graph_reference.segment_id == f"segment-{document.segments[0].segment_id.hex}"
+    assert graph_reference.locator.kind == "character_range"
 
 
 @pytest.mark.asyncio

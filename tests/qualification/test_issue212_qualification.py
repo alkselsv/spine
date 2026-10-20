@@ -39,32 +39,27 @@ def _report() -> Issue212QualificationReport:
     )
 
 
-def test_issue212_report_is_explicit_no_go_from_one_complete_live_run() -> None:
+def test_issue212_report_is_explicit_go_from_one_complete_live_run() -> None:
     report = _report()
 
     assert report.schema_version == "cognee-production-qualification:v2"
     assert report.ticket == 212
-    assert report.qualification_run_id == "issue507-blocked-001"
+    assert report.qualification_run_id == "issue507-composed-002"
     assert report.profile.model_dump() == {
         "relational": "postgresql",
         "graph": "neo4j",
         "vector": "pgvector",
     }
     assert report.mode.value == "live_real_backends"
-    assert report.decision.value == "no_go"
-    assert report.production_approval is False
-    assert report.safe_reason_code == "gate_failure_or_missing_evidence"
+    assert report.decision.value == "go"
+    assert report.production_approval is True
+    assert report.safe_reason_code == "all_required_gates_passed"
     assert [item.gate_id for item in report.observations] == list(
         required_gate_ids()
     )
     statuses = {item.gate_id: item.status.value for item in report.observations}
-    assert all(
-        statuses[gate_id] == "passed"
-        for gate_id in required_gate_ids()
-        if gate_id != "canonical_lifecycle_separation"
-    )
-    assert statuses["canonical_lifecycle_separation"] == "failed"
-    assert report.failed_gate_ids == ("canonical_lifecycle_separation",)
+    assert all(statuses[gate_id] == "passed" for gate_id in required_gate_ids())
+    assert report.failed_gate_ids == ()
     assert report.not_run_gate_ids == ()
     assert report.fallback == "owned_postgresql_projection_mapping"
 
@@ -75,7 +70,7 @@ def test_issue212_report_does_not_promote_issue211_fake_evidence() -> None:
     assert report.issue_211_fake_qualification == "not_production_evidence"
     assert report.postgres_demo == "rejected"
     assert report.canonical_lifecycle_owner == "postgresql"
-    assert report.canonical_lifecycle_separation == "not_verified"
+    assert report.canonical_lifecycle_separation == "verified_outside_unit_of_work"
 
 
 def test_issue212_report_claims_lifecycle_separation_only_after_gate_passes() -> None:
@@ -171,7 +166,8 @@ def test_issue212_runbook_names_exact_prerequisites_and_command() -> None:
     ):
         assert required in content
     assert "postgres_demo" in content
-    assert "no-go" in content.lower()
+    assert "issue507-composed-002" in content
+    assert "all ten" in content.lower()
 
 
 def test_issue212_backend_drivers_are_direct_runtime_dependencies() -> None:

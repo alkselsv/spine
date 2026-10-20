@@ -117,6 +117,7 @@ async def _prepare_projection_publication(
     persistence_adapter,
     *,
     seed: int = 24000,
+    include_shared_segment_graph_reference: bool = False,
 ) -> _PreparedProjectionPublication:
     case = await prepare_case(persistence_adapter, seed)
     async with persistence_adapter.uow_factory(case.context) as uow:
@@ -230,6 +231,15 @@ async def _prepare_projection_publication(
         security_domain_reference=partition.security_domain_reference,
         created_at=NOW,
     )
+    graph_reference = reference.model_copy(
+        update={
+            "source_projection_reference_id": UUID(
+                int=case.source.workspace_id.int + 54
+            ),
+            "projected_kind": "entity",
+            "projected_object_id": "entity-1",
+        }
+    )
     async with persistence_adapter.uow_factory(
         persistence_adapter.ingestion_context(
             case.source.workspace_id, case.source.environment_id, "projection_receipt"
@@ -255,6 +265,8 @@ async def _prepare_projection_publication(
             )
         )
         await uow.projections.add_source_reference(reference)
+        if include_shared_segment_graph_reference:
+            await uow.projections.add_source_reference(graph_reference)
         await uow.commit()
 
     async with persistence_adapter.uow_factory(
@@ -333,7 +345,30 @@ async def _prepare_projection_publication(
                                 "locator_digest": reference.locator_digest,
                                 "projected_kind": reference.projected_kind,
                                 "projected_object_id": reference.projected_object_id,
-                            }
+                            },
+                            *(
+                                [
+                                    {
+                                        "reference_id": str(
+                                            graph_reference.source_projection_reference_id
+                                        ),
+                                        "source_object_id": str(
+                                            graph_reference.source_object_id
+                                        ),
+                                        "source_revision_id": str(
+                                            graph_reference.source_revision_id
+                                        ),
+                                        "segment_id": graph_reference.segment_id,
+                                        "locator_digest": graph_reference.locator_digest,
+                                        "projected_kind": graph_reference.projected_kind,
+                                        "projected_object_id": (
+                                            graph_reference.projected_object_id
+                                        ),
+                                    }
+                                ]
+                                if include_shared_segment_graph_reference
+                                else []
+                            ),
                         ],
                     },
                     evaluator_reference="physical-projection-validator:r1",
@@ -649,7 +684,10 @@ async def _prepare_projection_publication(
 async def test_projection_candidate_seal_freezes_evidence_and_replays(
     persistence_adapter,
 ) -> None:
-    prepared = await _prepare_projection_publication(persistence_adapter)
+    prepared = await _prepare_projection_publication(
+        persistence_adapter,
+        include_shared_segment_graph_reference=True,
+    )
 
     async with persistence_adapter.uow_factory(prepared.seal_context) as uow:
         replayed_seal = await uow.projections.seal_candidate(prepared.seal_command)
@@ -669,6 +707,18 @@ async def test_projection_candidate_seal_freezes_evidence_and_replays(
     assert replayed_seal.result_reference == prepared.sealed.result_reference
     assert replayed_activation.replay is True
     assert replayed_activation.result_reference == prepared.activated.result_reference
+    run = prepared.created.value
+    context = persistence_adapter.ingestion_context(
+        run.workspace_id, run.environment_id, "projection_receipt"
+    )
+    async with persistence_adapter.uow_factory(context) as uow:
+        references = await uow.projections.list_source_references(
+            run.projection_run_id
+        )
+    assert {reference.projected_kind for reference in references} == {
+        "chunk",
+        "entity",
+    }
 
 
 @pytest.mark.asyncio

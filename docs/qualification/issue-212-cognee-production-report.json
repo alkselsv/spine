@@ -6,9 +6,9 @@
     "vector": "pgvector"
   },
   "mode": "live_real_backends",
-  "decision": "no_go",
-  "production_approval": false,
-  "safe_reason_code": "gate_failure_or_missing_evidence",
+  "decision": "go",
+  "production_approval": true,
+  "safe_reason_code": "all_required_gates_passed",
   "observations": [
     {
       "gate_id": "public_sdk",
@@ -57,19 +57,17 @@
     },
     {
       "gate_id": "canonical_lifecycle_separation",
-      "status": "failed",
-      "safe_code": "configuration_mismatch"
+      "status": "passed",
+      "safe_code": null
     }
   ],
-  "failed_gate_ids": [
-    "canonical_lifecycle_separation"
-  ],
+  "failed_gate_ids": [],
   "not_run_gate_ids": [],
   "fallback": "owned_postgresql_projection_mapping",
   "ticket": 212,
-  "qualification_run_id": "issue507-blocked-001",
+  "qualification_run_id": "issue507-composed-002",
   "issue_211_fake_qualification": "not_production_evidence",
   "postgres_demo": "rejected",
   "canonical_lifecycle_owner": "postgresql",
-  "canonical_lifecycle_separation": "not_verified"
+  "canonical_lifecycle_separation": "verified_outside_unit_of_work"
 }
