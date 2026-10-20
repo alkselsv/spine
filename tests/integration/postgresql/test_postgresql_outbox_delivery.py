@@ -778,6 +778,414 @@ async def test_postgresql_dispatch_commits_delivery_and_audit_atomically(
     assert len(diagnostic_sink.events) == 1
 
 
+async def test_postgresql_temporal_production_ask_composition_reaches_terminal_status(
+    delivery_database: DeliveryDatabase,
+) -> None:
+    """Exercise migration, admission, outbox, Temporal worker and terminalization together."""
+
+    from uuid import uuid4
+
+    from temporalio.common import WorkflowIDReusePolicy
+    from temporalio.contrib.pydantic import pydantic_data_converter
+    from temporalio.testing import WorkflowEnvironment
+    from temporalio.worker import Worker
+
+    from spine.api.composition import compose_durable_ask
+    from spine.application.answer_disclosure import (
+        AnswerDisclosureGate,
+        InMemoryAcceptedAnswerOutputPort,
+    )
+    from spine.application.answer_question_attempts import (
+        PersistedAnswerQuestionAttemptService,
+    )
+    from spine.application.answer_question_context import AnswerQuestionContextService
+    from spine.application.answer_question_execution import AnswerQuestionExecutionBoundary
+    from spine.application.authorized_context_broker import (
+        AuthorizedContextBrokerApplicationService,
+    )
+    from spine.application.diagnostics import DiagnosticContext
+    from spine.application.persistence.ask_admission import (
+        AskAdmissionCommand,
+        QA_ASK_ADMISSION_OPERATION,
+        register_ask_admission_outbox_event,
+    )
+    from spine.application.ask_admission import PersistedAskAdmissionService
+    from spine.application.persistence.context import (
+        PersistenceOperation,
+        PersistencePurpose,
+    )
+    from spine.application.production_qa_capability import (
+        AnswerQuestionContextReferences,
+        ExistingAnswerQuestionCandidateValidator,
+        PersistedAnswerQuestionCandidateRunner,
+        ProductionAnswerQuestionCapability,
+    )
+    from spine.application.qa_sessions import (
+        PersistedQASessionService,
+        QASessionRequester,
+    )
+    from spine.application.workflows.ask_admission_dispatch import (
+        ASK_ADMISSION_WORKFLOW_TYPE,
+        AskAdmissionCommandData,
+    )
+    from spine.application.outbox import OutboxConsumerRegistry
+    from spine.application.diagnostics.audit import AuditEventRegistry
+    from spine.application.persistence.delivery import OutboxDeliveryRouteRegistry
+    from spine.domain.capabilities.answer_question_execution import (
+        AnswerQuestionExecutionPin as DomainExecutionPin,
+    )
+    from spine.domain.common import ActorKind, ActorRef
+    from spine.infrastructure.auth.trusted_context import TrustedRequestContextBoundary
+    from spine.infrastructure.workflows.ask_admission import (
+        PersistenceAskAdmissionRunStarter,
+    )
+    from spine.infrastructure.qa_observation_capture.http import HttpCaptureChannel
+    from spine.workflows.temporal.client import TemporalSdkWorkflowClient
+    from spine.memory.contracts import ContextOutcome, ContextReasonCode, ContextResponse
+    from tests.application.test_answer_question_execution import (
+        capability as answer_question_capability,
+        configuration,
+    )
+    from tests.contracts.persistence.outbox_events import create_outbox_event_registry
+
+    workspace_id = synthetic_uuid(50601)
+    environment_id = synthetic_uuid(50602)
+    subject_id = synthetic_uuid(50603)
+    trace_id = synthetic_uuid(50604)
+    base_boundary = TrustedContextBoundary.for_testing(
+        issuer_id=synthetic_uuid(50605),
+        secret=b"issue-506-postgresql-temporal-composition-boundary",
+    )
+    request_boundary = TrustedRequestContextBoundary.for_testing(
+        persistence_boundary=base_boundary,
+        issuer_id=synthetic_uuid(50606),
+        secret=b"issue-506-postgresql-temporal-request-boundary",
+    )
+    outbox_events = create_outbox_event_registry()
+    register_ask_admission_outbox_event(outbox_events)
+    audit_events = AuditEventRegistry.with_default_families()
+    runtime_sessions = async_sessionmaker(
+        delivery_database.runtime_engine,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+    dispatcher_sessions = async_sessionmaker(
+        delivery_database.dispatcher_engine,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+    persistence = PostgreSQLPersistence(
+        session_factory=runtime_sessions,
+        context_verifier=request_boundary,
+        outbox_events=outbox_events,
+        audit_events=audit_events,
+    )
+
+    def scoped_context(operation: str) -> TrustedPersistenceContext:
+        return base_boundary.worker(
+            scope=EnvironmentScope(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+            ),
+            service_principal_id=synthetic_uuid(50607),
+            purpose=PersistencePurpose("issue_506_integration"),
+            operation=PersistenceOperation(operation),
+            trace_id=trace_id,
+        )
+
+    class ScopedPostgreSQLRepository:
+        """Adapt a tenant UoW repository to the service's repository port."""
+
+        def __init__(self, name: str) -> None:
+            self._name = name
+
+        def __getattr__(self, method_name: str):
+            async def invoke(*args, **kwargs):
+                async with persistence.uow_factory(
+                    scoped_context("qa_sessions")
+                ) as uow:
+                    repository = getattr(uow, self._name)
+                    result = await getattr(repository, method_name)(*args, **kwargs)
+                    await uow.commit()
+                return result
+
+            return invoke
+
+    class EligibleForSafeMessageRead:
+        async def is_eligible(self, *, message, requester) -> bool:
+            del message, requester
+            return True
+
+    sessions = PersistedQASessionService(
+        repository=ScopedPostgreSQLRepository("qa_sessions"),  # type: ignore[arg-type]
+        disclosure_eligibility=EligibleForSafeMessageRead(),  # type: ignore[arg-type]
+        answer_question_runs=ScopedPostgreSQLRepository("answer_question_runs"),  # type: ignore[arg-type]
+        answer_disclosures=ScopedPostgreSQLRepository("answer_disclosures"),  # type: ignore[arg-type]
+    )
+    seed_context = scoped_context("qa_sessions")
+    pin = DomainExecutionPin.create(
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        environment=EnvironmentKind.PRODUCTION,
+        configuration=configuration(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+        ),
+    )
+    execution = AnswerQuestionExecutionBoundary(
+        capability=answer_question_capability(),
+        binding_resolver=object(),  # type: ignore[arg-type]
+        configuration_catalog=object(),  # type: ignore[arg-type]
+        runtime_provider=object(),  # type: ignore[arg-type]
+    )
+    execution.resolve = lambda _request: (None, pin)  # type: ignore[method-assign]
+    disclosure_repository = ScopedPostgreSQLRepository("answer_disclosures")
+    disclosure_gate = AnswerDisclosureGate(
+        repository=disclosure_repository,  # type: ignore[arg-type]
+        accepted_output=InMemoryAcceptedAnswerOutputPort(),
+    )
+    broker = AuthorizedContextBrokerApplicationService(
+        trusted_context=object(),
+        profile_resolver=object(),
+        publication=object(),
+        scope_resolver=object(),
+        read_model=object(),
+        plan_builder=object(),
+        retrieval=object(),
+        evidence_verifier=object(),
+        bundles=object(),
+    )
+
+    async def no_usable_evidence(_request):
+        return ContextResponse(
+            outcome=ContextOutcome.INSUFFICIENT,
+            reason_code=ContextReasonCode.INSUFFICIENT_EVIDENCE,
+        )
+
+    broker.retrieve = no_usable_evidence  # type: ignore[method-assign]
+    context_service = AnswerQuestionContextService(
+        broker=broker,
+        bundles=object(),  # type: ignore[arg-type]
+        revalidator=object(),  # type: ignore[arg-type]
+    )
+    capability = ProductionAnswerQuestionCapability(
+        context=context_service,
+        execution=execution,
+        context_references=type(
+            "ContextReferences",
+            (),
+            {"for_command": lambda _self, _command: AnswerQuestionContextReferences(
+                trusted_request_context_ref=synthetic_uuid(50608),
+                authorization_context_ref=synthetic_uuid(50609),
+            )},
+        )(),
+        disclosure_gate=disclosure_gate,
+        candidate_runner=PersistedAnswerQuestionCandidateRunner(
+            input_artifacts=object(),  # type: ignore[arg-type]
+            artifacts=object(),  # type: ignore[arg-type]
+            canceller=object(),  # type: ignore[arg-type]
+        ),
+        validator=ExistingAnswerQuestionCandidateValidator(
+            citations=object(),  # type: ignore[arg-type]
+            semantic_support=object(),  # type: ignore[arg-type]
+            plans=object(),  # type: ignore[arg-type]
+        ),
+    )
+    admission = PersistedAskAdmissionService(persistence.uow_factory)
+    attempts = PersistedAnswerQuestionAttemptService(
+        uow_factory=persistence.uow_factory,
+        execution=execution,
+    )
+    routes = OutboxDeliveryRouteRegistry(version="issue506.integration.v1")
+
+    class AdmissionCommandLoader:
+        async def load(self, workflow_input):
+            return AskAdmissionCommandData(
+                command_id=workflow_input.command_id,
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                session_id=session.value.session_id,
+                message_id=workflow_input.message_id,
+                run_id=workflow_input.run_id,
+                question="Where is the approved policy?",
+                subject=ActorRef(kind=ActorKind.SERVICE, id=subject_id),
+                environment=EnvironmentKind.PRODUCTION,
+                idempotency_key="issue-506-admission",
+            )
+
+    def worker_context(workflow_input):
+        return base_boundary.worker(
+            scope=EnvironmentScope(
+                workspace_id=workflow_input.workspace_id,
+                environment_id=workflow_input.environment_id,
+            ),
+            service_principal_id=synthetic_uuid(50610),
+            purpose=PersistencePurpose("issue_506_worker"),
+            operation=PersistenceOperation("answer_question_run"),
+            trace_id=workflow_input.trace_id,
+        )
+
+    task_queue = "issue-506-production-qualification"
+    async with await WorkflowEnvironment.start_time_skipping(
+        data_converter=pydantic_data_converter
+    ) as temporal:
+        temporal_client = TemporalSdkWorkflowClient(
+            temporal.client,
+            task_queue=task_queue,
+            id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
+        )
+        capture_channel = HttpCaptureChannel(
+            base_url="https://capture.invalid",
+            headers=lambda: {"X-Workload-Identity": "integration-test"},
+        )
+        try:
+            composition = compose_durable_ask(
+                capability=capability,
+                sessions=sessions,
+                admission=admission,
+                attempts=attempts,
+                command_loader=AdmissionCommandLoader(),
+                persistence_context_factory=worker_context,
+                temporal_client=temporal_client,
+                delivery_routes=routes,
+                monotonic_ns=iter(range(100, 1000)).__next__,
+                worker_execution_elapsed_port=object(),  # type: ignore[arg-type]
+                run_starter=PersistenceAskAdmissionRunStarter(
+                    uow_factory=persistence.uow_factory,
+                    context_factory=worker_context,
+                ),
+                capture_channel=capture_channel,
+            )
+            assert composition.real_qualification_evidence is not None
+            assert composition.workflow_executor._service is composition.api_ask_service
+            assert composition.observer_admission is not None
+            assert composition.observer_admission._admission is composition.admission
+
+            workspace_context = base_boundary.worker(
+                scope=WorkspaceScope(workspace_id=workspace_id),
+                service_principal_id=synthetic_uuid(50611),
+                purpose=PersistencePurpose("issue_506_integration"),
+                operation=PersistenceOperation("workspace_repository"),
+                trace_id=trace_id,
+            )
+            async with persistence.uow_factory(workspace_context) as uow:
+                await uow.workspaces.add(
+                    Workspace(
+                        id=workspace_id,
+                        slug=f"issue-506-{workspace_id.hex[-8:]}",
+                        display_name="Issue 506 qualification",
+                    )
+                )
+                await uow.environments.add(
+                    Environment(
+                        id=environment_id,
+                        workspace_id=workspace_id,
+                        kind=EnvironmentKind.PRODUCTION,
+                        display_name="Production",
+                    )
+                )
+                await uow.commit()
+            session = await sessions.create_session(
+                context=seed_context,
+                requester=QASessionRequester(subject_id=subject_id),
+                idempotency_key=IdempotencyKey("issue-506-session"),
+            )
+            admitted = await admission.admit(
+                context=base_boundary.worker(
+                    scope=EnvironmentScope(
+                        workspace_id=workspace_id,
+                        environment_id=environment_id,
+                    ),
+                    service_principal_id=subject_id,
+                    purpose=PersistencePurpose("issue_506_integration"),
+                    operation=QA_ASK_ADMISSION_OPERATION,
+                    trace_id=trace_id,
+                ),
+                command=AskAdmissionCommand.create(
+                    workspace_id=workspace_id,
+                    environment_id=environment_id,
+                    session_id=session.value.session_id,
+                    subject=ActorRef(kind=ActorKind.SERVICE, id=subject_id),
+                    environment=EnvironmentKind.PRODUCTION,
+                    question="Where is the approved policy?",
+                    idempotency_key=IdempotencyKey("issue-506-admission"),
+                ),
+            )
+
+            consumers = OutboxConsumerRegistry()
+            for binding in composition.delivery_bindings:
+                consumers.register(binding.consumer_name, binding.consumer)
+            delivery_repository = PostgreSQLOutboxDeliveryRepository(
+                session_factory=dispatcher_sessions,
+                outbox_events=outbox_events,
+                delivery_routes=routes,
+                audit_events=audit_events,
+            )
+            diagnostics = DiagnosticEventRegistry.with_default_families()
+            now = datetime(2026, 10, 20, tzinfo=timezone.utc)
+            dispatcher = OutboxDispatcher(
+                repository=delivery_repository,
+                consumers=consumers,
+                audit_events=audit_events,
+                diagnostic_events=diagnostics,
+                diagnostic_sink=RecordingDiagnosticSink(diagnostics),
+                service_principal_id=synthetic_uuid(50613),
+                clock=lambda: now,
+                audit_event_id_source=uuid4,
+                retry_delay=lambda _attempt: timedelta(seconds=1),
+                maximum_retry_delay=timedelta(minutes=1),
+                lease_duration=timedelta(seconds=30),
+                handler_timeout=timedelta(seconds=10),
+                maximum_attempts=3,
+            )
+            registered_activities = tuple(composition.activity_bindings)
+            assert len(registered_activities) == 2
+            async with Worker(
+                temporal.client,
+                task_queue=task_queue,
+                workflows=[composition.workflow_definition],
+                activities=list(registered_activities),
+            ):
+                report = await dispatcher.dispatch_batch(
+                    limit=1,
+                    worker_identity="issue-506-outbox-worker",
+                )
+                workflow_result = await asyncio.wait_for(
+                    temporal.client.get_workflow_handle(str(admitted.run_id)).result(),
+                    timeout=15,
+                )
+
+            final_status = await admission.status(
+                context=base_boundary.worker(
+                    scope=EnvironmentScope(
+                        workspace_id=workspace_id,
+                        environment_id=environment_id,
+                    ),
+                    service_principal_id=subject_id,
+                    purpose=PersistencePurpose("issue_506_integration"),
+                    operation=QA_ASK_ADMISSION_OPERATION,
+                    trace_id=trace_id,
+                ),
+                result=admitted,
+            )
+            async with delivery_database.migration_engine.connect() as connection:
+                postgresql_major = await connection.scalar(
+                    text("SELECT current_setting('server_version_num')::integer / 10000")
+                )
+                migration_revision = await connection.scalar(
+                    text("SELECT version_num FROM spine.alembic_version")
+                )
+            assert postgresql_major == 17
+            assert migration_revision
+            assert report.delivered == 1
+            assert workflow_result["outcome"] == "abstained"
+            assert final_status.status.value == "terminal"
+            assert final_status.outcome.value == "abstained"
+            assert ASK_ADMISSION_WORKFLOW_TYPE == "spine.qa.ask-admission:v1"
+        finally:
+            await capture_channel.close()
+
+
 @pytest.mark.parametrize(
     "protected_failure",
     DIAGNOSTIC_LEAK_CORPUS,
