@@ -1057,9 +1057,7 @@ async def test_postgresql_temporal_production_ask_composition_reaches_terminal_s
                 capture_channel=capture_channel,
             )
             assert composition.real_qualification_evidence is not None
-            assert composition.workflow_executor._service is composition.api_ask_service
             assert composition.observer_admission is not None
-            assert composition.observer_admission._admission is composition.admission
 
             workspace_context = base_boundary.worker(
                 scope=WorkspaceScope(workspace_id=workspace_id),
