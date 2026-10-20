@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timezone
 import pytest
 
@@ -8,7 +9,11 @@ from spine.application.persistence.command_digest import digest_command
 from spine.application.persistence.context import PersistenceOperation
 from spine.application.persistence.errors import ConstraintConflictError
 from spine.application.persistence.idempotency import IdempotencyKey, OpaqueResultReference
-from spine.application.persistence.ingestion import IngestionBindingCommand, IngestionRunCommand
+from spine.application.persistence.ingestion import (
+    ExistingRevisionBindingCommand,
+    IngestionBindingCommand,
+    IngestionRunCommand,
+)
 from spine.application.persistence.repositories import SourceObservationCommand
 from spine.domain.ingestion import (
     IngestionItemState,
@@ -23,6 +28,7 @@ from spine.domain.sources import (
     RevisionMetadata,
     SourceObject,
     SourceRevisionProvenance,
+    SourceRevisionReceiptAssociation,
     canonical_revision_metadata_digest,
 )
 from spine.domain.sources.canonicalization import content_revision
@@ -102,7 +108,7 @@ async def exercise_ingestion_run_item_contract(adapter: PersistenceAdapter) -> N
 
 
 @pytest.mark.asyncio
-async def test_ingestion_binding_requires_a_scoped_original_receipt(
+async def test_ingestion_binding_requires_a_completed_scoped_original_receipt(
     persistence_adapter: PersistenceAdapter,
 ) -> None:
     assert persistence_adapter.ingestion_context is not None
@@ -232,26 +238,106 @@ async def test_ingestion_binding_requires_a_scoped_original_receipt(
             ),
         )
         await uow.commit()
-    binding = binding.model_copy(
-        update={"original_receipt_id": foreign_claim.receipt_id}
+    local_digest = digest_command(
+        operation=PersistenceOperation("original.upload"),
+        operation_schema_version=1,
+        payload={"fixture": "scoped-original-receipt"},
     )
-    binding_command = IngestionBindingCommand.create(
+    async with persistence_adapter.uow_factory(
+        ingestion_context(workspace_id, environment_id, "original.upload")
+    ) as uow:
+        local_claim = await uow.idempotency.claim(
+            operation_schema_version=1,
+            key=IdempotencyKey("scoped-original-upload"),
+            digest=local_digest,
+        )
+        await uow.idempotency.complete(
+            local_claim,
+            OpaqueResultReference(
+                result_type="original_upload",
+                result_id=synthetic_uuid(1817),
+                schema_version=1,
+            ),
+        )
+        await uow.commit()
+
+    valid_binding = binding.model_copy(
+        update={"original_receipt_id": local_claim.receipt_id}
+    )
+    reference = revision.original_reference
+    assert reference is not None
+    association = SourceRevisionReceiptAssociation(
+        association_id=synthetic_uuid(1827),
+        source_object_id=source.source_object_id,
+        revision_id=revision.revision_id,
+        provenance_id=observation.provenance.provenance_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        original_receipt_kind="issue6.write_receipt",
+        original_receipt_id=local_claim.receipt_id,
+        original_command_result_id=synthetic_uuid(1828),
+        original_command_result_schema_version=1,
+        original_upload_id=reference.object_id,
+        original_reference=reference,
+        original_sha256=revision.original_sha256,
+        byte_length=revision.byte_length,
+        verification_status="verified",
+        storage_status="finalized_verified",
+        finalized_at=NOW,
+        associated_at=NOW,
+    )
+    accepted_observation = replace(observation, receipt_association=association)
+    assert valid_binding.original_receipt_id == association.original_receipt_id
+    assert valid_binding.original_reference == association.original_reference
+    assert valid_binding.original_receipt_digest == association.original_sha256
+    assert valid_binding.original_receipt_kind == association.original_receipt_kind
+    valid_binding_command = IngestionBindingCommand.create(
         item=item,
-        binding=binding,
-        observation=observation,
+        binding=valid_binding,
+        observation=accepted_observation,
         idempotency_key=IdempotencyKey("contract-binding-command"),
+    )
+    denied_item = item.model_copy(
+        update={
+            "ingestion_run_source_id": synthetic_uuid(1826),
+            "input_ordinal": 2,
+            "input_identity": "contract-binding-denied-input",
+            "input_digest": "1" * 64,
+            "command_identity": "contract-binding-denied-item",
+            "command_digest": "2" * 64,
+        }
     )
     async with persistence_adapter.uow_factory(
         ingestion_context(workspace_id, environment_id, "ingestion_run")
     ) as uow:
         await uow.ingestion.create_run(command)
         await uow.ingestion.create_item(item)
+        await uow.ingestion.create_item(denied_item)
         await uow.commit()
+
+    async with persistence_adapter.uow_factory(
+        ingestion_context(workspace_id, environment_id, "ingestion_binding")
+    ) as uow:
+        await uow.ingestion.bind_source(valid_binding_command)
+        await uow.commit()
+
+    foreign_binding = valid_binding.model_copy(
+        update={
+            "binding_id": synthetic_uuid(1829),
+            "ingestion_run_source_id": denied_item.ingestion_run_source_id,
+            "original_receipt_id": foreign_claim.receipt_id,
+        }
+    )
+    foreign_binding_command = ExistingRevisionBindingCommand.create(
+        item=denied_item,
+        binding=foreign_binding,
+        idempotency_key=IdempotencyKey("contract-binding-foreign-receipt"),
+    )
     with pytest.raises(ConstraintConflictError):
         async with persistence_adapter.uow_factory(
             ingestion_context(workspace_id, environment_id, "ingestion_binding")
         ) as uow:
-            await uow.ingestion.bind_source(binding_command)
+            await uow.ingestion.bind_existing_revision(foreign_binding_command)
             await uow.commit()
 
     workspace_scoped_digest = digest_command(
@@ -276,22 +362,24 @@ async def test_ingestion_binding_requires_a_scoped_original_receipt(
             ),
         )
         await uow.commit()
-    workspace_scoped_binding = binding.model_copy(
-        update={"original_receipt_id": workspace_scoped_claim.receipt_id}
+    workspace_scoped_binding = valid_binding.model_copy(
+        update={
+            "binding_id": synthetic_uuid(1830),
+            "ingestion_run_source_id": denied_item.ingestion_run_source_id,
+            "original_receipt_id": workspace_scoped_claim.receipt_id,
+        }
     )
-    workspace_scoped_command = IngestionBindingCommand.create(
-        item=item,
+    workspace_scoped_command = ExistingRevisionBindingCommand.create(
+        item=denied_item,
         binding=workspace_scoped_binding,
-        observation=observation,
         idempotency_key=IdempotencyKey("contract-binding-workspace-scoped-receipt"),
     )
     with pytest.raises(ConstraintConflictError):
         async with persistence_adapter.uow_factory(
             ingestion_context(workspace_id, environment_id, "ingestion_binding")
         ) as uow:
-            await uow.ingestion.bind_source(workspace_scoped_command)
+            await uow.ingestion.bind_existing_revision(workspace_scoped_command)
             await uow.commit()
-
 
 async def exercise_ingestion_binding_race(adapter: PersistenceAdapter) -> None:
     assert adapter.ingestion_context is not None
