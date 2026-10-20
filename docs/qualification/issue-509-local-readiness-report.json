@@ -1,0 +1,110 @@
+{
+  "report_schema": "spine.issue-509.local-readiness:v1",
+  "issue": 509,
+  "generated_on": "2026-10-21",
+  "classification": "metadata-only",
+  "environment": "local-synthetic",
+  "compose_project": "spine509qual",
+  "engine": "Docker Desktop Linux Engine",
+  "profile": "deploy/qualification/issue-509/compose.yaml",
+  "profile_revision": "ec3542a",
+  "status": "BLOCKED",
+  "reason_codes": [
+    "NO_REVIEWED_BACKUP_OPERATOR_ENTRYPOINT",
+    "NO_DEPLOYABLE_TEMPORAL_WORKER_COMPOSITION",
+    "NO_TRUSTED_LOCAL_AUTH_BINDING",
+    "NO_APPROVED_PROVIDER_BINDING",
+    "PHYSICAL_BACKUP_NOT_EXECUTED"
+  ],
+  "deployment_observations": {
+    "source": {
+      "postgres": {
+        "status": "PASS",
+        "version": "17.11",
+        "vector_extension": "present",
+        "database": "spine_source",
+        "network": "spine509qual_source",
+        "volume": "spine509qual_source_postgres"
+      },
+      "migrations": {
+        "status": "PASS",
+        "revision": "20261113_50"
+      },
+      "synthetic_workspace": {
+        "status": "PASS",
+        "workspace_id": "10000000-0000-4000-8000-000000000509",
+        "document_corpus": "not_loaded"
+      }
+    },
+    "restore": {
+      "postgres": {
+        "status": "PASS",
+        "version": "17.11",
+        "vector_extension": "present",
+        "database": "spine_restore_509",
+        "network": "spine509qual_restore",
+        "volume": "spine509qual_restore_postgres"
+      },
+      "migrations": {
+        "status": "PASS",
+        "revision": "20261113_50"
+      },
+      "initial_state": {
+        "status": "PASS",
+        "workspace_count": 0
+      }
+    },
+    "isolation": {
+      "status": "PASS",
+      "database_instances": "separate",
+      "networks": "separate",
+      "postgres_volumes": "separate",
+      "original_storage_volumes": "declared_separately"
+    },
+    "temporal": {
+      "status": "NOT_VERIFIED",
+      "reason_code": "SERVICE_NOT_STARTED"
+    },
+    "neo4j_apoc": {
+      "status": "NOT_VERIFIED",
+      "reason_code": "PINNED_IMAGE_PULL_NOT_COMPLETED"
+    },
+    "api": {
+      "status": "NOT_VERIFIED",
+      "reason_code": "LEGACY_APP_ONLY_NO_REVIEWED_COMPOSITION_ROOT"
+    },
+    "workers": {
+      "status": "NOT_VERIFIED",
+      "reason_code": "NO_DEPLOYABLE_WORKER_ENTRYPOINT"
+    },
+    "cognee_projection": {
+      "status": "NOT_VERIFIED",
+      "reason_code": "NO_APPROVED_PROVIDER_BINDING"
+    },
+    "trusted_authorization": {
+      "status": "NOT_VERIFIED",
+      "reason_code": "NO_REVIEWED_LOCAL_AUTH_BINDING"
+    }
+  },
+  "qualification": {
+    "backup": "NOT_VERIFIED",
+    "recovery_manifest": "NOT_VERIFIED",
+    "restore": "NOT_VERIFIED",
+    "integrity_and_reconciliation": "NOT_VERIFIED",
+    "projection_recovery": "NOT_VERIFIED",
+    "authorized_canary": "NOT_VERIFIED",
+    "safe_diagnostics": "NOT_VERIFIED",
+    "reason_code": "NO_REVIEWED_COORDINATOR_BINDING"
+  },
+  "secrets": {
+    "values": "omitted",
+    "provider_payloads": "omitted",
+    "credentials_in_report": false
+  },
+  "evidence_refs": [
+    "docs/qualification/issue-509-backup-recovery-qualification.json",
+    "deploy/qualification/issue-509/README.md",
+    "https://github.com/alkselsv/spine/pull/523"
+  ],
+  "disposition": "Do not close Issue #509. Do not convert this readiness observation into physical qualification evidence."
+}
