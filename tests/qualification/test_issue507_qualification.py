@@ -37,10 +37,9 @@ def test_issue507_traceability_covers_every_acceptance_criterion() -> None:
         "issue-364-projection-recovery-report.json",
         "issue-212-cognee-production-report.json",
         "test_production_qualification_records_one_coherent_run",
+        "build_postgresql_cognee_projection_request_consumer",
         "ADR-0030",
-        "Issue #514",
-        "Issue #515",
-        "Issue #516",
+        "Issue #520",
     ):
         assert reference in content
 

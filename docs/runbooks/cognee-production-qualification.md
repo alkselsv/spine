@@ -91,22 +91,22 @@ through Cognee's public `forget` API.
 
 The orchestrated target continues through independent failures so the report
 contains one observation for every required gate. The canonical-lifecycle gate
-uses the production PostgreSQL request resolver and fails closed until Issues
-#514, #515 and #516 provide the remaining production composition. It does not
-substitute an in-memory parsed-artifact repository or fabricate a Cognee
-adapter receipt from fixture input. The target fails at the end if any gate
-failed or was not run; provider exception text is never serialized.
+uses the production PostgreSQL request resolver and the PostgreSQL/Cognee
+receipt composition integrated by Issue #520. It does not substitute an
+in-memory parsed-artifact repository or fabricate a Cognee adapter receipt from
+fixture input. The target fails at the end if any gate failed or was not run;
+provider exception text is never serialized.
 
 ## Interpreting the result
 
 The current committed result is **no-go** from coherent live run
 `issue507-blocked-001`. Nine physical PostgreSQL + Neo4j + PGVector gates
 passed, including public SDK compatibility, structured provenance, isolation,
-update/remove, rebuild/recovery and concurrency cleanup. The production
-canonical-lifecycle composition failed closed with bounded code
-`configuration_mismatch`; Issues #514 and #515 track the discovered contract
-defects, and Issue #516 tracks the missing production PostgreSQL parsed-artifact
-and observed Cognee receipt composition. Production approval remains withheld.
+update/remove, rebuild/recovery and concurrency cleanup. That run predates Issue
+#520 and its production canonical-lifecycle composition failed closed with
+bounded code `configuration_mismatch`. Issue #520 resolves the known code gap,
+but only a fresh coherent live run can replace the committed NO-GO evidence.
+Production approval remains withheld.
 
 Do not convert a partial pass, skipped test, local Cognee profile or Issue #211
 fake-backed result into production approval. A future `go` requires every gate

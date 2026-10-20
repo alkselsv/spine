@@ -15,6 +15,12 @@ bindings were `openai/gpt-5.4-nano` and `openai/text-embedding-3-small`. The
 machine-readable result is
 `docs/qualification/issue-212-cognee-production-report.json`; it contains only
 the bounded backend identities, gate observations, decision and run identity.
+That report predates the production receipt composition merged by Issue #520.
+The opt-in canonical gate now calls
+`build_postgresql_cognee_projection_request_consumer`, persists the parsed
+artifact through PostgreSQL and verifies the canonical receipt/reference after
+the physical call. No fresh provider run has verified that wiring yet, so the
+committed report remains the authoritative NO-GO evidence.
 
 ## Acceptance traceability
 
@@ -22,7 +28,7 @@ the bounded backend identities, gate observations, decision and run identity.
 | --- | --- | --- |
 | AC1 | `docs/qualification/issue-194-document-ingestion-report.json`; `tests/application/test_document_ingestion.py::test_document_ingestion_completes_each_r1_format_with_parser_metadata`; parser locator contract suites | Repository-qualified for PDF, DOCX, XLSX, Markdown and TXT. The R4 operator-approved deployed upload/UI run and its per-format metadata are unavailable, so this criterion remains blocked. |
 | AC2 | Issue #194 AC2–AC5; canonical acceptance and source lifecycle contracts; `tests/application/test_document_ingestion.py::test_projection_request_is_not_visible_when_its_transaction_fails` | Repository-qualified for duplicate/retry, changed revision, tombstone and partial failure. The same lifecycle has not been observed through the required deployed R4 path, so this criterion remains blocked. |
-| AC3 | ADR-0030; `tests/integration/cognee/test_production_profile.py::test_canonical_lifecycle_resolves_postgresql_before_physical_projection`; the same gate inside `test_production_qualification_records_one_coherent_run` | Failed closed with `configuration_mismatch` before the physical call. Issue #514 owns the ingestion-binding trigger defect; Issue #515 owns the next canonical ontology-version incompatibility found during diagnosis; Issue #516 owns the missing production PostgreSQL parsed-artifact and observed Cognee receipt composition. The gate deliberately cannot pass through qualification-only substitutes. |
+| AC3 | ADR-0030; Issue #520; `build_postgresql_cognee_projection_request_consumer`; `tests/integration/cognee/test_production_profile.py::test_canonical_lifecycle_resolves_postgresql_before_physical_projection`; the same gate inside `test_production_qualification_records_one_coherent_run` | Issues #514, #515 and #516 were integrated through the production composition in #520. The opt-in gate now exercises that seam without qualification-only repositories or fabricated receipts, but it has not been rerun against the authorized physical profile. The last coherent report therefore remains failed with `configuration_mismatch`; AC3 is not yet verified. |
 | AC4 | `docs/qualification/issue-212-cognee-production-report.json`; `structured_round_trip`, `unsafe_evidence`, `explicit_retrieval_context` and `update_remove_tombstone` observations | Passed: chunk/entity/relation evidence retains exact SourceRevision lineage; missing, ambiguous, stale, incomplete and tombstoned evidence fails closed. |
 | AC5 | The same report's `workspace_isolation` and `namespace_isolation` observations | Passed for two workspaces and simultaneous active/shadow namespaces; normal retrieval excludes foreign, shadow and stale artifacts. |
 | AC6 | `docs/qualification/issue-364-projection-recovery-report.json`; the physical report's `rebuild_recovery_validation_diagnostics` and `concurrency_failure_cleanup` observations | Deterministic PostgreSQL publication/recovery and live physical failure/rebuild checks pass separately. The required composed live activation, deletion propagation, stale-generation CAS and successor rollback evidence is absent, so R6 remains blocked. |
@@ -35,10 +41,11 @@ Run the deterministic ingestion, lifecycle and recovery evidence through their
 existing #194 and #364 qualification suites. For the physical result, provision
 the exact disposable profile from
 `docs/runbooks/cognee-production-qualification.md`, set a new bounded run ID and
-report path, and execute the opt-in production-profile target. After Issues
-#514, #515 and #516 are integrated, every ID returned by `required_gate_ids()` must be
-present and `passed` in one fresh run. R4 still requires an authorized deployed
-five-format upload/lifecycle record, and R6 requires a composed live canonical
+report path, and execute the opt-in production-profile target. Issue #520 now
+provides the production parsed-artifact and observed-receipt composition; every
+ID returned by `required_gate_ids()` must still be present and `passed` in one
+fresh run. R4 still requires an authorized deployed five-format
+upload/lifecycle record, and R6 requires a composed live canonical
 publication/recovery exercise.
 
 The live gate resolves real canonical PostgreSQL state and indexes only
