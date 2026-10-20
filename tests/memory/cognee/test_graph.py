@@ -17,6 +17,7 @@ from spine.memory.contracts import (
 from spine.memory.cognee.extraction import (
     EntityCandidate,
     ExtractionBatch,
+    ExtractionResult,
     GraphProjectionRequest,
     RelationCandidate,
     extract_projection,
@@ -255,6 +256,29 @@ def request(
         ),
         result=result,
     )
+
+
+def test_graph_request_accepts_canonical_uuid_ontology_version_in_complete_result() -> None:
+    result = extraction_result()
+    ontology_version = "11111111-1111-4111-8111-111111111111"
+    payload = result.model_dump(mode="python")
+    payload["ontology_version"] = ontology_version
+    for accepted_fact in (*payload["entities"], *payload["relations"]):
+        accepted_fact["ontology_version"] = ontology_version
+    payload.pop("result_digest")
+
+    canonical_result = ExtractionResult.model_validate(payload)
+    graph_request = request(canonical_result)
+
+    assert canonical_result.ontology_version == ontology_version
+    assert {entity.ontology_version for entity in canonical_result.entities} == {
+        ontology_version
+    }
+    assert {relation.ontology_version for relation in canonical_result.relations} == {
+        ontology_version
+    }
+    assert graph_request.projection_config.ontology_version == ontology_version
+    assert graph_request.result == canonical_result
 
 
 @pytest.mark.asyncio
