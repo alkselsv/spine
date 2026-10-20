@@ -1,0 +1,162 @@
+{
+  "schema_version": "r1-backup-recovery-qualification:v1",
+  "report_id": "issue-509:qualification:v1",
+  "ticket": 509,
+  "parent_ticket": 16,
+  "generated_at": "2026-10-20T22:24:32Z",
+  "target_commit": "0df4d03b633ccf36ade81629f55bc3b5077c35c4",
+  "immutable": true,
+  "content_free": true,
+  "decision": "blocked",
+  "production_qualified": false,
+  "scope": {
+    "backup_profile": "r1-coordinated-backup:v1",
+    "restore_profile": "isolated-restore-evidence:v1",
+    "projection_recovery": "projection-recovery-qualification:v1",
+    "canary": "authorized-recovery-canary:v1"
+  },
+  "outcome_semantics": {
+    "pass": "The bounded contract is proven in the named repository or approved deployment environment.",
+    "fail": "Evidence demonstrates a contract violation; the operation fails closed.",
+    "blocked": "A required deployment binding, authorization or isolated target is absent.",
+    "not_verified": "The contract has deterministic evidence, but the required deployment exercise was not observed.",
+    "unavailable": "Trusted evidence cannot be read or authorized; absence is never interpreted as success."
+  },
+  "criteria": [
+    {
+      "criterion_id": "AC1",
+      "status": "blocked",
+      "reason_codes": ["approved_backup_profile_unavailable", "backup_coordinator_unavailable"],
+      "evidence_artifact_ids": ["issue-368-r1-runbook-exercises:v1", "issue-369-operational-foundation:v1"],
+      "deployment_exercise": "not_started"
+    },
+    {
+      "criterion_id": "AC2",
+      "status": "not_verified",
+      "reason_codes": ["physical_backup_artifacts_unavailable"],
+      "evidence_artifact_ids": ["issue-368-r1-runbook-exercises:v1"],
+      "deployment_exercise": "not_started"
+    },
+    {
+      "criterion_id": "AC3",
+      "status": "blocked",
+      "reason_codes": ["isolated_restore_target_unavailable", "restore_authorization_unavailable"],
+      "evidence_artifact_ids": ["issue-368-r1-runbook-exercises:v1", "issue-369-operational-foundation:v1"],
+      "deployment_exercise": "not_started"
+    },
+    {
+      "criterion_id": "AC4",
+      "status": "pass",
+      "reason_codes": [],
+      "evidence_artifact_ids": ["issue-368-r1-runbook-failure-contracts:v1"],
+      "deployment_exercise": "covered_by_deterministic_tests_only"
+    },
+    {
+      "criterion_id": "AC5",
+      "status": "not_verified",
+      "reason_codes": ["projection_recovery_target_unavailable"],
+      "evidence_artifact_ids": ["issue-364-projection-recovery:v1", "issue-368-r1-runbook-exercises:v1"],
+      "deployment_exercise": "not_started"
+    },
+    {
+      "criterion_id": "AC6",
+      "status": "not_verified",
+      "reason_codes": ["authorized_canary_unavailable"],
+      "evidence_artifact_ids": [],
+      "deployment_exercise": "not_started"
+    },
+    {
+      "criterion_id": "AC7",
+      "status": "not_verified",
+      "reason_codes": ["deployment_runbook_exercise_unavailable"],
+      "evidence_artifact_ids": ["issue-368-r1-runbook-exercises:v1", "issue-369-operational-foundation:v1"],
+      "deployment_exercise": "not_started"
+    },
+    {
+      "criterion_id": "AC8",
+      "status": "pass",
+      "reason_codes": [],
+      "evidence_artifact_ids": ["issue-509:qualification:v1"],
+      "deployment_exercise": "report_contract_checked_by_ci"
+    },
+    {
+      "criterion_id": "AC9",
+      "status": "pass",
+      "reason_codes": [],
+      "evidence_artifact_ids": ["issue-509:qualification:v1"],
+      "deployment_exercise": "blocked_semantics_checked_by_ci"
+    }
+  ],
+  "evidence_artifacts": [
+    {
+      "artifact_id": "issue-368-r1-runbook-failure-contracts:v1",
+      "status": "pass",
+      "digest": "sha256:b4a29e543df0c7d0bb2d0c28a98faab9a8132a4ee7c3f830fca01ad664916dcc",
+      "physical_verification": false
+    },
+    {
+      "artifact_id": "issue-369-operational-foundation:v1",
+      "status": "blocked",
+      "digest": "sha256:d6de0a5a51ecc35b38fb7a567785d4279db3240d95e7069151934dbcdf7c70e3",
+      "physical_verification": false
+    },
+    {
+      "artifact_id": "issue-364-projection-recovery:v1",
+      "status": "partial",
+      "digest": "sha256:ca5c53eda4e4393ceff9caa6d32d4726ca3c7bd92839279ef1505232e2b65a11",
+      "physical_verification": false
+    },
+    {
+      "artifact_id": "issue-509:qualification:v1",
+      "status": "pass",
+      "digest": null,
+      "physical_verification": false
+    },
+    {
+      "artifact_id": "issue-368-r1-runbook-exercises:v1",
+      "status": "partial",
+      "digest": "sha256:b4a29e543df0c7d0bb2d0c28a98faab9a8132a4ee7c3f830fca01ad664916dcc",
+      "physical_verification": false
+    },
+    {
+      "artifact_id": "deployment-approved-recovery-manifest:v1",
+      "status": "unavailable",
+      "digest": null,
+      "physical_verification": false
+    },
+    {
+      "artifact_id": "isolated-restore-evidence:v1",
+      "status": "unavailable",
+      "digest": null,
+      "physical_verification": false
+    },
+    {
+      "artifact_id": "authorized-recovery-canary:v1",
+      "status": "unavailable",
+      "digest": null,
+      "physical_verification": false
+    }
+  ],
+  "unresolved_conditions": [
+    "deployment_approved_backup_destination_and_coordinator",
+    "deployment_approved_isolated_restore_target_and_verifier",
+    "out_of_band_recovery_authorization_and_operator_identity",
+    "projection_recovery_worker_and_physical_provider_binding",
+    "authorized_canary_and_safe_diagnostics_access"
+  ],
+  "safety_assertions": [
+    "live_source_deployment_not_modified",
+    "isolated_target_not_created_without_approval",
+    "no_sensitive_auth_values_recorded",
+    "no_production_readiness_or_cutover_claim_made",
+    "physical_projection_remains_non_authoritative"
+  ],
+  "unsupported_claims": {
+    "production_backup": false,
+    "isolated_restore": false,
+    "projection_recovery": false,
+    "authorized_canary": false,
+    "rpo_rto": false,
+    "cutover_ready": false
+  }
+}
