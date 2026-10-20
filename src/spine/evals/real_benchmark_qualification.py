@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import UUID
 
 from pydantic import Field, model_validator
 
 from spine.domain.common import DefinitionModel
 from spine.application.production_qa_composition import ProductionQAACompositionEvidence
+
+if TYPE_CHECKING:
+    from spine.application.production_runtime_readiness import RuntimeReadinessReport
 
 
 R1_BENCHMARK_QUALIFICATION_SCHEMA = "r1-benchmark-qualification:v1"
@@ -196,6 +199,7 @@ class RealBenchmarkQualificationRuntime:
             raise TypeError("qualification runtime requires the integrated benchmark runner")
         self._runner = runner
         self._preflight = preflight
+        self.readiness_report: RuntimeReadinessReport | None = None
 
     async def run(
         self, *, loaded: object, manifest: object
@@ -206,6 +210,11 @@ class RealBenchmarkQualificationRuntime:
             return None, None
         if type(preflight) is not RealBenchmarkPreflight:
             return None, None
+        from spine.application.production_runtime_readiness import TrustedProductionRuntimePreflight
+
+        self.readiness_report = None
+        if type(self._preflight) is TrustedProductionRuntimePreflight:
+            self.readiness_report = self._preflight.readiness_report
         decision = RealBenchmarkQualificationGate().evaluate(
             preflight=preflight,
             dataset_kind="real",

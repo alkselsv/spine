@@ -10,7 +10,7 @@ run the benchmark. Keep detailed private evidence in approved local storage.
 | Item | State | Evidence / limit |
 | --- | --- | --- |
 | Approved dataset | Structurally validated | Version `0.3.9-user-approved`, SHA-256 `7c2787272fd34643ff5168a46f5672b5a091f3070888546fa7b6ed0c918b3a62`, 30 documents, 149 cases (136 answered, 13 abstained, 0 denied); evaluation `not_run`. |
-| Local production qualification factory | Missing in this checkout | Search found the CLI factory seam and trusted-preflight issuer, but no local production factory that composes them. |
+| Local production qualification factory | Composition seam available | `DurableAskComposition.create_real_benchmark_qualification_runtime()` issues a CLI runtime only when the API/Temporal/observer graph passes the exact production binding checks and the runner carries the same evidence. The runtime owner still supplies deployment configuration and the real prerequisite inspector. |
 | Runtime configuration | Missing in current process | `SPINE_DATABASE_URL`, local auth configuration and Temporal address/namespace are absent; `.env` and `.env.local` are absent. Secret values were not read. |
 | PostgreSQL / Temporal / workers health | Not verified | No trusted composed preflight was available; absence of configuration does not establish service process state. |
 | Principal, scope, current authorization and AccessPolicy | Not verified | Cannot resolve through canonical PostgreSQL authorization without trusted configured composition. No policy change attempted. |
@@ -19,17 +19,31 @@ run the benchmark. Keep detailed private evidence in approved local storage.
 | Production Q&A composition and same-execution durable capture | Not verified | ADR-0040 composition must be supplied by runtime owner; no fake or test observer can satisfy preflight. |
 | Real benchmark report | Absent | Qualification record says `real_opt_in_qualification.status=not_exercised`; no observation started. |
 
-## Why the current preflight is unavailable
+## Why a local preflight may still be unavailable
 
-The `preflight_unavailable` result means the operator cannot obtain a trusted
-content-free readiness report from the local production composition. In the
-current checkout, the CLI requires an explicit `--composition` factory, while
-the qualification contract permits real execution only through a
-`TrustedRealBenchmarkPreflight` tied to the same verified production composition
-as the integrated runner. No such local production factory was found, and the
-current process has no database/local-auth/Temporal configuration. The CLI
-catches a preflight exception or invalid report and stops before the runner;
-the qualification runbook's safe reason is `preflight_unavailable`.
+`preflight_unavailable` means the operator could not obtain a trusted
+content-free readiness report. The composition method supplies the verified
+API/Temporal/observer binding and ties the preflight to the same evidence as the
+integrated runner. The runtime owner must still provide the typed deployment
+profile, the real inspector for all 11 prerequisites, and configured service
+clients. Missing local environment configuration is not evidence that a remote
+service is absent. If the inspector throws or returns an invalid report, the
+CLI stops before mapping and observation with `preflight_unavailable`.
+
+The versioned `spine-production-runtime-profile:v1` record contains PostgreSQL
+major and migration revision; Temporal namespace and task queue; worker roles;
+authentication and original-storage profiles; Context Projection provider and
+backend versions; LLM and embedding model versions plus embedding dimensions;
+Web and API release identities; commit SHA; and deployment fingerprint. It has
+no secret, endpoint, corpus, or credential fields. The CLI includes a
+`spine-production-runtime-readiness:v1` report under
+`runtime_readiness` when a typed trusted report is available. It keeps
+configuration, reachability, authorization, verified bindings, and overall
+qualification as separate states, with bounded reason codes and safe evidence
+references. The live inspector returns the observed profile alongside its
+prerequisite checks; any mismatch with the selected profile blocks
+configuration, binding and qualification before benchmark mapping. A profile
+does not create identity, grants, policy or mappings.
 
 This establishes missing local composition/configuration, not that PostgreSQL,
 Temporal, workers, the canonical corpus, or projection are stopped or absent.

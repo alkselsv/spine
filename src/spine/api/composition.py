@@ -73,6 +73,15 @@ from spine.workers.composition import OutboxConsumerBinding
 
 if TYPE_CHECKING:
     from spine.application.production_qa_composition import ProductionQAACompositionEvidence
+    from spine.application.production_runtime_readiness import (
+        ProductionRuntimeProfile,
+        ProductionRuntimeInspector,
+        TrustedProductionRuntimePreflight,
+    )
+    from spine.evals.real_benchmark_qualification import (
+        RealBenchmarkQualificationRuntime,
+    )
+    from spine.evals.real_benchmark_runner import RealBenchmarkRunner
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +216,69 @@ class DurableAskComposition:
             ask_admission_service=self.admission,
             **dependencies,
         )
+
+    def create_trusted_runtime_preflight(
+        self,
+        *,
+        profile: ProductionRuntimeProfile,
+        inspector: ProductionRuntimeInspector,
+    ) -> TrustedProductionRuntimePreflight:
+        """Bind readiness checks to this exact verified production Q&A graph."""
+
+        from spine.application.production_runtime_readiness import (
+            ProductionRuntimeProfile,
+            TrustedProductionRuntimePreflight,
+        )
+        from spine.evals.real_benchmark_qualification import (
+            _issue_trusted_real_benchmark_preflight,
+        )
+
+        if type(profile) is not ProductionRuntimeProfile:
+            raise TypeError("production runtime profile is required")
+        if not callable(getattr(inspector, "inspect", None)):
+            raise TypeError("production runtime inspector is required")
+        evidence = self.real_qualification_evidence
+        if evidence is None:
+            raise RuntimeError("production runtime composition is incomplete or mismatched")
+        inspector_evidence = getattr(inspector, "production_evidence", None)
+        if inspector_evidence is None or not evidence.matches_evidence(inspector_evidence):
+            raise RuntimeError("runtime inspector is bound to a different production composition")
+        trusted_preflight = _issue_trusted_real_benchmark_preflight(
+            inspector=inspector,
+            production_evidence=evidence,
+        )
+        return TrustedProductionRuntimePreflight(
+            profile=profile,
+            preflight=trusted_preflight,
+            inspector=inspector,
+        )
+
+    def create_real_benchmark_qualification_runtime(
+        self,
+        *,
+        profile: ProductionRuntimeProfile,
+        inspector: ProductionRuntimeInspector,
+        runner: RealBenchmarkRunner,
+    ) -> RealBenchmarkQualificationRuntime:
+        """Create the CLI runtime only when its observer shares this graph."""
+
+        from spine.evals.real_benchmark_qualification import (
+            RealBenchmarkQualificationRuntime,
+        )
+
+        evidence = self.real_qualification_evidence
+        if evidence is None:
+            raise RuntimeError("production runtime composition is incomplete or mismatched")
+        if not getattr(runner, "supports_real_qualification", False):
+            raise TypeError("real benchmark runner must use the production observer")
+        runner_evidence = getattr(runner, "production_qualification_evidence", None)
+        if runner_evidence is None or not evidence.matches_evidence(runner_evidence):
+            raise RuntimeError("benchmark runner is bound to a different production composition")
+        preflight = self.create_trusted_runtime_preflight(
+            profile=profile,
+            inspector=inspector,
+        )
+        return RealBenchmarkQualificationRuntime(runner=runner, preflight=preflight)
 
 
 def compose_durable_ask(
