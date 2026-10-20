@@ -94,15 +94,22 @@ $expectedVolumes = @(
   'spine509qual_source_api_data', 'spine509qual_restore_api_data'
 )
 $ownedVolumes = @($expectedVolumes | ForEach-Object {
-  $volume = docker --context desktop-linux volume inspect $_ 2>$null | ConvertFrom-Json
-  if ($null -eq $volume -or $volume[0].Labels.'com.docker.compose.project' -ne 'spine509qual') {
-    throw "Refusing to remove a missing or foreign volume: $_"
+  $volumeJson = docker --context desktop-linux volume inspect $_ 2>$null
+  if ($LASTEXITCODE -ne 0) {
+    return
+  }
+  $volume = $volumeJson | ConvertFrom-Json
+  if ($volume[0].Labels.'com.docker.compose.project' -ne 'spine509qual') {
+    throw "Refusing to remove a foreign volume: $_"
   }
   $_
 })
-docker --context desktop-linux volume rm $ownedVolumes
+if ($ownedVolumes.Count -gt 0) {
+  docker --context desktop-linux volume rm $ownedVolumes
+}
 ```
 
-The ownership check refuses a missing or foreign volume before removal. These
-commands target only the `spine509qual_*` resources created by this profile;
-they must not be run against another Compose project.
+The ownership check refuses a foreign volume before removal and skips volumes
+that were never created. These commands target only the `spine509qual_*`
+resources created by this profile; they must not be run against another Compose
+project.
