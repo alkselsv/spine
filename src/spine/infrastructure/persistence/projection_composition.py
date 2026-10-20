@@ -402,6 +402,7 @@ def create_production_outbox_worker(
     lease_duration: timedelta,
     handler_timeout: timedelta,
     maximum_attempts: int,
+    session_factory: Callable[[], Any],
     uow_factory: UnitOfWorkFactory,
     request_context_factory: Callable[
         [ProjectionRequestEnvelope], TrustedPersistenceContext
@@ -409,28 +410,33 @@ def create_production_outbox_worker(
     projection_context_factory: Callable[
         [ProjectionCommand], TrustedPersistenceContext
     ],
-    parsed_artifacts: ParsedArtifactRepository,
+    parsed_artifact_context_factory: Callable[
+        [UUID, UUID], TrustedPersistenceContext
+    ],
+    context_verifier: TrustedContextVerifier,
     projection: ContextProjection,
-    receipt_builder: AdapterProjectionReceiptBuilder,
     recovery_context_factory: Callable[
         [ProjectionRecoveryRequestEnvelope], TrustedPersistenceContext
     ],
     recovery_result_recorder: ProjectionRecoveryResultRecorder,
+    physical_reader: CogneeStructuredRetrievalSdk | None = None,
     operational_observer: OperationalObservationEmitter | None = None,
     reference_id_source: Callable[[], UUID] = uuid4,
 ) -> OutboxWorker:
     """Build the existing outbox worker with one production projection route."""
 
-    projection_binding = build_production_projection_delivery_binding(
+    projection_binding = build_postgresql_cognee_projection_delivery_binding(
+        session_factory=session_factory,
+        parsed_artifact_context_factory=parsed_artifact_context_factory,
+        context_verifier=context_verifier,
         uow_factory=uow_factory,
         request_context_factory=request_context_factory,
         projection_context_factory=projection_context_factory,
-        parsed_artifacts=parsed_artifacts,
         projection=projection,
-        receipt_builder=receipt_builder,
         recovery_context_factory=recovery_context_factory,
         recovery_result_recorder=recovery_result_recorder,
         clock=clock,
+        physical_reader=physical_reader,
         operational_observer=operational_observer,
         reference_id_source=reference_id_source,
     )

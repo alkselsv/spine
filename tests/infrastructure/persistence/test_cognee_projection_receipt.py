@@ -8,6 +8,8 @@ import pytest
 from spine.application.projection_result_mapping import ProjectionMappingError
 from spine.application.persistence.parsed_artifacts import ParsedArtifactCommand
 from spine.domain.artifacts import ParsedDocument
+from spine.domain.ingestion import ProcessingCoverage, ProcessingReceipt
+from spine.domain.projections import ProjectionPartition
 from spine.infrastructure.persistence.parsed_artifacts import (
     InMemoryParsedArtifactRepository,
 )
@@ -42,33 +44,57 @@ class _PhysicalReader:
 
 
 class _ProjectionRepository:
-    async def list_partitions(self, projection_run_id: UUID) -> tuple[object, ...]:
+    async def list_partitions(
+        self, projection_run_id: UUID
+    ) -> tuple[ProjectionPartition, ...]:
         assert projection_run_id == _command().projection_run_id
-        return (type("Partition", (), {
-            "projection_partition_id": _command().projection_candidate.partition_id,
-            "workspace_id": _command().workspace_id,
-            "environment_id": ENVIRONMENT,
-            "security_domain_reference": "security-domain:1",
-            "security_domain_version": "v1",
-        })(),)
+        command = _command()
+        return (
+            ProjectionPartition(
+                projection_partition_id=command.projection_candidate.partition_id,
+                projection_run_id=command.projection_run_id,
+                projection_candidate_id=command.projection_candidate.candidate_id,
+                workspace_id=command.workspace_id,
+                environment_id=ENVIRONMENT,
+                security_domain_reference="security-domain:1",
+                security_domain_version="v1",
+                partition_identity="partition-1",
+                expected_command_identity=command.command_identity,
+                expected_command_digest=command.command_digest,
+                created_at=NOW,
+            ),
+        )
 
 
 class _IngestionRepository:
-    async def resolve_processing_receipt_by_id(self, receipt_id: UUID) -> object:
+    async def resolve_processing_receipt_by_id(
+        self, receipt_id: UUID
+    ) -> ProcessingReceipt:
         assert receipt_id == PROCESSING_RECEIPT
-        return type("Receipt", (), {
-            "workspace_id": _command().workspace_id,
-            "environment_id": ENVIRONMENT,
-            "source_object_id": SOURCE,
-            "source_revision_id": REVISION,
-            "processing_receipt_id": PROCESSING_RECEIPT,
-            "output_reference": _document().artifact_id,
-            "output_digest": _document().artifact_digest,
-            "original_sha256": _document().original_sha256,
-            "parser_version": _document().parser_version,
-            "parser_config_reference": _document().parser_config_reference,
-            "locator_contract_version": _document().locator_contract_version,
-        })()
+        command = _command()
+        document = _document()
+        return ProcessingReceipt(
+            processing_receipt_id=PROCESSING_RECEIPT,
+            workspace_id=command.workspace_id,
+            environment_id=ENVIRONMENT,
+            ingestion_run_source_id=UUID(int=41),
+            binding_id=UUID(int=42),
+            source_object_id=SOURCE,
+            source_revision_id=REVISION,
+            processor_kind="document_parser",
+            parser_name="plain_text",
+            parser_version=document.parser_version,
+            parser_config_reference=document.parser_config_reference,
+            locator_contract_version=document.locator_contract_version,
+            original_sha256=document.original_sha256,
+            output_kind="parsed_document",
+            output_reference=document.artifact_id,
+            output_digest=document.artifact_digest,
+            coverage=ProcessingCoverage.COMPLETE,
+            command_identity="parsed-receipt-1",
+            command_digest="a" * 64,
+            completed_at=NOW,
+        )
 
 
 class _UnitOfWork:
