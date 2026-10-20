@@ -159,7 +159,7 @@ class ParsedArtifactCanonicalProjectionLocatorResolver:
             ):
                 raise ProjectionMappingError("canonical parsed artifact is invalid")
             for segment in artifact.segments:
-                stable = _stable_locator(segment.locator)
+                stable = stable_locator_from_parsed_locator(segment.locator)
                 locators.append(
                     CanonicalProjectionLocator(
                         source_object_id=source.source_object_id,
@@ -180,7 +180,7 @@ class ParsedArtifactCanonicalProjectionLocatorResolver:
         return tuple(locators)
 
 
-def _stable_locator(locator: Locator) -> StableLocator:
+def stable_locator_from_parsed_locator(locator: Locator) -> StableLocator:
     """Map parser-specific locators to the closed provider-neutral contract."""
 
     if isinstance(locator, PhysicalLineLocator):
@@ -574,4 +574,5 @@ __all__ = [
     "ParsedArtifactCanonicalProjectionLocatorResolver",
     "PersistenceCanonicalProjectionGateway",
     "build_projection_result_persistence",
+    "stable_locator_from_parsed_locator",
 ]

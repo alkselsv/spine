@@ -19,7 +19,13 @@ from spine.infrastructure.persistence.parsed_artifacts import (
     ParsedArtifactCitationExcerptResolver,
     PostgreSQLParsedArtifactRepository,
 )
+from spine.infrastructure.persistence.cognee_projection_receipt import (
+    CogneeProjectionReceiptBuilder,
+)
 from spine.infrastructure.persistence.projection_composition import (
+    build_postgresql_cognee_projection_delivery_binding,
+    build_postgresql_cognee_projection_request_binding,
+    build_postgresql_cognee_projection_request_consumer,
     build_production_projection_request_binding,
     build_production_projection_request_consumer,
     create_production_outbox_worker,
@@ -35,6 +41,10 @@ __all__ = [
     "InMemoryParsedArtifactRepository",
     "ParsedArtifactCitationExcerptResolver",
     "PostgreSQLParsedArtifactRepository",
+    "CogneeProjectionReceiptBuilder",
+    "build_postgresql_cognee_projection_delivery_binding",
+    "build_postgresql_cognee_projection_request_binding",
+    "build_postgresql_cognee_projection_request_consumer",
     "build_production_projection_request_binding",
     "build_production_projection_request_consumer",
     "create_production_outbox_worker",

@@ -741,6 +741,28 @@ async def test_public_sdk_bridge_reads_external_metadata_through_dataset_api() -
 
 
 @pytest.mark.asyncio
+async def test_public_sdk_bridge_rejects_incomplete_physical_metadata_rows() -> None:
+    dataset_id = UUID("a0000000-0000-4000-8000-000000000001")
+
+    class Datasets:
+        async def list_datasets(self) -> list[object]:
+            return [{"id": dataset_id, "name": "dataset"}]
+
+        async def list_data(self, requested_id: UUID) -> list[object]:
+            assert requested_id == dataset_id
+            return [{"id": UUID(int=1)}]
+
+    class PublicSdk:
+        __version__ = "1.5.4"
+        datasets = Datasets()
+
+    with pytest.raises(ValueError, match="metadata is malformed"):
+        await CogneePublicStructuredRetrievalSdk(PublicSdk()).list_data_metadata(
+            "dataset"
+        )
+
+
+@pytest.mark.asyncio
 async def test_public_sdk_bridge_reports_an_absent_dataset() -> None:
     class Datasets:
         @staticmethod

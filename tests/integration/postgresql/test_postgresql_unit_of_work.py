@@ -57,6 +57,7 @@ from spine.application.persistence.ingestion import (
     ExistingRevisionBindingCommand,
     IngestionRunCommand,
 )
+from spine.application.persistence.parsed_artifacts import ParsedArtifactCommand
 from spine.application.persistence.idempotency import (
     IdempotencyKey,
     IdempotencyReplay,
@@ -136,6 +137,9 @@ from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.persistence.postgresql import (
     PostgreSQLPersistence,
     PostgreSQLTransactionStage,
+)
+from spine.infrastructure.persistence.parsed_artifacts import (
+    PostgreSQLParsedArtifactRepository,
 )
 from spine.infrastructure.persistence.postgresql_operational_metrics import (
     PostgreSQLOperationalMetricsStore,
@@ -789,6 +793,590 @@ async def test_postgresql_unit_of_work_tracks_activity_until_context_exit(
         assert unit_of_work_is_active() is True
 
     assert unit_of_work_is_active() is False
+
+
+async def test_postgresql_parsed_artifacts_use_transaction_local_tenant_scope(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    from spine.ingestion.parsers import parse_document
+    from spine.domain.sources import RevisionMetadata
+    from spine.domain.sources.canonicalization import canonical_revision_metadata_digest
+    from spine.domain.sources.original_reference import ObjectReference
+    from hashlib import sha256
+
+    case = await prepare_canonical_case(postgresql_adapter, 51600)
+    content = b"test"
+    content_digest = sha256(content).hexdigest()
+    revision_metadata = RevisionMetadata(embedded_title="Tenant parsed artifact")
+    revision = content_revision(
+        revision_id=synthetic_uuid(51601),
+        source_object_id=case.source.source_object_id,
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        kind=case.revision.kind,
+        revision_schema_version=case.revision.revision_schema_version,
+        revision_metadata_schema=case.revision.revision_metadata_schema,
+        revision_metadata=revision_metadata,
+        revision_metadata_digest=canonical_revision_metadata_digest(revision_metadata),
+        original_reference=ObjectReference(
+            schema_version=1,
+            object_id=synthetic_uuid(51602),
+            storage_generation=synthetic_uuid(51603),
+            digest_algorithm="sha256",
+            digest_hex=content_digest,
+            byte_length=len(content),
+        ),
+        original_sha256=content_digest,
+        byte_length=len(content),
+        media_type="text/plain",
+        observed_at=case.revision.observed_at,
+    )
+    provenance = source_contract_provenance(
+        case.source, revision.revision_id, "event-2"
+    )
+    observation_context = postgresql_adapter.source_context(
+        case.source.workspace_id, case.source.environment_id
+    )
+    async with postgresql_adapter.uow_factory(observation_context) as uow:
+        await uow.sources.record_observation(
+            SourceObservationCommand.create(
+                source=case.source,
+                revision=revision,
+                provenance=provenance,
+                idempotency_key=IdempotencyKey("issue516-parsed-source-revision"),
+            )
+        )
+        await uow.commit()
+    document = parse_document(revision, content)
+    engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        pool_size=2,
+        max_overflow=0,
+        pool_pre_ping=True,
+        pool_reset_on_return="rollback",
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    parsed_context_boundary = TrustedContextBoundary.for_testing(
+        issuer_id=synthetic_uuid(51604),
+        secret=b"issue-516-parsed-artifact-context-secret-001",
+    )
+
+    def parsed_context(workspace_id: UUID, environment_id: UUID) -> TrustedPersistenceContext:
+        return parsed_context_boundary.worker(
+            scope=EnvironmentScope(
+                workspace_id=workspace_id, environment_id=environment_id
+            ),
+            service_principal_id=synthetic_uuid(51605),
+            purpose=PersistencePurpose("parsed_artifact_repository"),
+            operation=PersistenceOperation("parsed_artifact_read"),
+            trace_id=synthetic_uuid(51606),
+        )
+
+    repository = PostgreSQLParsedArtifactRepository(
+        async_sessionmaker(engine, expire_on_commit=False, autoflush=False),
+        context_factory=parsed_context,
+        context_verifier=parsed_context_boundary,
+    )
+    try:
+        persisted = await repository.persist(
+            ParsedArtifactCommand.create(document, command_identity="issue516:parsed:1")
+        )
+        resolved = await repository.get(
+            workspace_id=case.source.workspace_id,
+            environment_id=case.source.environment_id,
+            artifact_id=document.artifact_id,
+        )
+        isolated = await repository.get(
+            workspace_id=synthetic_uuid(51610),
+            environment_id=synthetic_uuid(51611),
+            artifact_id=document.artifact_id,
+        )
+    finally:
+        await engine.dispose()
+
+    assert persisted.replay is False
+    assert resolved == document
+    assert isolated is None
+
+
+async def test_postgresql_cognee_receipt_maps_after_physical_read(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    """Read Cognee before opening the canonical PostgreSQL mapping UoW."""
+    from hashlib import sha256
+    now = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+
+    from spine.application.persistence.boundary import CanonicalBoundaryCaptureCommand
+    from spine.application.persistence.context import PersistenceOperation, PersistencePurpose
+    from spine.application.persistence.command_digest import digest_command
+    from spine.application.persistence.idempotency import IdempotencyKey
+    from spine.application.persistence.ingestion import (
+        IngestionBindingCommand,
+        IngestionRunCommand,
+        ProcessingReceiptCommand,
+    )
+    from spine.application.persistence.parsed_artifacts import ParsedArtifactCommand
+    from spine.application.persistence.projection import ProjectionRunCommand
+    from spine.application.projection_result_persistence import (
+        build_projection_result_persistence,
+        ParsedArtifactCanonicalProjectionLocatorResolver,
+    )
+    from spine.domain.ingestion import (
+        IngestionRun,
+        IngestionRunSource,
+        IngestionRunSourceBinding,
+        ProcessingCoverage,
+        ProcessingReceipt,
+    )
+    from spine.domain.artifacts import ParsedDocument
+    from spine.domain.projections import (
+        OntologyVersion,
+        ProjectionConfigVersion as CanonicalProjectionConfigVersion,
+        ProjectionRun,
+        ProjectionRunTransition,
+        ProjectionPartition,
+        ProjectionRunState,
+    )
+    from spine.ingestion.parsers import parse_document
+    from tests.domain.artifacts.test_parsed_documents import revision as test_source_revision
+    from spine.infrastructure.persistence.cognee_projection_receipt import (
+        CogneeProjectionReceiptBuilder,
+    )
+    from spine.memory.contracts import (
+        CanonicalBoundary as MemoryCanonicalBoundary,
+        ProjectionCandidate,
+        ProjectionConfigVersion,
+        ProjectionNamespaceState,
+            ProjectionEffect,
+            ProjectionEffectAction,
+            ProjectionEffectStatus,
+            ProjectionOperation as MemoryProjectionOperation,
+        ProjectionResult,
+        ProjectionSourceRevision,
+        ProjectCommand,
+    )
+    from spine.memory.namespace import ProjectionNamespaceContext, ProjectionNamespaceRouter
+    from spine.memory.cognee.retrieval.adapter import CogneeDataMetadata
+
+    case = await prepare_canonical_case(postgresql_adapter, 51700)
+    assert postgresql_adapter.ingestion_context is not None
+    async with postgresql_adapter.uow_factory(case.context) as uow:
+        await uow.canonical.accept(case.command)
+        await uow.commit()
+    content = b"PostgreSQL Cognee receipt evidence\n"
+    revision = case.revision
+    template_revision = test_source_revision(
+        content,
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+    )
+    template_document = parse_document(template_revision, content)
+    document = ParsedDocument.from_source(
+        revision,
+        parser_name=template_document.parser_name,
+        parser_version=template_document.parser_version,
+        parser_config_reference=template_document.parser_config_reference,
+        locator_contract_version=template_document.locator_contract_version,
+        media_type=template_document.media_type,
+        coverage=template_document.coverage,
+        segments=template_document.segments,
+        exclusions=template_document.exclusions,
+        source_byte_length=revision.byte_length,
+        source_codepoint_length=template_document.source_codepoint_length,
+    )
+    runtime_engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        pool_size=2,
+        max_overflow=0,
+        pool_pre_ping=True,
+        pool_reset_on_return="rollback",
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    context_boundary = TrustedContextBoundary.for_testing(
+        issuer_id=synthetic_uuid(51704),
+        secret=b"issue-516-cognee-composition-context-secret-001",
+    )
+
+    def parsed_context(workspace_id: UUID, environment_id: UUID) -> TrustedPersistenceContext:
+        return context_boundary.worker(
+            scope=EnvironmentScope(workspace_id=workspace_id, environment_id=environment_id),
+            service_principal_id=synthetic_uuid(51705),
+            purpose=PersistencePurpose("parsed_artifact_repository"),
+            operation=PersistenceOperation("parsed_artifact_read"),
+            trace_id=synthetic_uuid(51706),
+        )
+
+    parsed_artifacts = PostgreSQLParsedArtifactRepository(
+        async_sessionmaker(runtime_engine, expire_on_commit=False, autoflush=False),
+        context_factory=parsed_context,
+        context_verifier=context_boundary,
+    )
+    await parsed_artifacts.persist(
+        ParsedArtifactCommand.create(document, command_identity="issue516:parsed:e2e")
+    )
+
+    receipt_id = synthetic_uuid(51717)
+    ingestion_context = postgresql_adapter.ingestion_context(
+        case.source.workspace_id, case.source.environment_id, "ingestion_run"
+    )
+    ingestion_run = IngestionRun(
+        ingestion_run_id=synthetic_uuid(51721),
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        command_identity="issue516-e2e-ingestion",
+        command_digest="0" * 64,
+        trigger_kind="reprocess",
+        requested_scope_schema="ingestion-scope:v1",
+        requested_scope_digest=sha256(b"issue516-e2e-scope").hexdigest(),
+        requested_at=now,
+    )
+    ingestion_run_command = IngestionRunCommand.create(
+        run=ingestion_run,
+        idempotency_key=IdempotencyKey("issue516-e2e-ingestion"),
+    )
+    ingestion_item = IngestionRunSource(
+        ingestion_run_source_id=synthetic_uuid(51718),
+        ingestion_run_id=ingestion_run.ingestion_run_id,
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        input_ordinal=1,
+        input_identity="issue516-e2e-item",
+        input_digest=sha256(b"issue516-e2e-item").hexdigest(),
+        command_identity="issue516-e2e-item",
+        command_digest=sha256(b"issue516-e2e-item-command").hexdigest(),
+        created_at=now,
+    )
+    source_context = postgresql_adapter.source_context(
+        case.source.workspace_id, case.source.environment_id
+    )
+    async with postgresql_adapter.uow_factory(source_context) as uow:
+        original_claim = await uow.idempotency.claim(
+            operation_schema_version=1,
+            key=IdempotencyKey("canonical-original-51700"),
+            digest=digest_command(
+                operation=source_context.operation,
+                operation_schema_version=1,
+                payload={"canonical_original": 51700},
+            ),
+        )
+        await uow.rollback()
+    association = _receipt_association(
+        case.source,
+        revision,
+        case.provenance,
+        receipt_id=original_claim.receipt_id,
+        number=51700,
+    )
+    ingestion_binding = IngestionRunSourceBinding(
+        binding_id=synthetic_uuid(51719),
+        ingestion_run_source_id=ingestion_item.ingestion_run_source_id,
+        source_object_id=case.source.source_object_id,
+        source_revision_id=revision.revision_id,
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        binding_command_identity="issue516-e2e-binding",
+        binding_command_digest=sha256(b"issue516-e2e-binding").hexdigest(),
+        original_reference=association.original_reference,
+        original_receipt_kind=association.original_receipt_kind,
+        original_receipt_id=association.original_receipt_id,
+        original_receipt_digest=association.original_reference.digest_hex,
+        bound_at=now,
+    )
+    processing_receipt = ProcessingReceipt(
+        processing_receipt_id=receipt_id,
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        ingestion_run_source_id=ingestion_item.ingestion_run_source_id,
+        binding_id=ingestion_binding.binding_id,
+        source_object_id=case.source.source_object_id,
+        source_revision_id=revision.revision_id,
+        processor_kind="document_parser",
+        parser_name=document.parser_name,
+        parser_version=document.parser_version,
+        parser_config_reference=document.parser_config_reference,
+        locator_contract_version=document.locator_contract_version,
+        original_sha256=document.original_sha256,
+        output_kind="parsed_document",
+        output_reference=document.artifact_id,
+        output_digest=document.artifact_digest,
+        coverage=ProcessingCoverage.COMPLETE,
+        command_identity="issue516-e2e-processing",
+        command_digest=sha256(b"issue516-e2e-processing").hexdigest(),
+        completed_at=now,
+    )
+    observation = SourceObservationCommand.create(
+        source=case.source,
+        revision=revision,
+        provenance=case.provenance,
+        idempotency_key=IdempotencyKey("canonical-observation-51700"),
+        receipt_association=association,
+    )
+    async with postgresql_adapter.uow_factory(ingestion_context) as uow:
+        await uow.ingestion.create_run(ingestion_run_command)
+        await uow.ingestion.create_item(ingestion_item)
+        await uow.commit()
+    binding_context = postgresql_adapter.ingestion_context(
+        case.source.workspace_id, case.source.environment_id, "ingestion_binding"
+    )
+    async with postgresql_adapter.uow_factory(binding_context) as uow:
+        await uow.ingestion.bind_source(
+            IngestionBindingCommand.create(
+                item=ingestion_item,
+                binding=ingestion_binding,
+                observation=observation,
+                idempotency_key=IdempotencyKey("issue516-e2e-binding"),
+            )
+        )
+        await uow.commit()
+    processing_context = postgresql_adapter.ingestion_context(
+        case.source.workspace_id, case.source.environment_id, "processing_receipt"
+    )
+    async with postgresql_adapter.uow_factory(processing_context) as uow:
+        await uow.ingestion.record_processing_receipt(
+            ProcessingReceiptCommand.create(
+                receipt=processing_receipt,
+                idempotency_key=IdempotencyKey("issue516-e2e-processing"),
+            )
+        )
+        await uow.commit()
+
+    boundary_context = postgresql_adapter.ingestion_context(
+        case.source.workspace_id, case.source.environment_id, "canonical_boundary_capture"
+    )
+    async with postgresql_adapter.uow_factory(boundary_context) as uow:
+        captured = await uow.boundaries.capture(
+            CanonicalBoundaryCaptureCommand.create(
+                projection_kind="context",
+                scope_version="r1",
+                idempotency_key=IdempotencyKey("issue516-e2e-boundary"),
+            )
+        )
+        await uow.commit()
+    boundary = captured.boundary
+    projection_context = postgresql_adapter.ingestion_context(
+        case.source.workspace_id, case.source.environment_id, "projection_run"
+    )
+    result_context = postgresql_adapter.ingestion_context(
+        case.source.workspace_id, case.source.environment_id, "projection_receipt"
+    )
+    from tests.contracts.persistence.test_projection_contract import _ontology
+
+    ontology = _ontology(case.source.workspace_id, case.source.environment_id)
+    from tests.contracts.persistence.test_projection_contract import _digest
+
+    config_payload = {"extractor": "provider-neutral:v1"}
+    config = CanonicalProjectionConfigVersion(
+        projection_config_version_id=synthetic_uuid(51711),
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        projection_kind="context",
+        version=1,
+        ontology_version_id=ontology.ontology_version_id,
+        parser_contract_version=document.parser_version,
+        locator_contract_version=document.locator_contract_version,
+        extraction_contract_version="extractor:v1",
+        embedding_profile_version="embedding:v1",
+        adapter_contract_version="context-projection:v1",
+        config_payload=config_payload,
+        config_digest=_digest("projection-config:r1", config_payload),
+        created_at=now,
+    )
+    run_id, candidate_id, partition_id = (
+        synthetic_uuid(51712), synthetic_uuid(51713), synthetic_uuid(51714)
+    )
+    command_identity = "issue516-e2e-project"
+    command_digest = sha256(b"issue516-e2e-command").hexdigest()
+    run = ProjectionRun(
+        projection_run_id=run_id,
+        projection_candidate_id=candidate_id,
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        projection_kind="context",
+        operation=ProjectionOperation.BUILD,
+        projection_config_version_id=config.projection_config_version_id,
+        canonical_boundary_id=boundary.boundary_id,
+        command_identity="issue516-e2e-run",
+        command_digest=sha256(b"issue516-e2e-run").hexdigest(),
+        idempotency_receipt_id=synthetic_uuid(51715),
+        started_at=now,
+    )
+    partition = ProjectionPartition(
+        projection_partition_id=partition_id,
+        projection_run_id=run_id,
+        projection_candidate_id=candidate_id,
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        security_domain_reference="security-domain:e2e",
+        security_domain_version="r1",
+        partition_identity="default",
+        expected_command_identity=command_identity,
+        expected_command_digest=command_digest,
+        created_at=now,
+    )
+    async with postgresql_adapter.uow_factory(projection_context) as uow:
+        await uow.projections.add_ontology_version(ontology)
+        await uow.projections.add_config_version(config)
+        await uow.projections.create_run(
+            ProjectionRunCommand.create(
+                run=run, idempotency_key=IdempotencyKey("issue516-e2e-run")
+            )
+        )
+        await uow.projections.append_transition(
+            ProjectionRunTransition(
+                projection_run_transition_id=synthetic_uuid(51716),
+                projection_run_id=run_id,
+                projection_candidate_id=candidate_id,
+                workspace_id=case.source.workspace_id,
+                environment_id=case.source.environment_id,
+                state=ProjectionRunState.REQUESTED,
+                attempt=1,
+                occurred_at=now,
+            )
+        )
+        await uow.projections.add_partition(partition)
+        await uow.commit()
+
+    provider_config = ProjectionConfigVersion(
+        config_id=config.projection_config_version_id,
+        version=str(config.version),
+        config_digest=config.config_digest,
+        ontology_version=str(config.ontology_version_id),
+        adapter_contract_version=config.adapter_contract_version,
+    )
+    canonical_boundary = MemoryCanonicalBoundary(
+        boundary_id=boundary.boundary_id,
+        boundary_digest=boundary.manifest_digest,
+        accepted_through_generation=boundary.accepted_through_generation,
+    )
+    candidate = ProjectionCandidate(
+        candidate_id=candidate_id, run_id=run_id, partition_id=partition_id
+    )
+    namespace = ProjectionNamespaceRouter().route(
+        ProjectionNamespaceContext(
+            workspace_id=case.source.workspace_id,
+            environment_id=case.source.environment_id,
+            projection_kind="context",
+            projection_candidate=candidate,
+            projection_config=provider_config,
+            canonical_boundary=canonical_boundary,
+            state=ProjectionNamespaceState.SHADOW,
+        )
+    )
+    source_revision = ProjectionSourceRevision(
+        source_object_id=case.source.source_object_id,
+        source_revision_id=revision.revision_id,
+        revision_digest=revision.revision_digest,
+        revision_number=1,
+        processing_receipt_id=receipt_id,
+        locator_contract_version=document.locator_contract_version,
+    )
+    command = ProjectCommand(
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        projection_run_id=run_id,
+        projection_candidate=candidate,
+        projection_config=provider_config,
+        canonical_boundary=canonical_boundary,
+        source_revisions=(source_revision,),
+        physical_namespace=namespace,
+        command_identity=command_identity,
+        command_digest=command_digest,
+    )
+    class PhysicalReader:
+        version = "test-cognee:v1"
+
+        async def list_data_metadata(self, dataset_name: str):
+            assert unit_of_work_is_active() is False
+            assert dataset_name.startswith("spine_context_")
+            segment = document.segments[0]
+            metadata = {
+                "spine_schema": "chunk-artifact:v1",
+                "workspace_id": str(command.workspace_id),
+                "environment_id": str(command.environment_id),
+                "source_object_id": str(source_revision.source_object_id),
+                "source_revision_id": str(source_revision.source_revision_id),
+                "revision_digest": source_revision.revision_digest,
+                "revision_number": source_revision.revision_number,
+                "namespace_digest": command.physical_namespace.namespace_digest,
+                "projection_candidate_id": str(candidate_id),
+                "projection_run_id": str(run_id),
+                "projection_config_id": str(config.projection_config_version_id),
+                "projection_config_version": str(config.version),
+                "projection_config_digest": config.config_digest,
+                "processing_receipt_id": str(receipt_id),
+                "segment_id": str(segment.segment_id),
+                "segment_digest": segment.segment_digest,
+                "locator_contract_version": document.locator_contract_version,
+                "locator": segment.locator.model_dump(mode="json"),
+            }
+            return (CogneeDataMetadata(data_id=str(segment.segment_id), external_metadata=metadata),)
+
+    builder = CogneeProjectionReceiptBuilder(
+        physical_reader=PhysicalReader(),
+        parsed_artifacts=parsed_artifacts,
+        uow_factory=postgresql_adapter.uow_factory,
+        context_factory=lambda _command: projection_context,
+        clock=lambda: now,
+    )
+    effect = ProjectionEffect(
+        effect_id="issue516-e2e-project:1",
+        operation=MemoryProjectionOperation.PROJECT,
+        action=ProjectionEffectAction.UPSERT_SOURCE,
+        status=ProjectionEffectStatus.APPLIED,
+        workspace_id=command.workspace_id,
+        environment_id=command.environment_id,
+        command_identity=command.command_identity,
+        command_digest=command.command_digest,
+        projection_candidate=command.projection_candidate,
+        projection_config=command.projection_config,
+        canonical_boundary=command.canonical_boundary,
+        physical_namespace=command.physical_namespace,
+        source_object_id=source_revision.source_object_id,
+        source_revision_id=source_revision.source_revision_id,
+        revision_digest=source_revision.revision_digest,
+        revision_number=source_revision.revision_number,
+        processing_receipt_id=receipt_id,
+        locator_contract_version=document.locator_contract_version,
+    )
+    physical_result = ProjectionResult(
+        operation=command.operation,
+        outcome="succeeded",
+        command_identity=command.command_identity,
+        command_digest=command.command_digest,
+        artifact_reference="observed-cognee-artifact",
+        effects=(effect,),
+    )
+    try:
+        adapter_receipt = await builder.build(command, physical_result)
+
+        bridge = build_projection_result_persistence(
+            uow_factory=postgresql_adapter.uow_factory,
+            context_factory=lambda _command: result_context,
+            locator_resolver=ParsedArtifactCanonicalProjectionLocatorResolver(
+                uow_factory=postgresql_adapter.uow_factory,
+                context_factory=lambda _command: result_context,
+                parsed_artifacts=parsed_artifacts,
+            ),
+            reference_id_source=lambda: synthetic_uuid(51720),
+        )
+        mapped = await bridge.map(command, adapter_receipt)
+        async with postgresql_adapter.uow_factory(result_context) as uow:
+            persisted_receipts = await uow.projections.list_receipts(run_id)
+            persisted_references = await uow.projections.list_source_references(run_id)
+    finally:
+        await runtime_engine.dispose()
+
+    assert mapped.handoff.receipt_command.receipt.command_identity == command_identity
+    assert any(receipt.command_identity == command_identity for receipt in persisted_receipts)
+    assert any(
+        reference.projected_object_id == str(document.segments[0].segment_id)
+        and reference.locator_reference.startswith("character_range:line:1:")
+        for reference in persisted_references
+    )
 
 
 @pytest.mark.parametrize(
