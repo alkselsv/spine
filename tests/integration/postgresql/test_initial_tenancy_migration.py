@@ -2548,7 +2548,7 @@ async def test_ingestion_ledger_catalog_has_immutable_and_deferred_integrity_tri
     assert "validate_issue7_binding_original" in by_name["trg_ingestion_run_source_bindings_original"].definition
     assert "validate_issue86_safe_metrics" in by_name["trg_ingestion_transitions_safe_metrics"].definition
     assert original_validator is not None
-    assert "Original receipt verification unavailable" in original_validator
+    assert "Verified source receipt association is unavailable." in original_validator
     assert "source_revisions" in original_validator
     assert "revision.revision_id = NEW.source_revision_id" in original_validator
     assert "FOR KEY SHARE" not in original_validator
@@ -2558,6 +2558,9 @@ async def test_ingestion_ledger_catalog_has_immutable_and_deferred_integrity_tri
     assert "result_schema_version IS NOT NULL" in original_validator
     assert "receipt_complete IS DISTINCT FROM true" in original_validator
     assert "Contentless ingestion binding cannot include an original receipt." in original_validator
+    assert "source_revision_receipt_associations" in original_validator
+    assert "verification_status = 'verified'" in original_validator
+    assert "storage_status = 'finalized_verified'" in original_validator
 
 
 @pytest.mark.asyncio(loop_scope="session")
