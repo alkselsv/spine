@@ -73,6 +73,11 @@ def main(argv: list[str] | None = None) -> int:
                 "composition factory did not return a qualified production runtime"
             )
         qualification, report = asyncio.run(runtime.run(loaded=loaded, manifest=manifest))
+        runtime_readiness = (
+            runtime.readiness_report.model_dump(mode="json")
+            if runtime.readiness_report is not None
+            else None
+        )
     except Exception:
         print(
             "real benchmark could not run: check the selected real inputs and local runtime composition",
@@ -86,13 +91,14 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        sys.stderr.write(
-            json.dumps(qualification.model_dump(mode="json"), ensure_ascii=False) + "\n"
-        )
+        failure = qualification.model_dump(mode="json")
+        failure["runtime_readiness"] = runtime_readiness
+        sys.stderr.write(json.dumps(failure, ensure_ascii=False) + "\n")
         return 2
     serialized = json.dumps(
         {
             "qualification": qualification.model_dump(mode="json"),
+            "runtime_readiness": runtime_readiness,
             "benchmark": report.model_dump(mode="json"),
         },
         ensure_ascii=False,
