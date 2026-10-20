@@ -1708,7 +1708,6 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "fk_projection_receipts_idempotency",
         "ck_projection_receipts_command_digest",
         "pk_source_projection_references",
-        "uq_source_projection_references_lineage",
         "uq_source_projection_references_projected_object",
         "fk_source_projection_references_run",
         "fk_source_projection_references_receipt",
@@ -2166,7 +2165,6 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "uq_projection_receipts_partition_command",
         "ix_projection_receipts_candidate",
         "pk_source_projection_references",
-        "uq_source_projection_references_lineage",
         "uq_source_projection_references_projected_object",
         "ix_source_projection_references_source",
         "uq_canonical_boundary_members_scope_member",
@@ -4798,13 +4796,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261110_47_canonical_qa_attempt_allocation.py",
         "20261111_48_ingestion_binding_receipt_guard.py",
         "20261112_49_ingestion_binding_receipt_associations.py",
+        "20261113_50_projection_reference_cardinality.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261113_50_injected_failure.py").write_text(
+    (target / "versions" / "20261114_51_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261113_50'\n"
-        "down_revision = '20261112_49'\n"
+        "revision = '20261114_51'\n"
+        "down_revision = '20261113_50'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

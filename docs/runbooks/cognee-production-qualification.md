@@ -99,14 +99,12 @@ provider exception text is never serialized.
 
 ## Interpreting the result
 
-The current committed result is **no-go** from coherent live run
-`issue507-blocked-001`. Nine physical PostgreSQL + Neo4j + PGVector gates
-passed, including public SDK compatibility, structured provenance, isolation,
-update/remove, rebuild/recovery and concurrency cleanup. That run predates Issue
-#520 and its production canonical-lifecycle composition failed closed with
-bounded code `configuration_mismatch`. Issue #520 resolves the known code gap,
-but only a fresh coherent live run can replace the committed NO-GO evidence.
-Production approval remains withheld.
+The current committed result is **go** from coherent live run
+`issue507-composed-002`. All ten PostgreSQL + Neo4j + PGVector gates passed,
+including public SDK compatibility, structured provenance, isolation,
+update/remove, rebuild/recovery, concurrency cleanup and the production
+canonical-lifecycle composition. Production approval applies only to the exact
+backend/model profile recorded by the report.
 
 Do not convert a partial pass, skipped test, local Cognee profile or Issue #211
 fake-backed result into production approval. A future `go` requires every gate

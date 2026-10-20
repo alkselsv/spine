@@ -466,10 +466,11 @@ class InMemoryProjectionRepository(ProjectionRepository):
                     self._uow._fail(ConstraintConflictError("Processing receipt lineage is invalid."))
             values = self._all("_base_projection_references", "_pending_projection_references")
             if reference.source_projection_reference_id in values or any(
-                item.projection_candidate_id == reference.projection_candidate_id
-                and item.source_object_id == reference.source_object_id
-                and item.source_revision_id == reference.source_revision_id
-                and item.segment_id == reference.segment_id
+                item.workspace_id == reference.workspace_id
+                and item.environment_id == reference.environment_id
+                and item.projection_candidate_id == reference.projection_candidate_id
+                and item.projected_kind == reference.projected_kind
+                and item.projected_object_id == reference.projected_object_id
                 for item in values.values()
             ):
                 self._uow._fail(ConstraintConflictError("Source projection reference identity conflicts."))

@@ -38,6 +38,7 @@ from spine.memory.cognee.live_smoke import (
     LiveSmokeReport,
     run_local_smoke,
 )
+from spine.memory.cognee.models.baseline import StableLocator as CogneeStableLocator
 from spine.memory.cognee.qualification import SearchLane, SmokeStatus
 from spine.memory.cognee.production_qualification import (
     GateStatus,
@@ -1361,7 +1362,15 @@ async def _assert_canonical_lifecycle_separation(
         environment_id=canonical.environment_id,
     )
     old_source = base_extraction.source_revisions[0]
-    evidence_update = {"source_revision_id": source.source_revision_id}
+    segment = document.segments[0]
+    evidence_update = {
+        "source_revision_id": source.source_revision_id,
+        "locator": CogneeStableLocator(
+            kind="text_range",
+            start=segment.locator.start_codepoint,
+            end=segment.locator.end_codepoint,
+        ),
+    }
     extraction = base_extraction.model_copy(
         update={
             "ontology_version": canonical.projection_config.ontology_version,
@@ -1482,7 +1491,7 @@ async def _assert_canonical_lifecycle_separation(
         projection_context_factory=lambda value: adapter.ingestion_context(
             value.workspace_id,
             value.environment_id,
-            "projection_result",
+            "projection_receipt",
         ),
         projection=projection,
         clock=lambda: datetime(2026, 10, 20, 12, 6, tzinfo=timezone.utc),
@@ -1503,7 +1512,7 @@ async def _assert_canonical_lifecycle_separation(
         result_context = adapter.ingestion_context(
             canonical.workspace_id,
             canonical.environment_id,
-            "projection_result",
+            "projection_receipt",
         )
         async with adapter.uow_factory(result_context) as uow:
             receipts = await uow.projections.list_receipts(
