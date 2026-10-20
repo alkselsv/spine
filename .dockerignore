@@ -4,6 +4,11 @@
 .spine
 data/private
 data/incoming
+**/.env
+**/.env.*
+**/secrets
+**/*.pem
+**/*.key
 **/__pycache__
 **/*.py[cod]
 *.log
