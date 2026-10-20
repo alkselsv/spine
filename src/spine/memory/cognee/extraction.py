@@ -15,7 +15,7 @@ from uuid import UUID
 
 from pydantic import Field, model_validator
 
-from spine.domain.common import DefinitionModel
+from spine.domain.common import DefinitionModel, VersionIdentifier
 from spine.memory.contracts import (
     CanonicalBoundary,
     ProjectionCandidate,
@@ -124,7 +124,7 @@ class AcceptedEntity(DefinitionModel):
     workspace_id: UUID
     environment_id: UUID
     source_revision_id: UUID
-    ontology_version: str = Field(min_length=1, max_length=32)
+    ontology_version: VersionIdentifier
     ontology_digest: str = Field(pattern=_DIGEST_PATTERN)
     extraction_config_version: str = Field(min_length=1, max_length=32)
     extraction_config_digest: str = Field(pattern=_DIGEST_PATTERN)
@@ -156,7 +156,7 @@ class AcceptedRelation(DefinitionModel):
     workspace_id: UUID
     environment_id: UUID
     source_revision_id: UUID
-    ontology_version: str = Field(min_length=1, max_length=32)
+    ontology_version: VersionIdentifier
     ontology_digest: str = Field(pattern=_DIGEST_PATTERN)
     extraction_config_version: str = Field(min_length=1, max_length=32)
     extraction_config_digest: str = Field(pattern=_DIGEST_PATTERN)
@@ -238,7 +238,7 @@ class ExtractionResult(DefinitionModel):
     status: ExtractionStatus
     workspace_id: UUID
     environment_id: UUID
-    ontology_version: str = Field(min_length=1, max_length=32)
+    ontology_version: VersionIdentifier
     ontology_digest: str = Field(pattern=_DIGEST_PATTERN)
     extraction_config_version: str = Field(min_length=1, max_length=32)
     extraction_config_digest: str = Field(pattern=_DIGEST_PATTERN)
