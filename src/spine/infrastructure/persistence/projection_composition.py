@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta
+from typing import Any
 from uuid import UUID, uuid4
 
 from spine.application.diagnostics import (
@@ -13,7 +14,10 @@ from spine.application.diagnostics import (
     DiagnosticSink,
 )
 from spine.application.outbox import OutboxConsumerSuccess, OutboxDispatchRepository
-from spine.application.persistence.context import TrustedPersistenceContext
+from spine.application.persistence.context import (
+    TrustedContextVerifier,
+    TrustedPersistenceContext,
+)
 from spine.application.persistence.delivery import OutboxDeliveryRouteRegistry
 from spine.application.persistence.outbox import OutboxIntent
 from spine.application.persistence.parsed_artifacts import ParsedArtifactRepository
@@ -46,10 +50,165 @@ from spine.application.document_ingestion import (
     PROJECTION_REQUEST_SCHEMA_VERSION,
 )
 from spine.memory.contracts import ContextProjection, ProjectionCommand
+from spine.memory.cognee.retrieval.adapter import (
+    CogneePublicStructuredRetrievalSdk,
+    CogneeStructuredRetrievalSdk,
+)
+from spine.infrastructure.persistence.cognee_projection_receipt import (
+    CogneeProjectionReceiptBuilder,
+)
+from spine.infrastructure.persistence.parsed_artifacts import (
+    PostgreSQLParsedArtifactRepository,
+)
 from spine.workers import OutboxConsumerBinding, OutboxWorker, create_outbox_worker
 
 
 PROJECTION_REQUEST_CONSUMER_NAME = "projection_request"
+
+
+def build_postgresql_cognee_projection_request_consumer(
+    *,
+    session_factory: Callable[[], Any],
+    parsed_artifact_context_factory: Callable[
+        [UUID, UUID], TrustedPersistenceContext
+    ],
+    context_verifier: TrustedContextVerifier,
+    uow_factory: UnitOfWorkFactory,
+    request_context_factory: Callable[
+        [ProjectionRequestEnvelope], TrustedPersistenceContext
+    ],
+    projection_context_factory: Callable[
+        [ProjectionCommand], TrustedPersistenceContext
+    ],
+    projection: ContextProjection,
+    clock: Callable[[], datetime],
+    physical_reader: CogneeStructuredRetrievalSdk | None = None,
+    reference_id_source: Callable[[], UUID] = uuid4,
+) -> ProjectionRequestConsumer:
+    """Compose PostgreSQL parsed artifacts and an observed Cognee receipt builder."""
+
+    parsed_artifacts = PostgreSQLParsedArtifactRepository(
+        session_factory,
+        context_factory=parsed_artifact_context_factory,
+        context_verifier=context_verifier,
+    )
+    receipt_builder = CogneeProjectionReceiptBuilder(
+        physical_reader=physical_reader or CogneePublicStructuredRetrievalSdk(),
+        parsed_artifacts=parsed_artifacts,
+        uow_factory=uow_factory,
+        context_factory=projection_context_factory,
+        clock=clock,
+    )
+    return build_production_projection_request_consumer(
+        uow_factory=uow_factory,
+        request_context_factory=request_context_factory,
+        projection_context_factory=projection_context_factory,
+        parsed_artifacts=parsed_artifacts,
+        projection=projection,
+        receipt_builder=receipt_builder,
+        reference_id_source=reference_id_source,
+    )
+
+
+def build_postgresql_cognee_projection_request_binding(
+    *,
+    session_factory: Callable[[], Any],
+    parsed_artifact_context_factory: Callable[
+        [UUID, UUID], TrustedPersistenceContext
+    ],
+    context_verifier: TrustedContextVerifier,
+    uow_factory: UnitOfWorkFactory,
+    request_context_factory: Callable[
+        [ProjectionRequestEnvelope], TrustedPersistenceContext
+    ],
+    projection_context_factory: Callable[
+        [ProjectionCommand], TrustedPersistenceContext
+    ],
+    projection: ContextProjection,
+    clock: Callable[[], datetime],
+    physical_reader: CogneeStructuredRetrievalSdk | None = None,
+    reference_id_source: Callable[[], UUID] = uuid4,
+) -> OutboxConsumerBinding:
+    """Bind the concrete PostgreSQL/Cognee composition to the existing route."""
+
+    consumer = build_postgresql_cognee_projection_request_consumer(
+        session_factory=session_factory,
+        parsed_artifact_context_factory=parsed_artifact_context_factory,
+        context_verifier=context_verifier,
+        uow_factory=uow_factory,
+        request_context_factory=request_context_factory,
+        projection_context_factory=projection_context_factory,
+        projection=projection,
+        clock=clock,
+        physical_reader=physical_reader,
+        reference_id_source=reference_id_source,
+    )
+    return OutboxConsumerBinding(
+        consumer_name=PROJECTION_REQUEST_CONSUMER_NAME,
+        consumer=consumer,
+    )
+
+
+def build_postgresql_cognee_projection_delivery_binding(
+    *,
+    session_factory: Callable[[], Any],
+    parsed_artifact_context_factory: Callable[
+        [UUID, UUID], TrustedPersistenceContext
+    ],
+    context_verifier: TrustedContextVerifier,
+    uow_factory: UnitOfWorkFactory,
+    request_context_factory: Callable[
+        [ProjectionRequestEnvelope], TrustedPersistenceContext
+    ],
+    projection_context_factory: Callable[
+        [ProjectionCommand], TrustedPersistenceContext
+    ],
+    recovery_context_factory: Callable[
+        [ProjectionRecoveryRequestEnvelope], TrustedPersistenceContext
+    ],
+    projection: ContextProjection,
+    recovery_result_recorder: ProjectionRecoveryResultRecorder,
+    clock: Callable[[], datetime],
+    physical_reader: CogneeStructuredRetrievalSdk | None = None,
+    operational_observer: OperationalObservationEmitter | None = None,
+    reference_id_source: Callable[[], UUID] = uuid4,
+) -> OutboxConsumerBinding:
+    """Compose ordinary and recovery delivery with the owned PostgreSQL/Cognee adapters."""
+
+    request_consumer = build_postgresql_cognee_projection_request_consumer(
+        session_factory=session_factory,
+        parsed_artifact_context_factory=parsed_artifact_context_factory,
+        context_verifier=context_verifier,
+        uow_factory=uow_factory,
+        request_context_factory=request_context_factory,
+        projection_context_factory=projection_context_factory,
+        projection=projection,
+        clock=clock,
+        physical_reader=physical_reader,
+        reference_id_source=reference_id_source,
+    )
+    recovery_consumer = ProjectionRecoveryRequestConsumer(
+        canonical_resolver=PersistenceCanonicalProjectionRecoveryResolver(
+            uow_factory=uow_factory,
+            context_factory=recovery_context_factory,
+            clock=clock,
+        ),
+        projection=projection,
+        result_recorder=recovery_result_recorder,
+        lifecycle=PersistenceProjectionRecoveryLifecycle(
+            uow_factory=uow_factory,
+            context_factory=projection_context_factory,
+            clock=clock,
+        ),
+        operational_observer=operational_observer,
+    )
+    return OutboxConsumerBinding(
+        consumer_name=PROJECTION_REQUEST_CONSUMER_NAME,
+        consumer=_ProjectionRequestRouteConsumer(
+            projection_request_consumer=request_consumer,
+            recovery_request_consumer=recovery_consumer,
+        ),
+    )
 
 
 def register_projection_delivery_routes(
@@ -298,6 +457,9 @@ def create_production_outbox_worker(
 
 __all__ = [
     "PROJECTION_REQUEST_CONSUMER_NAME",
+    "build_postgresql_cognee_projection_delivery_binding",
+    "build_postgresql_cognee_projection_request_binding",
+    "build_postgresql_cognee_projection_request_consumer",
     "build_production_projection_delivery_binding",
     "build_production_projection_request_binding",
     "build_production_projection_request_consumer",

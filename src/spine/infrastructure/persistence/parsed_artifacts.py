@@ -7,10 +7,18 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, text
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 
-from spine.application.persistence.errors import ParsedArtifactConflictError
+from spine.application.persistence.context import (
+    EnvironmentScope,
+    TrustedContextVerifier,
+    TrustedPersistenceContext,
+)
+from spine.application.persistence.errors import (
+    InvalidPersistenceContextError,
+    ParsedArtifactConflictError,
+)
 from spine.application.persistence.parsed_artifacts import (
     ParsedArtifactCommand,
     ParsedArtifactMetadata,
@@ -174,13 +182,24 @@ class InMemoryParsedArtifactRepository:
 class PostgreSQLParsedArtifactRepository:
     """Transactionally persist one document and all of its segments."""
 
-    def __init__(self, session_factory: Callable[[], Any]) -> None:
+    def __init__(
+        self,
+        session_factory: Callable[[], Any],
+        *,
+        context_factory: Callable[[UUID, UUID], TrustedPersistenceContext],
+        context_verifier: TrustedContextVerifier,
+    ) -> None:
         self._session_factory = session_factory
+        self._context_factory = context_factory
+        self._context_verifier = context_verifier
 
     async def persist(self, command: ParsedArtifactCommand) -> ParsedArtifactPersistenceResult:
         document = command.document
         async with self._session_factory() as session:
             async with session.begin():
+                await self._bind_tenant_scope(
+                    session, document.workspace_id, document.environment_id
+                )
                 existing = (
                     await session.execute(
                         select(parsed_documents).where(
@@ -268,6 +287,7 @@ class PostgreSQLParsedArtifactRepository:
         owns_session = session is None
         active = session or self._session_factory()
         try:
+            await self._bind_tenant_scope(active, workspace_id, environment_id)
             result = await active.execute(select(parsed_documents).where(
                 parsed_documents.c.workspace_id == workspace_id,
                 parsed_documents.c.environment_id == environment_id,
@@ -292,6 +312,7 @@ class PostgreSQLParsedArtifactRepository:
         locator_contract_version: str, locator: Locator,
     ) -> ParsedSegment | None:
         async with self._session_factory() as session:
+            await self._bind_tenant_scope(session, workspace_id, environment_id)
             result = await session.execute(select(parsed_documents).where(
                 parsed_documents.c.workspace_id == workspace_id,
                 parsed_documents.c.environment_id == environment_id,
@@ -325,6 +346,7 @@ class PostgreSQLParsedArtifactRepository:
         locator_contract_version: str, locator_kind: str, locator_value: str,
     ) -> tuple[ParsedDocument, ParsedSegment] | None:
         async with self._session_factory() as session:
+            await self._bind_tenant_scope(session, workspace_id, environment_id)
             rows = (await session.execute(select(parsed_documents).where(
                 parsed_documents.c.workspace_id == workspace_id,
                 parsed_documents.c.environment_id == environment_id,
@@ -359,6 +381,7 @@ class PostgreSQLParsedArtifactRepository:
         selector: Locator | None, after_segment_id: UUID | None, limit: int,
     ) -> ParsedArtifactSegmentPage | None:
         async with self._session_factory() as session:
+            await self._bind_tenant_scope(session, workspace_id, environment_id)
             result = await session.execute(
                 select(parsed_documents).where(
                     parsed_documents.c.workspace_id == workspace_id,
@@ -437,6 +460,48 @@ class PostgreSQLParsedArtifactRepository:
                 segments=segments,
                 has_more=len(rows) > limit,
             )
+
+    async def _bind_tenant_scope(
+        self, session: Any, workspace_id: UUID, environment_id: UUID
+    ) -> None:
+        """Authenticate the server-issued scope before setting transaction RLS."""
+
+        try:
+            supplied = self._context_factory(workspace_id, environment_id)
+            context = self._context_verifier.verify(supplied)
+        except Exception:
+            raise InvalidPersistenceContextError(
+                "Parsed artifact persistence context is invalid."
+            ) from None
+        if (
+            not isinstance(context.scope, EnvironmentScope)
+            or context.scope.workspace_id != workspace_id
+            or context.scope.environment_id != environment_id
+        ):
+            raise InvalidPersistenceContextError(
+                "Parsed artifact persistence scope does not match its tenant."
+            )
+        await session.execute(
+            text(
+                "SELECT "
+                "set_config('spine.workspace_id', :workspace_id, true), "
+                "set_config('spine.environment_id', :environment_id, true), "
+                "set_config('spine.acting_subject_id', :acting_subject_id, true), "
+                "set_config('spine.service_principal_id', :service_principal_id, true), "
+                "set_config('spine.purpose', :purpose, true), "
+                "set_config('spine.operation', :operation, true), "
+                "set_config('spine.trace_id', :trace_id, true)"
+            ),
+            {
+                "workspace_id": str(context.scope.workspace_id),
+                "environment_id": str(context.scope.environment_id),
+                "acting_subject_id": str(context.acting_subject_id or ""),
+                "service_principal_id": str(context.service_principal_id or ""),
+                "purpose": context.purpose.value,
+                "operation": context.operation.value,
+                "trace_id": str(context.trace_id),
+            },
+        )
 
 
 class ParsedArtifactCitationExcerptResolver:

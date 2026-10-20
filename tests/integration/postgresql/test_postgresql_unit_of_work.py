@@ -57,6 +57,7 @@ from spine.application.persistence.ingestion import (
     ExistingRevisionBindingCommand,
     IngestionRunCommand,
 )
+from spine.application.persistence.parsed_artifacts import ParsedArtifactCommand
 from spine.application.persistence.idempotency import (
     IdempotencyKey,
     IdempotencyReplay,
@@ -136,6 +137,9 @@ from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.persistence.postgresql import (
     PostgreSQLPersistence,
     PostgreSQLTransactionStage,
+)
+from spine.infrastructure.persistence.parsed_artifacts import (
+    PostgreSQLParsedArtifactRepository,
 )
 from spine.infrastructure.persistence.postgresql_operational_metrics import (
     PostgreSQLOperationalMetricsStore,
@@ -789,6 +793,112 @@ async def test_postgresql_unit_of_work_tracks_activity_until_context_exit(
         assert unit_of_work_is_active() is True
 
     assert unit_of_work_is_active() is False
+
+
+async def test_postgresql_parsed_artifacts_use_transaction_local_tenant_scope(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    from spine.ingestion.parsers import parse_document
+    from spine.domain.sources import RevisionMetadata
+    from spine.domain.sources.canonicalization import canonical_revision_metadata_digest
+    from spine.domain.sources.original_reference import ObjectReference
+    from hashlib import sha256
+
+    case = await prepare_canonical_case(postgresql_adapter, 51600)
+    content = b"test"
+    content_digest = sha256(content).hexdigest()
+    revision_metadata = RevisionMetadata(embedded_title="Tenant parsed artifact")
+    revision = content_revision(
+        revision_id=synthetic_uuid(51601),
+        source_object_id=case.source.source_object_id,
+        workspace_id=case.source.workspace_id,
+        environment_id=case.source.environment_id,
+        kind=case.revision.kind,
+        revision_schema_version=case.revision.revision_schema_version,
+        revision_metadata_schema=case.revision.revision_metadata_schema,
+        revision_metadata=revision_metadata,
+        revision_metadata_digest=canonical_revision_metadata_digest(revision_metadata),
+        original_reference=ObjectReference(
+            schema_version=1,
+            object_id=synthetic_uuid(51602),
+            storage_generation=synthetic_uuid(51603),
+            digest_algorithm="sha256",
+            digest_hex=content_digest,
+            byte_length=len(content),
+        ),
+        original_sha256=content_digest,
+        byte_length=len(content),
+        media_type="text/plain",
+        observed_at=case.revision.observed_at,
+    )
+    provenance = source_contract_provenance(
+        case.source, revision.revision_id, "event-2"
+    )
+    observation_context = postgresql_adapter.source_context(
+        case.source.workspace_id, case.source.environment_id
+    )
+    async with postgresql_adapter.uow_factory(observation_context) as uow:
+        await uow.sources.record_observation(
+            SourceObservationCommand.create(
+                source=case.source,
+                revision=revision,
+                provenance=provenance,
+                idempotency_key=IdempotencyKey("issue516-parsed-source-revision"),
+            )
+        )
+        await uow.commit()
+    document = parse_document(revision, content)
+    engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        pool_size=2,
+        max_overflow=0,
+        pool_pre_ping=True,
+        pool_reset_on_return="rollback",
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    parsed_context_boundary = TrustedContextBoundary.for_testing(
+        issuer_id=synthetic_uuid(51604),
+        secret=b"issue-516-parsed-artifact-context-secret-001",
+    )
+
+    def parsed_context(workspace_id: UUID, environment_id: UUID) -> TrustedPersistenceContext:
+        return parsed_context_boundary.worker(
+            scope=EnvironmentScope(
+                workspace_id=workspace_id, environment_id=environment_id
+            ),
+            service_principal_id=synthetic_uuid(51605),
+            purpose=PersistencePurpose("parsed_artifact_repository"),
+            operation=PersistenceOperation("parsed_artifact_read"),
+            trace_id=synthetic_uuid(51606),
+        )
+
+    repository = PostgreSQLParsedArtifactRepository(
+        async_sessionmaker(engine, expire_on_commit=False, autoflush=False),
+        context_factory=parsed_context,
+        context_verifier=parsed_context_boundary,
+    )
+    try:
+        persisted = await repository.persist(
+            ParsedArtifactCommand.create(document, command_identity="issue516:parsed:1")
+        )
+        resolved = await repository.get(
+            workspace_id=case.source.workspace_id,
+            environment_id=case.source.environment_id,
+            artifact_id=document.artifact_id,
+        )
+        isolated = await repository.get(
+            workspace_id=synthetic_uuid(51610),
+            environment_id=synthetic_uuid(51611),
+            artifact_id=document.artifact_id,
+        )
+    finally:
+        await engine.dispose()
+
+    assert persisted.replay is False
+    assert resolved == document
+    assert isolated is None
 
 
 @pytest.mark.parametrize(

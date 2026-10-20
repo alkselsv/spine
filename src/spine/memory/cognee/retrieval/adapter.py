@@ -120,7 +120,7 @@ class CogneePublicStructuredRetrievalSdk:
             data_id = self._value(row, "id")
             metadata = self._value(row, "external_metadata")
             if data_id is None or not isinstance(metadata, Mapping):
-                continue
+                raise ValueError("Cognee dataset metadata is malformed")
             records.append(
                 CogneeDataMetadata(
                     data_id=str(data_id),
