@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from hashlib import sha256
 from uuid import UUID
 
 import pytest
@@ -52,6 +53,7 @@ from spine.domain.sources import (
     PolicyProposal,
     PrincipalKind,
     SourceRevisionReceiptAssociation,
+    content_revision,
 )
 
 from .adapter import PersistenceAdapter
@@ -400,6 +402,7 @@ async def prepare_case(
     association_reference: object | None = None,
     order_scheme: str | None = None,
     order_token: str | None = None,
+    original_content: bytes | None = None,
 ) -> CanonicalCase:
     assert adapter.source_context is not None
     assert adapter.ingestion_context is not None
@@ -408,6 +411,25 @@ async def prepare_case(
     await prepare(adapter, workspace_id, environment_id)
     source_object = source(workspace_id, environment_id)
     source_revision = revision(source_object, synthetic_uuid(number + 2))
+    if original_content is not None:
+        digest = sha256(original_content).hexdigest()
+        original_reference = source_revision.original_reference
+        assert original_reference is not None
+        revision_fields = source_revision.model_dump(
+            mode="python",
+            exclude={"revision_digest"},
+        )
+        revision_fields.update(
+            original_reference=original_reference.model_copy(
+                update={
+                    "digest_hex": digest,
+                    "byte_length": len(original_content),
+                }
+            ),
+            original_sha256=digest,
+            byte_length=len(original_content),
+        )
+        source_revision = content_revision(**revision_fields)
     source_provenance = provenance(
         source_object, source_revision.revision_id, "event-1"
     )

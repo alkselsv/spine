@@ -39,12 +39,12 @@ def _report() -> Issue212QualificationReport:
     )
 
 
-def test_issue212_report_is_explicit_no_go_from_one_live_run() -> None:
+def test_issue212_report_is_explicit_no_go_from_one_complete_live_run() -> None:
     report = _report()
 
     assert report.schema_version == "cognee-production-qualification:v2"
     assert report.ticket == 212
-    assert report.qualification_run_id == "issue212-docker-013"
+    assert report.qualification_run_id == "issue507-blocked-001"
     assert report.profile.model_dump() == {
         "relational": "postgresql",
         "graph": "neo4j",
@@ -63,9 +63,9 @@ def test_issue212_report_is_explicit_no_go_from_one_live_run() -> None:
         for gate_id in required_gate_ids()
         if gate_id != "canonical_lifecycle_separation"
     )
-    assert statuses["canonical_lifecycle_separation"] == "not_run"
-    assert report.failed_gate_ids == ()
-    assert report.not_run_gate_ids == ("canonical_lifecycle_separation",)
+    assert statuses["canonical_lifecycle_separation"] == "failed"
+    assert report.failed_gate_ids == ("canonical_lifecycle_separation",)
+    assert report.not_run_gate_ids == ()
     assert report.fallback == "owned_postgresql_projection_mapping"
 
 
@@ -92,11 +92,22 @@ def test_issue212_report_claims_lifecycle_separation_only_after_gate_passes() ->
 
 def test_issue212_report_rejects_unobserved_lifecycle_claim() -> None:
     report = _report()
+    observations = [item.model_dump(mode="python") for item in report.observations]
+    observations[-1] = {
+        "gate_id": "canonical_lifecycle_separation",
+        "status": "not_run",
+        "safe_code": "live_prerequisite_unavailable",
+    }
 
     with pytest.raises(ValidationError, match="does not match gate evidence"):
         Issue212QualificationReport.model_validate(
             {
                 **report.model_dump(mode="python"),
+                "decision": "no_go",
+                "production_approval": False,
+                "safe_reason_code": "gate_failure_or_missing_evidence",
+                "observations": observations,
+                "not_run_gate_ids": ("canonical_lifecycle_separation",),
                 "canonical_lifecycle_separation": "verified_outside_unit_of_work",
             }
         )

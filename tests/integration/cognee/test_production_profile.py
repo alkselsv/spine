@@ -9,7 +9,10 @@ against that exact profile.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
+import hashlib
 from importlib.util import find_spec
+import json
 import logging
 import os
 from pathlib import Path
@@ -49,6 +52,39 @@ from spine.memory.validation import (
     PhysicalValidationCode,
     validate_physical_projection,
 )
+from spine.application.document_ingestion import build_projection_request_intent
+from spine.application.persistence.boundary import CanonicalBoundaryCaptureCommand
+from spine.application.persistence.idempotency import IdempotencyKey
+from spine.application.persistence.ingestion import (
+    ExistingRevisionBindingCommand,
+    IngestionRunCommand,
+    ProcessingReceiptCommand,
+)
+from spine.application.persistence.outbox import OutboxIntent
+from spine.application.persistence.projection import ProjectionRunCommand
+from spine.application.persistence.unit_of_work_activity import unit_of_work_is_active
+from spine.application.projection_request_execution import (
+    PersistenceCanonicalProjectionRequestResolver,
+    ProjectionRequestEnvelope,
+)
+from spine.domain.artifacts import ParsedDocument
+from spine.domain.ingestion import (
+    IngestionItemState,
+    IngestionRun,
+    IngestionRunSource,
+    IngestionRunSourceBinding,
+    IngestionTargetKind,
+    IngestionTransition,
+    ProcessingCoverage,
+    ProcessingReceipt,
+)
+from spine.domain.projections import (
+    OntologyVersion,
+    ProjectionConfigVersion as CanonicalProjectionConfigVersion,
+    ProjectionOperation as CanonicalProjectionOperation,
+    ProjectionPartition,
+    ProjectionRun,
+)
 from spine.memory.contracts import (
     ProjectionCandidate,
     ProjectionFailureCode,
@@ -72,6 +108,16 @@ from tests.contracts.memory.test_conformance import (
 )
 from tests.memory.cognee.test_graph import extraction_result, request
 from tests.memory.cognee.test_indexing import NEXT_REVISION_ID, REVISION_ID, parsed_document
+from tests.contracts.persistence.adapter import PersistenceAdapter
+from tests.contracts.persistence.ids import synthetic_uuid
+from tests.contracts.persistence.test_canonical_acceptance_contract import (
+    prepare_case as prepare_canonical_case,
+)
+from tests.integration.postgresql.test_postgresql_unit_of_work import (
+    postgresql_adapter,
+    postgresql_contract_database,
+)
+from tests.integration.postgresql.conftest import postgresql_provision
 
 
 pytestmark = [
@@ -968,8 +1014,437 @@ async def _forget_existing_datasets(
     return await datasets_api.list_datasets()
 
 
+async def _advance_ingestion_item(
+    adapter: PersistenceAdapter,
+    item: IngestionRunSource,
+    state: IngestionItemState,
+    *,
+    ordinal: int,
+) -> None:
+    assert adapter.ingestion_context is not None
+    context = adapter.ingestion_context(
+        item.workspace_id,
+        item.environment_id,
+        "processing_receipt",
+    )
+    async with adapter.uow_factory(context) as uow:
+        head = await uow.ingestion.resolve_item_head(item.ingestion_run_source_id)
+        assert head is not None
+        await uow.ingestion.append_transition(
+            IngestionTransition(
+                ingestion_transition_id=synthetic_uuid(507_100 + ordinal),
+                workspace_id=item.workspace_id,
+                environment_id=item.environment_id,
+                target_kind=IngestionTargetKind.ITEM,
+                ingestion_run_id=item.ingestion_run_id,
+                ingestion_run_source_id=item.ingestion_run_source_id,
+                predecessor_transition_id=head.ingestion_transition_id,
+                state=state,
+                attempt=head.attempt + 1,
+                actor_or_service="issue-507-qualification",
+                trace_id=context.trace_id,
+                occurred_at=datetime(2026, 10, 20, 12, ordinal, tzinfo=timezone.utc),
+            )
+        )
+        await uow.commit()
+
+
+async def _canonical_projection_request(
+    adapter: PersistenceAdapter,
+) -> tuple[OutboxIntent, ParsedDocument]:
+    """Seed one synthetic request through real PostgreSQL repositories."""
+
+    assert adapter.ingestion_context is not None
+    content = b"Synthetic Organization Alpha employs Synthetic Person Ada."
+    case = await prepare_canonical_case(
+        adapter,
+        507_000,
+        original_content=content,
+    )
+    async with adapter.uow_factory(case.context) as uow:
+        await uow.canonical.accept(case.command)
+        await uow.commit()
+
+    workspace_id = case.source.workspace_id
+    environment_id = case.source.environment_id
+    ingestion_context = adapter.ingestion_context(
+        workspace_id, environment_id, "ingestion_run"
+    )
+    run = IngestionRun(
+        ingestion_run_id=synthetic_uuid(507_010),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        command_identity="issue-507-ingestion",
+        command_digest="0" * 64,
+        trigger_kind="upload",
+        requested_scope_schema="ingestion-scope:v1",
+        requested_scope_digest="1" * 64,
+        requested_at=datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc),
+    )
+    run_command = IngestionRunCommand.create(
+        run=run,
+        idempotency_key=IdempotencyKey("issue-507-ingestion"),
+    )
+    run = run_command.run
+    item = IngestionRunSource(
+        ingestion_run_source_id=synthetic_uuid(507_011),
+        ingestion_run_id=run.ingestion_run_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        input_ordinal=1,
+        input_identity="issue-507-input",
+        input_digest="2" * 64,
+        command_identity="issue-507-item",
+        command_digest="3" * 64,
+        created_at=datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc),
+    )
+    async with adapter.uow_factory(ingestion_context) as uow:
+        await uow.ingestion.create_run(run_command)
+        await uow.ingestion.create_item(item)
+        associations = await uow.sources.resolve_receipt_associations(
+            case.revision.revision_id,
+        )
+        await uow.commit()
+    assert len(associations) == 1
+    association = associations[0]
+    binding = IngestionRunSourceBinding(
+        binding_id=synthetic_uuid(507_012),
+        ingestion_run_source_id=item.ingestion_run_source_id,
+        source_object_id=case.source.source_object_id,
+        source_revision_id=case.revision.revision_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        binding_command_identity="issue-507-binding",
+        binding_command_digest="4" * 64,
+        original_reference=association.original_reference,
+        original_receipt_kind=association.original_receipt_kind,
+        original_receipt_id=association.original_receipt_id,
+        original_receipt_digest=association.original_sha256,
+        bound_at=datetime(2026, 10, 20, 12, 1, tzinfo=timezone.utc),
+    )
+    binding_context = adapter.ingestion_context(
+        workspace_id, environment_id, "ingestion_existing_binding"
+    )
+    async with adapter.uow_factory(binding_context) as uow:
+        await uow.ingestion.bind_existing_revision(
+            ExistingRevisionBindingCommand.create(
+                item=item,
+                binding=binding,
+                idempotency_key=IdempotencyKey("issue-507-binding"),
+            )
+        )
+        await uow.commit()
+    await _advance_ingestion_item(
+        adapter, item, IngestionItemState.PROCESSING, ordinal=2
+    )
+    _, base_document = parsed_document(content, case.revision.revision_id)
+    document = ParsedDocument.from_source(
+        case.revision,
+        parser_name=base_document.parser_name,
+        parser_version=base_document.parser_version,
+        parser_config_reference=base_document.parser_config_reference,
+        locator_contract_version=base_document.locator_contract_version,
+        media_type=base_document.media_type,
+        coverage=base_document.coverage,
+        segments=base_document.segments,
+        exclusions=base_document.exclusions,
+        source_byte_length=base_document.source_byte_length,
+        source_codepoint_length=base_document.source_codepoint_length,
+    )
+    receipt = ProcessingReceipt(
+        processing_receipt_id=synthetic_uuid(507_013),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        ingestion_run_source_id=item.ingestion_run_source_id,
+        binding_id=binding.binding_id,
+        source_object_id=case.source.source_object_id,
+        source_revision_id=case.revision.revision_id,
+        processor_kind="document-ingestion",
+        parser_name=document.parser_name,
+        parser_version=document.parser_version,
+        parser_config_reference=document.parser_config_reference,
+        locator_contract_version=document.locator_contract_version,
+        original_sha256=case.revision.original_sha256,
+        output_kind="parsed-document",
+        output_reference=document.artifact_id,
+        output_digest=document.artifact_digest,
+        coverage=ProcessingCoverage.COMPLETE,
+        command_identity="issue-507-processing",
+        command_digest="6" * 64,
+        idempotency_receipt_id=synthetic_uuid(507_015),
+        completed_at=datetime(2026, 10, 20, 12, 3, tzinfo=timezone.utc),
+    )
+    processing_context = adapter.ingestion_context(
+        workspace_id, environment_id, "processing_receipt"
+    )
+    async with adapter.uow_factory(processing_context) as uow:
+        stored = await uow.ingestion.record_processing_receipt(
+            ProcessingReceiptCommand.create(
+                receipt=receipt,
+                idempotency_key=IdempotencyKey("issue-507-processing"),
+            )
+        )
+        receipt = stored.value
+        await uow.commit()
+    assert isinstance(receipt, ProcessingReceipt)
+    await _advance_ingestion_item(adapter, item, IngestionItemState.PROCESSED, ordinal=3)
+    await _advance_ingestion_item(
+        adapter, item, IngestionItemState.PROJECTION_REQUESTED, ordinal=4
+    )
+
+    boundary_context = adapter.ingestion_context(
+        workspace_id, environment_id, "canonical_boundary_capture"
+    )
+    async with adapter.uow_factory(boundary_context) as uow:
+        captured = await uow.boundaries.capture(
+            CanonicalBoundaryCaptureCommand.create(
+                projection_kind="context",
+                scope_version="r1",
+                idempotency_key=IdempotencyKey("issue-507-boundary"),
+            )
+        )
+        await uow.commit()
+    now = datetime(2026, 10, 20, 12, 5, tzinfo=timezone.utc)
+    ontology_payload = {
+        "schema_version": "ontology-definition:r1",
+        "entity_types": [{"name": "document"}],
+        "relation_types": [],
+    }
+    ontology_digest = hashlib.sha256(
+        json.dumps(
+            {"schema": "ontology-definition:r1", "payload": ontology_payload},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    ontology = OntologyVersion(
+        ontology_version_id=synthetic_uuid(507_020),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        ontology_name="issue-507",
+        version=1,
+        definition_payload=ontology_payload,
+        definition_digest=ontology_digest,
+        publication_eligible=True,
+        publication_decision_reference="issue-507-decision",
+        publisher_authority_reference="issue-507-authority",
+        audit_event_reference="issue-507-audit",
+        published_at=now,
+    )
+    config_payload = {"adapter": "context-projection:v1"}
+    config_digest = hashlib.sha256(
+        json.dumps(
+            {"schema": "projection-config:r1", "payload": config_payload},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    config = CanonicalProjectionConfigVersion(
+        projection_config_version_id=synthetic_uuid(507_021),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        projection_kind="context",
+        version=1,
+        ontology_version_id=ontology.ontology_version_id,
+        parser_contract_version="parser:v1",
+        locator_contract_version=receipt.locator_contract_version,
+        extraction_contract_version="extractor:v1",
+        embedding_profile_version="embedding:v1",
+        adapter_contract_version="context-projection:v1",
+        config_payload=config_payload,
+        config_digest=config_digest,
+        created_at=now,
+    )
+    projection_run = ProjectionRun(
+        projection_run_id=synthetic_uuid(507_022),
+        projection_candidate_id=synthetic_uuid(507_023),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        projection_kind="context",
+        operation=CanonicalProjectionOperation.BUILD,
+        projection_config_version_id=config.projection_config_version_id,
+        canonical_boundary_id=captured.boundary.boundary_id,
+        command_identity="issue-507-projection-run",
+        command_digest="7" * 64,
+        idempotency_receipt_id=synthetic_uuid(507_024),
+        started_at=now,
+    )
+    partition = ProjectionPartition(
+        projection_partition_id=synthetic_uuid(507_025),
+        projection_run_id=projection_run.projection_run_id,
+        projection_candidate_id=projection_run.projection_candidate_id,
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        security_domain_reference="security-domain:issue-507",
+        security_domain_version="r1",
+        partition_identity="default",
+        expected_command_identity="issue-507-project",
+        expected_command_digest="8" * 64,
+        created_at=now,
+    )
+    projection_context = adapter.ingestion_context(
+        workspace_id, environment_id, "projection_run"
+    )
+    async with adapter.uow_factory(projection_context) as uow:
+        await uow.projections.add_ontology_version(ontology)
+        await uow.projections.add_config_version(config)
+        await uow.projections.create_run(
+            ProjectionRunCommand.create(
+                run=projection_run,
+                idempotency_key=IdempotencyKey("issue-507-projection-run"),
+            )
+        )
+        await uow.projections.add_partition(partition)
+        await uow.commit()
+
+    intent = build_projection_request_intent(
+        registry=adapter.outbox_events,
+        run=run,
+        item=item,
+        receipt=receipt,
+        trace_id=processing_context.trace_id,
+        causation_id=synthetic_uuid(507_026),
+    )
+    return intent, document
+
+
+async def _assert_canonical_lifecycle_separation(
+    adapter: PersistenceAdapter,
+) -> None:
+    from spine.memory.cognee_memory import configure_environment
+
+    intent, document = await _canonical_projection_request(adapter)
+    request = ProjectionRequestEnvelope(
+        event_id=intent.event_id,
+        workspace_id=intent.workspace_id,
+        environment_id=intent.environment_id,
+        payload=intent.payload,
+    )
+    assert adapter.ingestion_context is not None
+    resolver = PersistenceCanonicalProjectionRequestResolver(
+        uow_factory=adapter.uow_factory,
+        context_factory=lambda value: adapter.ingestion_context(
+            value.workspace_id,
+            value.environment_id,
+            "projection_request",
+        ),
+    )
+    configure_environment()
+    import cognee
+
+    await cognee.run_migrations()
+    canonical = await resolver.resolve(request)
+    assert unit_of_work_is_active() is False
+
+    source = canonical.source_revision
+    base_extraction = extraction_result(
+        workspace_id=canonical.workspace_id,
+        environment_id=canonical.environment_id,
+    )
+    old_source = base_extraction.source_revisions[0]
+    evidence_update = {"source_revision_id": source.source_revision_id}
+    extraction = base_extraction.model_copy(
+        update={
+            "ontology_version": canonical.projection_config.ontology_version,
+            "source_revisions": (
+                old_source.model_copy(
+                    update={
+                        "source_object_id": source.source_object_id,
+                        "source_revision_id": source.source_revision_id,
+                        "revision_digest": source.revision_digest,
+                        "revision_number": source.revision_number,
+                    }
+                ),
+            ),
+            "entities": tuple(
+                entity.model_copy(
+                    update={
+                        "source_revision_id": source.source_revision_id,
+                        "ontology_version": canonical.projection_config.ontology_version,
+                        "evidence": tuple(
+                            reference.model_copy(update=evidence_update)
+                            for reference in entity.evidence
+                        ),
+                    }
+                )
+                for entity in base_extraction.entities
+            ),
+            "relations": tuple(
+                relation.model_copy(
+                    update={
+                        "source_revision_id": source.source_revision_id,
+                        "ontology_version": canonical.projection_config.ontology_version,
+                        "evidence": tuple(
+                            reference.model_copy(update=evidence_update)
+                            for reference in relation.evidence
+                        ),
+                    }
+                )
+                for relation in base_extraction.relations
+            ),
+            "result_digest": "",
+        }
+    )
+    extraction_payload = extraction.model_dump(mode="python")
+    extraction_payload.pop("result_digest")
+    extraction = type(base_extraction).model_validate(extraction_payload)
+    sdk = CogneePublicSdk()
+    chunks = CogneeChunkProjectionStore(
+        sdk=sdk,
+        artifacts={source.source_revision_id: document},
+    )
+    graph = CogneeGraphEffectStore(
+        writer=CogneeGraphProjectionWriter(sdk=sdk),
+        extraction_results={source.source_revision_id: extraction},
+    )
+    projection = CogneeContextProjection(
+        effect_store=chunks,
+        graph_effect_store=graph,
+        retrieval=CogneeStructuredRetrieval(),
+    )
+    dataset_name = CogneeChunkProjectionStore.dataset_name(
+        canonical.physical_namespace
+    )
+    command = ProjectCommand(
+        workspace_id=canonical.workspace_id,
+        environment_id=canonical.environment_id,
+        projection_run_id=canonical.projection_run_id,
+        projection_candidate=canonical.projection_candidate,
+        projection_config=canonical.projection_config,
+        canonical_boundary=canonical.canonical_boundary,
+        source_revisions=(canonical.source_revision,),
+        physical_namespace=canonical.physical_namespace,
+        command_identity=canonical.command_identity,
+        command_digest=canonical.command_digest,
+    )
+    await _forget_existing_datasets(cognee, (dataset_name,))
+    try:
+        result = await projection.project(command)
+        assert unit_of_work_is_active() is False
+        assert result.failure is None
+        raise RuntimeError(
+            "production parsed-artifact and Cognee receipt composition is unavailable; "
+            "see Issue #516"
+        )
+    finally:
+        await _forget_existing_datasets(cognee, (dataset_name,))
+
+
+@pytest.mark.skipif(
+    os.environ.get("SPINE_COGNEE_CANONICAL_GATE_ONLY") != "1",
+    reason="set only while developing the composed canonical lifecycle gate",
+)
 @pytest.mark.asyncio
-async def test_production_qualification_records_one_coherent_run() -> None:
+async def test_canonical_lifecycle_resolves_postgresql_before_physical_projection(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    await _assert_canonical_lifecycle_separation(postgresql_adapter)
+
+
+@pytest.mark.asyncio
+async def test_production_qualification_records_one_coherent_run(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
     run_id = os.environ.get("SPINE_COGNEE_QUALIFICATION_RUN_ID", "not-run")
 
     async def public_sdk_gate() -> None:
@@ -1022,6 +1497,9 @@ async def test_production_qualification_records_one_coherent_run() -> None:
                     run_id,
                     inject_cognify_failure=True,
                 )
+            ),
+            "canonical_lifecycle_separation": lambda: (
+                _assert_canonical_lifecycle_separation(postgresql_adapter)
             ),
         }
     )

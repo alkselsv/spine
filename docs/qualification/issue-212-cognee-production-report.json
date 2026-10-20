@@ -10,22 +10,64 @@
   "production_approval": false,
   "safe_reason_code": "gate_failure_or_missing_evidence",
   "observations": [
-    {"gate_id": "public_sdk", "status": "passed", "safe_code": null},
-    {"gate_id": "structured_round_trip", "status": "passed", "safe_code": null},
-    {"gate_id": "unsafe_evidence", "status": "passed", "safe_code": null},
-    {"gate_id": "workspace_isolation", "status": "passed", "safe_code": null},
-    {"gate_id": "namespace_isolation", "status": "passed", "safe_code": null},
-    {"gate_id": "explicit_retrieval_context", "status": "passed", "safe_code": null},
-    {"gate_id": "update_remove_tombstone", "status": "passed", "safe_code": null},
-    {"gate_id": "rebuild_recovery_validation_diagnostics", "status": "passed", "safe_code": null},
-    {"gate_id": "concurrency_failure_cleanup", "status": "passed", "safe_code": null},
-    {"gate_id": "canonical_lifecycle_separation", "status": "not_run", "safe_code": "live_prerequisite_unavailable"}
+    {
+      "gate_id": "public_sdk",
+      "status": "passed",
+      "safe_code": null
+    },
+    {
+      "gate_id": "structured_round_trip",
+      "status": "passed",
+      "safe_code": null
+    },
+    {
+      "gate_id": "unsafe_evidence",
+      "status": "passed",
+      "safe_code": null
+    },
+    {
+      "gate_id": "workspace_isolation",
+      "status": "passed",
+      "safe_code": null
+    },
+    {
+      "gate_id": "namespace_isolation",
+      "status": "passed",
+      "safe_code": null
+    },
+    {
+      "gate_id": "explicit_retrieval_context",
+      "status": "passed",
+      "safe_code": null
+    },
+    {
+      "gate_id": "update_remove_tombstone",
+      "status": "passed",
+      "safe_code": null
+    },
+    {
+      "gate_id": "rebuild_recovery_validation_diagnostics",
+      "status": "passed",
+      "safe_code": null
+    },
+    {
+      "gate_id": "concurrency_failure_cleanup",
+      "status": "passed",
+      "safe_code": null
+    },
+    {
+      "gate_id": "canonical_lifecycle_separation",
+      "status": "failed",
+      "safe_code": "configuration_mismatch"
+    }
   ],
-  "failed_gate_ids": [],
-  "not_run_gate_ids": ["canonical_lifecycle_separation"],
+  "failed_gate_ids": [
+    "canonical_lifecycle_separation"
+  ],
+  "not_run_gate_ids": [],
   "fallback": "owned_postgresql_projection_mapping",
   "ticket": 212,
-  "qualification_run_id": "issue212-docker-013",
+  "qualification_run_id": "issue507-blocked-001",
   "issue_211_fake_qualification": "not_production_evidence",
   "postgres_demo": "rejected",
   "canonical_lifecycle_owner": "postgresql",
