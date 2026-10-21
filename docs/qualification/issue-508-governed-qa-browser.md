@@ -1,6 +1,6 @@
 # Issue #508 governed Q&A browser qualification
 
-Status: **PASS**. Qualification run: `issue508-local-034`.
+Status: **PASS**. Qualification run: `issue508-local-046`.
 
 The repository now has a separate opt-in Chromium journey at
 `web/e2e/production/governed-qa.spec.ts`. It uses the deployed Web origin and
@@ -47,8 +47,9 @@ was caused by the worker issuing `projection_result` as its trusted persistence
 operation while `ProjectionReceiptCommand` requires `projection_receipt`. The
 composition now shares the command-owned operation constant.
 
-The final Chromium run used a fresh disposable Compose database and the
-least-privilege production composition. It completed upload, active projection,
+The final Chromium run used a fresh disposable Compose database, images built
+from commit `e9449d5e88972bf674c5c3d1a1f98fc78af7253c` and the least-privilege
+production composition. It completed upload, active projection,
 answer/citation/feedback/run diagnosis, duplicate retry, SSE reconnect, session
 restoration, abstention, cancellation, two-workspace isolation, evidence
 disclosure rejection and safe UI-state checks. The metadata-only JSON record
@@ -69,3 +70,8 @@ route interception nor a controlled fixture. The duplicate/retry scenario
 discarded one successful admission response in the browser to create an
 ambiguous disconnect, then verified the deployed API returned the durable
 replay for the same idempotency key and run.
+
+Before PASS was written, the runner scanned the in-memory artifact against the
+administrator credential, all submitted questions, input paths and names, the
+actual accepted answers and citation excerpts, plus a unique sentinel sent in
+the browser journey. None of those private values was retained in the report.
