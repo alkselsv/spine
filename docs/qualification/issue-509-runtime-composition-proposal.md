@@ -1,5 +1,14 @@
 # Issue #509 runtime and recovery composition proposal
 
+> Historical source-level gap analysis retained from PR #527. The versioned
+> approval contract, decision register and implementation handoff now live in
+> [`docs/specs/issue-509-production-composition-contract.md`](../specs/issue-509-production-composition-contract.md),
+> [`docs/specs/issue-509-production-composition-decisions.md`](../specs/issue-509-production-composition-decisions.md),
+> and
+> [`docs/specs/issue-509-production-composition-handoff.md`](../specs/issue-509-production-composition-handoff.md).
+> This file remains the original investigation; it is not a second approval
+> contract and its proposed items require the decisions in the linked register.
+
 **Status:** draft for deployment, security, and product-owner review. This is not
 an approved runtime profile or qualification evidence. It does not amend Issue
 #509, #506, or the accepted ADRs.
