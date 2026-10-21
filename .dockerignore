@@ -1,0 +1,12 @@
+# The application image only needs its declared package and migration sources.
+# Default-deny the repository-root build context so local credentials, datasets,
+# caches and unrelated worktree files never reach the Docker builder.
+**
+!pyproject.toml
+!uv.lock
+!README.md
+!alembic.ini
+!migrations
+!migrations/**
+!src
+!src/**

@@ -1,0 +1,384 @@
+name: spine509qual
+
+services:
+  source-postgres:
+    build:
+      context: ./postgres
+      args:
+        POSTGRES_IMAGE: pgvector/pgvector:0.8.7-pg17
+    environment:
+      POSTGRES_USER: spine_source_operator
+      POSTGRES_PASSWORD: ${SOURCE_OPERATOR_PASSWORD:?SOURCE_OPERATOR_PASSWORD must be set}
+      POSTGRES_DB: spine_source
+    ports:
+      - "127.0.0.1:${SOURCE_POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - source_postgres_data:/var/lib/postgresql/data
+    networks: [source]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spine_source_operator -d spine_source"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  restore-postgres:
+    build:
+      context: ./postgres
+      args:
+        POSTGRES_IMAGE: pgvector/pgvector:0.8.7-pg17
+    environment:
+      POSTGRES_USER: spine_restore_operator
+      POSTGRES_PASSWORD: ${RESTORE_OPERATOR_PASSWORD:?RESTORE_OPERATOR_PASSWORD must be set}
+      POSTGRES_DB: spine_restore_509
+    ports:
+      - "127.0.0.1:${RESTORE_POSTGRES_PORT:-55433}:5432"
+    volumes:
+      - restore_postgres_data:/var/lib/postgresql/data
+    networks: [restore]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spine_restore_operator -d spine_restore_509"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  source-temporal-postgres:
+    image: postgres:17.6-bookworm
+    environment:
+      POSTGRES_USER: spine_source_temporal
+      POSTGRES_PASSWORD: ${SOURCE_TEMPORAL_PASSWORD:?SOURCE_TEMPORAL_PASSWORD must be set}
+      POSTGRES_DB: spine_source_temporal
+    volumes:
+      - source_temporal_postgres_data:/var/lib/postgresql/data
+    networks: [source]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spine_source_temporal -d spine_source_temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  restore-temporal-postgres:
+    image: postgres:17.6-bookworm
+    environment:
+      POSTGRES_USER: spine_restore_temporal
+      POSTGRES_PASSWORD: ${RESTORE_TEMPORAL_PASSWORD:?RESTORE_TEMPORAL_PASSWORD must be set}
+      POSTGRES_DB: spine_restore_temporal
+    volumes:
+      - restore_temporal_postgres_data:/var/lib/postgresql/data
+    networks: [restore]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spine_restore_temporal -d spine_restore_temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  source-neo4j:
+    build:
+      context: ../../..
+      dockerfile: docker/neo4j-cognee/Dockerfile
+    environment:
+      NEO4J_AUTH: neo4j/${SOURCE_NEO4J_PASSWORD:?SOURCE_NEO4J_PASSWORD must be set}
+      QUALIFICATION_NEO4J_PASSWORD: ${SOURCE_NEO4J_PASSWORD:?SOURCE_NEO4J_PASSWORD must be set}
+      NEO4J_server_memory_heap_initial__size: 256m
+      NEO4J_server_memory_heap_max__size: 512m
+    ports:
+      - "127.0.0.1:${SOURCE_NEO4J_HTTP_PORT:-57474}:7474"
+      - "127.0.0.1:${SOURCE_NEO4J_BOLT_PORT:-57687}:7687"
+    volumes:
+      - source_neo4j_data:/data
+      - source_neo4j_logs:/logs
+    networks: [source]
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p \"$${QUALIFICATION_NEO4J_PASSWORD}\" 'RETURN 1' >/dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+  restore-neo4j:
+    build:
+      context: ../../..
+      dockerfile: docker/neo4j-cognee/Dockerfile
+    environment:
+      NEO4J_AUTH: neo4j/${RESTORE_NEO4J_PASSWORD:?RESTORE_NEO4J_PASSWORD must be set}
+      QUALIFICATION_NEO4J_PASSWORD: ${RESTORE_NEO4J_PASSWORD:?RESTORE_NEO4J_PASSWORD must be set}
+      NEO4J_server_memory_heap_initial__size: 256m
+      NEO4J_server_memory_heap_max__size: 512m
+    ports:
+      - "127.0.0.1:${RESTORE_NEO4J_HTTP_PORT:-57475}:7474"
+      - "127.0.0.1:${RESTORE_NEO4J_BOLT_PORT:-57688}:7687"
+    volumes:
+      - restore_neo4j_data:/data
+      - restore_neo4j_logs:/logs
+    networks: [restore]
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p \"$${QUALIFICATION_NEO4J_PASSWORD}\" 'RETURN 1' >/dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+  source-temporal:
+    image: temporalio/auto-setup:1.29.1
+    environment:
+      DB: postgres12
+      DBNAME: spine_source_temporal
+      VISIBILITY_DBNAME: spine_source_temporal_visibility
+      POSTGRES_SEEDS: source-temporal-postgres
+      POSTGRES_USER: spine_source_temporal
+      POSTGRES_PWD: ${SOURCE_TEMPORAL_PASSWORD:?SOURCE_TEMPORAL_PASSWORD must be set}
+      DB_PORT: 5432
+      POSTGRES_TLS_ENABLED: "false"
+      TEMPORAL_ADDRESS: 127.0.0.1:7233
+      DEFAULT_NAMESPACE: spine-source-509
+      DEFAULT_NAMESPACE_RETENTION: 24h
+      SKIP_ADD_CUSTOM_SEARCH_ATTRIBUTES: "true"
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+    ports:
+      - "127.0.0.1:${SOURCE_TEMPORAL_PORT:-57233}:7233"
+    depends_on:
+      source-temporal-postgres: {condition: service_healthy}
+    networks: [source]
+    healthcheck:
+      test: ["CMD-SHELL", "temporal operator cluster health --address 127.0.0.1:7233 >/dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 60
+
+  restore-temporal:
+    image: temporalio/auto-setup:1.29.1
+    environment:
+      DB: postgres12
+      DBNAME: spine_restore_temporal
+      VISIBILITY_DBNAME: spine_restore_temporal_visibility
+      POSTGRES_SEEDS: restore-temporal-postgres
+      POSTGRES_USER: spine_restore_temporal
+      POSTGRES_PWD: ${RESTORE_TEMPORAL_PASSWORD:?RESTORE_TEMPORAL_PASSWORD must be set}
+      DB_PORT: 5432
+      POSTGRES_TLS_ENABLED: "false"
+      TEMPORAL_ADDRESS: 127.0.0.1:7233
+      DEFAULT_NAMESPACE: spine-restore-509
+      DEFAULT_NAMESPACE_RETENTION: 24h
+      SKIP_ADD_CUSTOM_SEARCH_ATTRIBUTES: "true"
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+    ports:
+      - "127.0.0.1:${RESTORE_TEMPORAL_PORT:-57234}:7233"
+    depends_on:
+      restore-temporal-postgres: {condition: service_healthy}
+    networks: [restore]
+    healthcheck:
+      test: ["CMD-SHELL", "temporal operator cluster health --address 127.0.0.1:7233 >/dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 60
+
+  source-bootstrap:
+    build:
+      context: ../../..
+      dockerfile: deploy/qualification/issue-509/Dockerfile
+    environment:
+      SPINE_OPERATOR_DATABASE_URL: postgresql+psycopg://spine_source_operator:${SOURCE_OPERATOR_PASSWORD:?SOURCE_OPERATOR_PASSWORD must be set}@source-postgres:5432/spine_source
+      SPINE_OPERATOR_DATABASE_DATABASE_NAME: spine_source
+      SPINE_OPERATOR_DATABASE_MIGRATION_ROLE: spine_source_migration
+      SPINE_OPERATOR_DATABASE_MIGRATION_PASSWORD: ${SOURCE_MIGRATION_PASSWORD:?SOURCE_MIGRATION_PASSWORD must be set}
+      SPINE_OPERATOR_DATABASE_RUNTIME_ROLE: spine_source_runtime
+      SPINE_OPERATOR_DATABASE_RUNTIME_PASSWORD: ${SOURCE_RUNTIME_PASSWORD:?SOURCE_RUNTIME_PASSWORD must be set}
+      SPINE_OPERATOR_DATABASE_DISPATCHER_ROLE: spine_source_dispatcher
+      SPINE_OPERATOR_DATABASE_DISPATCHER_PASSWORD: ${SOURCE_DISPATCHER_PASSWORD:?SOURCE_DISPATCHER_PASSWORD must be set}
+    depends_on:
+      source-postgres: {condition: service_healthy}
+    command: ["spine-db-bootstrap"]
+    networks: [source]
+    restart: "no"
+
+  restore-bootstrap:
+    build:
+      context: ../../..
+      dockerfile: deploy/qualification/issue-509/Dockerfile
+    environment:
+      SPINE_OPERATOR_DATABASE_URL: postgresql+psycopg://spine_restore_operator:${RESTORE_OPERATOR_PASSWORD:?RESTORE_OPERATOR_PASSWORD must be set}@restore-postgres:5432/spine_restore_509
+      SPINE_OPERATOR_DATABASE_DATABASE_NAME: spine_restore_509
+      SPINE_OPERATOR_DATABASE_MIGRATION_ROLE: spine_restore_migration
+      SPINE_OPERATOR_DATABASE_MIGRATION_PASSWORD: ${RESTORE_MIGRATION_PASSWORD:?RESTORE_MIGRATION_PASSWORD must be set}
+      SPINE_OPERATOR_DATABASE_RUNTIME_ROLE: spine_restore_runtime
+      SPINE_OPERATOR_DATABASE_RUNTIME_PASSWORD: ${RESTORE_RUNTIME_PASSWORD:?RESTORE_RUNTIME_PASSWORD must be set}
+      SPINE_OPERATOR_DATABASE_DISPATCHER_ROLE: spine_restore_dispatcher
+      SPINE_OPERATOR_DATABASE_DISPATCHER_PASSWORD: ${RESTORE_DISPATCHER_PASSWORD:?RESTORE_DISPATCHER_PASSWORD must be set}
+    depends_on:
+      restore-postgres: {condition: service_healthy}
+    command: ["spine-db-bootstrap"]
+    networks: [restore]
+    restart: "no"
+
+  source-migrate:
+    build:
+      context: ../../..
+      dockerfile: deploy/qualification/issue-509/Dockerfile
+    environment:
+      SPINE_MIGRATION_DATABASE_URL: postgresql+psycopg://spine_source_migration:${SOURCE_MIGRATION_PASSWORD:?SOURCE_MIGRATION_PASSWORD must be set}@source-postgres:5432/spine_source
+      SPINE_MIGRATION_DATABASE_MIGRATION_ROLE: spine_source_migration
+      SPINE_MIGRATION_DATABASE_RUNTIME_ROLE: spine_source_runtime
+      SPINE_MIGRATION_DATABASE_DISPATCHER_ROLE: spine_source_dispatcher
+    depends_on:
+      source-bootstrap: {condition: service_completed_successfully}
+    command: ["spine-db-migrate"]
+    networks: [source]
+    restart: "no"
+
+  restore-migrate:
+    build:
+      context: ../../..
+      dockerfile: deploy/qualification/issue-509/Dockerfile
+    environment:
+      SPINE_MIGRATION_DATABASE_URL: postgresql+psycopg://spine_restore_migration:${RESTORE_MIGRATION_PASSWORD:?RESTORE_MIGRATION_PASSWORD must be set}@restore-postgres:5432/spine_restore_509
+      SPINE_MIGRATION_DATABASE_MIGRATION_ROLE: spine_restore_migration
+      SPINE_MIGRATION_DATABASE_RUNTIME_ROLE: spine_restore_runtime
+      SPINE_MIGRATION_DATABASE_DISPATCHER_ROLE: spine_restore_dispatcher
+    depends_on:
+      restore-bootstrap: {condition: service_completed_successfully}
+    command: ["spine-db-migrate"]
+    networks: [restore]
+    restart: "no"
+
+  source-api:
+    build:
+      context: ../../..
+      dockerfile: deploy/qualification/issue-509/Dockerfile
+    environment:
+      # This starts the legacy app module only; it is not the production
+      # PostgreSQL/Temporal composition root from #506.
+      SPINE_DATABASE_URL: postgresql+psycopg://spine_source_runtime:${SOURCE_RUNTIME_PASSWORD:?SOURCE_RUNTIME_PASSWORD must be set}@source-postgres:5432/spine_source
+      SPINE_DISPATCHER_DATABASE_URL: postgresql+psycopg://spine_source_dispatcher:${SOURCE_DISPATCHER_PASSWORD:?SOURCE_DISPATCHER_PASSWORD must be set}@source-postgres:5432/spine_source
+      SPINE_TEMPORAL_ADDRESS: source-temporal:7233
+      SPINE_TEMPORAL_NAMESPACE: spine-source-509
+      SPINE_TEMPORAL_TASK_QUEUE: spine-source-509
+      SPINE_DATA_DIR: /var/lib/spine/original-storage
+      SYSTEM_ROOT_DIRECTORY: /var/lib/spine/system
+      DATA_ROOT_DIRECTORY: /var/lib/spine/data
+      CACHE_ROOT_DIRECTORY: /var/lib/spine/cache
+      DB_PROVIDER: postgres
+      DB_HOST: source-postgres
+      DB_PORT: 5432
+      DB_NAME: spine_source
+      DB_USERNAME: spine_source_runtime
+      DB_PASSWORD: ${SOURCE_RUNTIME_PASSWORD:?SOURCE_RUNTIME_PASSWORD must be set}
+      GRAPH_DATABASE_PROVIDER: neo4j
+      GRAPH_DATABASE_HOST: source-neo4j
+      GRAPH_DATABASE_PORT: 7687
+      GRAPH_DATABASE_USERNAME: neo4j
+      GRAPH_DATABASE_PASSWORD: ${SOURCE_NEO4J_PASSWORD:?SOURCE_NEO4J_PASSWORD must be set}
+      GRAPH_DATASET_DATABASE_HANDLER: neo4j_community
+      NEO4J_COMMUNITY_IMAGE: spine509qual-source-neo4j
+      NEO4J_ENCRYPTION_KEY: ${SOURCE_NEO4J_ENCRYPTION_KEY:?SOURCE_NEO4J_ENCRYPTION_KEY must be set}
+      NEO4J_COMMUNITY_MAX_CONTAINERS: ${SOURCE_NEO4J_MAX_CONTAINERS:-4}
+      VECTOR_DB_PROVIDER: pgvector
+      VECTOR_DB_HOST: source-postgres
+      VECTOR_DB_PORT: 5432
+      VECTOR_DB_NAME: spine_source
+      VECTOR_DB_USERNAME: spine_source_runtime
+      VECTOR_DB_PASSWORD: ${SOURCE_RUNTIME_PASSWORD:?SOURCE_RUNTIME_PASSWORD must be set}
+      LLM_PROVIDER: ${SOURCE_LLM_PROVIDER:?SOURCE_LLM_PROVIDER must be set}
+      LLM_MODEL: ${SOURCE_LLM_MODEL:?SOURCE_LLM_MODEL must be set}
+      LLM_API_KEY: ${SOURCE_LLM_API_KEY:?SOURCE_LLM_API_KEY must be set}
+      EMBEDDING_PROVIDER: ${SOURCE_EMBEDDING_PROVIDER:?SOURCE_EMBEDDING_PROVIDER must be set}
+      EMBEDDING_MODEL: ${SOURCE_EMBEDDING_MODEL:?SOURCE_EMBEDDING_MODEL must be set}
+      EMBEDDING_DIMENSIONS: ${SOURCE_EMBEDDING_DIMENSIONS:?SOURCE_EMBEDDING_DIMENSIONS must be set}
+      SPINE_COGNEE_QUALIFICATION_RUN_ID: ${SOURCE_COGNEE_RUN_ID:?SOURCE_COGNEE_RUN_ID must be set}
+      ENABLE_BACKEND_ACCESS_CONTROL: "true"
+    ports:
+      - "127.0.0.1:${SOURCE_API_PORT:-58081}:8000"
+    volumes:
+      - source_original_storage:/var/lib/spine/original-storage
+      - source_api_data:/var/lib/spine
+    depends_on:
+      source-postgres: {condition: service_healthy}
+      source-migrate: {condition: service_completed_successfully}
+      source-neo4j: {condition: service_healthy}
+      source-temporal: {condition: service_healthy}
+    networks: [source]
+
+  restore-api:
+    build:
+      context: ../../..
+      dockerfile: deploy/qualification/issue-509/Dockerfile
+    environment:
+      # This starts the legacy app module only; it is not the production
+      # PostgreSQL/Temporal composition root from #506.
+      SPINE_DATABASE_URL: postgresql+psycopg://spine_restore_runtime:${RESTORE_RUNTIME_PASSWORD:?RESTORE_RUNTIME_PASSWORD must be set}@restore-postgres:5432/spine_restore_509
+      SPINE_DISPATCHER_DATABASE_URL: postgresql+psycopg://spine_restore_dispatcher:${RESTORE_DISPATCHER_PASSWORD:?RESTORE_DISPATCHER_PASSWORD must be set}@restore-postgres:5432/spine_restore_509
+      SPINE_TEMPORAL_ADDRESS: restore-temporal:7233
+      SPINE_TEMPORAL_NAMESPACE: spine-restore-509
+      SPINE_TEMPORAL_TASK_QUEUE: spine-restore-509
+      SPINE_DATA_DIR: /var/lib/spine/original-storage
+      SYSTEM_ROOT_DIRECTORY: /var/lib/spine/system
+      DATA_ROOT_DIRECTORY: /var/lib/spine/data
+      CACHE_ROOT_DIRECTORY: /var/lib/spine/cache
+      DB_PROVIDER: postgres
+      DB_HOST: restore-postgres
+      DB_PORT: 5432
+      DB_NAME: spine_restore_509
+      DB_USERNAME: spine_restore_runtime
+      DB_PASSWORD: ${RESTORE_RUNTIME_PASSWORD:?RESTORE_RUNTIME_PASSWORD must be set}
+      GRAPH_DATABASE_PROVIDER: neo4j
+      GRAPH_DATABASE_HOST: restore-neo4j
+      GRAPH_DATABASE_PORT: 7687
+      GRAPH_DATABASE_USERNAME: neo4j
+      GRAPH_DATABASE_PASSWORD: ${RESTORE_NEO4J_PASSWORD:?RESTORE_NEO4J_PASSWORD must be set}
+      GRAPH_DATASET_DATABASE_HANDLER: neo4j_community
+      NEO4J_COMMUNITY_IMAGE: spine509qual-restore-neo4j
+      NEO4J_ENCRYPTION_KEY: ${RESTORE_NEO4J_ENCRYPTION_KEY:?RESTORE_NEO4J_ENCRYPTION_KEY must be set}
+      NEO4J_COMMUNITY_MAX_CONTAINERS: ${RESTORE_NEO4J_MAX_CONTAINERS:-4}
+      VECTOR_DB_PROVIDER: pgvector
+      VECTOR_DB_HOST: restore-postgres
+      VECTOR_DB_PORT: 5432
+      VECTOR_DB_NAME: spine_restore_509
+      VECTOR_DB_USERNAME: spine_restore_runtime
+      VECTOR_DB_PASSWORD: ${RESTORE_RUNTIME_PASSWORD:?RESTORE_RUNTIME_PASSWORD must be set}
+      LLM_PROVIDER: ${RESTORE_LLM_PROVIDER:?RESTORE_LLM_PROVIDER must be set}
+      LLM_MODEL: ${RESTORE_LLM_MODEL:?RESTORE_LLM_MODEL must be set}
+      LLM_API_KEY: ${RESTORE_LLM_API_KEY:?RESTORE_LLM_API_KEY must be set}
+      EMBEDDING_PROVIDER: ${RESTORE_EMBEDDING_PROVIDER:?RESTORE_EMBEDDING_PROVIDER must be set}
+      EMBEDDING_MODEL: ${RESTORE_EMBEDDING_MODEL:?RESTORE_EMBEDDING_MODEL must be set}
+      EMBEDDING_DIMENSIONS: ${RESTORE_EMBEDDING_DIMENSIONS:?RESTORE_EMBEDDING_DIMENSIONS must be set}
+      SPINE_COGNEE_QUALIFICATION_RUN_ID: ${RESTORE_COGNEE_RUN_ID:?RESTORE_COGNEE_RUN_ID must be set}
+      ENABLE_BACKEND_ACCESS_CONTROL: "true"
+    ports:
+      - "127.0.0.1:${RESTORE_API_PORT:-58082}:8000"
+    volumes:
+      - restore_original_storage:/var/lib/spine/original-storage
+      - restore_api_data:/var/lib/spine
+    depends_on:
+      restore-postgres: {condition: service_healthy}
+      restore-migrate: {condition: service_completed_successfully}
+      restore-neo4j: {condition: service_healthy}
+      restore-temporal: {condition: service_healthy}
+    networks: [restore]
+
+networks:
+  source:
+    name: spine509qual_source
+  restore:
+    name: spine509qual_restore
+
+volumes:
+  source_postgres_data:
+    name: spine509qual_source_postgres
+  restore_postgres_data:
+    name: spine509qual_restore_postgres
+  source_neo4j_data:
+    name: spine509qual_source_neo4j_data
+  source_neo4j_logs:
+    name: spine509qual_source_neo4j_logs
+  restore_neo4j_data:
+    name: spine509qual_restore_neo4j_data
+  restore_neo4j_logs:
+    name: spine509qual_restore_neo4j_logs
+  source_original_storage:
+    name: spine509qual_source_original_storage
+  restore_original_storage:
+    name: spine509qual_restore_original_storage
+  source_api_data:
+    name: spine509qual_source_api_data
+  restore_api_data:
+    name: spine509qual_restore_api_data
+  source_temporal_postgres_data:
+    name: spine509qual_source_temporal_postgres
+  restore_temporal_postgres_data:
+    name: spine509qual_restore_temporal_postgres
