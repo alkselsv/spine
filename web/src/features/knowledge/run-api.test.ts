@@ -47,6 +47,8 @@ describe('ingestion run read API adapters', () => {
     const request = fetch.mock.calls[0]?.[0] as Request;
     expect(request.url).toBe('https://spine.test/api/v1/documents/processing-history?limit=25');
     expect(request.method).toBe('GET');
+    expect(request.headers.get('X-Workspace-ID')).toBe(workspaceId);
+    expect(request.headers.get('X-Environment-ID')).toBe(environmentId);
     expect(response.items[0]?.input_identity).toBe('file-1');
     expect(response.items[0]).not.toHaveProperty('content');
   });
