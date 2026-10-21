@@ -3,7 +3,7 @@
 **Contract:** [`spine-production-deployment-composition:v1`](issue-509-production-composition-contract.md)
 **Status:** **ARCHITECTURE APPROVED — recorded by `dima55279` based on team lead approval communicated outside GitHub on 2026-10-21; [approval record](https://github.com/alkselsv/spine/pull/528#issuecomment-6317606512).**
 **GitHub review:** The participant-authored comment is not a formal GitHub review from the team lead.
-**Publication rule:** P1–P5 are authorized for implementation-ticket publication after live tracker/ownership reconciliation. They do not carry Security, Provider, Storage/Recovery, operator or release approvals by implication. Do not assign or claim them without owner agreement.
+**Publication state:** P1–P5 were published after live tracker/ownership reconciliation on 2026-10-21. This handoff is a tracking map; it does not grant Security, Provider, Storage/Recovery, operator or release approvals. No individual assignees were added.
 
 ## 1. Existing ticket reconciliation
 
@@ -15,17 +15,16 @@
 | #506 Production runtime composition/trusted readiness | Closed; #512 and #513 comments record code/readiness and disposable integration. #513 explicitly leaves live deployment reachability and existing authorization unverified. The contract document maps all nine ACs and their residual evidence. | New deployment-wiring issues are children of the open #16 release gate and link #506 as prior implementation. Ask current owners to reconcile residual acceptance ownership; do not reopen automatically or claim residual ACs complete. |
 | #507 Canonical ingestion/physical projection qualification | Closed and referenced as a native blocker for #509; latest records leave deployed R4 and composed live R6 outstanding and report a NO-GO on canonical receipt mapping. | P4 is limited to deployment wiring. Reuse profile/code only after owner confirmation; the current #507 owner must reconcile residual physical/adapter work. Preserve #507 → #509; do not reopen or reparent #507. |
 | #5, #18, #362, #363, #364, #368, #369 | Closed contracts/implementation/exercises | Reuse their accepted interfaces and runbooks. Closure is not evidence of this deployment's identity, destination, restore, projection, or canary readiness. |
-| #509 Backup, isolated restore and recovery qualification | Open / `in-progress`, assigned to `dima55279` and `Ocskylla` | Remains the physical qualification issue and current ownership lock. No claim, reassignment, or closure change is proposed. |
+| #509 Backup, isolated restore and recovery qualification | Open / `in-progress`, assigned to `dima55279` and `Ocskylla`; native blockers are #507 and published P1–P5 (#529–#533) | Remains the physical qualification issue and current ownership lock. No claim, reassignment, label, or closure change is proposed. |
 | #16 production qualification spec | Merged and accepted | System-level release criteria remain authoritative for R2/R3/R13 and final GO/NO-GO. |
 
-The current native dependency query lists #507 as a blocker of #509 although #507 is closed. Its evidence report still marks deployed R4/composed R6 incomplete; do not treat the closed dependency edge as proof that those conditions are met. Resolve the tracker relationship with owners rather than editing it as part of this documentation PR.
+The native dependency query lists #507 and #529–#533 as blockers of #509; #507 is closed, but its evidence report still marks deployed R4/composed R6 incomplete. Do not treat its closed state as proof that those conditions are met. Preserve the #507 relationship and reconcile its residual evidence with its owner.
 
-## 2. Proposed implementation tickets
+## 2. Published implementation tickets
 
-### P1 — Deploy the approved production composition for API, worker and observer
+### P1 — [#529: Deploy the approved production API, Temporal worker and observer composition](https://github.com/alkselsv/spine/issues/529)
 
-- **Proposed title:** `Deploy the approved production API, Temporal worker and observer composition`
-- **Parent / owner:** #16 release gate (native sub-issue); Runtime owner. Reference #506 as prior implementation. Security identity approval is a runtime prerequisite owned separately by P3.
+- **Tracker state:** Open, `ready-for-agent`, unassigned; native child of #16. Runtime owner role. Reference #506 as prior implementation. Security identity approval is a runtime prerequisite owned separately by P3.
 - **Problem:** Existing `compose_durable_ask()` and `DurableAskComposition` can construct the API path, worker factory and observer binding, but no process entrypoint loads validated configuration, starts the right lifecycle, or reports deployed readiness for API and worker; the observer/capture binding has not been verified against that deployment.
 - **Scope:** Implement only the approved versioned settings binding and one production composition root; API and worker process-specific entrypoints; canonical PostgreSQL + trusted-context bindings; existing API and Temporal factories; bind the existing observer/capture contract to the same logical composition and its current approved runner topology; authenticated ephemeral same-execution capture where that topology separates worker and observer; bounded lifecycle; compatible profile identity checks; safe readiness. Do not add an observer process solely for this contract. Preserve API admission-only behavior and existing Temporal workflow/activity contracts.
 - **Out of scope:** New Q&A runtime, auth model, persistence, workflow engine, provisioning, provider calls at startup, production rollout, recovery operator, private corpus or executing the #453 Golden Dataset benchmark.
@@ -36,10 +35,9 @@ The current native dependency query lists #507 as a blocker of #509 although #50
 - **Parallelism:** Can proceed alongside P2 lifecycle work after the shared settings and profile identity contract is approved.
 - **#509 blocker:** Without real API/worker/observer-compatible composition and trusted authorization, no application readiness or authorized canary.
 
-### P2 — Run the existing PostgreSQL outbox dispatcher as a bounded process
+### P2 — [#530: Deploy the canonical Ask and projection outbox dispatcher](https://github.com/alkselsv/spine/issues/530)
 
-- **Proposed title:** `Deploy the canonical Ask and projection outbox dispatcher`
-- **Parent / owner:** #16 release gate (native sub-issue); Runtime/Operations owner.
+- **Tracker state:** Open, `ready-for-agent`, unassigned; native child of #16. Runtime/Operations owner role.
 - **Problem:** `OutboxWorker.dispatch_batch()` and the PostgreSQL delivery repository are bounded seams, but no runner owns polling, consumer registration, retry/lease settings and shutdown.
 - **Scope:** Bind `create_outbox_worker()` and `create_production_outbox_worker()` to the same approved root; explicitly register Ask admission, cancellation and projection/recovery routes; use the dispatcher-only role; implement bounded polling, retry/lease limits, diagnostics and graceful stop.
 - **Out of scope:** New queue/broker, second dispatcher, direct provider or workflow calls, unbounded background threads, broad database grants.
@@ -49,10 +47,9 @@ The current native dependency query lists #507 as a blocker of #509 although #50
 - **Dependencies:** D1/D2/D3; P1 for Ask end-to-end, but projection route and dispatcher core can be prepared in parallel with P1.
 - **#509 blocker:** No reliable API → outbox → Temporal application execution or deployed projection recovery worker.
 
-### P3 — Approve and bind synthetic trusted qualification identities
+### P3 — [#531: Provide a Security-owned synthetic qualification identity binding](https://github.com/alkselsv/spine/issues/531)
 
-- **Proposed title:** `Provide a Security-owned synthetic qualification identity binding`
-- **Parent / owner:** #5 Identity/authorization domain (native sub-issue); Security owner. #5 is closed and will not be reopened or modified. P3 is limited to the qualification-specific approved binding not supplied by existing implementation.
+- **Tracker state:** Open, `needs-triage`, unassigned; native child of closed #5. Security owner role. #5 is not reopened or modified. P3 is limited to the qualification-specific approved binding not supplied by existing implementation.
 - **Problem:** Canonical auth resolution exists, but no reviewed production-capable method creates or selects scoped temporary identities for isolated qualification. Development local bearer settings and `PostgreSQLAuthorizationSeedHelper` do not satisfy trusted authorization.
 - **Scope:** Identify an existing security-owned provisioning path or propose a narrowly scoped operator mechanism; specify lifecycle/expiry/revocation, human vs service identities, Workspace/Environment membership, least-privilege roles, RLS and audit behavior; bind independent SOURCE and RESTORE identities.
 - **Out of scope:** General user/admin provisioning product, auth redesign, token-claim authority, test helper promotion, blanket grants or RLS/AccessPolicy relaxation.
@@ -62,10 +59,9 @@ The current native dependency query lists #507 as a blocker of #509 although #50
 - **Dependencies:** No implementation blocker after approved D4. P3 can run in parallel with P1/P2; P1 deployed trusted-authorization checks and #509 readiness require P3 completion. Any new provisioning contract remains blocked on Security decision.
 - **#509 blocker:** Trusted runtime authorization, recovery verifier separation and authorized canary.
 
-### P4 — Bind the approved Context Projection profile and recovery worker
+### P4 — [#533: Bind the approved Cognee profile to the canonical projection worker](https://github.com/alkselsv/spine/issues/533)
 
-- **Proposed title:** `Bind the approved Cognee profile to the canonical projection worker`
-- **Parent / owner:** #16 release gate (native sub-issue); Projection/Provider owner. Coordinate residual acceptance with the current #507 owner; do not change #507 ownership/status.
+- **Tracker state:** Open, `needs-triage`, unassigned; native child of #16 and natively blocked by P2 (#530). Projection/Provider owner role. Coordinate residual acceptance with the current #507 owner; #507 ownership/status is unchanged.
 - **Problem:** Cognee adapter, canonical PostgreSQL request resolver, physical qualification evidence and projection recovery route exist, but no approved run-specific provider credentials, settings, limits or deployed worker binding is supplied.
 - **Scope:** Confirm whether #507's exact Cognee 1.5.4 / PostgreSQL 17 / Neo4j/APOC 5.26.32 / PGVector 0.8.7 profile remains approved; bind model versions and bounded spend policy; connect the existing physical adapter through the canonical outbox route; preserve active/shadow, lineage and stale/tombstone controls. Hand the still-open deployed R4/composed live R6 evidence to the current #507 owner for explicit ownership reconciliation; do not absorb or duplicate that qualification here.
 - **Out of scope:** Alternate provider/fallback, new projection adapter, PostgreSQL projection authority, private Golden Dataset, automatic indexing/re-embedding or unapproved paid calls.
@@ -75,10 +71,9 @@ The current native dependency query lists #507 as a blocker of #509 although #50
 - **Dependencies:** Approved D5 architecture; profile/configuration work proceeds in parallel. The combined deployed projection route is a runtime prerequisite for #509 and uses P2's runner; physical #507/#509 execution remains separate operator qualification and is not a completion criterion for P4.
 - **#509 blocker:** Deployment-specific provider readiness and projection recovery evidence remain blocked until the existing #507/#509 qualification owners run and review the authorized physical exercise.
 
-### P5 — Bind the approved recovery operator to existing coordinator and verifier
+### P5 — [#532: Deploy the approved coordinated backup and isolated restore entrypoints](https://github.com/alkselsv/spine/issues/532)
 
-- **Proposed title:** `Deploy the approved coordinated backup and isolated restore entrypoints`
-- **Parent / owner:** #18 operations/recovery domain (native sub-issue); Storage/Recovery owner. #18 is closed and will not be reopened or modified. Reuse #362/#363/#368 and their current contracts.
+- **Tracker state:** Open, `needs-triage`, unassigned; native child of closed #18. Storage/Recovery owner role. #18 is not reopened or modified. Reuse #362/#363/#368 and their current contracts.
 - **Problem:** `CoordinatedBackupProfile` and `IsolatedRestoreVerifier` have deterministic/integration-tested implementations and runbooks, but no reviewed target-specific entrypoint/configuration.
 - **Scope:** Choose one-shot command or owner-managed job; bind ADR-0022 fence/quiescence, PostgreSQL and original-storage components, protected destination/read-back, immutable manifest, separate empty non-serving RESTORE targets and identities, reconciliation, audit and safe failure output. Reuse projection recovery and authorized canary seams; do not introduce new storage/recovery formats.
 - **Out of scope:** New backup subsystem, raw manual dump/archive flow, restore over SOURCE, direct filesystem/database edits, automatic promotion, RPO/RTO claim, production operation.
@@ -88,7 +83,7 @@ The current native dependency query lists #507 as a blocker of #509 although #50
 - **Dependencies:** Approved D4/D6 architecture; D7 is a target-specific prerequisite for canary binding. Entry-point configuration and fail-closed tests can proceed in parallel with P1–P4; physical invocation waits for deployment readiness and Security/Storage/Runtime target approvals.
 - **#509 blocker:** Target-specific coordinated backup, independent restore verification, projection recovery and canary evidence remain exclusively in the existing #509 qualification.
 
-### P6 — Complete Issue #509 physical qualification (existing issue; no duplicate ticket)
+### P6 — [#509: Complete physical qualification](https://github.com/alkselsv/spine/issues/509) (existing issue; no duplicate)
 
 - **Owner:** Current #509 executors `dima55279` and `Ocskylla`; Storage/Runtime/Security owners approve targets and operations.
 - **Scope:** Use #509's approved synthetic SOURCE and isolated RESTORE only after P1–P5 prerequisites and target-specific operator approval. Execute the existing runbook sequence: canonical synthetic ingestion if needed; coordinated fenced backup; immutable manifest and component read-back; independent restore; trust/integrity/reconciliation; physical projection recovery; stale/tombstone/shadow/foreign-scope denial; authorized canary; safe diagnostics.
@@ -108,34 +103,38 @@ The current native dependency query lists #507 as a blocker of #509 although #50
 
 GitHub currently reports #507 as #509's blocking dependency, but #507 is closed while its qualification report still calls deployed R4 and composed live R6 blocked. Preserve this edge until its owner reconciles the residual. Do not infer that closing #507 clears its evidence gap.
 
-### Proposed implementation ordering (no new issue IDs)
+### Published implementation dependency map
 
 ```mermaid
 flowchart TD
   A[Approved contract D1-D8; owner-specific bindings remain gated]
-  B[P1: API, Temporal worker, observer and capture composition]
-  C[P2: canonical outbox runner]
-  D[P3: Security-owned trusted identities]
-  E[P4: approved provider and projection worker]
-  F[P5: backup / isolated restore operator bindings]
+  B[P1 #529: API, Temporal worker, observer and capture composition]
+  C[P2 #530: canonical outbox runner]
+  D[P3 #531: Security-owned trusted identities]
+  E[P4 #533: approved provider and projection worker]
+  F[P5 #532: backup / isolated restore operator bindings]
   G[Deployment readiness: config, reachability, auth, pollers, app completion]
-  H[P6: physical Issue #509 qualification]
+  H[P6 #509: physical qualification]
+  I[Existing #507 projection qualification]
   A --> B
   A --> C
   A --> D
   A --> E
   A --> F
+  C --> E
+  I --> H
   B --> G
   C --> G
   D --> G
   E --> G
-  G --> F
-  F --> H
-  E --> H
+  B --> H
+  C --> H
   D --> H
+  E --> H
+  F --> H
 ```
 
-P1, P2, P3 and P5 implementation can start in parallel. P4 profile/configuration work can proceed in parallel; its combined deployed projection route uses P2's runner. P1 trusted deployment checks depend on P3, while composition code and deterministic tests can proceed independently. Physical provider work requires P3 identities, exact provider profile and run-specific budget approval. Recovery binding work can proceed independently, but operation requires approved identities, target inventory and deployment readiness. #509 operation is sequential: source backup → manifest verification → isolated restore → reconciliation → projection recovery → canary/evidence review.
+P1, P2, P3 and P5 implementation can start in parallel. P4 configuration work can proceed in parallel, while its deployed projection route is natively blocked by P2 (#530). P1 trusted deployment checks depend on P3, while composition code and deterministic tests can proceed independently. Physical provider work requires P3 identities, exact provider profile and run-specific budget approval. Recovery binding work can proceed independently, but operation requires approved identities, target inventory and deployment readiness. #509 is natively blocked by #507 and P1–P5; its physical operation is sequential: source backup → manifest verification → isolated restore → reconciliation → projection recovery → canary/evidence review.
 
 ## 4. Evidence and ownership boundary
 
