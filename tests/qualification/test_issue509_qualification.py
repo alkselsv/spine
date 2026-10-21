@@ -10,6 +10,7 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REPORT_PATH = PROJECT_ROOT / "docs/qualification/issue-509-backup-recovery-qualification.json"
+COMPOSE_PATH = PROJECT_ROOT / "deploy/qualification/issue-509/compose.yaml"
 
 EXPECTED_CRITERIA = {f"AC{number}" for number in range(1, 10)}
 OUTCOME_STATUSES = {"pass", "fail", "blocked", "not_verified", "unavailable"}
@@ -142,3 +143,21 @@ def test_issue509_report_does_not_promote_repository_evidence_to_live_recovery()
         "no_production_readiness_or_cutover_claim_made",
         "physical_projection_remains_non_authoritative",
     ]
+
+
+def test_issue509_temporal_services_use_the_pinned_image_dynamic_config() -> None:
+    compose = COMPOSE_PATH.read_text(encoding="utf-8")
+
+    assert compose.count(
+        "DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig/docker.yaml"
+    ) == 2
+    assert "DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml" not in compose
+
+
+def test_issue509_temporal_startup_and_healthchecks_use_isolated_service_dns() -> None:
+    compose = COMPOSE_PATH.read_text(encoding="utf-8")
+
+    for service in ("source-temporal", "restore-temporal"):
+        assert f"TEMPORAL_ADDRESS: {service}:7233" in compose
+        assert f"cluster health --address {service}:7233" in compose
+    assert "cluster health --address 127.0.0.1:7233" not in compose
