@@ -26,6 +26,7 @@ WORKSPACE_ID = UUID("10000000-0000-4000-8000-000000000001")
 ENVIRONMENT_ID = UUID("20000000-0000-4000-8000-000000000001")
 SUBJECT_ID = UUID("30000000-0000-4000-8000-000000000001")
 SERVICE_ID = UUID("40000000-0000-4000-8000-000000000001")
+QA_SERVICE_ID = UUID("40000000-0000-4000-8000-000000000002")
 SOURCE_ID = UUID("50000000-0000-4000-8000-000000000001")
 TRACE_ID = UUID("60000000-0000-4000-8000-000000000001")
 SNAPSHOT_ID = UUID("70000000-0000-4000-8000-000000000001")
@@ -56,6 +57,7 @@ def test_initial_upload_policy_authorizes_governed_retrieval_service() -> None:
         uow_factory=object(),
         request_context=context,
         service_principal_id=SERVICE_ID,
+        qa_service_principal_id=QA_SERVICE_ID,
         outbox_events=outbox,
         audit_events=AuditEventRegistry.with_default_families(),
         authority_alias_issuer="qualification",
@@ -91,8 +93,15 @@ def test_initial_upload_policy_authorizes_governed_retrieval_service() -> None:
 
     assert any(
         grant.principal_kind is PrincipalKind.SERVICE
-        and grant.principal_id == SERVICE_ID
+        and grant.principal_id == QA_SERVICE_ID
         and grant.permission is AccessPermission.PROCESS_CONTENT
+        and grant.purpose == "answer_question"
+        and grant.operation == "retrieve_context"
+        for grant in command.policy.grants
+    )
+    assert not any(
+        grant.principal_kind is PrincipalKind.SERVICE
+        and grant.principal_id == SERVICE_ID
         and grant.purpose == "answer_question"
         and grant.operation == "retrieve_context"
         for grant in command.policy.grants

@@ -174,6 +174,7 @@ def test_issue508_compose_profile_is_reproducible_and_fail_closed() -> None:
     assert "SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID" not in shared_environment
     assert "SPINE_PROJECTION_WORKER_SERVICE_PRINCIPAL_ID" in compose
     assert "SPINE_QA_WORKER_SERVICE_PRINCIPAL_ID" in compose
+    assert "SPINE_API_QA_SERVICE_PRINCIPAL_ID: ${SPINE_QA_WORKER_SERVICE_PRINCIPAL_ID}" in compose
     assert "SPINE_WORKER_SERVICE_PRINCIPAL_ID: ${SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID}" not in compose
     assert "SPINE_QA_WORKER_SERVICE_PRINCIPAL_ID: ${SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID}" not in compose
     assert "spine.api.runtime:create_production_app" in python_image

@@ -72,6 +72,7 @@ class DeployableApiSettings(BaseSettings):
     cursor_secret: SecretStr = Field(min_length=32, repr=False)
     build_version: str = Field(min_length=1, max_length=128)
     ingestion_service_principal_id: UUID
+    qa_service_principal_id: UUID
     original_storage_root: Path
     max_upload_bytes: int = Field(default=10_000_000, gt=0)
 
@@ -131,6 +132,7 @@ def create_production_app(
         context_verifier=request_boundary,
         persistence_boundary=persistence_boundary,
         service_principal_id=resolved_api.ingestion_service_principal_id,
+        qa_service_principal_id=resolved_api.qa_service_principal_id,
         storage_root=resolved_api.original_storage_root,
         outbox_events=outbox_events,
         audit_events=audit_registry,

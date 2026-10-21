@@ -163,6 +163,7 @@ class _InitialUploadPolicyEnsurer:
     uow_factory: object
     request_context: TrustedPersistenceContext
     service_principal_id: UUID
+    qa_service_principal_id: UUID
     outbox_events: OutboxEventRegistry
     audit_events: AuditEventRegistry
     authority_alias_issuer: str
@@ -323,7 +324,7 @@ class _InitialUploadPolicyEnsurer:
                 AccessGrant(
                     access_grant_id=stable("service-retrieve"),
                     principal_kind=PrincipalKind.SERVICE,
-                    principal_id=self.service_principal_id,
+                    principal_id=self.qa_service_principal_id,
                     permission=AccessPermission.PROCESS_CONTENT,
                     purpose="answer_question",
                     operation="retrieve_context",
@@ -430,6 +431,7 @@ class _SharedIngestion:
     uow_factory: object
     boundary: TrustedContextBoundary
     service_principal_id: UUID
+    qa_service_principal_id: UUID
     uploader: OriginalUploadOrchestrator
     reader: OpaqueGrantContentValidationReader
     validator: BoundedContentValidator
@@ -479,6 +481,7 @@ class _SharedIngestion:
                 uow_factory=self.uow_factory,
                 request_context=context,
                 service_principal_id=self.service_principal_id,
+                qa_service_principal_id=self.qa_service_principal_id,
                 outbox_events=self.outbox_events,
                 audit_events=self.audit_events,
                 authority_alias_issuer=self.authority_alias_issuer,
@@ -575,6 +578,7 @@ def build_production_ingestion(
     context_verifier: object,
     persistence_boundary: TrustedContextBoundary,
     service_principal_id: UUID,
+    qa_service_principal_id: UUID,
     storage_root: str | Path,
     outbox_events: OutboxEventRegistry,
     audit_events: AuditEventRegistry,
@@ -596,6 +600,7 @@ def build_production_ingestion(
         uow_factory=uow_factory,
         boundary=persistence_boundary,
         service_principal_id=service_principal_id,
+        qa_service_principal_id=qa_service_principal_id,
         uploader=OriginalUploadOrchestrator(
             uow_factory=uow_factory,  # type: ignore[arg-type]
             object_store=object_store,

@@ -25,6 +25,9 @@ def test_production_app_exposes_protected_canonical_document_surface() -> None:
             ingestion_service_principal_id=UUID(
                 "50800000-0000-4000-8000-000000000002"
             ),
+            qa_service_principal_id=UUID(
+                "50800000-0000-4000-8000-000000000004"
+            ),
             original_storage_root="/tmp/spine-test-originals",
         ),
     )
