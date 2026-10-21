@@ -56,6 +56,8 @@ def test_durable_ask_composition_wires_api_outbox_and_temporal_executor(
     assert composition.workflow_executor is not None
     assert composition.real_qualification_evidence is None
     assert ASK_ADMISSION_WORKFLOW_TYPE == "spine.qa.ask-admission:v1"
+    with pytest.raises(RuntimeError, match="composed SDK client"):
+        composition.create_temporal_worker()
 
     from spine.api import main
 
@@ -180,6 +182,7 @@ def test_validated_production_graph_receives_qualification_evidence(monkeypatch)
         admission=admission,
         api_ask_service=service,
         workflow_executor=executor,
+        workflow_client=temporal_client,
         delivery_bindings=(
             OutboxConsumerBinding("qa_ask_admission", admission_consumer),
             OutboxConsumerBinding("qa_ask_cancellation", cancellation_consumer),

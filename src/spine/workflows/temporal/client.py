@@ -55,6 +55,18 @@ class TemporalSdkWorkflowClient(AskAdmissionWorkflowClient):
         self._task_queue = task_queue
         self._id_reuse_policy = id_reuse_policy
 
+    @property
+    def sdk_client(self) -> TemporalSdkClient:
+        """Expose the exact SDK client to its paired worker composition."""
+
+        return self._client
+
+    @property
+    def task_queue(self) -> str:
+        """Return the queue used by this workflow client for starts/signals."""
+
+        return self._task_queue
+
     async def start_workflow(
         self,
         *,

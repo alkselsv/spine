@@ -82,6 +82,8 @@ if TYPE_CHECKING:
         RealBenchmarkQualificationRuntime,
     )
     from spine.evals.real_benchmark_runner import RealBenchmarkRunner
+    from temporalio.client import Client
+    from temporalio.worker import Worker
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +99,7 @@ class DurableAskComposition:
     observer_admission: ObserverAskAdmission | None = None
     sessions: QASessionService | None = None
     capture_channel: CaptureChannel | None = None
+    workflow_client: AskAdmissionWorkflowClient | None = None
 
     @property
     def real_qualification_evidence(self) -> ProductionQAACompositionEvidence | None:
@@ -194,6 +197,7 @@ class DurableAskComposition:
         temporal_client = admission_binding.consumer._launcher._client
         if (
             type(temporal_client) is not TemporalSdkWorkflowClient
+            or self.workflow_client is not temporal_client
             or cancellation_binding.consumer._client is not temporal_client
         ):
             return None
@@ -215,6 +219,22 @@ class DurableAskComposition:
             authorized_ask_service=self.api_ask_service,
             ask_admission_service=self.admission,
             **dependencies,
+        )
+
+    def create_temporal_worker(
+        self,
+    ) -> Worker:
+        """Register this composition with its paired client and task queue."""
+
+        from spine.workflows.temporal.client import TemporalSdkWorkflowClient
+        from spine.workflows.temporal.bootstrap import create_ask_admission_worker
+
+        if type(self.workflow_client) is not TemporalSdkWorkflowClient:
+            raise RuntimeError("Temporal SDK worker requires the composed SDK client")
+        return create_ask_admission_worker(
+            client=self.workflow_client.sdk_client,
+            task_queue=self.workflow_client.task_queue,
+            activity=self.workflow_executor,
         )
 
     def create_trusted_runtime_preflight(
@@ -353,6 +373,7 @@ def compose_durable_ask(
         ),
         sessions=sessions,
         capture_channel=capture_channel,
+        workflow_client=temporal_client,
     )
 
 

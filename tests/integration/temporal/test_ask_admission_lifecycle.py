@@ -34,6 +34,7 @@ from spine.workflows.temporal.definitions import (
     AskAdmissionWorkflowDefinition,
     build_ask_admission_activity_bindings,
 )
+from spine.workflows.temporal.bootstrap import create_ask_admission_worker
 from spine.workflows.temporal.client import TemporalSdkWorkflowClient
 from tests.contracts.persistence.outbox_events import create_outbox_event_registry
 from tests.api.test_authorized_ask import (
@@ -226,6 +227,39 @@ async def test_temporal_ask_workflow_cancellation_signal_returns_terminal_result
     assert result["outcome"] == AnswerQuestionOutcome.CANCELLED.value
     assert activity.execute_calls >= 1
     assert activity.cancel_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_temporal_worker_factory_executes_admitted_workflow() -> None:
+    activity = WorkerRestartAskActivity()
+    task_queue = f"{TASK_QUEUE}-worker-factory"
+    event = _admission_intent()
+    context = DiagnosticContext(
+        trace_id=TRACE_ID,
+        correlation_id=event.correlation_id,
+        causation_id=event.event_id,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping(
+        data_converter=pydantic_data_converter
+    ) as environment:
+        temporal_client = TemporalSdkWorkflowClient(
+            environment.client,
+            task_queue=task_queue,
+            id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
+        )
+        consumer = AskAdmissionDispatchConsumer(
+            AskAdmissionWorkflowLauncher(temporal_client)
+        )
+        async with create_ask_admission_worker(
+            client=environment.client, task_queue=task_queue, activity=activity
+        ):
+            await consumer.consume(event, context)
+            handle = environment.client.get_workflow_handle(str(RUN_ID))
+            result = await asyncio.wait_for(handle.result(), timeout=10)
+
+    assert result["outcome"] == AnswerQuestionOutcome.ABSTAINED.value
+    assert activity.execute_calls == 1
 
 
 @pytest.mark.asyncio

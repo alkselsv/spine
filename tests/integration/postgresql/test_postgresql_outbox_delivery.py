@@ -788,7 +788,6 @@ async def test_postgresql_temporal_production_ask_composition_reaches_terminal_s
     from temporalio.common import WorkflowIDReusePolicy
     from temporalio.contrib.pydantic import pydantic_data_converter
     from temporalio.testing import WorkflowEnvironment
-    from temporalio.worker import Worker
 
     from spine.api.composition import compose_durable_ask
     from spine.application.answer_disclosure import (
@@ -1136,14 +1135,7 @@ async def test_postgresql_temporal_production_ask_composition_reaches_terminal_s
                 handler_timeout=timedelta(seconds=10),
                 maximum_attempts=3,
             )
-            registered_activities = tuple(composition.activity_bindings)
-            assert len(registered_activities) == 2
-            async with Worker(
-                temporal.client,
-                task_queue=task_queue,
-                workflows=[composition.workflow_definition],
-                activities=list(registered_activities),
-            ):
+            async with composition.create_temporal_worker():
                 report = await dispatcher.dispatch_batch(
                     limit=1,
                     worker_identity="issue-506-outbox-worker",
