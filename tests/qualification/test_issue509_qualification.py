@@ -12,6 +12,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REPORT_PATH = PROJECT_ROOT / "docs/qualification/issue-509-backup-recovery-qualification.json"
 READINESS_REPORT_PATH = PROJECT_ROOT / "docs/qualification/issue-509-local-readiness-report-v2.json"
 COMPOSE_PATH = PROJECT_ROOT / "deploy/qualification/issue-509/compose.yaml"
+DOCKERIGNORE_PATH = PROJECT_ROOT / ".dockerignore"
+QUALIFICATION_DOCKERFILE_PATH = PROJECT_ROOT / "deploy/qualification/issue-509/Dockerfile"
 
 EXPECTED_CRITERIA = {f"AC{number}" for number in range(1, 10)}
 OUTCOME_STATUSES = {"pass", "fail", "blocked", "not_verified", "unavailable"}
@@ -26,6 +28,16 @@ FORBIDDEN_REPORT_TOKENS = (
     "source_text",
     "stack_trace",
 )
+QUALIFICATION_BUILD_CONTEXT_ALLOWLIST = {
+    "!pyproject.toml",
+    "!uv.lock",
+    "!README.md",
+    "!alembic.ini",
+    "!migrations",
+    "!migrations/**",
+    "!src",
+    "!src/**",
+}
 
 
 def _load_report() -> dict[str, Any]:
@@ -223,3 +235,20 @@ def test_issue509_readiness_report_contains_only_safe_metadata() -> None:
         assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
         assert "\\" not in text
         assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
+
+
+def test_issue509_application_build_context_is_default_deny_and_allowlisted() -> None:
+    dockerignore = set(DOCKERIGNORE_PATH.read_text(encoding="utf-8").splitlines())
+    dockerfile = QUALIFICATION_DOCKERFILE_PATH.read_text(encoding="utf-8")
+
+    assert "**" in dockerignore
+    assert {line for line in dockerignore if line.startswith("!")} == (
+        QUALIFICATION_BUILD_CONTEXT_ALLOWLIST
+    )
+    for required_copy in (
+        "COPY pyproject.toml uv.lock README.md ./",
+        "COPY alembic.ini ./",
+        "COPY migrations ./migrations",
+        "COPY src ./src",
+    ):
+        assert required_copy in dockerfile
