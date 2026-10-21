@@ -1,17 +1,12 @@
-.git
-.github
-.venv
-.spine
-data/private
-data/incoming
-**/.env
-**/.env.*
-**/secrets
-**/*.pem
-**/*.key
-**/__pycache__
-**/*.py[cod]
-*.log
-htmlcov
-.pytest_cache
-web/node_modules
+# The application image only needs its declared package and migration sources.
+# Default-deny the repository-root build context so local credentials, datasets,
+# caches and unrelated worktree files never reach the Docker builder.
+**
+!pyproject.toml
+!uv.lock
+!README.md
+!alembic.ini
+!migrations
+!migrations/**
+!src
+!src/**
