@@ -4192,7 +4192,10 @@
           "delivery_status": {
             "anyOf": [
               {
-                "const": "quarantined",
+                "enum": [
+                  "delivered",
+                  "quarantined"
+                ],
                 "type": "string"
               },
               {
