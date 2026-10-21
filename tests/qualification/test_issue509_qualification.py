@@ -216,9 +216,12 @@ def test_issue509_readiness_report_records_only_observed_states() -> None:
         assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
 
 
-def test_issue509_temporal_readiness_report_records_both_real_environments() -> None:
-    report = json.loads(TEMPORAL_READINESS_REPORT_PATH.read_text(encoding="utf-8"))
+def _temporal_readiness_report() -> dict[str, Any]:
+    return json.loads(TEMPORAL_READINESS_REPORT_PATH.read_text(encoding="utf-8"))
 
+
+def test_issue509_temporal_readiness_report_is_bound_to_deployment_fingerprint() -> None:
+    report = _temporal_readiness_report()
     assert report["report_schema"] == "spine.issue-509.temporal-readiness:v1"
     assert report["target_commit"] == "d6db466b93a330c24a392dcf62e21dcee9008f52"
     assert report["production_qualified"] is False
@@ -228,23 +231,51 @@ def test_issue509_temporal_readiness_report_records_both_real_environments() -> 
         "deployment_fingerprint"
     ]
 
+
+def test_issue509_temporal_profile_fingerprints_match_profile_material() -> None:
+    report = _temporal_readiness_report()
     for side in ("source", "restore"):
         profile = report["profiles"][side]
         assert re.fullmatch(r"[a-f0-9]{64}", profile["fingerprint"])
         assert _fingerprint(profile["fingerprint_material"]) == profile["fingerprint"]
+
+
+def test_issue509_temporal_services_and_namespaces_are_ready_in_both_profiles() -> None:
+    report = _temporal_readiness_report()
+    for side in ("source", "restore"):
+        profile = report["profiles"][side]
         assert profile["postgres_health"] == "PASS"
         assert profile["persistence_schema"] == "PASS"
         assert profile["temporal_docker_health"] == "healthy"
         assert profile["cluster_health_rpc"] == "SERVING"
         assert profile["namespace"] == "REGISTERED"
-        assert profile["synthetic_workflow_admission"] == "PASS"
-        assert profile["synthetic_workflow_terminal_status"] == "TERMINATED"
-        assert profile["active_worker_pollers"] == 0
-        assert profile["application_worker_readiness"] == "NOT_VERIFIED"
         assert profile["network_isolation"] == "PASS"
 
+
+def test_issue509_temporal_synthetic_workflow_probe_reaches_terminal_status() -> None:
+    report = _temporal_readiness_report()
+    for side in ("source", "restore"):
+        profile = report["profiles"][side]
+        assert profile["synthetic_workflow_admission"] == "PASS"
+        assert profile["synthetic_workflow_terminal_status"] == "TERMINATED"
+
+
+def test_issue509_temporal_report_does_not_claim_application_worker_readiness() -> None:
+    report = _temporal_readiness_report()
+    for side in ("source", "restore"):
+        profile = report["profiles"][side]
+        assert profile["active_worker_pollers"] == 0
+        assert profile["application_worker_readiness"] == "NOT_VERIFIED"
+
+
+def test_issue509_temporal_report_keeps_unverified_application_gaps_explicit() -> None:
+    report = _temporal_readiness_report()
     assert report["application_authorization"] == "NOT_VERIFIED"
     assert report["recovery_qualification"] == "NOT_STARTED"
+
+
+def test_issue509_temporal_readiness_report_contains_only_safe_metadata() -> None:
+    report = _temporal_readiness_report()
     for text in _all_strings(report):
         lowered = text.lower()
         assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
