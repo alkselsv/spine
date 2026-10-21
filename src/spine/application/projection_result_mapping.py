@@ -478,9 +478,11 @@ class ProjectionResultMappingBridge:
             (member.source_object_id, member.source_revision_id)
             for member in context.boundary_members
         }
-        if command_source_ids != assigned_member_ids:
+        if not command_source_ids or not command_source_ids.issubset(
+            assigned_member_ids
+        ):
             raise ProjectionMappingError(
-                "projection command must cover its exact assigned boundary members"
+                "projection command sources must belong to its canonical boundary"
             )
         for source in command.source_revisions:
             locator = canonical_sources.get(

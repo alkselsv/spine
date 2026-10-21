@@ -39,6 +39,7 @@ from spine.application.worker_execution_observation import (
 )
 from spine.application.qa_sessions import QASessionService
 from spine.application.workflows.ask_admission_dispatch import (
+    AskAdmissionCommandData,
     AskAdmissionCommandLoader,
     AskAdmissionWorkflowClient,
     AskAdmissionWorkflowExecutor,
@@ -317,6 +318,10 @@ def compose_durable_ask(
     worker_execution_elapsed_port: WorkerExecutionElapsedCapturePort,
     environment: EnvironmentKind = EnvironmentKind.PRODUCTION,
     authorization_generation: int = 1,
+    authorization_generation_resolver: Callable[
+        [AskAdmissionWorkflowInput, AskAdmissionCommandData], Awaitable[int]
+    ]
+    | None = None,
     run_starter: Callable[[AskAdmissionWorkflowInput], Awaitable[object]] | None = None,
     capture_channel: CaptureChannel | None = None,
     worker_capture_channel: CaptureChannel | None = None,
@@ -342,6 +347,7 @@ def compose_durable_ask(
         persistence_context_factory=persistence_context_factory,
         run_starter=run_starter,
         authorization_generation=authorization_generation,
+        authorization_generation_resolver=authorization_generation_resolver,
         monotonic_ns=monotonic_ns,
         execution_elapsed_port=worker_execution_elapsed_port,
         capture_publisher=(
@@ -416,6 +422,7 @@ def compose_local_api_authorization(
     settings: LocalAuthenticationSettings | None = None,
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     request_id_source: Callable[[], UUID] = uuid4,
+    close_hook: Callable[[], Awaitable[object]] | None = None,
 ) -> ApiAuthorizationRuntime:
     """Build local HTTP auth with the production PostgreSQL authority lookup."""
 
@@ -459,6 +466,7 @@ def compose_local_api_authorization(
         composer=composer,
         route_policies=route_policies,
         readiness_probe=local_readiness,
+        close_hook=close_hook,
     )
 
 

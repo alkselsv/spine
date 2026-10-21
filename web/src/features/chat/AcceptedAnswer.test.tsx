@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { cleanup, render, screen } from '@testing-library/react';
+import { StrictMode } from 'react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -226,12 +227,14 @@ describe('accepted citation markers and inspection', () => {
     });
 
     const { container } = render(
-      <AcceptedAnswer
-        client={client}
-        message={messageResource}
-        targetCitationId={citationId}
-        scope={scope}
-      />,
+      <StrictMode>
+        <AcceptedAnswer
+          client={client}
+          message={messageResource}
+          targetCitationId={citationId}
+          scope={scope}
+        />
+      </StrictMode>,
     );
 
     expect(await screen.findByText('Защищённый синтетический фрагмент.')).toBeVisible();
@@ -242,10 +245,11 @@ describe('accepted citation markers and inspection', () => {
     expect(claimMarker?.getAttribute('data-end-utf16')).toBe('13');
     expect(claimMarker?.previousSibling?.textContent).toBe(answer.slice(0, 13));
     expect(screen.getByRole('button', { name: ru.chat.citationMarkerLabel(1, ru.chat.relationshipKinds.independent) })).toBeVisible();
-    expect(fetcher).toHaveBeenCalledTimes(2);
-    const citationRequest = fetcher.mock.calls.find(([input]) =>
+    const citationRequests = fetcher.mock.calls.filter(([input]) =>
       String(input instanceof Request ? input.url : input).includes(`/api/v1/qa/citations/${citationId}`),
-    )?.[0];
+    );
+    expect(citationRequests.length).toBeGreaterThanOrEqual(1);
+    const citationRequest = citationRequests[0]?.[0];
     const request = new Request(citationRequest as RequestInfo);
     expect(request.headers.get('X-Workspace-ID')).toBe(scope.workspaceId);
     expect(request.headers.get('X-Environment-ID')).toBe(scope.environmentId);

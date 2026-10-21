@@ -212,16 +212,32 @@ async def verify_database_readiness(
                     text(
                         "SELECT has_function_privilege(current_user, "
                         "'spine.resolve_current_authorization_snapshot"
-                        "(text,text,uuid,uuid)', 'EXECUTE') AS runtime_execute, "
+                        "(text,text,uuid,uuid)', 'EXECUTE') AS snapshot_runtime, "
                         "has_function_privilege('public', "
                         "'spine.resolve_current_authorization_snapshot"
-                        "(text,text,uuid,uuid)', 'EXECUTE') AS public_execute"
+                        "(text,text,uuid,uuid)', 'EXECUTE') AS snapshot_public, "
+                        "has_function_privilege(current_user, "
+                        "'spine.resolve_current_authorization_generation"
+                        "(uuid,uuid)', 'EXECUTE') AS generation_runtime, "
+                        "has_function_privilege('public', "
+                        "'spine.resolve_current_authorization_generation"
+                        "(uuid,uuid)', 'EXECUTE') AS generation_public, "
+                        "has_function_privilege(current_user, "
+                        "'spine.resolve_run_outbox_delivery_correlation"
+                        "(uuid,uuid,uuid)', 'EXECUTE') AS correlation_runtime, "
+                        "has_function_privilege('public', "
+                        "'spine.resolve_run_outbox_delivery_correlation"
+                        "(uuid,uuid,uuid)', 'EXECUTE') AS correlation_public"
                     )
                 )
             ).mappings().one()
             if (
-                not resolver_privileges.runtime_execute
-                or resolver_privileges.public_execute
+                not resolver_privileges.snapshot_runtime
+                or resolver_privileges.snapshot_public
+                or not resolver_privileges.generation_runtime
+                or resolver_privileges.generation_public
+                or not resolver_privileges.correlation_runtime
+                or resolver_privileges.correlation_public
             ):
                 raise DatabaseReadinessError("database runtime privileges are not ready")
 
@@ -318,6 +334,8 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "qa_disclosure_validation_results": ExpectedTablePrivileges(True, True, True, False, False),
         "qa_answer_disclosure_records": ExpectedTablePrivileges(True, True, True, False, False),
         "qa_answer_disclosure_deliveries": ExpectedTablePrivileges(True, True, True, False, False),
+        "qa_agent_artifacts": ExpectedTablePrivileges(True, True, True, False, False),
+        "qa_agent_results": ExpectedTablePrivileges(True, True, True, False, False),
         "operational_metric_events": ExpectedTablePrivileges(True, True, True, False, False),
         "operational_correlation_records": ExpectedTablePrivileges(
             True, True, True, False, False
@@ -339,6 +357,9 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "ingestion_warnings": ExpectedTablePrivileges(True, True, True, False, False),
         "ingestion_failures": ExpectedTablePrivileges(True, True, True, False, False),
         "processing_receipts": ExpectedTablePrivileges(True, True, True, False, False),
+        "original_upload_records": ExpectedTablePrivileges(
+            True, True, True, True, False
+        ),
         "process_only_operation_lineages": ExpectedTablePrivileges(
             True, True, True, False, False
         ),

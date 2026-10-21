@@ -151,7 +151,7 @@ describe('Knowledge document operational overview', () => {
     );
     renderDetail(`/knowledge/documents/${sourceObjectId}`);
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Не удалось выполнить операцию');
+    expect(await screen.findByRole('alert')).toHaveTextContent('Доступ запрещён');
     expect(globalThis.document.body).not.toHaveTextContent('customer secret must not leak');
     expect(globalThis.document.body).not.toHaveTextContent(sourceObjectId);
   });

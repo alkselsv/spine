@@ -21,6 +21,7 @@ from spine.domain.disclosure import (
     DisclosureValidationFact,
 )
 
+
 if TYPE_CHECKING:
     from spine.application.qa_sessions import QASessionRequester
     from spine.domain.capabilities.answer_disclosure import AnswerDisclosureRecord

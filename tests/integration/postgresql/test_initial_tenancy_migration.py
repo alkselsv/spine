@@ -1262,6 +1262,9 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "policy_approvals",
         "policy_activations",
         "current_access_policies",
+        "original_upload_records",
+        "qa_agent_artifacts",
+        "qa_agent_results",
     }
     tables = set(
         (
@@ -1283,7 +1286,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                     "ON ns.oid = relation.relnamespace WHERE ns.nspname = 'spine' AND "
                     "relation.relname IN ('access_policy_versions','access_policy_grants',"
                     "'policy_proposals','policy_approvals','policy_activations',"
-                    "'current_access_policies'))"
+                    "'current_access_policies','original_upload_records',"
+                    "'qa_agent_artifacts','qa_agent_results'))"
                 )
             )
         ).scalars()
@@ -1294,7 +1298,8 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
                 text("SELECT indexname FROM pg_indexes WHERE schemaname = 'spine' AND "
                      "tablename NOT IN ('access_policy_versions','access_policy_grants',"
                      "'policy_proposals','policy_approvals','policy_activations',"
-                     "'current_access_policies')")
+                     "'current_access_policies','original_upload_records',"
+                     "'qa_agent_artifacts','qa_agent_results')")
             )
         ).scalars()
     )
@@ -2582,6 +2587,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "WHERE source_namespace.nspname = 'spine' AND relation.relname IN "
                         "('source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', 'ingestion_runs', "
+                        "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
                         "'ingestion_run_sources', 'ingestion_run_source_bindings', "
                         "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', "
                             "'processing_receipts', 'process_only_operation_lineages', "
@@ -2620,6 +2626,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "AND table_name NOT LIKE 'source_canonical%' "
                         "AND table_name NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', "
+                        "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
                             "'process_only_operation_lineages', "
@@ -2651,6 +2658,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "AND indexname NOT LIKE 'pk_source_canonical%' "
                         "AND tablename NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', "
+                        "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
                             "'process_only_operation_lineages', "
@@ -2681,6 +2689,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "AND tablename NOT LIKE 'source_canonical%' "
                         "AND tablename NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', "
+                        "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                                 "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
                                 "'process_only_operation_lineages', "
@@ -2711,6 +2720,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                         "AND tablename NOT LIKE 'source_canonical%' "
                         "AND tablename NOT IN ('source_objects', 'source_revisions', 'source_revision_provenance', "
                         "'source_revision_receipt_associations', "
+                        "'original_upload_records', 'qa_agent_artifacts', 'qa_agent_results', "
                         "'ingestion_runs', 'ingestion_run_sources', 'ingestion_run_source_bindings', "
                             "'ingestion_transitions', 'ingestion_warnings', 'ingestion_failures', 'processing_receipts', "
                             "'process_only_operation_lineages', "
@@ -3396,7 +3406,8 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'projection_partitions', 'projection_receipts', 'source_projection_references', "
                         "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                         "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
-                        "'projection_drifts')"
+                        "'projection_drifts', 'original_upload_records', "
+                        "'qa_agent_artifacts', 'qa_agent_results')"
                     )
                 )
             )
@@ -3496,6 +3507,9 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "projection_activations": (True, True),
             "active_projections": (True, True),
             "projection_drifts": (True, True),
+            "original_upload_records": (True, True),
+            "qa_agent_artifacts": (True, True),
+            "qa_agent_results": (True, True),
         }
     standard_tables = set(tables) - {"outbox_deliveries"}
     assert set(policies) == {
@@ -4797,13 +4811,18 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261111_48_ingestion_binding_receipt_guard.py",
         "20261112_49_ingestion_binding_receipt_associations.py",
         "20261113_50_projection_reference_cardinality.py",
+        "20261114_51_original_upload_records.py",
+        "20261115_52_nullable_source_canonicalization.py",
+        "20261116_53_qa_agent_artifacts.py",
+        "20261117_54_worker_authorization_generation_read.py",
+        "20261118_55_runtime_outbox_correlation_read.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261114_51_injected_failure.py").write_text(
+    (target / "versions" / "20261119_56_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261114_51'\n"
-        "down_revision = '20261113_50'\n"
+        "revision = '20261119_56'\n"
+        "down_revision = '20261118_55'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

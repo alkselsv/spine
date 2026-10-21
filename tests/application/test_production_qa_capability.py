@@ -125,6 +125,7 @@ def command(
     attempt_id: UUID | None = None,
     attempt_number: int | None = None,
     execution_pin: AnswerQuestionExecutionPin | None = None,
+    cancelled: bool = False,
 ) -> AnswerQuestionCapabilityCommand:
     return AnswerQuestionCapabilityCommand(
         request_context=AskRequestContext(
@@ -158,6 +159,7 @@ def command(
         attempt_id=attempt_id,
         attempt_number=attempt_number,
         execution_pin=execution_pin,
+        cancelled=cancelled,
     )
 
 
@@ -225,9 +227,11 @@ class TerminalContext:
     def __init__(self, outcome: AnswerQuestionOutcome) -> None:
         self.outcome = outcome
         self.prepared = 0
+        self.requests = []
 
     async def prepare(self, request):
         self.prepared += 1
+        self.requests.append(request)
         reason = {
             AnswerQuestionOutcome.ABSTAINED: AnswerQuestionSafeReasonCode.NO_USABLE_EVIDENCE,
             AnswerQuestionOutcome.DENIED: AnswerQuestionSafeReasonCode.AUTHORIZATION_DENIED,
@@ -690,6 +694,40 @@ async def test_context_terminal_outcome_is_preserved_without_candidate_generatio
     assert result.terminalization_receipt is not None
     assert result.terminalization_receipt.disclosure_record.output == result.output
     assert context.prepared == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_durable_command_stops_before_retrieval_and_generation() -> None:
+    context = TerminalContext(AnswerQuestionOutcome.CANCELLED)
+    capability = ProductionAnswerQuestionCapability(
+        context=context,
+        execution=BoundExecution(),
+        context_references=References(),
+        disclosure_gate=object(),
+        candidate_runner=UnexpectedCandidateStage(),
+        validator=object(),
+        disclosure_environment=EnvironmentKind.DEVELOPMENT,
+    )
+    persisted_pin = AnswerQuestionExecutionPin.create(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        environment=EnvironmentKind.DEVELOPMENT,
+        configuration=configuration(),
+    )
+
+    result = await capability.answer(
+        command(
+            worker=True,
+            attempt_id=UUID(int=99),
+            attempt_number=1,
+            execution_pin=persisted_pin,
+            cancelled=True,
+        )
+    )
+
+    assert result.output.outcome is AnswerQuestionOutcome.CANCELLED
+    assert context.requests[0].cancelled is True
+    assert result.terminalization_receipt is not None
 
 
 @pytest.mark.asyncio

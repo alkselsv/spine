@@ -29,6 +29,7 @@ from spine.application.persistence.canonical import (
     SourceOrderComparison,
     SourceOrderingPolicyError,
     SourceOrderingPolicyRegistry,
+    bind_canonical_acceptance_generation,
     validate_canonical_acceptance_effects,
 )
 from spine.application.persistence.boundary import (
@@ -156,6 +157,7 @@ from spine.application.persistence.outbox import (
 from spine.application.persistence.unit_of_work_activity import (
     track_unit_of_work_activity,
 )
+from spine.application.storage.contracts import OriginalUploadRecord
 from spine.domain.audit import (
     AuditEvent,
     AuditObjectReference,
@@ -264,6 +266,7 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     qa_message_versions as _QA_MESSAGE_VERSIONS,
     idempotency_receipts as _IDEMPOTENCY_RECEIPTS,
     outbox_intents as _OUTBOX_INTENTS,
+    original_upload_records as _ORIGINAL_UPLOAD_RECORDS,
     source_objects as _SOURCE_OBJECTS,
     source_revisions as _SOURCE_REVISIONS,
     source_revision_provenance as _SOURCE_PROVENANCE,
@@ -1464,7 +1467,7 @@ class _PostgreSQLAnswerQuestionRunRepository:
                 object_type="answer_question_run", object_id=run_id, schema_version=1
             ),
             producer_deduplication_id=f"qa-ask-cancellation:{run_id}",
-            trace_id=existing.diagnostic_context.trace_id,
+            trace_id=self._uow._trace_id_snapshot(),
         )
         await self._uow.outbox.append(intent)
         return updated
@@ -1549,7 +1552,10 @@ class _PostgreSQLAnswerQuestionRunRepository:
         attempts = await self.list_attempts(allocation.run_id)
         if (
             run.state is not AnswerQuestionRunState.RUNNING
-            or run.cancellation_requested_at is not None
+            or (
+                run.cancellation_requested_at is not None
+                and not allocation.cancellation
+            )
             or any(
                 attempt.state is AnswerQuestionAttemptState.RUNNING
                 and attempt.logical_execution_key is not None
@@ -2781,9 +2787,10 @@ class _PostgreSQLCanonicalAcceptanceRepository:
             outbox_event_id=command.outbox_event_id,
             accepted_at=command.accepted_at,
         )
+        effect_command = bind_canonical_acceptance_generation(command, generation)
         try:
             validate_canonical_acceptance_effects(
-                command=command,
+                command=effect_command,
                 acceptance=acceptance,
                 context=self._uow._context_snapshot_active(),
                 audit_registry=self._uow._audit_events,
@@ -2836,7 +2843,7 @@ class _PostgreSQLCanonicalAcceptanceRepository:
             )
         ).mappings().all()
         for active_row in active_rows:
-            active = self._projections._pointer(active_row)
+            active = self._uow.projections._pointer(active_row)
             snapshot_row = (
                 await self._uow._execute(
                     select(_PROJECTION_SNAPSHOTS).where(
@@ -2909,16 +2916,16 @@ class _PostgreSQLCanonicalAcceptanceRepository:
                     trace_id=context.trace_id,
                 )
             )
-        if command.audit_event.audit_event_id not in (None, command.audit_event_id):
+        if effect_command.audit_event.audit_event_id not in (None, command.audit_event_id):
             await self._uow._fail(
                 ConstraintConflictError("Canonical audit identity is invalid.")
             )
-        if command.outbox_intent.event_id not in (None, command.outbox_event_id):
+        if effect_command.outbox_intent.event_id not in (None, command.outbox_event_id):
             await self._uow._fail(
                 ConstraintConflictError("Canonical outbox identity is invalid.")
             )
-        audit_id = await self._uow.audit.append(command.audit_event)
-        event_id = await self._uow.outbox.append(command.outbox_intent)
+        audit_id = await self._uow.audit.append(effect_command.audit_event)
+        event_id = await self._uow.outbox.append(effect_command.outbox_intent)
         if audit_id != command.audit_event_id or event_id != command.outbox_event_id:
             await self._uow._fail(
                 ConstraintConflictError("Canonical evidence identity is invalid.")
@@ -3136,6 +3143,7 @@ class _PostgreSQLIngestionRepository:
         detail = values.pop("safe_detail", None)
         values.pop("safe_detail_digest", None)
         values.pop("retryable", None)
+        values.pop("opaque_detail_ref", None)
         if detail is not None and "schema_version" not in detail:
             detail = {"schema_version": detail_schema, **detail}
         values["safe_detail"] = detail
@@ -3147,6 +3155,7 @@ class _PostgreSQLIngestionRepository:
         detail_schema = values.pop("safe_detail_schema", None)
         detail = values.pop("safe_detail", None)
         values.pop("safe_detail_digest", None)
+        values.pop("opaque_detail_ref", None)
         if detail is not None and "schema_version" not in detail:
             detail = {"schema_version": detail_schema, **detail}
         values["safe_detail"] = detail
@@ -4889,7 +4898,9 @@ class _PostgreSQLProjectionSnapshotMixin:
             if row is None:
                 await self._uow._fail(ConstraintConflictError("Reconciliation replay is unavailable."))
             return ProjectionMutationResult(self._reconciliation(row), True, claim, claim.result)
-        value = command.result
+        value = command.result.model_copy(
+            update={"idempotency_receipt_id": claim.receipt_id}
+        )
         self._scoped(value)
         snapshot = await self.resolve_snapshot(value.projection_snapshot_id)
         if snapshot is None or snapshot.snapshot_state is not ProjectionSnapshotState.FINALIZED:
@@ -5682,6 +5693,23 @@ class _PostgreSQLProjectionRepository(_PostgreSQLProjectionSnapshotMixin, Projec
         ).mappings().one_or_none()
         return self._config(row) if row is not None else None
 
+    async def resolve_config_version_number(
+        self, projection_kind: str, version: int
+    ) -> ProjectionConfigVersion | None:
+        self._uow._guard_active()
+        scope = self._scope()
+        row = (
+            await self._uow._execute(
+                select(_PROJECTION_CONFIGS).where(
+                    _PROJECTION_CONFIGS.c.workspace_id == scope.workspace_id,
+                    _PROJECTION_CONFIGS.c.environment_id == scope.environment_id,
+                    _PROJECTION_CONFIGS.c.projection_kind == projection_kind,
+                    _PROJECTION_CONFIGS.c.version == version,
+                )
+            )
+        ).mappings().one_or_none()
+        return self._config(row) if row is not None else None
+
     async def _resolve_run(self, run_id: UUID, *, for_update: bool = False) -> ProjectionRun | None:
         scope = self._scope()
         query = select(_PROJECTION_RUNS).where(
@@ -6079,6 +6107,80 @@ class _PostgreSQLProjectionRepository(_PostgreSQLProjectionSnapshotMixin, Projec
         return result
 
 
+class _PostgreSQLOriginalUploadRepository:
+    """Persist one complete upload state document behind tenant RLS and CAS."""
+
+    def __init__(self, uow: "PostgreSQLTenantUnitOfWork") -> None:
+        self._uow = uow
+
+    async def add(self, record: OriginalUploadRecord) -> None:
+        self._assert_scope(record)
+        await self._uow._execute(
+            insert(_ORIGINAL_UPLOAD_RECORDS).values(
+                upload_id=record.result.upload_id,
+                workspace_id=record.command.workspace_id,
+                environment_id=record.command.environment_id,
+                record_version=record.record_version,
+                record=record.model_dump(mode="json"),
+            )
+        )
+
+    async def resolve(self, upload_id: UUID) -> OriginalUploadRecord | None:
+        scope = self._environment_scope()
+        row = (
+            await self._uow._execute(
+                select(_ORIGINAL_UPLOAD_RECORDS.c.record).where(
+                    _ORIGINAL_UPLOAD_RECORDS.c.upload_id == upload_id,
+                    _ORIGINAL_UPLOAD_RECORDS.c.workspace_id == scope.workspace_id,
+                    _ORIGINAL_UPLOAD_RECORDS.c.environment_id == scope.environment_id,
+                )
+            )
+        ).scalar_one_or_none()
+        return (
+            OriginalUploadRecord.model_validate_json(json.dumps(row))
+            if row is not None
+            else None
+        )
+
+    async def replace(
+        self,
+        record: OriginalUploadRecord,
+        *,
+        expected_version: int,
+    ) -> None:
+        self._assert_scope(record)
+        changed = await self._uow._execute(
+            update(_ORIGINAL_UPLOAD_RECORDS)
+            .where(
+                _ORIGINAL_UPLOAD_RECORDS.c.upload_id == record.result.upload_id,
+                _ORIGINAL_UPLOAD_RECORDS.c.workspace_id == record.command.workspace_id,
+                _ORIGINAL_UPLOAD_RECORDS.c.environment_id == record.command.environment_id,
+                _ORIGINAL_UPLOAD_RECORDS.c.record_version == expected_version,
+            )
+            .values(
+                record_version=record.record_version,
+                record=record.model_dump(mode="json"),
+            )
+            .returning(_ORIGINAL_UPLOAD_RECORDS.c.upload_id)
+        )
+        if changed.scalar_one_or_none() is None:
+            raise OptimisticConflictError("Original upload state changed concurrently.")
+
+    def _assert_scope(self, record: OriginalUploadRecord) -> None:
+        scope = self._environment_scope()
+        if (
+            record.command.workspace_id != scope.workspace_id
+            or record.command.environment_id != scope.environment_id
+        ):
+            raise InvalidPersistenceContextError("Persistence context is invalid.")
+
+    def _environment_scope(self) -> EnvironmentScope:
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            raise InvalidPersistenceContextError("Persistence context is invalid.")
+        return scope
+
+
 class PostgreSQLTenantUnitOfWork:
     """Own one PostgreSQL session and transaction for one trusted operation."""
 
@@ -6143,6 +6245,7 @@ class PostgreSQLTenantUnitOfWork:
         self._admissions = _PostgreSQLAdmissionRepository(self)
         self._access_policies = _PostgreSQLAccessPolicyRepository(self)
         self._idempotency = _PostgreSQLIdempotencyRepository(self)
+        self._original_uploads = _PostgreSQLOriginalUploadRepository(self)
         self._outbox = _PostgreSQLOutboxWriter(self)
         self._audit = _PostgreSQLAuditWriter(self)
         self._owned_claims: dict[UUID, OwnedIdempotencyClaim] = {}
@@ -6260,6 +6363,11 @@ class PostgreSQLTenantUnitOfWork:
     def idempotency(self) -> _PostgreSQLIdempotencyRepository:
         self._guard_active()
         return self._idempotency
+
+    @property
+    def original_uploads(self) -> _PostgreSQLOriginalUploadRepository:
+        self._guard_active()
+        return self._original_uploads
 
     @property
     def outbox(self) -> _PostgreSQLOutboxWriter:

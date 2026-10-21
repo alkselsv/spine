@@ -681,7 +681,15 @@ class CogneeStructuredRetrieval:
         data_id = next(iter(candidates))
         metadata = data_metadata.get(data_id, {})
         segment_id = metadata.get("segment_id")
-        if segment_id is not None and str(segment_id) != data_id:
+        metadata_data_id = metadata.get("data_id")
+        if (
+            metadata_data_id is not None
+            and str(metadata_data_id) != data_id
+        ) or (
+            metadata_data_id is None
+            and segment_id is not None
+            and str(segment_id) != data_id
+        ):
             raise _RetrievalIssue(
                 ProjectionFailureCode.AMBIGUOUS_EVIDENCE,
                 "dataset_metadata_segment",

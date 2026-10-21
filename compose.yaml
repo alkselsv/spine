@@ -1,0 +1,263 @@
+name: spine
+
+x-app-environment: &app-environment
+  SPINE_DATABASE_URL: postgresql+psycopg://spine_runtime:${SPINE_DATABASE_RUNTIME_PASSWORD}@postgres:5432/spine
+  SPINE_API_CURSOR_SECRET: ${SPINE_API_CURSOR_SECRET}
+  SPINE_API_BUILD_VERSION: ${SPINE_E2E_API_RELEASE_IDENTITY}
+  SPINE_API_ORIGINAL_STORAGE_ROOT: ${SPINE_API_ORIGINAL_STORAGE_ROOT:-/var/lib/spine/originals}
+  SPINE_TEMPORAL_TARGET: temporal:7233
+  SPINE_TEMPORAL_NAMESPACE: default
+  SPINE_TEMPORAL_TASK_QUEUE: spine-r1-qa
+  DB_PROVIDER: postgres
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  DB_NAME: cognee
+  DB_USERNAME: ${SPINE_COGNEE_DATABASE_USERNAME}
+  DB_PASSWORD: ${SPINE_COGNEE_DATABASE_PASSWORD}
+  VECTOR_DB_PROVIDER: pgvector
+  VECTOR_DB_HOST: postgres
+  VECTOR_DB_PORT: "5432"
+  VECTOR_DB_NAME: cognee
+  VECTOR_DB_USERNAME: ${SPINE_COGNEE_DATABASE_USERNAME}
+  VECTOR_DB_PASSWORD: ${SPINE_COGNEE_DATABASE_PASSWORD}
+  GRAPH_DATABASE_PROVIDER: neo4j
+  GRAPH_DATABASE_URL: neo4j://neo4j:7687
+  GRAPH_DATABASE_HOST: neo4j
+  GRAPH_DATABASE_PORT: "7687"
+  GRAPH_DATABASE_USERNAME: neo4j
+  GRAPH_DATABASE_PASSWORD: ${SPINE_NEO4J_PASSWORD}
+  LLM_PROVIDER: ${LLM_PROVIDER}
+  LLM_MODEL: ${LLM_MODEL}
+  LLM_API_KEY: ${LLM_API_KEY}
+  LLM_ENDPOINT: ${LLM_ENDPOINT:-}
+  EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL}
+  EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS}
+  EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+  EMBEDDING_ENDPOINT: ${EMBEDDING_ENDPOINT:-}
+  # Spine enforces tenant access before projection and isolates every physical
+  # namespace. Cognee's optional HTTP-backend ACL has no authenticated user in
+  # this worker process, so leaving its default enabled blocks ingestion.
+  ENABLE_BACKEND_ACCESS_CONTROL: "false"
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.1-pg17-bookworm
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${SPINE_DATABASE_OPERATOR_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    ports:
+      - "127.0.0.1:${SPINE_POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - spine-postgres:/var/lib/postgresql/data
+      - ./docker/postgres/10-cognee-database.sh:/docker-entrypoint-initdb.d/10-cognee-database.sh:ro
+
+  database-bootstrap:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    user: "0:0"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPINE_OPERATOR_DATABASE_URL: postgresql+psycopg://postgres:${SPINE_DATABASE_OPERATOR_PASSWORD}@postgres:5432/postgres
+      SPINE_OPERATOR_DATABASE_DATABASE_NAME: spine
+      SPINE_OPERATOR_DATABASE_MIGRATION_ROLE: spine_migration
+      SPINE_OPERATOR_DATABASE_MIGRATION_PASSWORD: ${SPINE_DATABASE_MIGRATION_PASSWORD}
+      SPINE_OPERATOR_DATABASE_RUNTIME_ROLE: spine_runtime
+      SPINE_OPERATOR_DATABASE_RUNTIME_PASSWORD: ${SPINE_DATABASE_RUNTIME_PASSWORD}
+      SPINE_OPERATOR_DATABASE_DISPATCHER_ROLE: spine_dispatcher
+      SPINE_OPERATOR_DATABASE_DISPATCHER_PASSWORD: ${SPINE_DATABASE_DISPATCHER_PASSWORD}
+      SPINE_MIGRATION_DATABASE_URL: postgresql+psycopg://spine_migration:${SPINE_DATABASE_MIGRATION_PASSWORD}@postgres:5432/spine
+    command:
+      - /bin/sh
+      - -ec
+      - spine-db-bootstrap && spine-db-migrate
+    restart: "no"
+
+  qualification-authority-bootstrap:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      database-bootstrap:
+        condition: service_completed_successfully
+    environment:
+      SPINE_QUALIFICATION_DEPLOYMENT_MODE: development
+      SPINE_QUALIFICATION_MIGRATION_DATABASE_URL: postgresql+psycopg://spine_migration:${SPINE_DATABASE_MIGRATION_PASSWORD}@postgres:5432/spine
+      SPINE_QUALIFICATION_IDENTITY_ID: ${SPINE_E2E_IDENTITY_ID}
+      SPINE_QUALIFICATION_AUTHENTICATION_ALIAS_ISSUER: ${SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_ISSUER}
+      SPINE_QUALIFICATION_AUTHENTICATION_ALIAS_SUBJECT: ${SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_SUBJECT}
+      SPINE_QUALIFICATION_WORKSPACE_A_ID: ${SPINE_E2E_WORKSPACE_A_ID}
+      SPINE_QUALIFICATION_WORKSPACE_B_ID: ${SPINE_E2E_WORKSPACE_B_ID}
+      SPINE_QUALIFICATION_ENVIRONMENT_A_ID: ${SPINE_E2E_ENVIRONMENT_A_ID}
+      SPINE_QUALIFICATION_ENVIRONMENT_B_ID: ${SPINE_E2E_ENVIRONMENT_B_ID}
+    command: ["spine-qualification-bootstrap"]
+    restart: "no"
+
+  original-storage-bootstrap:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    user: "0:0"
+    command: ["/bin/sh", "-ec", "mkdir -p /var/lib/spine/originals && chown 65532:65532 /var/lib/spine/originals"]
+    volumes:
+      - spine-originals:/var/lib/spine/originals
+    restart: "no"
+
+  temporal:
+    image: temporalio/auto-setup:1.28.1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_SEEDS: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PWD: ${SPINE_DATABASE_OPERATOR_PASSWORD}
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "temporal:7233"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+    ports:
+      - "127.0.0.1:${SPINE_TEMPORAL_PORT:-7233}:7233"
+
+  temporal-ui:
+    image: temporalio/ui:2.42.1
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    ports:
+      - "127.0.0.1:${SPINE_TEMPORAL_UI_PORT:-8233}:8080"
+
+  neo4j:
+    build:
+      context: docker/neo4j-cognee
+      dockerfile: Dockerfile
+    environment:
+      NEO4J_AUTH: neo4j/${SPINE_NEO4J_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:7474 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+    ports:
+      - "127.0.0.1:${SPINE_NEO4J_HTTP_PORT:-17474}:7474"
+      - "127.0.0.1:${SPINE_NEO4J_BOLT_PORT:-17687}:7687"
+    volumes:
+      - spine-neo4j:/data
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      database-bootstrap:
+        condition: service_completed_successfully
+      qualification-authority-bootstrap:
+        condition: service_completed_successfully
+      original-storage-bootstrap:
+        condition: service_completed_successfully
+      temporal:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    environment:
+      <<: *app-environment
+      SPINE_LOCAL_AUTH_DEPLOYMENT_MODE: development
+      SPINE_LOCAL_AUTH_CONFIGURATION_VERSION: ${SPINE_E2E_IDENTITY_VERSION}
+      SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_ISSUER: ${SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_ISSUER}
+      SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_SUBJECT: ${SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_SUBJECT}
+      SPINE_LOCAL_AUTH_BEARER_CREDENTIAL: ${SPINE_E2E_ACCESS_TOKEN}
+      SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID: ${SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID}
+      SPINE_API_QA_SERVICE_PRINCIPAL_ID: ${SPINE_QA_WORKER_SERVICE_PRINCIPAL_ID}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/v1/health/live', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    ports:
+      - "127.0.0.1:${SPINE_API_PORT:-18080}:8080"
+    volumes:
+      - ./data/incoming/issue508:/app/data/incoming/issue508:ro
+      - spine-originals:/var/lib/spine/originals
+
+  projection-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      database-bootstrap:
+        condition: service_completed_successfully
+      neo4j:
+        condition: service_healthy
+    environment:
+      <<: *app-environment
+      SPINE_DISPATCHER_DATABASE_URL: postgresql+psycopg://spine_dispatcher:${SPINE_DATABASE_DISPATCHER_PASSWORD}@postgres:5432/spine
+      SPINE_WORKER_SERVICE_PRINCIPAL_ID: ${SPINE_PROJECTION_WORKER_SERVICE_PRINCIPAL_ID}
+      SPINE_WORKER_IDENTITY: projection-worker
+      SPINE_WORKER_LEASE_SECONDS: ${SPINE_WORKER_LEASE_SECONDS:-3600}
+      SPINE_WORKER_HANDLER_TIMEOUT_SECONDS: ${SPINE_WORKER_HANDLER_TIMEOUT_SECONDS:-3500}
+      SPINE_WORKER_TEMPORAL_ADDRESS: temporal:7233
+      SPINE_WORKER_TEMPORAL_NAMESPACE: default
+      SPINE_WORKER_TEMPORAL_TASK_QUEUE: spine-r1-qa
+    command: ["spine-outbox-worker"]
+    tmpfs:
+      - /app/.spine:uid=65532,gid=65532,mode=0700
+    restart: unless-stopped
+
+  qa-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      database-bootstrap:
+        condition: service_completed_successfully
+      qualification-authority-bootstrap:
+        condition: service_completed_successfully
+      temporal:
+        condition: service_healthy
+    environment:
+      <<: *app-environment
+      SPINE_DISPATCHER_DATABASE_URL: postgresql+psycopg://spine_dispatcher:${SPINE_DATABASE_DISPATCHER_PASSWORD}@postgres:5432/spine
+      SPINE_QA_WORKER_SERVICE_PRINCIPAL_ID: ${SPINE_QA_WORKER_SERVICE_PRINCIPAL_ID}
+      SPINE_QA_WORKER_TEMPORAL_ADDRESS: temporal:7233
+      SPINE_QA_WORKER_TEMPORAL_NAMESPACE: default
+      SPINE_QA_WORKER_TEMPORAL_TASK_QUEUE: spine-r1-qa
+      SPINE_QA_WORKER_AUTHORIZATION_GENERATION: "1"
+    command: ["spine-qa-worker"]
+    tmpfs:
+      - /app/.spine:uid=65532,gid=65532,mode=0700
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      SPINE_E2E_ACCESS_TOKEN: ${SPINE_E2E_ACCESS_TOKEN}
+      SPINE_E2E_IDENTITY_VERSION: ${SPINE_E2E_IDENTITY_VERSION}
+      SPINE_E2E_WORKSPACE_A_ID: ${SPINE_E2E_WORKSPACE_A_ID}
+      SPINE_E2E_WORKSPACE_B_ID: ${SPINE_E2E_WORKSPACE_B_ID}
+      SPINE_E2E_ENVIRONMENT_A_ID: ${SPINE_E2E_ENVIRONMENT_A_ID}
+      SPINE_E2E_ENVIRONMENT_B_ID: ${SPINE_E2E_ENVIRONMENT_B_ID}
+    ports:
+      - "127.0.0.1:${SPINE_WEB_PORT:-4175}:8080"
+
+volumes:
+  spine-postgres:
+  spine-neo4j:
+  spine-originals:

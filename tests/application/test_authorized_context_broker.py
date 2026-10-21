@@ -13,6 +13,7 @@ from spine.application.authorized_context_broker import (
     AuthorizedContextRequest,
     InMemoryContextBundleStore,
     SavedContextBundleAccess,
+    _references_by_evidence_id,
     context_bundle_id_for_request,
 )
 from spine.application.qa_observation.context_capture import (
@@ -847,6 +848,23 @@ async def test_allowed_request_persists_exact_bundle_and_replays_without_second_
             environment_id=ENVIRONMENT,
             reference=first.context_bundle_ref,
         )
+
+
+def test_bundle_lineage_indexes_canonical_evidence_not_physical_object_id() -> None:
+    from tests.memory.test_physical_read_plan import _context
+
+    physical_context, _ = _context()
+    reference = physical_context.source_references[0].model_copy(
+        update={
+            "segment_id": "segment-canonical",
+            "projected_object_id": "chunk-physical",
+        }
+    )
+
+    indexed = _references_by_evidence_id((reference,))
+
+    assert set(indexed) == {"segment-canonical"}
+    assert indexed["segment-canonical"].projected_object_id == "chunk-physical"
 
 
 @pytest.mark.asyncio

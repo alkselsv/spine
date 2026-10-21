@@ -1,0 +1,20 @@
+window.__SPINE_RUNTIME__ = Object.freeze({
+  authentication: Object.freeze({
+    status: 'authenticated',
+    role: 'administrator',
+    identityVersion: '${SPINE_E2E_IDENTITY_VERSION}',
+    getBearerCredential: () => '${SPINE_E2E_ACCESS_TOKEN}',
+  }),
+  scope: Object.freeze({
+    defaultWorkspaceId: '${SPINE_E2E_WORKSPACE_A_ID}',
+    defaultEnvironmentId: '${SPINE_E2E_ENVIRONMENT_A_ID}',
+    workspaces: Object.freeze([
+      Object.freeze({ id: '${SPINE_E2E_WORKSPACE_A_ID}', label: 'Workspace A' }),
+      Object.freeze({ id: '${SPINE_E2E_WORKSPACE_B_ID}', label: 'Workspace B' }),
+    ]),
+    environments: Object.freeze([
+      Object.freeze({ id: '${SPINE_E2E_ENVIRONMENT_A_ID}', label: 'Qualification A' }),
+      Object.freeze({ id: '${SPINE_E2E_ENVIRONMENT_B_ID}', label: 'Qualification B' }),
+    ]),
+  }),
+});

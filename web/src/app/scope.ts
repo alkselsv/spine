@@ -8,6 +8,11 @@ export interface Scope {
   workspaceId: WorkspaceId;
 }
 
+export interface ScopeOption<Value extends string> {
+  id: Value;
+  label: string;
+}
+
 export const workspaceOptions = [
   {
     id: '10000000-0000-4000-8000-000000000001',
@@ -24,22 +29,34 @@ export const environmentOptions = [
   { id: '20000000-0000-4000-8000-000000000002', label: ru.scope.environmentStaging },
 ] as const;
 
-export type WorkspaceId = (typeof workspaceOptions)[number]['id'];
-export type EnvironmentId = (typeof environmentOptions)[number]['id'];
+export type WorkspaceId = string;
+export type EnvironmentId = string;
 
 export const DEFAULT_SCOPE: Scope = {
   workspaceId: workspaceOptions[0].id,
   environmentId: environmentOptions[0].id,
 };
 
-export function parseScopeSearch(search: string): Scope {
+export function parseScopeSearch(
+  search: string,
+  options: {
+    defaultScope?: Scope;
+    environmentOptions?: readonly ScopeOption<EnvironmentId>[];
+    workspaceOptions?: readonly ScopeOption<WorkspaceId>[];
+  } = {},
+): Scope {
   const parameters = new URLSearchParams(search);
   const workspaceId = parameters.get('workspace');
   const environmentId = parameters.get('environment');
-  if (isWorkspaceId(workspaceId) && isEnvironmentId(environmentId)) {
+  const allowedWorkspaces = options.workspaceOptions ?? workspaceOptions;
+  const allowedEnvironments = options.environmentOptions ?? environmentOptions;
+  if (
+    isConfiguredId(workspaceId, allowedWorkspaces) &&
+    isConfiguredId(environmentId, allowedEnvironments)
+  ) {
     return { workspaceId, environmentId };
   }
-  return DEFAULT_SCOPE;
+  return options.defaultScope ?? DEFAULT_SCOPE;
 }
 
 export function updateScopeSearch(search: string, scope: Scope): string {
@@ -66,10 +83,9 @@ export function useScope(): ScopeContextValue {
   return value;
 }
 
-function isWorkspaceId(value: string | null): value is WorkspaceId {
-  return workspaceOptions.some((option) => option.id === value);
-}
-
-function isEnvironmentId(value: string | null): value is EnvironmentId {
-  return environmentOptions.some((option) => option.id === value);
+function isConfiguredId<Value extends string>(
+  value: string | null,
+  options: readonly ScopeOption<Value>[],
+): value is Value {
+  return options.some((option) => option.id === value);
 }

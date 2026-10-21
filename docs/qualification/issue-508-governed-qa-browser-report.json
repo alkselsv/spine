@@ -1,0 +1,162 @@
+{
+  "schema_version": "issue-508-governed-qa-browser:v1",
+  "ticket": 508,
+  "status": "pass",
+  "reason_code": null,
+  "qualification_run_id": "issue508-local-046",
+  "deployment": {
+    "api_release_identity": "sha256:ff6e075d6a12a58884e2408af8339953e66b5edcacebbfef74cee25e728903cd",
+    "commit_sha": "e9449d5e88972bf674c5c3d1a1f98fc78af7253c",
+    "deployment_fingerprint": "12af83e7ed9521d27b6e19d2bda06a0a05ce81f6b856cd29a7a426f81a91ac1d",
+    "provider_profile_identity": "provider-local-16f02efe2e3c6bc",
+    "web_release_identity": "sha256:d761c2bba1a817fcf3a3c9344a1e55caf053ad7083ae45be4a0587c96bc0c342"
+  },
+  "scope": {
+    "scope_references": [
+      {
+        "workspace_id": "54400000-0000-4000-8000-00000000000a",
+        "environment_id": "54400000-0000-4000-8000-00000000000e"
+      },
+      {
+        "workspace_id": "54400000-0000-4000-8000-00000000000b",
+        "environment_id": "54400000-0000-4000-8000-00000000000f"
+      }
+    ]
+  },
+  "correlated_references": {
+    "admission_command_ids": [
+      "19ebf4fc-0815-405d-8e7f-d46448576121",
+      "80b1bac1-f47d-4b7e-9d16-c56631ad745e",
+      "c5e1a38f-6028-43b0-bbf4-0227c98f95c8",
+      "63c7606b-847b-43ab-aba6-de517fa99383"
+    ],
+    "ask_run_ids": [
+      "494d7fa8-15f9-4e60-bf0b-8fa12aa6efa5",
+      "d1fb9be2-7d09-4c70-a57d-9a73232ac720",
+      "3b0fb28e-d451-47e4-b0c1-65e0b88b2169",
+      "94c8f8fc-54e4-4a6c-918d-7973c05e29b0"
+    ],
+    "cancellation_run_id": "3b0fb28e-d451-47e4-b0c1-65e0b88b2169",
+    "feedback_ids": [
+      "7476b3ba-b9f9-5164-b777-2139995604f7"
+    ],
+    "ingestion_run_id": "155914fd-02b5-5f20-b264-a689eaf80b54",
+    "session_ids": [
+      "7859ab5c-f0d4-4a16-98a0-6b5d7c31765a",
+      "9bf52e66-48e1-4002-8ad2-9c6490432bf3"
+    ],
+    "source_object_id": "7dfd389d-f61b-5c14-bace-42e117e1e234",
+    "source_revision_id": "2dc3aa7a-b21c-5174-82b8-c65f86809a8c",
+    "workspace_b_source_object_id": "f7523855-cd7b-58bc-8178-e5fe49a1b811",
+    "workspace_b_source_revision_id": "875c06aa-8d6d-5277-a521-498d1937006e",
+    "terminal_run_ids": [
+      "494d7fa8-15f9-4e60-bf0b-8fa12aa6efa5",
+      "d1fb9be2-7d09-4c70-a57d-9a73232ac720",
+      "3b0fb28e-d451-47e4-b0c1-65e0b88b2169",
+      "94c8f8fc-54e4-4a6c-918d-7973c05e29b0"
+    ],
+    "trace_ids": [
+      "2b4e75ba-258e-4bac-a9ff-7460a6ca4527",
+      "c1d4030d-098a-4128-a88f-c46b502977a2",
+      "071814ea-784c-492a-bf9a-67f49efedac0",
+      "2607e7ca-7cff-42c8-9295-318d43b255ba",
+      "3f61c3cd-046e-41bd-9964-43ccd711925a",
+      "acc445f7-0b05-471f-81fe-9ab26221904e",
+      "36d18342-ed2a-4630-af3e-e18fb41a1cd4",
+      "4e38a0d4-e963-4d86-8fd0-0bef7ab16af1",
+      "7f87b1b2-0414-48d9-aa27-b8499a7c3151",
+      "d4e89e3a-5c25-46d2-a3a9-1d5e0748c04c",
+      "116b93ab-a16b-4e7b-ac7d-937c34dfd037",
+      "f08359b1-1f0a-45f1-9a85-dda4a29c0b3d",
+      "8f5bd3d0-4682-482e-9c93-540b8ceeab88",
+      "75fc8b8b-33e6-4765-8211-ff94d59fdda0",
+      "6a5f88c3-0df8-4f4e-bb07-23a623907c4e",
+      "0ece3446-2f39-4069-8510-4a5b1559b74b",
+      "dd59a759-0e83-4ae4-9ade-d3cfa9559197",
+      "39436134-eb26-4fbf-9286-d42cd79881ef",
+      "148f7e25-ec05-49fb-b178-0dd94f1dba7d",
+      "eada2f4e-bb19-4f02-b0f4-1b4ccf1e3d62",
+      "8bc35e5b-f5ea-40f5-bfe0-93ca6ce6d099",
+      "1107e363-de08-4219-9366-32e50ee952a5",
+      "4b157727-dfb9-47a8-8ad7-802b13a73f49",
+      "a3e2e519-9921-498e-be1c-7f2717ea6c36",
+      "f253b631-d349-4368-bde4-22ee6a181716",
+      "30e00e34-357c-41c9-b9a4-977bac55c393",
+      "c5b4b949-4187-4c3e-9469-0e90808c3fbf",
+      "02905f2b-dbda-4b3f-9cac-02a890ce83d9",
+      "535c3844-de88-48b9-b6d9-c653da97a4d2",
+      "39c71bda-77ed-4d4a-8bdc-9589f1c960d0",
+      "c20443ae-045f-4530-b039-702f7dfb0d7e",
+      "b3c0c7ed-c94a-4d28-882d-6e6eb80c0cd7",
+      "542cd02d-fbbb-4baa-a7f8-d30a7748134c",
+      "a454371e-290f-4e0e-866f-ef837051a834",
+      "da0e354c-9d89-4239-869a-3470e74dcd85",
+      "3989da14-e719-4828-be1a-ab74157decd6",
+      "7c7cb2c7-23e1-4a2b-a71c-f081c44412af",
+      "789f8a07-96ed-494c-86d6-90a63abc4ca6",
+      "bc44084f-be15-41f0-a769-b8db23de0138",
+      "11fd094c-f45d-4d2a-855c-f77f69c5bb7e",
+      "e3283752-62dd-4926-9735-2d1a76207612",
+      "7b99b148-ac09-4090-b2a1-a138095b27c3",
+      "686c65c1-e017-4f7f-87b0-6e80a3eba412",
+      "98c363d0-8ef0-4822-bd07-58d2bfb7ac55",
+      "80194b38-2e8d-4001-a7bc-91d6ca87a0de",
+      "4045bf5b-9cf0-46cf-9595-5273dbf023c5",
+      "37851242-f0d0-4e95-97d8-e9b78eb7081b",
+      "fd5a47bb-b9f7-42e2-80b3-1a57c62c78d8",
+      "8dde7252-c496-45d8-ad62-aeb1d22f750a",
+      "e718f4a7-df88-4ca0-a0b3-78a4aa4b6536",
+      "b46b6197-35aa-4973-9cc8-91816c2e2ed9"
+    ]
+  },
+  "scenarios": [
+    "abstention",
+    "answer_citation_feedback_run",
+    "cancellation",
+    "duplicate_retry",
+    "evidence_disclosure_rejection",
+    "safe_ui_states",
+    "session_restoration",
+    "sse_reconnect",
+    "two_workspace_isolation",
+    "upload_active_projection"
+  ],
+  "ui_states": [
+    "degraded",
+    "empty",
+    "loading",
+    "partial",
+    "permission-denied",
+    "stale",
+    "terminal-failure"
+  ],
+  "required_scenarios": [
+    "upload_active_projection",
+    "answer_citation_feedback_run",
+    "duplicate_retry",
+    "sse_reconnect",
+    "session_restoration",
+    "abstention",
+    "cancellation",
+    "two_workspace_isolation",
+    "evidence_disclosure_rejection",
+    "safe_ui_states"
+  ],
+  "citation_locator_validation": "pass",
+  "execution": {
+    "api_mocking": false,
+    "browser": "chromium",
+    "cli_user_actions": false,
+    "controlled_fixture": false,
+    "post_admission_response_disconnect_injected": true,
+    "route_interception": false
+  },
+  "privacy": {
+    "artifact_no_leak_scan": "pass",
+    "content_fields_recorded": false,
+    "sentinel_scan": "pass",
+    "screenshots": false,
+    "trace": false,
+    "video": false
+  }
+}

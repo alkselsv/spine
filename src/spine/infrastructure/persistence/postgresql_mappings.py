@@ -1155,6 +1155,23 @@ qa_answer_disclosure_deliveries = Table(
     ),
 )
 
+original_upload_records = Table(
+    "original_upload_records",
+    metadata,
+    Column("upload_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("record_version", Integer, nullable=False),
+    Column("record", JSONB, nullable=False),
+    PrimaryKeyConstraint("upload_id", name="pk_original_upload_records"),
+    UniqueConstraint(
+        "workspace_id",
+        "environment_id",
+        "upload_id",
+        name="uq_original_upload_records_scope_id",
+    ),
+)
+
 __all__ = [
     "access_policy_grants",
     "access_policy_versions",
@@ -1216,4 +1233,5 @@ __all__ = [
     "qa_disclosure_validation_results",
     "qa_answer_disclosure_records",
     "qa_answer_disclosure_deliveries",
+    "original_upload_records",
 ]

@@ -75,6 +75,7 @@ class PersistedAnswerQuestionAttemptService:
         context: TrustedPersistenceContext,
         run_id: UUID,
         logical_execution_key: str,
+        cancellation: bool = False,
     ) -> AnswerQuestionAttemptAllocationResult:
         context.validate_shape()
         scope = context.scope
@@ -101,6 +102,7 @@ class PersistedAnswerQuestionAttemptService:
                     logical_execution_key=logical_execution_key,
                     execution_pin=pin,
                     input_artifact_ids=run.input_artifact_ids,
+                    cancellation=cancellation,
                 )
             )
             await uow.commit()

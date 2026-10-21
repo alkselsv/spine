@@ -191,9 +191,7 @@ class PersistedQARunHistoryService:
                 return None
             attempts = await uow.answer_question_runs.list_attempts(run.run_id)
             link = await uow.answer_question_runs.resolve_message_link(run.run_id)
-            contexts = tuple(
-                await self._context(uow, attempt) for attempt in attempts
-            )
+            contexts = await self._contexts(uow, attempts)
             evidence, eligible = await self._accepted_evidence(
                 uow.answer_disclosures,
                 run=run,
@@ -223,6 +221,13 @@ class PersistedQARunHistoryService:
             )
         except Exception:
             return None
+
+    async def _contexts(
+        self,
+        uow: object,
+        attempts: tuple[AnswerQuestionAttempt, ...],
+    ) -> tuple[ContextBundle | None, ...]:
+        return tuple([await self._context(uow, attempt) for attempt in attempts])
 
     async def _accepted_evidence(
         self,

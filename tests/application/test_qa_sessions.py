@@ -512,3 +512,26 @@ async def test_sessions_and_messages_are_isolated_between_workspace_environments
     assert tuple(item.session_id for item in first_scope.items) == (first.value.session_id,)
     assert tuple(item.session_id for item in second_scope.items) == (second.value.session_id,)
     assert foreign_message is None
+
+
+@pytest.mark.asyncio
+async def test_empty_message_page_returns_safe_empty_result():
+    qa, _ = service()
+    requester = QASessionRequester(SUBJECT_ID)
+    session = await qa.create_session(
+        context=context(),
+        requester=requester,
+        idempotency_key=IdempotencyKey("empty-message-page"),
+    )
+
+    page = await qa.list_messages(
+        context=context(),
+        requester=requester,
+        session_id=session.value.session_id,
+        limit=10,
+        after=None,
+    )
+
+    assert page is not None
+    assert page.items == ()
+    assert page.has_more is False

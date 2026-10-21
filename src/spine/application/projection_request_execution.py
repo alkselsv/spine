@@ -8,6 +8,7 @@ hands the adapter result to the approved Issue #208 mapping bridge.
 from __future__ import annotations
 
 from collections.abc import Callable
+import logging
 from types import TracebackType
 from typing import Literal, Protocol
 from uuid import UUID
@@ -70,6 +71,19 @@ from spine.domain.projections import (
 from spine.domain.sources import RevisionKind
 
 
+_LOGGER = logging.getLogger(__name__)
+
+
+def _log_mapping_rejection(stage: str, error: ProjectionMappingError) -> None:
+    """Record only the bounded internal rejection reason, never provider payloads."""
+
+    _LOGGER.warning(
+        "Projection request canonical mapping rejected at %s: %s",
+        stage,
+        error,
+    )
+
+
 class ProjectionRequestEnvelope(BaseModel):
     """Content-free canonical lookup input reconstructed from one outbox intent."""
 
@@ -98,7 +112,7 @@ class CanonicalProjectionRequestContext(BaseModel):
     projection_candidate: ProjectionCandidate
     projection_config: ProjectionConfigVersion
     canonical_boundary: CanonicalBoundary
-    source_revision: ProjectionSourceRevision
+    source_revisions: tuple[ProjectionSourceRevision, ...]
     physical_namespace: ProjectionNamespace
     command_identity: str
     command_digest: str
@@ -245,7 +259,11 @@ class PersistenceCanonicalProjectionRequestResolver:
                 run.workspace_id != request.workspace_id
                 or run.environment_id != request.environment_id
                 or run.operation is not CanonicalProjectionOperation.BUILD
-                or run.candidate_state is not ProjectionCandidateState.OPEN
+                or run.candidate_state
+                not in {
+                    ProjectionCandidateState.OPEN,
+                    ProjectionCandidateState.SEALED,
+                }
             ):
                 self._reject()
 
@@ -271,9 +289,15 @@ class PersistenceCanonicalProjectionRequestResolver:
             ):
                 self._reject()
             members = await uow.boundaries.resolve_members(boundary.boundary_id)
-            if len(members) != 1:
+            matching_members = tuple(
+                value
+                for value in members
+                if value.source_object_id == revision.source_object_id
+                and value.source_revision_id == revision.revision_id
+            )
+            if len(matching_members) != 1:
                 self._reject()
-            member = members[0]
+            member = matching_members[0]
             if (
                 member.boundary_id != boundary.boundary_id
                 or member.workspace_id != run.workspace_id
@@ -324,6 +348,89 @@ class PersistenceCanonicalProjectionRequestResolver:
                     canonical_boundary=canonical_boundary,
                 )
             )
+            projection_sources: list[ProjectionSourceRevision] = []
+            for boundary_member in members:
+                if boundary_member.revision_kind is not RevisionKind.CONTENT:
+                    continue
+                boundary_revision = await uow.sources.resolve_revision(
+                    boundary_member.source_revision_id
+                )
+                boundary_current = await uow.canonical.resolve_current(
+                    boundary_member.source_object_id
+                )
+                bindings = await uow.ingestion.list_bindings_for_source_revision(
+                    boundary_member.source_object_id,
+                    boundary_member.source_revision_id,
+                )
+                receipt_values = []
+                for source_binding in bindings:
+                    candidate_receipt = (
+                        await uow.ingestion.resolve_processing_receipt(
+                            source_binding.ingestion_run_source_id
+                        )
+                    )
+                    if (
+                        candidate_receipt is not None
+                        and candidate_receipt.coverage
+                        is not ProcessingCoverage.FAILED
+                        and candidate_receipt.output_reference is not None
+                        and candidate_receipt.output_digest is not None
+                    ):
+                        receipt_values.append(candidate_receipt)
+                receipts = tuple(receipt_values)
+                if (
+                    boundary_revision is None
+                    or boundary_current is None
+                    or boundary_current.current_revision_id
+                    != boundary_member.source_revision_id
+                    or boundary_current.current_revision_kind is not RevisionKind.CONTENT
+                    or boundary_current.accepted_generation
+                    != boundary_member.accepted_generation
+                    or not receipts
+                ):
+                    self._reject()
+                selected_receipt = (
+                    receipt
+                    if boundary_member.source_revision_id == payload.source_revision_id
+                    else max(
+                        receipts,
+                        key=lambda value: (
+                            value.completed_at,
+                            value.processing_receipt_id.hex,
+                        ),
+                    )
+                )
+                if selected_receipt not in receipts:
+                    self._reject()
+                if (
+                    boundary_revision.source_object_id
+                    != boundary_member.source_object_id
+                    or boundary_revision.workspace_id != run.workspace_id
+                    or boundary_revision.environment_id != run.environment_id
+                    or boundary_revision.kind is not RevisionKind.CONTENT
+                    or boundary_revision.original_sha256
+                    != selected_receipt.original_sha256
+                    or selected_receipt.locator_contract_version
+                    != config.locator_contract_version
+                ):
+                    self._reject()
+                projection_sources.append(
+                    ProjectionSourceRevision(
+                        source_object_id=boundary_revision.source_object_id,
+                        source_revision_id=boundary_revision.revision_id,
+                        revision_digest=boundary_revision.revision_digest,
+                        revision_number=boundary_member.accepted_generation,
+                        status="current",
+                        processing_receipt_id=(
+                            selected_receipt.processing_receipt_id
+                        ),
+                        locator_contract_version=(
+                            selected_receipt.locator_contract_version
+                        ),
+                    )
+                )
+            if not projection_sources:
+                self._reject()
             return CanonicalProjectionRequestContext(
                 workspace_id=run.workspace_id,
                 environment_id=run.environment_id,
@@ -331,14 +438,11 @@ class PersistenceCanonicalProjectionRequestResolver:
                 projection_candidate=candidate,
                 projection_config=projection_config,
                 canonical_boundary=canonical_boundary,
-                source_revision=ProjectionSourceRevision(
-                    source_object_id=revision.source_object_id,
-                    source_revision_id=revision.revision_id,
-                    revision_digest=revision.revision_digest,
-                    revision_number=member.accepted_generation,
-                    status="current",
-                    processing_receipt_id=receipt.processing_receipt_id,
-                    locator_contract_version=receipt.locator_contract_version,
+                source_revisions=tuple(
+                    sorted(
+                        projection_sources,
+                        key=lambda value: value.source_object_id.hex,
+                    )
                 ),
                 physical_namespace=physical_namespace,
                 command_identity=partition.expected_command_identity,
@@ -375,6 +479,12 @@ class ProjectionResultRecorder(Protocol):
     ) -> ProjectionMappingResult: ...
 
 
+class ProjectionRequestCompletion(Protocol):
+    """Finish a mapped projection without hiding durable publication work."""
+
+    async def complete(self, mapping: ProjectionMappingResult) -> None: ...
+
+
 class ProjectionRequestConsumer:
     """Consume one committed per-source projection request at least once."""
 
@@ -385,12 +495,14 @@ class ProjectionRequestConsumer:
         projection: ContextProjection,
         receipt_builder: AdapterProjectionReceiptBuilder,
         result_bridge: ProjectionResultRecorder,
+        completion: ProjectionRequestCompletion | None = None,
         operational_observer: OperationalObservationEmitter | None = None,
     ) -> None:
         self._canonical_resolver = canonical_resolver
         self._projection = projection
         self._receipt_builder = receipt_builder
         self._result_bridge = result_bridge
+        self._completion = completion
         self._operational_observer = operational_observer
 
     async def consume(
@@ -406,7 +518,8 @@ class ProjectionRequestConsumer:
             raise TerminalOutboxConsumerFailure(
                 "projection.request.integrity_conflict"
             ) from None
-        except ProjectionMappingError:
+        except ProjectionMappingError as error:
+            _log_mapping_rejection("resolution", error)
             await self._observe_projection_failure(request, diagnostic_context)
             raise TerminalOutboxConsumerFailure(
                 "projection.request.canonical_rejected"
@@ -435,7 +548,7 @@ class ProjectionRequestConsumer:
             projection_candidate=canonical.projection_candidate,
             projection_config=canonical.projection_config,
             canonical_boundary=canonical.canonical_boundary,
-            source_revisions=(canonical.source_revision,),
+            source_revisions=canonical.source_revisions,
             physical_namespace=canonical.physical_namespace,
             command_identity=canonical.command_identity,
             command_digest=canonical.command_digest,
@@ -451,7 +564,8 @@ class ProjectionRequestConsumer:
             raise TerminalOutboxConsumerFailure(
                 "projection.request.integrity_conflict"
             ) from None
-        except ProjectionMappingError:
+        except ProjectionMappingError as error:
+            _log_mapping_rejection("preparation", error)
             await self._observe_projection_failure(
                 request, diagnostic_context, command=command
             )
@@ -465,7 +579,10 @@ class ProjectionRequestConsumer:
             raise RetryableOutboxConsumerFailure(
                 "projection.request.resolution_retryable"
             ) from None
-        if replay is ProjectionPreparationStatus.RECORDED:
+        if (
+            replay is ProjectionPreparationStatus.RECORDED
+            and self._completion is None
+        ):
             return OutboxConsumerSuccess(diagnostic_context=diagnostic_context)
 
         # Physical projection is deliberately outside every PostgreSQL UnitOfWork.
@@ -496,7 +613,7 @@ class ProjectionRequestConsumer:
             )
             if result.failure.code is ProjectionFailureCode.INTEGRITY_CONFLICT:
                 raise TerminalOutboxConsumerFailure(
-                    "projection.request.integrity_conflict"
+                    "projection.request.physical_integrity_conflict"
                 )
             if result.failure.retryable:
                 raise RetryableOutboxConsumerFailure(
@@ -507,7 +624,9 @@ class ProjectionRequestConsumer:
             )
         try:
             receipt = await self._receipt_builder.build(command, result)
-            await self._result_bridge.map(command, receipt)
+            mapping = await self._result_bridge.map(command, receipt)
+            if self._completion is not None:
+                await self._completion.complete(mapping)
         except ProjectionMappingConflictError:
             await self._observe_projection_failure(
                 request, diagnostic_context, command=command
@@ -515,7 +634,8 @@ class ProjectionRequestConsumer:
             raise TerminalOutboxConsumerFailure(
                 "projection.request.integrity_conflict"
             ) from None
-        except ProjectionMappingError:
+        except ProjectionMappingError as error:
+            _log_mapping_rejection("handoff", error)
             await self._observe_projection_failure(
                 request, diagnostic_context, command=command
             )
@@ -631,13 +751,21 @@ class ProjectionRequestConsumer:
         if (
             command.workspace_id != request.workspace_id
             or command.environment_id != request.environment_id
-            or len(command.source_revisions) != 1
-            or command.source_revisions[0].source_revision_id
-            != payload.source_revision_id
-            or command.source_revisions[0].processing_receipt_id
-            != payload.processing_receipt_id
-            or command.source_revisions[0].locator_contract_version
+            or len(command.source_revisions) < 1
+        ):
+            raise TerminalOutboxConsumerFailure("projection.request.context_invalid")
+        requested = tuple(
+            source
+            for source in command.source_revisions
+            if source.source_revision_id == payload.source_revision_id
+        )
+        if (
+            len(requested) != 1
+            or requested[0].processing_receipt_id != payload.processing_receipt_id
+            or requested[0].locator_contract_version
             != payload.locator_contract_version
+            or len({item.source_object_id for item in command.source_revisions})
+            != len(command.source_revisions)
         ):
             raise TerminalOutboxConsumerFailure("projection.request.context_invalid")
 

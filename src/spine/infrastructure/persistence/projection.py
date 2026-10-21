@@ -209,6 +209,22 @@ class InMemoryProjectionRepository(ProjectionRepository):
         value = self._all("_base_projection_configs", "_pending_projection_configs").get(config_id)
         return self._copy(value) if value is not None and self._in_scope(value) else None
 
+    async def resolve_config_version_number(
+        self, projection_kind: str, version: int
+    ) -> ProjectionConfigVersion | None:
+        self._uow._guard_active()
+        values = (
+            item
+            for item in self._all(
+                "_base_projection_configs", "_pending_projection_configs"
+            ).values()
+            if self._in_scope(item)
+            and item.projection_kind == projection_kind
+            and item.version == version
+        )
+        value = next(values, None)
+        return self._copy(value) if value is not None else None
+
     async def create_run(self, command: ProjectionRunCommand) -> ProjectionMutationResult:
         self._uow._guard_active()
         claim = await self._uow.idempotency.claim(

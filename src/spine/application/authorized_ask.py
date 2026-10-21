@@ -159,6 +159,7 @@ class AskExecutionCommand:
     idempotency_key: IdempotencyKey
     logical_execution_key: str | None = None
     capture_subscription: AskCaptureSubscription | None = None
+    cancelled: bool = False
 
     def __post_init__(self) -> None:
         if any(
@@ -202,6 +203,7 @@ class AnswerQuestionCapabilityCommand:
     attempt_number: int | None = None
     execution_pin: AnswerQuestionExecutionPin | None = None
     capture_subscription: AskCaptureSubscription | None = None
+    cancelled: bool = False
 
     def __post_init__(self) -> None:
         if self.run_id is None:
@@ -301,6 +303,7 @@ class AnswerQuestionAttemptApplication(Protocol):
         context: TrustedPersistenceContext,
         run_id: UUID,
         logical_execution_key: str,
+        cancellation: bool = False,
     ) -> AnswerQuestionAttemptAllocationResult: ...
 
     async def resolve_terminal_result(
@@ -471,6 +474,7 @@ class PersistedAuthorizedAskService:
                 context=command.persistence_context,
                 run_id=command.run_id,
                 logical_execution_key=command.logical_execution_key,
+                cancellation=command.cancelled,
             )
             if allocated.attempt.state is not AnswerQuestionAttemptState.RUNNING:
                 terminal = await self.attempts.resolve_terminal_result(
@@ -537,6 +541,7 @@ class PersistedAuthorizedAskService:
                     allocated.attempt.execution_pin if allocated is not None else None
                 ),
                 capture_subscription=command.capture_subscription,
+                cancelled=command.cancelled,
             )
         )
         _validate_capability_scope(command.request_context, capability)

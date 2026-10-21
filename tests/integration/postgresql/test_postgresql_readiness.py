@@ -30,7 +30,7 @@ DISPATCHER_ROLE = "spine_dispatcher"
 MIGRATION_PASSWORD = "migration-readiness-secret"
 RUNTIME_PASSWORD = "runtime-readiness-secret"
 DISPATCHER_PASSWORD = "dispatcher-readiness-secret"
-HEAD_REVISION = "20261107_44"
+HEAD_REVISION = "20261118_55"
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +147,22 @@ async def test_runtime_is_ready_at_exact_supported_head(
 
     assert resources is runtime.resources
     await runtime.shutdown()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_runtime_can_resolve_tenant_scoped_authorization_generation(
+    readiness_database: ReadinessDatabase,
+) -> None:
+    async with _connection(readiness_database.runtime_url) as connection:
+        allowed = await connection.scalar(
+            text(
+                "SELECT has_function_privilege(current_user, "
+                "'spine.resolve_current_authorization_generation(uuid,uuid)', "
+                "'EXECUTE')"
+            )
+        )
+
+    assert allowed is True
 
 
 @pytest.mark.parametrize(

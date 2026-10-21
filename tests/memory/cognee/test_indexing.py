@@ -110,11 +110,45 @@ class FakeCogneeSdk:
         self.calls.append((name, payload))
 
 
-def parsed_document(content: bytes, revision_id: UUID) -> tuple[SourceRevision, ParsedDocument]:
+class DatasetScopedIdentityCogneeSdk(FakeCogneeSdk):
+    """Model Cognee's rule that one data ID belongs to only one dataset."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._datasets_by_data_id: dict[UUID, str] = {}
+
+    async def add(
+        self,
+        *,
+        data: list[FakeDataItem],
+        dataset_name: str,
+        dataset_id: UUID | None,
+        node_set: list[str],
+    ) -> dict[str, object]:
+        for item in data:
+            existing = self._datasets_by_data_id.get(item.data_id)
+            if existing is not None and existing != dataset_name:
+                raise RuntimeError("data id is not available in the target dataset")
+        for item in data:
+            self._datasets_by_data_id[item.data_id] = dataset_name
+        return await super().add(
+            data=data,
+            dataset_name=dataset_name,
+            dataset_id=dataset_id,
+            node_set=node_set,
+        )
+
+
+def parsed_document(
+    content: bytes,
+    revision_id: UUID,
+    *,
+    source_object_id: UUID = SOURCE_OBJECT_ID,
+) -> tuple[SourceRevision, ParsedDocument]:
     digest = sha256(content).hexdigest()
     source_revision = content_revision(
         revision_id=revision_id,
-        source_object_id=SOURCE_OBJECT_ID,
+        source_object_id=source_object_id,
         workspace_id=WORKSPACE_ID,
         environment_id=ENVIRONMENT_ID,
         kind="content",
@@ -144,10 +178,13 @@ def effect(
     action: ProjectionEffectAction = ProjectionEffectAction.UPSERT_SOURCE,
     operation: ProjectionOperation | None = None,
     command_digest: str | None = None,
+    candidate_id: UUID = CANDIDATE_ID,
+    run_id: UUID = RUN_ID,
+    boundary_id: UUID = BOUNDARY_ID,
 ) -> ProjectionEffect:
     candidate = ProjectionCandidate(
-        candidate_id=CANDIDATE_ID,
-        run_id=RUN_ID,
+        candidate_id=candidate_id,
+        run_id=run_id,
         partition_id=PARTITION_ID,
     )
     config = ProjectionConfigVersion(
@@ -158,7 +195,7 @@ def effect(
         adapter_contract_version="context-projection:v1",
     )
     boundary = CanonicalBoundary(
-        boundary_id=BOUNDARY_ID,
+        boundary_id=boundary_id,
         boundary_digest="e" * 64,
         accepted_through_generation=1,
     )
@@ -188,7 +225,7 @@ def effect(
         projection_config=config,
         canonical_boundary=boundary,
         physical_namespace=namespace,
-        source_object_id=SOURCE_OBJECT_ID,
+        source_object_id=source_revision.source_object_id,
         source_revision_id=source_revision.revision_id,
         revision_digest=source_revision.revision_digest,
         revision_number=revision_number,
@@ -234,6 +271,27 @@ async def test_indexing_preserves_revision_locator_and_namespace_provenance() ->
 
 
 @pytest.mark.asyncio
+async def test_indexing_resolves_durable_artifact_when_not_preloaded() -> None:
+    source_revision, document = parsed_document(b"durable artifact\n", REVISION_ID)
+    resolved_effects: list[ProjectionEffect] = []
+
+    async def resolve(command_effect: ProjectionEffect) -> ParsedDocument:
+        resolved_effects.append(command_effect)
+        return document
+
+    store = CogneeChunkProjectionStore(
+        sdk=FakeCogneeSdk(),
+        artifact_resolver=resolve,
+    )
+    command_effect = effect(source_revision=source_revision)
+
+    result = await store.apply(command_effect)
+
+    assert result.status is ProjectionEffectStatus.APPLIED
+    assert resolved_effects == [command_effect]
+
+
+@pytest.mark.asyncio
 async def test_same_effect_replays_without_a_second_physical_write() -> None:
     source_revision, document = parsed_document(b"first line\n", REVISION_ID)
     sdk = FakeCogneeSdk()
@@ -246,6 +304,77 @@ async def test_same_effect_replays_without_a_second_physical_write() -> None:
     assert first.status is ProjectionEffectStatus.APPLIED
     assert replay.status is ProjectionEffectStatus.REPLAYED
     assert [name for name, _ in sdk.calls] == ["add", "cognify"]
+
+
+@pytest.mark.asyncio
+async def test_one_projection_command_writes_every_source_effect() -> None:
+    second_source_id = UUID("20000000-0000-4000-8000-000000000002")
+    first_revision, first_document = parsed_document(b"first source\n", REVISION_ID)
+    second_revision, second_document = parsed_document(
+        b"second source\n",
+        NEXT_REVISION_ID,
+        source_object_id=second_source_id,
+    )
+    sdk = FakeCogneeSdk()
+    store = CogneeChunkProjectionStore(
+        sdk=sdk,
+        artifacts={
+            REVISION_ID: first_document,
+            NEXT_REVISION_ID: second_document,
+        },
+    )
+    first = effect(source_revision=first_revision, command_digest="a" * 64)
+    second = effect(
+        source_revision=second_revision,
+        command_digest="a" * 64,
+    ).model_copy(update={"effect_id": "effect-second-source"})
+
+    first_result = await store.apply(first)
+    second_result = await store.apply(second)
+
+    assert first_result.status is ProjectionEffectStatus.APPLIED
+    assert second_result.status is ProjectionEffectStatus.APPLIED
+    assert [name for name, _ in sdk.calls] == [
+        "add",
+        "cognify",
+        "add",
+        "cognify",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_same_revision_can_be_projected_into_a_successor_candidate_dataset() -> None:
+    source_revision, document = parsed_document(b"candidate rebuild\n", REVISION_ID)
+    sdk = DatasetScopedIdentityCogneeSdk()
+    store = CogneeChunkProjectionStore(sdk=sdk, artifacts={REVISION_ID: document})
+    first = effect(source_revision=source_revision)
+    successor = effect(
+        source_revision=source_revision,
+        candidate_id=UUID("60000000-0000-4000-8000-000000000002"),
+        run_id=UUID("50000000-0000-4000-8000-000000000002"),
+        boundary_id=UUID("90000000-0000-4000-8000-000000000002"),
+    ).model_copy(update={"effect_id": "effect-successor", "command_identity": "project-2"})
+
+    initial = await store.apply(first)
+    rebuilt = await store.apply(successor)
+
+    assert initial.status is ProjectionEffectStatus.APPLIED
+    assert rebuilt.status is ProjectionEffectStatus.APPLIED
+    add_calls = [payload for name, payload in sdk.calls if name == "add"]
+    assert add_calls[0]["dataset_name"] != add_calls[1]["dataset_name"]
+    assert {
+        item.data_id
+        for payload in add_calls
+        for item in payload["data"]
+    } == {
+        mapping.data_id
+        for namespace in (first.physical_namespace, successor.physical_namespace)
+        for mapping in await store.physical_artifacts_for(
+            workspace_id=WORKSPACE_ID,
+            environment_id=ENVIRONMENT_ID,
+            namespace_digest=namespace.namespace_digest,
+        )
+    }
 
 
 @pytest.mark.asyncio
@@ -288,7 +417,8 @@ async def test_update_uses_cognee_update_and_keeps_data_identity_for_shared_chun
     assert result.status is ProjectionEffectStatus.APPLIED
     update_calls = [payload for name, payload in sdk.calls if name == "update"]
     assert len(update_calls) == 2
-    assert update_calls[0]["data_id"] == current_document.segments[0].segment_id
+    first_add = next(payload for name, payload in sdk.calls if name == "add")
+    assert update_calls[0]["data_id"] == first_add["data"][0].data_id
     assert update_calls[0]["data"].data == "firsx"
 
 

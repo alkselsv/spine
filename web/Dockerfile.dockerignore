@@ -1,0 +1,16 @@
+# The web image is built from the repository root, but it only needs the
+# workspace manifests, frontend sources and runtime nginx templates.
+**
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!web
+!web/**
+!docker
+!docker/web
+!docker/web/**
+
+web/node_modules
+web/dist
+web/test-results
+web/playwright-report

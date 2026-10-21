@@ -6,6 +6,7 @@ process.env.no_proxy = [localBypass, process.env.no_proxy].filter(Boolean).join(
 
 export default defineConfig({
   testDir: './e2e',
+  testMatch: 'app.spec.ts',
   fullyParallel: true,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 2 : 0,

@@ -581,7 +581,7 @@ async def test_missing_per_object_provenance_is_rejected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_omitted_assigned_boundary_member_is_rejected() -> None:
+async def test_partition_command_may_project_one_member_of_workspace_boundary() -> None:
     command = _command()
     context = _context(command)
     omitted = context.boundary_members[0].model_copy(
@@ -599,8 +599,9 @@ async def test_omitted_assigned_boundary_member_is_rejected() -> None:
         id_source=iter((UUID(int=30),)).__next__,
     )
 
-    with pytest.raises(ProjectionMappingError, match="exact assigned boundary"):
-        await bridge.map(command, _adapter_receipt(command))
+    result = await bridge.map(command, _adapter_receipt(command))
+
+    assert result.handoff.command.source_revisions == command.source_revisions
 
 
 @pytest.mark.asyncio

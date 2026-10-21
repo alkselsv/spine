@@ -34,4 +34,23 @@ describe('structured API error presentation', () => {
     expect(result.description).not.toContain('raw provider');
     expect(result.traceId).toBe('50000000-0000-4000-8000-000000000001');
   });
+
+  it('test_disclosure_safe_not_found_maps_to_the_same_permission_denied_copy', () => {
+    const result = localizeApiError(
+      new SpineApiError({
+        code: 'spine.qa.session.not_found',
+        kind: 'request',
+        retryability: 'never',
+        safeMessage: 'resource state must remain undisclosed',
+        status: 404,
+        traceId: '50000000-0000-4000-8000-000000000002',
+      }),
+    );
+
+    expect(result).toMatchObject({
+      state: 'permissionDenied',
+      title: 'Доступ запрещён',
+    });
+    expect(result.description).not.toContain('resource');
+  });
 });

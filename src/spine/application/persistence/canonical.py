@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
 import re
@@ -57,7 +57,9 @@ class CanonicalAcceptanceOutboxPayload(BaseModel):
     canonical_acceptance_id: UUID
     source_object_id: UUID
     source_revision_id: UUID
-    accepted_generation: int = Field(ge=1)
+    # The repository binds this value while holding the workspace generation
+    # counter lock. A caller cannot safely predict it before the transaction.
+    accepted_generation: int | None = Field(default=None, ge=1)
     audit_event_id: UUID
     transition: Literal["source.accepted", "source.reappeared", "source.tombstoned"]
 
@@ -311,6 +313,31 @@ class CanonicalAcceptanceCommand:
         )
 
 
+def bind_canonical_acceptance_generation(
+    command: CanonicalAcceptanceCommand,
+    accepted_generation: int,
+) -> CanonicalAcceptanceCommand:
+    """Bind transaction-assigned generation into canonical outbox evidence."""
+
+    if accepted_generation < 1 or command.outbox_intent is None:
+        raise ValueError("Canonical accepted generation cannot be bound.")
+    payload = command.outbox_intent.payload
+    if not isinstance(payload, CanonicalAcceptanceOutboxPayload):
+        raise ValueError("Canonical outbox payload cannot be bound.")
+    if payload.accepted_generation is not None:
+        return command
+    return replace(
+        command,
+        outbox_intent=command.outbox_intent.model_copy(
+            update={
+                "payload": payload.model_copy(
+                    update={"accepted_generation": accepted_generation}
+                )
+            }
+        ),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class CanonicalAcceptanceResult:
     source: SourceObject
@@ -351,6 +378,7 @@ __all__ = [
     "SourceOrderComparison",
     "SourceOrderingPolicyError",
     "SourceOrderingPolicyRegistry",
+    "bind_canonical_acceptance_generation",
     "canonical_transition_for_revision",
     "validate_canonical_acceptance_effects",
 ]

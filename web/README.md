@@ -55,6 +55,7 @@ pnpm web:typecheck # strict TypeScript
 pnpm web:build     # static SPA production build
 pnpm web:test      # Vitest + Testing Library
 pnpm web:test:e2e  # Playwright against a controlled Vite preview
+pnpm --dir web test:e2e:production # opt-in deployed-backend qualification
 pnpm web:check     # all frontend checks in sequence
 ```
 
@@ -76,6 +77,10 @@ pnpm --dir web exec playwright install --with-deps chromium
 
 `pnpm web:test:e2e` запускает собранную SPA в Chromium. Тестовые URL с
 `fixture=controlled` включают только синтетический API/SSE boundary для
-квалификации foundation; этот режим не является авторизацией и не заменяет
-будущую интеграцию с Issue #26. Описание сценариев находится в
+квалификации foundation; этот режим не является авторизацией и не считается production evidence.
+Опциональная `test:e2e:production` команда работает только с уже развёрнутым Web/API и
+требует доверенные `SPINE_E2E_*` bindings; она не поднимает preview server и не перехватывает API.
+Описание контролируемых сценариев находится в
 [`docs/design/issue-167-frontend-qualification.md`](../docs/design/issue-167-frontend-qualification.md).
+Живая R1-квалификация и формат metadata-only отчёта описаны в
+[`docs/runbooks/r1-governed-qa-browser-qualification.md`](../docs/runbooks/r1-governed-qa-browser-qualification.md).

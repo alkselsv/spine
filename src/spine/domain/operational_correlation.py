@@ -113,7 +113,7 @@ class OperationalCorrelationRecord(ValidatedDefinitionModel):
     metric_denominator: int | None = Field(default=None, ge=0)
     metric_currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
 
-    delivery_status: Literal["quarantined"] | None = None
+    delivery_status: Literal["delivered", "quarantined"] | None = None
     delivery_attempt_count: int | None = Field(default=None, ge=1)
     delivery_created_at: datetime | None = None
     delivery_updated_at: datetime | None = None
@@ -159,10 +159,16 @@ class OperationalCorrelationRecord(ValidatedDefinitionModel):
             if self.metric_measurement is None or self.metric_coverage is None:
                 raise ValueError("metric records require measurement and coverage")
         elif self.source_kind is CorrelationSourceKind.DELIVERY:
-            if self.delivery_event_id != self.source_record_id or self.delivery_status != "quarantined":
-                raise ValueError("delivery records require quarantined delivery metadata")
-            if self.delivery_attempt_count is None or self.delivery_quarantined_at is None:
-                raise ValueError("delivery records require bounded quarantine metadata")
+            if self.delivery_event_id != self.source_record_id:
+                raise ValueError("delivery records require exact delivery identity")
+            if self.delivery_attempt_count is None:
+                raise ValueError("delivery records require bounded attempt metadata")
+            if self.delivery_status == "delivered" and self.delivery_updated_at is None:
+                raise ValueError("delivered records require a terminal timestamp")
+            if self.delivery_status == "quarantined" and self.delivery_quarantined_at is None:
+                raise ValueError("quarantined records require a terminal timestamp")
+            if self.delivery_status not in {"delivered", "quarantined"}:
+                raise ValueError("delivery records require a terminal status")
         elif self.source_kind is CorrelationSourceKind.RUN:
             if self.run_id != self.source_record_id or self.run_state is None:
                 raise ValueError("run records require canonical run identity and state")

@@ -1,0 +1,32 @@
+server {
+    listen 8080;
+    server_name _;
+
+    # Docker service IPs change when Compose recreates a dependency. Resolve
+    # the API name at request time instead of pinning nginx to its startup IP.
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    set $spine_api http://api:8080;
+
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy no-referrer always;
+    add_header Cache-Control "no-store" always;
+
+    location /api/ {
+        proxy_pass $spine_api;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /health {
+        proxy_pass $spine_api;
+    }
+
+    location / {
+        root /usr/share/nginx/html;
+        try_files $uri $uri/ /index.html;
+    }
+}

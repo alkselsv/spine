@@ -2577,7 +2577,7 @@ export interface components {
             /** Delivery Quarantined At */
             delivery_quarantined_at?: string | null;
             /** Delivery Status */
-            delivery_status?: "quarantined" | null;
+            delivery_status?: ("delivered" | "quarantined") | null;
             /** Delivery Updated At */
             delivery_updated_at?: string | null;
             /**

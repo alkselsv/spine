@@ -540,7 +540,7 @@ def _context(value) -> QARunContextResponse:
         projection_activation_id=value.projection_activation.projection_activation_id,
         activation_generation=value.activation_generation,
         canonical_boundary_id=value.canonical_boundary.boundary_id,
-        canonical_boundary_digest=value.canonical_boundary.boundary_digest,
+        canonical_boundary_digest=value.canonical_boundary.manifest_digest,
         canonical_as_of_generation=value.canonical_as_of.accepted_through_generation,
         canonical_as_of_time=value.canonical_as_of.boundary_time,
         freshness=value.freshness.value,

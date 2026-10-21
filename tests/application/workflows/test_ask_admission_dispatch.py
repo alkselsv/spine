@@ -501,6 +501,114 @@ async def test_workflow_executor_does_not_emit_duration_for_incomplete_attempt()
 
 
 @pytest.mark.asyncio
+async def test_workflow_executor_uses_current_authorization_generation() -> None:
+    command = AskAdmissionCommandData(
+        command_id=COMMAND_ID,
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        session_id=SESSION_ID,
+        message_id=MESSAGE_ID,
+        run_id=RUN_ID,
+        question="secret question",
+        subject=ActorRef(kind=ActorKind.HUMAN, id=UUID(int=427)),
+        environment=EnvironmentKind.PRODUCTION,
+        idempotency_key="ask-427",
+    )
+
+    class Loader:
+        async def load(self, workflow_input):
+            return command
+
+    class Service:
+        def __init__(self) -> None:
+            self.commands = []
+
+        async def execute_admitted(self, execution):
+            self.commands.append(execution)
+            return SimpleNamespace(
+                command_id=execution.command_id,
+                session_id=execution.session_id,
+                message_id=execution.message_id,
+                run_id=execution.run_id,
+                attempt_id=UUID(int=RUN_ID.int + 1),
+            )
+
+    resolved = []
+
+    async def current_generation(workflow, loaded_command):
+        resolved.append((workflow, loaded_command))
+        return 4
+
+    service = Service()
+    executor = AskAdmissionWorkflowExecutor(
+        loader=Loader(),
+        service=service,
+        persistence_context_factory=lambda workflow_input: object(),
+        authorization_generation_resolver=current_generation,
+    )
+
+    await executor.execute(workflow_input())
+
+    assert resolved == [(workflow_input(), command)]
+    assert service.commands[0].request_context.authorization_generation == 4
+
+
+@pytest.mark.asyncio
+async def test_workflow_executor_cancellation_reuses_admitted_attempt_identity() -> None:
+    command = AskAdmissionCommandData(
+        command_id=COMMAND_ID,
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        session_id=SESSION_ID,
+        message_id=MESSAGE_ID,
+        run_id=RUN_ID,
+        question="secret question",
+        subject=ActorRef(kind=ActorKind.HUMAN, id=UUID(int=427)),
+        environment=EnvironmentKind.PRODUCTION,
+        idempotency_key="ask-427",
+    )
+
+    class Loader:
+        async def load(self, workflow_input):
+            return command
+
+    class Service:
+        def __init__(self):
+            self.commands = []
+
+        async def execute_admitted(self, execution):
+            self.commands.append(execution)
+            return SimpleNamespace(
+                command_id=execution.command_id,
+                session_id=execution.session_id,
+                message_id=execution.message_id,
+                run_id=execution.run_id,
+            )
+
+    service = Service()
+    started = []
+
+    async def start_run(value):
+        started.append(value)
+
+    executor = AskAdmissionWorkflowExecutor(
+        loader=Loader(),
+        service=service,
+        persistence_context_factory=lambda workflow_input: object(),
+        run_starter=start_run,
+    )
+
+    await executor.cancel(workflow_input())
+
+    cancellation = service.commands[0]
+    assert cancellation.cancelled is True
+    assert cancellation.logical_execution_key == f"durable-ask:{COMMAND_ID}"
+    assert cancellation.idempotency_key.value == "ask-427"
+    assert cancellation.question == "secret question"
+    assert started == [workflow_input()]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("publish_fails", [False, True])
 async def test_observer_capture_publishes_only_after_canonical_terminal_commit(
     publish_fails: bool,

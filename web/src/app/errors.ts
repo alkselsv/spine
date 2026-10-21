@@ -32,7 +32,7 @@ export function localizeApiError(error: unknown): LocalizedApiError {
       traceId: error.traceId,
     };
   }
-  if (error.kind === 'authorization') {
+  if (error.kind === 'authorization' || error.status === 404) {
     return {
       state: 'permissionDenied',
       ...ru.errors.authorization,

@@ -315,4 +315,31 @@ describe('authorized Ask command actions', () => {
     expect(state.kind).toBe('accepted');
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
+
+  it('retries a browser network disconnect with the same idempotency key and payload', async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch protected request content'))
+      .mockResolvedValueOnce(acceptedResponse());
+    const actions = createAskCommandActions(clientFor(fetcher), scope, () => 'ask-network-retry');
+
+    const failed = await actions.submit(sessionId, 'Question');
+    const retried = await actions.retry();
+
+    expect(failed).toEqual({
+      kind: 'failed',
+      message: 'Сервис временно недоступен. Можно повторить ту же команду.',
+      retryable: true,
+    });
+    expect(retried.kind).toBe('accepted');
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    const requests = fetcher.mock.calls.map(([request]) => request as Request);
+    expect(requests.map((request) => request.headers.get('Idempotency-Key'))).toEqual([
+      'ask-network-retry',
+      'ask-network-retry',
+    ]);
+    await expect(Promise.all(requests.map((request) => request.clone().json()))).resolves.toEqual([
+      { question: 'Question', schema_version: 1, session_id: sessionId },
+      { question: 'Question', schema_version: 1, session_id: sessionId },
+    ]);
+  });
 });

@@ -285,6 +285,32 @@ def test_gate_allows_current_healthy_verified_evidence_and_preserves_pin() -> No
     assert RetrievalGateDecision.model_validate_json(decision.model_dump_json()) == decision
 
 
+def test_gate_preserves_independent_scope_and_verification_decisions() -> None:
+    publication = _publication()
+    retrieval, verified = _retrieval(
+        publication_pin_id=PublicationPin.from_publication(publication).pin_id
+    )
+    current_verification = verified.model_copy(
+        update={"authorization_decision_reference": UUID(int=99)}
+    )
+
+    decision = RetrievalGateService().evaluate(
+        RetrievalGateRequest(
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+            profile=_profile(),
+            publication=publication,
+            retrieval=retrieval,
+            evidence_verifications=(current_verification,),
+            policy_decision_generations=(_policy_generation(),),
+        )
+    )
+
+    assert decision.outcome.value == "allowed"
+    assert decision.authorization_decision_references == (UUID(int=99),)
+    assert decision.policy_decision_generations[0].decision_reference == UUID(int=27)
+
+
 def _policy_generation() -> PolicyDecisionGeneration:
     return PolicyDecisionGeneration(
         source_object_id=SOURCE,

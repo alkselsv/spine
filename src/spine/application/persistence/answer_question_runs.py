@@ -123,6 +123,7 @@ class AnswerQuestionAttemptAllocation:
     logical_execution_key: str
     execution_pin: AnswerQuestionExecutionPin
     input_artifact_ids: tuple[UUID, ...]
+    cancellation: bool = False
 
     def __post_init__(self) -> None:
         key = self.logical_execution_key
@@ -130,6 +131,7 @@ class AnswerQuestionAttemptAllocation:
             self.run_id.int == 0
             or not 1 <= len(key) <= 255
             or any(not (character.isalnum() or character in "._:-") for character in key)
+            or type(self.cancellation) is not bool
             or any(identifier.int == 0 for identifier in self.input_artifact_ids)
             or len(set(self.input_artifact_ids)) != len(self.input_artifact_ids)
         ):

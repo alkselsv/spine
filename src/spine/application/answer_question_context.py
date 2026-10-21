@@ -10,10 +10,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from enum import Enum
+import logging
 from typing import Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import ConfigDict, Field, model_validator
+
+
+_LOGGER = logging.getLogger(__name__)
 
 from spine.application.answer_disclosure import (
     AnswerDisclosureFacts,
@@ -276,7 +280,15 @@ class AnswerQuestionContextService:
                     broker_capture = sink.value
             if type(response) is not ContextResponse:
                 raise ValueError("context response is invalid")
-        except Exception:
+        except Exception as error:
+            _LOGGER.warning(
+                "governed Q&A context broker unavailable",
+                extra={
+                    "safe_failure_code": "context_broker_invalid_response",
+                    "error_type": type(error).__name__,
+                    "run_id": str(request.question.correlation.run_id),
+                },
+            )
             return self._failure(
                 request.question,
                 RetrievalOutcome.UNAVAILABLE,
@@ -323,6 +335,11 @@ class AnswerQuestionContextService:
                 AnswerQuestionSafeReasonCode.CANCELLED,
             )
         if response.context_bundle_ref is None:
+            _LOGGER.warning(
+                "governed Q&A context response unavailable: %s/%s",
+                response.outcome.value,
+                response.reason_code.value,
+            )
             return self._failure(
                 request.question,
                 retrieval_outcome,

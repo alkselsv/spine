@@ -43,6 +43,7 @@ from spine.domain.projections import (
 
 PROJECTION_RUN_SCHEMA_VERSION = 2
 PROJECTION_RECEIPT_SCHEMA_VERSION = 1
+PROJECTION_RECEIPT_OPERATION = PersistenceOperation("projection_receipt")
 PROJECTION_SEAL_SCHEMA_VERSION = 1
 PROJECTION_RESULT_SCHEMA_VERSION = 1
 PROJECTION_VALIDATION_SCHEMA_VERSION = 1
@@ -165,7 +166,7 @@ class ProjectionReceiptCommand:
         cls, *, receipt: ProjectionReceipt, idempotency_key: IdempotencyKey
     ) -> "ProjectionReceiptCommand":
         digest = digest_command(
-            operation=PersistenceOperation("projection_receipt"),
+            operation=PROJECTION_RECEIPT_OPERATION,
             operation_schema_version=PROJECTION_RECEIPT_SCHEMA_VERSION,
             payload={
                 "receipt_id": receipt.projection_receipt_id,
@@ -454,6 +455,10 @@ class ProjectionRepository(Protocol):
     async def add_config_version(self, config: ProjectionConfigVersion) -> ProjectionConfigVersion: ...
 
     async def resolve_config_version(self, config_id: UUID) -> ProjectionConfigVersion | None: ...
+
+    async def resolve_config_version_number(
+        self, projection_kind: str, version: int
+    ) -> ProjectionConfigVersion | None: ...
 
     async def create_run(self, command: ProjectionRunCommand) -> ProjectionMutationResult: ...
 

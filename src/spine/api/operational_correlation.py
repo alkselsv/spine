@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 from spine.api.authorization import (
     add_protected_api_route,
     get_authorization_audit_event_id,
+    get_authorized_persistence_context,
     get_authorized_request_context,
 )
 from spine.application.operational_correlation import (
@@ -19,6 +20,7 @@ from spine.application.operational_correlation import (
     UnavailableOperationalCorrelationReader,
 )
 from spine.application.persistence import PersistenceOperation, PersistencePurpose
+from spine.application.persistence.context import TrustedPersistenceContext
 from spine.auth import (
     AuthorizationRole,
     AuthorizationScopeRequirement,
@@ -64,6 +66,9 @@ def install_operational_correlation_routes(
         authorization_audit_event_id: UUID = Depends(
             get_authorization_audit_event_id
         ),
+        persistence_context: TrustedPersistenceContext = Depends(
+            get_authorized_persistence_context
+        ),
     ) -> OperationalCorrelationResponse:
         query = OperationalCorrelationQuery(
             workspace_id=request_context.scope.workspace_id,
@@ -75,6 +80,7 @@ def install_operational_correlation_routes(
             data = await _reader(request).read(
                 query=query,
                 authority=request_context,
+                context=persistence_context,
             )
         except OperationalCorrelationStoreUnavailable:
             data = OperationalCorrelationView(

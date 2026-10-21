@@ -326,7 +326,10 @@ async def _batch_command(
         command = BatchDocumentUploadCommand(
             workspace_id=_scope_id(request, "X-Workspace-ID"),
             environment_id=_scope_id(request, "X-Environment-ID"),
-            command_identity="api.document.batch-upload",
+            command_identity=(
+                "api.document.batch-upload."
+                + hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:24]
+            ),
             idempotency_key=idempotency_key,
             items=tuple(commands),
         )

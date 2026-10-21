@@ -255,6 +255,7 @@ def acceptance_command(
     expected=None,
     tombstone=False,
     policy_id=None,
+    repository_assigned_generation=False,
 ):
     audit_id = uid(700 + generation)
     outbox_id = uid(800 + generation)
@@ -292,7 +293,9 @@ def acceptance_command(
             canonical_acceptance_id=acceptance_id,
             source_object_id=source_object.source_object_id,
             source_revision_id=revision.revision_id,
-            accepted_generation=generation,
+            accepted_generation=(
+                None if repository_assigned_generation else generation
+            ),
             audit_event_id=audit_id,
             transition=transition,
         ),
@@ -462,6 +465,7 @@ async def test_canonical_acceptance_advances_head_and_replays_without_second_eff
             generation=2,
             expected=first.current.current_revision_id,
             policy_id=policy_id,
+            repository_assigned_generation=True,
         )
         successor_result = await uow.canonical.accept(successor_command)
         await uow.commit()

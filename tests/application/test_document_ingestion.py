@@ -324,7 +324,13 @@ def _orchestrator(content: bytes, *, media_type: str, parser_calls: list[int]):
         return SimpleNamespace(operation=operation, trace_id=trace_id)
 
     def canonical_command_factory(**kwargs):
+        assert kwargs["request"].access_policy_version_id == _id("policy")
         return SimpleNamespace(revision=kwargs["revision"])
+
+    class PolicyEnsurer:
+        async def ensure(self, *, request, source, context, activated_at):
+            del request, source, context, activated_at
+            return _id("policy")
 
     return DocumentIngestionOrchestrator(
         uow_factory=lambda context: uow,
@@ -333,6 +339,7 @@ def _orchestrator(content: bytes, *, media_type: str, parser_calls: list[int]):
         validator=BoundedContentValidator(max_bytes=10_000_000, max_chunk_bytes=10_000_000),
         parsed_artifacts=InMemoryParsedArtifactRepository(),
         context_factory=context_factory,
+        access_policy_ensurer=PolicyEnsurer(),
         canonical_command_factory=canonical_command_factory,
         outbox_events=OutboxEventRegistry(),
         parser=parse,

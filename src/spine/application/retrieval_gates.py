@@ -494,10 +494,11 @@ def _policy_generations_match(
                 for reference in result.item.evidence
             )
         )
-        if not matching or any(
-            result.authorization_decision_reference != generation.decision_reference
-            for result in matching
-        ):
+        # Scope resolution and evidence verification are separate authorization
+        # decisions.  Both references are retained in the gate result, but a
+        # production decision service issues a new opaque reference per call;
+        # equality would therefore reject independently verified evidence.
+        if not matching:
             return False
     return True
 

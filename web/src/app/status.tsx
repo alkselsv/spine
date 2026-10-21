@@ -31,6 +31,7 @@ export function ApiErrorPanel({ error }: { error: unknown }) {
   const copy = localizeApiError(error);
   return (
     <div
+      aria-label={copy.title}
       className={`${styles.statusPanel} ${styles[`statusPanel_${copy.state}`]}`}
       role="alert"
     >

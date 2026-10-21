@@ -228,7 +228,9 @@ def _command_from_request(request: Request) -> DocumentUploadCommand:
         return DocumentUploadCommand(
             workspace_id=_workspace_id(request),
             environment_id=_environment_id(request),
-            command_identity="api.document.upload",
+            command_identity=(
+                f"api.document.upload.{_stable_key_suffix(idempotency_key)}"
+            ),
             idempotency_key=idempotency_key,
             upload_identity=upload_identity,
             purpose="document.upload.v1",
