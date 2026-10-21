@@ -54,3 +54,12 @@ def test_temporal_worker_factory_rejects_blank_task_queue() -> None:
             task_queue=" ",
             activity=object(),  # type: ignore[arg-type]
         )
+
+
+def test_temporal_worker_factory_rejects_non_sdk_client() -> None:
+    with pytest.raises(TypeError, match="official SDK client"):
+        create_ask_admission_worker(
+            client=object(),  # type: ignore[arg-type]
+            task_queue="spine-r1-qa",
+            activity=object(),  # type: ignore[arg-type]
+        )

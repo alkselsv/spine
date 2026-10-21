@@ -101,7 +101,11 @@ def create_ask_admission_worker(
     if type(task_queue) is not str or not task_queue.strip() or len(task_queue) > 255:
         raise ValueError("Temporal task queue must be a bounded non-blank string")
 
+    from temporalio.client import Client
     from temporalio.worker import Worker
+
+    if type(client) is not Client:
+        raise TypeError("Temporal worker requires the official SDK client")
 
     return Worker(
         client,
