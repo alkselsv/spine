@@ -130,6 +130,8 @@ def test_issue508_live_target_has_no_controlled_routes_or_content_artifacts() ->
     assert "trace_correlation_incomplete" in source
     assert "cross_workspace_session_not_denied" in source
     assert "cross_workspace_source_not_denied" in source
+    assert "workspace_b_citation_not_validated" in source
+    assert "safeUuid(value.source_revision_id) === this.workspaceBSourceRevisionId" in source
     assert "production_api_surface_incomplete" in source
     assert "production_ingestion_surface_incomplete" in source
     assert "qualification_authority_missing" in source

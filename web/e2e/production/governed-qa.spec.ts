@@ -16,6 +16,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 const WORKSPACE_B_DOCUMENT_PATH = fileURLToPath(
   new URL('../fixtures/workspace-b-isolation.md', import.meta.url),
 );
+const WORKSPACE_B_ANSWERABLE_QUESTION = 'What are the fixture color and verification sequence in this workspace?';
 
 test('test_real_browser_qualifies_governed_qa_without_controlled_api_fixtures', async ({ context, page }) => {
   test.setTimeout(45 * 60_000);
@@ -327,29 +328,27 @@ async function qualifyWorkspaceIsolation(
   if (![403, 404].includes((await sourceDenial).status())) throw new Error('cross_workspace_source_not_denied');
   if (await page.locator('[data-protected-content]').count()) throw new Error('cross_workspace_source_disclosed');
 
-  await uploadIndependentWorkspaceBDocument(page, config);
+  const workspaceBSource = await uploadIndependentWorkspaceBDocument(page, config);
+  evidence.workspaceBSourceObjectId = workspaceBSource.sourceObjectId;
+  evidence.workspaceBSourceRevisionId = workspaceBSource.sourceRevisionId;
 
   await page.goto(scoped('/chat', config.workspaceBId, config.environmentBId));
   await visible(page.getByRole('heading', { name: 'Сессии вопросов и ответов' }), 'workspace_b_not_authorized');
   await page.getByRole('button', { name: 'Создать сессию' }).click();
   await page.waitForURL(/\/chat\/[0-9a-f-]{36}/i);
   evidence.sessionBId = uuidFromPath(page.url(), 'chat');
-  await page.getByRole('textbox', { name: 'Вопрос' }).fill(config.answerableQuestion);
+  await page.getByRole('textbox', { name: 'Вопрос' }).fill(WORKSPACE_B_ANSWERABLE_QUESTION);
   await page.getByRole('button', { name: 'Отправить' }).click();
-  await visible(
-    page.getByText(/Недостаточно данных для ответа|Требуется уточнение|Доступ к ответу запрещён/).last(),
-    'cross_workspace_safe_outcome_not_observed',
-    300_000,
-  );
-  const disclosed = await page.locator('[data-accepted-answer-text]').count();
-  if (disclosed !== 0) throw new Error('cross_workspace_answer_disclosed');
+  await visible(page.locator('[data-accepted-answer-text]').last(), 'workspace_b_answer_not_visible', 300_000);
+  await openCitationInspector(page);
+  await waitFor(() => evidence.workspaceBCitationLocatorValidated, 'workspace_b_citation_not_validated');
   evidence.scenarios.add('two_workspace_isolation');
 }
 
 async function uploadIndependentWorkspaceBDocument(
   page: Page,
   config: LiveQualificationConfig,
-): Promise<void> {
+): Promise<{ sourceObjectId: string; sourceRevisionId: string }> {
   await page.goto(scoped('/knowledge/documents', config.workspaceBId, config.environmentBId));
   await visible(page.getByRole('heading', { name: 'Документы', exact: true }), 'workspace_b_documents_unavailable');
   await page.locator('input[type="file"]').setInputFiles(WORKSPACE_B_DOCUMENT_PATH);
@@ -365,7 +364,8 @@ async function uploadIndependentWorkspaceBDocument(
     ? body.items[0]
     : null;
   const sourceObjectId = safeUuid(item?.source_object_id);
-  if (!sourceObjectId) throw new Error('workspace_b_upload_metadata_unavailable');
+  const sourceRevisionId = safeUuid(item?.source_revision_id);
+  if (!sourceObjectId || !sourceRevisionId) throw new Error('workspace_b_upload_metadata_unavailable');
 
   await page.goto(scoped(
     `/knowledge/documents/${sourceObjectId}?tab=projection&projection_kind=qa`,
@@ -378,6 +378,7 @@ async function uploadIndependentWorkspaceBDocument(
     const value = element.textContent ?? '';
     return value.includes('Опубликован') && value.includes('Здоров') && value.includes('Актуальна');
   }), 'workspace_b_projection_not_current', 1_800_000);
+  return { sourceObjectId, sourceRevisionId };
 }
 
 async function qualifyEvidenceDisclosureRejection(
@@ -465,6 +466,9 @@ class EvidenceCollector {
   sessionBId: string | null = null;
   sourceObjectId: string | null = null;
   sourceRevisionId: string | null = null;
+  workspaceBCitationLocatorValidated = false;
+  workspaceBSourceObjectId: string | null = null;
+  workspaceBSourceRevisionId: string | null = null;
 
   constructor(readonly config: LiveQualificationConfig) {}
 
@@ -526,7 +530,7 @@ class EvidenceCollector {
       const citationId = safeUuid(value.citation_id);
       const reference = isRecord(value.evidence_reference) ? value.evidence_reference : null;
       const locator = reference && isRecord(reference.locator) ? reference.locator : null;
-      this.citationLocatorValidated = typeof value.locator_schema === 'string'
+      const locatorValidated = typeof value.locator_schema === 'string'
         && /^[a-z][a-z0-9-]*:v[1-9][0-9]*$/.test(value.locator_schema)
         && typeof value.locator_reference === 'string'
         && value.locator_reference.length > 0
@@ -534,9 +538,18 @@ class EvidenceCollector {
         && locator?.schema_version === 'stable-locator:v1'
         && typeof locator.kind === 'string'
         && ['page', 'sheet_row', 'message', 'character_range', 'record_field', 'custom'].includes(locator.kind)
-        && locator.value === value.locator_reference
-        && safeUuid(value.source_revision_id) === this.sourceRevisionId;
-      if (this.citationLocatorValidated) this.citationId = citationId;
+        && locator.value === value.locator_reference;
+      if (locatorValidated && safeUuid(value.source_revision_id) === this.sourceRevisionId) {
+        this.citationLocatorValidated = true;
+        this.citationId = citationId;
+      }
+      if (
+        locatorValidated
+        && safeUuid(value.source_object_id) === this.workspaceBSourceObjectId
+        && safeUuid(value.source_revision_id) === this.workspaceBSourceRevisionId
+      ) {
+        this.workspaceBCitationLocatorValidated = true;
+      }
     } else if (isRecord(body.data)) {
       const outcome = body.data.terminal_outcome;
       if (typeof outcome === 'string') {
@@ -560,6 +573,7 @@ class EvidenceCollector {
     ];
     if (required.some((scenario) => !this.scenarios.has(scenario))) throw new Error('scenario_incomplete');
     if (!this.citationLocatorValidated) throw new Error('citation_locator_not_validated');
+    if (!this.workspaceBCitationLocatorValidated) throw new Error('workspace_b_citation_not_validated');
     if (this.feedbackIds.length === 0) throw new Error('feedback_reference_missing');
     const keys = this.askIdempotencyKeys.filter(Boolean);
     if (keys.length < 2 || keys[0] !== keys[1]) throw new Error('ask_retry_identity_not_stable');
@@ -603,6 +617,8 @@ class EvidenceCollector {
         session_ids: [this.sessionAId, this.sessionBId].filter(Boolean),
         source_object_id: this.sourceObjectId,
         source_revision_id: this.sourceRevisionId,
+        workspace_b_source_object_id: this.workspaceBSourceObjectId,
+        workspace_b_source_revision_id: this.workspaceBSourceRevisionId,
         terminal_run_ids: [...new Set(this.terminalRunIds)],
         trace_ids: [...new Set(this.traceIds)],
       },
