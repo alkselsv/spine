@@ -126,7 +126,12 @@ services:
       POSTGRES_PWD: ${SOURCE_TEMPORAL_PASSWORD:?SOURCE_TEMPORAL_PASSWORD must be set}
       DB_PORT: 5432
       POSTGRES_TLS_ENABLED: "false"
-      TEMPORAL_ADDRESS: source-temporal:7233
+      # The pinned CLI times out on the service DNS alias in local WSL Docker;
+      # numeric IPv4 loopback is verified, and BIND_ON_IP keeps it reachable.
+      TEMPORAL_ADDRESS: 127.0.0.1:7233
+      # The pinned image advertises 127.0.0.1:7233 for its local cluster RPC.
+      # Bind on all container interfaces so that advertised endpoint is served.
+      BIND_ON_IP: "0.0.0.0"
       DEFAULT_NAMESPACE: spine-source-509
       DEFAULT_NAMESPACE_RETENTION: 24h
       SKIP_ADD_CUSTOM_SEARCH_ATTRIBUTES: "true"
@@ -138,7 +143,7 @@ services:
       source-temporal-postgres: {condition: service_healthy}
     networks: [source]
     healthcheck:
-      test: ["CMD-SHELL", "temporal operator cluster health --address source-temporal:7233 >/dev/null"]
+      test: ["CMD-SHELL", "temporal operator cluster health --address 127.0.0.1:7233 >/dev/null"]
       interval: 10s
       timeout: 10s
       retries: 60
@@ -154,7 +159,10 @@ services:
       POSTGRES_PWD: ${RESTORE_TEMPORAL_PASSWORD:?RESTORE_TEMPORAL_PASSWORD must be set}
       DB_PORT: 5432
       POSTGRES_TLS_ENABLED: "false"
-      TEMPORAL_ADDRESS: restore-temporal:7233
+      # Match SOURCE while keeping RESTORE's CLI self-check on IPv4 loopback.
+      TEMPORAL_ADDRESS: 127.0.0.1:7233
+      # Keep the isolated RESTORE frontend bound for the image's local cluster RPC.
+      BIND_ON_IP: "0.0.0.0"
       DEFAULT_NAMESPACE: spine-restore-509
       DEFAULT_NAMESPACE_RETENTION: 24h
       SKIP_ADD_CUSTOM_SEARCH_ATTRIBUTES: "true"
@@ -166,7 +174,7 @@ services:
       restore-temporal-postgres: {condition: service_healthy}
     networks: [restore]
     healthcheck:
-      test: ["CMD-SHELL", "temporal operator cluster health --address restore-temporal:7233 >/dev/null"]
+      test: ["CMD-SHELL", "temporal operator cluster health --address 127.0.0.1:7233 >/dev/null"]
       interval: 10s
       timeout: 10s
       retries: 60

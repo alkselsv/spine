@@ -159,13 +159,14 @@ def test_issue509_temporal_services_use_the_pinned_image_dynamic_config() -> Non
     assert "DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml" not in compose
 
 
-def test_issue509_temporal_startup_and_healthchecks_use_isolated_service_dns() -> None:
+def test_issue509_temporal_self_healthcheck_uses_loopback_and_clients_use_service_dns() -> None:
     compose = COMPOSE_PATH.read_text(encoding="utf-8")
 
-    for service in ("source-temporal", "restore-temporal"):
-        assert f"TEMPORAL_ADDRESS: {service}:7233" in compose
-        assert f"cluster health --address {service}:7233" in compose
-    assert "cluster health --address 127.0.0.1:7233" not in compose
+    assert compose.count('BIND_ON_IP: "0.0.0.0"') == 2
+    assert compose.count("TEMPORAL_ADDRESS: 127.0.0.1:7233") == 2
+    assert compose.count("cluster health --address 127.0.0.1:7233") == 2
+    assert "SPINE_TEMPORAL_ADDRESS: source-temporal:7233" in compose
+    assert "SPINE_TEMPORAL_ADDRESS: restore-temporal:7233" in compose
 
 
 def test_issue509_readiness_report_records_only_observed_states() -> None:
