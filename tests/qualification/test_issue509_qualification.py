@@ -16,6 +16,8 @@ TEMPORAL_READINESS_REPORT_PATH = (
     PROJECT_ROOT / "docs/qualification/issue-509-temporal-readiness-report-v1.json"
 )
 COMPOSE_PATH = PROJECT_ROOT / "deploy/qualification/issue-509/compose.yaml"
+DOCKERIGNORE_PATH = PROJECT_ROOT / ".dockerignore"
+QUALIFICATION_DOCKERFILE_PATH = PROJECT_ROOT / "deploy/qualification/issue-509/Dockerfile"
 
 EXPECTED_CRITERIA = {f"AC{number}" for number in range(1, 10)}
 OUTCOME_STATUSES = {"pass", "fail", "blocked", "not_verified", "unavailable"}
@@ -30,6 +32,16 @@ FORBIDDEN_REPORT_TOKENS = (
     "source_text",
     "stack_trace",
 )
+QUALIFICATION_BUILD_CONTEXT_ALLOWLIST = {
+    "!pyproject.toml",
+    "!uv.lock",
+    "!README.md",
+    "!alembic.ini",
+    "!migrations",
+    "!migrations/**",
+    "!src",
+    "!src/**",
+}
 
 
 def _load_report() -> dict[str, Any]:
@@ -178,7 +190,7 @@ def test_issue509_temporal_self_healthcheck_uses_loopback_and_clients_use_servic
     assert "SPINE_TEMPORAL_ADDRESS: restore-temporal:7233" in compose
 
 
-def test_issue509_readiness_report_records_only_observed_states() -> None:
+def test_issue509_readiness_report_binds_blocked_runtime_observation() -> None:
     report = _load_readiness_report()
 
     assert report["report_schema"] == "spine.issue-509.local-readiness:v2"
@@ -190,10 +202,20 @@ def test_issue509_readiness_report_records_only_observed_states() -> None:
     assert report["readiness"]["runtime_reachability"] == "BLOCKED"
     assert report["readiness"]["decision"] == "BLOCKED"
     assert report["readiness"]["authorization"] == "NOT_VERIFIED"
+
+
+def test_issue509_readiness_report_records_neo4j_and_temporal_observations() -> None:
+    report = _load_readiness_report()
+
     assert report["observations"]["source_neo4j"]["status"] == "PASS"
     assert report["observations"]["restore_neo4j"]["status"] == "PASS"
     assert report["observations"]["source_temporal"]["cluster_health"] == "NOT_VERIFIED"
     assert report["observations"]["restore_temporal"]["status"] == "NOT_VERIFIED"
+
+
+def test_issue509_readiness_report_keeps_recovery_checks_unverified() -> None:
+    report = _load_readiness_report()
+
     assert all(value == "NOT_VERIFIED" for key, value in report["readiness"].items() if key in {
         "backup",
         "restore",
@@ -202,6 +224,11 @@ def test_issue509_readiness_report_records_only_observed_states() -> None:
         "authorized_canary",
         "safe_diagnostics",
     })
+
+
+def test_issue509_readiness_report_does_not_claim_physical_qualification() -> None:
+    report = _load_readiness_report()
+
     assert report["qualification_claims"] == {
         "physical_backup": False,
         "isolated_restore": False,
@@ -209,6 +236,10 @@ def test_issue509_readiness_report_records_only_observed_states() -> None:
         "authorized_canary": False,
         "production_readiness": False,
     }
+
+
+def test_issue509_readiness_report_contains_only_safe_metadata() -> None:
+    report = _load_readiness_report()
     for text in _all_strings(report):
         lowered = text.lower()
         assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
@@ -281,3 +312,20 @@ def test_issue509_temporal_readiness_report_contains_only_safe_metadata() -> Non
         assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
         assert "\\" not in text
         assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
+
+
+def test_issue509_application_build_context_is_default_deny_and_allowlisted() -> None:
+    dockerignore = set(DOCKERIGNORE_PATH.read_text(encoding="utf-8").splitlines())
+    dockerfile = QUALIFICATION_DOCKERFILE_PATH.read_text(encoding="utf-8")
+
+    assert "**" in dockerignore
+    assert {line for line in dockerignore if line.startswith("!")} == (
+        QUALIFICATION_BUILD_CONTEXT_ALLOWLIST
+    )
+    for required_copy in (
+        "COPY pyproject.toml uv.lock README.md ./",
+        "COPY alembic.ini ./",
+        "COPY migrations ./migrations",
+        "COPY src ./src",
+    ):
+        assert required_copy in dockerfile
