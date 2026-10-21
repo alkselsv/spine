@@ -15,6 +15,9 @@ READINESS_REPORT_PATH = PROJECT_ROOT / "docs/qualification/issue-509-local-readi
 TEMPORAL_READINESS_REPORT_PATH = (
     PROJECT_ROOT / "docs/qualification/issue-509-temporal-readiness-report-v1.json"
 )
+RUNTIME_COMPOSITION_REPORT_PATH = (
+    PROJECT_ROOT / "docs/qualification/issue-509-runtime-composition-readiness-v1.json"
+)
 TEMPORAL_READINESS_REPORT_V2_PATH = (
     PROJECT_ROOT / "docs/qualification/issue-509-temporal-readiness-report-v2.json"
 )
@@ -252,6 +255,70 @@ def test_issue509_readiness_report_contains_only_safe_metadata() -> None:
 
 def _temporal_readiness_report() -> dict[str, Any]:
     return json.loads(TEMPORAL_READINESS_REPORT_PATH.read_text(encoding="utf-8"))
+
+
+def _runtime_composition_report() -> dict[str, Any]:
+    return json.loads(RUNTIME_COMPOSITION_REPORT_PATH.read_text(encoding="utf-8"))
+
+
+def test_issue509_runtime_composition_report_is_bound_to_commit_and_compose() -> None:
+    report = _runtime_composition_report()
+
+    assert report["report_schema"] == "spine.issue-509.runtime-composition-readiness:v1"
+    assert report["issue"] == 509
+    assert re.fullmatch(r"[a-f0-9]{40}", report["target_commit"])
+    assert report["deployment_fingerprint"] == hashlib.sha256(
+        COMPOSE_PATH.read_bytes()
+    ).hexdigest()
+    assert report["production_qualified"] is False
+
+
+def test_issue509_runtime_composition_report_separates_worker_test_from_deployment() -> None:
+    report = _runtime_composition_report()
+
+    assert report["observations"]["worker_factory_integration"] == {
+        "status": "PASS",
+        "environment": "Temporal SDK test server",
+        "workflow_outcome": "ABSTAINED",
+        "deployed_application_readiness": False,
+    }
+    assert report["readiness"]["deployed_worker_pollers"] == "NOT_VERIFIED"
+    assert report["readiness"]["application_api"] == "NOT_VERIFIED"
+    assert report["readiness"]["decision"] == "BLOCKED"
+
+
+def test_issue509_runtime_composition_report_keeps_all_physical_recovery_unverified() -> None:
+    report = _runtime_composition_report()
+
+    assert all(
+        report["readiness"][criterion] == "NOT_VERIFIED"
+        for criterion in (
+            "backup",
+            "restore",
+            "integrity_reconciliation",
+            "projection_recovery",
+            "authorized_canary",
+        )
+    )
+    assert report["qualification_claims"] == {
+        "deployed_api_worker": False,
+        "trusted_authorization": False,
+        "physical_backup": False,
+        "isolated_restore": False,
+        "projection_recovery": False,
+        "authorized_canary": False,
+        "production_readiness": False,
+    }
+
+
+def test_issue509_runtime_composition_report_contains_only_safe_metadata() -> None:
+    report = _runtime_composition_report()
+
+    for text in _all_strings(report):
+        lowered = text.lower()
+        assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
+        assert "\\" not in text
+        assert not re.search(r"(?:^|\s)/(?:home|tmp|var|etc|mnt|root)/", text)
 
 
 def _temporal_readiness_report_v2() -> dict[str, Any]:

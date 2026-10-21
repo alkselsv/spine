@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from spine.application.persistence.delivery import OutboxDeliveryRouteRegistry
 from spine.application.workflows.ask_admission_dispatch import (
     ASK_ADMISSION_WORKFLOW_TYPE,
@@ -9,6 +11,7 @@ from spine.workflows.temporal.bootstrap import (
     ASK_CANCELLATION_CONSUMER_NAME,
     build_ask_cancellation_delivery_binding,
     build_ask_admission_delivery_binding,
+    create_ask_admission_worker,
     register_ask_admission_delivery_route,
 )
 
@@ -42,3 +45,21 @@ def test_temporal_bootstrap_builds_cancellation_signal_binding() -> None:
 
     assert binding.consumer_name == ASK_CANCELLATION_CONSUMER_NAME
     assert binding.consumer is not None
+
+
+def test_temporal_worker_factory_rejects_blank_task_queue() -> None:
+    with pytest.raises(ValueError, match="bounded non-blank"):
+        create_ask_admission_worker(
+            client=object(),  # type: ignore[arg-type]
+            task_queue=" ",
+            activity=object(),  # type: ignore[arg-type]
+        )
+
+
+def test_temporal_worker_factory_rejects_non_sdk_client() -> None:
+    with pytest.raises(TypeError, match="official SDK client"):
+        create_ask_admission_worker(
+            client=object(),  # type: ignore[arg-type]
+            task_queue="spine-r1-qa",
+            activity=object(),  # type: ignore[arg-type]
+        )

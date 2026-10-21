@@ -11,6 +11,7 @@ from spine.workflows.temporal.bootstrap import (
     build_ask_cancellation_delivery_binding,
     build_ask_admission_delivery_binding,
     build_ask_admission_workflow_definition,
+    create_ask_admission_worker,
     register_ask_admission_delivery_route,
 )
 from spine.workflows.temporal.client import (
@@ -25,6 +26,7 @@ __all__ = [
     "build_ask_cancellation_delivery_binding",
     "build_ask_admission_delivery_binding",
     "build_ask_admission_workflow_definition",
+    "create_ask_admission_worker",
     "register_ask_admission_delivery_route",
     "TemporalSdkClient",
     "TemporalSdkWorkflowClient",

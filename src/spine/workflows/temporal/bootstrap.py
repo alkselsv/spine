@@ -7,6 +7,8 @@ keeps Temporal types out of application and domain contracts.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from spine.application.persistence.ask_admission import (
     QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION,
     QA_ASK_ADMISSION_EVENT_TYPE,
@@ -26,6 +28,10 @@ from spine.workflows.temporal.definitions import (
     build_ask_admission_activity_bindings as _build_ask_admission_activity_bindings,
 )
 from spine.workers import OutboxConsumerBinding
+
+if TYPE_CHECKING:
+    from temporalio.client import Client
+    from temporalio.worker import Worker
 
 ASK_ADMISSION_CONSUMER_NAME = "qa_ask_admission"
 ASK_CANCELLATION_CONSUMER_NAME = "qa_ask_cancellation"
@@ -84,6 +90,31 @@ def build_ask_admission_activity_bindings(
     return _build_ask_admission_activity_bindings(activity)
 
 
+def create_ask_admission_worker(
+    *,
+    client: Client,
+    task_queue: str,
+    activity: AskAdmissionActivity,
+) -> Worker:
+    """Create a Temporal SDK worker for the existing durable Ask composition."""
+
+    if type(task_queue) is not str or not task_queue.strip() or len(task_queue) > 255:
+        raise ValueError("Temporal task queue must be a bounded non-blank string")
+
+    from temporalio.client import Client
+    from temporalio.worker import Worker
+
+    if type(client) is not Client:
+        raise TypeError("Temporal worker requires the official SDK client")
+
+    return Worker(
+        client,
+        task_queue=task_queue,
+        workflows=[build_ask_admission_workflow_definition()],
+        activities=list(build_ask_admission_activity_bindings(activity)),
+    )
+
+
 __all__ = [
     "ASK_ADMISSION_CONSUMER_NAME",
     "ASK_CANCELLATION_CONSUMER_NAME",
@@ -91,5 +122,6 @@ __all__ = [
     "build_ask_admission_delivery_binding",
     "build_ask_admission_activity_bindings",
     "build_ask_admission_workflow_definition",
+    "create_ask_admission_worker",
     "register_ask_admission_delivery_route",
 ]
