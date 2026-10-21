@@ -7,7 +7,7 @@ import {
   type Response as PlaywrightResponse,
 } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { basename, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { readLiveQualificationConfig, type LiveQualificationConfig } from './live-config';
@@ -224,8 +224,11 @@ async function qualifyAnswerCitationFeedbackReconnectAndRun(
     180_000,
   );
 
-  await visible(page.locator('[data-accepted-answer-text]').last(), 'accepted_answer_not_visible', 300_000);
+  const acceptedAnswer = page.locator('[data-accepted-answer-text]').last();
+  await visible(acceptedAnswer, 'accepted_answer_not_visible', 300_000);
+  evidence.captureSensitiveValue(await acceptedAnswer.textContent());
   await openCitationInspector(page);
+  evidence.captureSensitiveValue(await citationExcerpt(page));
   await waitFor(() => Boolean(evidence.citationId), 'citation_evidence_identity_not_observed');
   await page.getByRole('group', { name: 'Оценка ответа' }).getByRole('button', { name: 'Полезно' }).click();
   await visible(page.getByText('Спасибо, отзыв сохранён.'), 'feedback_not_persisted');
@@ -268,15 +271,23 @@ async function qualifyAbstentionCancellationAndRestoration(
   await visible(page.getByRole('textbox', { name: 'Вопрос' }), 'session_reload_unavailable');
   evidence.scenarios.add('session_restoration');
 
-  await page.getByRole('textbox', { name: 'Вопрос' }).fill(config.unanswerableQuestion);
+  await page.getByRole('textbox', { name: 'Вопрос' }).fill(
+    `${config.unanswerableQuestion}\nNo-leak sentinel: ${evidence.noLeakSentinel}`,
+  );
   await page.getByRole('button', { name: 'Отправить' }).click();
   await visible(page.getByText(/Недостаточно данных для ответа|Требуется уточнение/).last(), 'abstention_not_visible', 300_000);
   evidence.scenarios.add('abstention');
 
+  const askRunCountBeforeCancellation = evidence.askRuns.length;
   await page.getByRole('textbox', { name: 'Вопрос' }).fill(config.cancelQuestion);
   await page.getByRole('button', { name: 'Отправить' }).click();
   const cancel = page.getByRole('button', { name: 'Остановить выполнение' }).last();
   await visible(cancel, 'cancellation_control_not_visible', 120_000);
+  await waitFor(
+    () => evidence.askRuns.length > askRunCountBeforeCancellation,
+    'cancellation_admission_not_correlated',
+  );
+  evidence.cancellationRunId = evidence.askRuns.at(-1) ?? null;
   const cancellationResponse = page.waitForResponse((response) =>
     new URL(response.url()).pathname.endsWith('/cancel'),
   );
@@ -293,6 +304,11 @@ async function qualifyAbstentionCancellationAndRestoration(
       return false;
     }
   }, 'cancelled_terminal_not_restored', 240_000);
+  await waitFor(
+    () => evidence.cancellationRunId !== null
+      && evidence.terminalOutcomesByRun.get(evidence.cancellationRunId) === 'cancelled',
+    'cancelled_terminal_run_not_correlated',
+  );
   evidence.scenarios.add('cancellation');
 }
 
@@ -339,8 +355,11 @@ async function qualifyWorkspaceIsolation(
   evidence.sessionBId = uuidFromPath(page.url(), 'chat');
   await page.getByRole('textbox', { name: 'Вопрос' }).fill(WORKSPACE_B_ANSWERABLE_QUESTION);
   await page.getByRole('button', { name: 'Отправить' }).click();
-  await visible(page.locator('[data-accepted-answer-text]').last(), 'workspace_b_answer_not_visible', 300_000);
+  const workspaceBAnswer = page.locator('[data-accepted-answer-text]').last();
+  await visible(workspaceBAnswer, 'workspace_b_answer_not_visible', 300_000);
+  evidence.captureSensitiveValue(await workspaceBAnswer.textContent());
   await openCitationInspector(page);
+  evidence.captureSensitiveValue(await citationExcerpt(page));
   await waitFor(() => evidence.workspaceBCitationLocatorValidated, 'workspace_b_citation_not_validated');
   evidence.scenarios.add('two_workspace_isolation');
 }
@@ -453,12 +472,14 @@ class EvidenceCollector {
   readonly feedbackIds: string[] = [];
   readonly scenarios = new Set<string>();
   readonly terminalOutcomes: string[] = [];
+  readonly terminalOutcomesByRun = new Map<string, string>();
   readonly terminalRunIds: string[] = [];
   readonly traceIds: string[] = [];
   readonly uiStates = new Set<string>();
   readonly workspaceBOutcomes: string[] = [];
   answerMessageId: string | null = null;
   answerRunId: string | null = null;
+  cancellationRunId: string | null = null;
   citationId: string | null = null;
   citationLocatorValidated = false;
   ingestionRunId: string | null = null;
@@ -469,8 +490,29 @@ class EvidenceCollector {
   workspaceBCitationLocatorValidated = false;
   workspaceBSourceObjectId: string | null = null;
   workspaceBSourceRevisionId: string | null = null;
+  readonly noLeakSentinel: string;
+  readonly privateArtifactValues = new Set<string>();
 
-  constructor(readonly config: LiveQualificationConfig) {}
+  constructor(readonly config: LiveQualificationConfig) {
+    this.noLeakSentinel = `SPINE508_NO_LEAK_${config.qualificationRunId}`;
+    for (const value of [
+      config.accessToken,
+      config.answerableQuestion,
+      config.unanswerableQuestion,
+      config.cancelQuestion,
+      config.documentPath,
+      basename(config.documentPath),
+      WORKSPACE_B_ANSWERABLE_QUESTION,
+      WORKSPACE_B_DOCUMENT_PATH,
+      basename(WORKSPACE_B_DOCUMENT_PATH),
+      this.noLeakSentinel,
+    ]) this.captureSensitiveValue(value);
+  }
+
+  captureSensitiveValue(value: string | null | undefined): void {
+    const normalized = value?.trim();
+    if (normalized) this.privateArtifactValues.add(normalized);
+  }
 
   observeRequest(request: Request): void {
     const path = new URL(request.url()).pathname;
@@ -555,7 +597,10 @@ class EvidenceCollector {
       if (typeof outcome === 'string') {
         this.terminalOutcomes.push(outcome);
         const terminalRunId = safeUuid(body.data.run_id);
-        if (terminalRunId) this.terminalRunIds.push(terminalRunId);
+        if (terminalRunId) {
+          this.terminalRunIds.push(terminalRunId);
+          this.terminalOutcomesByRun.set(terminalRunId, outcome);
+        }
         if (body.workspace_id === this.config.workspaceBId) this.workspaceBOutcomes.push(outcome);
       }
     }
@@ -574,6 +619,11 @@ class EvidenceCollector {
     if (required.some((scenario) => !this.scenarios.has(scenario))) throw new Error('scenario_incomplete');
     if (!this.citationLocatorValidated) throw new Error('citation_locator_not_validated');
     if (!this.workspaceBCitationLocatorValidated) throw new Error('workspace_b_citation_not_validated');
+    if (
+      !this.cancellationRunId
+      || this.terminalOutcomesByRun.get(this.cancellationRunId) !== 'cancelled'
+      || !this.terminalRunIds.includes(this.cancellationRunId)
+    ) throw new Error('cancelled_terminal_run_not_correlated');
     if (this.feedbackIds.length === 0) throw new Error('feedback_reference_missing');
     const keys = this.askIdempotencyKeys.filter(Boolean);
     if (keys.length < 2 || keys[0] !== keys[1]) throw new Error('ask_retry_identity_not_stable');
@@ -612,6 +662,7 @@ class EvidenceCollector {
       correlated_references: {
         admission_command_ids: [...new Set(this.askCommandIds)],
         ask_run_ids: [...new Set(this.askRuns)],
+        cancellation_run_id: this.cancellationRunId,
         feedback_ids: [...new Set(this.feedbackIds)],
         ingestion_run_id: this.ingestionRunId,
         session_ids: [this.sessionAId, this.sessionBId].filter(Boolean),
@@ -646,14 +697,20 @@ class EvidenceCollector {
         route_interception: false,
       },
       privacy: {
+        artifact_no_leak_scan: 'pass',
         content_fields_recorded: false,
+        sentinel_scan: 'pass',
         screenshots: false,
         trace: false,
         video: false,
       },
     };
+    const serialized = `${JSON.stringify(record, null, 2)}\n`;
+    if (status === 'pass' && [...this.privateArtifactValues].some((value) => serialized.includes(value))) {
+      throw new Error('artifact_no_leak_scan_failed');
+    }
     await mkdir(dirname(this.config.reportPath), { recursive: true });
-    await writeFile(this.config.reportPath, `${JSON.stringify(record, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+    await writeFile(this.config.reportPath, serialized, { encoding: 'utf8', mode: 0o600 });
   }
 }
 
@@ -669,6 +726,10 @@ async function choose(page: Page, label: string, option: string): Promise<void> 
 
 async function visible(locator: Locator, code: string, timeout = 60_000): Promise<void> {
   try { await locator.waitFor({ state: 'visible', timeout }); } catch { throw new Error(code); }
+}
+
+async function citationExcerpt(page: Page): Promise<string | null> {
+  return page.getByRole('heading', { name: 'Источник 1' }).locator('..').locator('p').first().textContent();
 }
 
 async function waitFor(check: () => boolean | Promise<boolean>, code: string, timeout = 60_000): Promise<void> {

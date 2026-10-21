@@ -62,7 +62,9 @@ def test_issue508_report_is_metadata_only_and_fail_closed() -> None:
         "route_interception": False,
     }
     assert report["privacy"] == {
+        "artifact_no_leak_scan": "pass",
         "content_fields_recorded": False,
+        "sentinel_scan": "pass",
         "screenshots": False,
         "trace": False,
         "video": False,
@@ -98,6 +100,7 @@ def test_issue508_pass_requires_complete_correlated_real_browser_evidence() -> N
     references = report["correlated_references"]
     assert references["admission_command_ids"]
     assert references["ask_run_ids"]
+    assert references["cancellation_run_id"] in references["terminal_run_ids"]
     assert references["feedback_ids"]
     assert references["ingestion_run_id"]
     assert references["session_ids"]
@@ -128,6 +131,9 @@ def test_issue508_live_target_has_no_controlled_routes_or_content_artifacts() ->
     assert "answer_admission_identity_not_observed" in source
     assert "citation_evidence_identity_not_observed" in source
     assert "trace_correlation_incomplete" in source
+    assert "cancelled_terminal_run_not_correlated" in source
+    assert "artifact_no_leak_scan_failed" in source
+    assert "noLeakSentinel" in source
     assert "cross_workspace_session_not_denied" in source
     assert "cross_workspace_source_not_denied" in source
     assert "workspace_b_citation_not_validated" in source
@@ -173,9 +179,14 @@ def test_issue508_compose_profile_is_reproducible_and_fail_closed() -> None:
     assert "SPINE_E2E_ACCESS_TOKEN: ${SPINE_E2E_ACCESS_TOKEN}" in compose
     assert "SPINE_E2E_ACCESS_TOKEN=" not in compose
     shared_environment = compose.split("x-app-environment:", 1)[1].split("services:", 1)[0]
+    assert "SPINE_LOCAL_AUTH_BEARER_CREDENTIAL" not in shared_environment
+    assert "SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_ISSUER" not in shared_environment
+    assert "SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_SUBJECT" not in shared_environment
     assert "SPINE_DISPATCHER_DATABASE_URL" not in shared_environment
     assert "SPINE_MIGRATION_DATABASE_URL" not in shared_environment
     assert "SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID" not in shared_environment
+    api_environment = compose.split("  api:", 1)[1].split("  projection-worker:", 1)[0]
+    assert "SPINE_LOCAL_AUTH_BEARER_CREDENTIAL: ${SPINE_E2E_ACCESS_TOKEN}" in api_environment
     assert "SPINE_PROJECTION_WORKER_SERVICE_PRINCIPAL_ID" in compose
     assert "SPINE_QA_WORKER_SERVICE_PRINCIPAL_ID" in compose
     assert "SPINE_API_QA_SERVICE_PRINCIPAL_ID: ${SPINE_QA_WORKER_SERVICE_PRINCIPAL_ID}" in compose
