@@ -2,8 +2,6 @@ name: spine
 
 x-app-environment: &app-environment
   SPINE_DATABASE_URL: postgresql+psycopg://spine_runtime:${SPINE_DATABASE_RUNTIME_PASSWORD}@postgres:5432/spine
-  SPINE_DISPATCHER_DATABASE_URL: postgresql+psycopg://spine_dispatcher:${SPINE_DATABASE_DISPATCHER_PASSWORD}@postgres:5432/spine
-  SPINE_MIGRATION_DATABASE_URL: postgresql+psycopg://spine_migration:${SPINE_DATABASE_MIGRATION_PASSWORD}@postgres:5432/spine
   SPINE_LOCAL_AUTH_DEPLOYMENT_MODE: development
   SPINE_LOCAL_AUTH_CONFIGURATION_VERSION: ${SPINE_E2E_IDENTITY_VERSION}
   SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_ISSUER: ${SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_ISSUER}
@@ -11,7 +9,6 @@ x-app-environment: &app-environment
   SPINE_LOCAL_AUTH_BEARER_CREDENTIAL: ${SPINE_E2E_ACCESS_TOKEN}
   SPINE_API_CURSOR_SECRET: ${SPINE_API_CURSOR_SECRET}
   SPINE_API_BUILD_VERSION: ${SPINE_E2E_API_RELEASE_IDENTITY}
-  SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID: ${SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID}
   SPINE_API_ORIGINAL_STORAGE_ROOT: ${SPINE_API_ORIGINAL_STORAGE_ROOT:-/var/lib/spine/originals}
   SPINE_TEMPORAL_TARGET: temporal:7233
   SPINE_TEMPORAL_NAMESPACE: default
@@ -180,7 +177,9 @@ services:
         condition: service_healthy
       neo4j:
         condition: service_healthy
-    environment: *app-environment
+    environment:
+      <<: *app-environment
+      SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID: ${SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/v1/health/live', timeout=2)"]
       interval: 5s
@@ -203,7 +202,8 @@ services:
         condition: service_healthy
     environment:
       <<: *app-environment
-      SPINE_WORKER_SERVICE_PRINCIPAL_ID: ${SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID}
+      SPINE_DISPATCHER_DATABASE_URL: postgresql+psycopg://spine_dispatcher:${SPINE_DATABASE_DISPATCHER_PASSWORD}@postgres:5432/spine
+      SPINE_WORKER_SERVICE_PRINCIPAL_ID: ${SPINE_PROJECTION_WORKER_SERVICE_PRINCIPAL_ID}
       SPINE_WORKER_IDENTITY: projection-worker
       SPINE_WORKER_LEASE_SECONDS: ${SPINE_WORKER_LEASE_SECONDS:-3600}
       SPINE_WORKER_HANDLER_TIMEOUT_SECONDS: ${SPINE_WORKER_HANDLER_TIMEOUT_SECONDS:-3500}
@@ -228,7 +228,8 @@ services:
         condition: service_healthy
     environment:
       <<: *app-environment
-      SPINE_QA_WORKER_SERVICE_PRINCIPAL_ID: ${SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID}
+      SPINE_DISPATCHER_DATABASE_URL: postgresql+psycopg://spine_dispatcher:${SPINE_DATABASE_DISPATCHER_PASSWORD}@postgres:5432/spine
+      SPINE_QA_WORKER_SERVICE_PRINCIPAL_ID: ${SPINE_QA_WORKER_SERVICE_PRINCIPAL_ID}
       SPINE_QA_WORKER_TEMPORAL_ADDRESS: temporal:7233
       SPINE_QA_WORKER_TEMPORAL_NAMESPACE: default
       SPINE_QA_WORKER_TEMPORAL_TASK_QUEUE: spine-r1-qa

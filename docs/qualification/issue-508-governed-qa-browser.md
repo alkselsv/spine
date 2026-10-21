@@ -64,5 +64,8 @@ terminal-failure states that were visibly exercised in that browser session.
 The generated PASS record contains all required scenario IDs, two workspace
 references, correlated ingestion/session/run/feedback/source identities, a
 validated stable locator and exact release fingerprints. It records no content
-fields, screenshot, video or Playwright trace and used neither API interception
-nor a controlled fixture.
+fields, screenshot, video or Playwright trace and used neither API mocking,
+route interception nor a controlled fixture. The duplicate/retry scenario
+discarded one successful admission response in the browser to create an
+ambiguous disconnect, then verified the deployed API returned the durable
+replay for the same idempotency key and run.

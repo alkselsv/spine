@@ -54,10 +54,12 @@ def test_issue508_report_is_metadata_only_and_fail_closed() -> None:
     assert set(report["scenarios"]) <= REQUIRED_SCENARIOS
     assert set(report["ui_states"]) <= REQUIRED_UI_STATES
     assert report["execution"] == {
-        "api_interception": False,
+        "api_mocking": False,
         "browser": "chromium",
         "cli_user_actions": False,
         "controlled_fixture": False,
+        "post_admission_response_disconnect_injected": True,
+        "route_interception": False,
     }
     assert report["privacy"] == {
         "content_fields_recorded": False,
@@ -115,7 +117,10 @@ def test_issue508_live_target_has_no_controlled_routes_or_content_artifacts() ->
     assert "route.fulfill(" not in source
     assert "fixture=" not in source
     assert "controlled_fixture: false" in source
-    assert "api_interception: false" in source
+    assert "api_mocking: false" in source
+    assert "post_admission_response_disconnect_injected: true" in source
+    assert "route_interception: false" in source
+    assert "permission_denied_state_not_visible" in source
     assert "'/api/v1/documents/batches'" in source
     assert "safeUuid(value.source_revision_id) === this.sourceRevisionId" in source
     assert "new Set(retryRuns).size !== 1" in source
@@ -163,6 +168,14 @@ def test_issue508_compose_profile_is_reproducible_and_fail_closed() -> None:
     assert "./data/incoming/issue508:/app/data/incoming/issue508:ro" in compose
     assert "SPINE_E2E_ACCESS_TOKEN: ${SPINE_E2E_ACCESS_TOKEN}" in compose
     assert "SPINE_E2E_ACCESS_TOKEN=" not in compose
+    shared_environment = compose.split("x-app-environment:", 1)[1].split("services:", 1)[0]
+    assert "SPINE_DISPATCHER_DATABASE_URL" not in shared_environment
+    assert "SPINE_MIGRATION_DATABASE_URL" not in shared_environment
+    assert "SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID" not in shared_environment
+    assert "SPINE_PROJECTION_WORKER_SERVICE_PRINCIPAL_ID" in compose
+    assert "SPINE_QA_WORKER_SERVICE_PRINCIPAL_ID" in compose
+    assert "SPINE_WORKER_SERVICE_PRINCIPAL_ID: ${SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID}" not in compose
+    assert "SPINE_QA_WORKER_SERVICE_PRINCIPAL_ID: ${SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID}" not in compose
     assert "spine.api.runtime:create_production_app" in python_image
     assert "spine-qualification-bootstrap" in compose
     assert 'command: ["spine-qa-worker"]' in compose

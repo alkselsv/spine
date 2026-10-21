@@ -112,10 +112,12 @@
   ],
   "citation_locator_validation": "pass",
   "execution": {
-    "api_interception": false,
+    "api_mocking": false,
     "browser": "chromium",
     "cli_user_actions": false,
-    "controlled_fixture": false
+    "controlled_fixture": false,
+    "post_admission_response_disconnect_injected": true,
+    "route_interception": false
   },
   "privacy": {
     "content_fields_recorded": false,

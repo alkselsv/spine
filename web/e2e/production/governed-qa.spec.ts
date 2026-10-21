@@ -84,6 +84,7 @@ async function installUiStateObserver(page: Page): Promise<void> {
       ['Данные устарели', 'stale'],
       ['Сервис работает с ограничениями', 'degraded'],
       ['Нет доступа к данным', 'permission-denied'],
+      ['Доступ запрещён', 'permission-denied'],
       ['Не удалось загрузить раздел', 'terminal-failure'],
     ]);
     const observe = () => {
@@ -309,7 +310,10 @@ async function qualifyWorkspaceIsolation(
   if ((await page.locator('body').innerText()).includes(config.answerableQuestion)) {
     throw new Error('cross_workspace_question_disclosed');
   }
-  await markUiState(page, 'permission-denied');
+  await visible(
+    page.getByRole('alert', { name: 'Доступ запрещён' }),
+    'permission_denied_state_not_visible',
+  );
 
   const sourceDenial = page.waitForResponse((response) =>
     new URL(response.url()).pathname === `/api/v1/documents/${evidence.sourceObjectId}`,
@@ -613,10 +617,12 @@ class EvidenceCollector {
       ],
       citation_locator_validation: this.citationLocatorValidated ? 'pass' : 'not_verified',
       execution: {
-        api_interception: false,
+        api_mocking: false,
         browser: 'chromium',
         cli_user_actions: false,
         controlled_fixture: false,
+        post_admission_response_disconnect_injected: true,
+        route_interception: false,
       },
       privacy: {
         content_fields_recorded: false,

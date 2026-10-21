@@ -70,6 +70,11 @@ screenshots or video. A failure writes a bounded safe reason code; inspect
 server-side safe trace references under the authorized operator procedure
 rather than enabling content-bearing Playwright artifacts.
 
+The duplicate/retry scenario injects one browser-side response loss only after
+the real admission response has succeeded. It does not mock or fulfill an API
+route; the retry reaches the same deployed admission endpoint and must return
+the persisted replay for the original idempotency key.
+
 ## Review
 
 Accept the record only when it reports `pass`, every required scenario appears,
