@@ -125,6 +125,8 @@ def test_issue508_live_target_has_no_controlled_routes_or_content_artifacts() ->
     assert "safeUuid(value.source_revision_id) === this.sourceRevisionId" in source
     assert "new Set(retryRuns).size !== 1" in source
     assert "this.askReplaysByKey.get(keys[0]!)?.includes(true)" in source
+    assert "answer_admission_identity_not_observed" in source
+    assert "citation_evidence_identity_not_observed" in source
     assert "trace_correlation_incomplete" in source
     assert "cross_workspace_session_not_denied" in source
     assert "cross_workspace_source_not_denied" in source

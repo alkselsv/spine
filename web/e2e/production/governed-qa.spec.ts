@@ -206,6 +206,10 @@ async function qualifyAnswerCitationFeedbackReconnectAndRun(
   await context.setOffline(false);
   await page.getByRole('button', { name: 'Повторить ту же команду' }).click();
   await waitFor(() => evidence.askRuns.length >= 1, 'ask_admission_not_observed');
+  await waitFor(
+    () => Boolean(evidence.answerMessageId && evidence.answerRunId),
+    'answer_admission_identity_not_observed',
+  );
 
   await waitFor(() => evidence.eventRequests.length >= 1, 'sse_not_observed');
   await context.setOffline(true);
@@ -221,6 +225,7 @@ async function qualifyAnswerCitationFeedbackReconnectAndRun(
 
   await visible(page.locator('[data-accepted-answer-text]').last(), 'accepted_answer_not_visible', 300_000);
   await openCitationInspector(page);
+  await waitFor(() => Boolean(evidence.citationId), 'citation_evidence_identity_not_observed');
   await page.getByRole('group', { name: 'Оценка ответа' }).getByRole('button', { name: 'Полезно' }).click();
   await visible(page.getByText('Спасибо, отзыв сохранён.'), 'feedback_not_persisted');
 
