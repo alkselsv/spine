@@ -1,0 +1,96 @@
+{
+  "report_schema": "spine.issue-509.runtime-composition-readiness:v1",
+  "issue": 509,
+  "generated_on": "2026-10-21",
+  "classification": "metadata-only",
+  "environment": "local-synthetic",
+  "profile": "issue-509-local-compose:v1",
+  "target_commit": "276d8731c10d36826c8629a47352467d510bf14f",
+  "deployment_fingerprint": "9cb02076903069ff69f386c4f9191f43edd0c5531630b8b248b62a5ad426b061",
+  "fingerprint_schema": "spine.issue-509.compose-file-sha256:v1",
+  "production_qualified": false,
+  "scope": "worker-factory integration and local container status only",
+  "readiness": {
+    "configuration": "NOT_RECHECKED",
+    "runtime_reachability": "PARTIAL",
+    "temporal_server": "CONTAINER_HEALTHY",
+    "temporal_cluster_health_rpc": "NOT_RECHECKED",
+    "temporal_namespace": "NOT_RECHECKED",
+    "worker_factory_integration": "PASS",
+    "deployed_worker_pollers": "NOT_VERIFIED",
+    "application_api": "NOT_VERIFIED",
+    "trusted_authorization": "NOT_VERIFIED",
+    "api_outbox_worker_terminal_completion": "NOT_VERIFIED",
+    "backup": "NOT_VERIFIED",
+    "restore": "NOT_VERIFIED",
+    "integrity_reconciliation": "NOT_VERIFIED",
+    "projection_recovery": "NOT_VERIFIED",
+    "authorized_canary": "NOT_VERIFIED",
+    "decision": "BLOCKED"
+  },
+  "observations": {
+    "source_temporal": {
+      "container_status": "healthy",
+      "image": "temporalio/auto-setup:1.29.1",
+      "postgres_container_status": "healthy",
+      "postgres_image": "postgres:17.6-bookworm",
+      "cluster_health_rpc": "NOT_RECHECKED",
+      "namespace": "NOT_RECHECKED"
+    },
+    "restore_temporal": {
+      "container_status": "healthy",
+      "image": "temporalio/auto-setup:1.29.1",
+      "postgres_container_status": "healthy",
+      "postgres_image": "postgres:17.6-bookworm",
+      "cluster_health_rpc": "NOT_RECHECKED",
+      "namespace": "NOT_RECHECKED"
+    },
+    "application_deployment": {
+      "api_container": "NOT_PRESENT",
+      "worker_container": "NOT_PRESENT",
+      "reason_codes": [
+        "NO_CONFIGURATION_BACKED_PRODUCTION_COMPOSITION",
+        "NO_APPROVED_TRUSTED_RUNTIME_IDENTITY_BINDING"
+      ]
+    },
+    "worker_factory_integration": {
+      "status": "PASS",
+      "environment": "Temporal SDK test server",
+      "workflow_outcome": "ABSTAINED",
+      "deployed_application_readiness": false
+    },
+    "verification": {
+      "full_pytest": "3758_PASSED_6_SKIPPED",
+      "compileall": "PASS",
+      "diff_check": "PASS",
+      "r1_gate": "PASS_OFFLINE_CONTRACT_ONLY",
+      "pr_ci": "PASS_ALL_CHECKS"
+    }
+  },
+  "acceptance_criteria": {
+    "AC1": "BLOCKED",
+    "AC2": "BLOCKED",
+    "AC3": "BLOCKED",
+    "AC4": "NOT_VERIFIED",
+    "AC5": "BLOCKED",
+    "AC6": "BLOCKED",
+    "AC7": "NOT_VERIFIED",
+    "AC8": "NOT_VERIFIED",
+    "AC9": "BLOCKED"
+  },
+  "secrets": {
+    "values_in_report": false,
+    "provider_payloads_in_report": false,
+    "source_content_in_report": false
+  },
+  "qualification_claims": {
+    "deployed_api_worker": false,
+    "trusted_authorization": false,
+    "physical_backup": false,
+    "isolated_restore": false,
+    "projection_recovery": false,
+    "authorized_canary": false,
+    "production_readiness": false
+  },
+  "disposition": "Keep Issue #509 open. This report records limited runtime and integration observations only; no physical recovery qualification is claimed."
+}
