@@ -1,0 +1,108 @@
+{
+  "report_schema": "spine.issue-509.temporal-readiness:v1",
+  "target_commit": "d6db466b93a330c24a392dcf62e21dcee9008f52",
+  "decision": "BLOCKED",
+  "production_qualified": false,
+  "deployment_fingerprint": "1a328cfccccc92ff1a356180a2f2ce8ba46c4092e75d4fffbb0ff164675ee4d7",
+  "deployment_fingerprint_material": {
+    "target_commit": "d6db466b93a330c24a392dcf62e21dcee9008f52",
+    "fingerprint_schema": "spine.issue-509.deployment-source-digest-set:v2",
+    "source_files": {
+      "ignore_rules": "e7b45e6c027b7ddcfe4771b2e6914ddd4eb12e592287176dd1614c0467ff3712",
+      "compose_config": "9cb02076903069ff69f386c4f9191f43edd0c5531630b8b248b62a5ad426b061",
+      "application_image_recipe": "72130b86d12930a53debfeb6c7461f30c296f93f3efaee77dd1704e2f10cf241",
+      "persistence_image_recipe": "6932cec41996da1f3b821c2527cbdc29e368b698ed04ed42e02b9093aafacd5e",
+      "persistence_init_script": "7eef82251758b9218363e5a0d5c04721834148b751986c377382d30fcdb2e9ae"
+    },
+    "docker_engine": "29.8.1",
+    "compose": "5.5.1",
+    "temporal_image_id": "sha256:80fce65668df9a40704d4aaec8ade3ab3e70f6a0327bf217b243443dfe6a52f6",
+    "postgres_image_id": "sha256:567d5d704a3e5a4864393b623a0d50eb1b5a4ad134cdac7cf19555cb2d8ffe9e",
+    "source_profile": "0be0d45d5dd1e42767196d5b61a417993674940ad565f06b12c375f26d440d77",
+    "restore_profile": "789eaa373be6e2d3a15d5cd2ff3a321146738e8b47cc6a682ae899d8e16b9294"
+  },
+  "engine": {
+    "name": "Docker Engine",
+    "version": "29.8.1",
+    "platform": "linux-amd64",
+    "compose_version": "5.5.1"
+  },
+  "images": {
+    "temporal_image_family": "temporal-auto-setup",
+    "temporal_image_tag": "1.29.1",
+    "temporal_image_id": "sha256:80fce65668df9a40704d4aaec8ade3ab3e70f6a0327bf217b243443dfe6a52f6",
+    "temporal_server_version": "1.29.0",
+    "postgres_image_family": "postgres-bookworm",
+    "postgres_image_tag": "17.6",
+    "postgres_image_id": "sha256:567d5d704a3e5a4864393b623a0d50eb1b5a4ad134cdac7cf19555cb2d8ffe9e",
+    "postgres_server_version": "17.6"
+  },
+  "profiles": {
+    "source": {
+      "fingerprint": "0be0d45d5dd1e42767196d5b61a417993674940ad565f06b12c375f26d440d77",
+      "fingerprint_material": {
+        "profile": "source",
+        "compose_sha256": "9cb02076903069ff69f386c4f9191f43edd0c5531630b8b248b62a5ad426b061",
+        "network": "spine509qual_source",
+        "persistence_database": "spine_source_temporal",
+        "visibility_database": "spine_source_temporal_visibility",
+        "namespace": "spine-source-509",
+        "task_queue": "spine-source-509",
+        "host_grpc_port": "127.0.0.1:57233",
+        "temporal_image": "temporal-auto-setup:1.29.1",
+        "temporal_image_id": "sha256:80fce65668df9a40704d4aaec8ade3ab3e70f6a0327bf217b243443dfe6a52f6",
+        "postgres_image": "postgres-bookworm:17.6",
+        "postgres_image_id": "sha256:567d5d704a3e5a4864393b623a0d50eb1b5a4ad134cdac7cf19555cb2d8ffe9e",
+        "bind_on_ip": "0.0.0.0",
+        "self_health_address": "127.0.0.1:7233"
+      },
+      "postgres_health": "PASS",
+      "persistence_schema": "PASS",
+      "temporal_docker_health": "healthy",
+      "cluster_health_rpc": "SERVING",
+      "namespace": "REGISTERED",
+      "synthetic_workflow_admission": "PASS",
+      "synthetic_workflow_terminal_status": "TERMINATED",
+      "active_worker_pollers": 0,
+      "application_worker_readiness": "NOT_VERIFIED",
+      "network_isolation": "PASS"
+    },
+    "restore": {
+      "fingerprint": "789eaa373be6e2d3a15d5cd2ff3a321146738e8b47cc6a682ae899d8e16b9294",
+      "fingerprint_material": {
+        "profile": "restore",
+        "compose_sha256": "9cb02076903069ff69f386c4f9191f43edd0c5531630b8b248b62a5ad426b061",
+        "network": "spine509qual_restore",
+        "persistence_database": "spine_restore_temporal",
+        "visibility_database": "spine_restore_temporal_visibility",
+        "namespace": "spine-restore-509",
+        "task_queue": "spine-restore-509",
+        "host_grpc_port": "127.0.0.1:57234",
+        "temporal_image": "temporal-auto-setup:1.29.1",
+        "temporal_image_id": "sha256:80fce65668df9a40704d4aaec8ade3ab3e70f6a0327bf217b243443dfe6a52f6",
+        "postgres_image": "postgres-bookworm:17.6",
+        "postgres_image_id": "sha256:567d5d704a3e5a4864393b623a0d50eb1b5a4ad134cdac7cf19555cb2d8ffe9e",
+        "bind_on_ip": "0.0.0.0",
+        "self_health_address": "127.0.0.1:7233"
+      },
+      "postgres_health": "PASS",
+      "persistence_schema": "PASS",
+      "temporal_docker_health": "healthy",
+      "cluster_health_rpc": "SERVING",
+      "namespace": "REGISTERED",
+      "synthetic_workflow_admission": "PASS",
+      "synthetic_workflow_terminal_status": "TERMINATED",
+      "active_worker_pollers": 0,
+      "application_worker_readiness": "NOT_VERIFIED",
+      "network_isolation": "PASS"
+    }
+  },
+  "application_api_readiness": "NOT_VERIFIED",
+  "application_authorization": "NOT_VERIFIED",
+  "recovery_qualification": "NOT_STARTED",
+  "not_verified_reason_codes": [
+    "NO_DEPLOYABLE_APPLICATION_WORKER_ENTRYPOINT",
+    "NO_TRUSTED_APPLICATION_AUTHORIZATION_BINDING",
+    "BACKUP_RESTORE_SCOPE_NOT_EXECUTED"
+  ]
+}

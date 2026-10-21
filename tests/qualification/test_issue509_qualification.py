@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -11,6 +12,9 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REPORT_PATH = PROJECT_ROOT / "docs/qualification/issue-509-backup-recovery-qualification.json"
 READINESS_REPORT_PATH = PROJECT_ROOT / "docs/qualification/issue-509-local-readiness-report-v2.json"
+TEMPORAL_READINESS_REPORT_PATH = (
+    PROJECT_ROOT / "docs/qualification/issue-509-temporal-readiness-report-v1.json"
+)
 COMPOSE_PATH = PROJECT_ROOT / "deploy/qualification/issue-509/compose.yaml"
 DOCKERIGNORE_PATH = PROJECT_ROOT / ".dockerignore"
 QUALIFICATION_DOCKERFILE_PATH = PROJECT_ROOT / "deploy/qualification/issue-509/Dockerfile"
@@ -56,6 +60,11 @@ def _all_strings(value: Any) -> list[str]:
     if isinstance(value, list):
         return [item for nested in value for item in _all_strings(nested)]
     return []
+
+
+def _fingerprint(material: dict[str, Any]) -> str:
+    canonical = json.dumps(material, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def test_issue509_report_is_closed_versioned_and_content_free() -> None:
@@ -171,13 +180,14 @@ def test_issue509_temporal_services_use_the_pinned_image_dynamic_config() -> Non
     assert "DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml" not in compose
 
 
-def test_issue509_temporal_startup_and_healthchecks_use_isolated_service_dns() -> None:
+def test_issue509_temporal_self_healthcheck_uses_loopback_and_clients_use_service_dns() -> None:
     compose = COMPOSE_PATH.read_text(encoding="utf-8")
 
-    for service in ("source-temporal", "restore-temporal"):
-        assert f"TEMPORAL_ADDRESS: {service}:7233" in compose
-        assert f"cluster health --address {service}:7233" in compose
-    assert "cluster health --address 127.0.0.1:7233" not in compose
+    assert compose.count('BIND_ON_IP: "0.0.0.0"') == 2
+    assert compose.count("TEMPORAL_ADDRESS: 127.0.0.1:7233") == 2
+    assert compose.count("cluster health --address 127.0.0.1:7233") == 2
+    assert "SPINE_TEMPORAL_ADDRESS: source-temporal:7233" in compose
+    assert "SPINE_TEMPORAL_ADDRESS: restore-temporal:7233" in compose
 
 
 def test_issue509_readiness_report_binds_blocked_runtime_observation() -> None:
@@ -230,6 +240,73 @@ def test_issue509_readiness_report_does_not_claim_physical_qualification() -> No
 
 def test_issue509_readiness_report_contains_only_safe_metadata() -> None:
     report = _load_readiness_report()
+    for text in _all_strings(report):
+        lowered = text.lower()
+        assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
+        assert "\\" not in text
+        assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
+
+
+def _temporal_readiness_report() -> dict[str, Any]:
+    return json.loads(TEMPORAL_READINESS_REPORT_PATH.read_text(encoding="utf-8"))
+
+
+def test_issue509_temporal_readiness_report_is_bound_to_deployment_fingerprint() -> None:
+    report = _temporal_readiness_report()
+    assert report["report_schema"] == "spine.issue-509.temporal-readiness:v1"
+    assert report["target_commit"] == "d6db466b93a330c24a392dcf62e21dcee9008f52"
+    assert report["production_qualified"] is False
+    assert report["decision"] == "BLOCKED"
+    assert re.fullmatch(r"[a-f0-9]{64}", report["deployment_fingerprint"])
+    assert _fingerprint(report["deployment_fingerprint_material"]) == report[
+        "deployment_fingerprint"
+    ]
+
+
+def test_issue509_temporal_profile_fingerprints_match_profile_material() -> None:
+    report = _temporal_readiness_report()
+    for side in ("source", "restore"):
+        profile = report["profiles"][side]
+        assert re.fullmatch(r"[a-f0-9]{64}", profile["fingerprint"])
+        assert _fingerprint(profile["fingerprint_material"]) == profile["fingerprint"]
+
+
+def test_issue509_temporal_services_and_namespaces_are_ready_in_both_profiles() -> None:
+    report = _temporal_readiness_report()
+    for side in ("source", "restore"):
+        profile = report["profiles"][side]
+        assert profile["postgres_health"] == "PASS"
+        assert profile["persistence_schema"] == "PASS"
+        assert profile["temporal_docker_health"] == "healthy"
+        assert profile["cluster_health_rpc"] == "SERVING"
+        assert profile["namespace"] == "REGISTERED"
+        assert profile["network_isolation"] == "PASS"
+
+
+def test_issue509_temporal_synthetic_workflow_probe_reaches_terminal_status() -> None:
+    report = _temporal_readiness_report()
+    for side in ("source", "restore"):
+        profile = report["profiles"][side]
+        assert profile["synthetic_workflow_admission"] == "PASS"
+        assert profile["synthetic_workflow_terminal_status"] == "TERMINATED"
+
+
+def test_issue509_temporal_report_does_not_claim_application_worker_readiness() -> None:
+    report = _temporal_readiness_report()
+    for side in ("source", "restore"):
+        profile = report["profiles"][side]
+        assert profile["active_worker_pollers"] == 0
+        assert profile["application_worker_readiness"] == "NOT_VERIFIED"
+
+
+def test_issue509_temporal_report_keeps_unverified_application_gaps_explicit() -> None:
+    report = _temporal_readiness_report()
+    assert report["application_authorization"] == "NOT_VERIFIED"
+    assert report["recovery_qualification"] == "NOT_STARTED"
+
+
+def test_issue509_temporal_readiness_report_contains_only_safe_metadata() -> None:
+    report = _temporal_readiness_report()
     for text in _all_strings(report):
         lowered = text.lower()
         assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
