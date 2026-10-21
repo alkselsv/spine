@@ -18,6 +18,9 @@ TEMPORAL_READINESS_REPORT_PATH = (
 RUNTIME_COMPOSITION_REPORT_PATH = (
     PROJECT_ROOT / "docs/qualification/issue-509-runtime-composition-readiness-v1.json"
 )
+TEMPORAL_READINESS_REPORT_V2_PATH = (
+    PROJECT_ROOT / "docs/qualification/issue-509-temporal-readiness-report-v2.json"
+)
 COMPOSE_PATH = PROJECT_ROOT / "deploy/qualification/issue-509/compose.yaml"
 DOCKERIGNORE_PATH = PROJECT_ROOT / ".dockerignore"
 QUALIFICATION_DOCKERFILE_PATH = PROJECT_ROOT / "deploy/qualification/issue-509/Dockerfile"
@@ -318,6 +321,10 @@ def test_issue509_runtime_composition_report_contains_only_safe_metadata() -> No
         assert not re.search(r"(?:^|\s)/(?:home|tmp|var|etc|mnt|root)/", text)
 
 
+def _temporal_readiness_report_v2() -> dict[str, Any]:
+    return json.loads(TEMPORAL_READINESS_REPORT_V2_PATH.read_text(encoding="utf-8"))
+
+
 def test_issue509_temporal_readiness_report_is_bound_to_deployment_fingerprint() -> None:
     report = _temporal_readiness_report()
     assert report["report_schema"] == "spine.issue-509.temporal-readiness:v1"
@@ -374,6 +381,72 @@ def test_issue509_temporal_report_keeps_unverified_application_gaps_explicit() -
 
 def test_issue509_temporal_readiness_report_contains_only_safe_metadata() -> None:
     report = _temporal_readiness_report()
+    for text in _all_strings(report):
+        lowered = text.lower()
+        assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
+        assert "\\" not in text
+        assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
+
+
+def test_issue509_temporal_readiness_report_v2_binds_post_merge_deployment() -> None:
+    report = _temporal_readiness_report_v2()
+
+    assert report["report_schema"] == "spine.issue-509.temporal-readiness:v2"
+    assert report["target_commit"] == "a8565fd86cc2c8c56158d22a5664733c05f138d2"
+    assert report["decision"] == "BLOCKED"
+    assert report["production_qualified"] is False
+    assert _fingerprint(report["deployment_fingerprint_material"]) == report[
+        "deployment_fingerprint"
+    ]
+    for side in ("source", "restore"):
+        profile = report["profiles"][side]
+        assert _fingerprint(profile["fingerprint_material"]) == profile["fingerprint"]
+
+
+def test_issue509_temporal_readiness_report_v2_binds_current_profile_sources() -> None:
+    report = _temporal_readiness_report_v2()
+    source_files = report["deployment_fingerprint_material"]["source_files"]
+    paths = {
+        "ignore_rules": PROJECT_ROOT / ".dockerignore",
+        "compose_config": COMPOSE_PATH,
+        "application_image_recipe": QUALIFICATION_DOCKERFILE_PATH,
+        "persistence_image_recipe": PROJECT_ROOT
+        / "deploy/qualification/issue-509/postgres/Dockerfile",
+        "persistence_init_script": PROJECT_ROOT
+        / "deploy/qualification/issue-509/postgres/init-qualification.sh",
+    }
+
+    assert set(source_files) == set(paths)
+    for key, path in paths.items():
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == source_files[key]
+
+
+def test_issue509_temporal_readiness_report_v2_records_only_observed_server_states() -> None:
+    report = _temporal_readiness_report_v2()
+    for side in ("source", "restore"):
+        profile = report["profiles"][side]
+        assert profile["postgres_container_health"] == "healthy"
+        assert profile["postgres_tcp_readiness"] == "PASS"
+        assert profile["temporal_container_health"] == "healthy"
+        assert profile["cluster_health_rpc"] == "SERVING"
+        assert profile["namespace"] == "REGISTERED"
+        assert profile["synthetic_workflow_probe"] == "NOT_VERIFIED"
+        assert profile["active_application_worker_pollers"] == 0
+        assert profile["application_worker_readiness"] == "NOT_VERIFIED"
+        assert profile["network_isolation"] == "NOT_VERIFIED"
+
+    assert report["application_api_readiness"] == "NOT_VERIFIED"
+    assert report["application_authorization"] == "NOT_VERIFIED"
+    assert report["backup"] == "NOT_STARTED"
+    assert report["isolated_restore"] == "NOT_STARTED"
+    assert report["integrity_reconciliation"] == "NOT_STARTED"
+    assert report["physical_projection_recovery"] == "NOT_STARTED"
+    assert report["authorized_canary"] == "NOT_STARTED"
+    assert report["safe_diagnostics"] == "NOT_VERIFIED"
+
+
+def test_issue509_temporal_readiness_report_v2_contains_only_safe_metadata() -> None:
+    report = _temporal_readiness_report_v2()
     for text in _all_strings(report):
         lowered = text.lower()
         assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
