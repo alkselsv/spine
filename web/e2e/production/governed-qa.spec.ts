@@ -226,7 +226,7 @@ async function qualifyAnswerCitationFeedbackReconnectAndRun(
 
   const acceptedAnswer = page.locator('[data-accepted-answer-text]').last();
   await visible(acceptedAnswer, 'accepted_answer_not_visible', 300_000);
-  evidence.captureSensitiveValue(await acceptedAnswer.textContent());
+  evidence.captureSensitiveValue(await boundedText(acceptedAnswer));
   await openCitationInspector(page);
   evidence.captureSensitiveValue(await citationExcerpt(page));
   await waitFor(() => Boolean(evidence.citationId), 'citation_evidence_identity_not_observed');
@@ -357,7 +357,7 @@ async function qualifyWorkspaceIsolation(
   await page.getByRole('button', { name: 'Отправить' }).click();
   const workspaceBAnswer = page.locator('[data-accepted-answer-text]').last();
   await visible(workspaceBAnswer, 'workspace_b_answer_not_visible', 300_000);
-  evidence.captureSensitiveValue(await workspaceBAnswer.textContent());
+  evidence.captureSensitiveValue(await boundedText(workspaceBAnswer));
   await openCitationInspector(page);
   evidence.captureSensitiveValue(await citationExcerpt(page));
   await waitFor(() => evidence.workspaceBCitationLocatorValidated, 'workspace_b_citation_not_validated');
@@ -729,7 +729,17 @@ async function visible(locator: Locator, code: string, timeout = 60_000): Promis
 }
 
 async function citationExcerpt(page: Page): Promise<string | null> {
-  return page.getByRole('heading', { name: 'Источник 1' }).locator('..').locator('p').first().textContent();
+  return boundedText(page.getByRole('heading', { name: 'Источник 1' }).locator('..').locator('p').first());
+}
+
+async function boundedText(locator: Locator): Promise<string> {
+  try {
+    const value = await locator.textContent({ timeout: 10_000 });
+    if (value?.trim()) return value;
+  } catch {
+    // Mapped to the same safe reason below.
+  }
+  throw new Error('sensitive_content_capture_failed');
 }
 
 async function waitFor(check: () => boolean | Promise<boolean>, code: string, timeout = 60_000): Promise<void> {
