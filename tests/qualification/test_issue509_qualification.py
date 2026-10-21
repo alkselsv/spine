@@ -10,6 +10,7 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REPORT_PATH = PROJECT_ROOT / "docs/qualification/issue-509-backup-recovery-qualification.json"
+READINESS_REPORT_PATH = PROJECT_ROOT / "docs/qualification/issue-509-local-readiness-report-v2.json"
 COMPOSE_PATH = PROJECT_ROOT / "deploy/qualification/issue-509/compose.yaml"
 
 EXPECTED_CRITERIA = {f"AC{number}" for number in range(1, 10)}
@@ -29,6 +30,10 @@ FORBIDDEN_REPORT_TOKENS = (
 
 def _load_report() -> dict[str, Any]:
     return json.loads(REPORT_PATH.read_text(encoding="utf-8"))
+
+
+def _load_readiness_report() -> dict[str, Any]:
+    return json.loads(READINESS_REPORT_PATH.read_text(encoding="utf-8"))
 
 
 def _all_strings(value: Any) -> list[str]:
@@ -161,3 +166,41 @@ def test_issue509_temporal_startup_and_healthchecks_use_isolated_service_dns() -
         assert f"TEMPORAL_ADDRESS: {service}:7233" in compose
         assert f"cluster health --address {service}:7233" in compose
     assert "cluster health --address 127.0.0.1:7233" not in compose
+
+
+def test_issue509_readiness_report_records_only_observed_states() -> None:
+    report = _load_readiness_report()
+
+    assert report["report_schema"] == "spine.issue-509.local-readiness:v2"
+    assert report["issue"] == 509
+    assert re.fullmatch(r"[0-9a-f]{40}", report["target_commit"])
+    assert re.fullmatch(r"[0-9a-f]{64}", report["deployment_fingerprint"])
+    assert report["production_qualified"] is False
+    assert report["readiness"]["configuration"] == "PASS"
+    assert report["readiness"]["runtime_reachability"] == "BLOCKED"
+    assert report["readiness"]["decision"] == "BLOCKED"
+    assert report["readiness"]["authorization"] == "NOT_VERIFIED"
+    assert report["observations"]["source_neo4j"]["status"] == "PASS"
+    assert report["observations"]["restore_neo4j"]["status"] == "PASS"
+    assert report["observations"]["source_temporal"]["cluster_health"] == "NOT_VERIFIED"
+    assert report["observations"]["restore_temporal"]["status"] == "NOT_VERIFIED"
+    assert all(value == "NOT_VERIFIED" for key, value in report["readiness"].items() if key in {
+        "backup",
+        "restore",
+        "integrity_reconciliation",
+        "projection_recovery",
+        "authorized_canary",
+        "safe_diagnostics",
+    })
+    assert report["qualification_claims"] == {
+        "physical_backup": False,
+        "isolated_restore": False,
+        "projection_recovery": False,
+        "authorized_canary": False,
+        "production_readiness": False,
+    }
+    for text in _all_strings(report):
+        lowered = text.lower()
+        assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
+        assert "\\" not in text
+        assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
