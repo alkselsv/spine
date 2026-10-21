@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -11,6 +12,9 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REPORT_PATH = PROJECT_ROOT / "docs/qualification/issue-509-backup-recovery-qualification.json"
 READINESS_REPORT_PATH = PROJECT_ROOT / "docs/qualification/issue-509-local-readiness-report-v2.json"
+TEMPORAL_READINESS_REPORT_PATH = (
+    PROJECT_ROOT / "docs/qualification/issue-509-temporal-readiness-report-v1.json"
+)
 COMPOSE_PATH = PROJECT_ROOT / "deploy/qualification/issue-509/compose.yaml"
 
 EXPECTED_CRITERIA = {f"AC{number}" for number in range(1, 10)}
@@ -200,6 +204,52 @@ def test_issue509_readiness_report_records_only_observed_states() -> None:
         "authorized_canary": False,
         "production_readiness": False,
     }
+    for text in _all_strings(report):
+        lowered = text.lower()
+        assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
+        assert "\\" not in text
+        assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
+
+
+def test_issue509_temporal_readiness_report_records_both_real_environments() -> None:
+    report = json.loads(TEMPORAL_READINESS_REPORT_PATH.read_text(encoding="utf-8"))
+
+    assert report["report_schema"] == "spine.issue-509.temporal-readiness:v1"
+    assert report["target_commit"] == "d6db466b93a330c24a392dcf62e21dcee9008f52"
+    assert report["production_qualified"] is False
+    assert report["decision"] == "BLOCKED"
+    assert re.fullmatch(r"[a-f0-9]{64}", report["deployment_fingerprint"])
+    assert hashlib.sha256(
+        json.dumps(
+            report["deployment_fingerprint_material"],
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest() == report["deployment_fingerprint"]
+
+    for side in ("source", "restore"):
+        profile = report["profiles"][side]
+        assert re.fullmatch(r"[a-f0-9]{64}", profile["fingerprint"])
+        assert hashlib.sha256(
+            json.dumps(
+                profile["fingerprint_material"],
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest() == profile["fingerprint"]
+        assert profile["postgres_health"] == "PASS"
+        assert profile["persistence_schema"] == "PASS"
+        assert profile["temporal_docker_health"] == "healthy"
+        assert profile["cluster_health_rpc"] == "SERVING"
+        assert profile["namespace"] == "REGISTERED"
+        assert profile["synthetic_workflow_admission"] == "PASS"
+        assert profile["synthetic_workflow_terminal_status"] == "TERMINATED"
+        assert profile["active_worker_pollers"] == 0
+        assert profile["application_worker_readiness"] == "NOT_VERIFIED"
+        assert profile["network_isolation"] == "PASS"
+
+    assert report["application_authorization"] == "NOT_VERIFIED"
+    assert report["recovery_qualification"] == "NOT_STARTED"
     for text in _all_strings(report):
         lowered = text.lower()
         assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
