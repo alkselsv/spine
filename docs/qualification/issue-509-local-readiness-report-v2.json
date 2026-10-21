@@ -1,0 +1,102 @@
+{
+  "report_schema": "spine.issue-509.local-readiness:v2",
+  "issue": 509,
+  "generated_on": "2026-10-21",
+  "classification": "metadata-only",
+  "environment": "local-synthetic",
+  "profile": "issue-509-local-compose:v1",
+  "target_commit": "fcd31ac92e75e8ca599f816cd422b06a63df9ec3",
+  "deployment_fingerprint": "37fb9a052b64bd9027d85b80711e4c73c6e2e5561a7fb6fc047dd7b2087aa25b",
+  "fingerprint_schema": "spine.issue-509.profile-source-digest-set:v1",
+  "production_qualified": false,
+  "engine": {
+    "runtime": "Docker Engine on WSL2",
+    "version": "29.8.1",
+    "compose_version": "5.5.1"
+  },
+  "readiness": {
+    "configuration": "PASS",
+    "runtime_reachability": "BLOCKED",
+    "authorization": "NOT_VERIFIED",
+    "backup": "NOT_VERIFIED",
+    "restore": "NOT_VERIFIED",
+    "integrity_reconciliation": "NOT_VERIFIED",
+    "projection_recovery": "NOT_VERIFIED",
+    "authorized_canary": "NOT_VERIFIED",
+    "safe_diagnostics": "NOT_VERIFIED",
+    "decision": "BLOCKED"
+  },
+  "observations": {
+    "compose_validation": {
+      "status": "PASS",
+      "result": "configuration_parsed"
+    },
+    "source_neo4j": {
+      "status": "PASS",
+      "neo4j_version": "5.26.32",
+      "apoc_version": "5.26.32",
+      "bolt_query": "PASS",
+      "network_isolation": "PASS"
+    },
+    "restore_neo4j": {
+      "status": "PASS",
+      "neo4j_version": "5.26.32",
+      "apoc_version": "5.26.32",
+      "bolt_query": "PASS",
+      "network_isolation": "PASS"
+    },
+    "source_temporal": {
+      "status": "BLOCKED",
+      "temporal_version": "1.29.1",
+      "postgres_version": "17.6",
+      "postgres_health": "PASS",
+      "grpc_tcp_reachability": "PASS",
+      "cluster_health": "NOT_VERIFIED",
+      "reason_code": "CLUSTER_HEALTH_RPC_TIMEOUT"
+    },
+    "restore_temporal": {
+      "status": "NOT_VERIFIED",
+      "reason_code": "SERVICE_NOT_STARTED"
+    },
+    "application_runtime": {
+      "api": "NOT_VERIFIED",
+      "worker": "NOT_VERIFIED",
+      "entrypoint": "LEGACY_API_ONLY",
+      "reason_codes": [
+        "NO_DEPLOYABLE_TEMPORAL_WORKER_ENTRYPOINT",
+        "NO_TRUSTED_LOCAL_AUTH_BINDING"
+      ]
+    },
+    "recovery_bindings": {
+      "backup_coordinator": "NOT_VERIFIED",
+      "restore_verifier": "NOT_VERIFIED",
+      "projection_recovery_worker": "NOT_VERIFIED",
+      "authorized_canary": "NOT_VERIFIED",
+      "reason_codes": [
+        "NO_REVIEWED_BACKUP_OPERATOR_ENTRYPOINT",
+        "NO_REVIEWED_RESTORE_VERIFIER_BINDING",
+        "NO_DEPLOYABLE_PROJECTION_RECOVERY_WORKER",
+        "NO_AUTHORIZED_CANARY_IDENTITY"
+      ]
+    },
+    "provider_calls": "NOT_STARTED"
+  },
+  "secrets": {
+    "values_in_report": false,
+    "provider_payloads_in_report": false
+  },
+  "qualification_claims": {
+    "physical_backup": false,
+    "isolated_restore": false,
+    "projection_recovery": false,
+    "authorized_canary": false,
+    "production_readiness": false
+  },
+  "evidence_refs": [
+    "issue-509:historical-qualification:v1",
+    "issue-509:local-profile:v1",
+    "issue-509:temporal-startup-check:v1",
+    "issue-509:neo4j-bolt-check:v1"
+  ],
+  "disposition": "Keep Issue #509 open. No physical recovery qualification is claimed."
+}

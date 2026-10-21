@@ -126,18 +126,19 @@ services:
       POSTGRES_PWD: ${SOURCE_TEMPORAL_PASSWORD:?SOURCE_TEMPORAL_PASSWORD must be set}
       DB_PORT: 5432
       POSTGRES_TLS_ENABLED: "false"
-      TEMPORAL_ADDRESS: 127.0.0.1:7233
+      TEMPORAL_ADDRESS: source-temporal:7233
       DEFAULT_NAMESPACE: spine-source-509
       DEFAULT_NAMESPACE_RETENTION: 24h
       SKIP_ADD_CUSTOM_SEARCH_ATTRIBUTES: "true"
-      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+      # Use the pinned image's bundled default; no external dynamic-config mount exists.
+      DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig/docker.yaml
     ports:
       - "127.0.0.1:${SOURCE_TEMPORAL_PORT:-57233}:7233"
     depends_on:
       source-temporal-postgres: {condition: service_healthy}
     networks: [source]
     healthcheck:
-      test: ["CMD-SHELL", "temporal operator cluster health --address 127.0.0.1:7233 >/dev/null"]
+      test: ["CMD-SHELL", "temporal operator cluster health --address source-temporal:7233 >/dev/null"]
       interval: 10s
       timeout: 10s
       retries: 60
@@ -153,18 +154,19 @@ services:
       POSTGRES_PWD: ${RESTORE_TEMPORAL_PASSWORD:?RESTORE_TEMPORAL_PASSWORD must be set}
       DB_PORT: 5432
       POSTGRES_TLS_ENABLED: "false"
-      TEMPORAL_ADDRESS: 127.0.0.1:7233
+      TEMPORAL_ADDRESS: restore-temporal:7233
       DEFAULT_NAMESPACE: spine-restore-509
       DEFAULT_NAMESPACE_RETENTION: 24h
       SKIP_ADD_CUSTOM_SEARCH_ATTRIBUTES: "true"
-      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+      # Use the pinned image's bundled default; no external dynamic-config mount exists.
+      DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig/docker.yaml
     ports:
       - "127.0.0.1:${RESTORE_TEMPORAL_PORT:-57234}:7233"
     depends_on:
       restore-temporal-postgres: {condition: service_healthy}
     networks: [restore]
     healthcheck:
-      test: ["CMD-SHELL", "temporal operator cluster health --address 127.0.0.1:7233 >/dev/null"]
+      test: ["CMD-SHELL", "temporal operator cluster health --address restore-temporal:7233 >/dev/null"]
       interval: 10s
       timeout: 10s
       retries: 60

@@ -10,6 +10,8 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REPORT_PATH = PROJECT_ROOT / "docs/qualification/issue-509-backup-recovery-qualification.json"
+READINESS_REPORT_PATH = PROJECT_ROOT / "docs/qualification/issue-509-local-readiness-report-v2.json"
+COMPOSE_PATH = PROJECT_ROOT / "deploy/qualification/issue-509/compose.yaml"
 DOCKERIGNORE_PATH = PROJECT_ROOT / ".dockerignore"
 QUALIFICATION_DOCKERFILE_PATH = PROJECT_ROOT / "deploy/qualification/issue-509/Dockerfile"
 
@@ -40,6 +42,10 @@ QUALIFICATION_BUILD_CONTEXT_ALLOWLIST = {
 
 def _load_report() -> dict[str, Any]:
     return json.loads(REPORT_PATH.read_text(encoding="utf-8"))
+
+
+def _load_readiness_report() -> dict[str, Any]:
+    return json.loads(READINESS_REPORT_PATH.read_text(encoding="utf-8"))
 
 
 def _all_strings(value: Any) -> list[str]:
@@ -154,6 +160,81 @@ def test_issue509_report_does_not_promote_repository_evidence_to_live_recovery()
         "no_production_readiness_or_cutover_claim_made",
         "physical_projection_remains_non_authoritative",
     ]
+
+
+def test_issue509_temporal_services_use_the_pinned_image_dynamic_config() -> None:
+    compose = COMPOSE_PATH.read_text(encoding="utf-8")
+
+    assert compose.count(
+        "DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig/docker.yaml"
+    ) == 2
+    assert "DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml" not in compose
+
+
+def test_issue509_temporal_startup_and_healthchecks_use_isolated_service_dns() -> None:
+    compose = COMPOSE_PATH.read_text(encoding="utf-8")
+
+    for service in ("source-temporal", "restore-temporal"):
+        assert f"TEMPORAL_ADDRESS: {service}:7233" in compose
+        assert f"cluster health --address {service}:7233" in compose
+    assert "cluster health --address 127.0.0.1:7233" not in compose
+
+
+def test_issue509_readiness_report_binds_blocked_runtime_observation() -> None:
+    report = _load_readiness_report()
+
+    assert report["report_schema"] == "spine.issue-509.local-readiness:v2"
+    assert report["issue"] == 509
+    assert re.fullmatch(r"[0-9a-f]{40}", report["target_commit"])
+    assert re.fullmatch(r"[0-9a-f]{64}", report["deployment_fingerprint"])
+    assert report["production_qualified"] is False
+    assert report["readiness"]["configuration"] == "PASS"
+    assert report["readiness"]["runtime_reachability"] == "BLOCKED"
+    assert report["readiness"]["decision"] == "BLOCKED"
+    assert report["readiness"]["authorization"] == "NOT_VERIFIED"
+
+
+def test_issue509_readiness_report_records_neo4j_and_temporal_observations() -> None:
+    report = _load_readiness_report()
+
+    assert report["observations"]["source_neo4j"]["status"] == "PASS"
+    assert report["observations"]["restore_neo4j"]["status"] == "PASS"
+    assert report["observations"]["source_temporal"]["cluster_health"] == "NOT_VERIFIED"
+    assert report["observations"]["restore_temporal"]["status"] == "NOT_VERIFIED"
+
+
+def test_issue509_readiness_report_keeps_recovery_checks_unverified() -> None:
+    report = _load_readiness_report()
+
+    assert all(value == "NOT_VERIFIED" for key, value in report["readiness"].items() if key in {
+        "backup",
+        "restore",
+        "integrity_reconciliation",
+        "projection_recovery",
+        "authorized_canary",
+        "safe_diagnostics",
+    })
+
+
+def test_issue509_readiness_report_does_not_claim_physical_qualification() -> None:
+    report = _load_readiness_report()
+
+    assert report["qualification_claims"] == {
+        "physical_backup": False,
+        "isolated_restore": False,
+        "projection_recovery": False,
+        "authorized_canary": False,
+        "production_readiness": False,
+    }
+
+
+def test_issue509_readiness_report_contains_only_safe_metadata() -> None:
+    report = _load_readiness_report()
+    for text in _all_strings(report):
+        lowered = text.lower()
+        assert not any(token in lowered for token in FORBIDDEN_REPORT_TOKENS)
+        assert "\\" not in text
+        assert not re.search(r"(?:^|[^:])/(?:[^/]|$)", text)
 
 
 def test_issue509_application_build_context_is_default_deny_and_allowlisted() -> None:
