@@ -226,9 +226,7 @@ async function qualifyAnswerCitationFeedbackReconnectAndRun(
 
   const acceptedAnswer = page.locator('[data-accepted-answer-text]').last();
   await visible(acceptedAnswer, 'accepted_answer_not_visible', 300_000);
-  evidence.captureSensitiveValue(await boundedText(acceptedAnswer));
   await openCitationInspector(page);
-  evidence.captureSensitiveValue(await citationExcerpt(page));
   await waitFor(() => Boolean(evidence.citationId), 'citation_evidence_identity_not_observed');
   await page.getByRole('group', { name: 'Оценка ответа' }).getByRole('button', { name: 'Полезно' }).click();
   await visible(page.getByText('Спасибо, отзыв сохранён.'), 'feedback_not_persisted');
@@ -357,9 +355,7 @@ async function qualifyWorkspaceIsolation(
   await page.getByRole('button', { name: 'Отправить' }).click();
   const workspaceBAnswer = page.locator('[data-accepted-answer-text]').last();
   await visible(workspaceBAnswer, 'workspace_b_answer_not_visible', 300_000);
-  evidence.captureSensitiveValue(await boundedText(workspaceBAnswer));
   await openCitationInspector(page);
-  evidence.captureSensitiveValue(await citationExcerpt(page));
   await waitFor(() => evidence.workspaceBCitationLocatorValidated, 'workspace_b_citation_not_validated');
   evidence.scenarios.add('two_workspace_isolation');
 }
@@ -569,6 +565,7 @@ class EvidenceCollector {
       if (feedbackId) this.feedbackIds.push(feedbackId);
     } else if (path.startsWith('/api/v1/qa/citations/') && isRecord(body.data) && isRecord(body.data.evidence)) {
       const value = body.data.evidence;
+      if (typeof value.excerpt === 'string') this.captureSensitiveValue(value.excerpt);
       const citationId = safeUuid(value.citation_id);
       const reference = isRecord(value.evidence_reference) ? value.evidence_reference : null;
       const locator = reference && isRecord(reference.locator) ? reference.locator : null;
@@ -593,6 +590,7 @@ class EvidenceCollector {
         this.workspaceBCitationLocatorValidated = true;
       }
     } else if (isRecord(body.data)) {
+      if (typeof body.data.answer === 'string') this.captureSensitiveValue(body.data.answer);
       const outcome = body.data.terminal_outcome;
       if (typeof outcome === 'string') {
         this.terminalOutcomes.push(outcome);
@@ -726,20 +724,6 @@ async function choose(page: Page, label: string, option: string): Promise<void> 
 
 async function visible(locator: Locator, code: string, timeout = 60_000): Promise<void> {
   try { await locator.waitFor({ state: 'visible', timeout }); } catch { throw new Error(code); }
-}
-
-async function citationExcerpt(page: Page): Promise<string | null> {
-  return boundedText(page.getByRole('heading', { name: 'Источник 1' }).locator('..').locator('p').first());
-}
-
-async function boundedText(locator: Locator): Promise<string> {
-  try {
-    const value = await locator.textContent({ timeout: 10_000 });
-    if (value?.trim()) return value;
-  } catch {
-    // Mapped to the same safe reason below.
-  }
-  throw new Error('sensitive_content_capture_failed');
 }
 
 async function waitFor(check: () => boolean | Promise<boolean>, code: string, timeout = 60_000): Promise<void> {

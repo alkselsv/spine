@@ -133,7 +133,8 @@ def test_issue508_live_target_has_no_controlled_routes_or_content_artifacts() ->
     assert "trace_correlation_incomplete" in source
     assert "cancelled_terminal_run_not_correlated" in source
     assert "artifact_no_leak_scan_failed" in source
-    assert "sensitive_content_capture_failed" in source
+    assert "this.captureSensitiveValue(value.excerpt)" in source
+    assert "this.captureSensitiveValue(body.data.answer)" in source
     assert "noLeakSentinel" in source
     assert "cross_workspace_session_not_denied" in source
     assert "cross_workspace_source_not_denied" in source
