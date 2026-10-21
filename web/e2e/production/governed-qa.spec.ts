@@ -525,7 +525,7 @@ class EvidenceCollector {
     if (!response.ok() || !path.startsWith('/api/v1/')) return;
     if (!['/api/v1/documents/batches', '/api/v1/ask/admissions', '/api/v1/qa/feedback'].includes(path)
       && !path.startsWith('/api/v1/ingestion/runs/')
-      && !path.includes('/messages/') && !path.startsWith('/api/v1/qa/citations/')) return;
+      && !path.includes('/messages') && !path.startsWith('/api/v1/qa/citations/')) return;
     let body: unknown;
     try { body = await response.json(); } catch { return; }
     if (!isRecord(body)) return;
@@ -589,19 +589,35 @@ class EvidenceCollector {
       ) {
         this.workspaceBCitationLocatorValidated = true;
       }
+    } else if (Array.isArray(body.items)) {
+      for (const item of body.items) {
+        if (!isRecord(item)) continue;
+        if (typeof item.answer === 'string') this.captureSensitiveValue(item.answer);
+        const outcome = item.terminal_outcome;
+        const terminalRunId = safeUuid(item.run_id);
+        if (typeof outcome === 'string') this.captureTerminalOutcome(
+          terminalRunId,
+          outcome,
+          body.workspace_id === this.config.workspaceBId,
+        );
+      }
     } else if (isRecord(body.data)) {
       if (typeof body.data.answer === 'string') this.captureSensitiveValue(body.data.answer);
       const outcome = body.data.terminal_outcome;
       if (typeof outcome === 'string') {
-        this.terminalOutcomes.push(outcome);
         const terminalRunId = safeUuid(body.data.run_id);
-        if (terminalRunId) {
-          this.terminalRunIds.push(terminalRunId);
-          this.terminalOutcomesByRun.set(terminalRunId, outcome);
-        }
-        if (body.workspace_id === this.config.workspaceBId) this.workspaceBOutcomes.push(outcome);
+        this.captureTerminalOutcome(terminalRunId, outcome, body.workspace_id === this.config.workspaceBId);
       }
     }
+  }
+
+  captureTerminalOutcome(runId: string | null, outcome: string, workspaceB: boolean): void {
+    this.terminalOutcomes.push(outcome);
+    if (runId) {
+      this.terminalRunIds.push(runId);
+      this.terminalOutcomesByRun.set(runId, outcome);
+    }
+    if (workspaceB) this.workspaceBOutcomes.push(outcome);
   }
 
   captureUiStates(states: string[]): void {

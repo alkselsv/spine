@@ -135,6 +135,7 @@ def test_issue508_live_target_has_no_controlled_routes_or_content_artifacts() ->
     assert "artifact_no_leak_scan_failed" in source
     assert "this.captureSensitiveValue(value.excerpt)" in source
     assert "this.captureSensitiveValue(body.data.answer)" in source
+    assert "Array.isArray(body.items)" in source
     assert "noLeakSentinel" in source
     assert "cross_workspace_session_not_denied" in source
     assert "cross_workspace_source_not_denied" in source
