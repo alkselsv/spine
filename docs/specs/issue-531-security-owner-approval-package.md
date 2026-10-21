@@ -1,63 +1,44 @@
-# Issue #531 — Security Owner approval package
+# Issue #531 — approved Security qualification contract
 
-**Status: PROPOSED — SECURITY APPROVAL REQUIRED**
+**Status: APPROVED ARCHITECTURAL CONTRACT — PROJECT PARTICIPANT DECISION**
 
-This package requests an architecture/interface decision only. It does not authorize provisioning any concrete identity, membership, grant, credential, database role, SOURCE/RESTORE target, backup, restore, or canary.
+The project participant recorded agreement to Security-owned qualification provisioning and S1–S8 in [PR #540](https://github.com/alkselsv/spine/pull/540#issuecomment-6326615206). This is not a formal GitHub Review and does not claim that the Security Owner personally reviewed or approved the PR.
 
-## Problem
+This decision permits contract documentation, decomposition and implementation through repository workflow. It does not authorize provisioning any concrete identity, membership, grant, credential, database role, SOURCE/RESTORE target, backup, restore or canary.
 
-Spine has canonical identity resolution and authorization enforcement, but no identified Security-owned operator interface for temporary synthetic qualification principals on independent SOURCE and RESTORE targets. Current identity/membership records have status and history but no built-in expiry. #508 bootstrap, local bearer authentication, and the migration/test seed helper do not meet this boundary.
+## Approved contract
 
-## Recommendation
+Use a bounded one-shot operator-invoked provision/revoke/cleanup interface. Require an independently authenticated operator, independently verified operation/change approval, and a strict versioned target profile. Do not create a general identity API, use #508 bootstrap as the operator entrypoint, or provision during API/worker/dispatcher startup.
 
-Choose bounded option B if Security cannot name an existing approved mechanism: a one-shot operator-invoked, qualification-only provision/revoke/cleanup command or owner-managed job. It should consume a strict versioned approved target profile plus an independently verified operation/change approval reference; reuse canonical identity, membership, role, AccessPolicy, audit, generation, and RLS contracts; keep SOURCE and RESTORE principals, credentials, database scopes, and operators separate; and never run during application startup.
+Reuse canonical PostgreSQL identity, alias, membership, environment role, service-principal, authorization generation, audit, AccessPolicy and RLS contracts. Create or select only the principals and least-privilege bindings required by the approved profile. Human `read_content` and service `process_content` remain distinct. Content grants may only be created and activated through the existing approved AccessPolicy workflow; the provisioning interface may verify a grant reference but cannot manufacture or activate it.
 
-The proposed expiry model is a canonical deadline checked on every relevant authority resolution, with AccessPolicy valid_until for content grants and scheduled cleanup/external credential expiry as additional defenses. This requires Security approval because the current identity/membership schema has no expiry enforcement.
+SOURCE and RESTORE must use separate identity bindings, aliases, credentials, database roles and operator scopes. The restore verifier is independent and read-only. No SOURCE credential is copied to RESTORE. Backup/restore authority does not imply `read_content`.
 
-## Why #508 is not sufficient
+Use inactive-first provisioning, idempotent operation identity/digest, recoverable partial failure, and explicit revoke/cleanup. Binding activation, authorization generation changes, and immutable audit evidence commit atomically. Required audit failure prevents activation. Canonical denial on revocation/expiry remains effective if external secret revocation or cleanup is delayed.
 
-spine-qualification-bootstrap is limited to Issue #508's disposable development deployment. It creates one administrator human identity across two configured Workspace/Environment scopes. It does not create independent SOURCE/RESTORE identities, service-principal lifecycle, source-specific content grants, guaranteed expiry, revoke/cleanup, or target-specific operator authority. It uses migration database credentials and the migration/test seed helper. Do not extend its privilege or point it at #509 targets implicitly.
+## S1–S8 decisions recorded
 
-## Proposed boundary
+- **S1 — Interface:** approve a new bounded one-shot operator command/job with provision, revoke and cleanup operations; no startup or public API provisioning.
+- **S2 — Operator authority:** require operator authentication and independent validation of the change/operation approval outside request-controlled values. The concrete operator channel, approver identity and approval reference are run-specific prerequisites.
+- **S3 — Principals and grants:** use canonical human and service identities, aliases, scoped memberships and roles; add only a qualification-scoped binding if existing contracts cannot express the required temporary service authority. Admin does not imply content authority. AccessPolicy is the only source of content grants.
+- **S4 — Expiry/revocation:** approve hard expiry option A. A canonical binding deadline is checked against database time on every applicable human and service authority resolution; at the deadline it is expired. Reaper and external secret expiry are supplementary only. Revocation atomically denies authority, records audit, and advances authorization generation. Durable workflows revalidate before every protected continuation and cannot renew or extend expired authority.
+- **S5 — SOURCE/RESTORE:** separate principals, aliases, credentials, database roles, runtime bindings and operator scopes; verifier is independent/read-only; no credential copying.
+- **S6 — AccessPolicy/RLS:** keep both enforcement layers enabled, independent and tested with allow and deny cases under restricted database roles.
+- **S7 — Secrets:** use an external secret provider and keep values out of GitHub, logs, audit, arguments and reports. Provider selection and target/process-specific references and rotation are operational/configuration prerequisites; no provider is selected by this contract.
+- **S8 — Evidence:** keep deterministic and PostgreSQL implementation evidence separate from target-bound live evidence and physical recovery qualification; require independent review for live readiness.
 
-- Operator-authenticated, independently approved invocation; strict versioned target/profile; no arbitrary database/path/identity selectors or inline secrets.
-- Canonical human and required service bindings, scoped memberships and environment-local roles; admin is not read_content.
-- read_content and process_content are distinct and are approved only through the existing AccessPolicy workflow.
-- Separate SOURCE, RESTORE, verifier, API, worker, dispatcher, migration, backup, and restore authority where each is needed.
-- Inactive-first activation; idempotent operation identity/digest; atomic canonical binding/generation/audit transaction; secret-provider failure leaves bindings inactive; revoke denies canonical resolution before external secret cleanup.
-- Immutable, redacted evidence; credentials stay in an approved external secret mechanism.
-- AccessPolicy and PostgreSQL RLS are both tested and remain enabled.
-- Deterministic tests, disposable PostgreSQL integration, and live target qualification are separate evidence levels.
+## Expiry and ADR follow-up
 
-## S1–S8 decisions requested
+Canonical identity, alias, membership and role records do not currently have a general expiry timestamp. Hard expiry is an agreed change to canonical authorization behavior and requires a bounded schema representation plus resolver changes that cover human and service authority. Compare the immutable deadline to database time in the authority-resolution transaction; equality means expired. An admitted durable workflow must revalidate current authority before each later protected read/action and stop protected work after expiry/revocation. Safe cancellation and cleanup may continue without expired authority.
 
-| ID | Decision requested | Recommendation |
-|---|---|---|
-| **S1** | Name an existing Security-owned provisioning interface or approve a bounded new interface. | Verify reuse first; otherwise approve a one-shot operator boundary, not a general identity API. |
-| **S2** | Identify eligible operator/job and how independent approval is verified. | Named operator or owner-managed job plus approved change/operation reference. |
-| **S3** | Approve canonical human/service principal, alias, membership, role, and grant shapes. | Separate principals per target; least privilege; content grants remain policy-workflow-owned. |
-| **S4** | Choose hard expiry enforcement and revoke/cleanup semantics. | Canonical deadline checked during authority resolution; scheduled revoke and secret expiry supplement it. |
-| **S5** | Approve SOURCE/RESTORE identity, credential, database-role, network and operator separation. | Fully separate target bindings; verifier is independent and read-only. |
-| **S6** | Confirm AccessPolicy and RLS must be verified together. | Require both allow and deny cases under restricted database roles. |
-| **S7** | Name approved external secret provider and per-process access/rotation/expiry behavior. | Use existing approved provider or obtain separate approval before selecting one. |
-| **S8** | Define implementation-readiness evidence separately from live deployment evidence. | Security decision/spec before implementation; tests before code readiness; target-specific evidence plus independent review before deployment readiness. |
+Do not edit accepted ADR-0021 silently. Before schema or resolver implementation, record a separate ADR that explicitly extends the canonical authorization contract with qualification-binding expiry, service-principal coverage, database-time semantics, revocation/generation behavior and durable-work handling. The ADR follow-up does not reopen the agreed decision to enforce hard expiry.
 
-Open design points requiring explicit Security response include: whether an existing mechanism is acceptable; operator authentication/approval source; canonical service-principal lifecycle; expiry schema and database-time semantics; handling already-admitted durable work at expiry; target role inventory; secret provider; and evidence reviewer.
+## Why #508 is not reusable as the provisioning interface
 
-## What approval unlocks
+`spine-qualification-bootstrap` is limited to #508's disposable development qualification. It creates an administrator identity for its configured scopes and relies on migration/test-only seed behavior. It does not provide separate SOURCE/RESTORE principals, temporary service authority, hard expiry, revoke/cleanup or independent target-specific operator approval. Reuse its validation/test patterns only; do not extend its privilege or point it at #509 targets.
 
-Security approval of S1–S8 would settle the bounded contract and allow it to be decomposed into implementation work. It would permit deterministic and PostgreSQL contract implementation after the approved boundary is recorded. It does not create or approve any real principal or grant.
+## Implementation and operation boundaries
 
-Run-specific approval remains separate: exact target inventory/profile, operation/change reference, allowed synthetic source/action, secret references, external provider access, database roles, target isolation, run window, cleanup owner, and independent reviewer must be authorized for each operation. No live qualification is included here.
+The contract can be decomposed into canonical expiry/ADR/schema/resolver, bounded operator lifecycle, external-secret and SOURCE/RESTORE binding, and security integration-test slices. #531 remains the integration/qualification parent; #509 remains the physical backup/restore qualification issue. #529/#530 deterministic implementation can proceed independently.
 
-## Approval response
-
-Please reply with one of:
-
-- APPROVED
-- APPROVED WITH CHANGES
-- REJECTED / ALTERNATIVE
-
-List the S1–S8 decisions accepted or changed and provide a non-sensitive approval reference. Do not post credentials, target secrets, private source identifiers, or policy payloads.
-
-An architecture approval is not permission to provision specific SOURCE/RESTORE identities or grants. Each concrete operation requires separate operator authorization.
+Run-specific prerequisites still need separate authorization: exact target/profile inventories, Workspace/Environment scope, operator and approval references, deadline/run window, selected external secret provider and secret references, database roles, synthetic sources and policy references, cleanup owner, and evidence reviewer. Do not put secrets or sensitive identifiers in GitHub.

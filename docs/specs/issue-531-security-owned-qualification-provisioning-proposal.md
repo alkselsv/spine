@@ -1,8 +1,8 @@
 # Issue #531 — Security-owned qualification identity provisioning
 
-**Status: PROPOSED — SECURITY APPROVAL REQUIRED**
+**Status: APPROVED ARCHITECTURAL CONTRACT — PROJECT PARTICIPANT DECISION**
 
-This is a review draft for the Security Owner. It is not an accepted ADR, approved provisioning contract, implementation authorization, target approval, or permission to create identities, memberships, grants, credentials, or database roles. Decisions S1–S8 remain open until the Security Owner records an explicit response.
+The project participant recorded agreement to this Security-owned provisioning contract and S1–S8 in [PR #540](https://github.com/alkselsv/spine/pull/540#issuecomment-6326615206). This records that participant decision; it is not a formal GitHub Review or a claim that the Security Owner personally reviewed or approved the PR. It authorizes contract documentation and implementation work through repository workflow, but does not authorize creating identities, memberships, grants, credentials, database roles, or operating concrete targets. Those actions require separate target-specific operational approval.
 
 ## Problem Statement
 
@@ -12,11 +12,11 @@ Without that interface, the qualification cannot prove deployed authorization us
 
 ## Solution
 
-Subject to Security Owner approval, provide a one-shot operator-invoked, qualification-only provisioning interface. It accepts a versioned approved target/profile reference and independent operation/change approval reference, then creates or selects only the canonical records and service bindings required for that qualification. SOURCE and RESTORE receive distinct principals, credentials, database-role references, and operator scopes.
+Provide a one-shot operator-invoked, qualification-only provisioning interface. It accepts a versioned approved target/profile reference and independently verifies the operator and operation/change approval before creating or selecting only the canonical records and service bindings required for that qualification. SOURCE and RESTORE receive distinct principals, credentials, database-role references, and operator scopes.
 
 The interface reuses Spine's canonical identity, membership, role, policy, audit, authorization-generation, and RLS contracts. It does not create a general user administration API. read_content and process_content remain separate grants issued only through the existing approved AccessPolicy workflow. The provisioning interface may verify and bind a pre-approved policy reference; it does not write or activate AccessPolicy grants itself.
 
-All choices in this solution remain proposals until S1–S8 are approved. Canonical identity and membership records have no built-in expiry field. Guaranteed expiry must be enforced by an approved mechanism that denies access when its deadline passes even if cleanup is unavailable.
+S1–S8 are agreed architectural contract decisions recorded below. Canonical identity and membership records currently have no built-in expiry field. The agreed hard-expiry requirement is option A: add canonical schema representation and enforce the deadline using database time during every applicable human and service authority resolution. Expiry is a real authority constraint even when cleanup is unavailable; reaping and secret expiry are supplementary. This changes canonical authorization behavior and requires a separate ADR before implementation; ADR-0021 is not silently amended here.
 
 ## User Stories
 
@@ -45,11 +45,11 @@ All choices in this solution remain proposals until S1–S8 are approved. Canoni
 
 ## Implementation Decisions
 
-### Proposed boundary and invocation
+### Approved boundary and invocation
 
-- **Proposed operation:** a one-shot operator command or owner-managed job with explicit provision, revoke, and cleanup operations. Do not add an HTTP endpoint or run it from API, worker, dispatcher, migration, or readiness startup.
-- **Proposed ownership:** Security owns the provisioning contract and permitted principal/grant shapes. Operations owns invocation controls and target profile inventory. Runtime consumes pre-provisioned bindings. Storage/Recovery owns target inventory and backup/restore role constraints.
-- **Operator authority:** the caller must authenticate through an owner-approved operator channel and present an independent approval/change reference. The command must validate that reference and caller eligibility against a source outside request-controlled values. The exact operator identity mechanism remains S2 and is not defined here.
+- **Approved operation:** a one-shot operator command or owner-managed job with explicit provision, revoke, and cleanup operations. Do not add an HTTP endpoint or run it from API, worker, dispatcher, migration, or readiness startup.
+- **Approved ownership:** Security owns the provisioning contract and permitted principal/grant shapes. Operations owns invocation controls and target profile inventory. Runtime consumes pre-provisioned bindings. Storage/Recovery owns target inventory and backup/restore role constraints.
+- **Operator authority:** the caller must authenticate through an owner-approved operator channel and present an independent approval/change reference. The command must validate that reference and caller eligibility against a source outside request-controlled values. The architecture requires this independent check; the concrete operator channel and approval reference are run-specific configuration prerequisites, not a reason to select a provider here.
 - **Versioned input:** accept only a strict immutable profile containing a profile version/digest, qualification run reference, exact SOURCE or RESTORE target inventory reference, Workspace/Environment inventory references, approved process-role references, allowed operations, expiry policy, and secret references. An independent approval/change reference binds the requested profile to the operation. Reject arbitrary database URLs, paths, identity IDs, Workspace selectors, source volumes, inline secrets, or verification bypass flags.
 - **No target discovery from identity inputs:** a target/profile identifier selects configuration only. It cannot create membership, grant, role, or canonical identity authority without the independently verified operator approval.
 
@@ -57,7 +57,7 @@ All choices in this solution remain proposals until S1–S8 are approved. Canoni
 
 - Reuse CanonicalHumanIdentity, AuthenticationAliasBinding, WorkspaceMembership, EnvironmentMembership, EnvironmentRoleBinding, and AuthorizationGeneration as the canonical human authorization records.
 - Authentication Alias remains an exact provider-scoped issuer/subject pair; local bearer authentication may authenticate a configured alias in explicit development but does not authorize provisioning or establish a canonical grant.
-- Reuse existing service-principal references and PrincipalKind.SERVICE only where the consuming application contract already supports them. The repository has service-principal IDs in trusted contexts and AccessPolicy, but no general canonical service-principal provisioning registry was found. Security must decide whether existing references suffice or a qualification binding record is required.
+- Reuse existing service-principal references and PrincipalKind.SERVICE only where the consuming application contract supports the required scoped authority and expiry checks. Where it does not, add a qualification-scoped binding record; do not add a general service-principal registry.
 - Workspace membership, Environment membership, and environment-local roles must be scoped to the approved Workspace and Environment. The current R1 role vocabulary is exactly administrator; no new role is implied.
 - Administrator remains control-plane authority, not content authority. Human read_content and service process_content grants remain separate, source-specific, purpose/operation scoped where applicable, and subject to existing AccessPolicy approval and activation. Provisioning may validate a current approved policy reference but cannot manufacture or activate grants.
 - API runtime, Temporal worker, outbox dispatcher, migration operator, backup coordinator, restore operator, verifier, and canary use distinct authority references and least-privilege PostgreSQL/RLS scopes. These do not all need new entity types. Each role is included only if the selected qualification profile requires it.
@@ -70,34 +70,36 @@ All choices in this solution remain proposals until S1–S8 are approved. Canoni
 - SOURCE credentials and identity bindings are never copied into RESTORE. A restore migration/import may reproduce canonical source data only under a separately approved recovery procedure; this proposal does not authorize copying active credentials or grants.
 - Reject use of SOURCE principal/credential against RESTORE, RESTORE verifier against SOURCE, and serving/canary principal before the restore target is trusted. Cross-target requests fail closed and emit safe audit evidence.
 
-### Expiry enforcement options — Security decision required (S4)
+### Approved expiry contract (S4)
 
-Canonical human identity, alias, Workspace membership, Environment membership, and role records currently use version/status history and generation. They do not carry an expiry timestamp. AccessPolicy grants do support valid_from and valid_until. Cleanup alone therefore cannot currently guarantee identity expiry.
+Canonical human identity, alias, Workspace membership, Environment membership, and role records currently use version/status history and generation but do not carry an expiry timestamp. AccessPolicy grants support valid_from and valid_until. The agreed contract requires schema and resolver changes so cleanup failure cannot extend identity or service authority beyond its deadline.
 
 | Option | Enforcement | Advantages | Risks / required work | Assessment |
 |---|---|---|---|---|
-| **A. Canonical deadline checked on every authority resolution** | Add a bounded expiry field to qualification binding records or a canonical qualification binding that the resolver validates using database time. Expired bindings are denied even if cleanup never runs. AccessPolicy continues to enforce its own grant interval. | Hard fail-closed deadline; no dependency on cleanup availability; explicit testable expiry boundary. | Requires schema and resolver changes; must cover alias, human, memberships, roles, service bindings and all consumers consistently. Time source/clock boundary and policy for already admitted long-running work need approval. | **Recommended for hard expiry**, subject to Security approval. |
-| **B. Reaper/scheduled revocation only** | A scheduled process appends revoked/disabled successor records and advances generation at expiry. | Reuses current status-history and generation mechanics; leaves explicit audit transition. | If the reaper is delayed or unavailable, authority remains active after deadline. Does not satisfy hard expiry by itself. Requires a new privileged scheduled operator and recovery semantics. | **Not sufficient alone** for the stated fail-safe expiry requirement. May supplement A. |
-| **C. External credential expiry / target shutdown only** | Secret provider expires credentials or deployment is disabled at deadline; canonical records are later revoked. | Uses an external control and can reduce exposure beyond Spine. | A still-valid credential may be replayed or another auth route may resolve the same alias; database-side authority remains active. Depends on provider behavior and operator availability. | Defense in depth only; not canonical expiry enforcement. |
-| **D. Expiry of AccessPolicy grants only** | Set valid_until on content grants. | Already supported for content access; no identity schema change for this layer. | Does not expire route role, alias, membership, service reference, or database credentials. | Required for temporary content grants, but insufficient for full qualification binding expiry. |
+| **A. Canonical deadline checked on every authority resolution** | Store an immutable UTC deadline on the bounded qualification binding; canonical human and service authority resolution compares it to database time. At or after the deadline, resolution denies authority even if cleanup never runs. AccessPolicy continues to enforce its own grant interval. | Hard fail-closed deadline; no dependency on cleanup availability; explicit testable expiry boundary. | Requires a new schema representation and resolver changes; every human/service consumer must use the authoritative resolver. Already admitted durable work must revalidate before each subsequent protected action and be unable to extend authority past expiry. | **Approved architectural requirement.** |
+| **B. Reaper/scheduled revocation only** | A scheduled process appends revoked/disabled successor records and advances generation at expiry. | Reuses current status-history and generation mechanics; leaves explicit audit transition. | If the reaper is delayed or unavailable, authority remains active after deadline. Does not satisfy hard expiry by itself. Requires a new privileged scheduled operator and recovery semantics. | Rejected as sole enforcement; may supplement A. |
+| **C. External credential expiry / target shutdown only** | Secret provider expires credentials or deployment is disabled at deadline; canonical records are later revoked. | Uses an external control and can reduce exposure beyond Spine. | A still-valid credential may be replayed or another auth route may resolve the same alias; database-side authority remains active. Depends on provider behavior and operator availability. | Rejected as sole enforcement; defense in depth only. |
+| **D. Expiry of AccessPolicy grants only** | Set valid_until on content grants. | Already supported for content access; no identity schema change for this layer. | Does not expire route role, alias, membership, service reference, or database credentials. | Required for temporary content grants, but insufficient as full qualification binding expiry. |
 
-**Proposed combination:** A for canonical authentication/authorization binding expiry, D for content grant expiry, plus B and C as defense-in-depth cleanup. Security Owner must decide whether A is necessary, which records carry the deadline, how database time is evaluated, and how admitted durable work is handled at expiry. Until then expiry semantics are unresolved and implementation must not claim hard expiry.
+**Approved combination:** A for human and service authority expiry, D for content grant expiry, with B and C as defense-in-depth only. The deadline is compared against database time within authoritative resolution; equality means expired. Revocation advances the matching authorization generation atomically with its audit record and binding state. An already admitted durable workflow must revalidate before every subsequent protected read or action, reject work after expiry/revocation, and cannot renew or extend the binding. Its orchestration may continue only for safe cancellation/cleanup that does not use expired protected authority.
+
+This is a new canonical authorization contract. Record it in a separate ADR that explicitly extends ADR-0021 before changing schema or resolver behavior; retain ADR-0021 unchanged until that ADR is accepted.
 
 ### Lifecycle, idempotency, partial failure, rollback
 
-The following lifecycle is proposed, not approved:
+The approved lifecycle is:
 
 requested → validated → inactive bindings recorded → external secrets bound → active → revoked → cleaned
 
 - A strict operation identity and canonical request digest make retries idempotent. Reusing an operation identity with different target/profile or authority inputs is a conflict, not an update.
 - Every target binding starts inactive. It becomes active only after operator approval, target/profile checks, canonical record consistency, required external secret references, AccessPolicy references, database role qualification, and audit readiness succeed.
 - If external secret creation fails, keep authorization inactive and retain a safe incomplete operation record. Retry using the same idempotency identity or run explicit cleanup; do not silently create a second principal.
-- Activation of all canonical alias/membership/role changes for one target is one PostgreSQL transaction, with immutable audit evidence and generation changes committed atomically. If the schema needs an operation ledger, it belongs to this bounded contract and must not become a general identity CRUD repository.
-- Revocation first makes canonical resolution deny the principal, records an audit event and advances the affected authorization generation atomically. External credentials are then revoked. If secret revocation fails, the canonical binding remains denied and cleanup stays pending for safe retry.
+- Activation changes the target binding to active only in the same PostgreSQL transaction that commits its immutable audit event and the required authorization generation changes. If the binding, audit, or generation write fails, the transaction rolls back and authority remains inactive. The bounded operation ledger supports idempotency and partial recovery; it is not a general identity CRUD repository.
+- Revocation atomically records the denied/revoked binding, audit event, and affected authorization generation. Canonical resolution denies the principal before external credentials are revoked. If secret revocation fails, canonical expiry/revocation still denies authority and cleanup stays pending for safe retry.
 - Cleanup removes or disables only externally managed credentials and target resources covered by the approved profile. Canonical identity/audit history is retained; no history is deleted to make retries succeed.
-- Required audit failure prevents activation. Revocation should fail closed: deny the binding even when audit delivery is unavailable, retain an operator-visible safe failure, and retry durable audit according to the Security-approved recovery rule.
+- Audit is part of the activation/revocation database transaction: audit write failure prevents activation, and revocation is not reported complete unless denial, generation, and audit commit together. If an external audit sink is added, an outbox committed in that same transaction provides retry; authority remains inactive or denied while delivery is pending.
 - Effective alias, membership, role, or service-authority changes advance the matching authorization generation in the same database transaction. A stale generation must not authorize the next request or content decision.
-- Since the secret provider is external, database and secret writes cannot be one distributed atomic transaction. Inactive-first activation and durable operation state are proposed to make partial failure safe and resumable.
+- Since the secret provider is external, database and secret writes cannot be one distributed atomic transaction. Inactive-first activation and durable operation state are the required recovery boundary: an external failure never leaves an active partial binding, and retries use the same idempotency identity.
 
 ### Audit and secret handling
 
@@ -116,7 +118,7 @@ requested → validated → inactive bindings recorded → external secrets boun
 | AccessPolicy activation workflow and PostgreSQL RLS | Reuse unchanged for content grants and tenant enforcement | Provisioner can require/verify an approved policy; it cannot bypass, author, or activate it. |
 | Audit and generation contracts | Reuse existing audit writer and atomic generation rules where the selected mutation seam supports them | New provisioning operation must have durable safe evidence and atomic effective changes. |
 | spine-qualification-bootstrap (#508) | Reuse as reference for strict frozen config, explicit development guard, deterministic identity construction tests and disposable-target naming patterns | Its output is a single administrator identity shared across two #508 scopes. It lacks SOURCE/RESTORE separation, service principals, content grants, hard expiry and revoke/cleanup. Do not point it at #509 targets or extend its privileges implicitly. |
-| PostgreSQLAuthorizationSeedHelper | Reuse only as test/migration implementation evidence when designing contract tests | It is explicitly migration-owner/test-only. Do not export it to runtime or operator production composition without a separate Security decision. |
+| PostgreSQLAuthorizationSeedHelper | Reuse only as test/migration implementation evidence when designing contract tests | It remains migration-owner/test-only and is excluded from this approved operator interface. |
 | DB role bootstrap/migration | Reuse existing role separation checks as input to target validation | Provisioning does not create broad roles or perform migrations during app startup. Recovery-specific roles require their own approved references. |
 
 No function from #508 is proposed as the approved SOURCE/RESTORE provisioning entrypoint. Reusing a validation type or test pattern is distinct from reusing the CLI, changing the CLI, or approving a new Security interface.
@@ -137,59 +139,58 @@ The reuse boundary is explicit:
   QualificationBootstrapSettings, and PostgreSQLAuthorizationSeedHelper remain
   confined to their current development or migration/test boundaries. Reusing
   their patterns does not authorize changing their supported mode or role.
-- **New approved interface:** if no existing Security-owned operator interface
-  is confirmed, a separate one-shot command/use case and bounded mutation
-  adapter require Security approval before implementation. This proposal does
-  not select its final API, schema, or operator credential mechanism.
+- **Approved new interface:** S1 selects a separate one-shot command/use case
+  and bounded mutation adapter because no existing Security-owned SOURCE/
+  RESTORE provisioning entrypoint was found. This contract does not select the
+  concrete operator channel, secret provider, or run-specific profile values.
 
-### Existing contracts versus new work
+### Existing contracts versus approved new work
 
-| Concern | Reuse available after approval | New work or decision required |
+| Concern | Existing contracts to reuse | Agreed new work |
 |---|---|---|
-| Canonical identity, aliases, memberships, environment roles, trusted request context | Existing record/resolver contracts and normal request checks | A mutation boundary that can safely create or select records for a specific approved operation; no current operator provisioning entrypoint is approved. |
+| Canonical identity, aliases, memberships, environment roles, trusted request context | Existing record/resolver contracts and normal request checks | A bounded mutation boundary for one independently approved operation; no current operator provisioning entrypoint is approved. |
 | AccessPolicy and RLS | Existing policy approval/activation and database enforcement | No policy schema change is proposed. Each content grant still needs its own approved policy decision; the provisioner only verifies the approved reference. |
-| Authorization generation and audit | Existing generation and audit semantics where the chosen persistence seam supports one transaction | Bind the new provisioning state changes and safe audit evidence atomically. A bounded operation ledger or persistence extension may be needed if existing storage cannot represent idempotency and partial completion. |
-| SOURCE/RESTORE service bindings and credentials | Existing principal references only where their consuming contracts already support them; external secret integration if an approved provider exists | Security must decide whether a qualification binding record/registry is needed; target-specific operator, credential, and database-role configuration must be supplied and isolated. No general service-principal registry is assumed. |
-| Hard expiry of identity and membership authority | Existing revocation and generation behavior can deny after explicit revocation; AccessPolicy grant intervals remain available | Recommended option A requires an approved schema representation for the deadline and resolver changes covering all relevant authority paths. This changes canonical authorization contracts and is not implied by ADR-0021. Reaper-only, secret-expiry-only, or policy-grant-only approaches do not provide the proposed hard identity expiry. |
-| Provisioning lifecycle and operator authorization | Existing authentication can identify the operator only if an owner-approved operator channel is selected | Versioned profile validation, independent approval verification, idempotent provision/revoke/cleanup, incomplete-operation recovery, and the one-shot command/job are new bounded contract work. |
-| Credentials | Existing deployment may use a named approved external provider | Provider choice, target/process-scoped read policy, rotation, expiry, and failure behavior require S7 approval and deployment integration; no secret value or provider is selected here. |
+| Authorization generation and audit | Existing generation and audit semantics | Bind activation/revocation, generation, and immutable audit atomically; add a bounded operation ledger/outbox if needed for idempotency and retry. |
+| SOURCE/RESTORE service bindings and credentials | Existing principal references only where consuming contracts enforce required scope and expiry | Add only a qualification-scoped binding where required. Target-specific operator, credential, and database-role configuration remains a run-specific prerequisite. No general service-principal registry is approved. |
+| Hard expiry of identity and membership authority | Existing revocation and generation behavior; AccessPolicy grant intervals | Approved option A requires a canonical deadline schema representation and resolver enforcement using database time for human and service authority. This extends canonical authorization behavior beyond ADR-0021 and requires a separate ADR before implementation. Reaper-only, secret-expiry-only, or policy-grant-only approaches are insufficient. |
+| Provisioning lifecycle and operator authorization | Existing authentication and authorization boundaries | Versioned profile validation, independent operator/change approval verification, idempotent provision/revoke/cleanup, incomplete-operation recovery, and the one-shot command/job are agreed bounded contract work. Concrete operator channel/reference values remain run-specific. |
+| Credentials | External secret provider boundary | Provider selection, target/process-scoped read policy, rotation, expiry, and target references remain deployment/run-specific prerequisites; this contract selects no provider and stores no secret value. |
 
-The recommendation to add hard expiry is a proposed change to canonical
-authorization behavior, not a description of current behavior. If Security
-chooses another option, the contract must explicitly state its expiry guarantee
-and accept that cleanup-only options cannot promise denial at the deadline.
+Hard expiry is an agreed change to canonical authorization behavior, not a
+description of current behavior. A separate ADR must record this extension before
+schema or resolver changes begin; no accepted ADR is silently amended here.
 
-### Proposed implementation slices (not tickets)
+### Proposed implementation order (to be decomposed into tickets after merge)
 
-1. **Contract and approval model:** versioned target/profile, operator/change authorization, principal and privilege matrix, expiry decision, lifecycle states, evidence shape. Security approval is a prerequisite.
-2. **Provision/revoke application boundary:** one-shot command/use case using canonical records and approved policy references; idempotent operation state; inactive-first partial failure recovery; generation and audit atomicity.
-3. **Credential and target adapter:** approved external secret provider and per-process SOURCE/RESTORE database-role/profile bindings. No secret literal enters repository state or command output.
-4. **Contract and PostgreSQL verification:** deterministic state-machine and port tests, then PostgreSQL/RLS/AccessPolicy integration with isolated synthetic Workspaces/Environments. No deployment qualification claim.
+1. **Canonical expiry contract:** record a separate ADR, then implement schema representation, database-time semantics, canonical human/service resolution, generation behavior, and durable-work revalidation.
+2. **Provision/revoke application boundary:** one-shot command/use case using canonical records and approved policy references; independent operator/change approval; idempotent operation state; inactive-first recovery; atomic activation, generation, and audit.
+3. **Credential and target adapter:** bind an externally approved secret provider and per-process SOURCE/RESTORE database-role/profile references. No provider or credential value is selected here.
+4. **Contract and PostgreSQL verification:** deterministic lifecycle tests and PostgreSQL/RLS/AccessPolicy integration with isolated synthetic Workspaces/Environments. No deployment qualification claim.
 5. **Run-specific qualification:** separate operator approval for concrete targets followed by live SOURCE/RESTORE checks and independent evidence review. This is not part of implementation acceptance and does not pass Issue #509 by itself.
 
 ## Decision Register S1–S8
 
-Every recommendation below is pending owner decision. No row is approved by this proposal.
+S1–S8 were agreed by the project participant and recorded in PR #540. The table records those architectural decisions, not a formal GitHub Review from the Security Owner. Target-specific operational approvals remain separate.
 
-| ID | Existing approved constraint | Gap and permissible options | Recommendation | Owner / required approval | Effect and testable acceptance criteria |
-|---|---|---|---|---|---|
-| **S1 Interface** | ADR-0021 and #69–#74 define canonical contracts/resolution. #70 defines migration/test seed only. D4 says reuse an existing Security mechanism if one exists; otherwise obtain a separate bounded contract. | **A:** Security names an existing approved bootstrap interface and exact contract. **B:** Security approves a new narrow one-shot command/job. No general API and no implicit helper promotion. | Verify A first. If none meets SOURCE/RESTORE lifecycle, select B and specify the operator interface before implementation. | Security Owner; written architecture/interface approval. | Interface is uniquely named, versioned, owner-bound and unavailable during app startup; tests show only allowlisted qualification operations can be requested. |
-| **S2 Operator authority** | Selectors and local bearer cannot mint authority; mutation is explicit and trusted. Migration credentials have a separate database purpose. | Gap: no named provisioning operator check or independent approval reference. Options: named human via approved operator channel; owner-managed job; both with change reference. | Named operator/job plus independently verified change/operation approval; keep authentication mechanism separate from authorization decision. | Security Owner + Operations; approve operator class and evidence source. | Unauthorized caller and selector-only caller fail before mutation; permitted operator works only for the approved versioned profile. |
-| **S3 Canonical bindings/grants** | Human identity/alias/membership/role are canonical; R1 role exactly administrator; AccessPolicy defines human read_content and service process_content; admin is not content superuser. | Gap: no approved synthetic principal set, alias issuer, service-principal registry/lifecycle or target-specific grants. Options: existing pre-provisioned canonical principals; create bounded new canonical bindings; add qualification service binding record if existing references are insufficient. | One independent synthetic human and needed service bindings per target; exact memberships and roles. Route role and content grants remain distinct; content grants flow only through approved policy workflow. | Security Owner; separate policy/source owner approval for each content grant. | Valid identity resolves only approved Workspace/Environment; absent human read or worker process grants deny; service cannot inherit human access; no blanket admin grant. |
-| **S4 Expiry/revocation** | Membership/identity statuses and immutable history support revocation; generation tracks effective changes. AccessPolicy grants support valid_until; human/membership/role rows do not have expiry. | Gap: no guaranteed authority expiry. Options: **A** database-enforced deadline in canonical resolver; **B** scheduled revocation/reaper only; **C** external credential expiry/target shutdown; **D** AccessPolicy expiry only. | A as hard denial, D for content grants; B/C as defense-in-depth. Do not accept B/C/D alone for full identity expiry. | Security Owner; Security + Runtime approval for clock source, durable-work handling, cleanup authority. | Injected-time boundary tests deny at/after expiry even with reaper offline; revoke advances generation atomically; durable work cannot continue protected actions after revalidation fails. |
-| **S5 SOURCE/RESTORE isolation** | D4 and #509 require independent contexts and isolated targets; restore stays fenced/non-serving. | Gap: no canonical binding inventory showing separate identity, aliases, credentials, DB scopes, verifier and operator roles. Options: separate all bindings per target; share only narrowly approved read-only artifact validation identity if justified. | Separate identities, aliases, secret refs, DB roles, namespaces/network and operator authority; no SOURCE-to-RESTORE credential copy. | Security Owner + Storage/Recovery + Runtime; target-specific authorization is separate. | SOURCE principal denied on RESTORE; verifier denied on SOURCE; restore writer cannot serve; same principal cannot cross target boundary. |
-| **S6 AccessPolicy/RLS** | ADR-0011 is allow-only/deny-by-default; policy and RLS remain mandatory and independent. | Gap: no current target grants and no deployed dual-layer proof. Options: pre-existing approved synthetic policy; separate policy approval for synthetic source; no grant and test denial. | Reuse policy workflow for narrowly selected synthetic source; test allow and missing-grant denial while RLS is active under restricted DB roles. | Security Owner + content/source policy owner; operator approval for live corpus use. | Positive case passes both policy and RLS; each layer independently denies when its grant/scope is absent; admin does not disclose content. |
-| **S7 Secrets** | D1/D5 require external secret mechanism and process-scoped access; repo has no provider selected for this deployment. | Gap: provider, reference shape, read policy, rotation, expiry and failure behavior unspecified. Options: existing approved platform provider or separately approved provider selection. | Reuse an existing approved provider if one is named; otherwise Runtime proposes provider and Security approves per-process/per-target policy before implementation. | Runtime/Operations + Security; provider and access/rotation approval. | Tests reject missing/wrong target secret references; rotation/revocation denies old credential; logs/evidence contain no secret values. |
-| **S8 Evidence/readiness** | Tests and reports cannot imply physical PASS; #509 needs current attributable target evidence and owner review. | Gap: required approval artifacts for implementation readiness vs deployment readiness are not named. Options: decision-only evidence for spec; fake/PG tests for implementation; target-specific live evidence for operation. | Separate gates: Security decision + approved contract before ready-for-agent; deterministic/PG tests for code readiness; independent live SOURCE/RESTORE evidence for runtime readiness. | Security Owner for contract; Release/Storage/Runtime for live evidence and review. | Each report binds commit/profile/target reference, auth/policy/RLS result, generation, audit correlation and redacted outcome; no fixture result is reported as live PASS. |
+| ID | Agreed architectural decision | Implementation boundary | Owner / operational prerequisite | Effect and testable acceptance criteria |
+|---|---|---|---|---|
+| **S1 Interface** | New one-shot, qualification-only operator command/job with explicit provision, revoke, and cleanup; no API or startup provisioning. | Versioned allowlisted target/profile and bounded mutation adapter; reuse canonical-purpose interfaces, not #508 CLI or migration/test helper. | Security owns the contract; Operations owns invocation controls and target-profile inventory. | Only the approved operation/profile can mutate; runtime startup cannot provision. |
+| **S2 Operator authority** | Independently authenticate the eligible operator and verify an approval/change reference outside request-controlled selectors. | Keep operator authentication separate from operation authorization. No local bearer, request selector, or migration credential supplies this authority. | Concrete operator channel, approver reference, and evidence source are run-specific prerequisites. | Unapproved or selector-only caller is denied before mutation; approved invocation is constrained to its profile. |
+| **S3 Canonical bindings/grants** | Reuse canonical human identities/aliases/memberships/environment roles and supported service-principal references; add only a qualification-scoped binding where needed. | Administrator is not content authority. `read_content` and `process_content` are distinct; the existing approved AccessPolicy workflow is the only source of content grants. | Exact principals, issuer/subject aliases, scopes, and policy references are run-specific. | No grant is inferred from claims; provisioner cannot create/activate content grants; least privilege is tested. |
+| **S4 Expiry/revocation** | Hard expiry option A: canonical binding carries a deadline; every applicable human and service resolution checks it against database time. AccessPolicy `valid_until` separately bounds content grants. Reaper/secret expiry supplement only. | New schema and resolver behavior; revocation atomically denies, audits, and advances generation. Durable workflows revalidate before each protected continuation and cannot renew expired authority. A separate ADR must record this contract before implementation. | Run-specific deadline and cleanup window remain per operation. | At/after deadline and with cleanup unavailable, authority resolution denies; stale generations fail; service and human paths are covered; admitted work cannot continue protected actions. |
+| **S5 SOURCE/RESTORE isolation** | Distinct identities, aliases, credentials, database roles, runtime bindings and operator scopes; verifier is independent/read-only; no SOURCE credential copying. | Reuse existing principal/role contracts only where they enforce this isolation; restore remains fenced/non-serving until separately qualified. | Concrete inventories, secret references, network scopes, and target approvals are run-specific. | SOURCE against RESTORE and verifier against SOURCE fail closed; restore writer cannot serve. |
+| **S6 AccessPolicy/RLS** | Keep ADR-0011 AccessPolicy and PostgreSQL RLS enabled and independent. Content grants flow only through the approved AccessPolicy workflow. | Provisioner may verify approved grant references; it cannot create/activate content grants or bypass either enforcement layer. | Each synthetic source/grant requires policy-owner approval for its concrete scope. | Positive and independent negative AccessPolicy/RLS cases pass under restricted DB roles; admin alone cannot read content. |
+| **S7 Secrets** | Use an external secret provider; keep values out of GitHub, logs, audit, command arguments, and reports. | Configure provider adapter/references per process and target; no provider is selected in this contract. | Provider, secret references, credentials, read policy, and rotation window are run-specific prerequisites. | Wrong/missing/expired secret denies; rotation revokes old use; no secret values leak. |
+| **S8 Evidence/readiness** | Keep implementation evidence separate from live deployment and physical recovery qualification. | Deterministic and PostgreSQL checks qualify code/contracts; target-bound evidence plus independent review qualifies a live run. | Run owner/reviewer and exact target evidence bundle are required for each operation. | Fixtures never count as live PASS; #509 remains owner of physical backup/restore qualification. |
 
 ### Surface impact of S1–S8
 
 | Decision | API | Worker / dispatcher | Recovery | #509 |
 |---|---|---|---|---|
-| S1 | API continues using the existing resolver; no startup provisioning. | Existing service identities remain pre-bound. | Recovery consumes approved bindings only. | Resolves whether a qualification interface exists; without it, remains blocked. |
+| S1 | API continues using the existing resolver; no startup provisioning. | Existing service identities remain pre-bound. | Recovery consumes approved bindings only. | Defines the approved one-shot provisioning interface; target-specific operation remains separately authorized. |
 | S2 | No caller-selected authority or new public route. | Processes cannot self-provision at startup. | Operators need separate approved invocation authority. | Enables only the approved operator path, not a run. |
 | S3 | API gets only route role and any separately approved canary human grant. | Worker and dispatcher identities/grants remain purpose-specific. | Backup, restore, verifier and serving principals stay separate. | Enables trusted application/canary scenarios after target binding. |
-| S4 | With an approved resolver/schema change, request resolution would reject expired identity/scope; protected actions must revalidate current authority. | With that change, durable activities must revalidate before protected work after expiry/revoke. | Expired recovery bindings/credentials would deny further operations; cleanup can retry. | Expiry/revocation evidence becomes an acceptance criterion; no live readiness until verified. |
+| S4 | Canonical resolution rejects expired human and service bindings at the database-time deadline; protected actions revalidate current authority. | Durable activities revalidate before every protected continuation and cannot extend expired authority. | Expired recovery bindings deny further operations; cleanup can retry independently. | Expiry/revocation evidence is required; no live readiness until verified. |
 | S5 | API selects only its target's configured identity and database scope. | Worker/dispatcher cannot cross target bindings. | SOURCE, restore writer, verifier and restored serving identities are isolated. | Enables cross-target negative checks; no physical restore authorization follows. |
 | S6 | Route authorization remains distinct from content disclosure. | Worker needs its own process_content policy and database scope. | Recovery operators do not gain content grants from backup/restore duties. | Enables dual AccessPolicy/RLS allow/deny evidence. |
 | S7 | API receives only its process-scoped secret reference. | Worker/dispatcher each use their own secret access policy. | Restore/verifier and backup secrets are distinct from SOURCE. | Secret mechanism is runtime prerequisite, not grant approval. |
@@ -204,7 +205,8 @@ Tests assert externally observable authorization outcomes and safe evidence, not
 - Strict profile schema, version/digest validation, operator approval rejection, SOURCE/RESTORE target collision rejection, and forbidden selector/inline credential fields.
 - Provision/revoke state transitions, idempotent replay, same operation ID with different digest conflict, inactive-first activation, partial secret failure, retry, cleanup-pending, audit failure, rollback/revoke behavior.
 - Identity/scope allow and deny: wrong Workspace/Environment, disabled alias, revoked membership, insufficient role, stale generation, expired binding, missing read_content, missing process_content, selector authority, cross-SOURCE/RESTORE principal use, verifier-to-SOURCE attempt.
-- Time-boundary tests with injected database time; test immediately before, at, and after expiry, with cleanup unavailable.
+- Time-boundary tests with injected database time on both human and service authority paths; test immediately before, at, and after expiry, with cleanup unavailable.
+- Temporal/durable-work tests admit work before expiry, advance database time past expiry, and prove every later protected read/action is denied while only authority-free cancellation/cleanup may continue.
 - Safe diagnostics and audit redaction for tokens, credentials, provider errors, SQL parameters, protected content and cross-tenant identifiers.
 - Revocation after application admission: revalidation denies the next protected decision/operation; already delivered bytes are not represented as retractable.
 
@@ -233,7 +235,7 @@ Tests assert externally observable authorization outcomes and safe evidence, not
 | Wrong Environment | Missing membership/role or mismatched Environment owner | Deny before application operation | Contract/API denial | Scoped resolver and RLS denial | Verify target-specific denial |
 | Revoked membership | Active binding then revoked successor | Subsequent authorization denied; history retained | State transition/generation test | Transactional revoke and generation update | Revoke a run binding and verify fresh request denial |
 | Disabled alias | Alias status disabled/revoked | Authentication may identify alias, authorization denies | Alias status contract | Resolver denial without enumeration | Disabled alias fails against target |
-| Expired qualification binding | Deadline passes while cleanup/reaper is unavailable | Deny from canonical expiry enforcement | Injected-time before/at/after test | Database resolver rejects expired binding | Verify deadline denial on isolated target |
+| Expired qualification binding | Human or service deadline passes while cleanup/reaper is unavailable | Deny from canonical expiry enforcement | Injected database-time before/at/after test on both principal kinds | Database resolver rejects expired human and service binding | Verify deadline denial on isolated target |
 | Stale authorization generation | Context captured before membership/role change | Next protected operation requires current authority and denies stale state | Generation contract | Concurrent/revocation integration | Observe target generation and denial |
 | Missing read_content | Human has route role but no source grant | Protected content not disclosed | AccessPolicy denial | Policy and RLS composed denial | Canary denies without grant |
 | Missing process_content | Worker lacks scoped service grant | Processing denied; no human authority inheritance | Application decision test | Service grant and DB role denial | Worker action denied on target |
@@ -255,7 +257,7 @@ Reuse the authorization directory contract and PostgreSQL tests from Issue #70; 
 
 - General user, invitation, SCIM, administrator, identity federation, or RBAC management API.
 - New authority from Workspace/Environment selectors, OIDC groups/roles/email, development local bearer, or identity data supplied by a request.
-- Promoting PostgreSQLAuthorizationSeedHelper into runtime or operator provisioning without an explicit Security decision.
+- Promoting PostgreSQLAuthorizationSeedHelper into runtime or operator provisioning; the approved contract keeps it migration/test-only.
 - Expanding spine-qualification-bootstrap beyond the existing #508 disposable development qualification contract.
 - Blanket administrator or content-superuser permissions; RLS/AccessPolicy disablement; cross-Workspace access; startup provisioning.
 - Creating specific SOURCE/RESTORE identities, memberships, grants, credentials, database roles, provider secrets, or target resources under this spec.
@@ -283,15 +285,19 @@ Reuse the authorization directory contract and PostgreSQL tests from Issue #70; 
 - #529 and #530 deterministic implementation can proceed independently. Their live authorization/runtime evidence has P3 as a runtime prerequisite, not an implementation blocker.
 - #532 binding work can proceed separately, but physical backup/restore invocation requires approved Security bindings and target approvals.
 - #533 is natively dependent on #530; its provider configuration work may proceed independently, while a provider-backed deployed qualification also needs approved principals and run-specific authorization.
-- Once S1–S8 are resolved, an approved specification can be decomposed into bounded implementation tickets. Do not create those tickets before Security chooses the interface and expiry model.
+- S1–S8 are agreed. After this contract is merged, decompose the bounded implementation work into tickets; implementation begins only through repository workflow. A separate expiry ADR must be recorded before schema/resolver changes.
 
-### Approval response format
+### Approval and operational authorization boundary
 
-Security Owner response: APPROVED, APPROVED WITH CHANGES, or REJECTED / ALTERNATIVE.
-
-For each response, identify the decision IDs accepted or changed and a non-sensitive approval reference. Do not include credentials, private source identifiers, policy payloads, or concrete target secrets in GitHub.
-
-This response approves only the architecture/interface contract. A separate operator authorization is required for each concrete SOURCE/RESTORE provisioning and each physical backup, restore, or canary operation.
+The architecture agreement is recorded by the project participant in PR #540
+and is not represented as a formal GitHub Review from the Security Owner. It
+approves this bounded contract and recommendations S1–S8 for documentation and
+implementation planning. It does not select concrete credentials, secret
+provider, targets, operator identities, or approval references. A separate
+operator authorization is required for each concrete SOURCE/RESTORE
+provisioning and each physical backup, restore, or canary operation. Do not
+include credentials, private source identifiers, policy payloads, or concrete
+target secrets in GitHub.
 
 ### Source references
 
@@ -301,7 +307,8 @@ This response approves only the architecture/interface contract. A separate oper
 - Issue #447 and ADR-0039; Issue #508 and its development-only qualification
   bootstrap.
 - Production composition D4 in the approved decision register and PR #528's
-  architecture approval, which explicitly leaves Security provisioning approval
-  open.
+  architecture approval, which left provisioning mechanism approval to Security;
+  the project-participant agreement to the bounded contract is recorded in PR
+  #540 and does not represent a Security Owner GitHub Review.
 - Issues #529, #530, #532, #533, and #509 for runtime, dispatcher, recovery,
   provider, and physical qualification boundaries.
