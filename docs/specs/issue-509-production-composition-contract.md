@@ -1,14 +1,16 @@
 # Spine production deployment composition contract
 
 **Contract ID:** `spine-production-deployment-composition:v1`
-**Status:** **PROPOSED — NOT APPROVED; awaiting team lead / architecture owner approval**
-**Scope:** one production-owned composition boundary needed by the existing API, durable Q&A, projection, and recovery contracts. This document proposes deployment wiring; it does not authorize production deployment or physical operations.
+**Status:** **ARCHITECTURE APPROVED — recorded by `dima55279` based on team lead approval communicated outside GitHub on 2026-10-21; [approval record](https://github.com/alkselsv/spine/pull/528#issuecomment-6317606512).**
+**GitHub review:** This participant-authored comment records the communicated decision; it is not a formal GitHub review from the team lead. Required PR reviews and branch protections remain independent gates.
+**Deployment status:** Not implemented or qualified. Security, Runtime/Provider, Storage/Recovery and operator-specific approvals remain prerequisites for their respective bindings and physical operations.
+**Scope:** the approved production-owned composition boundary needed by existing API, durable Q&A, projection, and recovery contracts. This document defines deployment wiring; it does not implement it or authorize production deployment or physical operations.
 
 ## 1. Problem and relationship to existing decisions
 
 Spine already has production application capabilities and infrastructure adapters, but no reviewed, settings-backed process composition has been demonstrated against the local SOURCE/RESTORE deployment. #527 adds a real Temporal SDK worker-registration factory to the existing durable Ask graph. It does not add a configuration-backed API/worker process, outbox loop, trusted local qualification identity, provider deployment profile, or backup/restore operator entrypoint.
 
-ADR-0040 approves one shared production Q&A capability composition for API and observer, and #506 specifies a narrow qualification factory. This document proposes the concrete settings-backed deployment ownership and process boundary across API, worker, dispatcher, projection and recovery. That broader deployment root/lifecycle is not itself an accepted ADR decision and remains subject to approval. The proposal does not replace the approved durable Ask path, introduce another runtime, redefine authorization, or create a backup subsystem. It separates implementation evidence from deployment and release evidence. It does not change Issue #509 acceptance criteria.
+ADR-0040 approves one shared production Q&A capability composition for API and observer, and #506 specifies a narrow qualification factory. The team lead has approved the broader settings-backed deployment ownership and process boundary across API, worker, dispatcher, projection and recovery as recorded above. This records architectural approval only; it does not mean the root/lifecycle is implemented, formally reviewed by the team lead on GitHub, or cleared for production or physical operations. The contract does not replace the approved durable Ask path, introduce another runtime, redefine authorization, or create a backup subsystem. It separates implementation evidence from deployment and release evidence. It does not change Issue #509 acceptance criteria.
 
 ### Approved architecture this contract preserves
 
@@ -20,7 +22,7 @@ ADR-0040 approves one shared production Q&A capability composition for API and o
 - **ADR-0040:** one production `AnswerQuestionCapability` composition is shared by the API and observer; observer output is bounded and disclosure is revalidated.
 - **#506 / Issue #16:** one narrow production-capable profile, trusted readiness, API/worker composition, and operator-controlled deployment evidence. #16 remains the system-level qualification gate.
 
-These decisions are not reopened here. The proposed extension from the approved shared Q&A graph and #506 qualification factory to one deployment-owned root spanning separate processes and recovery entrypoints is explicitly open for review. Other decisions below concern only deployment owners and bindings not settled by existing contracts.
+These decisions are not reopened here. The extension from the approved shared Q&A graph and #506 qualification factory to one deployment-owned root spanning separate processes and recovery entrypoints is architecturally approved by the recorded team lead decision. Implementation, process configuration and owner-specific binding approvals remain outstanding.
 
 ## 2. Verified implementation baseline
 
@@ -60,7 +62,7 @@ The tracker closure of #506 therefore represents merged implementation/integrati
 
 ### 3.1 One owner and one composition boundary
 
-**Proposed owner:** the Spine Runtime owner owns the canonical settings schema, production composition factory, process entrypoints, compatible version pins, and runtime readiness. Security, Projection/Provider, Storage/Recovery, and Release owners retain authority over their respective bindings and approvals.
+**Approved ownership boundary:** the Spine Runtime owner owns the canonical settings schema, production composition factory, process entrypoints, compatible version pins, and runtime readiness. Security, Projection/Provider, Storage/Recovery, and Release owners retain authority over their respective bindings and approvals. Naming the individual accountable Runtime owner and selecting the actual external secret mechanism/access policy remain Runtime owner follow-ups.
 
 One production-owned composition root assembles existing application and adapter implementations. It exposes process-specific entrypoints over the same versioned configuration and logical runtime contract. API, Temporal worker, and outbox are separate OS/container processes; they cannot share Python object identity. They must instead prove compatible deployment profile, commit/release identity, contract versions, Workspace/Environment scope policy, canonical database identity, Temporal namespace/task queue, and provider/recovery profile references. Process-specific credentials are expected to differ by least-privilege role.
 
@@ -95,7 +97,7 @@ API and worker compatibility is checked using validated identities and versions,
 
 ## 4. Configuration contract
 
-This is a proposed contract, not a new implemented settings model. Build on the existing frozen/strict settings types and `ProductionRuntimeProfile:v1`; do not add competing copies of fields already owned by PostgreSQL, OIDC, Temporal or recovery adapters.
+This approved contract does not itself add a settings model. Implementation must build on existing frozen/strict settings types and `ProductionRuntimeProfile:v1`; do not add competing copies of fields already owned by PostgreSQL, OIDC, Temporal or recovery adapters.
 
 ### 4.1 Versioned inputs and sources
 
@@ -188,7 +190,7 @@ Each level is recorded separately in a versioned metadata-only report, with stat
 
 `docker compose config`, container health, Temporal `SERVING`, a registered namespace, SDK test server, unit/integration tests, and `/health` are evidence only for their own boundary. They never promote levels 3–8. Readiness data must say which process/profile was observed and distinguish application-worker readiness from Temporal server readiness.
 
-## 10. Acceptance criteria for this proposed contract
+## 10. Acceptance criteria for implementing this approved contract
 
 1. One Runtime-owned root and strict versioned settings contract assemble existing bindings; no duplicate Q&A runtime, persistence authority, dispatcher or workflow engine is introduced.
 2. API, worker and dispatcher run in separate processes yet prove compatible profile/release/contract/database/namespace/queue identities while retaining separate least-privilege credentials; the observer binds to that same logical composition and uses the approved existing capture topology.
@@ -199,11 +201,11 @@ Each level is recorded separately in a versioned metadata-only report, with stat
 7. Provider/model settings are pinned, versioned, budget bounded and run-authorized; readiness does not make paid provider calls.
 8. Backup and restore entrypoints call only the existing coordinator/verifier/reconciliation contracts, use distinct approved roles/targets and cannot target SOURCE for restore.
 9. Evidence reports each readiness level separately and is metadata-only, immutable/versioned, attributable to exact commit and deployment fingerprint.
-10. Existing #16/#18/#507/#509 acceptance and runbooks remain authoritative. Implementation tickets and physical qualification remain blocked until their designated owners approve the open decisions.
+10. Existing #16/#18/#507/#509 acceptance and runbooks remain authoritative. Implementation may proceed against this approved architectural boundary; identity provisioning, provider spending, recovery targets, canary and physical operations remain blocked until their designated owners approve the exact bindings.
 
 ## 11. Verification strategy
 
-After approval, verify at the highest available seam in this order: strict settings and mismatch tests; composition tests proving API/worker/dispatcher compatibility; PostgreSQL role/RLS integration; Temporal integration proving actual SDK poller delivery and a successful synthetic terminal execution; supported-auth positive/negative API scenario; disposable Docker SOURCE/RESTORE deployment; separate physical projection qualification; then the approved fenced backup, isolated restore, reconciliation, projection rebuild, canary and safe diagnostics. Bind every report to the tested code/image/profile. Run full repository gates including pytest, compileall, domain import boundary, R1 regression and web gates when relevant.
+After architecture approval, implementation is verified at the highest available seam in this order: strict settings and mismatch tests; composition tests proving API/worker/dispatcher compatibility; PostgreSQL role/RLS integration; Temporal integration proving actual SDK poller delivery and a successful synthetic terminal execution; supported-auth positive/negative API scenario; disposable Docker SOURCE/RESTORE deployment; separate physical projection qualification; then, only after target-specific operator approvals, the approved fenced backup, isolated restore, reconciliation, projection rebuild, canary and safe diagnostics. Bind every report to the tested code/image/profile. Run full repository gates including pytest, compileall, domain import boundary, R1 regression and web gates when relevant.
 
 No unit, fake, test-server, disposable integration, or infrastructure health result substitutes for an operator-controlled physical deployment/evidence stage.
 
@@ -211,4 +213,6 @@ No unit, fake, test-server, disposable integration, or infrastructure health res
 
 This version does not implement settings, a deployment factory, process runner, identity provisioning, secret manager, backup CLI, restore CLI, new provider adapter, new workflow/orchestration system, schema migration, AccessPolicy change, new ADR, or a physical operation. It does not authorize production access, new production privileges, private corpus use, provider spending, backup, restore, canary, promotion, or issue closure.
 
-**Approval requested:** Runtime/Architecture owner approves or changes the proposed settings-backed root across separate processes and recovery entrypoints, names the accountable implementation owner, and identifies the approved external secret provider and its access/rotation policy; Security Owner approves the identity/grant provisioning boundary and local synthetic trust source; Projection/Provider Owner approves the pinned profile and run budget limits; Storage/Recovery Owner approves operator target/protection bindings; Release owner confirms evidence and approval gates. Record `APPROVED`, `APPROVED WITH CHANGES`, or `REJECTED / ALTERNATIVE` before converting the handoff into tickets.
+**Architecture approval:** recorded by `dima55279` based on team lead approval communicated outside GitHub on 2026-10-21 ([comment](https://github.com/alkselsv/spine/pull/528#issuecomment-6317606512)); D1–D8 are approved at the architecture boundary. This is not a formal GitHub review from the team lead.
+
+**Remaining prerequisites:** Runtime/Operations names the accountable implementation owner and approved external secret mechanism/access/rotation policy; Security Owner confirms the canonical identity/grant provisioning mechanism and local synthetic trust source; Projection/Provider Owner approves the exact pinned profile and run budget; Storage/Recovery Owner approves operator target/protection bindings; operators separately approve each physical operation; Release owner confirms evidence adjudication. These approvals do not reopen D1–D8 and do not imply deployment readiness.
