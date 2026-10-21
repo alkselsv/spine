@@ -50,6 +50,11 @@ def _all_strings(value: Any) -> list[str]:
     return []
 
 
+def _fingerprint(material: dict[str, Any]) -> str:
+    canonical = json.dumps(material, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 def test_issue509_report_is_closed_versioned_and_content_free() -> None:
     report = _load_report()
 
@@ -219,24 +224,14 @@ def test_issue509_temporal_readiness_report_records_both_real_environments() -> 
     assert report["production_qualified"] is False
     assert report["decision"] == "BLOCKED"
     assert re.fullmatch(r"[a-f0-9]{64}", report["deployment_fingerprint"])
-    assert hashlib.sha256(
-        json.dumps(
-            report["deployment_fingerprint_material"],
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-    ).hexdigest() == report["deployment_fingerprint"]
+    assert _fingerprint(report["deployment_fingerprint_material"]) == report[
+        "deployment_fingerprint"
+    ]
 
     for side in ("source", "restore"):
         profile = report["profiles"][side]
         assert re.fullmatch(r"[a-f0-9]{64}", profile["fingerprint"])
-        assert hashlib.sha256(
-            json.dumps(
-                profile["fingerprint_material"],
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest() == profile["fingerprint"]
+        assert _fingerprint(profile["fingerprint_material"]) == profile["fingerprint"]
         assert profile["postgres_health"] == "PASS"
         assert profile["persistence_schema"] == "PASS"
         assert profile["temporal_docker_health"] == "healthy"
