@@ -115,12 +115,14 @@ flowchart TD
   F[P5 #532: backup / isolated restore operator bindings]
   G[Deployment readiness: config, reachability, auth, pollers, app completion]
   H[P6 #509: physical qualification]
+  I[Existing #507 projection qualification]
   A --> B
   A --> C
   A --> D
   A --> E
   A --> F
   C --> E
+  I --> H
   B --> G
   C --> G
   D --> G
