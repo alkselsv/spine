@@ -324,6 +324,47 @@ async def test_retrieval_joins_public_dataset_metadata_to_chunk_document_id() ->
 
 
 @pytest.mark.asyncio
+async def test_retrieval_joins_namespace_scoped_data_id_to_canonical_segment() -> None:
+    data_id = "a0000000-0000-4000-8000-000000000019"
+    segment_id = "a0000000-0000-4000-8000-000000000009"
+    metadata = {
+        **physical_metadata(),
+        "spine_schema": "chunk-artifact:v1",
+        "data_id": data_id,
+        "segment_id": segment_id,
+        "evidence_id": "segment-evidence-1",
+        "evidence_digest": "f" * 64,
+    }
+    chunks = [
+        {
+            "objects_result": [
+                {
+                    "payload": {
+                        "text": "Alice works for Acme.",
+                        "document_id": data_id,
+                        "metadata": {"index_fields": ["text"]},
+                    }
+                }
+            ],
+            "evidence": [],
+        }
+    ]
+    sdk = FakeSearchSdk(
+        chunks_response=chunks,
+        data_metadata=(
+            CogneeDataMetadata(data_id=data_id, external_metadata=metadata),
+        ),
+    )
+
+    result = await CogneeStructuredRetrieval(sdk=sdk).retrieve(command())
+
+    assert result.outcome is ProjectionOutcome.SUCCEEDED
+    assert result.chunks[0].chunk_id == segment_id
+    assert result.evidence[0].evidence_id == "segment-evidence-1"
+    assert result.evidence[0].source_revision_id == SOURCE_REVISION_ID
+
+
+@pytest.mark.asyncio
 async def test_retrieval_rejects_conflicting_joined_and_search_metadata() -> None:
     data_id = "a0000000-0000-4000-8000-000000000009"
     metadata = {

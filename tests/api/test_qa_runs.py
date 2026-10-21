@@ -1,10 +1,11 @@
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import UUID
 
 import httpx
 import pytest
 
-from spine.api.qa_runs import install_qa_run_routes
+from spine.api.qa_runs import _context, install_qa_run_routes
 from spine.application.qa_run_history import (
     QARunDetail,
     QARunHistoryFilters,
@@ -190,6 +191,37 @@ async def test_run_detail_exposes_pinned_attempt_metadata_and_safe_timeline():
     assert payload["execution_pin"]["agent_version"]["agent_version_id"]
     assert payload["timeline"][0]["kind"] == "started"
     assert "input_artifact_ids" in payload
+
+
+def test_run_context_uses_canonical_boundary_manifest_digest() -> None:
+    digest = "a" * 64
+    response = _context(
+        SimpleNamespace(
+            bundle_id=UUID(int=1),
+            bundle_version=1,
+            bundle_digest="b" * 64,
+            retrieval_strategy="hybrid",
+            outcome=SimpleNamespace(value="sufficient"),
+            reason_code="sufficient_evidence",
+            state=SimpleNamespace(value="assembled"),
+            projection_snapshot=SimpleNamespace(projection_snapshot_id=UUID(int=2)),
+            projection_activation=SimpleNamespace(projection_activation_id=UUID(int=3)),
+            activation_generation=1,
+            canonical_boundary=SimpleNamespace(
+                boundary_id=UUID(int=4),
+                manifest_digest=digest,
+            ),
+            canonical_as_of=SimpleNamespace(
+                accepted_through_generation=1,
+                boundary_time=NOW,
+            ),
+            freshness=SimpleNamespace(value="current"),
+            health=SimpleNamespace(value="healthy"),
+            evidence_references=(),
+        )
+    )
+
+    assert response.canonical_boundary_digest == digest
 
 
 @pytest.mark.asyncio

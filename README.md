@@ -47,6 +47,10 @@ Spine развивается вертикальными релизами в фи
 - provider-neutral identity и request authorization contracts;
 - trace context, structured errors, diagnostic events и append-only audit;
 - immutable original-storage contracts и filesystem adapter;
+- deployable ingestion composition: PostgreSQL upload ledger, validation,
+  parsing, canonical acceptance, initial access policy and transactional outbox;
+- deployable outbox worker for canonical/processing/policy notifications and
+  provider-backed Cognee projection requests;
 - `SourceObject`/`SourceRevision`, admission decisions, ingestion ledger и
   canonical source/projection lifecycle;
 - versioned ingestion PDF, DOCX, XLSX, Markdown и text через `/api/v1`, включая
@@ -177,6 +181,32 @@ uv run uvicorn spine.api.main:app --reload --port 8080
 ```bash
 curl http://localhost:8080/health
 ```
+
+### Запустить локальный Compose-стенд
+
+Заполните локальный `.env` по `.env.example`, включая отдельные пароли
+PostgreSQL, пароль Neo4j, provider bindings и development-only local auth.
+Затем соберите и запустите pinned PostgreSQL/PGVector, Temporal, Neo4j/APOC,
+API и Web:
+
+```bash
+docker compose up --build --detach --wait
+curl http://127.0.0.1:4175/api/v1/health/live
+docker compose ps --all
+```
+
+Web доступен на `http://127.0.0.1:4175`, Temporal UI — на
+`http://127.0.0.1:8233`. По умолчанию наружу публикуются только loopback-порты;
+их можно переопределить переменными `SPINE_*_PORT`.
+
+Остановить стенд, сохранив данные:
+
+```bash
+docker compose down
+```
+
+`docker compose down --volumes` удаляет только disposable volumes этого
+стенда и используется для полностью чистого повторного bootstrap.
 
 ### Run the offline regression gate
 

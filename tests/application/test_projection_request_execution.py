@@ -127,7 +127,7 @@ def _canonical_context(command: ProjectCommand) -> CanonicalProjectionRequestCon
         projection_candidate=command.projection_candidate,
         projection_config=command.projection_config,
         canonical_boundary=command.canonical_boundary,
-        source_revision=command.source_revisions[0],
+        source_revisions=command.source_revisions,
         physical_namespace=command.physical_namespace,
         command_identity=command.command_identity,
         command_digest=command.command_digest,
@@ -562,7 +562,9 @@ async def test_non_retryable_physical_rejection_returns_safe_terminal_code() -> 
 
 
 @pytest.mark.asyncio
-async def test_missing_canonical_handoff_context_returns_safe_terminal_code() -> None:
+async def test_missing_canonical_handoff_context_returns_safe_terminal_code(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     command = _command()
     projection = DeterministicContextProjection()
     consumer = ProjectionRequestConsumer(
@@ -586,6 +588,7 @@ async def test_missing_canonical_handoff_context_returns_safe_terminal_code() ->
 
     assert captured.value.code == "projection.request.canonical_rejected"
     assert str(captured.value) == "projection.request.canonical_rejected"
+    assert "canonical mapping rejected at preparation" in caplog.text
 
 
 @pytest.mark.asyncio

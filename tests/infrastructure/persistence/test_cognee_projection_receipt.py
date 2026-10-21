@@ -151,8 +151,9 @@ def _successful_result() -> ProjectionResult:
     )
 
 
-def _chunk_row(command) -> CogneeDataMetadata:
+def _chunk_row(command, *, data_id: UUID | None = None) -> CogneeDataMetadata:
     segment = _document().segments[0]
+    physical_data_id = data_id or segment.segment_id
     metadata: dict[str, Any] = {
         "spine_schema": "chunk-artifact:v1",
         "workspace_id": str(command.workspace_id),
@@ -168,12 +169,13 @@ def _chunk_row(command) -> CogneeDataMetadata:
         "projection_config_version": command.projection_config.version,
         "projection_config_digest": command.projection_config.config_digest,
         "processing_receipt_id": str(PROCESSING_RECEIPT),
+        "data_id": str(physical_data_id),
         "segment_id": str(segment.segment_id),
         "segment_digest": segment.segment_digest,
         "locator_contract_version": command.source_revisions[0].locator_contract_version,
         "locator": segment.locator.model_dump(mode="json"),
     }
-    return CogneeDataMetadata(data_id=str(segment.segment_id), external_metadata=metadata)
+    return CogneeDataMetadata(data_id=str(physical_data_id), external_metadata=metadata)
 
 
 def _graph_row(command) -> CogneeDataMetadata:
@@ -237,6 +239,36 @@ async def test_receipt_builder_uses_observed_cognee_data_and_canonical_segments(
     assert reference.segment_id == f"segment-{document.segments[0].segment_id.hex}"
     assert reference.locator.kind == "character_range"
     assert reference.security_domain_reference == "security-domain:1"
+
+
+@pytest.mark.asyncio
+async def test_receipt_builder_maps_namespace_scoped_data_id_to_canonical_segment() -> None:
+    document = _document()
+    command = _command_for_document(document)
+    physical_data_id = UUID("a0000000-0000-4000-8000-000000000019")
+    repository = InMemoryParsedArtifactRepository()
+    await repository.persist(
+        ParsedArtifactCommand.create(document=document, command_identity="parsed:1")
+    )
+    builder = CogneeProjectionReceiptBuilder(
+        physical_reader=_PhysicalReader(
+            (_chunk_row(command, data_id=physical_data_id),)
+        ),
+        parsed_artifacts=repository,
+        uow_factory=lambda _context: _UnitOfWork(),
+        context_factory=lambda _command: object(),
+        clock=lambda: NOW,
+        adapter_version="1.5.4",
+    )
+
+    receipt = await builder.build(command, _successful_result())
+
+    assert [(item.kind, item.object_id) for item in receipt.emitted_objects] == [
+        ("chunk", str(physical_data_id))
+    ]
+    assert receipt.source_references[0].segment_id == (
+        f"segment-{document.segments[0].segment_id.hex}"
+    )
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createHash } from 'node:crypto';
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -43,7 +43,7 @@ function session(status: 'active' | 'archived' = 'active', version = 1) {
 }
 
 function message(
-  question = 'Где находится политика отпуска?',
+  question: string | null = 'Где находится политика отпуска?',
   answer: string | null = 'В разделе HR.',
   terminalOutcome: 'answered' | 'clarification_required' | 'abstained' | 'denied' | 'failed' | 'cancelled' = 'answered',
   overrides: Record<string, unknown> = {},
@@ -119,7 +119,12 @@ function LocationProbe() {
   return <output aria-label="Текущий адрес">{location.pathname + location.search}</output>;
 }
 
-function renderPage(entry: string, currentScope: Scope = scope, seedStaleContent = false) {
+function renderPage(
+  entry: string,
+  currentScope: Scope = scope,
+  seedStaleContent = false,
+  seedStaleSessionList = false,
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 0 } },
   });
@@ -136,6 +141,13 @@ function renderPage(entry: string, currentScope: Scope = scope, seedStaleContent
       qaSessionQueryKeys.messages(currentScope, sessionId, null, identityVersion),
       { items: [message('Cached private question', 'Cached private answer')], next_cursor: null, limit: 25 },
       { updatedAt },
+    );
+  }
+  if (seedStaleSessionList) {
+    client.setQueryData(
+      qaSessionQueryKeys.sessions(currentScope, null, identityVersion),
+      { items: [session()], next_cursor: null, limit: 25 },
+      { updatedAt: Date.parse('2020-01-01T00:00:00.000Z') },
     );
   }
   function PageHarness({ pageScope, authIdentity = identityVersion }: { pageScope: Scope; authIdentity?: string }) {
@@ -185,10 +197,24 @@ function renderSessionMessages(messages: unknown[]) {
 
 afterEach(() => {
   cleanup();
+  onlineManager.setOnline(true);
   vi.unstubAllGlobals();
 });
 
 describe('final Chat experience', () => {
+  it('test_offline_refresh_with_cached_sessions_shows_stale_partial_state', async () => {
+    onlineManager.setOnline(false);
+    renderPage(
+      `/chat?workspace=${scope.workspaceId}&environment=${scope.environmentId}`,
+      scope,
+      false,
+      true,
+    );
+
+    expect(await screen.findByRole('region', { name: ru.status.stale.title })).toBeVisible();
+    expect(screen.getByRole('region', { name: ru.status.partial.title })).toBeVisible();
+  });
+
   it.each([
     ['before_start', 'pending'],
     ['in_progress', 'running'],
@@ -401,6 +427,41 @@ describe('final Chat experience', () => {
     expect(screen.queryByText('В разделе HR.')).toBeNull();
   });
 
+  it('test_revoked_citation_deep_link_shows_safe_hidden_message_state', async () => {
+    const revokedMessage = message(null, null, 'answered', {
+      accepted_presentation: null,
+      disclosure_eligibility: 'ineligible',
+    });
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}`) {
+        return response({ data: session(), workspace_id: scope.workspaceId, environment_id: scope.environmentId, trace_id: traceId });
+      }
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages` && request.method === 'GET') {
+        return collection(request, [], null);
+      }
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages/${messageId}`) {
+        return response({
+          schema_version: 1,
+          trace_id: traceId,
+          workspace_id: scope.workspaceId,
+          environment_id: scope.environmentId,
+          data: revokedMessage,
+        });
+      }
+      return response({ error: 'unexpected request' });
+    }));
+
+    renderPage(
+      `/chat/${sessionId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}&message_id=${messageId}&run_id=${runId}&citation_id=${citationId}`,
+    );
+
+    expect(await screen.findByText(ru.chat.messageContentHidden)).toBeVisible();
+    expect(screen.queryByRole('region', { name: ru.status.failed.title })).toBeNull();
+    expect(screen.queryByText('В разделе HR.')).toBeNull();
+  });
+
   it('test_archived_session_requires_restore_before_messages_are_loaded', async () => {
     const user = userEvent.setup();
     let messagePageRequested = false;
@@ -566,6 +627,10 @@ describe('final Chat experience', () => {
     const user = userEvent.setup();
     const askRequests: Array<{ body: unknown; headers: Headers }> = [];
     let hydratedMessageRequested = false;
+    let releaseHydration: () => void = () => undefined;
+    const hydrationGate = new Promise<void>((resolve) => {
+      releaseHydration = resolve;
+    });
     const fetcher = vi.fn<typeof fetch>(async (input, init) => {
       const request = new Request(input, init);
       const url = new URL(request.url);
@@ -597,6 +662,7 @@ describe('final Chat experience', () => {
       }
       if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages/${admittedMessageId}`) {
         hydratedMessageRequested = true;
+        await hydrationGate;
         return response({
           data: message('Где лежит отпускная политика?', null, 'answered', {
             message_id: admittedMessageId,
@@ -610,6 +676,11 @@ describe('final Chat experience', () => {
           trace_id: traceId,
         });
       }
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages/${admittedMessageId}/events`) {
+        return new Response('event: completed\ndata: not-json\n\n', {
+          headers: { 'content-type': 'text/event-stream' },
+        });
+      }
       return response({ error: 'unexpected request' });
     });
     vi.stubGlobal('fetch', fetcher);
@@ -618,6 +689,8 @@ describe('final Chat experience', () => {
     await user.type(await screen.findByRole('textbox', { name: 'Вопрос' }), 'Где лежит отпускная политика?');
     await user.click(screen.getByRole('button', { name: 'Отправить' }));
 
+    expect(await screen.findByRole('button', { name: 'Остановить выполнение' })).toBeVisible();
+    releaseHydration();
     expect(await screen.findByText('Ожидает выполнения')).toBeVisible();
     expect(screen.getByText('Где лежит отпускная политика?')).toBeVisible();
     expect(askRequests).toHaveLength(1);
@@ -626,6 +699,8 @@ describe('final Chat experience', () => {
     expect(askRequests[0]?.headers.get('X-Workspace-ID')).toBe(scope.workspaceId);
     expect(askRequests[0]?.headers.get('X-Environment-ID')).toBe(scope.environmentId);
     expect(hydratedMessageRequested).toBe(true);
+    expect(screen.getAllByRole('button', { name: 'Остановить выполнение' })).toHaveLength(1);
+    expect(await screen.findByRole('alert')).toHaveTextContent(ru.chat.eventStreamFailed);
   });
 
   it('test_clarification_reply_links_to_the_canonical_message', async () => {

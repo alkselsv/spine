@@ -55,6 +55,13 @@ export function ProjectionStatusPanel({
     }),
     refetchInterval: (query) => {
       const status = query.state.data;
+      const error = query.state.error;
+      if (
+        (indexingState === 'projection_requested' || indexingState === 'processed')
+        && (!error || (error instanceof SpineApiError && error.status === 404))
+        && (!status || status.publication_status !== 'published'
+          || status.freshness !== 'current' || status.health !== 'healthy')
+      ) return 1_000;
       if (status && isProjectionOperationPending(status)) return 1_000;
       return recoveryMutation.data && status && !isProjectionOperationTerminal(status) ? 1_000 : false;
     },

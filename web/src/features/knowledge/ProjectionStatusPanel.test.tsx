@@ -147,6 +147,60 @@ describe('document projection operations panel', () => {
     expect(globalThis.document.body).not.toHaveTextContent('secret provider trace');
   });
 
+  it('test_projection_requested_polls_expected_unpublished_status_until_current', async () => {
+    let statusReads = 0;
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>(async (input) => {
+      const path = new URL((input as Request).url).pathname;
+      if (path === `/api/v1/documents/${documentId}`) {
+        return Response.json(documentEnvelope('projection_requested'));
+      }
+      if (path === '/api/v1/projections/qa/status') {
+        statusReads += 1;
+        if (statusReads === 1) {
+          return Response.json({
+            code: 'spine.projection.unavailable',
+            retryability: 'after_delay',
+            safe_message: 'The projection is not published yet.',
+            schema_version: 1,
+            trace_id: traceId,
+          }, { status: 404 });
+        }
+        return Response.json({ ...scopeEnvelope(), data: publishedStatus() });
+      }
+      if (path === '/api/v1/health/summary') return Response.json(healthEnvelope());
+      throw new Error(`Unexpected request: ${path}`);
+    }));
+
+    renderPanel(`/knowledge/documents/${documentId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}&tab=projection`);
+
+    expect(await screen.findByText('Актуальна', {}, { timeout: 5_000 })).toBeVisible();
+    expect(statusReads).toBeGreaterThan(1);
+  });
+
+  it('test_processed_ingestion_keeps_polling_stale_projection_until_current', async () => {
+    let statusReads = 0;
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>(async (input) => {
+      const path = new URL((input as Request).url).pathname;
+      if (path === `/api/v1/documents/${documentId}`) {
+        return Response.json(documentEnvelope('processed'));
+      }
+      if (path === '/api/v1/projections/qa/status') {
+        statusReads += 1;
+        return Response.json({
+          ...scopeEnvelope(),
+          data: publishedStatus(statusReads === 1 ? { freshness: 'stale' } : {}),
+        });
+      }
+      if (path === '/api/v1/health/summary') return Response.json(healthEnvelope());
+      throw new Error(`Unexpected request: ${path}`);
+    }));
+
+    renderPanel(`/knowledge/documents/${documentId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}&tab=projection`);
+
+    expect(await screen.findByText('Актуальна', {}, { timeout: 5_000 })).toBeVisible();
+    expect(statusReads).toBeGreaterThan(1);
+  });
+
   it('test_projection_recovery_reuses_idempotency_key_after_ambiguous_failure', async () => {
     const keys: string[] = [];
     let attempts = 0;

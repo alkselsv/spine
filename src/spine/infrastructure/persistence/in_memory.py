@@ -106,6 +106,7 @@ from spine.application.persistence.canonical import (
     SourceOrderComparison,
     SourceOrderingPolicyError,
     SourceOrderingPolicyRegistry,
+    bind_canonical_acceptance_generation,
     validate_canonical_acceptance_effects,
 )
 from spine.application.persistence.projection import (
@@ -1256,7 +1257,7 @@ class _AnswerQuestionRunRepository:
                     object_type="answer_question_run", object_id=run_id, schema_version=1
                 ),
                 producer_deduplication_id=f"qa-ask-cancellation:{run_id}",
-                trace_id=existing.diagnostic_context.trace_id,
+                trace_id=self._uow._trace_id_snapshot(),
             )
         )
         self._uow._pending_answer_question_runs[self._run_key(run_id)] = updated
@@ -1346,7 +1347,10 @@ class _AnswerQuestionRunRepository:
             )
         if (
             run.state is not AnswerQuestionRunState.RUNNING
-            or run.cancellation_requested_at is not None
+            or (
+                run.cancellation_requested_at is not None
+                and not allocation.cancellation
+            )
             or any(
                 attempt.state is AnswerQuestionAttemptState.RUNNING
                 and attempt.logical_execution_key is not None
@@ -2440,9 +2444,10 @@ class _CanonicalAcceptanceRepository:
             changed_at=command.accepted_at,
         )
         self._uow._pending_current_source_heads[source.source_object_id] = head
+        effect_command = bind_canonical_acceptance_generation(command, generation)
         try:
             validate_canonical_acceptance_effects(
-                command=command,
+                command=effect_command,
                 acceptance=acceptance,
                 context=self._uow._context_snapshot_active(),
                 audit_registry=self._uow._audit_events,
@@ -2521,8 +2526,8 @@ class _CanonicalAcceptanceRepository:
                     trace_id=context.trace_id,
                 )
             )
-        audit_id = await self._uow.audit.append(command.audit_event)
-        event_id = await self._uow.outbox.append(command.outbox_intent)
+        audit_id = await self._uow.audit.append(effect_command.audit_event)
+        event_id = await self._uow.outbox.append(effect_command.outbox_intent)
         if audit_id != command.audit_event_id or event_id != command.outbox_event_id:
             self._uow._fail(ConstraintConflictError("Canonical evidence identity is invalid."))
         reference = OpaqueResultReference(result_type="canonical_acceptance", result_id=acceptance.canonical_acceptance_id, schema_version=1)

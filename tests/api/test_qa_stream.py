@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import UUID
 
 import httpx
 import pytest
 
 from spine.api.authorized_ask import install_authorized_ask_routes
-from spine.api.qa_stream import install_qa_stream_routes
+from spine.api.qa_stream import _canonical_terminal_event, install_qa_stream_routes
 from spine.application.qa_events import InMemoryQAEventLog
 from spine.application.qa_streaming import AuthorizedQAStreamService
 from spine.application.telemetry import (
@@ -26,6 +27,8 @@ from tests.api.test_authorized_ask import (
     headers,
 )
 from tests.api.test_authorization import authorized_app
+from spine.domain.capabilities import AnswerQuestionOutcome
+from spine.domain.qa_sessions import QAMessageState
 
 
 def _event_frames(value: str) -> list[dict[str, object]]:
@@ -63,6 +66,67 @@ def _app(
         operational_observer=operational_observer,
     )
     return httpx.ASGITransport(app=application)
+
+
+@pytest.mark.asyncio
+async def test_empty_running_stream_emits_resumable_heartbeat() -> None:
+    log = InMemoryQAEventLog()
+    transport = _app(allowed={"content": False}, log=log)
+    message_id = UUID(int=701)
+    run_id = UUID(int=702)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            f"/api/v1/qa/sessions/{SESSION_ID}/messages/{message_id}/events",
+            params={"run_id": str(run_id)},
+            headers=headers(),
+        )
+
+    frames = _event_frames(response.text)
+    assert response.status_code == 200
+    assert [frame["event"] for frame in frames] == ["heartbeat"]
+    assert frames[0]["id"]
+
+
+@pytest.mark.asyncio
+async def test_worker_committed_message_rehydrates_content_free_terminal_event() -> None:
+    message_id = UUID(int=701)
+    run_id = UUID(int=702)
+
+    class Sessions:
+        async def get_message(self, **_: object) -> object:
+            return SimpleNamespace(
+                workspace_id=UUID(int=1),
+                environment_id=UUID(int=2),
+                session_id=SESSION_ID,
+                message_id=message_id,
+                run_id=run_id,
+                trace_id=TRACE_ID,
+                version=2,
+                state=QAMessageState.TERMINAL,
+                terminal_outcome=AnswerQuestionOutcome.ANSWERED,
+            )
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(qa_session_service=Sessions()))
+    )
+    request_context = SimpleNamespace(
+        acting_subject_id=UUID(int=3), authorization_generation=1
+    )
+
+    terminal = await _canonical_terminal_event(
+        request=request,  # type: ignore[arg-type]
+        persistence_context=object(),  # type: ignore[arg-type]
+        request_context=request_context,  # type: ignore[arg-type]
+        session_id=SESSION_ID,
+        message_id=message_id,
+        run_id=run_id,
+    )
+
+    assert terminal is not None
+    assert terminal.sequence == 2
+    assert terminal.type.value == "completed"
+    assert terminal.payload.model_dump() == {"outcome": "answered"}
 
 
 @pytest.mark.asyncio

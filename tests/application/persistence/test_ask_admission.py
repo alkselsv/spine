@@ -58,7 +58,12 @@ def _boundary() -> TrustedContextBoundary:
     )
 
 
-def _context(boundary: TrustedContextBoundary, *, operation: PersistenceOperation):
+def _context(
+    boundary: TrustedContextBoundary,
+    *,
+    operation: PersistenceOperation,
+    trace_id: UUID = TRACE_ID,
+):
     return boundary.interactive(
         scope=EnvironmentScope(
             workspace_id=WORKSPACE_ID,
@@ -67,7 +72,7 @@ def _context(boundary: TrustedContextBoundary, *, operation: PersistenceOperatio
         acting_subject_id=SUBJECT_ID,
         purpose=PersistencePurpose("question_answering"),
         operation=operation,
-        trace_id=TRACE_ID,
+        trace_id=trace_id,
     )
 
 
@@ -295,6 +300,32 @@ async def test_cancellation_command_replays_stably_and_hides_unknown_runs() -> N
             context=context,
             run_id=UUID("a0000000-0000-0000-0000-000000000426"),
         )
+
+
+@pytest.mark.asyncio
+async def test_cancellation_uses_the_cancel_request_trace_for_its_outbox_intent() -> None:
+    persistence, boundary = await _persistence()
+    admission_context = _context(boundary, operation=QA_ASK_ADMISSION_OPERATION)
+    async with persistence.uow_factory(admission_context) as uow:
+        await uow.ask_admissions.admit(_command())
+        await uow.commit()
+    cancel_trace_id = UUID("70000000-0000-0000-0000-000000000427")
+    cancellation_context = _context(
+        boundary,
+        operation=QA_ASK_ADMISSION_OPERATION,
+        trace_id=cancel_trace_id,
+    )
+    service = PersistedAskAdmissionService(
+        persistence.uow_factory,
+        clock=lambda: NOW.replace(microsecond=1),
+    )
+
+    result = await service.request_cancellation(
+        context=cancellation_context,
+        run_id=RUN_ID,
+    )
+
+    assert result.status is AskCancellationLifecycle.CANCELLATION_REQUESTED
 
 
 @pytest.mark.asyncio

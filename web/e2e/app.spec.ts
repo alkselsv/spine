@@ -66,7 +66,7 @@ test('test_control_plane_navigation_preserves_scope_and_generated_client_context
 
 test('test_shared_shell_keeps_navigation_and_scope_controls_usable_on_mobile', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto('/');
+  await page.goto('/?fixture=controlled');
 
   await expect(page.getByRole('navigation', { name: 'Разделы workspace' })).toBeVisible();
   await expect(page.getByRole('group', { name: 'Рабочая область и среда' })).toBeVisible();
@@ -75,8 +75,8 @@ test('test_shared_shell_keeps_navigation_and_scope_controls_usable_on_mobile', a
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
   await page.getByRole('link', { name: 'Чат', exact: true }).click();
-  await expect(page).toHaveURL(/\/chat$/);
-  await expect(page.getByRole('region', { name: 'Сервис работает с ограничениями' })).toBeVisible();
+  await expect(page).toHaveURL(/\/chat\?fixture=controlled$/);
+  await expect(page.getByRole('heading', { name: 'Диагностический чат' })).toBeVisible();
 });
 
 test('test_documents_discovery_filters_paginates_and_navigates_without_content_identity', async ({ page }) => {

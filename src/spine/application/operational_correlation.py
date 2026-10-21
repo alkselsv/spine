@@ -7,6 +7,7 @@ from typing import Protocol
 from uuid import UUID
 
 from spine.application.outbox_inspection import OutboxDeliveryInspectionItem
+from spine.application.persistence.context import TrustedPersistenceContext
 from spine.application.telemetry.observations import OperationalObservation
 from spine.auth import AuthorizationRole, AuthorizedRequestContext
 from spine.domain.capabilities.answer_question_runs import AnswerQuestionRun
@@ -45,6 +46,7 @@ class OperationalCorrelationReaderPort(Protocol):
         *,
         query: OperationalCorrelationQuery,
         authority: AuthorizedRequestContext[object],
+        context: TrustedPersistenceContext | None = None,
     ) -> OperationalCorrelationView: ...
 
 
@@ -210,7 +212,9 @@ class OperationalCorrelationReader:
         *,
         query: OperationalCorrelationQuery,
         authority: AuthorizedRequestContext[object],
+        context: TrustedPersistenceContext | None = None,
     ) -> OperationalCorrelationView:
+        del context
         if (
             authority.roles != frozenset({AuthorizationRole.ADMINISTRATOR})
             or authority.scope.workspace_id != query.workspace_id
@@ -234,7 +238,9 @@ class UnavailableOperationalCorrelationReader:
         *,
         query: OperationalCorrelationQuery,
         authority: AuthorizedRequestContext[object],
+        context: TrustedPersistenceContext | None = None,
     ) -> OperationalCorrelationView:
+        del context
         if (
             authority.roles != frozenset({AuthorizationRole.ADMINISTRATOR})
             or authority.scope.workspace_id != query.workspace_id

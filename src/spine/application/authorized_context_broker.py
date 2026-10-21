@@ -13,8 +13,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
+import logging
 from typing import Literal, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
+
+
+_LOGGER = logging.getLogger(__name__)
 
 from spine.application.authorized_retrieval_scope import (
     AuthorizedRetrievalScope,
@@ -67,6 +71,7 @@ from spine.domain.projections import (
     UnpublishedActivePublication,
 )
 from spine.domain.sources import CanonicalBoundary as DomainCanonicalBoundary
+from spine.domain.sources import SourceRevision
 from spine.memory.contracts import (
     ContextOutcome,
     ContextReasonCode,
@@ -125,6 +130,7 @@ class ContextBrokerReadModel:
     source_references: tuple[SourceProjectionReference, ...]
     canonical_boundary: DomainCanonicalBoundary
     provider_capability_reference: str
+    source_revisions: tuple[SourceRevision, ...] = ()
     max_partitions: int = 64
 
 
@@ -501,7 +507,10 @@ class AuthorizedContextBrokerApplicationService:
         expected_bundle_id = context_bundle_id_for_request(request)
         try:
             replay = await self._resolve_replay(request)
-        except Exception:
+        except Exception as error:
+            _LOGGER.warning(
+                "authorized context bundle unavailable: %s", type(error).__name__
+            )
             return self._response(
                 ContextOutcome.UNAVAILABLE, ContextReasonCode.BUNDLE_UNAVAILABLE
             )
@@ -599,6 +608,22 @@ class AuthorizedContextBrokerApplicationService:
             verifications=verifications,
             scope=scope,
         )
+        _LOGGER.warning(
+            "authorized context retrieval evaluated: projection=%s items=%s "
+            "verifications=%s gate=%s reason=%s",
+            retrieval.outcome.value,
+            len((*retrieval.chunks, *retrieval.entities, *retrieval.relations)),
+            tuple(
+                (
+                    item.reason_code.value
+                    if isinstance(item, RejectedEvidenceItem)
+                    else "verified"
+                )
+                for item in verifications
+            ),
+            gate.outcome.value,
+            gate.gate_reason.value,
+        )
         if gate.publication_pin is not None and gate.publication_pin != pin:
             return self._response(
                 ContextOutcome.UNAVAILABLE, ContextReasonCode.PUBLICATION_UNAVAILABLE
@@ -622,6 +647,8 @@ class AuthorizedContextBrokerApplicationService:
                 scope=scope,
                 gate=gate,
                 canonical_boundary=read_model.canonical_boundary,
+                source_references=read_model.source_references,
+                source_revisions=read_model.source_revisions,
                 bundle_id=expected_bundle_id,
             )
             stored = await self._bundles.create_or_replay(bundle)
@@ -629,7 +656,11 @@ class AuthorizedContextBrokerApplicationService:
             return self._response(
                 ContextOutcome.UNAVAILABLE, ContextReasonCode.RETRIEVAL_UNAVAILABLE
             )
-        except Exception:
+        except Exception as error:
+            _LOGGER.warning(
+                "authorized context bundle creation unavailable: %s",
+                type(error).__name__,
+            )
             return self._response(
                 ContextOutcome.UNAVAILABLE, ContextReasonCode.BUNDLE_UNAVAILABLE
             )
@@ -847,12 +878,31 @@ class AuthorizedContextBrokerApplicationService:
         scope: AuthorizedRetrievalScope,
         gate: RetrievalGateDecision,
         canonical_boundary: DomainCanonicalBoundary,
+        source_references: tuple[SourceProjectionReference, ...],
+        source_revisions: tuple[SourceRevision, ...],
         bundle_id: UUID,
     ) -> ContextBundle:
         if gate.publication_pin is None:
             raise ValueError("bundle requires a publication pin")
-        evidence = tuple(
-            ContextBundleEvidenceReference(
+        references_by_evidence = _references_by_evidence_id(source_references)
+        revisions_by_id = {
+            revision.revision_id: revision for revision in source_revisions
+        }
+
+        def persisted_reference(item: object) -> ContextBundleEvidenceReference:
+            source_reference = references_by_evidence.get(item.evidence_id)
+            revision = revisions_by_id.get(item.source_revision_id)
+            complete_v2 = (
+                source_reference is not None
+                and revision is not None
+                and revision.original_sha256 is not None
+            )
+            return ContextBundleEvidenceReference(
+                schema_version=(
+                    "context-evidence-reference:v2"
+                    if complete_v2
+                    else "context-evidence-reference:v1"
+                ),
                 evidence_id=item.evidence_id,
                 workspace_id=item.workspace_id,
                 environment_id=item.environment_id,
@@ -860,6 +910,9 @@ class AuthorizedContextBrokerApplicationService:
                 activation_generation=pin.activation_generation,
                 source_object_id=item.source_object_id,
                 source_revision_id=item.source_revision_id,
+                original_sha256=(
+                    revision.original_sha256 if complete_v2 else None
+                ),
                 revision_digest=item.revision_digest,
                 revision_number=item.revision_number,
                 processing_receipt_id=item.processing_receipt_id,
@@ -867,9 +920,17 @@ class AuthorizedContextBrokerApplicationService:
                 locator=EvidenceLocator(
                     kind=item.locator.kind, value=item.locator.value
                 ),
+                locator_digest=(
+                    source_reference.locator_digest if complete_v2 else None
+                ),
+                projected_kind=(
+                    source_reference.projected_kind if complete_v2 else None
+                ),
                 evidence_digest=item.evidence_digest,
                 status=ContextBundleEvidenceStatus(item.status),
             )
+        evidence = tuple(
+            persisted_reference(item)
             for item in gate.evidence_references
         )
         outcome = ContextBundleOutcome(gate.outcome.value)
@@ -946,6 +1007,14 @@ class AuthorizedContextBrokerApplicationService:
             AuthorizedRetrievalScopeReason,
         )
 
+        _LOGGER.warning(
+            "authorized context scope rejected",
+            extra={
+                "safe_outcome": resolution.outcome.value,
+                "safe_reason_code": resolution.reason.value,
+            },
+        )
+
         if resolution.outcome is AuthorizedRetrievalScopeOutcome.DENIED:
             reason = (
                 ContextReasonCode.INVALID_TRUSTED_CONTEXT
@@ -999,6 +1068,18 @@ class AuthorizedContextBrokerApplicationService:
             reason_code=reason,
             publication_pin_id=bundle.publication_pin_id,
         )
+
+
+def _references_by_evidence_id(
+    references: tuple[SourceProjectionReference, ...],
+) -> dict[str, SourceProjectionReference]:
+    """Index projected lineage by the canonical segment evidence identity."""
+
+    return {
+        reference.segment_id: reference
+        for reference in references
+        if reference.projected_kind in {"chunk", "entity", "relation"}
+    }
 
 
 def request_command_digest(request: AuthorizedContextRequest) -> str:

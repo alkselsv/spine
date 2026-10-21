@@ -335,6 +335,21 @@ async def test_answer_question_attempt_allocation_rejects_cancellation_winner(
                 )
             )
 
+    async with persistence_adapter.uow_factory(context) as uow:
+        cancellation = await uow.answer_question_runs.allocate_or_resume_attempt(
+            AnswerQuestionAttemptAllocation(
+                run_id=command.run.run_id,
+                logical_execution_key="durable-ask:cancelled",
+                execution_pin=_pin(workspace_id, environment_id),
+                input_artifact_ids=command.run.input_artifact_ids,
+                cancellation=True,
+            )
+        )
+        await uow.commit()
+
+    assert cancellation.replay is False
+    assert cancellation.attempt.attempt_number == 1
+
 
 @pytest.mark.asyncio
 async def test_answer_question_attempt_terminal_record_is_immutable_and_replayable(

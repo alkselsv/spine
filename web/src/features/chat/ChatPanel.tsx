@@ -23,6 +23,7 @@ import { AcceptedAnswer } from './AcceptedAnswer';
 import { AskComposer } from './AskComposer';
 import { AskCancellationControl } from './AskCancellationControl';
 import { DiagnosticChatPanel, type DiagnosticChatPanelProps } from './DiagnosticChatPanel';
+import { observeQAMessageEvents } from './qa-event-observer';
 import styles from './SessionBrowserPage.module.css';
 
 const SESSION_CURSOR = 'session_cursor';
@@ -252,7 +253,7 @@ function SessionList({
       {query.error && !query.data ? <ApiErrorPanel error={query.error} /> : null}
       {query.isPending ? <StatusPanel state="loading" /> : null}
       {query.isStale && query.data ? <StatusPanel state="stale" /> : null}
-      {query.error && query.data ? <StatusPanel state="partial" /> : null}
+      {(query.isStale || query.error || query.fetchStatus === 'paused') && query.data ? <StatusPanel state="partial" /> : null}
       {!query.isStale && !query.error && query.data?.items.length === 0 ? <StatusPanel state="empty" /> : null}
 
       {!query.isStale && !query.error && query.data?.items.length ? (
@@ -323,7 +324,8 @@ function SessionDetails({
 }) {
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [admittedMessageId, setAdmittedMessageId] = useState<string | null>(null);
+  const [admission, setAdmission] = useState<{ messageId: string; runId: string } | null>(null);
+  const [eventObservation, setEventObservation] = useState<'idle' | 'observing' | 'reconnecting' | 'failed'>('idle');
   const [clarificationTarget, setClarificationTarget] = useState<string | null>(null);
   const session = sessionQuery.isStale || sessionQuery.error ? undefined : sessionQuery.data;
   const linkedMessageId = searchParams.get('message_id');
@@ -337,7 +339,7 @@ function SessionDetails({
     (returnRunId && !UUID_PATTERN.test(returnRunId)),
   );
   const deepLinkMessageId = invalidDeepLink ? null : linkedMessageId;
-  const requestedMessageId = deepLinkMessageId ?? admittedMessageId;
+  const requestedMessageId = deepLinkMessageId ?? admission?.messageId ?? null;
   const admittedMessageQuery = useQuery({
     ...apiQueryOptions({
       load: (signal) => loadQAMessage(
@@ -358,12 +360,48 @@ function SessionDetails({
     refetchInterval: (query) =>
       query.state.status !== 'error' && query.state.data?.state !== 'terminal' ? 2_000 : false,
   });
+  const admissionIsTerminal = Boolean(
+    admission &&
+    admittedMessageQuery.data?.message_id === admission.messageId &&
+    admittedMessageQuery.data.state === 'terminal',
+  );
+  useEffect(() => {
+    if (!admission || session?.status !== 'active') return;
+    const controller = new AbortController();
+    setEventObservation('observing');
+    void observeQAMessageEvents({
+      client: askClient,
+      messageId: admission.messageId,
+      onEvent: (event) => {
+        setEventObservation('observing');
+        void queryClient.invalidateQueries({
+          queryKey: qaSessionQueryKeys.messages(scope, session.session_id, messageCursor, identityVersion),
+        });
+        if (event.type !== 'heartbeat') void admittedMessageQuery.refetch();
+      },
+      onReconnect: () => setEventObservation('reconnecting'),
+      runId: admission.runId,
+      scope,
+      sessionId: session.session_id,
+      signal: controller.signal,
+    }).then(() => {
+      if (!controller.signal.aborted) {
+        setEventObservation('idle');
+        void admittedMessageQuery.refetch();
+      }
+    }).catch(() => {
+      if (!controller.signal.aborted) setEventObservation('failed');
+    });
+    return () => controller.abort();
+  }, [admission, askClient, identityVersion, messageCursor, queryClient, scope, session?.session_id, session?.status]);
   const deepLinkMismatch = Boolean(
     deepLinkMessageId && admittedMessageQuery.data && (
       admittedMessageQuery.data.message_id !== deepLinkMessageId ||
       admittedMessageQuery.data.session_id !== session?.session_id ||
       (linkedRunId && admittedMessageQuery.data.run_id !== linkedRunId) ||
-      (linkedCitationId && !admittedMessageQuery.data.accepted_presentation?.citation_ids.includes(linkedCitationId))
+      (linkedCitationId &&
+        admittedMessageQuery.data.disclosure_eligibility !== 'ineligible' &&
+        !admittedMessageQuery.data.accepted_presentation?.citation_ids.includes(linkedCitationId))
     ),
   );
   const deepLinkNeedsActiveSession = Boolean(deepLinkMessageId && session && session.status !== 'active');
@@ -441,6 +479,9 @@ function SessionDetails({
               {messages.map((message) => (
                 <MessageCard
                   client={client}
+                  hideCancellationControl={
+                    admission?.messageId === message.message_id && !admissionIsTerminal
+                  }
                   key={message.message_id}
                   message={message}
                   onCanonicalRefresh={() => {
@@ -494,6 +535,33 @@ function SessionDetails({
             </button>
           ) : null}
           {messageCursor ? <span className={styles.pageHint}>{ru.chat.messagePageLoaded}</span> : null}
+          {eventObservation !== 'idle' ? (
+            <p data-state={eventObservation} role={eventObservation === 'failed' ? 'alert' : 'status'}>
+              {eventObservation === 'observing'
+                ? ru.chat.eventStreamObserving
+                : eventObservation === 'reconnecting'
+                  ? ru.chat.eventStreamReconnecting
+                  : ru.chat.eventStreamFailed}
+            </p>
+          ) : null}
+          {admission && !admissionIsTerminal ? (
+            <AskCancellationControl
+              client={client}
+              onCanonicalRefresh={() => {
+                void admittedMessageQuery.refetch();
+                void queryClient.invalidateQueries({
+                  queryKey: qaSessionQueryKeys.messages(
+                    scope,
+                    session.session_id,
+                    messageCursor,
+                    identityVersion,
+                  ),
+                });
+              }}
+              runId={admission.runId}
+              scope={scope}
+            />
+          ) : null}
         </section>
       ) : null}
 
@@ -502,7 +570,7 @@ function SessionDetails({
           client={askClient}
           clarificationTarget={clarificationMessage ? clarificationTarget : null}
           onAccepted={(admission) => {
-            setAdmittedMessageId(admission.message_id);
+            setAdmission({ messageId: admission.message_id, runId: admission.run_id });
             setClarificationTarget(null);
             const nextSearch = new URLSearchParams(searchParams);
             nextSearch.delete('message_id');
@@ -534,6 +602,7 @@ function SessionDetails({
 
 function MessageCard({
   client,
+  hideCancellationControl,
   message,
   onCanonicalRefresh,
   onClarify,
@@ -542,6 +611,7 @@ function MessageCard({
   scope,
 }: {
   client: ReturnType<typeof createScopedApiClient>;
+  hideCancellationControl: boolean;
   message: QAMessage;
   onCanonicalRefresh: () => void;
   onClarify: () => void;
@@ -566,6 +636,7 @@ function MessageCard({
             </div>
           ) : null}
           {(message.state === 'pending' || message.state === 'running') &&
+          !hideCancellationControl &&
           message.run_id &&
           UUID_PATTERN.test(message.run_id) &&
           message.workspace_id === scope.workspaceId &&

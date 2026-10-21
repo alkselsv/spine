@@ -123,6 +123,9 @@ export function AcceptedAnswer({
       return;
     }
     void onInspect(targetCitationId);
+    return () => {
+      if (autoInspection.current === requestKey) autoInspection.current = null;
+    };
   }, [message.message_id, presentation, targetCitationId]);
 
   async function onInspect(citationId: string): Promise<void> {

@@ -6,13 +6,12 @@ import { createScopedApiClient, type SpineApiError } from '../api/client';
 import { ru } from '../i18n/resources';
 import { useAuth } from './auth';
 import { localizeApiError } from './errors';
+import { useBrowserRuntime } from './runtime-context';
 import {
-  environmentOptions,
   parseScopeSearch,
   ScopeContext,
   scopeQueryKey,
   updateScopeSearch,
-  workspaceOptions,
   type EnvironmentId,
   type Scope,
   type WorkspaceId,
@@ -40,9 +39,10 @@ export function AppShell() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const auth = useAuth();
+  const runtime = useBrowserRuntime();
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connected');
   const [connectionError, setConnectionError] = useState<SpineApiError | null>(null);
-  const scope = parseScopeSearch(`?${searchParams.toString()}`);
+  const scope = parseScopeSearch(`?${searchParams.toString()}`, runtime.scope);
 
   function changeScope(next: Partial<Scope>) {
     const nextScope: Scope = { ...scope, ...next };
@@ -99,13 +99,13 @@ export function AppShell() {
             >
               <ScopeSelector
                 ariaLabel={ru.scope.workspaceLabel}
-                options={workspaceOptions}
+                options={runtime.scope.workspaceOptions}
                 value={scope.workspaceId}
                 onValueChange={(value) => changeScope({ workspaceId: value as WorkspaceId })}
               />
               <ScopeSelector
                 ariaLabel={ru.scope.environmentLabel}
-                options={environmentOptions}
+                options={runtime.scope.environmentOptions}
                 value={scope.environmentId}
                 onValueChange={(value) => changeScope({ environmentId: value as EnvironmentId })}
               />

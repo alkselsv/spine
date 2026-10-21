@@ -9,8 +9,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, replace
+import logging
 from typing import Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
+
+
+_LOGGER = logging.getLogger(__name__)
 
 from spine.application.answer_question_context import (
     AnswerQuestionAuthorizedContext,
@@ -417,6 +421,7 @@ class ProductionAnswerQuestionCapability:
         self, command: AnswerQuestionCapabilityCommand
     ) -> AnswerQuestionCapabilityResult:
         request = self._request(command)
+        safe_stage = "configuration"
         try:
             request = replace(
                 request, references=self.context_references.for_command(command)
@@ -461,6 +466,7 @@ class ProductionAnswerQuestionCapability:
                 pin = command.execution_pin
             if request.references is None:
                 return self._failed(command, request)
+            safe_stage = "context"
             context_resolution = await self.context.prepare(
                 AnswerQuestionContextRequest(
                     question=request.question,
@@ -469,6 +475,7 @@ class ProductionAnswerQuestionCapability:
                     trusted_request_context_ref=request.references.trusted_request_context_ref,
                     authorization_context_ref=request.references.authorization_context_ref,
                     idempotency_key=request.idempotency_key,
+                    cancelled=command.cancelled,
                     capture_context=capture_context,
                 )
             )
@@ -481,6 +488,14 @@ class ProductionAnswerQuestionCapability:
                     else AnswerQuestionCapabilityAvailability.AVAILABLE
                 )
                 if availability is AnswerQuestionCapabilityAvailability.UNAVAILABLE:
+                    _LOGGER.warning(
+                        "governed Q&A context unavailable: %s",
+                        (
+                            "unknown"
+                            if context_resolution.failure is None
+                            else context_resolution.failure.value
+                        ),
+                    )
                     return self._result(
                         command, request, output, None, availability=availability
                     )
@@ -531,6 +546,7 @@ class ProductionAnswerQuestionCapability:
             if authorized is None:
                 return self._failed(command, request)
 
+            safe_stage = "candidate_generation"
             persisted_candidate = None
             generate_persisted = getattr(self.candidate_runner, "generate_persisted", None)
             if command.attempt_id is not None and callable(generate_persisted):
@@ -572,6 +588,7 @@ class ProductionAnswerQuestionCapability:
                     request,
                     availability=AnswerQuestionCapabilityAvailability.AVAILABLE,
                 )
+            safe_stage = "candidate_validation"
             facts = await self.validator.validate(
                 question=request.question,
                 authorized_context=authorized,
@@ -596,6 +613,7 @@ class ProductionAnswerQuestionCapability:
                     request,
                     availability=AnswerQuestionCapabilityAvailability.UNAVAILABLE,
                 )
+            safe_stage = "disclosure"
             disclosed = await self.context.disclose(
                 context=authorized,
                 outcome_facts=facts,
@@ -688,9 +706,14 @@ class ProductionAnswerQuestionCapability:
             )
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as error:
             # Provider, broker, validator and storage diagnostics may contain
             # protected material; callers receive only this typed safe result.
+            _LOGGER.warning(
+                "governed Q&A capability unavailable at %s: %s",
+                safe_stage,
+                type(error).__name__,
+            )
             return self._failed(command, request)
 
     async def cancel(

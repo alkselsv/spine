@@ -33,7 +33,6 @@ from spine.application.persistence.ask_admission import (
 from spine.application.persistence.outbox import OutboxIntent
 from spine.application.diagnostics.context import DiagnosticContext
 from spine.application.authorized_ask import (
-    AskCancellationCommand,
     AskExecutionCommand,
     AskRequestContext,
     AuthorizedAskResult,
@@ -440,6 +439,10 @@ class AskAdmissionWorkflowExecutor:
         ],
         run_starter: Callable[[AskAdmissionWorkflowInput], Awaitable[object]] | None = None,
         authorization_generation: int = 1,
+        authorization_generation_resolver: Callable[
+            [AskAdmissionWorkflowInput, AskAdmissionCommandData], Awaitable[int]
+        ]
+        | None = None,
         monotonic_ns: Callable[[], int] | None = None,
         execution_elapsed_port: WorkerExecutionElapsedCapturePort | None = None,
         capture_publisher: WorkerCapturePublisher | None = None,
@@ -451,6 +454,7 @@ class AskAdmissionWorkflowExecutor:
         self._persistence_context_factory = persistence_context_factory
         self._run_starter = run_starter
         self._authorization_generation = authorization_generation
+        self._authorization_generation_resolver = authorization_generation_resolver
         self._monotonic_ns = monotonic_ns
         self._execution_elapsed_port = execution_elapsed_port
         self._capture_publisher = capture_publisher
@@ -468,6 +472,9 @@ class AskAdmissionWorkflowExecutor:
         if self._run_starter is not None:
             await self._run_starter(workflow_input)
         context = self._persistence_context_factory(workflow_input)
+        authorization_generation = await self._resolve_authorization_generation(
+            workflow_input, command
+        )
         started_at = self._monotonic_ns() if self._monotonic_ns is not None else None
         result = await self._service.execute_admitted(
             AskExecutionCommand(
@@ -476,7 +483,7 @@ class AskAdmissionWorkflowExecutor:
                     workspace_id=workflow_input.workspace_id,
                     environment_id=workflow_input.environment_id,
                     trace_id=workflow_input.trace_id,
-                    authorization_generation=self._authorization_generation,
+                    authorization_generation=authorization_generation,
                     correlation_id=workflow_input.correlation_id,
                     causation_id=workflow_input.causation_id,
                 ),
@@ -575,23 +582,32 @@ class AskAdmissionWorkflowExecutor:
             raise AskAdmissionCommandUnavailable(
                 "Admitted Ask command lacks cancellation identity."
             )
+        if self._run_starter is not None:
+            await self._run_starter(workflow_input)
         context = self._persistence_context_factory(workflow_input)
-        result = await self._service.cancel(
-            AskCancellationCommand(
+        authorization_generation = await self._resolve_authorization_generation(
+            workflow_input, command
+        )
+        result = await self._service.execute_admitted(
+            AskExecutionCommand(
                 request_context=AskRequestContext(
                     subject_id=command.subject.id,
                     workspace_id=workflow_input.workspace_id,
                     environment_id=workflow_input.environment_id,
                     trace_id=workflow_input.trace_id,
-                    authorization_generation=self._authorization_generation,
+                    authorization_generation=authorization_generation,
                     correlation_id=workflow_input.correlation_id,
                     causation_id=workflow_input.causation_id,
                 ),
                 persistence_context=context,
+                command_id=workflow_input.command_id,
+                session_id=workflow_input.session_id,
+                message_id=workflow_input.message_id,
                 run_id=workflow_input.run_id,
-                idempotency_key=IdempotencyKey(
-                    f"qa-cancel-{workflow_input.run_id}"
-                ),
+                question=command.question,
+                idempotency_key=IdempotencyKey(command.idempotency_key),
+                logical_execution_key=f"durable-ask:{workflow_input.command_id}",
+                cancelled=True,
             )
         )
         if (
@@ -602,6 +618,22 @@ class AskAdmissionWorkflowExecutor:
         ):
             raise InvalidAskAdmissionIntent("Ask cancellation returned mismatched identity.")
         return result
+
+    async def _resolve_authorization_generation(
+        self,
+        workflow_input: AskAdmissionWorkflowInput,
+        command: AskAdmissionCommandData,
+    ) -> int:
+        generation = self._authorization_generation
+        if self._authorization_generation_resolver is not None:
+            generation = await self._authorization_generation_resolver(
+                workflow_input, command
+            )
+        if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+            raise AskAdmissionCommandUnavailable(
+                "Current authorization generation is unavailable."
+            )
+        return generation
 
 
 class AskAdmissionReconciliationSource(Protocol):

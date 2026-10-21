@@ -30,6 +30,7 @@ from spine.application.projection_request_execution import (
     AdapterProjectionReceiptBuilder,
     PersistenceCanonicalProjectionRequestResolver,
     ProjectionRequestConsumer,
+    ProjectionRequestCompletion,
     ProjectionRequestEnvelope,
     ProjectionResultRecorder,
 )
@@ -84,6 +85,7 @@ def build_postgresql_cognee_projection_request_consumer(
     clock: Callable[[], datetime],
     physical_reader: CogneeStructuredRetrievalSdk | None = None,
     reference_id_source: Callable[[], UUID] = uuid4,
+    completion: ProjectionRequestCompletion | None = None,
 ) -> ProjectionRequestConsumer:
     """Compose PostgreSQL parsed artifacts and an observed Cognee receipt builder."""
 
@@ -107,6 +109,7 @@ def build_postgresql_cognee_projection_request_consumer(
         projection=projection,
         receipt_builder=receipt_builder,
         reference_id_source=reference_id_source,
+        completion=completion,
     )
 
 
@@ -128,6 +131,7 @@ def build_postgresql_cognee_projection_request_binding(
     clock: Callable[[], datetime],
     physical_reader: CogneeStructuredRetrievalSdk | None = None,
     reference_id_source: Callable[[], UUID] = uuid4,
+    completion: ProjectionRequestCompletion | None = None,
 ) -> OutboxConsumerBinding:
     """Bind the concrete PostgreSQL/Cognee composition to the existing route."""
 
@@ -142,6 +146,7 @@ def build_postgresql_cognee_projection_request_binding(
         clock=clock,
         physical_reader=physical_reader,
         reference_id_source=reference_id_source,
+        completion=completion,
     )
     return OutboxConsumerBinding(
         consumer_name=PROJECTION_REQUEST_CONSUMER_NAME,
@@ -270,6 +275,7 @@ def build_production_projection_request_consumer(
     projection: ContextProjection,
     receipt_builder: AdapterProjectionReceiptBuilder,
     reference_id_source: Callable[[], UUID] = uuid4,
+    completion: ProjectionRequestCompletion | None = None,
 ) -> ProjectionRequestConsumer:
     """Compose the canonical resolver, physical adapter and result bridge.
 
@@ -298,6 +304,7 @@ def build_production_projection_request_consumer(
         projection=projection,
         receipt_builder=receipt_builder,
         result_bridge=result_bridge,
+        completion=completion,
     )
 
 

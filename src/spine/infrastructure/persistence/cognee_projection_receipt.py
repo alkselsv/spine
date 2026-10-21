@@ -174,11 +174,19 @@ class CogneeProjectionReceiptBuilder(AdapterProjectionReceiptBuilder):
 
             if schema == "chunk-artifact:v1":
                 segment_uuid = _as_uuid(metadata.get("segment_id"))
+                metadata_data_id = _as_uuid(metadata.get("data_id"))
                 segment_id = f"segment-{segment_uuid.hex}" if segment_uuid else ""
                 segment = canonical_segments.get((source_key, segment_id))
                 if (
                     segment is None
-                    or data_id != segment.segment_id
+                    or (
+                        metadata.get("data_id") is not None
+                        and metadata_data_id != data_id
+                    )
+                    or (
+                        metadata.get("data_id") is None
+                        and data_id != segment.segment_id
+                    )
                     or metadata.get("segment_digest") != segment.segment_digest
                     or metadata.get("locator") != segment.locator.model_dump(mode="json")
                     or metadata.get("locator_contract_version")

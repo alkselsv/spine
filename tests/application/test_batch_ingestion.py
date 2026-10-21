@@ -13,6 +13,7 @@ from spine.application.batch_ingestion import (
     BatchDocumentUploadCommand,
     BatchDocumentUploadItem,
     BatchIngestionStatus,
+    _child_request,
 )
 from spine.application.batch_ingestion_api import (
     OrchestratedBatchDocumentIngestionService,
@@ -217,6 +218,17 @@ def _inputs():
         BatchDocumentInput(BatchDocumentUploadItem(input_identity="file-a", purpose="document.upload.v1", declared_media_type="text/plain"), _stream(b"a")),
         BatchDocumentInput(BatchDocumentUploadItem(input_identity="file-b", purpose="document.upload.v1", declared_media_type="text/plain"), _stream(b"b")),
     )
+
+
+def test_batch_child_upload_identity_is_stable_per_batch_and_distinct_between_batches() -> None:
+    item = _request().items[0]
+
+    first = _child_request(_request(), item, 1)
+    replay = _child_request(_request(), item, 1)
+    later = _child_request(_request(suffix="-later"), item, 1)
+
+    assert first.upload_identity == replay.upload_identity
+    assert first.upload_identity != later.upload_identity
 
 
 @pytest.mark.asyncio

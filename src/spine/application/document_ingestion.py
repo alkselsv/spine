@@ -237,6 +237,19 @@ class CanonicalAcceptanceCommandFactory(Protocol):
     ) -> CanonicalAcceptanceCommand: ...
 
 
+class InitialAccessPolicyEnsurer(Protocol):
+    """Ensure the first current policy before canonical content acceptance."""
+
+    async def ensure(
+        self,
+        *,
+        request: DocumentUploadCommand,
+        source: SourceObject,
+        context: TrustedPersistenceContext,
+        activated_at: datetime,
+    ) -> UUID: ...
+
+
 class DocumentParser(Protocol):
     def __call__(
         self, revision: SourceRevision, content: bytes, *, media_type: str
@@ -307,6 +320,7 @@ class DocumentIngestionOrchestrator:
     validator: ContentValidator
     parsed_artifacts: ParsedArtifactRepository
     context_factory: Callable[[PersistenceOperation, UUID], TrustedPersistenceContext]
+    access_policy_ensurer: InitialAccessPolicyEnsurer
     canonical_command_factory: CanonicalAcceptanceCommandFactory
     outbox_events: OutboxEventRegistry
     parser: DocumentParser
@@ -428,7 +442,22 @@ class DocumentIngestionOrchestrator:
                 replay=replay,
             )
 
-        await self._accept_canonical(request, source, revision, provenance, admission)
+        policy_context = self.context_factory(
+            PersistenceOperation("access_policy_activation"),
+            _id(request, "access-policy-trace"),
+        )
+        policy_id = await self.access_policy_ensurer.ensure(
+            request=request,
+            source=source,
+            context=policy_context,
+            activated_at=self._now(),
+        )
+        governed_request = request.model_copy(
+            update={"access_policy_version_id": policy_id}
+        )
+        await self._accept_canonical(
+            governed_request, source, revision, provenance, admission
+        )
         await self._advance_to_processing(request, run, item)
         return await self._process(
             request=request,
@@ -1214,6 +1243,7 @@ def _uow_trace_id(uow: object) -> UUID:
 
 __all__ = [
     "CanonicalAcceptanceCommandFactory",
+    "InitialAccessPolicyEnsurer",
     "DocumentIngestionOrchestrator",
     "DocumentIngestionResult",
     "DocumentIngestionStatus",

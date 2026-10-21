@@ -439,12 +439,17 @@ def _batch_status(items: Sequence[BatchItemOutcome], run_state: IngestionRunStat
 
 def _child_request(parent: BatchDocumentUploadCommand, item: BatchDocumentUploadItem, ordinal: int) -> DocumentUploadCommand:
     key = f"{parent.idempotency_key}:{ordinal}:{item.input_identity}"
+    # Multipart field names identify rows only inside one batch.  Binding them
+    # directly as the durable upload identity makes every later batch's
+    # ``file-1`` collide with the first source.  The batch idempotency key is
+    # stable for retries and distinct for a genuinely new upload.
+    upload_identity = f"upload-{_sha256(key)[:32]}"
     return DocumentUploadCommand(
         workspace_id=parent.workspace_id,
         environment_id=parent.environment_id,
         command_identity=_child_identifier(parent.command_identity, f"item-{ordinal}"),
         idempotency_key=key if len(key) <= 255 else f"{key[:220]}:{_sha256(key)[:32]}",
-        upload_identity=item.input_identity,
+        upload_identity=upload_identity,
         purpose=item.purpose,
         declared_media_type=item.declared_media_type,
         declared_filename=item.declared_filename,

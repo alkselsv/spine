@@ -25,6 +25,7 @@ from spine.domain.ingestion import (
     ProcessingCoverage,
     ProcessingReceipt,
 )
+from spine.domain.projections import ProjectionCandidateState
 from spine.domain.sources import CurrentSourceHead, RevisionKind
 from spine.ingestion.parsers import parse_document
 from tests.domain.artifacts.test_parsed_documents import revision
@@ -59,19 +60,29 @@ class _Uow:
         runs=None,
         current_revision_id=REVISION,
         current_revision_kind=RevisionKind.CONTENT,
+        additional_boundary_member=None,
     ) -> None:
         command = _command()
         context = _context(command)
         source = revision(b"hello")
-        self.ingestion = _Ingestion(source, current_revision_id)
+        additional_source = None
+        if additional_boundary_member is not None:
+            additional_source = source.model_copy(
+                update={
+                    "source_object_id": additional_boundary_member.source_object_id,
+                    "revision_id": additional_boundary_member.source_revision_id,
+                    "revision_digest": "f" * 64,
+                }
+            )
+        self.ingestion = _Ingestion(source, additional_source)
         self.sources = SimpleNamespace(resolve_revision=self._resolve_revision)
         self.canonical = SimpleNamespace(resolve_current=self._resolve_current)
         self.boundaries = SimpleNamespace(
             resolve=lambda boundary_id: self._resolve_boundary(
-                context, boundary_id
+                self._context, boundary_id
             ),
             resolve_members=lambda boundary_id: self._resolve_members(
-                context, boundary_id
+                self._context, boundary_id
             ),
         )
         self.projections = SimpleNamespace(
@@ -82,9 +93,20 @@ class _Uow:
             list_partitions=lambda run_id: self._resolve_partitions(context, run_id),
         )
         self._source = source
+        self._additional_source = additional_source
+        self._additional_boundary_member = additional_boundary_member
         self._current_revision_id = current_revision_id
         self._current_revision_kind = current_revision_kind
         self._context = context
+        if additional_boundary_member is not None:
+            self._context = context.model_copy(
+                update={
+                    "boundary_members": (
+                        *context.boundary_members,
+                        additional_boundary_member,
+                    )
+                }
+            )
         self._runs = runs
 
     async def __aenter__(self):
@@ -94,12 +116,35 @@ class _Uow:
         return None
 
     async def _resolve_revision(self, revision_id):
-        return self._source if revision_id == REVISION else None
+        if revision_id == REVISION:
+            return self._source
+        if (
+            self._additional_source is not None
+            and revision_id == self._additional_source.revision_id
+        ):
+            return self._additional_source
+        return None
 
     async def _list_runs_for_source_revision(self, source_object_id, source_revision_id):
         return self._runs if self._runs is not None else (self._context.run,)
 
     async def _resolve_current(self, source_object_id):
+        if (
+            self._additional_source is not None
+            and source_object_id == self._additional_source.source_object_id
+        ):
+            member = self._additional_boundary_member
+            return CurrentSourceHead(
+                source_object_id=member.source_object_id,
+                workspace_id=WORKSPACE,
+                environment_id=ENVIRONMENT,
+                current_revision_id=member.source_revision_id,
+                current_revision_kind=RevisionKind.CONTENT,
+                acceptance_id=member.acceptance_id,
+                accepted_generation=member.accepted_generation,
+                cas_version=1,
+                changed_at=NOW,
+            )
         if source_object_id != SOURCE:
             return None
         return CurrentSourceHead(
@@ -132,9 +177,9 @@ class _Uow:
 
 
 class _Ingestion:
-    def __init__(self, source, current_revision_id) -> None:
+    def __init__(self, source, additional_source=None) -> None:
         self._source = source
-        self._current_revision_id = current_revision_id
+        self._additional_source = additional_source
 
     async def resolve_item(self, item_id):
         return IngestionRunSource(
@@ -179,6 +224,30 @@ class _Ingestion:
         ) if item_id == ITEM else None
 
     async def resolve_processing_receipt(self, item_id):
+        if self._additional_source is not None and item_id == UUID(int=111):
+            return ProcessingReceipt(
+                processing_receipt_id=UUID(int=114),
+                workspace_id=WORKSPACE,
+                environment_id=ENVIRONMENT,
+                ingestion_run_source_id=UUID(int=111),
+                binding_id=UUID(int=113),
+                source_object_id=self._additional_source.source_object_id,
+                source_revision_id=self._additional_source.revision_id,
+                processor_kind="document-ingestion",
+                parser_name="text",
+                parser_version="parser:v1",
+                parser_config_reference="parser-default:v1",
+                locator_contract_version="locator:v1",
+                original_sha256=self._additional_source.original_sha256,
+                output_kind="parsed-document",
+                output_reference=UUID(int=115),
+                output_digest="1" * 64,
+                coverage=ProcessingCoverage.COMPLETE,
+                command_identity="process-2",
+                command_digest="2" * 64,
+                idempotency_receipt_id=UUID(int=119),
+                completed_at=NOW,
+            )
         original_sha256 = self._source.original_sha256
         return ProcessingReceipt(
             processing_receipt_id=PROCESSING_RECEIPT,
@@ -203,6 +272,35 @@ class _Ingestion:
             idempotency_receipt_id=UUID(int=19),
             completed_at=NOW,
         ) if item_id == ITEM else None
+
+    async def list_bindings_for_source_revision(
+        self, source_object_id, source_revision_id
+    ):
+        if (source_object_id, source_revision_id) == (SOURCE, REVISION):
+            binding = await self.resolve_binding(ITEM)
+            return (binding,)
+        if (
+            self._additional_source is not None
+            and (source_object_id, source_revision_id)
+            == (
+                self._additional_source.source_object_id,
+                self._additional_source.revision_id,
+            )
+        ):
+            return (
+                IngestionRunSourceBinding(
+                    binding_id=UUID(int=113),
+                    ingestion_run_source_id=UUID(int=111),
+                    source_object_id=source_object_id,
+                    source_revision_id=source_revision_id,
+                    workspace_id=WORKSPACE,
+                    environment_id=ENVIRONMENT,
+                    binding_command_identity="bind-2",
+                    binding_command_digest="3" * 64,
+                    bound_at=NOW,
+                ),
+            )
+        return ()
 
 
 class _LocatorUow:
@@ -272,9 +370,49 @@ async def test_production_resolver_returns_detached_canonical_command_context() 
     assert resolved.projection_run_id == RUN
     assert resolved.projection_candidate.candidate_id == CANDIDATE
     assert resolved.projection_candidate.partition_id == PARTITION
-    assert resolved.source_revision.source_revision_id == REVISION
+    assert len(resolved.source_revisions) == 1
+    assert resolved.source_revisions[0].source_revision_id == REVISION
     assert resolved.command_identity == "partition-project-1"
     assert resolved.physical_namespace.state.value == "shadow"
+
+
+@pytest.mark.asyncio
+async def test_production_resolver_resumes_sealed_candidate_after_partial_publication() -> None:
+    context = _context(_command())
+    sealed_run = context.run.model_copy(
+        update={"candidate_state": ProjectionCandidateState.SEALED}
+    )
+
+    resolved = await _resolver(_Uow(runs=(sealed_run,))).resolve(_request())
+
+    assert resolved.projection_run_id == RUN
+    assert resolved.projection_candidate.candidate_id == CANDIDATE
+
+
+@pytest.mark.asyncio
+async def test_production_resolver_projects_every_current_source_in_workspace_boundary() -> None:
+    context = _context(_command())
+    additional = context.boundary_members[0].model_copy(
+        update={
+            "source_object_id": UUID(int=101),
+            "source_revision_id": UUID(int=102),
+            "acceptance_id": UUID(int=103),
+            "accepted_generation": 2,
+        }
+    )
+
+    resolved = await _resolver(
+        _Uow(additional_boundary_member=additional)
+    ).resolve(_request())
+
+    assert {item.source_object_id for item in resolved.source_revisions} == {
+        SOURCE,
+        additional.source_object_id,
+    }
+    assert {item.source_revision_id for item in resolved.source_revisions} == {
+        REVISION,
+        additional.source_revision_id,
+    }
 
 
 @pytest.mark.asyncio

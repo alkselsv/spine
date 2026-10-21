@@ -12,7 +12,7 @@ import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import Field
 
@@ -79,6 +79,12 @@ class CogneeSdk(Protocol):
     async def delete_data(self, *, dataset_id: UUID, data_id: UUID, mode: str) -> object: ...
 
     async def list_datasets(self) -> Sequence[object]: ...
+
+
+class ParsedArtifactResolver(Protocol):
+    """Resolve the durable parsed artifact needed by one projection effect."""
+
+    async def __call__(self, effect: ProjectionEffect) -> ParsedDocument | None: ...
 
 
 class CogneePublicSdk:
@@ -211,6 +217,7 @@ class CogneeChunkProjectionStore:
         *,
         sdk: CogneeSdk | None = None,
         artifacts: Mapping[UUID, ParsedDocument] | None = None,
+        artifact_resolver: ParsedArtifactResolver | None = None,
         router: ProjectionNamespaceRouter | None = None,
     ) -> None:
         self._sdk = sdk or CogneePublicSdk()
@@ -219,11 +226,13 @@ class CogneeChunkProjectionStore:
                 f"Cognee {SUPPORTED_COGNEE_VERSION} is required, got {self._sdk.version or 'unknown'}"
             )
         self._artifacts = artifacts or {}
+        self._artifact_resolver = artifact_resolver
         self._router = router or ProjectionNamespaceRouter()
         self._lock = asyncio.Lock()
         self._applied_effects: dict[str, ProjectionEffect] = {}
         self._commands: dict[
-            tuple[UUID, UUID, str, str], tuple[str, ProjectionOperation, str, bool]
+            tuple[UUID, UUID, str, str, UUID],
+            tuple[str, ProjectionOperation, str, bool],
         ] = {}
         self._records: dict[tuple[UUID, UUID, str, UUID], _SourceRecord] = {}
         self._pending_records: dict[tuple[UUID, UUID, str, UUID], _SourceRecord] = {}
@@ -395,7 +404,7 @@ class CogneeChunkProjectionStore:
             if record.mappings and not record.tombstoned and effect.operation is not ProjectionOperation.REBUILD:
                 return
 
-        document = self._artifact(effect)
+        document = await self._artifact(effect)
         if not document.segments:
             raise ValueError("parsed artifact has no indexable segments")
 
@@ -424,11 +433,20 @@ class CogneeChunkProjectionStore:
         dataset_name = self.dataset_name(effect.physical_namespace)
         dataset_id = record.dataset_id if record is not None else self._dataset_ids.get(dataset_name)
         node_set = [effect.physical_namespace.namespace_digest]
+        data_ids = {
+            segment.segment_id: self._data_id(effect, segment.segment_id)
+            for segment in document.segments
+        }
         items = [
             self._sdk.make_data_item(
                 data=segment.text,
-                data_id=segment.segment_id,
-                external_metadata=self._metadata(effect, document, segment),
+                data_id=data_ids[segment.segment_id],
+                external_metadata=self._metadata(
+                    effect,
+                    document,
+                    segment,
+                    data_id=data_ids[segment.segment_id],
+                ),
             )
             for segment in document.segments
         ]
@@ -443,7 +461,12 @@ class CogneeChunkProjectionStore:
             dataset_id or self._dataset_id_from_result(add_result),
         )
         mappings = tuple(
-            self._mapping(effect, document, segment, data_id=segment.segment_id)
+            self._mapping(
+                effect,
+                document,
+                segment,
+                data_id=data_ids[segment.segment_id],
+            )
             for segment in document.segments
         )
         completed_record = _SourceRecord(
@@ -485,7 +508,12 @@ class CogneeChunkProjectionStore:
             item = self._sdk.make_data_item(
                 data=segment.text,
                 data_id=old_mapping.data_id,
-                external_metadata=self._metadata(effect, document, segment),
+                external_metadata=self._metadata(
+                    effect,
+                    document,
+                    segment,
+                    data_id=old_mapping.data_id,
+                ),
             )
             await self._sdk.update(
                 data_id=old_mapping.data_id,
@@ -499,11 +527,20 @@ class CogneeChunkProjectionStore:
             )
 
         if new_segments:
+            new_data_ids = {
+                segment.segment_id: self._data_id(effect, segment.segment_id)
+                for segment in new_segments
+            }
             items = [
                 self._sdk.make_data_item(
                     data=segment.text,
-                    data_id=segment.segment_id,
-                    external_metadata=self._metadata(effect, document, segment),
+                    data_id=new_data_ids[segment.segment_id],
+                    external_metadata=self._metadata(
+                        effect,
+                        document,
+                        segment,
+                        data_id=new_data_ids[segment.segment_id],
+                    ),
                 )
                 for segment in new_segments
             ]
@@ -514,7 +551,12 @@ class CogneeChunkProjectionStore:
                 node_set=node_set,
             )
             new_mappings.extend(
-                self._mapping(effect, document, segment, data_id=segment.segment_id)
+                self._mapping(
+                    effect,
+                    document,
+                    segment,
+                    data_id=new_data_ids[segment.segment_id],
+                )
                 for segment in new_segments
             )
 
@@ -569,8 +611,10 @@ class CogneeChunkProjectionStore:
                 mode="soft",
             )
 
-    def _artifact(self, effect: ProjectionEffect) -> ParsedDocument:
+    async def _artifact(self, effect: ProjectionEffect) -> ParsedDocument:
         document = self._artifacts.get(effect.source_revision_id)
+        if document is None and self._artifact_resolver is not None:
+            document = await self._artifact_resolver(effect)
         if document is None:
             raise ValueError("parsed artifact is unavailable")
         if (
@@ -670,12 +714,15 @@ class CogneeChunkProjectionStore:
         )
 
     @staticmethod
-    def _command_key(effect: ProjectionEffect) -> tuple[UUID, UUID, str, str]:
+    def _command_key(
+        effect: ProjectionEffect,
+    ) -> tuple[UUID, UUID, str, str, UUID]:
         return (
             effect.workspace_id,
             effect.environment_id,
             effect.physical_namespace.namespace_digest,
             effect.command_identity,
+            effect.source_object_id,
         )
 
     @staticmethod
@@ -709,10 +756,32 @@ class CogneeChunkProjectionStore:
         return f"spine_{namespace.projection_kind}_{namespace.namespace_digest}"
 
     @staticmethod
+    def _data_id(effect: ProjectionEffect, segment_id: UUID) -> UUID:
+        return CogneeChunkProjectionStore.data_id_for(
+            namespace_digest=effect.physical_namespace.namespace_digest,
+            source_object_id=effect.source_object_id,
+            segment_id=segment_id,
+        )
+
+    @staticmethod
+    def data_id_for(
+        *, namespace_digest: str, source_object_id: UUID, segment_id: UUID
+    ) -> UUID:
+        """Derive the provider identity validated at the publication boundary."""
+
+        namespace = uuid5(
+            NAMESPACE_URL,
+            f"spine:{namespace_digest}",
+        )
+        return uuid5(namespace, f"{source_object_id}:chunk:{segment_id}")
+
+    @staticmethod
     def _metadata(
         effect: ProjectionEffect,
         document: ParsedDocument,
         segment: Any,
+        *,
+        data_id: UUID,
     ) -> dict[str, object]:
         metadata: dict[str, object] = {
             "spine_schema": "chunk-artifact:v1",
@@ -735,6 +804,7 @@ class CogneeChunkProjectionStore:
             "parser_version": document.parser_version,
             "locator_contract_version": document.locator_contract_version,
             "segment_id": str(segment.segment_id),
+            "data_id": str(data_id),
             "segment_digest": segment.segment_digest,
             "evidence_id": str(segment.segment_id),
             "evidence_digest": segment.segment_digest,

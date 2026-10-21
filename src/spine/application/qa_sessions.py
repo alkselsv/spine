@@ -450,10 +450,10 @@ class PersistedQASessionService:
             workspace_id=workspace_id, environment_id=environment_id,
             session_id=session_id, limit=limit, after=after,
         )
-        return QAMessagePage(
-            items=tuple(await self._read(message, requester) for message in page.items),
-            has_more=page.has_more,
-        )
+        items: list[QAMessageRead] = []
+        for message in page.items:
+            items.append(await self._read(message, requester))
+        return QAMessagePage(items=tuple(items), has_more=page.has_more)
 
     async def get_message(
         self,

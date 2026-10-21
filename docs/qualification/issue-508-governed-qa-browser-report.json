@@ -1,0 +1,126 @@
+{
+  "schema_version": "issue-508-governed-qa-browser:v1",
+  "ticket": 508,
+  "status": "pass",
+  "reason_code": null,
+  "qualification_run_id": "issue508-local-034",
+  "deployment": {
+    "api_release_identity": "sha256:3050f02154e438f10561b51d1df8adc1197622738814429dda708fb1c271096f",
+    "commit_sha": "0df4d03b633ccf36ade81629f55bc3b5077c35c4",
+    "deployment_fingerprint": "017cd98e493821de5de7c871670a36dc3ba4532481bba35902556a5da8119f51",
+    "provider_profile_identity": "provider-local-16f02efe2e3c6bc",
+    "web_release_identity": "sha256:6b709d0795fd4f483a116dedcf3901bdfb85d470e6d1d45e43c8126a02b071c6"
+  },
+  "scope": {
+    "scope_references": [
+      {
+        "workspace_id": "54400000-0000-4000-8000-00000000000a",
+        "environment_id": "54400000-0000-4000-8000-00000000000e"
+      },
+      {
+        "workspace_id": "54400000-0000-4000-8000-00000000000b",
+        "environment_id": "54400000-0000-4000-8000-00000000000f"
+      }
+    ]
+  },
+  "correlated_references": {
+    "admission_command_ids": [
+      "d55ef1ed-408a-4105-9a71-37b04ca18d96",
+      "ddea0bb2-bed7-4865-bfe2-7a6af9d72ecb",
+      "dcac2011-a741-425e-b519-a7fee3a59f2b",
+      "b17c4729-7bf2-4c02-9160-bf248ad321b3"
+    ],
+    "ask_run_ids": [
+      "6cf1733c-3538-4396-95f9-f079aaa8fb0a",
+      "737cf17f-2024-47fb-acd1-2db3cd0d3545",
+      "1e77ede6-3d97-4d85-a634-45773766179c",
+      "960c9111-1631-4fdf-a7f3-7d972fb8e9ee"
+    ],
+    "feedback_ids": [
+      "939100b5-a592-5f62-b2b7-47c2c66220cf"
+    ],
+    "ingestion_run_id": "216bc92b-7c54-57d7-b438-a5c4fe8c8e2e",
+    "session_ids": [
+      "b63338fc-283b-4623-9df2-aae647839481",
+      "b2c5fa43-d386-4555-8b7d-341f1220be7c"
+    ],
+    "source_object_id": "6dd7bf61-7e80-5782-8ddb-53d42e4b87a0",
+    "source_revision_id": "4938227a-7095-56f0-a64f-dbe1a495882b",
+    "terminal_run_ids": [
+      "6cf1733c-3538-4396-95f9-f079aaa8fb0a",
+      "737cf17f-2024-47fb-acd1-2db3cd0d3545",
+      "960c9111-1631-4fdf-a7f3-7d972fb8e9ee"
+    ],
+    "trace_ids": [
+      "eb0ef9ab-33fc-4cf9-b910-5729059a99ae",
+      "14ba533e-957b-4fda-9742-68230e7088ad",
+      "1a61db51-64a7-4a27-b7d9-240b7aed32f0",
+      "4e745e81-d7f1-4635-8fca-f474592f2554",
+      "c00e7474-c135-4eed-a5a1-3ec2e34511d1",
+      "b7b3972a-0fc3-44d6-9d58-ed1d063db211",
+      "966ba0c2-b3bd-43fa-be65-2bddacad6baa",
+      "14558ae9-72dc-4316-98c5-f5e82873e3f0",
+      "e28e3019-2379-48cf-9d92-e76875740741",
+      "f1b135d5-a029-414e-ac13-6bdec43d228a",
+      "472b5374-c095-47c6-a37f-b455aa49729f",
+      "bb7b37fa-af0c-4a5a-8017-0c8a7fa2db74",
+      "fc13f63c-4500-4d74-92aa-80dbb3ab2c02",
+      "2f276eae-9391-47dc-b718-95439a82035d",
+      "963e198e-c9c4-41ff-95c8-5f0e4dc586ac",
+      "4d51c4a6-930a-4de0-90ae-434f7eb8f6e5",
+      "d17f245f-1c77-4586-95d3-49cd4b373133",
+      "f2a07306-f46b-46a1-9b2a-8fba6c4d1f4b",
+      "5e031198-330a-4775-825b-e7022523af2a",
+      "1d57d04e-c8a3-48be-83e9-eddeada608eb",
+      "e6833978-7218-4aec-a82f-673364122f39",
+      "148c9268-8883-4369-a5c7-3551bd02cea7",
+      "3be197b4-e724-4c83-8aff-d79342d81c0c"
+    ]
+  },
+  "scenarios": [
+    "abstention",
+    "answer_citation_feedback_run",
+    "cancellation",
+    "duplicate_retry",
+    "evidence_disclosure_rejection",
+    "safe_ui_states",
+    "session_restoration",
+    "sse_reconnect",
+    "two_workspace_isolation",
+    "upload_active_projection"
+  ],
+  "ui_states": [
+    "degraded",
+    "empty",
+    "loading",
+    "partial",
+    "permission-denied",
+    "stale",
+    "terminal-failure"
+  ],
+  "required_scenarios": [
+    "upload_active_projection",
+    "answer_citation_feedback_run",
+    "duplicate_retry",
+    "sse_reconnect",
+    "session_restoration",
+    "abstention",
+    "cancellation",
+    "two_workspace_isolation",
+    "evidence_disclosure_rejection",
+    "safe_ui_states"
+  ],
+  "citation_locator_validation": "pass",
+  "execution": {
+    "api_interception": false,
+    "browser": "chromium",
+    "cli_user_actions": false,
+    "controlled_fixture": false
+  },
+  "privacy": {
+    "content_fields_recorded": false,
+    "screenshots": false,
+    "trace": false,
+    "video": false
+  }
+}
