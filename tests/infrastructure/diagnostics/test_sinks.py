@@ -54,6 +54,7 @@ async def test_logging_sink_emits_only_the_validated_structured_snapshot(
         await sink.emit(event)
 
         assert len(caplog.records) == 1
+        assert logger.disabled is True
         record = caplog.records[0]
         assert record.levelno == logging.ERROR
         assert record.exc_info is None

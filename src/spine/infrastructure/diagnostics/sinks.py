@@ -79,17 +79,21 @@ class JsonLoggingDiagnosticSink:
             "payload": snapshot.payload_json(),
         }
         # Third-party SDK configuration may disable loggers created earlier.
-        # This sink emits only the validated, bounded diagnostic snapshot.
-        self._logger.disabled = False
-        self._logger.log(
-            _LOG_LEVELS[snapshot.severity],
-            json.dumps(
-                record,
-                allow_nan=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-        )
+        # Emit this validated, bounded snapshot without changing later policy.
+        was_disabled = self._logger.disabled
+        try:
+            self._logger.disabled = False
+            self._logger.log(
+                _LOG_LEVELS[snapshot.severity],
+                json.dumps(
+                    record,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            )
+        finally:
+            self._logger.disabled = was_disabled
 
 
 __all__ = ["JsonLoggingDiagnosticSink", "RecordingDiagnosticSink"]

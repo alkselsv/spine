@@ -538,22 +538,30 @@ async def test_postgresql_interrupted_dispatch_reclaims_after_lease_expiry(
     claimed_at = datetime(2026, 10, 22, 9, tzinfo=timezone.utc)
     consumer_started = asyncio.Event()
     consumer_cancelled = asyncio.Event()
+    logical_effects: set[UUID] = set()
+    consumer_calls = 0
 
     class BlockingConsumer:
         async def consume(
             self,
-            _intent: OutboxIntent,
+            outbox_intent: OutboxIntent,
             diagnostic_context: DiagnosticContext,
         ) -> OutboxConsumerSuccess:
-            consumer_started.set()
-            try:
-                await asyncio.Future()
-            except asyncio.CancelledError:
-                consumer_cancelled.set()
-                raise
+            nonlocal consumer_calls
+            assert outbox_intent.event_id == event_id
+            logical_effects.add(event_id)
+            consumer_calls += 1
+            if consumer_calls == 1:
+                consumer_started.set()
+                try:
+                    await asyncio.Future()
+                except asyncio.CancelledError:
+                    consumer_cancelled.set()
+                    raise
             return OutboxConsumerSuccess(diagnostic_context=diagnostic_context)
 
     diagnostic_events = DiagnosticEventRegistry.with_default_families()
+    clock_now = [claimed_at]
     worker = create_outbox_worker(
         repository=adapter.delivery_repository,
         consumer_bindings=(
@@ -566,7 +574,7 @@ async def test_postgresql_interrupted_dispatch_reclaims_after_lease_expiry(
         diagnostic_events=diagnostic_events,
         diagnostic_sink=RecordingDiagnosticSink(diagnostic_events),
         service_principal_id=synthetic_uuid(6903),
-        clock=lambda: claimed_at,
+        clock=lambda: clock_now[0],
         audit_event_id_source=lambda: synthetic_uuid(6904),
         retry_delay=lambda attempt: timedelta(seconds=attempt),
         maximum_retry_delay=timedelta(minutes=5),
@@ -603,16 +611,18 @@ async def test_postgresql_interrupted_dispatch_reclaims_after_lease_expiry(
     assert interrupted.status.value == "in_flight"
     assert interrupted.attempt_count == 1
 
-    reclaimed = await adapter.delivery_repository.claim_due(
-        limit=1,
-        worker_identity="restarted_dispatcher",
-        claimed_at=claimed_at + timedelta(seconds=6),
-        lease_duration=timedelta(seconds=5),
+    clock_now[0] = claimed_at + timedelta(seconds=6)
+    restarted_report = await worker.dispatch_batch(
+        limit=1, worker_identity="restarted_dispatcher"
     )
+    delivered = await adapter.delivery_repository.resolve(event_id)
 
-    assert len(reclaimed) == 1
-    assert reclaimed[0].intent.event_id == event_id
-    assert reclaimed[0].attempt_number == 2
+    assert restarted_report.delivered == 1
+    assert delivered is not None
+    assert delivered.status.value == "delivered"
+    assert delivered.attempt_count == 2
+    assert consumer_calls == 2
+    assert logical_effects == {event_id}
 
 
 async def test_postgresql_unknown_route_is_quarantined(
