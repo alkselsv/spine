@@ -47,26 +47,31 @@ async def test_logging_sink_emits_only_the_validated_structured_snapshot(
         ),
     )
     caplog.set_level(logging.DEBUG, logger=logger.name)
+    previous_disabled = logger.disabled
+    logger.disabled = True
 
-    await sink.emit(event)
+    try:
+        await sink.emit(event)
 
-    assert len(caplog.records) == 1
-    record = caplog.records[0]
-    assert record.levelno == logging.ERROR
-    assert record.exc_info is None
-    assert record.args == ()
-    assert json.loads(record.message) == {
-        "causation_id": str(synthetic_uuid(3)),
-        "correlation_id": str(synthetic_uuid(2)),
-        "environment_id": str(synthetic_uuid(5)),
-        "event_type": "failure.observed",
-        "occurred_at": "2026-10-10T12:30:00+00:00",
-        "payload": {"failure_code": "authorization.unavailable"},
-        "schema_version": 1,
-        "severity": "error",
-        "trace_id": str(synthetic_uuid(1)),
-        "workspace_id": str(synthetic_uuid(4)),
-    }
+        assert len(caplog.records) == 1
+        record = caplog.records[0]
+        assert record.levelno == logging.ERROR
+        assert record.exc_info is None
+        assert record.args == ()
+        assert json.loads(record.message) == {
+            "causation_id": str(synthetic_uuid(3)),
+            "correlation_id": str(synthetic_uuid(2)),
+            "environment_id": str(synthetic_uuid(5)),
+            "event_type": "failure.observed",
+            "occurred_at": "2026-10-10T12:30:00+00:00",
+            "payload": {"failure_code": "authorization.unavailable"},
+            "schema_version": 1,
+            "severity": "error",
+            "trace_id": str(synthetic_uuid(1)),
+            "workspace_id": str(synthetic_uuid(4)),
+        }
+    finally:
+        logger.disabled = previous_disabled
 
 
 @pytest.mark.asyncio
