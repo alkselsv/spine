@@ -130,6 +130,7 @@ class TrustedProductionRuntimePreflight:
         self.profile = profile
         self._preflight = preflight
         self.readiness_report: RuntimeReadinessReport | None = None
+        self._inspection: ProductionRuntimeInspection | None = None
 
     @property
     def production_evidence(self) -> ProductionQAACompositionEvidence:
@@ -143,6 +144,7 @@ class TrustedProductionRuntimePreflight:
         inspection = await self._preflight.inspect()
         if type(inspection) is not ProductionRuntimeInspection:
             raise TypeError("trusted runtime inspector must return an observed runtime profile")
+        self._inspection = inspection
         profile_matches = inspection.profile == self.profile
         preflight = inspection.preflight
         if not profile_matches:
@@ -169,6 +171,19 @@ class TrustedProductionRuntimePreflight:
             composition_verified=profile_matches,
         )
         return preflight
+
+    async def inspect_runtime(self) -> ProductionRuntimeInspection:
+        """Return an observed profile only after every trusted runtime check is ready."""
+        preflight = await self.inspect()
+        if self._inspection is None or self._inspection.profile != self.profile:
+            raise ValueError("observed runtime profile does not match the trusted composition")
+        states = {check.prerequisite: check.state for check in preflight.prerequisites}
+        if len(states) != len(RuntimePrerequisite) or any(
+            states.get(prerequisite) is not PrerequisiteState.READY
+            for prerequisite in RuntimePrerequisite
+        ):
+            raise ValueError("trusted production runtime is not ready")
+        return self._inspection
 
     async def report(
         self, *, evidence_references: tuple[str, ...] = ()

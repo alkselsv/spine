@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from uuid import UUID
 
 import pytest
@@ -7,15 +8,22 @@ from pydantic import ValidationError
 
 from spine.application.production_runtime_readiness import (
     ProductionRuntimeProfile,
+    ProductionRuntimeInspection,
     RuntimeReadinessReport,
     RuntimeReadinessStatus,
+    TrustedProductionRuntimePreflight,
     readiness_report,
+)
+from spine.application.production_qa_composition import (
+    _issue_production_qa_composition_evidence,
 )
 from spine.evals.real_benchmark_qualification import (
     PrerequisiteState,
     RealBenchmarkPreflight,
     RuntimePrerequisite,
     RuntimePrerequisiteCheck,
+    TrustedRealBenchmarkPreflight,
+    _issue_trusted_real_benchmark_preflight,
 )
 
 
@@ -104,6 +112,40 @@ def test_readiness_report_blocks_profile_pin_mismatch() -> None:
     assert "mismatched:runtime_profile" in report.reason_codes
 
 
+def test_trusted_runtime_inspection_returns_profile_only_when_all_checks_are_ready() -> None:
+    profile = _profile()
+    inspection = ProductionRuntimeInspection(
+        profile=profile,
+        preflight=_preflight(),
+    )
+    runtime = _trusted_runtime(profile=profile, inspection=inspection)
+
+    observed = asyncio.run(runtime.inspect_runtime())
+
+    assert observed == inspection
+    assert runtime.readiness_report.qualification is RuntimeReadinessStatus.READY
+
+
+@pytest.mark.parametrize("mismatch", ("profile", "readiness"))
+def test_trusted_runtime_inspection_rejects_mismatch_or_incomplete_readiness(
+    mismatch: str,
+) -> None:
+    profile = _profile()
+    observed_profile = (
+        profile.model_copy(update={"commit_sha": "c" * 40})
+        if mismatch == "profile"
+        else profile
+    )
+    inspection = ProductionRuntimeInspection(
+        profile=observed_profile,
+        preflight=_preflight(ready=mismatch != "readiness"),
+    )
+    runtime = _trusted_runtime(profile=profile, inspection=inspection)
+
+    with pytest.raises(ValueError):
+        asyncio.run(runtime.inspect_runtime())
+
+
 def _profile(
     *, postgresql_major: int = 17, embedding_dimensions: int = 1536
 ) -> ProductionRuntimeProfile:
@@ -124,4 +166,41 @@ def _profile(
         api_release_identity="api:2026.10.20",
         commit_sha="b" * 40,
         deployment_fingerprint="a" * 64,
+    )
+
+
+def _preflight(*, ready: bool = True) -> RealBenchmarkPreflight:
+    return RealBenchmarkPreflight(
+        workspace_id=UUID(int=1),
+        environment_id=UUID(int=2),
+        prerequisites=tuple(
+            RuntimePrerequisiteCheck(
+                prerequisite=prerequisite,
+                state=(PrerequisiteState.READY if ready else PrerequisiteState.UNAVAILABLE),
+            )
+            for prerequisite in RuntimePrerequisite
+        ),
+    )
+
+
+def _trusted_runtime(
+    *, profile: ProductionRuntimeProfile, inspection: ProductionRuntimeInspection
+) -> TrustedProductionRuntimePreflight:
+    evidence = _issue_production_qa_composition_evidence(object(), object())  # type: ignore[arg-type]
+
+    class Inspector:
+        is_fake = False
+
+        async def inspect(self) -> ProductionRuntimeInspection:
+            return inspection
+
+    inspector = Inspector()
+    preflight = _issue_trusted_real_benchmark_preflight(
+        inspector=inspector,
+        production_evidence=evidence,
+    )
+    return TrustedProductionRuntimePreflight(
+        profile=profile,
+        preflight=preflight,
+        inspector=inspector,
     )

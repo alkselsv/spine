@@ -13,10 +13,11 @@ import json
 import math
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, PrivateAttr, model_validator
 
 from spine.domain.common import DefinitionModel
 from spine.evals.real_baseline import R1BaselineReport
+from spine.evals.real_benchmark_runner import RuntimeVersionPins
 from spine.evals.real_qa_r1 import REAL_R1_DATASET_CASE_COUNT
 
 
@@ -25,6 +26,7 @@ MetricStatus = Literal[
     "passed", "failed", "not_applicable", "insufficient_evidence", "not_approved", "unavailable"
 ]
 GateStatus = Literal["passed", "failed", "not_approved", "unavailable"]
+R1_PRODUCT_OWNER_GITHUB_ACTOR_ID = 167317615
 ReasonCode = Literal[
     "mandatory_safety_failed",
     "mandatory_safety_conflict",
@@ -121,6 +123,112 @@ class ThresholdPolicy(DefinitionModel):
         return self
 
 
+class RuntimeIdentityBinding(DefinitionModel):
+    """Exact trusted profile and accepted-run pins used by threshold policy v2."""
+
+    schema_version: Literal["r1-threshold-runtime-binding:v1"] = (
+        "r1-threshold-runtime-binding:v1"
+    )
+    profile_identity: str = Field(pattern=r"^[a-f0-9]{64}$")
+    profile_version: str = Field(min_length=1, max_length=128)
+    deployment_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    commit_sha: str = Field(pattern=r"^[a-f0-9]{40}$")
+    runtime_pins: RuntimeVersionPins
+
+
+class ThresholdPolicyV2(ThresholdPolicy):
+    """Successor policy that binds its thresholds to one exact production runtime."""
+
+    schema_version: Literal["r1-threshold-policy:v2"] = "r1-threshold-policy:v2"
+    runtime_binding: RuntimeIdentityBinding
+
+    @model_validator(mode="after")
+    def validate_runtime_identity(self) -> "ThresholdPolicyV2":
+        if self.runtime_identity != self.runtime_binding.profile_identity:
+            raise ValueError("policy runtime identity must match its trusted profile binding")
+        return self
+
+
+class ThresholdEvidenceV2(DefinitionModel):
+    """Baseline metadata bound to a trusted profile and accepted benchmark run."""
+
+    schema_version: Literal["r1-threshold-evidence:v2"] = "r1-threshold-evidence:v2"
+    evidence_version: str = Field(min_length=1, max_length=128)
+    run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    dataset_id: str = Field(min_length=1, max_length=128)
+    dataset_version: str = Field(min_length=1, max_length=128)
+    dataset_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    runtime_identity: str = Field(min_length=1, max_length=128)
+    runtime_scope: str = Field(min_length=1, max_length=128)
+    runtime_binding: RuntimeIdentityBinding
+    baseline: R1BaselineReport
+
+    @model_validator(mode="after")
+    def validate_baseline_dataset_identity(self) -> "ThresholdEvidenceV2":
+        if (self.dataset_version, self.dataset_digest) != (
+            self.baseline.dataset_version,
+            self.baseline.dataset_sha256,
+        ):
+            raise ValueError("evidence dataset identity must match its baseline")
+        if self.runtime_identity != self.runtime_binding.profile_identity:
+            raise ValueError("evidence runtime identity must match its trusted profile binding")
+        return self
+
+
+_VERIFIED_APPROVAL_ISSUER = object()
+
+
+class VerifiedThresholdApproval(DefinitionModel):
+    """Typed approval evidence emitted by the trusted GitHub decision verifier."""
+
+    schema_version: Literal["r1-threshold-approval:v1"] = "r1-threshold-approval:v1"
+    decision_id: str = Field(min_length=1, max_length=128)
+    record_reference: str = Field(pattern=r"^https://github\.com/alkselsv/spine/issues/557#issuecomment-[0-9]+$")
+    actor_id: int = Field(gt=0)
+    authority_reference: str = Field(pattern=r"^https://github\.com/alkselsv/spine/issues/17$")
+    policy_id: str = Field(min_length=1, max_length=128)
+    policy_version: str = Field(min_length=1, max_length=128)
+    policy_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    dataset_id: str = Field(min_length=1, max_length=128)
+    dataset_version: str = Field(min_length=1, max_length=128)
+    dataset_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    runtime_binding: RuntimeIdentityBinding
+    release_scope: str = Field(min_length=1, max_length=128)
+    decision_status: Literal["approved"]
+    decided_at: datetime
+    verification_contract: Literal["github-r1-threshold-decision-verifier:v1"] = (
+        "github-r1-threshold-decision-verifier:v1"
+    )
+    source_snapshot_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    _issuer: object | None = PrivateAttr(default=None)
+    _issued_payload_digest: str | None = PrivateAttr(default=None)
+
+    def _issued_by_verifier(self) -> bool:
+        if self._issuer is not _VERIFIED_APPROVAL_ISSUER:
+            return False
+        payload = json.dumps(
+            self.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        )
+        return self._issued_payload_digest == hashlib.sha256(payload.encode("ascii")).hexdigest()
+
+
+def _issue_verified_threshold_approval(**values: object) -> VerifiedThresholdApproval:
+    """Mark approval evidence issued after the trusted GitHub verification."""
+    approval = VerifiedThresholdApproval(**values)
+    approval._issuer = _VERIFIED_APPROVAL_ISSUER
+    payload = json.dumps(
+        approval.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    approval._issued_payload_digest = hashlib.sha256(payload.encode("ascii")).hexdigest()
+    return approval
+
+
 class ThresholdEvidence(DefinitionModel):
     """Metadata-only baseline plus runtime and dataset identity."""
 
@@ -166,7 +274,7 @@ class MetricGateResult(DefinitionModel):
 
 
 class ThresholdGateResult(DefinitionModel):
-    schema_version: Literal["r1-approved-threshold-gate:v1"] = "r1-approved-threshold-gate:v1"
+    schema_version: Literal["r1-approved-threshold-gate:v2"] = "r1-approved-threshold-gate:v2"
     status: GateStatus
     policy_id: str
     policy_version: str
@@ -177,6 +285,11 @@ class ThresholdGateResult(DefinitionModel):
     dataset_digest: str
     runtime_identity: str
     runtime_scope: str
+    runtime_binding: RuntimeIdentityBinding | None = None
+    approval_decision_id: str | None = None
+    approval_reference: str | None = None
+    approval_actor_id: int | None = None
+    approval_source_snapshot_digest: str | None = None
     metrics: tuple[MetricGateResult, ...]
     reason_codes: tuple[ReasonCode, ...] = ()
 
@@ -196,21 +309,6 @@ def policy_digest(policy: ThresholdPolicy) -> str:
     values = policy.model_dump(mode="json", exclude={"state", "approval"})
     payload = json.dumps(values, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(payload.encode("ascii")).hexdigest()
-
-
-def _approval_is_valid(policy: ThresholdPolicy) -> bool:
-    approval = policy.approval
-    return bool(
-        policy.state == "approved"
-        and approval is not None
-        and approval.authority == "product_owner"
-        and approval.approver_id.strip()
-        and approval.approval_id.strip()
-        and approval.approval_version.strip()
-        and approval.approved_at.tzinfo is not None
-        and approval.policy_digest == policy_digest(policy)
-        and all(metric.threshold is not None for metric in policy.metrics)
-    )
 
 
 def _metric_observation(
@@ -268,10 +366,11 @@ def _metric_observation(
 
 def evaluate_threshold_policy(
     *,
-    policy: ThresholdPolicy,
-    evidence: ThresholdEvidence,
+    policy: ThresholdPolicy | ThresholdPolicyV2,
+    evidence: ThresholdEvidence | ThresholdEvidenceV2,
     safety_results: tuple[MandatorySafetyResult, ...],
     required_safety_gates: tuple[str, ...],
+    verified_approval: VerifiedThresholdApproval | None = None,
 ) -> ThresholdGateResult:
     """Evaluate hard safety first, then compatible approved thresholds."""
     result_base = {
@@ -285,6 +384,8 @@ def evaluate_threshold_policy(
         "runtime_identity": evidence.runtime_identity,
         "runtime_scope": evidence.runtime_scope,
     }
+    if type(policy) is ThresholdPolicyV2 and type(evidence) is ThresholdEvidenceV2:
+        result_base["runtime_binding"] = evidence.runtime_binding
     safety = {item.gate_id: item.status for item in safety_results}
     duplicate_safety_ids = len(safety) != len(safety_results)
     safety_missing = not required_safety_gates or any(gate not in safety for gate in required_safety_gates)
@@ -296,14 +397,54 @@ def evaluate_threshold_policy(
         results = tuple(MetricGateResult(metric=item.metric, status="unavailable", reason_code=code, policy_version=policy.version) for item in policy.metrics)
         return ThresholdGateResult(**result_base, status=status, metrics=results, reason_codes=(code,))
 
-    if not _approval_is_valid(policy):
+    approval_matches = (
+        type(policy) is ThresholdPolicyV2
+        and type(evidence) is ThresholdEvidenceV2
+        and type(verified_approval) is VerifiedThresholdApproval
+        and verified_approval._issued_by_verifier()
+        and verified_approval.decision_status == "approved"
+        and verified_approval.actor_id == R1_PRODUCT_OWNER_GITHUB_ACTOR_ID
+        and verified_approval.authority_reference
+        == "https://github.com/alkselsv/spine/issues/17"
+        and verified_approval.record_reference.startswith(
+            "https://github.com/alkselsv/spine/issues/557#issuecomment-"
+        )
+        and policy.state == "approved"
+        and verified_approval.policy_id == policy.policy_id
+        and verified_approval.policy_version == policy.version
+        and verified_approval.policy_digest == policy_digest(policy)
+        and verified_approval.dataset_id == policy.dataset_id == evidence.dataset_id
+        and verified_approval.dataset_version == policy.dataset_version == evidence.dataset_version
+        and verified_approval.dataset_digest == policy.dataset_digest == evidence.dataset_digest
+        and verified_approval.runtime_binding == policy.runtime_binding == evidence.runtime_binding
+        and verified_approval.release_scope == policy.runtime_scope
+        and verified_approval.decided_at.tzinfo is not None
+        and all(metric.threshold is not None for metric in policy.metrics)
+    )
+    if not approval_matches:
         results = tuple(MetricGateResult(metric=item.metric, status="not_approved", reason_code="policy_not_approved", policy_version=policy.version, applied_threshold=None, comparison=None, statistic=None, denominator_kind=None) for item in policy.metrics)
         return ThresholdGateResult(**result_base, status="not_approved", metrics=results, reason_codes=("policy_not_approved",))
+
+    result_base.update(
+        {
+            "approval_decision_id": verified_approval.decision_id,
+            "approval_reference": verified_approval.record_reference,
+            "approval_actor_id": verified_approval.actor_id,
+            "approval_source_snapshot_digest": verified_approval.source_snapshot_digest,
+        }
+    )
 
     incompatibilities = []
     if (evidence.dataset_id, evidence.dataset_version, evidence.dataset_digest) != (policy.dataset_id, policy.dataset_version, policy.dataset_digest):
         incompatibilities.append("dataset_pin_mismatch")
     if (evidence.runtime_identity, evidence.runtime_scope) != (policy.runtime_identity, policy.runtime_scope):
+        incompatibilities.append("runtime_pin_mismatch")
+    if (
+        type(policy) is not ThresholdPolicyV2
+        or type(evidence) is not ThresholdEvidenceV2
+        or policy.runtime_binding != evidence.runtime_binding
+        or policy.runtime_binding.runtime_pins != evidence.runtime_binding.runtime_pins
+    ):
         incompatibilities.append("runtime_pin_mismatch")
     if (
         evidence.baseline.baseline_status != "completed"
@@ -407,6 +548,8 @@ def evaluate_threshold_policy(
 
 __all__ = [
     "MandatorySafetyResult", "MetricGateResult", "MetricThreshold", "PolicyApproval",
-    "ThresholdEvidence", "ThresholdGateResult", "ThresholdPolicy",
+    "RuntimeIdentityBinding", "ThresholdEvidence", "ThresholdEvidenceV2",
+    "ThresholdGateResult", "ThresholdPolicy", "ThresholdPolicyV2",
+    "VerifiedThresholdApproval", "R1_PRODUCT_OWNER_GITHUB_ACTOR_ID",
     "evaluate_threshold_policy", "policy_digest",
 ]
