@@ -85,9 +85,12 @@ class CogneeWorkerProfile(DefinitionModel):
     neo4j_python_version: Literal["5.28.6"]
     pgvector_python_version: Literal["0.3.6"]
     llm_model: Literal["openai/gpt-5.4-nano"]
+    llm_revision_required: bool
     llm_revision: str | None
     embedding_model: Literal["openai/text-embedding-3-small"]
+    embedding_revision_required: bool
     embedding_revision: str | None
+    generation_parameters_required: bool
     generation_parameters: tuple["GenerationParameter", ...]
 
     postgres_secret_ref: str = Field(pattern=_REFERENCE_PATTERN)
@@ -133,6 +136,12 @@ class CogneeWorkerProfile(DefinitionModel):
 
     @model_validator(mode="after")
     def digest_matches_profile(self) -> "CogneeWorkerProfile":
+        if self.llm_revision_required and not self.llm_revision:
+            raise ValueError("required LLM revision is missing")
+        if self.embedding_revision_required and not self.embedding_revision:
+            raise ValueError("required embedding revision is missing")
+        if self.generation_parameters_required and not self.generation_parameters:
+            raise ValueError("required generation parameters are missing")
         expected = self.digest_for(
             self.model_dump(mode="json", exclude={"profile_digest"})
         )
@@ -304,27 +313,15 @@ def profile_configuration_status(
     release_id: str,
 ) -> ProfileConfigurationStatus:
     """Return bounded local config status without resolving secrets or calling providers."""
-
-    if profile is None:
-        return ProfileConfigurationStatus.PROFILE_MISSING
-    if approval is None:
-        return ProfileConfigurationStatus.APPROVAL_MISSING
-    if not approval.approved:
-        return ProfileConfigurationStatus.PROFILE_UNAPPROVED
-    if (
-        approval.profile_id != profile.profile_id
-        or approval.profile_digest != profile.profile_digest
-        or approval.approval_reference != profile.approval_reference
-    ):
-        return ProfileConfigurationStatus.APPROVAL_MISMATCH
-    if (
-        deployment_id != profile.deployment_id
-        or approval.deployment_id != profile.deployment_id
-    ):
-        return ProfileConfigurationStatus.DEPLOYMENT_MISMATCH
-    if release_id != profile.release_id or approval.release_id != profile.release_id:
-        return ProfileConfigurationStatus.RELEASE_MISMATCH
-    return ProfileConfigurationStatus.VALID
+    binding_refusals = _profile_binding_refusal_codes(
+        profile=profile,
+        approval=approval,
+        deployment_id=deployment_id,
+        release_id=release_id,
+    )
+    if not binding_refusals:
+        return ProfileConfigurationStatus.VALID
+    return ProfileConfigurationStatus(binding_refusals[0])
 
 
 T = TypeVar("T")
@@ -339,6 +336,7 @@ async def guarded_provider_call(
     release_id: str,
     secret_resolver: SecretReferenceResolver | None,
     budget_authorization: RunBudgetAuthorization | None,
+    run_id: str,
     workspace_id: UUID,
     environment_id: UUID,
     now: datetime,
@@ -354,6 +352,7 @@ async def guarded_provider_call(
         release_id=release_id,
         secret_resolver=secret_resolver,
         budget_authorization=budget_authorization,
+        run_id=run_id,
         workspace_id=workspace_id,
         environment_id=environment_id,
         now=now,
@@ -386,36 +385,24 @@ async def check_invocation_eligibility(
     release_id: str,
     secret_resolver: SecretReferenceResolver | None,
     budget_authorization: RunBudgetAuthorization | None,
+    run_id: str,
     workspace_id: UUID,
     environment_id: UUID,
     now: datetime,
 ) -> InvocationDecision:
     """Return bounded refusal codes; never include config, secret or exception data."""
 
-    refusals: list[InvocationRefusal] = []
-    if profile is None:
-        return InvocationDecision(
-            allowed=False, refusals=(InvocationRefusal(code="profile_missing"),)
+    refusals: list[InvocationRefusal] = [
+        InvocationRefusal(code=code)
+        for code in _profile_binding_refusal_codes(
+            profile=profile,
+            approval=approval,
+            deployment_id=deployment_id,
+            release_id=release_id,
         )
-    if approval is None:
-        refusals.append(InvocationRefusal(code="approval_missing"))
-    elif not approval.approved:
-        refusals.append(InvocationRefusal(code="profile_unapproved"))
-    elif (
-        approval.profile_id != profile.profile_id
-        or approval.profile_digest != profile.profile_digest
-        or approval.approval_reference != profile.approval_reference
-    ):
-        refusals.append(InvocationRefusal(code="profile_approval_mismatch"))
-
-    if deployment_id != profile.deployment_id or (
-        approval is not None and approval.deployment_id != profile.deployment_id
-    ):
-        refusals.append(InvocationRefusal(code="deployment_mismatch"))
-    if release_id != profile.release_id or (
-        approval is not None and approval.release_id != profile.release_id
-    ):
-        refusals.append(InvocationRefusal(code="release_mismatch"))
+    ]
+    if profile is None:
+        return InvocationDecision(allowed=False, refusals=tuple(refusals))
 
     if runtime is None:
         refusals.append(InvocationRefusal(code="runtime_identity_missing"))
@@ -425,6 +412,8 @@ async def check_invocation_eligibility(
     if budget_authorization is None:
         refusals.append(InvocationRefusal(code="run_budget_missing"))
     else:
+        if budget_authorization.run_id != run_id:
+            refusals.append(InvocationRefusal(code="run_budget_run_mismatch"))
         if not budget_authorization.approved:
             refusals.append(InvocationRefusal(code="run_budget_unapproved"))
         if (
@@ -470,6 +459,40 @@ async def check_invocation_eligibility(
 
     safe_refusals = tuple(dict.fromkeys(refusals))
     return InvocationDecision(allowed=not safe_refusals, refusals=safe_refusals)
+
+
+def _profile_binding_refusal_codes(
+    *,
+    profile: CogneeWorkerProfile | None,
+    approval: ProfileApproval | None,
+    deployment_id: str,
+    release_id: str,
+) -> tuple[str, ...]:
+    """Validate the common profile, approval, deployment and release binding."""
+
+    if profile is None:
+        return ("profile_missing",)
+    refusals: list[str] = []
+    if approval is None:
+        refusals.append("approval_missing")
+    else:
+        if not approval.approved:
+            refusals.append("profile_unapproved")
+        if (
+            approval.profile_id != profile.profile_id
+            or approval.profile_digest != profile.profile_digest
+            or approval.approval_reference != profile.approval_reference
+        ):
+            refusals.append("profile_approval_mismatch")
+    if deployment_id != profile.deployment_id or (
+        approval is not None and approval.deployment_id != profile.deployment_id
+    ):
+        refusals.append("deployment_mismatch")
+    if release_id != profile.release_id or (
+        approval is not None and approval.release_id != profile.release_id
+    ):
+        refusals.append("release_mismatch")
+    return tuple(refusals)
 
 
 def _runtime_matches(profile: CogneeWorkerProfile, runtime: RuntimeIdentity) -> bool:

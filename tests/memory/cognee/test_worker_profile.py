@@ -9,7 +9,6 @@ import pytest
 from pydantic import ValidationError
 
 from spine.memory.cognee.worker_profile import (
-    COGNEE_WORKER_PROFILE_SCHEMA,
     CogneeWorkerLimits,
     CogneeWorkerProfile,
     ProfileApproval,
@@ -22,48 +21,14 @@ from spine.memory.cognee.worker_profile import (
     profile_configuration_status,
     WorkerProfileLoadStatus,
 )
+from tests.memory.cognee.worker_profile_fixtures import cognee_worker_profile_values
 
 WORKSPACE_ID = UUID("10000000-0000-4000-8000-000000000001")
 ENVIRONMENT_ID = UUID("20000000-0000-4000-8000-000000000001")
 
 
-def profile_payload() -> dict[str, object]:
-    return {
-        "schema_version": COGNEE_WORKER_PROFILE_SCHEMA,
-        "profile_id": "cognee-approved-production",
-        "deployment_id": "spine-prod-eu-1",
-        "release_id": "release-2026.10.22",
-        "approval_reference": "change-548-approved-profile",
-        "cognee_version": "1.5.4",
-        "postgres_server_major": "17",
-        "neo4j_apoc_server_version": "5.26.32",
-        "pgvector_extension_version": "0.8.7",
-        "neo4j_python_version": "5.28.6",
-        "pgvector_python_version": "0.3.6",
-        "llm_model": "openai/gpt-5.4-nano",
-        "llm_revision": None,
-        "embedding_model": "openai/text-embedding-3-small",
-        "embedding_revision": None,
-        "generation_parameters": [],
-        "postgres_secret_ref": "secretref://production/spine/postgres",
-        "neo4j_secret_ref": "secretref://production/spine/neo4j",
-        "model_secret_ref": "secretref://production/spine/openai",
-        "limits": {
-            "max_requests_per_run": 20,
-            "max_concurrency": 2,
-            "max_input_tokens": 32_000,
-            "max_output_tokens": 2_000,
-            "request_timeout_seconds": 60,
-            "run_deadline_seconds": 600,
-            "max_retries": 2,
-            "max_budget_amount": Decimal("1.25"),
-            "budget_currency": "USD",
-        },
-    }
-
-
 def create_profile() -> CogneeWorkerProfile:
-    payload = profile_payload()
+    payload = cognee_worker_profile_values()
     payload["profile_digest"] = CogneeWorkerProfile.digest_for(payload)
     return CogneeWorkerProfile.model_validate(payload)
 
@@ -71,19 +36,21 @@ def create_profile() -> CogneeWorkerProfile:
 def test_profile_is_immutable_versioned_and_digest_bound() -> None:
     profile = create_profile()
 
-    assert profile.profile_digest == CogneeWorkerProfile.digest_for(profile_payload())
+    assert profile.profile_digest == CogneeWorkerProfile.digest_for(
+        cognee_worker_profile_values()
+    )
     with pytest.raises(ValidationError):
         profile.profile_id = "changed"  # type: ignore[misc]
 
 
 def test_profile_rejects_unknown_fields_and_wrong_pinned_identities() -> None:
-    unknown = profile_payload() | {"fallback_model": "other/model"}
+    unknown = cognee_worker_profile_values() | {"fallback_model": "other/model"}
     unknown["profile_digest"] = CogneeWorkerProfile.digest_for(unknown)
-    mismatched = profile_payload() | {"neo4j_apoc_server_version": "5.26.31"}
+    mismatched = cognee_worker_profile_values() | {"neo4j_apoc_server_version": "5.26.31"}
     mismatched["profile_digest"] = CogneeWorkerProfile.digest_for(mismatched)
-    client_mismatch = profile_payload() | {"neo4j_python_version": "5.28.5"}
+    client_mismatch = cognee_worker_profile_values() | {"neo4j_python_version": "5.28.5"}
     client_mismatch["profile_digest"] = CogneeWorkerProfile.digest_for(client_mismatch)
-    model_mismatch = profile_payload() | {"embedding_model": "other/embedding"}
+    model_mismatch = cognee_worker_profile_values() | {"embedding_model": "other/embedding"}
     model_mismatch["profile_digest"] = CogneeWorkerProfile.digest_for(model_mismatch)
 
     with pytest.raises(ValidationError):
@@ -97,10 +64,10 @@ def test_profile_rejects_unknown_fields_and_wrong_pinned_identities() -> None:
 
 
 def test_profile_requires_every_numeric_limit_and_a_well_formed_secret_reference() -> None:
-    missing_limits = profile_payload()
+    missing_limits = cognee_worker_profile_values()
     del missing_limits["limits"]
     missing_limits["profile_digest"] = CogneeWorkerProfile.digest_for(missing_limits)
-    malformed_reference = profile_payload() | {
+    malformed_reference = cognee_worker_profile_values() | {
         "model_secret_ref": "secretref://production//openai"
     }
     malformed_reference["profile_digest"] = CogneeWorkerProfile.digest_for(
@@ -113,8 +80,20 @@ def test_profile_requires_every_numeric_limit_and_a_well_formed_secret_reference
         CogneeWorkerProfile.model_validate(malformed_reference)
 
 
+def test_profile_rejects_required_model_revision_or_parameters_when_absent() -> None:
+    candidates = (
+        cognee_worker_profile_values() | {"llm_revision_required": True},
+        cognee_worker_profile_values() | {"embedding_revision_required": True},
+        cognee_worker_profile_values() | {"generation_parameters_required": True},
+    )
+    for values in candidates:
+        values["profile_digest"] = CogneeWorkerProfile.digest_for(values)
+        with pytest.raises(ValidationError):
+            CogneeWorkerProfile.model_validate(values)
+
+
 def test_profile_load_failure_hides_untrusted_configuration_values() -> None:
-    values = profile_payload() | {
+    values = cognee_worker_profile_values() | {
         "model_secret_ref": "private-provider-secret-value",
         "unknown_secret_value": "never-include-this-in-diagnostics",
     }
@@ -293,6 +272,7 @@ async def test_guard_invokes_provider_only_when_every_binding_is_valid() -> None
         budget_authorization=budget_authorization(),
         workspace_id=WORKSPACE_ID,
         environment_id=ENVIRONMENT_ID,
+        run_id="run-1",
         now=datetime(2026, 10, 22, tzinfo=timezone.utc),
         provider_call=provider_call,
     )
@@ -339,6 +319,7 @@ async def test_guard_refuses_missing_or_invalid_secret_reference(
         budget_authorization=budget_authorization(),
         workspace_id=WORKSPACE_ID,
         environment_id=ENVIRONMENT_ID,
+        run_id="run-1",
         now=datetime(2026, 10, 22, tzinfo=timezone.utc),
         provider_call=provider_call,
     )
@@ -366,6 +347,7 @@ async def test_guard_suppresses_secret_resolver_exception_details(caplog) -> Non
         budget_authorization=budget_authorization(profile=profile),
         workspace_id=WORKSPACE_ID,
         environment_id=ENVIRONMENT_ID,
+        run_id="run-1",
         now=datetime(2026, 10, 22, tzinfo=timezone.utc),
         provider_call=provider_call,
     )
@@ -394,6 +376,7 @@ async def test_guard_suppresses_secret_resolver_exception_details(caplog) -> Non
         ("budget_authorization", "expired", "run_budget_expired"),
         ("budget_authorization", "unapproved", "run_budget_unapproved"),
         ("budget_authorization", "wrong_scope", "run_budget_scope_mismatch"),
+        ("budget_authorization", "wrong_run", "run_budget_run_mismatch"),
         ("secret_resolver", None, "secret_resolver_unavailable"),
     ],
 )
@@ -411,6 +394,7 @@ async def test_guard_fails_closed_without_leaking_diagnostic_input(
         "budget_authorization": budget_authorization(),
         "workspace_id": WORKSPACE_ID,
         "environment_id": ENVIRONMENT_ID,
+        "run_id": "run-1",
         "now": datetime(2026, 10, 22, tzinfo=timezone.utc),
     }
     if field == "approval" and value == "unapproved":
@@ -434,6 +418,10 @@ async def test_guard_fails_closed_without_leaking_diagnostic_input(
     elif field == "budget_authorization" and value == "unapproved":
         kwargs[field] = budget_authorization(profile=create_profile()).model_copy(
             update={"approved": False}
+        )
+    elif field == "budget_authorization" and value == "wrong_run":
+        kwargs[field] = budget_authorization(profile=create_profile()).model_copy(
+            update={"run_id": "another-run"}
         )
     else:
         kwargs[field] = value
@@ -468,6 +456,7 @@ async def test_provider_exception_is_returned_as_bounded_diagnostic(caplog) -> N
         budget_authorization=budget_authorization(profile=profile),
         workspace_id=WORKSPACE_ID,
         environment_id=ENVIRONMENT_ID,
+        run_id="run-1",
         now=datetime(2026, 10, 22, tzinfo=timezone.utc),
         provider_call=provider_call,
     )
