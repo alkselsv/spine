@@ -293,6 +293,7 @@ class ConfiguredLLMRuntimeProvider:
         model: str,
         endpoint: str,
         authority_generation_resolver: Callable[[UUID, UUID], Awaitable[int | None]],
+        admitted_authority_generation: Callable[[], int],
     ) -> None:
         if not api_key or not model:
             raise RuntimeError("configured Q&A LLM is unavailable")
@@ -301,6 +302,7 @@ class ConfiguredLLMRuntimeProvider:
         self._model = model
         self._endpoint = endpoint.rstrip("/")
         self._authority_generation_resolver = authority_generation_resolver
+        self._admitted_authority_generation = admitted_authority_generation
 
     def runtime_for(self, **values: object) -> "ConfiguredLLMRuntime":
         pin = values.get("pin")
@@ -316,6 +318,7 @@ class ConfiguredLLMRuntimeProvider:
             workspace_id=workspace_id,
             environment_id=environment_id,
             authority_generation_resolver=self._authority_generation_resolver,
+            admitted_authority_generation=self._admitted_authority_generation(),
         )
 
 
@@ -330,6 +333,7 @@ class ConfiguredLLMRuntime:
         workspace_id: UUID,
         environment_id: UUID,
         authority_generation_resolver: Callable[[UUID, UUID], Awaitable[int | None]],
+        admitted_authority_generation: int,
     ) -> None:
         self._artifacts = artifacts
         self._api_key = api_key
@@ -338,7 +342,9 @@ class ConfiguredLLMRuntime:
         self._workspace_id = workspace_id
         self._environment_id = environment_id
         self._authority_generation_resolver = authority_generation_resolver
-        self._admitted_authority_generation: int | None = None
+        if admitted_authority_generation < 1:
+            raise RuntimeError("Q&A admitted authority generation is unavailable")
+        self._admitted_authority_generation = admitted_authority_generation
 
     async def invoke_with_reference(
         self, version: AgentVersion, invocation: AgentInvocation
@@ -425,9 +431,7 @@ class ConfiguredLLMRuntime:
             or generation < 1
         ):
             raise RuntimeError("Q&A service authority is unavailable")
-        if self._admitted_authority_generation is None:
-            self._admitted_authority_generation = generation
-        elif generation != self._admitted_authority_generation:
+        if generation != self._admitted_authority_generation:
             raise RuntimeError("Q&A service authority generation changed")
 
     async def _complete(

@@ -59,6 +59,7 @@ def _workflow_input() -> AskAdmissionWorkflowInput:
         message_id=MESSAGE_ID,
         run_id=RUN_ID,
         trace_id=TRACE_ID,
+        authorization_generation=1,
     )
 
 
@@ -395,5 +396,4 @@ async def test_temporal_ask_cancellation_resumes_after_worker_restart() -> None:
     assert result["outcome"] == AnswerQuestionOutcome.CANCELLED.value
     assert activity.execute_calls >= 1
     assert activity.cancel_calls == 1
-
 

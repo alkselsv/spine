@@ -7,6 +7,11 @@ from spine.infrastructure.qa_agent_runtime import (
     ConfiguredLLMRuntime,
     _SEMANTIC_SUPPORT_SYSTEM_PROMPT,
 )
+from tests.agents.test_answer_question_candidate_runtime import (
+    candidate_context,
+    input_artifact,
+)
+from tests.agents.test_local_runtime import invocation, version
 
 
 class _Rows:
@@ -66,6 +71,7 @@ async def test_evidence_text_uses_canonical_segment_identity() -> None:
         workspace_id=UUID(int=1),
         environment_id=UUID(int=2),
         authority_generation_resolver=lambda *_: _generation(4),
+        admitted_authority_generation=4,
     )
     candidate_input = SimpleNamespace(
         context_bundle=SimpleNamespace(
@@ -95,6 +101,7 @@ async def test_evidence_read_rejects_revoked_service_authority() -> None:
         workspace_id=UUID(int=1),
         environment_id=UUID(int=2),
         authority_generation_resolver=lambda *_: _generation(None),
+        admitted_authority_generation=4,
     )
     candidate_input = SimpleNamespace(
         context_bundle=SimpleNamespace(
@@ -124,11 +131,74 @@ async def test_protected_action_rejects_authority_revoked_after_prior_check() ->
         workspace_id=UUID(int=1),
         environment_id=UUID(int=2),
         authority_generation_resolver=resolve,
+        admitted_authority_generation=4,
     )
 
     await runtime._require_current_authority()
     with pytest.raises(RuntimeError, match="authority is unavailable"):
         await runtime._require_current_authority()
+
+
+@pytest.mark.asyncio
+async def test_first_protected_action_rejects_generation_newer_than_admission() -> None:
+    runtime = ConfiguredLLMRuntime(
+        artifacts=_Artifacts(),  # type: ignore[arg-type]
+        api_key="synthetic",
+        model="synthetic",
+        endpoint="https://example.invalid/v1",
+        workspace_id=UUID(int=1),
+        environment_id=UUID(int=2),
+        authority_generation_resolver=lambda *_: _generation(5),
+        admitted_authority_generation=4,
+    )
+
+    with pytest.raises(RuntimeError, match="generation changed"):
+        await runtime._require_current_authority()
+
+
+@pytest.mark.asyncio
+async def test_invoke_revalidates_after_model_call_before_persisting(monkeypatch) -> None:
+    context = candidate_context()
+    artifact = input_artifact(context)
+    generations = iter((4, 4, None))
+
+    async def resolve(*_: object) -> int | None:
+        return next(generations)
+
+    class Artifacts:
+        persisted = False
+
+        async def load(self, *_: object, **__: object):
+            return artifact
+
+        async def persist_candidate(self, **_: object):
+            self.persisted = True
+            raise AssertionError("candidate persistence must remain protected")
+
+    artifacts = Artifacts()
+    runtime = ConfiguredLLMRuntime(
+        artifacts=artifacts,  # type: ignore[arg-type]
+        api_key="synthetic",
+        model="synthetic",
+        endpoint="https://example.invalid/v1",
+        workspace_id=context.workspace_id,
+        environment_id=context.environment_id,
+        authority_generation_resolver=resolve,
+        admitted_authority_generation=4,
+    )
+
+    async def evidence_text(_: object) -> dict[str, str]:
+        return {"evidence-1": "Synthetic evidence."}
+
+    async def complete(*_: object) -> tuple[str, tuple[str, ...]]:
+        return "Synthetic answer.", ("evidence-1",)
+
+    monkeypatch.setattr(runtime, "_evidence_text", evidence_text)
+    monkeypatch.setattr(runtime, "_complete", complete)
+
+    with pytest.raises(RuntimeError, match="authority is unavailable"):
+        await runtime.invoke_with_reference(version(), invocation())
+    assert artifacts.persisted is False
 
 
 def test_semantic_support_prompt_does_not_treat_absence_claims_as_grounded() -> None:

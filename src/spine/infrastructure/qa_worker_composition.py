@@ -188,6 +188,13 @@ def _active_request_scope() -> _ActiveRequestScope:
     return scope
 
 
+def _admitted_authority_generation() -> int:
+    context = _ACTIVE_AUTHORIZATION_CONTEXT.get()
+    if context is None:
+        raise RuntimeError("active Q&A authorization context is unavailable")
+    return context.authority_generation
+
+
 class _NeverDirectHandler:
     async def invoke(self, request: object, context: object) -> object:
         del request, context
@@ -1487,6 +1494,7 @@ async def build_production_qa_capability_graph(
             authority_generation_resolver=_CurrentQAServiceAuthority(
                 session_factory, service_principal_id
             ),
+            admitted_authority_generation=_admitted_authority_generation,
         ),
     )
     uow_factory = persistence.uow_factory

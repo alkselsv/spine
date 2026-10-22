@@ -91,6 +91,7 @@ async def exercise_ask_admission_contract(adapter: PersistenceAdapter) -> None:
         environment=EnvironmentKind.PRODUCTION,
         question="Cafe\u0301?",
         idempotency_key=IdempotencyKey("qa-admission-contract-426"),
+        authorization_generation=1,
     )
     async with adapter.uow_factory(context) as uow:
         first = await uow.ask_admissions.admit(command)
@@ -166,6 +167,7 @@ async def exercise_ask_admission_contract(adapter: PersistenceAdapter) -> None:
         environment=command.environment,
         question="A changed question",
         idempotency_key=command.idempotency_key,
+        authorization_generation=command.authorization_generation,
     )
     async with adapter.uow_factory(context) as uow:
         with pytest.raises(IdempotencyConflictError):

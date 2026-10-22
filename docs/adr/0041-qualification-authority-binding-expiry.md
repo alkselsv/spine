@@ -69,6 +69,8 @@ later protected activity or external action obtains fresh authority.  An
 expired or revoked binding, or a stale generation, denies that operation.  Only
 safe cancellation or cleanup that does not read protected content or perform a
 protected external action may continue without the expired authority.
+The v2 admission command and event persist this generation explicitly; legacy
+v1-v3 dispatch payloads contain no such proof and fail closed at dispatch.
 
 ## Consequences
 

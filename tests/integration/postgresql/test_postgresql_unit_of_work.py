@@ -4107,6 +4107,7 @@ async def test_postgresql_ask_admission_replays_after_application_process_recrea
         environment=EnvironmentKind.PRODUCTION,
         question="Restart-safe question",
         idempotency_key=IdempotencyKey("issue-430-process-restart-admission"),
+        authorization_generation=1,
     )
     async with postgresql_adapter.uow_factory(ask_context) as uow:
         first = await uow.ask_admissions.admit(command)
@@ -4143,7 +4144,7 @@ async def main():
     boundary = TrustedContextBoundary.for_testing(issuer_id=synthetic_uuid(950), secret=b"issue-45-postgresql-contract-secret")
     persistence = PostgreSQLPersistence(session_factory=async_sessionmaker(engine, expire_on_commit=False, autoflush=False), context_verifier=boundary, outbox_events=create_outbox_event_registry())
     context = boundary.worker(scope=EnvironmentScope(workspace_id=workspace_id, environment_id=environment_id), service_principal_id=synthetic_uuid(959), purpose=PersistencePurpose("contract_test"), operation=PersistenceOperation(QA_ASK_ADMISSION_OPERATION.value), trace_id=synthetic_uuid(960))
-    command = AskAdmissionCommand.create(workspace_id=workspace_id, environment_id=environment_id, session_id=session_id, subject=ActorRef(kind=ActorKind.SERVICE, id=subject_id), environment=EnvironmentKind.PRODUCTION, question="Restart-safe question", idempotency_key=IdempotencyKey("issue-430-process-restart-admission"))
+    command = AskAdmissionCommand.create(workspace_id=workspace_id, environment_id=environment_id, session_id=session_id, subject=ActorRef(kind=ActorKind.SERVICE, id=subject_id), environment=EnvironmentKind.PRODUCTION, question="Restart-safe question", idempotency_key=IdempotencyKey("issue-430-process-restart-admission"), authorization_generation=1)
     async with persistence.uow_factory(context) as uow:
         replay = await uow.ask_admissions.admit(command)
         run = await uow.answer_question_runs.resolve_run(replay.run_id)
@@ -4304,6 +4305,7 @@ asyncio.run(main())
             "producer_deduplication_id"
         ],
         trace_id=cancellation_event["trace_id"],
+        authorization_generation=1,
         correlation_id=cancellation_event["correlation_id"],
         causation_id=cancellation_event["causation_id"],
     )
@@ -5135,6 +5137,7 @@ async def test_temporal_retry_after_terminal_commit_failure_persists_one_postgre
         message_id=MESSAGE_ID,
         run_id=RUN_ID,
         trace_id=TRACE_ID,
+        authorization_generation=1,
     )
     async with await WorkflowEnvironment.start_time_skipping(
         data_converter=pydantic_data_converter
