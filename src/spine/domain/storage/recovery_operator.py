@@ -47,6 +47,7 @@ class RecoveryOperatorProfile(ValidatedDefinitionModel):
     deployment_scope_reference: str = Field(min_length=3, max_length=128)
     scope_reference: str = Field(min_length=3, max_length=128)
     change_reference: str = Field(min_length=3, max_length=128)
+    approval_reference: str = Field(min_length=3, max_length=128)
     recovery_set_id: str = Field(min_length=3, max_length=128)
     operator_identity_reference: str = Field(min_length=3, max_length=128)
     coordinator_identity_reference: str = Field(min_length=3, max_length=128)
@@ -61,6 +62,8 @@ class RecoveryOperatorProfile(ValidatedDefinitionModel):
     postgres_tool_profile_reference: str = Field(min_length=3, max_length=128)
     filesystem_semantics_profile_reference: str = Field(min_length=3, max_length=128)
     fence_profile_reference: str = Field(min_length=3, max_length=128)
+    source_network_profile_reference: str = Field(min_length=3, max_length=128)
+    restore_network_profile_reference: str = Field(min_length=3, max_length=128)
     restore_target_inventory_reference: str | None = Field(default=None, max_length=128)
     serving_identity_inventory_reference: str | None = Field(default=None, max_length=128)
     evidence_destination_reference: str = Field(min_length=3, max_length=128)
@@ -72,6 +75,7 @@ class RecoveryOperatorProfile(ValidatedDefinitionModel):
         "deployment_scope_reference",
         "scope_reference",
         "change_reference",
+        "approval_reference",
         "recovery_set_id",
         "operator_identity_reference",
         "coordinator_identity_reference",
@@ -86,6 +90,8 @@ class RecoveryOperatorProfile(ValidatedDefinitionModel):
         "postgres_tool_profile_reference",
         "filesystem_semantics_profile_reference",
         "fence_profile_reference",
+        "source_network_profile_reference",
+        "restore_network_profile_reference",
         "restore_target_inventory_reference",
         "serving_identity_inventory_reference",
         "evidence_destination_reference",
@@ -113,6 +119,8 @@ class RecoveryOperatorProfile(ValidatedDefinitionModel):
             raise ValueError("evidence reviewer identity must be independent")
         if self.source_volume_reference == self.protected_destination_reference:
             raise ValueError("source and protected destination references must be distinct")
+        if self.source_network_profile_reference == self.restore_network_profile_reference:
+            raise ValueError("SOURCE and RESTORE network profiles must be distinct")
         if self.operation in {
             RecoveryOperatorOperation.RESTORE,
             RecoveryOperatorOperation.BACKUP_AND_RESTORE,
@@ -157,6 +165,8 @@ class RecoveryRestoreTargetFacts(ValidatedDefinitionModel):
 
     inventory_reference: str = Field(min_length=3, max_length=128)
     target_reference: str = Field(min_length=3, max_length=128)
+    database_target_reference: str = Field(min_length=3, max_length=128)
+    filesystem_target_reference: str = Field(min_length=3, max_length=128)
     empty: Literal[True] = True
     isolated: Literal[True] = True
     non_serving: Literal[True] = True
@@ -171,6 +181,8 @@ class RecoveryRestoreTargetFacts(ValidatedDefinitionModel):
     @field_validator(
         "inventory_reference",
         "target_reference",
+        "database_target_reference",
+        "filesystem_target_reference",
         "serving_identity_inventory_reference",
         "restore_identity_reference",
         "verifier_identity_reference",
@@ -183,6 +195,8 @@ class RecoveryRestoreTargetFacts(ValidatedDefinitionModel):
     def _validate_distinct_identities(self) -> "RecoveryRestoreTargetFacts":
         if self.restore_identity_reference == self.verifier_identity_reference:
             raise ValueError("restore and verifier identities must be distinct")
+        if self.database_target_reference == self.filesystem_target_reference:
+            raise ValueError("database and filesystem restore targets must be distinct")
         return self
 
 
