@@ -17,9 +17,18 @@ statistic, denominator, expected eligible count, applicability, minimum coverage
 and optional threshold. The gate checks the baseline's 149-case population
 against the pinned approved dataset and each metric's eligible count against
 the approved policy.
-Draft and proposed policies remain inactive. Approval is valid only when it is
-attributable to a Product Owner, has a version and timestamp, includes every
-threshold value, and binds the canonical policy digest.
+
+Issue #559 adds policy/evidence v2. V2 binds the canonical production runtime
+profile digest/version, deployment fingerprint, commit SHA and every accepted
+`RuntimeVersionPins` value. Its evidence is built from ready
+`TrustedProductionRuntimePreflight` plus a completed typed benchmark report.
+Legacy v1 remains parseable but cannot qualify positively. V2 requires typed
+approval evidence from the trusted GitHub Decision Record verifier; the legacy
+`PolicyApproval` fields are not authority evidence. The verifier checks the
+numeric Product Owner actor from Issue #17, exact policy/dataset/runtime/scope,
+the current unedited decision record and revocation/supersession state. See
+[`issue-559-threshold-runtime-approval.md`](issue-559-threshold-runtime-approval.md)
+for the decision record format and migration contract.
 
 The gate checks all supplied mandatory safety outcomes first. Missing, failed,
 unavailable or conflicting safety results prevent quality threshold evaluation.

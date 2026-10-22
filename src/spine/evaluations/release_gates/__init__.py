@@ -16,11 +16,21 @@ from spine.evaluations.release_gates.thresholds import (
     MetricGateResult,
     MetricThreshold,
     PolicyApproval,
+    RuntimeIdentityBinding,
     ThresholdEvidence,
+    ThresholdEvidenceV2,
     ThresholdGateResult,
     ThresholdPolicy,
+    ThresholdPolicyV2,
+    VerifiedThresholdApproval,
+    build_threshold_evidence,
     evaluate_threshold_policy,
     policy_digest,
+)
+from spine.evaluations.release_gates.threshold_approval_verifier import (
+    GitHubRestThresholdDecisionSource,
+    GitHubThresholdApprovalVerifier,
+    evaluate_threshold_policy_with_github_approval,
 )
 
 __all__ = [
@@ -37,9 +47,17 @@ __all__ = [
     "MetricGateResult",
     "MetricThreshold",
     "PolicyApproval",
+    "RuntimeIdentityBinding",
     "ThresholdEvidence",
+    "ThresholdEvidenceV2",
     "ThresholdGateResult",
     "ThresholdPolicy",
+    "ThresholdPolicyV2",
+    "VerifiedThresholdApproval",
+    "build_threshold_evidence",
     "evaluate_threshold_policy",
     "policy_digest",
+    "GitHubRestThresholdDecisionSource",
+    "GitHubThresholdApprovalVerifier",
+    "evaluate_threshold_policy_with_github_approval",
 ]

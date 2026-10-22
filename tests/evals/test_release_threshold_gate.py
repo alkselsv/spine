@@ -1,17 +1,50 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
+
+import pytest
+from pydantic import ValidationError
 
 from spine.evals.real_baseline import BaselineCaseInput, BaselineMetricInput, build_r1_baseline_report
+from spine.evals.real_benchmark_runner import RuntimeVersionPins
 from spine.evaluations.release_gates.thresholds import (
     MandatorySafetyResult,
     MetricThreshold,
     PolicyApproval,
+    RuntimeIdentityBinding,
     ThresholdEvidence,
+    ThresholdEvidenceV2,
     ThresholdPolicy,
-    evaluate_threshold_policy,
+    ThresholdPolicyV2,
+    VerifiedThresholdApproval,
+    evaluate_threshold_policy as _evaluate_threshold_policy,
     policy_digest,
 )
+from spine.evaluations.release_gates.threshold_approval_verifier import (
+    GitHubDecisionComment,
+    GitHubThresholdApprovalVerifier,
+    GitHubTimelineEvent,
+    evaluate_threshold_policy_with_github_approval,
+)
+
+
+def _runtime_binding() -> RuntimeIdentityBinding:
+    return RuntimeIdentityBinding(
+        profile_identity="d" * 64,
+        profile_version="spine-production-runtime-profile:v1",
+        deployment_fingerprint="a" * 64,
+        commit_sha="b" * 40,
+        runtime_pins=RuntimeVersionPins(
+            observer_seam_version="observer:v1",
+            application_version="api:v1",
+            projection_version="projection:v1",
+            model_version="model:v1",
+            prompt_version="prompt:v1",
+            validation_policy_version="validation:v1",
+            projection_kind="qa",
+        ),
+    )
 
 
 def _evidence(
@@ -20,7 +53,7 @@ def _evidence(
     coverage: str = "complete",
     metric: str = "qa.answer_outcome",
     failure_counts: dict[str, int] | None = None,
-) -> ThresholdEvidence:
+) -> ThresholdEvidenceV2:
     measured = 149 if coverage == "complete" else 148
     baseline = build_r1_baseline_report(
         cases=tuple(
@@ -52,13 +85,16 @@ def _evidence(
         observer_attempt_count=0,
         failure_counts=failure_counts,
     )
-    return ThresholdEvidence(
+    binding = _runtime_binding()
+    return ThresholdEvidenceV2(
         evidence_version="baseline-run-7",
+        run_id="c" * 64,
         dataset_id="qa-r1-real-approved",
         dataset_version=baseline.dataset_version,
         dataset_digest=baseline.dataset_sha256,
-        runtime_identity="worker-build-abc",
+        runtime_identity=binding.profile_identity,
         runtime_scope="r1-production-profile",
+        runtime_binding=binding,
         baseline=baseline,
     )
 
@@ -67,7 +103,7 @@ def _policy(
     *, threshold: float = 0.8, approved: bool = True, metric: str = "qa.answer_outcome",
     direction: str = "minimum", comparison: str = "gte", minimum_coverage: float = 0.5,
     optional_denial_metric: bool = False,
-) -> ThresholdPolicy:
+) -> ThresholdPolicyV2:
     metrics = [
         MetricThreshold(
             metric=metric,
@@ -99,15 +135,17 @@ def _policy(
             )
         )
         evaluator_versions.append(("qa.denial_quality", "v1"))
-    policy = ThresholdPolicy(
+    binding = _runtime_binding()
+    policy = ThresholdPolicyV2(
         policy_id="r1-quality-policy",
         version="v1",
         dataset_id="qa-r1-real-approved",
         dataset_version="0.3.9-user-approved",
         dataset_digest="7c2787272fd34643ff5168a46f5672b5a091f3070888546fa7b6ed0c918b3a62",
         metric_evaluator_versions=tuple(evaluator_versions),
-        runtime_identity="worker-build-abc",
+        runtime_identity=binding.profile_identity,
         runtime_scope="r1-production-profile",
+        runtime_binding=binding,
         metrics=tuple(metrics),
         state="draft",
     )
@@ -126,6 +164,37 @@ def _policy(
             ),
         }
     )
+
+
+def _verified_approval(policy: ThresholdPolicyV2) -> VerifiedThresholdApproval:
+    return VerifiedThresholdApproval(
+        decision_id="decision-42",
+        record_reference="https://github.com/alkselsv/spine/issues/557#issuecomment-42",
+        actor_id=167317615,
+        authority_reference="https://github.com/alkselsv/spine/issues/17",
+        policy_id=policy.policy_id,
+        policy_version=policy.version,
+        policy_digest=policy_digest(policy),
+        dataset_id=policy.dataset_id,
+        dataset_version=policy.dataset_version,
+        dataset_digest=policy.dataset_digest,
+        runtime_binding=policy.runtime_binding,
+        release_scope=policy.runtime_scope,
+        decision_status="approved",
+        decided_at=datetime(2026, 10, 19, tzinfo=timezone.utc),
+        source_snapshot_digest="e" * 64,
+    )
+
+
+def evaluate_threshold_policy(**kwargs):
+    policy = kwargs["policy"]
+    if (
+        type(policy) is ThresholdPolicyV2
+        and policy.state == "approved"
+        and "verified_approval" not in kwargs
+    ):
+        kwargs["verified_approval"] = _verified_approval(policy)
+    return _evaluate_threshold_policy(**kwargs)
 
 
 def _safety(status: str = "passed") -> tuple[MandatorySafetyResult, ...]:
@@ -169,6 +238,31 @@ def test_draft_policy_is_not_approved_and_cannot_pass() -> None:
 
     assert result.status == "not_approved"
     assert {metric.status for metric in result.metrics} == {"not_approved"}
+
+
+def test_legacy_policy_approval_cannot_qualify_without_trusted_verifier_evidence() -> None:
+    v2_policy = _policy()
+    policy = ThresholdPolicy.model_validate(
+        v2_policy.model_dump(exclude={"schema_version", "runtime_binding"})
+    )
+    v2_evidence = _evidence()
+    evidence = ThresholdEvidence(
+        evidence_version=v2_evidence.evidence_version,
+        dataset_id=v2_evidence.dataset_id,
+        dataset_version=v2_evidence.dataset_version,
+        dataset_digest=v2_evidence.dataset_digest,
+        runtime_identity=v2_evidence.runtime_identity,
+        runtime_scope=v2_evidence.runtime_scope,
+        baseline=v2_evidence.baseline,
+    )
+    result = _evaluate_threshold_policy(
+        policy=policy,
+        evidence=evidence,
+        safety_results=_safety(),
+        required_safety_gates=("hard-safety",),
+    )
+
+    assert result.status == "not_approved"
 
 
 def test_missing_safety_result_blocks_quality_evaluation() -> None:
@@ -244,14 +338,15 @@ def test_policy_identity_digest_excludes_approval_and_is_stable() -> None:
     assert policy_digest(policy) == policy_digest(policy)
 
 
-def test_wrong_approval_authority_is_not_approved() -> None:
+def test_wrong_verified_actor_is_not_approved() -> None:
     policy = _policy()
-    invalid_approval = policy.approval.model_copy(update={"authority": "operator"})
+    invalid_approval = _verified_approval(policy).model_copy(update={"actor_id": 21})
     result = evaluate_threshold_policy(
-        policy=policy.model_copy(update={"approval": invalid_approval}),
+        policy=policy,
         evidence=_evidence(),
         safety_results=_safety(),
         required_safety_gates=("hard-safety",),
+        verified_approval=invalid_approval,
     )
     assert result.status == "not_approved"
 
@@ -341,7 +436,248 @@ def test_incompatible_dataset_or_runtime_pins_cannot_pass() -> None:
         policy=_policy(), evidence=changed_dataset, safety_results=_safety(),
         required_safety_gates=("hard-safety",),
     )
-    assert "dataset_pin_mismatch" in dataset_result.reason_codes
+    assert dataset_result.status == "not_approved"
+
+
+@pytest.mark.parametrize(
+    "pin_name",
+    (
+        "observer_seam_version",
+        "application_version",
+        "projection_version",
+        "model_version",
+        "prompt_version",
+        "validation_policy_version",
+        "projection_kind",
+    ),
+)
+def test_each_runtime_version_pin_is_required(pin_name: str) -> None:
+    values = _runtime_binding().runtime_pins.model_dump()
+    values.pop(pin_name)
+    with pytest.raises(ValidationError):
+        RuntimeVersionPins.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    ("binding_field", "replacement"),
+    (
+        ("commit_sha", "f" * 40),
+        ("deployment_fingerprint", "f" * 64),
+        ("profile_identity", "f" * 64),
+    ),
+)
+def test_wrong_trusted_profile_binding_cannot_pass(
+    binding_field: str, replacement: str
+) -> None:
+    policy = _policy()
+    wrong_binding = policy.runtime_binding.model_copy(
+        update={binding_field: replacement}
+    )
+    wrong_evidence = _evidence().model_copy(
+        update={"runtime_binding": wrong_binding, "runtime_identity": wrong_binding.profile_identity}
+    )
+    result = _evaluate_threshold_policy(
+        policy=policy,
+        evidence=wrong_evidence,
+        safety_results=_safety(),
+        required_safety_gates=("hard-safety",),
+        verified_approval=_verified_approval(policy),
+    )
+    assert result.status == "not_approved"
+
+
+def test_wrong_model_or_projection_pin_cannot_pass() -> None:
+    policy = _policy()
+    for pin_name in ("model_version", "projection_version"):
+        pins = policy.runtime_binding.runtime_pins.model_copy(
+            update={pin_name: "different-version"}
+        )
+        wrong_binding = policy.runtime_binding.model_copy(update={"runtime_pins": pins})
+        evidence = _evidence().model_copy(update={"runtime_binding": wrong_binding})
+        result = _evaluate_threshold_policy(
+            policy=policy,
+            evidence=evidence,
+            safety_results=_safety(),
+            required_safety_gates=("hard-safety",),
+            verified_approval=_verified_approval(policy),
+        )
+        assert result.status == "not_approved"
+
+
+class _DecisionSource:
+    def __init__(self, comments, timeline=(), actor_id=167317615) -> None:
+        self._comments = tuple(comments)
+        self._timeline = tuple(timeline)
+        self._actor_id = actor_id
+
+    async def issue_author_id(self, issue_number: int) -> int:
+        assert issue_number == 17
+        return self._actor_id
+
+    async def comments(self, issue_number: int):
+        assert issue_number == 557
+        return self._comments
+
+    async def timeline(self, issue_number: int):
+        assert issue_number == 557
+        return self._timeline
+
+
+def _decision_comment(
+    policy: ThresholdPolicyV2,
+    *,
+    status: str = "approved",
+    actor_id: int = 167317615,
+    comment_id: int = 42,
+    updated_at: datetime | None = None,
+    dataset_digest: str | None = None,
+    policy_digest_value: str | None = None,
+    policy_version: str | None = None,
+    html_url: str | None = None,
+    supersedes: tuple[str, ...] = (),
+    revokes: tuple[str, ...] = (),
+) -> GitHubDecisionComment:
+    decided_at = datetime(2026, 10, 19, tzinfo=timezone.utc)
+    decision = {
+        "schema_version": "spine-r1-threshold-decision:v1",
+        "decision_id": "decision-42",
+        "status": status,
+        "policy_id": policy.policy_id,
+        "policy_version": policy_version or policy.version,
+        "policy_digest": policy_digest_value or policy_digest(policy),
+        "dataset_id": policy.dataset_id,
+        "dataset_version": policy.dataset_version,
+        "dataset_digest": dataset_digest or policy.dataset_digest,
+        "runtime_binding": policy.runtime_binding.model_dump(mode="json"),
+        "release_scope": policy.runtime_scope,
+        "decided_at": decided_at.isoformat(),
+        "supersedes_decision_ids": supersedes,
+        "revokes_decision_ids": revokes,
+    }
+    return GitHubDecisionComment(
+        comment_id=comment_id,
+        actor_id=actor_id,
+        body="```spine-r1-threshold-decision:v1\n"
+        + json.dumps(decision, sort_keys=True)
+        + "\n```",
+        created_at=decided_at,
+        updated_at=decided_at if updated_at is None else updated_at,
+        html_url=html_url
+        or f"https://github.com/alkselsv/spine/issues/557#issuecomment-{comment_id}",
+    )
+
+
+@pytest.mark.asyncio
+async def test_github_verifier_issues_exact_current_product_owner_approval() -> None:
+    policy = _policy()
+    evidence = _evidence()
+    verifier = GitHubThresholdApprovalVerifier(
+        _DecisionSource((_decision_comment(policy),))
+    )
+
+    approval = await verifier.verify(policy=policy, evidence=evidence)
+    result = await evaluate_threshold_policy_with_github_approval(
+        verifier=verifier,
+        policy=policy,
+        evidence=evidence,
+        safety_results=_safety(),
+        required_safety_gates=("hard-safety",),
+    )
+
+    assert approval is not None
+    assert approval.actor_id == 167317615
+    assert approval.policy_digest == policy_digest(policy)
+    assert approval.runtime_binding == policy.runtime_binding
+    assert result.status == "passed"
+    assert result.runtime_binding == evidence.runtime_binding
+    assert result.approval_reference == approval.record_reference
+    assert result.approval_source_snapshot_digest == approval.source_snapshot_digest
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        _DecisionSource((_decision_comment(_policy(), actor_id=9),)),
+        _DecisionSource((_decision_comment(_policy(), updated_at=datetime(2026, 10, 20, tzinfo=timezone.utc)),)),
+        _DecisionSource((_decision_comment(_policy(), status="revoked"),)),
+        _DecisionSource((_decision_comment(_policy(), status="rejected"),)),
+        _DecisionSource((_decision_comment(_policy(), dataset_digest="f" * 64),)),
+        _DecisionSource((_decision_comment(_policy(), policy_digest_value="f" * 64),)),
+        _DecisionSource((_decision_comment(_policy(), policy_version="v2"),)),
+        _DecisionSource((_decision_comment(_policy(), html_url="https://attacker.invalid/fake"),)),
+        _DecisionSource(
+            (_decision_comment(_policy()),),
+            (GitHubTimelineEvent(event="comment_deleted", comment_id=42),),
+        ),
+        _DecisionSource((_decision_comment(_policy()),), actor_id=10),
+    ),
+)
+@pytest.mark.asyncio
+async def test_github_verifier_rejects_untrusted_or_stale_decision(source) -> None:
+    policy = _policy()
+    approval = await GitHubThresholdApprovalVerifier(source).verify(
+        policy=policy,
+        evidence=_evidence(),
+    )
+
+    assert approval is None
+
+
+@pytest.mark.asyncio
+async def test_github_verifier_rejects_superseded_decision() -> None:
+    policy = _policy()
+    original = _decision_comment(policy)
+    successor = _decision_comment(
+        policy,
+        status="approved",
+        comment_id=43,
+        supersedes=("decision-42",),
+    )
+    approval = await GitHubThresholdApprovalVerifier(
+        _DecisionSource((original, successor))
+    ).verify(policy=policy, evidence=_evidence())
+
+    assert approval is None
+
+
+@pytest.mark.asyncio
+async def test_github_verifier_rejects_conflicting_current_decisions() -> None:
+    policy = _policy()
+    comments = (
+        _decision_comment(policy),
+        _decision_comment(policy, comment_id=43),
+    )
+    approval = await GitHubThresholdApprovalVerifier(
+        _DecisionSource(comments)
+    ).verify(policy=policy, evidence=_evidence())
+
+    assert approval is None
+
+
+@pytest.mark.asyncio
+async def test_missing_or_unavailable_github_source_fails_closed() -> None:
+    class UnavailableSource(_DecisionSource):
+        async def comments(self, issue_number: int):
+            raise OSError("network unavailable")
+
+    policy = _policy()
+    approval = await GitHubThresholdApprovalVerifier(
+        UnavailableSource(())
+    ).verify(policy=policy, evidence=_evidence())
+
+    assert approval is None
+
+
+def test_v2_policy_without_verifier_evidence_cannot_pass() -> None:
+    result = _evaluate_threshold_policy(
+        policy=_policy(),
+        evidence=_evidence(),
+        safety_results=_safety(),
+        required_safety_gates=("hard-safety",),
+        verified_approval=None,
+    )
+
+    assert result.status == "not_approved"
 
 
 def test_incompatible_evaluator_pin_cannot_pass() -> None:
