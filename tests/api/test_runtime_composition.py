@@ -105,6 +105,23 @@ def _authorization_runtime() -> ApiAuthorizationRuntime:
     )
 
 
+def _production_app_with_empty_ingestion_history(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    authorization = _authorization_runtime()
+    monkeypatch.setattr(
+        runtime_module,
+        "compose_local_api_authorization",
+        lambda **_: authorization,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "OrchestratedIngestionHistoryService",
+        lambda _uow_factory: EmptyIngestionHistoryService(),
+    )
+    return _production_app()
+
+
 def test_production_app_exposes_protected_canonical_document_surface() -> None:
     application = _production_app()
 
@@ -147,18 +164,7 @@ def test_production_app_exposes_protected_canonical_document_surface() -> None:
 async def test_production_app_serves_supported_runs_screen_processing_history_query(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    authorization = _authorization_runtime()
-    monkeypatch.setattr(
-        runtime_module,
-        "compose_local_api_authorization",
-        lambda **_: authorization,
-    )
-    monkeypatch.setattr(
-        runtime_module,
-        "OrchestratedIngestionHistoryService",
-        lambda _uow_factory: EmptyIngestionHistoryService(),
-    )
-    application = _production_app()
+    application = _production_app_with_empty_ingestion_history(monkeypatch)
     transport = httpx.ASGITransport(app=application)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -174,3 +180,70 @@ async def test_production_app_serves_supported_runs_screen_processing_history_qu
     assert response.status_code == 200
     assert response.json()["items"] == []
     assert response.json()["limit"] == 25
+
+
+@pytest.mark.asyncio
+async def test_production_app_serves_ingestion_runs_collection_for_authorized_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = _production_app_with_empty_ingestion_history(monkeypatch)
+    transport = httpx.ASGITransport(app=application)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/v1/ingestion/runs?limit=25",
+            headers={
+                "Authorization": "Bearer opaque-provider-token",
+                "X-Workspace-ID": str(WORKSPACE_ID),
+                "X-Environment-ID": str(ENVIRONMENT_ID),
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+    assert response.json()["limit"] == 25
+    assert response.json()["workspace_id"] == str(WORKSPACE_ID)
+    assert response.json()["environment_id"] == str(ENVIRONMENT_ID)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("headers", "expected_status", "protected_identifiers"),
+    [
+        (
+            {
+                "X-Workspace-ID": str(WORKSPACE_ID),
+                "X-Environment-ID": str(ENVIRONMENT_ID),
+            },
+            401,
+            (str(WORKSPACE_ID), str(ENVIRONMENT_ID)),
+        ),
+        (
+            {
+                "Authorization": "Bearer opaque-provider-token",
+                "X-Workspace-ID": "10000000-0000-4000-8000-000000000099",
+                "X-Environment-ID": "20000000-0000-4000-8000-000000000099",
+            },
+            403,
+            (
+                "10000000-0000-4000-8000-000000000099",
+                "20000000-0000-4000-8000-000000000099",
+            ),
+        ),
+    ],
+    ids=["missing-bearer", "foreign-scope"],
+)
+async def test_production_app_rejects_unauthorized_ingestion_runs_collection(
+    monkeypatch: pytest.MonkeyPatch,
+    headers: dict[str, str],
+    expected_status: int,
+    protected_identifiers: tuple[str, str],
+) -> None:
+    application = _production_app_with_empty_ingestion_history(monkeypatch)
+    transport = httpx.ASGITransport(app=application)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/v1/ingestion/runs", headers=headers)
+
+    assert response.status_code == expected_status
+    assert all(identifier not in response.text for identifier in protected_identifiers)

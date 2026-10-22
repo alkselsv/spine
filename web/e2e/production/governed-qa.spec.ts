@@ -135,8 +135,36 @@ async function qualifyUploadAndProjection(
   if (![200, 201, 202].includes(uploadStatus)) throw new Error('production_ingestion_dependency_unavailable');
   const ingestionRunLink = page.getByRole('link', { name: 'Открыть запуск обработки' }).first();
   await visible(ingestionRunLink, 'ingestion_run_unavailable', 180_000);
+  const ingestionRunsResponse = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === '/api/v1/ingestion/runs',
+  );
   await ingestionRunLink.click();
+  const ingestionRuns = await ingestionRunsResponse;
+  const ingestionRunsStatus = ingestionRuns.status();
+  if (ingestionRunsStatus === 404) throw new Error('production_ingestion_runs_surface_incomplete');
+  if (ingestionRunsStatus === 401) throw new Error('qualification_authentication_rejected');
+  if (ingestionRunsStatus === 403) throw new Error('qualification_authority_missing');
+  if (ingestionRunsStatus !== 200) throw new Error('production_ingestion_runs_dependency_unavailable');
+  const ingestionRunsBody: unknown = await ingestionRuns.json();
+  if (
+    !isRecord(ingestionRunsBody)
+    || ingestionRunsBody.workspace_id !== config.workspaceAId
+    || ingestionRunsBody.environment_id !== config.environmentAId
+    || !Array.isArray(ingestionRunsBody.items)
+  ) throw new Error('production_ingestion_runs_schema_invalid');
   await visible(page.getByRole('heading', { name: 'Запуски обработки' }), 'ingestion_run_unavailable');
+  const runHistory = page.getByRole('heading', { name: 'История запусков' }).locator('..');
+  const firstHistoryRun = ingestionRunsBody.items[0];
+  if (firstHistoryRun === undefined) {
+    await visible(
+      runHistory.getByRole('region', { name: 'Пока нет данных' }),
+      'ingestion_runs_empty_state_unavailable',
+    );
+  } else {
+    const historyRunId = isRecord(firstHistoryRun) ? safeUuid(firstHistoryRun.run_id) : null;
+    if (!historyRunId) throw new Error('production_ingestion_runs_schema_invalid');
+    await visible(runHistory.getByText(historyRunId), 'ingestion_runs_collection_not_rendered');
+  }
   await waitFor(() => Boolean(evidence.sourceObjectId && evidence.sourceRevisionId && evidence.ingestionRunId), 'upload_metadata_unavailable');
 
   await page.goto(scoped(
