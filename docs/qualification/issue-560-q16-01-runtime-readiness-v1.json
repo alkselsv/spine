@@ -1,0 +1,136 @@
+{
+  "schema_version": "q16-01-runtime-readiness:v1",
+  "issue": 560,
+  "observed_at": "2026-10-22T18:42:00Z",
+  "decision": "BLOCKED",
+  "target": {
+    "kind": "repository-owned-isolated-source-compose",
+    "compose_project": "spine560",
+    "commit_sha": "9784577d276445aa5e4e52b513ca89e653ad7e55",
+    "deployment_fingerprint": "5f8cc32cc79d6127be50cf6363a5006cbebd063f129565a12bdea71a81b53b23",
+    "release_identity": "sha256:ff6e075d6a12a58884e2408af8339953e66b5edcacebbfef74cee25e728903cd",
+    "workspace_id": "54400000-0000-4000-8000-00000000000a",
+    "environment_id": "54400000-0000-4000-8000-00000000000e",
+    "authorization_generation": 1
+  },
+  "manifest": {
+    "profile_id": "spine-local-qa",
+    "profile_version": "v1",
+    "database_profile_id": "spine-local-postgresql-v1",
+    "postgresql_version": "17.11",
+    "migration_revision": "20261120_57",
+    "original_storage_profile": "compose-volume-v1",
+    "temporal_version": "1.28.1",
+    "temporal_namespace": "default",
+    "temporal_task_queue": "spine-r1-qa",
+    "worker_identity": "spine-qa-worker",
+    "dispatcher_identity": "outbox-dispatcher",
+    "authentication_mode": "local_development",
+    "authentication_profile_id": "local-issue508-v28",
+    "scope_policy_id": "workspace-environment-v1",
+    "capture_contract_version": "r1-qa-observer-capture:v1",
+    "projection_profile_id": "spine-cognee-local-v1",
+    "model_profile_id": "spine-openai-r1-v1",
+    "provider_profile_id": "cognee-approved-production",
+    "provider_profile_digest": "a4b5b13cef86d86b6c257205f1485108e0d833b780f66ff8ad15f5bccd135c15",
+    "cognee_version": "1.5.4",
+    "neo4j_apoc_version": "5.26.32",
+    "pgvector_available_version": "0.8.7",
+    "pgvector_installed_version": null,
+    "neo4j_python_version": "5.28.6",
+    "pgvector_python_version": "0.3.6",
+    "llm_model": "openai/gpt-5.4-nano",
+    "embedding_model": "openai/text-embedding-3-small",
+    "images": {
+      "api": "sha256:96e5397483c4cb31dfd7daa129d9d4100fddbe75c4f99d75efcf8b576a9fe35b",
+      "qa_worker": "sha256:c7c2466faffa636a9b501f839dc210d800af7c0b3ef18deb7fe32d8d061209b4",
+      "outbox_dispatcher": "sha256:f93921df6b90305de558349498ef71881664f797e061a0db52157501c62c75d6",
+      "web": "sha256:99bd5c2da49285094903e6fb8f0687a63f69f00b84ea48fe541d0530aa57970a",
+      "postgresql": "sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d",
+      "temporal": "sha256:607d68caa111338d754771efb876c92dfcdae06d056e4530bb31cd0f37406e6a",
+      "neo4j": "sha256:4bba6d3a4a50bcfbfb72eaaf99dd1f614bef05068b25d69160c56f68d9c29bb2"
+    }
+  },
+  "readiness": {
+    "configuration": "PASS",
+    "reachability": "PASS",
+    "authorization": "NOT_VERIFIED",
+    "bindings": "PASS",
+    "application_execution": "BLOCKED",
+    "qualification": "BLOCKED",
+    "api": "ready",
+    "postgresql": "reachable",
+    "original_storage": "read_write_reachable",
+    "temporal": "serving",
+    "worker_polling": "polling",
+    "dispatcher": "running",
+    "observer_capture": "NOT_VERIFIED",
+    "provider_calls_observed": 0
+  },
+  "database_posture": {
+    "migration_current": true,
+    "application_roles_superuser": false,
+    "application_roles_create_role": false,
+    "application_roles_create_database": false,
+    "rls_enabled_tables": 74,
+    "rls_forced_tables": 74,
+    "spine_tables": 82
+  },
+  "authorization_observations": {
+    "approved_scope": "PASS",
+    "wrong_environment_pair": "PASS_DENIED_403",
+    "unknown_workspace": "PASS_DENIED_403",
+    "foreign_credential": "PASS_DENIED_401",
+    "insufficient_role": "NOT_VERIFIED",
+    "revoked_or_expired_authority": "NOT_VERIFIED",
+    "stale_authorization_generation": "NOT_VERIFIED"
+  },
+  "synthetic_ask": {
+    "command_id": "a8ff8c83-3df1-4203-99eb-9c9e173cc446",
+    "message_id": "288bf72c-6f18-4356-bd13-33391764a235",
+    "run_id": "9cdf9e72-1b93-40b6-adb9-61ab2004639c",
+    "trace_id": "1b4e56f4-e8ed-4a12-9e77-d7a85903b4f8",
+    "capture_id": "3890d3d4-d1c3-5f4a-9cc6-d014936d9daa",
+    "subscription_id": "50e24ab9-8c4a-5417-a0ea-578ab2040d94",
+    "outbox_event_id": "f19ddc03-558e-57b3-bbff-88f52cca1d69",
+    "temporal_run_id": "01a164ea-a6ae-779f-bbe0-af953be4d456",
+    "api_admission": "PASS",
+    "canonical_outbox": "PASS_DELIVERED",
+    "dispatcher_delivery": "PASS",
+    "temporal_admission": "PASS_RUNNING",
+    "answer_question_capability": "BLOCKED",
+    "canonical_terminal_readback": "BLOCKED_ADMITTED",
+    "same_execution_capture": "NOT_VERIFIED",
+    "attempt_count": 0,
+    "safe_reason_code": "active_projection_unavailable",
+    "supported_api_cancellation": "BLOCKED_503",
+    "temporal_cleanup": "CANCEL_REQUESTED",
+    "canonical_cleanup": "BLOCKED_ADMITTED"
+  },
+  "blockers": [
+    {
+      "code": "active_projection_unavailable",
+      "meaning": "The SOURCE target has no active Q&A publication. The worker fails closed while preparing the pinned production configuration before capability invocation. Creating or activating a projection is owned by issue 562, which currently depends on issue 560."
+    },
+    {
+      "code": "pre_attempt_failure_not_terminalized",
+      "meaning": "Configuration failure occurs before attempt allocation; Temporal retries while the canonical run remains admitted, and the supported cancellation request returns a bounded unavailable response."
+    },
+    {
+      "code": "negative_authority_principals_unavailable",
+      "meaning": "The approved target supplied one active administrator principal. Live insufficient-role, revoked or expired authority and stale-generation cases cannot be exercised without additional pre-existing Security-owned fixtures."
+    },
+    {
+      "code": "pgvector_extension_not_installed",
+      "meaning": "The pinned PostgreSQL image offers PGVector 0.8.7, but the extension is not installed in the selected database."
+    }
+  ],
+  "privacy": {
+    "metadata_only": true,
+    "credentials_recorded": false,
+    "network_locations_recorded": false,
+    "content_recorded": false,
+    "provider_payloads_recorded": false,
+    "raw_errors_recorded": false
+  }
+}
