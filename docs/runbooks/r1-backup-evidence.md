@@ -13,16 +13,19 @@ or operator command.
 - The approved configuration binds a separate protected destination, encrypted
   storage and transport, daily cadence, 30-day retention enforcement, compatible
   PostgreSQL tooling, and the POSIX original-object volume.
-- A reviewed operator entry point composes the existing coordinator, PostgreSQL
-  adapter, filesystem adapter, artifact store, and independent verifiers.
+- A deployment-owned operator composition invokes `spine-recovery-operator:v1`
+  with the existing coordinator, PostgreSQL adapter, filesystem adapter,
+  artifact store, and independent verifiers. The repository CLI validates the
+  profile; it does not discover deployment resources or credentials.
 - Staged uploads have a documented restart/reconciliation policy. Finalized
   original bytes, private manifests, and canonical receipt/reference metadata
   are in scope.
 
-If the deployment has no reviewed coordinator entry point or any binding above
-is missing, stop before creating a backup. The repository exposes no backup HTTP
-route or CLI. Do not substitute direct `pg_dump`, `tar`, ad hoc Python, or manual
-manifest writes for the coordinated operation.
+If the deployment has no reviewed coordinator composition or any binding above
+is missing, stop before creating a backup. There is no backup HTTP route and the
+profile-validation CLI cannot perform recovery by itself. Do not substitute
+direct `pg_dump`, `tar`, ad hoc Python, or manual manifest writes for the
+coordinated operation.
 
 ## Permissions
 

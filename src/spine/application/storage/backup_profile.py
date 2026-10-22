@@ -85,6 +85,12 @@ class CoordinatedBackupProfile:
         self._lease_duration = lease_duration
         self._lease_renewal_interval = renewal_interval
 
+    @property
+    def protection(self) -> BackupProtectionProfile:
+        """Return the immutable deployment protection binding used by this profile."""
+
+        return self._protection
+
     async def run(
         self,
         *,

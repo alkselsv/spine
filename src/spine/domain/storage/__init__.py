@@ -24,6 +24,15 @@ from .recovery import (
     validate_ticket_transition,
     verify_recovery_evidence_chain,
 )
+from .recovery_operator import (
+    RECOVERY_OPERATOR_PROFILE_VERSION,
+    RECOVERY_OPERATOR_RESULT_VERSION,
+    RecoveryOperatorOperation,
+    RecoveryOperatorProfile,
+    RecoveryOperatorResult,
+    RecoveryRestoreTargetFacts,
+    RecoverySourceInventoryFacts,
+)
 
 __all__ = [
     "BackupFenceLease",
@@ -48,4 +57,11 @@ __all__ = [
     "derive_recovery_readiness",
     "validate_ticket_transition",
     "verify_recovery_evidence_chain",
+    "RECOVERY_OPERATOR_PROFILE_VERSION",
+    "RECOVERY_OPERATOR_RESULT_VERSION",
+    "RecoveryOperatorOperation",
+    "RecoveryOperatorProfile",
+    "RecoveryOperatorResult",
+    "RecoveryRestoreTargetFacts",
+    "RecoverySourceInventoryFacts",
 ]

@@ -34,7 +34,7 @@ These decisions are not reopened here. The extension from the approved shared Q&
 | Outbox | `OutboxDispatcher`, `OutboxWorker.dispatch_batch()`, `PostgreSQLOutboxDeliveryRepository`, Ask/cancellation consumer bindings, and `create_production_outbox_worker()` for projection/recovery | No long-running runner, owned poll/lease/retry settings, coordinated shutdown, or production registry combining the required Ask and projection consumers under the approved dispatch identity. |
 | Authorization | `compose_local_api_authorization()`, `OIDCAuthenticationRuntime`, development `LocalAuthenticationAdapter`, `TrustedRequestContextBoundary`, PostgreSQL authorization directory, AccessPolicy/RLS checks | Local authentication is a configured development adapter, not an approved production qualification trust source. The test/migration seed helper is not a provisioning API. No verified canonical synthetic principal/grant binding exists for this deployment. |
 | Projection | Cognee 1.5.4 adapter and `CogneeContextProjection`; `build_postgresql_cognee_projection_request_consumer()` plus the recovery route; `create_production_outbox_worker()` | No process binding to an approved SOURCE/RESTORE provider profile. #507's coherent physical run is useful evidence for its exact profile, but #507 still records deployed R4 and composed live R6 as blocked. |
-| Backup | `CoordinatedBackupProfile`, ADR-0022 fence/coordinator, PostgreSQL and original-storage component sources, protected artifact store, immutable manifest and read-back verification | No reviewed operator entrypoint or deployed destination, encryption/retention binding, change authority, or backup identity. Runbook explicitly forbids replacing it with direct `pg_dump`, `tar`, or ad hoc receipts. |
+| Backup | `CoordinatedBackupProfile`, ADR-0022 fence/coordinator, PostgreSQL and original-storage component sources, protected artifact store, immutable manifest and read-back verification | #532 supplies the strict profile and application binding seam; no deployment-approved destination, encryption/retention binding, change authority, or backup identity is selected here. Runbook explicitly forbids replacing it with direct `pg_dump`, `tar`, or ad hoc receipts. |
 | Restore | `IsolatedRestoreVerifier`, isolated PostgreSQL restore, original materialization and canonical reconciliation | No configured non-serving empty RESTORE target, separate credentials, process entrypoint or deployment inventory binding. The verifier may not restore over SOURCE. |
 | Readiness/evidence | `ProductionRuntimeProfile:v1`, trusted runtime preflight and `RuntimeReadinessReport`; versioned #509 Temporal/runtime reports | Existing readiness contracts do not establish API deployment, trusted auth, live pollers, completed application execution, provider qualification, recovery or release approval. |
 
@@ -156,7 +156,13 @@ The operator binding accepts an approved deployment/profile identity, full trust
 
 The operator entrypoint is one-shot, explicit, auditable, and unavailable to normal API startup. It reads/records immutable evidence through existing ports; it cannot manufacture receipts or write manifests by hand. Any incomplete fence, artifact digest/read-back, reconciliation, authorization, target isolation, projection rebuild or audit result keeps RESTORE fenced and untrusted. The storage/recovery owner approves exact endpoints/volume aliases, tool versions, retention/encryption, role references and independent review. The security owner approves the identities and canary. No backup or restore is allowed until the decision register prerequisites are resolved.
 
-The repository runbooks state there is currently no reviewed backup or restore CLI/HTTP entrypoint. Do not run direct `pg_dump`, `tar`, a hand-written manifest, or restore onto SOURCE as a substitute.
+Issue #532 now supplies the strict `spine-recovery-operator:v1` profile and
+application launcher seam. It does not select deployment targets or credentials:
+the CLI validates a profile, while a deployment-owned composition injects the
+existing coordinator, verifier, artifact and evidence ports for an explicitly
+authorized one-shot run. There is still no public HTTP route or startup/scheduler
+operation. Do not run direct `pg_dump`, `tar`, a hand-written manifest, or
+restore onto SOURCE as a substitute.
 
 ## 8. Mandatory security invariants
 
@@ -211,7 +217,13 @@ No unit, fake, test-server, disposable integration, or infrastructure health res
 
 ## 12. Non-goals and approval
 
-This version does not implement settings, a deployment factory, process runner, identity provisioning, secret manager, backup CLI, restore CLI, new provider adapter, new workflow/orchestration system, schema migration, AccessPolicy change, new ADR, or a physical operation. It does not authorize production access, new production privileges, private corpus use, provider spending, backup, restore, canary, promotion, or issue closure.
+This version does not implement settings, a deployment factory, process runner,
+identity provisioning, secret manager, deployment-specific target adapters, new
+provider adapter, new workflow/orchestration system, schema migration,
+AccessPolicy change, new ADR, or a physical operation. Issue #532 supplies the
+profile-validation CLI and application binding seam; it does not authorize
+production access, new production privileges, private corpus use, provider
+spending, backup, restore, canary, promotion, or issue closure.
 
 **Architecture approval:** recorded by `dima55279` based on team lead approval communicated outside GitHub on 2026-10-21 ([comment](https://github.com/alkselsv/spine/pull/528#issuecomment-6317606512)); D1–D8 are approved at the architecture boundary. This is not a formal GitHub review from the team lead.
 

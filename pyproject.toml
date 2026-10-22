@@ -44,6 +44,7 @@ spine-db-bootstrap = "spine.scripts.database:operator_bootstrap_main"
 spine-db-migrate = "spine.scripts.database:migrate_main"
 spine-db-bootstrap-workspace = "spine.scripts.database:initial_workspace_main"
 spine-qualification-bootstrap = "spine.scripts.qualification:main"
+spine-recovery-operator = "spine.scripts.recovery_operator:main"
 spine-outbox-worker = "spine.workers.runtime:main"
 spine-qa-worker = "spine.workers.qa_runtime:main"
 

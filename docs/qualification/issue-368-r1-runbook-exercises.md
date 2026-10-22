@@ -22,13 +22,14 @@ content are committed here.
 
 ## Production boundary
 
-The contracts are implemented, but operational bindings remain deployment
-responsibilities. No backup/restore CLI or HTTP route, protected destination,
-credential, encryption binding, retention enforcement, isolated production
-target, independent production verifier, Cognee/provider profile, or external
-telemetry exporter is approved by this record. Do not execute an ad hoc restore
-or claim production recovery readiness. Complete the owner-approved bindings
-and rerun the exact isolated procedures before any production qualification.
+The contracts and the strict recovery-operator profile/launcher are implemented,
+but operational bindings remain deployment responsibilities. No protected
+destination, credential, encryption binding, retention enforcement, isolated
+production target, independent production verifier, Cognee/provider profile, or
+external telemetry exporter is approved by this record. The profile-validation
+CLI is not production qualification and does not execute an ad hoc restore.
+Complete the owner-approved bindings and rerun the exact isolated procedures
+before any production qualification.
 
 ## Reproduction
 
