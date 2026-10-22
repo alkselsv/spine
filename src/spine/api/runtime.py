@@ -20,6 +20,7 @@ from spine.application.diagnostics import (
 )
 from spine.application.ask_admission import PersistedAskAdmissionService
 from spine.application.document_queries import CanonicalDocumentQueryService
+from spine.application.ingestion_history import OrchestratedIngestionHistoryService
 from spine.application.persistence.outbox import OutboxEventRegistry
 from spine.application.projection_control import (
     CanonicalProjectionStatusService,
@@ -168,6 +169,12 @@ def create_production_app(
         ),
         document_ingestion_service=ingestion.document_service,
         batch_document_ingestion_service=ingestion.batch_service,
+        ingestion_history_service=OrchestratedIngestionHistoryService(
+            persistence.uow_factory
+        ),
+        ingestion_history_cursor_secret=(
+            resolved_api.cursor_secret.get_secret_value().encode("utf-8")
+        ),
         document_lifecycle_command_service=ProductionDocumentLifecycleCommandService(
             uow_factory=persistence.uow_factory,
             outbox_events=outbox_events,

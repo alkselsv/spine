@@ -287,6 +287,36 @@ describe('Knowledge ingestion run view', () => {
     expect(screen.getByRole('button', { name: 'Повторить загрузку' })).toBeVisible();
   });
 
+  it('test_processing_history_validation_failure_is_safe_and_retryable_by_the_user', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof globalThis.fetch>().mockImplementation(async (input) => {
+        const path = new URL((input as Request).url).pathname;
+        if (path === '/api/v1/ingestion/runs') return Response.json(runHistoryCollection());
+        if (path === '/api/v1/documents/processing-history') {
+          return Response.json(
+            {
+              code: 'spine.request.validation',
+              retryability: 'never',
+              safe_message: 'Request validation failed.',
+              schema_version: 1,
+              trace_id: '50000000-0000-4000-8000-000000000001',
+              protected_detail: 'must not leak',
+            },
+            { status: 422 },
+          );
+        }
+        return Response.json(runStatus());
+      }),
+    );
+
+    renderRun(`/runs?workspace=${scope.workspaceId}&environment=${scope.environmentId}`);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Проверьте данные');
+    expect(globalThis.document.body).not.toHaveTextContent('must not leak');
+    expect(screen.getByRole('button', { name: 'Повторить загрузку' })).toBeVisible();
+  });
+
   it('test_permission_denial_hides_cached_run_details_after_a_successful_read', async () => {
     let denyRunRead = false;
     const emptyRuns = runHistoryCollection();

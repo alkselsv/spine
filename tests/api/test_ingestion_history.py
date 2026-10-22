@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 import httpx
+import pytest
 
 from spine.api.ingestion_history import install_ingestion_history_routes
 from spine.application.ingestion_history import (
@@ -252,7 +253,27 @@ async def test_processing_history_links_each_item_to_its_polling_resource() -> N
     assert item["failure_ids"] == [str(FAILURE_ID)]
 
 
-async def test_history_denies_foreign_scope_without_enumerating_rows() -> None:
+async def test_supported_runs_screen_processing_history_query_returns_200() -> None:
+    transport = httpx.ASGITransport(app=_app())
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/v1/documents/processing-history?limit=25",
+            headers=_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["limit"] == 25
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/v1/ingestion/runs",
+        "/api/v1/documents/processing-history?limit=25",
+    ],
+)
+async def test_history_denies_foreign_scope_without_enumerating_rows(path: str) -> None:
     transport = httpx.ASGITransport(app=_app())
     headers = {
         **_headers(),
@@ -261,7 +282,7 @@ async def test_history_denies_foreign_scope_without_enumerating_rows() -> None:
     }
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/api/v1/ingestion/runs", headers=headers)
+        response = await client.get(path, headers=headers)
 
     assert response.status_code == 403
     assert response.json()["code"] == "spine.authorization.denied"
@@ -269,21 +290,28 @@ async def test_history_denies_foreign_scope_without_enumerating_rows() -> None:
     assert str(RUN_ID) not in response.text
 
 
-async def test_history_rejects_invalid_collection_query() -> None:
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/v1/ingestion/runs?limit=0",
+        "/api/v1/ingestion/runs?cursor=" + ("x" * 4097),
+        "/api/v1/documents/processing-history?limit=0",
+        "/api/v1/documents/processing-history?cursor=" + ("x" * 4097),
+    ],
+    ids=[
+        "runs-invalid-limit",
+        "runs-oversized-cursor",
+        "processing-invalid-limit",
+        "processing-oversized-cursor",
+    ],
+)
+async def test_history_rejects_invalid_collection_query(path: str) -> None:
     transport = httpx.ASGITransport(app=_app())
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        invalid_limit = await client.get(
-            "/api/v1/ingestion/runs?limit=0",
-            headers=_headers(),
-        )
-        oversized_cursor = await client.get(
-            "/api/v1/ingestion/runs?cursor=" + ("x" * 4097),
-            headers=_headers(),
-        )
+        response = await client.get(path, headers=_headers())
 
-    assert invalid_limit.status_code == 422
-    assert oversized_cursor.status_code == 422
+    assert response.status_code == 422
 
 
 async def test_processing_history_exposes_cancelled_run_state() -> None:
