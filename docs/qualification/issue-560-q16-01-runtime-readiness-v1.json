@@ -132,7 +132,7 @@
     },
     {
       "code": "negative_authority_principals_unavailable",
-      "meaning": "The approved target supplied one active administrator principal. Live insufficient-role, revoked or expired authority and stale-generation cases cannot be exercised without additional pre-existing Security-owned fixtures."
+      "meaning": "The target supplied no admissible pre-existing qualification principals. Live approved-scope, insufficient-role, revoked or expired authority and stale-generation cases cannot be exercised without pre-existing Security-owned fixtures."
     },
     {
       "code": "pgvector_extension_not_installed",
