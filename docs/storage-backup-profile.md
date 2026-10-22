@@ -53,6 +53,14 @@ environment inventory scope source must also cover every active tenant in the
 deployment; an incomplete scope set makes the physical/canonical set comparison
 fail closed.
 
+The `spine-recovery-operator:v1` profile and application launcher provide the
+one-shot binding seam for these checks. They accept opaque deployment-approved
+references only, reject SOURCE/RESTORE and identity collisions, and call the
+existing coordinator/verifier contracts through injected ports. The CLI can
+validate a profile, while physical execution still requires a deployment-owned
+composition and current operator approval; it is never started by API, worker,
+dispatcher or scheduler startup.
+
 ## O04 isolated restore verification
 
 `IsolatedRestoreVerifier` consumes a coherent v1 recovery manifest and both

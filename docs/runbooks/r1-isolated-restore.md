@@ -19,10 +19,11 @@ non-serving restore target is eligible.
 - Deployment-approved credentials, encrypted transfer, and an independent
   evidence reviewer. Keep values in the secret manager only.
 
-If any deployment binding is missing, do not restore. The repository has no
-public restore API or operator CLI; invoke only an owner-reviewed composition
-entry point. Never point the verifier at a live database or use a serving
-identity for restore.
+If any deployment binding is missing, do not restore. Use the strict
+`spine-recovery-operator:v1` profile through an owner-reviewed composition
+entry point; the repository CLI validates profiles but does not discover or
+invoke deployment targets. Never point the verifier at a live database or use
+a serving identity for restore.
 
 ## Permissions
 
