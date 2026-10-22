@@ -235,6 +235,12 @@ async def verify_database_readiness(
                         "'spine.resolve_current_service_authority"
                         "(uuid,uuid,uuid,text,text)', 'EXECUTE') AS service_public, "
                         "has_function_privilege(current_user, "
+                        "'spine.resolve_current_qualification_target_binding"
+                        "(uuid,text,uuid,uuid)', 'EXECUTE') AS target_binding_runtime, "
+                        "has_function_privilege('public', "
+                        "'spine.resolve_current_qualification_target_binding"
+                        "(uuid,text,uuid,uuid)', 'EXECUTE') AS target_binding_public, "
+                        "has_function_privilege(current_user, "
                         "'spine.resolve_current_authorization_generation"
                         "(uuid,uuid)', 'EXECUTE') AS legacy_generation_runtime, "
                         "has_function_privilege(current_user, "
@@ -255,6 +261,8 @@ async def verify_database_readiness(
                 or resolver_privileges.human_public
                 or not resolver_privileges.service_runtime
                 or resolver_privileges.service_public
+                or not resolver_privileges.target_binding_runtime
+                or resolver_privileges.target_binding_public
                 or resolver_privileges.legacy_generation_runtime
                 or not resolver_privileges.correlation_runtime
                 or resolver_privileges.correlation_public
@@ -433,6 +441,9 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "environment_role_bindings": ExpectedTablePrivileges(True, False, False, False, False),
         "authorization_generations": ExpectedTablePrivileges(True, False, False, False, False),
         "qualification_authority_bindings": ExpectedTablePrivileges(
+            True, False, False, False, False
+        ),
+        "qualification_target_bindings": ExpectedTablePrivileges(
             True, False, False, False, False
         ),
     }

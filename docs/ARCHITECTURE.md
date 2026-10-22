@@ -232,6 +232,25 @@ prompts, answers, citations, comments, provider errors or stack traces.
 - `AccessPolicy` — неизменно версионируемые правила доступа `SourceObject`.
   Текущая версия в PostgreSQL является единственным каноническим источником
   authorization; прошлые версии сохраняются только для provenance и audit.
+- `QualificationAuthorityBinding` — временное versioned ограничение полномочий
+  одного human/service principal с immutable hard deadline.
+- `QualificationTargetBinding` — references-only связь текущего qualification
+  authority с одним изолированным SOURCE или RESTORE target scope, alias,
+  внешней secret reference, database-role reference и уже существующими
+  AccessPolicy references. SOURCE и RESTORE не переиспользуют эти ссылки;
+  явно versioned immutable successor chain одного target может сохранять его
+  ссылки для rotation, но каждый successor pin-ит новую canonical authority
+  version и тем самым запрещает predecessor; разные роли одного target разделяют
+  только inventory reference.
+  Verifier является отдельным read-only service principal для RESTORE. Resolver
+  проверяет существование всех AccessPolicy versions в том же Workspace и
+  Environment, но не создаёт content grants.
+
+Runtime не перечисляет qualification targets и не читает их canonical records
+напрямую: разрешение требует полный ожидаемый binding digest, актуальную
+неистёкшую canonical authority и точный tenant scope. Secret values разрешаются
+только через внешний provider-neutral seam и никогда не входят в canonical
+state; недоступность или mismatch любого reference приводит к отказу.
 
 Роль `administrator` даёт доступ к Control Plane, operational lifecycle, safe
 metadata, diagnostics и управлению policy, но не делает человека content

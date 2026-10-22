@@ -327,6 +327,23 @@ A narrowly scoped service authority to receive, isolate and security-validate ne
 content before a Source Object has an active Access Policy.
 _Avoid_: process_content, read_content, ingestion superuser
 
+**Qualification Authority Binding**:
+A temporary, versioned authority constraint for one human or service principal
+in one Workspace and Environment, with an immutable hard deadline.
+_Avoid_: Credential, Access Grant, general identity record
+
+**Qualification Target Binding**:
+An approved references-only association between one Qualification Authority
+Binding and one isolated SOURCE or RESTORE target scope, principal alias,
+external secret reference and database-role reference. Rotation appends an
+explicitly versioned successor pinned to a newer authority version.
+_Avoid_: Credential value, discovered target, content grant
+
+**External Secret Reference**:
+An opaque provider/configuration reference through which an approved external
+mechanism may resolve a secret without placing its value in canonical state.
+_Avoid_: Secret, password, inline credential
+
 **Policy Template**:
 An immutable, pre-approved basis for creating a Source Object's initial Access
 Policy when its source, Security Domain, purpose and environment are eligible.

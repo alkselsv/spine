@@ -205,6 +205,56 @@ qualification_authority_bindings = Table(
     ),
 )
 
+qualification_target_bindings = Table(
+    "qualification_target_bindings",
+    metadata,
+    Column("binding_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("binding_series_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("binding_version", BigInteger, nullable=False),
+    Column("predecessor_binding_id", PostgreSQLUUID(as_uuid=True), nullable=True),
+    Column("authority_binding_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("authority_binding_version", BigInteger, nullable=False),
+    Column("qualification_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("target", String(16), nullable=False),
+    Column("target_reference", String(255), nullable=False),
+    Column("target_scope_reference", String(255), nullable=False),
+    Column("principal_kind", String(16), nullable=False),
+    Column("principal_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("purpose", String(64), nullable=True),
+    Column("operation", String(64), nullable=True),
+    Column("alias_reference", String(255), nullable=False),
+    Column("secret_provider_reference", String(255), nullable=False),
+    Column("secret_reference", String(255), nullable=False),
+    Column("database_role_reference", String(255), nullable=False),
+    Column("target_role", String(32), nullable=False),
+    Column("database_access", String(16), nullable=False),
+    Column(
+        "access_policy_references",
+        ARRAY(PostgreSQLUUID(as_uuid=True)),
+        nullable=False,
+    ),
+    Column("binding_digest", String(64), nullable=False),
+    Column(
+        "recorded_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+    ),
+    ForeignKeyConstraint(
+        ["authority_binding_id", "authority_binding_version"],
+        [
+            "spine.qualification_authority_bindings.binding_id",
+            "spine.qualification_authority_bindings.version",
+        ],
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id"],
+        ["spine.environments.workspace_id", "spine.environments.id"],
+    ),
+)
+
 
 __all__ = [
     "authentication_alias_bindings",
@@ -214,5 +264,6 @@ __all__ = [
     "environment_memberships",
     "environment_role_bindings",
     "qualification_authority_bindings",
+    "qualification_target_bindings",
     "workspace_memberships",
 ]
