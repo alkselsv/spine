@@ -170,10 +170,14 @@ def test_process_failure_log_omits_raw_exception_details(
 ) -> None:
     import spine.workers.runtime as runtime_module
 
-    async def fail_with_sensitive_detail() -> None:
+    def fail_with_sensitive_detail():
         raise RuntimeError("postgres://secret-user:secret-password/db payload")
 
-    monkeypatch.setattr(runtime_module, "_run", fail_with_sensitive_detail)
+    monkeypatch.setattr(
+        runtime_module,
+        "create_production_outbox_worker_runtime",
+        fail_with_sensitive_detail,
+    )
 
     with pytest.raises(SystemExit):
         runtime_module.main()

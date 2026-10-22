@@ -13,7 +13,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from spine.application.diagnostics import (
     AuditEventRegistry,
@@ -914,31 +914,8 @@ def create_production_outbox_worker_runtime(
     runtime_db = runtime_database or RuntimeDatabaseSettings()
     dispatcher_db = dispatcher_database or DispatcherDatabaseSettings()
     settings = worker_settings or OutboxWorkerSettings()
-    connect_args = {
-        "connect_timeout": runtime_db.connect_timeout_seconds,
-        "options": POSTGRESQL_SEARCH_PATH_OPTIONS,
-    }
-    runtime_engine = create_async_engine(
-        runtime_db.url.get_secret_value(),
-        pool_size=runtime_db.pool_size,
-        max_overflow=runtime_db.max_overflow,
-        pool_timeout=runtime_db.pool_timeout_seconds,
-        pool_pre_ping=True,
-        connect_args=connect_args,
-        hide_parameters=True,
-    )
-    dispatcher_engine = create_async_engine(
-        dispatcher_db.url.get_secret_value(),
-        pool_size=dispatcher_db.pool_size,
-        max_overflow=dispatcher_db.max_overflow,
-        pool_timeout=dispatcher_db.pool_timeout_seconds,
-        pool_pre_ping=True,
-        connect_args={
-            "connect_timeout": dispatcher_db.connect_timeout_seconds,
-            "options": POSTGRESQL_SEARCH_PATH_OPTIONS,
-        },
-        hide_parameters=True,
-    )
+    runtime_engine = _create_outbox_database_engine(runtime_db)
+    dispatcher_engine = _create_outbox_database_engine(dispatcher_db)
     runtime_sessions = async_sessionmaker(runtime_engine, expire_on_commit=False)
     dispatcher_sessions = async_sessionmaker(dispatcher_engine, expire_on_commit=False)
     boundary = TrustedContextBoundary.create()
@@ -1089,6 +1066,25 @@ def create_production_outbox_worker_runtime(
         settings=settings,
         runtime_engine=runtime_engine,
         dispatcher_engine=dispatcher_engine,
+    )
+
+
+def _create_outbox_database_engine(
+    settings: RuntimeDatabaseSettings | DispatcherDatabaseSettings,
+) -> AsyncEngine:
+    return create_async_engine(
+        settings.url.get_secret_value(),
+        pool_size=settings.pool_size,
+        max_overflow=settings.max_overflow,
+        pool_timeout=settings.pool_timeout_seconds,
+        pool_pre_ping=settings.pool_pre_ping,
+        pool_reset_on_return="rollback",
+        isolation_level="READ COMMITTED",
+        connect_args={
+            "connect_timeout": settings.connect_timeout_seconds,
+            "options": POSTGRESQL_SEARCH_PATH_OPTIONS,
+        },
+        hide_parameters=True,
     )
 
 

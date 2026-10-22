@@ -70,6 +70,8 @@ from spine.infrastructure.persistence.projection_composition import (
     PROJECTION_REQUEST_CONSUMER_NAME,
     register_projection_delivery_routes,
 )
+from spine.workers import OutboxConsumerBinding, create_outbox_worker
+from spine.workers.runtime import OutboxWorkerSettings, ProductionOutboxWorkerRuntime
 from tests.contracts.persistence.adapter import DeliveryPersistenceAdapter
 from tests.contracts.persistence.ids import synthetic_uuid
 from tests.contracts.persistence.outbox_events import create_outbox_event_registry
@@ -511,6 +513,106 @@ async def test_postgresql_expired_lease_rejects_stale_worker(
     postgresql_delivery_adapter: DeliveryPersistenceAdapter,
 ) -> None:
     await contract_reclaim(postgresql_delivery_adapter)
+
+
+async def test_postgresql_interrupted_dispatch_reclaims_after_lease_expiry(
+    postgresql_delivery_adapter: DeliveryPersistenceAdapter,
+) -> None:
+    adapter = postgresql_delivery_adapter
+    workspace_id = synthetic_uuid(6901)
+    event_id = synthetic_uuid(6902)
+    context = adapter.workspace_context(workspace_id)
+    async with adapter.uow_factory(context) as uow:
+        await uow.workspaces.add(workspace(workspace_id))
+        await uow.outbox.append(
+            intent(
+                adapter,
+                workspace_id=workspace_id,
+                event_id=event_id,
+                trace_id=context.trace_id,
+                producer_deduplication_id=None,
+            )
+        )
+        await uow.commit()
+
+    claimed_at = datetime(2026, 10, 22, 9, tzinfo=timezone.utc)
+    consumer_started = asyncio.Event()
+    consumer_cancelled = asyncio.Event()
+
+    class BlockingConsumer:
+        async def consume(
+            self,
+            _intent: OutboxIntent,
+            diagnostic_context: DiagnosticContext,
+        ) -> OutboxConsumerSuccess:
+            consumer_started.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                consumer_cancelled.set()
+                raise
+            return OutboxConsumerSuccess(diagnostic_context=diagnostic_context)
+
+    diagnostic_events = DiagnosticEventRegistry.with_default_families()
+    worker = create_outbox_worker(
+        repository=adapter.delivery_repository,
+        consumer_bindings=(
+            OutboxConsumerBinding(
+                consumer_name="workspace_projection",
+                consumer=BlockingConsumer(),
+            ),
+        ),
+        audit_events=adapter.audit_events,
+        diagnostic_events=diagnostic_events,
+        diagnostic_sink=RecordingDiagnosticSink(diagnostic_events),
+        service_principal_id=synthetic_uuid(6903),
+        clock=lambda: claimed_at,
+        audit_event_id_source=lambda: synthetic_uuid(6904),
+        retry_delay=lambda attempt: timedelta(seconds=attempt),
+        maximum_retry_delay=timedelta(minutes=5),
+        lease_duration=timedelta(seconds=5),
+        handler_timeout=timedelta(seconds=4),
+        maximum_attempts=3,
+    )
+
+    class DisposableEngine:
+        async def dispose(self) -> None:
+            return None
+
+    runtime = ProductionOutboxWorkerRuntime(
+        worker=worker,
+        settings=OutboxWorkerSettings(
+            service_principal_id=synthetic_uuid(6903),
+            lease_seconds=5,
+            handler_timeout_seconds=4,
+            shutdown_timeout_seconds=0.01,
+        ),
+        runtime_engine=DisposableEngine(),
+        dispatcher_engine=DisposableEngine(),
+    )
+    stop = asyncio.Event()
+    task = asyncio.create_task(runtime.run_forever(stop))
+    await asyncio.wait_for(consumer_started.wait(), timeout=1)
+    stop.set()
+    await asyncio.wait_for(task, timeout=1)
+    await runtime.close()
+
+    assert consumer_cancelled.is_set()
+    interrupted = await adapter.delivery_repository.resolve(event_id)
+    assert interrupted is not None
+    assert interrupted.status.value == "in_flight"
+    assert interrupted.attempt_count == 1
+
+    reclaimed = await adapter.delivery_repository.claim_due(
+        limit=1,
+        worker_identity="restarted_dispatcher",
+        claimed_at=claimed_at + timedelta(seconds=6),
+        lease_duration=timedelta(seconds=5),
+    )
+
+    assert len(reclaimed) == 1
+    assert reclaimed[0].intent.event_id == event_id
+    assert reclaimed[0].attempt_number == 2
 
 
 async def test_postgresql_unknown_route_is_quarantined(
