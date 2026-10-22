@@ -87,6 +87,8 @@ def _admission_intent():
             session_id=SESSION_ID,
             message_id=MESSAGE_ID,
             run_id=RUN_ID,
+            authorization_generation=1,
+            schema_version=4,
         ),
         aggregate=OpaqueObjectReference(
             object_type="answer_question_run",
@@ -396,4 +398,3 @@ async def test_temporal_ask_cancellation_resumes_after_worker_restart() -> None:
     assert result["outcome"] == AnswerQuestionOutcome.CANCELLED.value
     assert activity.execute_calls >= 1
     assert activity.cancel_calls == 1
-

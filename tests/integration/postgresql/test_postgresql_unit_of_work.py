@@ -4305,7 +4305,6 @@ asyncio.run(main())
             "producer_deduplication_id"
         ],
         trace_id=cancellation_event["trace_id"],
-        authorization_generation=1,
         correlation_id=cancellation_event["correlation_id"],
         causation_id=cancellation_event["causation_id"],
     )
@@ -4317,6 +4316,7 @@ asyncio.run(main())
         message_id=first.message_id,
         run_id=first.run_id,
         trace_id=cancellation_event["trace_id"],
+        authorization_generation=1,
         correlation_id=cancellation_event["correlation_id"],
         causation_id=first.dispatch_event_id,
     )
