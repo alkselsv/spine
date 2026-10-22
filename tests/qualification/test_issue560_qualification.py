@@ -53,7 +53,21 @@ def test_issue560_report_preserves_each_readiness_dimension() -> None:
     provisioning = report["fixture_provisioning"]
     assert provisioning["mode"] == "explicit_operator_profile_before_runtime_start"
     assert provisioning["idempotent_replay"] == "PASS"
+    assert provisioning["partial_failure_retry_contract"] == "PASS"
+    assert provisioning["immutable_conflict_detection"] == "PASS"
+    assert provisioning["stale_generation_fixture"] == "PASS"
+    assert provisioning["generation_after_advance"] == (
+        provisioning["generation_before_advance"] + 1
+    )
+    assert provisioning["generation_after_advance_retry"] == provisioning[
+        "generation_after_advance"
+    ]
     assert provisioning["counts_unchanged_after_runtime_verification"] is True
+
+    manifest = report["manifest"]
+    assert manifest["capture_service_profile_id"] == "api-qa-capture-v1"
+    assert manifest["capture_worker_workload_id"] == "spine-qa-worker"
+    assert manifest["capture_observer_workload_id"] == "spine-qa-observer"
 
 
 def test_issue560_synthetic_run_does_not_elevate_partial_correlation() -> None:

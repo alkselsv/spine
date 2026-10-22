@@ -1,17 +1,17 @@
 {
   "schema_version": "q16-01-runtime-readiness:v1",
   "issue": 560,
-  "observed_at": "2026-10-22T19:25:53Z",
+  "observed_at": "2026-10-22T19:50:10Z",
   "decision": "BLOCKED",
   "target": {
     "kind": "repository-owned-isolated-source-compose",
-    "compose_project": "spine560q",
-    "commit_sha": "5aec31884c5d45265c6575454c4f787cb2d1ed68",
-    "deployment_fingerprint": "f1d17795c415a4a778ebf3fb885fe51ec01e5c892df2b882780506ad919f8e24",
-    "release_identity": "issue560-local-dev-v2",
+    "compose_project": "spine560r",
+    "commit_sha": "4d68588878ee33a82a5db1692fb713fcde32b624",
+    "deployment_fingerprint": "773a23659b64597b491c339c5c7d715f15b1bfcb9ec5988f8946f422856f456d",
+    "release_identity": "issue560-local-dev-v3",
     "workspace_id": "54400000-0000-4000-8000-00000000000a",
     "environment_id": "54400000-0000-4000-8000-00000000000e",
-    "authorization_generation": 15
+    "authorization_generation": 16
   },
   "manifest": {
     "profile_id": "spine-local-qa",
@@ -29,6 +29,9 @@
     "authentication_profile_id": "local-issue508-v28",
     "scope_policy_id": "workspace-environment-v1",
     "capture_contract_version": "r1-qa-observer-capture:v1",
+    "capture_service_profile_id": "api-qa-capture-v1",
+    "capture_worker_workload_id": "spine-qa-worker",
+    "capture_observer_workload_id": "spine-qa-observer",
     "projection_profile_id": "spine-cognee-local-v1",
     "model_profile_id": "spine-openai-r1-v1",
     "provider_profile_id": "cognee-approved-production",
@@ -42,13 +45,13 @@
     "llm_model": "openai/gpt-5.4-nano",
     "embedding_model": "openai/text-embedding-3-small",
     "images": {
-      "api": "sha256:f77835a642c60f3293c1f6e61fa60bfa2b0fc9b1ded2fd36ff19dd43bad4e2c7",
-      "qa_worker": "sha256:7e41874ad0e9f95be771ec49f8ddf2074fb630d837cdf2bc3ca30e2610eec695",
-      "outbox_dispatcher": "sha256:7f58124ca551dc0cc6b95eb3c80c984f0577dfbd33abadfedc6d7522fa2806ba",
-      "web": "sha256:08ae6f0383a01bdffe302c814aa0e496b1e72fc057889dd71545adce4a96902a",
+      "api": "sha256:9ff7bca067776a0a56ee69a002ce5917b09a98c126b77123acc2909858b29f85",
+      "qa_worker": "sha256:8ec8f469c7e577aedd8c09744609edddf395539b71c3095be7fc2519291bf8a1",
+      "outbox_dispatcher": "sha256:408bce5f6372e4f1142eea893adb5ff3be96f01a69ab68b67f3ea84106d7b674",
+      "web": "sha256:c7e953d8bee5c4b0e2025173c8e08b637bff3c2b120520917e315c6f25440261",
       "postgresql": "sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d",
       "temporal": "sha256:607d68caa111338d754771efb876c92dfcdae06d056e4530bb31cd0f37406e6a",
-      "neo4j": "sha256:3fcba54eb0ec29a07a1c95e99c0e3b4f73663861e1f243fb8d9204b6a53f5a16"
+      "neo4j": "sha256:69dfd805f2e306aafe713a979092723c6d66f9dd3573deace05b52a37396abd3"
     }
   },
   "readiness": {
@@ -98,17 +101,23 @@
     "qualification_target_binding_count": 1,
     "access_policy_version_count": 1,
     "access_policy_grant_count": 1,
-    "counts_unchanged_after_runtime_verification": true
+    "counts_unchanged_after_runtime_verification": true,
+    "partial_failure_retry_contract": "PASS",
+    "immutable_conflict_detection": "PASS",
+    "stale_generation_fixture": "PASS",
+    "generation_before_advance": 15,
+    "generation_after_advance": 16,
+    "generation_after_advance_retry": 16
   },
   "synthetic_ask": {
-    "command_id": "b9ed0985-5521-47f0-bb4e-b5f87fb29702",
-    "message_id": "03ccf3a4-7d45-4813-8e44-77e506947ee2",
-    "run_id": "6aea4d70-46fd-4d2c-8343-d696a0a1ff7c",
-    "trace_id": "eac8a7ab-1ca0-409f-8d27-b60a899b6526",
+    "command_id": "b0f99f05-0232-4e9a-9dc0-3f7fc9baa33f",
+    "message_id": "d3c30504-bf7c-41c9-9a96-e013d477f971",
+    "run_id": "e3c4c51b-0e01-4ff8-8c34-f7e38ed9a6ad",
+    "trace_id": "1e8dc295-ef9d-4df9-af65-21d24d76dae3",
     "capture_id": null,
     "subscription_id": null,
-    "outbox_event_id": "84b4bff3-6cb5-55ca-8a4f-279219482c4a",
-    "temporal_run_id": "01a16512-8857-7004-bd6c-8b9891ad2d07",
+    "outbox_event_id": "c5d7021b-0fd9-535c-82ea-f2faa21a9267",
+    "temporal_run_id": "01a16529-8f7b-7ddd-86ea-9789a0a7a6c1",
     "api_admission": "PASS",
     "canonical_outbox": "PASS_DELIVERED",
     "dispatcher_delivery": "PASS",
@@ -125,7 +134,7 @@
   "blockers": [
     {
       "code": "access_policy_rls_combination_not_exercised",
-      "meaning": "The exact target binding and its AccessPolicy reference resolve under forced RLS, but the full protected-content AccessPolicy plus RLS allow, deny and workspace-isolation matrix cannot run without an active publication."
+      "meaning": "The exact target binding exists and its AccessPolicy reference resolves, but the full protected-content AccessPolicy plus RLS allow, deny and workspace-isolation matrix cannot run without an active publication."
     },
     {
       "code": "active_projection_unavailable",
@@ -137,7 +146,7 @@
     },
     {
       "code": "stale_authorization_generation_not_exercised",
-      "meaning": "The operator fixture exposes the current generation, but a live stale-generation request has not yet been exercised through the protected application path."
+      "meaning": "The one-shot operator fixture advanced generation 15 to 16 and replay held at 16, but a request admitted at 15 has not yet been exercised through the protected application path."
     },
     {
       "code": "pgvector_extension_not_installed",
