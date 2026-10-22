@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from uuid import UUID
 
 import pytest
@@ -12,6 +13,8 @@ from spine.auth.records import (
     AuthorizationRecordStatus,
     CanonicalHumanIdentity,
     EnvironmentRoleBinding,
+    QualificationAuthorityBinding,
+    QualificationPrincipalKind,
 )
 
 
@@ -63,3 +66,36 @@ def test_role_binding_accepts_only_exact_r1_administrator_role() -> None:
 
     with pytest.raises(ValidationError):
         EnvironmentRoleBinding(**values, role="owner")
+
+
+def test_qualification_binding_requires_bounded_principal_scope() -> None:
+    common = {
+        "binding_id": UUID("15000000-0000-0000-0000-000000000001"),
+        "qualification_id": UUID("16000000-0000-0000-0000-000000000001"),
+        "workspace_id": UUID("20000000-0000-0000-0000-000000000001"),
+        "environment_id": UUID("30000000-0000-0000-0000-000000000001"),
+        "principal_id": UUID("10000000-0000-0000-0000-000000000001"),
+        "expires_at": datetime(2026, 10, 23, tzinfo=timezone.utc),
+        "version": 1,
+        "status": AuthorizationRecordStatus.ACTIVE,
+        "provenance": PROVENANCE,
+    }
+
+    human = QualificationAuthorityBinding(
+        **common, principal_kind=QualificationPrincipalKind.HUMAN
+    )
+    assert human.purpose is None
+
+    with pytest.raises(ValidationError):
+        QualificationAuthorityBinding(
+            **common,
+            principal_kind=QualificationPrincipalKind.SERVICE,
+        )
+
+    service = QualificationAuthorityBinding(
+        **common,
+        principal_kind=QualificationPrincipalKind.SERVICE,
+        purpose="answer_question",
+        operation="retrieve_context",
+    )
+    assert service.operation == "retrieve_context"

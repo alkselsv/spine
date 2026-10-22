@@ -125,6 +125,10 @@ from spine.memory.contracts import (
 from spine.memory.read_plan import PhysicalReadPlanBuilder
 from spine.memory.retrieval import PhysicalReadPlanExecutor
 from spine.memory.namespace import ProjectionNamespaceRouter
+from spine.auth.contracts import RequestedAuthorizationScope
+from spine.infrastructure.persistence.postgresql_authorization import (
+    PostgreSQLQualificationAuthorityResolver,
+)
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.qa_agent_runtime import (
     ConfiguredLLMRuntimeProvider,
@@ -444,7 +448,7 @@ class _TrustedContextRegistry:
             operation="retrieve_context",
             membership_generation=request_context.authorization_generation,
             authority_generation=request_context.authorization_generation,
-            service_authority_generation=1,
+            service_authority_generation=request_context.authorization_generation,
             authority_snapshot_reference=reference,
             trace_id=request_context.trace_id,
             issued_at=datetime.now(timezone.utc),
@@ -564,6 +568,9 @@ class _CurrentContentAuthorization(_ScopedPort):
 
 
 class _CurrentIdentityAuthority:
+    def __init__(self, session_factory: object) -> None:
+        self._resolver = PostgreSQLQualificationAuthorityResolver(session_factory)  # type: ignore[arg-type]
+
     async def revalidate(
         self, context: TrustedAuthorizationContext
     ) -> TrustedAuthorizationContext:
@@ -573,7 +580,38 @@ class _CurrentIdentityAuthority:
             or context.environment_id != scope.environment_id
         ):
             raise RuntimeError("Q&A authority scope changed")
-        return context
+        requested_scope = RequestedAuthorizationScope(
+            workspace_id=context.workspace_id,
+            environment_id=context.environment_id,
+        )
+        human_generation: int | None = None
+        if context.canonical_human_id is not None:
+            human_generation = await self._resolver.resolve_human_authority(
+                principal_id=context.canonical_human_id,
+                requested_scope=requested_scope,
+            )
+            if human_generation is None:
+                raise RuntimeError("Q&A human authority is unavailable")
+        service_generation: int | None = None
+        if context.service_principal_id is not None:
+            service_generation = await self._resolver.resolve_service_authority(
+                principal_id=context.service_principal_id,
+                requested_scope=requested_scope,
+                purpose=context.purpose,
+                operation=context.operation,
+            )
+            if service_generation is None:
+                raise RuntimeError("Q&A service authority is unavailable")
+        current_generation = human_generation or service_generation
+        if current_generation is None:
+            raise RuntimeError("Q&A authority is unavailable")
+        return context.model_copy(
+            update={
+                "membership_generation": current_generation,
+                "authority_generation": current_generation,
+                "service_authority_generation": service_generation,
+            }
+        )
 
 
 class _CanonicalSourceIsolation:
@@ -1459,7 +1497,7 @@ async def build_production_qa_capability_graph(
         repository=_CurrentContentAuthorization(
             **port_values, operation="resolve_content_authorization"
         ),
-        identity_authority=_CurrentIdentityAuthority(),
+        identity_authority=_CurrentIdentityAuthority(session_factory),
     )
     snapshot_members = _SnapshotMembers(
         **port_values, operation="resolve_projection_members"

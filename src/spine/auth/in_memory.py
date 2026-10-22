@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from datetime import datetime, timezone
 from enum import Enum
 from typing import TypeVar
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -18,7 +19,7 @@ from spine.auth.contracts import (
     RouteAuthorizationPolicy,
 )
 from spine.auth.directory import RepositoryAuthorizationDirectory
-from spine.auth.errors import AuthorizationUnavailableError
+from spine.auth.errors import AuthorizationDeniedError, AuthorizationUnavailableError
 from spine.auth.records import (
     AuthenticationAliasBinding,
     AuthorizationDirectoryRecords,
@@ -30,6 +31,8 @@ from spine.auth.records import (
     EnvironmentMembership,
     EnvironmentOwnership,
     EnvironmentRoleBinding,
+    QualificationAuthorityBinding,
+    QualificationPrincipalKind,
     WorkspaceMembership,
 )
 from spine.domain.common import DefinitionModel
@@ -84,6 +87,7 @@ class InMemoryAuthorizationSnapshotRepository:
         records: AuthorizationDirectoryRecords,
         *,
         available: bool = True,
+        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         if type(records) is not AuthorizationDirectoryRecords:
             raise TypeError("authorization records must use the canonical contract")
@@ -91,6 +95,7 @@ class InMemoryAuthorizationSnapshotRepository:
             records.model_dump(mode="python")
         )
         self._available = available
+        self._clock = clock
         _validate_record_versions(self._records)
 
     async def resolve_current_snapshot(
@@ -181,6 +186,15 @@ class InMemoryAuthorizationSnapshotRepository:
             generation is None
             or owner is None
             or owner.workspace_id != requested_scope.workspace_id
+            or not _qualification_authority_is_current(
+                self._records.qualification_bindings,
+                principal_kind=QualificationPrincipalKind.HUMAN,
+                principal_id=identity_id,
+                requested_scope=requested_scope,
+                purpose=None,
+                operation=None,
+                now=self._clock(),
+            )
         ):
             return None
 
@@ -193,6 +207,55 @@ class InMemoryAuthorizationSnapshotRepository:
             effective_team_ids=environment_membership.effective_team_ids,
         )
 
+    async def resolve_current_service_authority(
+        self,
+        *,
+        service_principal_id: UUID,
+        requested_scope: RequestedAuthorizationScope,
+        purpose: str,
+        operation: str,
+        expected_generation: int | None = None,
+    ) -> int | None:
+        if not self._available:
+            raise AuthorizationUnavailableError()
+        generation = next(
+            (
+                record
+                for record in self._records.generations
+                if record.workspace_id == requested_scope.workspace_id
+                and record.environment_id == requested_scope.environment_id
+            ),
+            None,
+        )
+        owner = next(
+            (
+                record
+                for record in self._records.environment_owners
+                if record.environment_id == requested_scope.environment_id
+            ),
+            None,
+        )
+        if (
+            generation is None
+            or owner is None
+            or owner.workspace_id != requested_scope.workspace_id
+            or (
+                expected_generation is not None
+                and expected_generation != generation.generation
+            )
+            or not _qualification_authority_is_current(
+                self._records.qualification_bindings,
+                principal_kind=QualificationPrincipalKind.SERVICE,
+                principal_id=service_principal_id,
+                requested_scope=requested_scope,
+                purpose=purpose,
+                operation=operation,
+                now=self._clock(),
+            )
+        ):
+            return None
+        return generation.generation
+
 
 class InMemoryAuthorizationDirectory:
     """Resolve either canonical records or legacy aggregate fixtures."""
@@ -203,13 +266,16 @@ class InMemoryAuthorizationDirectory:
         records: AuthorizationDirectoryRecords | None = None,
         entries: Iterable[InMemoryAuthorizationEntry] | None = None,
         available: bool = True,
+        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         if (records is None) == (entries is None):
             raise TypeError("provide exactly one authorization record source")
         if records is None:
             records = _records_from_entries(tuple(entries or ()))
         self._directory = RepositoryAuthorizationDirectory(
-            InMemoryAuthorizationSnapshotRepository(records, available=available)
+            InMemoryAuthorizationSnapshotRepository(
+                records, available=available, clock=clock
+            )
         )
 
     async def resolve_request_authority(
@@ -223,6 +289,41 @@ class InMemoryAuthorizationDirectory:
             requested_scope,
             route_policy,
         )
+
+
+class InMemoryServiceAuthorizationDirectory:
+    """Resolve bounded service authority without creating a principal registry."""
+
+    def __init__(
+        self,
+        records: AuthorizationDirectoryRecords,
+        *,
+        available: bool = True,
+        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    ) -> None:
+        self._repository = InMemoryAuthorizationSnapshotRepository(
+            records, available=available, clock=clock
+        )
+
+    async def resolve_service_authority(
+        self,
+        *,
+        service_principal_id: UUID,
+        requested_scope: RequestedAuthorizationScope,
+        purpose: str,
+        operation: str,
+        expected_generation: int | None = None,
+    ) -> int:
+        generation = await self._repository.resolve_current_service_authority(
+            service_principal_id=service_principal_id,
+            requested_scope=requested_scope,
+            purpose=purpose,
+            operation=operation,
+            expected_generation=expected_generation,
+        )
+        if generation is None:
+            raise AuthorizationDeniedError()
+        return generation
 
 
 def _latest(
@@ -268,6 +369,10 @@ def _validate_record_versions(records: AuthorizationDirectoryRecords) -> None:
             lambda item: (item.workspace_id, item.environment_id),  # type: ignore[attr-defined]
         ),
         (records.environment_owners, lambda item: item.environment_id),  # type: ignore[attr-defined]
+        (
+            records.qualification_bindings,
+            lambda item: (item.binding_id, item.version),  # type: ignore[attr-defined]
+        ),
     )
     for collection, key in collections_and_keys:
         seen: set[object] = set()
@@ -276,6 +381,66 @@ def _validate_record_versions(records: AuthorizationDirectoryRecords) -> None:
             if item_key in seen:
                 raise ValueError("authorization record versions must be unique")
             seen.add(item_key)
+    _validate_qualification_binding_history(records.qualification_bindings)
+
+
+def _validate_qualification_binding_history(
+    bindings: tuple[QualificationAuthorityBinding, ...],
+) -> None:
+    immutable_fields = (
+        "qualification_id",
+        "workspace_id",
+        "environment_id",
+        "principal_kind",
+        "principal_id",
+        "purpose",
+        "operation",
+        "expires_at",
+    )
+    first_by_binding: dict[UUID, QualificationAuthorityBinding] = {}
+    principal_bindings: dict[tuple[object, ...], UUID] = {}
+    for binding in sorted(bindings, key=lambda item: (item.binding_id.int, item.version)):
+        first = first_by_binding.setdefault(binding.binding_id, binding)
+        if any(getattr(binding, field) != getattr(first, field) for field in immutable_fields):
+            raise ValueError("qualification binding scope and deadline are immutable")
+        key = (
+            binding.workspace_id,
+            binding.environment_id,
+            binding.principal_kind,
+            binding.principal_id,
+        )
+        previous_id = principal_bindings.setdefault(key, binding.binding_id)
+        if previous_id != binding.binding_id:
+            raise ValueError("qualification principal scope has multiple bindings")
+
+
+def _qualification_authority_is_current(
+    bindings: tuple[QualificationAuthorityBinding, ...],
+    *,
+    principal_kind: QualificationPrincipalKind,
+    principal_id: UUID,
+    requested_scope: RequestedAuthorizationScope,
+    purpose: str | None,
+    operation: str | None,
+    now: datetime,
+) -> bool:
+    candidates = tuple(
+        binding
+        for binding in bindings
+        if binding.principal_kind is principal_kind
+        and binding.principal_id == principal_id
+        and binding.workspace_id == requested_scope.workspace_id
+        and binding.environment_id == requested_scope.environment_id
+    )
+    if not candidates:
+        return True
+    current = max(candidates, key=lambda item: item.version)
+    return bool(
+        current.status is AuthorizationRecordStatus.ACTIVE
+        and current.purpose == purpose
+        and current.operation == operation
+        and now < current.expires_at
+    )
 
 
 def _fixture_uuid(kind: str, *parts: object) -> UUID:

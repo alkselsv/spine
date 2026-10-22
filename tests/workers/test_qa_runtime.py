@@ -93,15 +93,23 @@ async def test_current_authorization_generation_reads_exact_worker_scope() -> No
             statements.append((str(statement), parameters))
             return Result(4 if len(statements) == 2 else None)
 
-    generation = await _CurrentAuthorizationGeneration(Session)(
+    service_principal_id = UUID(int=50812)
+    generation = await _CurrentAuthorizationGeneration(
+        Session, service_principal_id
+    )(
         workflow_input, command
     )
 
     assert generation == 4
-    assert all(
-        parameters == {
-            "workspace_id": str(workflow_input.workspace_id),
-            "environment_id": str(workflow_input.environment_id),
-        }
-        for _, parameters in statements
-    )
+    assert statements[0][1] == {
+        "workspace_id": str(workflow_input.workspace_id),
+        "environment_id": str(workflow_input.environment_id),
+    }
+    assert statements[1][1] == {
+        "service_principal_id": str(service_principal_id),
+        "workspace_id": str(workflow_input.workspace_id),
+        "environment_id": str(workflow_input.environment_id),
+        "purpose": "governed_qa.execution.v1",
+        "operation": "answer_question_run",
+    }
+    assert "resolve_current_service_authority" in statements[1][0]

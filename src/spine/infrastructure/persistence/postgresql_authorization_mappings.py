@@ -177,6 +177,34 @@ authorization_generations = Table(
     ),
 )
 
+qualification_authority_bindings = Table(
+    "qualification_authority_bindings",
+    metadata,
+    Column("binding_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("version", BigInteger, primary_key=True),
+    Column("qualification_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("principal_kind", String(16), nullable=False),
+    Column("principal_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("purpose", String(64), nullable=True),
+    Column("operation", String(64), nullable=True),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("status", String(16), nullable=False),
+    Column("change_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("recorded_by", Text, nullable=False),
+    Column(
+        "recorded_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "environment_id"],
+        ["spine.environments.workspace_id", "spine.environments.id"],
+    ),
+)
+
 
 __all__ = [
     "authentication_alias_bindings",
@@ -185,5 +213,6 @@ __all__ = [
     "canonical_human_identity_states",
     "environment_memberships",
     "environment_role_bindings",
+    "qualification_authority_bindings",
     "workspace_memberships",
 ]

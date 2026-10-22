@@ -90,7 +90,9 @@ from tests.contracts.auth.test_authorization_directory_contract import (
     test_current_records_resolve_exact_authorization_contract as contract_current,
     test_inactive_or_incomplete_records_deny_without_disclosure as contract_denied,
     test_latest_history_version_is_the_only_authority as contract_history,
+    test_expired_qualification_binding_denies_without_cleanup as contract_expired_binding,
     test_same_identity_has_strictly_workspace_local_authority as contract_isolation,
+    test_unexpired_qualification_binding_allows_current_authority as contract_unexpired_binding,
 )
 
 
@@ -105,6 +107,7 @@ MIGRATION_PASSWORD = "migration-test-secret"
 RUNTIME_PASSWORD = "runtime-test-secret"
 DISPATCHER_PASSWORD = "dispatcher-test-secret"
 AUTH_TABLES = (
+    "qualification_authority_bindings",
     "authentication_alias_bindings",
     "canonical_human_identity_states",
     "workspace_memberships",
@@ -358,6 +361,186 @@ async def test_postgresql_latest_history_is_only_current_authority(
     authorization_directory_factory: AuthorizationDirectoryFactory,
 ) -> None:
     await contract_history(authorization_directory_factory)
+
+
+async def test_postgresql_expired_qualification_binding_denies_without_cleanup(
+    authorization_directory_factory: AuthorizationDirectoryFactory,
+) -> None:
+    await contract_expired_binding(authorization_directory_factory)
+
+
+async def test_postgresql_unexpired_qualification_binding_allows_current_authority(
+    authorization_directory_factory: AuthorizationDirectoryFactory,
+) -> None:
+    await contract_unexpired_binding(authorization_directory_factory)
+
+
+@pytest.mark.parametrize(
+    ("principal_kind", "deadline_interval", "allowed"),
+    (
+        ("human", "1 microsecond", True),
+        ("human", "0 seconds", False),
+        ("human", "-1 microsecond", False),
+        ("service", "1 microsecond", True),
+        ("service", "0 seconds", False),
+        ("service", "-1 microsecond", False),
+    ),
+    ids=(
+        "human-before",
+        "human-at",
+        "human-after",
+        "service-before",
+        "service-at",
+        "service-after",
+    ),
+)
+async def test_database_time_is_the_hard_qualification_deadline(
+    authorization_directory_factory: AuthorizationDirectoryFactory,
+    authorization_database: AuthorizationDatabase,
+    principal_kind: str,
+    deadline_interval: str,
+    allowed: bool,
+) -> None:
+    await authorization_directory_factory(records())
+    principal_id = (
+        IDENTITY_ID
+        if principal_kind == "human"
+        else UUID("17000000-0000-0000-0000-000000000001")
+    )
+    async with authorization_database.migration_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO spine.qualification_authority_bindings ("
+                "binding_id, version, qualification_id, workspace_id, environment_id, "
+                "principal_kind, principal_id, purpose, operation, expires_at, status, "
+                "change_id, recorded_by) VALUES ("
+                ":binding_id, 1, :qualification_id, :workspace_id, :environment_id, "
+                ":principal_kind, :principal_id, :purpose, :operation, "
+                "transaction_timestamp() + CAST(:deadline_interval AS interval), "
+                "'active', :change_id, 'postgresql-deadline-test')"
+            ),
+            {
+                "binding_id": UUID("15000000-0000-0000-0000-000000000001"),
+                "qualification_id": UUID("16000000-0000-0000-0000-000000000001"),
+                "workspace_id": WORKSPACE_ID,
+                "environment_id": ENVIRONMENT_ID,
+                "principal_kind": principal_kind,
+                "principal_id": principal_id,
+                "purpose": "answer_question" if principal_kind == "service" else None,
+                "operation": "retrieve_context" if principal_kind == "service" else None,
+                "deadline_interval": deadline_interval,
+                "change_id": UUID("90000000-0000-0000-0000-000000000151"),
+            },
+        )
+        await connection.execute(
+            text(
+                "SELECT set_config('spine.workspace_id', :workspace_id, true), "
+                "set_config('spine.environment_id', :environment_id, true)"
+            ),
+            {"workspace_id": str(WORKSPACE_ID), "environment_id": str(ENVIRONMENT_ID)},
+        )
+        if principal_kind == "human":
+            generation = await connection.scalar(
+                text(
+                    "SELECT spine.resolve_current_human_authority("
+                    ":principal_id, :workspace_id, :environment_id)"
+                ),
+                {
+                    "principal_id": principal_id,
+                    "workspace_id": WORKSPACE_ID,
+                    "environment_id": ENVIRONMENT_ID,
+                },
+            )
+        else:
+            generation = await connection.scalar(
+                text(
+                    "SELECT spine.resolve_current_service_authority("
+                    ":principal_id, :workspace_id, :environment_id, "
+                    "'answer_question', 'retrieve_context')"
+                ),
+                {
+                    "principal_id": principal_id,
+                    "workspace_id": WORKSPACE_ID,
+                    "environment_id": ENVIRONMENT_ID,
+                },
+            )
+
+    assert (generation is not None) is allowed
+
+
+async def test_revocation_denies_and_advances_generation_atomically(
+    authorization_directory_factory: AuthorizationDirectoryFactory,
+    authorization_database: AuthorizationDatabase,
+) -> None:
+    await authorization_directory_factory(records())
+    service_id = UUID("17000000-0000-0000-0000-000000000001")
+    async with authorization_database.migration_engine.begin() as connection:
+        parameters = {
+            "binding_id": UUID("15000000-0000-0000-0000-000000000002"),
+            "qualification_id": UUID("16000000-0000-0000-0000-000000000002"),
+            "workspace_id": WORKSPACE_ID,
+            "environment_id": ENVIRONMENT_ID,
+            "principal_id": service_id,
+        }
+        await connection.execute(
+            text(
+                "INSERT INTO spine.qualification_authority_bindings ("
+                "binding_id, version, qualification_id, workspace_id, environment_id, "
+                "principal_kind, principal_id, purpose, operation, expires_at, status, "
+                "change_id, recorded_by) VALUES ("
+                ":binding_id, 1, :qualification_id, :workspace_id, :environment_id, "
+                "'service', :principal_id, 'answer_question', 'retrieve_context', "
+                "transaction_timestamp() + interval '1 hour', 'active', "
+                "'90000000-0000-0000-0000-000000000161', 'postgresql-revocation-test')"
+            ),
+            parameters,
+        )
+        before = await connection.scalar(
+            text(
+                "SELECT generation FROM spine.authorization_generations "
+                "WHERE workspace_id = :workspace_id AND environment_id = :environment_id"
+            ),
+            parameters,
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO spine.qualification_authority_bindings ("
+                "binding_id, version, qualification_id, workspace_id, environment_id, "
+                "principal_kind, principal_id, purpose, operation, expires_at, status, "
+                "change_id, recorded_by) "
+                "SELECT binding_id, 2, qualification_id, workspace_id, environment_id, "
+                "principal_kind, principal_id, purpose, operation, expires_at, 'revoked', "
+                "'90000000-0000-0000-0000-000000000162', 'postgresql-revocation-test' "
+                "FROM spine.qualification_authority_bindings "
+                "WHERE binding_id = :binding_id AND version = 1"
+            ),
+            parameters,
+        )
+        after = await connection.scalar(
+            text(
+                "SELECT generation FROM spine.authorization_generations "
+                "WHERE workspace_id = :workspace_id AND environment_id = :environment_id"
+            ),
+            parameters,
+        )
+        await connection.execute(
+            text(
+                "SELECT set_config('spine.workspace_id', :workspace_id, true), "
+                "set_config('spine.environment_id', :environment_id, true)"
+            ),
+            {"workspace_id": str(WORKSPACE_ID), "environment_id": str(ENVIRONMENT_ID)},
+        )
+        authority = await connection.scalar(
+            text(
+                "SELECT spine.resolve_current_service_authority("
+                ":principal_id, :workspace_id, :environment_id, "
+                "'answer_question', 'retrieve_context')"
+            ),
+            parameters,
+        )
+
+    assert after == before + 1
+    assert authority is None
 
 
 async def test_postgresql_same_identity_is_strictly_tenant_local(

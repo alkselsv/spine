@@ -25,6 +25,7 @@ from spine.auth.in_memory import (
     AuthorizationRecordState,
     InMemoryAuthorizationDirectory,
     InMemoryAuthorizationEntry,
+    InMemoryServiceAuthorizationDirectory,
 )
 from spine.auth.ports import AuthenticationPort, AuthorizationDirectory
 from spine.auth.records import (
@@ -37,6 +38,8 @@ from spine.auth.records import (
     EnvironmentMembership,
     EnvironmentOwnership,
     EnvironmentRoleBinding,
+    QualificationAuthorityBinding,
+    QualificationPrincipalKind,
     WorkspaceMembership,
 )
 from spine.auth.repositories import AuthorizationSnapshotRepository
@@ -76,6 +79,8 @@ __all__ = [
     "EnvironmentMembership",
     "EnvironmentOwnership",
     "EnvironmentRoleBinding",
+    "QualificationAuthorityBinding",
+    "QualificationPrincipalKind",
     "InvalidRoutePolicyError",
     "RequestedAuthorizationScope",
     "RouteAuthorizationPolicy",
@@ -83,6 +88,7 @@ __all__ = [
     "is_http_bearer_token",
     "InMemoryAuthorizationDirectory",
     "InMemoryAuthorizationEntry",
+    "InMemoryServiceAuthorizationDirectory",
     "MissingRoutePolicyError",
     "RoutePolicyRegistry",
     "RoutePolicyRegistryError",

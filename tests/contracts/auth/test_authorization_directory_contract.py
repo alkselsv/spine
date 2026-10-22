@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 import pytest
@@ -25,6 +26,8 @@ from spine.auth.records import (
     EnvironmentMembership,
     EnvironmentOwnership,
     EnvironmentRoleBinding,
+    QualificationAuthorityBinding,
+    QualificationPrincipalKind,
     WorkspaceMembership,
 )
 
@@ -152,6 +155,61 @@ def records(**overrides: object) -> AuthorizationDirectoryRecords:
     }
     values.update(overrides)
     return AuthorizationDirectoryRecords.model_validate(values)
+
+
+def qualification_binding(
+    *,
+    expires_at: datetime,
+    version: int = 1,
+    status: AuthorizationRecordStatus = AuthorizationRecordStatus.ACTIVE,
+) -> QualificationAuthorityBinding:
+    return QualificationAuthorityBinding(
+        binding_id=UUID("15000000-0000-0000-0000-000000000001"),
+        qualification_id=UUID("16000000-0000-0000-0000-000000000001"),
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        principal_kind=QualificationPrincipalKind.HUMAN,
+        principal_id=IDENTITY_ID,
+        expires_at=expires_at,
+        version=version,
+        status=status,
+        provenance=provenance(100 + version),
+    )
+
+
+@pytest.mark.asyncio
+async def test_expired_qualification_binding_denies_without_cleanup(
+    authorization_directory_factory: AuthorizationDirectoryFactory,
+) -> None:
+    expired = qualification_binding(
+        expires_at=datetime.now(timezone.utc) - timedelta(days=1)
+    )
+    directory = await authorization_directory_factory(
+        records(qualification_bindings=(expired,))
+    )
+
+    with pytest.raises(AuthorizationDeniedError):
+        await directory.resolve_request_authority(
+            authenticated_alias(), scope(), route_policy()
+        )
+
+
+@pytest.mark.asyncio
+async def test_unexpired_qualification_binding_allows_current_authority(
+    authorization_directory_factory: AuthorizationDirectoryFactory,
+) -> None:
+    current = qualification_binding(
+        expires_at=datetime.now(timezone.utc) + timedelta(days=1)
+    )
+    directory = await authorization_directory_factory(
+        records(qualification_bindings=(current,))
+    )
+
+    resolution = await directory.resolve_request_authority(
+        authenticated_alias(), scope(), route_policy()
+    )
+
+    assert resolution.authorization_generation == 7
 
 
 @pytest.mark.asyncio
