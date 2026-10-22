@@ -504,7 +504,7 @@ async def test_qualification_provisioning_rejects_conflicting_immutable_fixture(
         await provision_qualification(settings)
 
 
-async def test_qualification_generation_advance_is_idempotent_and_makes_snapshot_stale(
+async def test_qualification_generation_advance_is_idempotent_and_preserves_current_authority(
     authorization_database: AuthorizationDatabase,
 ) -> None:
     settings = _qualification_settings(
