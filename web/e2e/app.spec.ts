@@ -79,6 +79,45 @@ test('test_shared_shell_keeps_navigation_and_scope_controls_usable_on_mobile', a
   await expect(page.getByRole('heading', { name: 'Диагностический чат' })).toBeVisible();
 });
 
+test('test_qa_runs_renders_valid_empty_collection_without_service_error', async ({ page }) => {
+  const requests: { authorization?: string; workspace?: string; environment?: string }[] = [];
+  await page.route('**/api/v1/qa/runs**', async (route) => {
+    const headers = route.request().headers();
+    const workspace = headers['x-workspace-id'];
+    const environment = headers['x-environment-id'];
+    if (!workspace || !environment) throw new Error('Q&A run request is missing scope headers');
+    requests.push({
+      authorization: headers.authorization,
+      workspace,
+      environment,
+    });
+    await route.fulfill({
+      contentType: 'application/json',
+      status: 200,
+      body: JSON.stringify({
+        schema_version: 1,
+        workspace_id: workspace,
+        environment_id: environment,
+        trace_id: traceId,
+        limit: 25,
+        next_cursor: null,
+        items: [],
+      }),
+    });
+  });
+
+  await page.goto('/qa/runs?fixture=controlled');
+
+  await expect(page.getByRole('heading', { name: 'Запуски Q&A' })).toBeVisible();
+  await expect(page.getByText('Пока нет данных')).toBeVisible();
+  await expect(page.getByText('В этом разделе ещё ничего нет.')).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  expect(requests).toHaveLength(1);
+  expect(requests[0]?.authorization).toBe('Bearer controlled-browser-token');
+  expect(requests[0]?.workspace).toMatch(/^[0-9a-f-]{36}$/);
+  expect(requests[0]?.environment).toMatch(/^[0-9a-f-]{36}$/);
+});
+
 test('test_documents_discovery_filters_paginates_and_navigates_without_content_identity', async ({ page }) => {
   const documentRequests = await installControlledDocuments(page);
   await page.goto(

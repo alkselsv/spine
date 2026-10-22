@@ -23,6 +23,21 @@ afterEach(() => {
 });
 
 describe('Q&A runs list', () => {
+  it('test_qa_run_list_renders_empty_state_for_a_valid_empty_collection', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        Response.json(collection([])),
+      ),
+    );
+
+    renderQARuns('/qa/runs');
+
+    expect(await screen.findByText(ru.status.empty.title)).toBeVisible();
+    expect(screen.getByText(ru.status.empty.description)).toBeVisible();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
   it('test_qa_run_list_renders_safe_status_initiator_and_timestamps', async () => {
     vi.stubGlobal(
       'fetch',
