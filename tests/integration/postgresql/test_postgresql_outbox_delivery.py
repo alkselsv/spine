@@ -539,19 +539,18 @@ async def test_postgresql_interrupted_dispatch_reclaims_after_lease_expiry(
     consumer_started = asyncio.Event()
     consumer_cancelled = asyncio.Event()
     logical_effects: set[UUID] = set()
-    consumer_calls = 0
+    consumer_calls: list[UUID] = []
 
-    class BlockingConsumer:
+    class IdempotentConsumer:
         async def consume(
             self,
             outbox_intent: OutboxIntent,
             diagnostic_context: DiagnosticContext,
         ) -> OutboxConsumerSuccess:
-            nonlocal consumer_calls
             assert outbox_intent.event_id == event_id
-            logical_effects.add(event_id)
-            consumer_calls += 1
-            if consumer_calls == 1:
+            consumer_calls.append(event_id)
+            if event_id not in logical_effects:
+                logical_effects.add(event_id)
                 consumer_started.set()
                 try:
                     await asyncio.Future()
@@ -562,26 +561,31 @@ async def test_postgresql_interrupted_dispatch_reclaims_after_lease_expiry(
 
     diagnostic_events = DiagnosticEventRegistry.with_default_families()
     clock_now = [claimed_at]
-    worker = create_outbox_worker(
-        repository=adapter.delivery_repository,
-        consumer_bindings=(
-            OutboxConsumerBinding(
-                consumer_name="workspace_projection",
-                consumer=BlockingConsumer(),
+    diagnostic_sink = RecordingDiagnosticSink(diagnostic_events)
+
+    def build_worker():
+        return create_outbox_worker(
+            repository=adapter.delivery_repository,
+            consumer_bindings=(
+                OutboxConsumerBinding(
+                    consumer_name="workspace_projection",
+                    consumer=IdempotentConsumer(),
+                ),
             ),
-        ),
-        audit_events=adapter.audit_events,
-        diagnostic_events=diagnostic_events,
-        diagnostic_sink=RecordingDiagnosticSink(diagnostic_events),
-        service_principal_id=synthetic_uuid(6903),
-        clock=lambda: clock_now[0],
-        audit_event_id_source=lambda: synthetic_uuid(6904),
-        retry_delay=lambda attempt: timedelta(seconds=attempt),
-        maximum_retry_delay=timedelta(minutes=5),
-        lease_duration=timedelta(seconds=5),
-        handler_timeout=timedelta(seconds=4),
-        maximum_attempts=3,
-    )
+            audit_events=adapter.audit_events,
+            diagnostic_events=diagnostic_events,
+            diagnostic_sink=diagnostic_sink,
+            service_principal_id=synthetic_uuid(6903),
+            clock=lambda: clock_now[0],
+            audit_event_id_source=lambda: synthetic_uuid(6904),
+            retry_delay=lambda attempt: timedelta(seconds=attempt),
+            maximum_retry_delay=timedelta(minutes=5),
+            lease_duration=timedelta(seconds=5),
+            handler_timeout=timedelta(seconds=4),
+            maximum_attempts=3,
+        )
+
+    worker = build_worker()
 
     class DisposableEngine:
         async def dispose(self) -> None:
@@ -612,7 +616,8 @@ async def test_postgresql_interrupted_dispatch_reclaims_after_lease_expiry(
     assert interrupted.attempt_count == 1
 
     clock_now[0] = claimed_at + timedelta(seconds=6)
-    restarted_report = await worker.dispatch_batch(
+    restarted_worker = build_worker()
+    restarted_report = await restarted_worker.dispatch_batch(
         limit=1, worker_identity="restarted_dispatcher"
     )
     delivered = await adapter.delivery_repository.resolve(event_id)
@@ -621,7 +626,7 @@ async def test_postgresql_interrupted_dispatch_reclaims_after_lease_expiry(
     assert delivered is not None
     assert delivered.status.value == "delivered"
     assert delivered.attempt_count == 2
-    assert consumer_calls == 2
+    assert consumer_calls == [event_id, event_id]
     assert logical_effects == {event_id}
 
 
