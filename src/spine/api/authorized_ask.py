@@ -41,6 +41,8 @@ from spine.application.persistence.ask_admission import (
     AskAdmissionStatus,
     QA_ASK_ADMISSION_OPERATION,
 )
+from spine.application.qa_observation.admission import ObserverAskAdmission
+from spine.application.qa_observation.contracts import AdmittedRunIdentity
 from spine.application.qa_run_history import QARunNotFound
 
 if TYPE_CHECKING:
@@ -119,6 +121,18 @@ class QAAskAdmissionResultV1(BaseModel):
         if self.status != "terminal" and self.outcome is not None:
             raise ValueError("non-terminal Ask admission result cannot carry an outcome")
         return self
+
+
+class QAObserverAdmissionResultV1(BaseModel):
+    """Content-free capture registration and canonical admission identity."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    admission: QAAskAdmissionResultV1
+    capture_id: UUID
+    subscription_id: UUID
+    run_identity: AdmittedRunIdentity
 
 
 class QACancelResultV1(BaseModel):
@@ -513,6 +527,107 @@ def install_authorized_ask_routes(
             202: {"model": ApiCommandResult[QACancelResultV1]},
         },
         openapi_extra=_cancel_openapi_extra(),
+    )
+
+
+def install_qa_observer_admission_route(
+    application: FastAPI,
+    *,
+    observer_admission: ObserverAskAdmission,
+) -> None:
+    """Register capture before admitting an explicitly observer-owned Ask."""
+
+    async def observer_admission_endpoint(
+        request: Request,
+        body: QAAskAdmissionRequestV1 = Body(...),
+        request_context: AuthorizedRequestContext[object] = Depends(
+            get_authorized_request_context
+        ),
+        persistence_context: TrustedPersistenceContext = Depends(
+            get_authorized_persistence_context
+        ),
+    ) -> JSONResponse:
+        try:
+            observer_result = await observer_admission.admit(
+                context=persistence_context,
+                command=AskAdmissionCommand.create(
+                    workspace_id=request_context.scope.workspace_id,
+                    environment_id=request_context.scope.environment_id,
+                    session_id=body.session_id,
+                    subject=ActorRef(
+                        kind=ActorKind.HUMAN,
+                        id=request_context.acting_subject_id,
+                    ),
+                    environment=getattr(
+                        request.app.state,
+                        "ask_admission_environment",
+                        EnvironmentKind.PRODUCTION,
+                    ),
+                    question=body.question,
+                    idempotency_key=_idempotency(
+                        request.headers.getlist(_IDEMPOTENCY_HEADER)
+                    ),
+                    clarification_of_message_id=body.clarification_of_message_id,
+                    authorization_generation=request_context.authorization_generation,
+                ),
+            )
+            admission_status = await _admission_status(
+                request,
+                persistence_context=persistence_context,
+                result=observer_result.admission,
+            )
+        except InvalidAuthorizedAskRequest:
+            await _observe_api_failure(
+                request_context=request_context,
+                request=request,
+                failure_code=SafeOperationalFailureCode.VALIDATION_FAILED,
+            )
+            raise
+        except Exception:
+            await _observe_api_failure(
+                request_context=request_context,
+                request=request,
+                failure_code=SafeOperationalFailureCode.INTERNAL_FAILURE,
+            )
+            raise
+        result = QAObserverAdmissionResultV1(
+            admission=_admission_response(admission_status),
+            capture_id=observer_result.capture_id,
+            subscription_id=observer_result.subscription_id,
+            run_identity=observer_result.run_identity,
+        )
+        payload = ApiCommandResult(
+            workspace_id=request_context.scope.workspace_id,
+            environment_id=request_context.scope.environment_id,
+            trace_id=request_context.diagnostic_context.trace_id,
+            command_id=admission_status.command_id,
+            status=(
+                CommandStatus.COMPLETED
+                if admission_status.status is AskAdmissionLifecycle.TERMINAL
+                else CommandStatus.ACCEPTED
+            ),
+            replay=observer_result.admission.replay,
+            result=result,
+        )
+        return JSONResponse(
+            status_code=(
+                200
+                if admission_status.status is AskAdmissionLifecycle.TERMINAL
+                else 202
+            ),
+            content=payload.model_dump(mode="json"),
+        )
+
+    add_protected_api_route(
+        application,
+        "/api/v1/qa-observer/admissions",
+        observer_admission_endpoint,
+        route_id="qa.observer.admissions",
+        policy=_admission_policy(),
+        methods=["POST"],
+        response_model=ApiCommandResult[QAObserverAdmissionResultV1],
+        responses={202: {"model": ApiCommandResult[QAObserverAdmissionResultV1]}},
+        openapi_extra=_idempotency_openapi_extra(),
     )
 
 

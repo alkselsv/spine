@@ -46,6 +46,7 @@ spine-db-bootstrap-workspace = "spine.scripts.database:initial_workspace_main"
 spine-qualification-bootstrap = "spine.scripts.qualification:main"
 spine-outbox-worker = "spine.workers.runtime:main"
 spine-qa-worker = "spine.workers.qa_runtime:main"
+spine-api = "spine.api.runtime:main"
 
 [build-system]
 requires = ["hatchling"]
