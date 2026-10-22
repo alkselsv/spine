@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from uuid import UUID
 
 import pytest
@@ -122,10 +123,11 @@ async def test_shutdown_drain_timeout_emits_only_a_bounded_reason_code(
     runtime = outbox_runtime(worker, shutdown_timeout_seconds=0.01)
     stop = asyncio.Event()
 
-    task = asyncio.create_task(runtime.run_forever(stop))
-    await worker.started.wait()
-    stop.set()
-    await asyncio.wait_for(task, timeout=1)
+    with caplog.at_level(logging.WARNING, logger="spine.worker"):
+        task = asyncio.create_task(runtime.run_forever(stop))
+        await worker.started.wait()
+        stop.set()
+        await asyncio.wait_for(task, timeout=1)
 
     assert caplog.records[0].reason_code == "dispatcher.shutdown_drain_timeout"
     assert "payload" not in caplog.text.lower()
@@ -179,8 +181,9 @@ def test_process_failure_log_omits_raw_exception_details(
         fail_with_sensitive_detail,
     )
 
-    with pytest.raises(SystemExit):
-        runtime_module.main()
+    with caplog.at_level(logging.ERROR, logger="spine.worker"):
+        with pytest.raises(SystemExit):
+            runtime_module.main()
 
     assert caplog.records[-1].reason_code == "dispatcher.process_failure"
     assert "secret-password" not in caplog.text
