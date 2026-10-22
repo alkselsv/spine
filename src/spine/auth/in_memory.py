@@ -415,6 +415,8 @@ def _validate_qualification_binding_history(
             binding.environment_id,
             binding.principal_kind,
             binding.principal_id,
+            binding.purpose,
+            binding.operation,
         )
         previous_id = principal_bindings.setdefault(key, binding.binding_id)
         if previous_id != binding.binding_id:
@@ -432,7 +434,7 @@ def _qualification_authority_is_current(
     operation: str | None,
     now: datetime,
 ) -> bool:
-    candidates = tuple(
+    principal_bindings = tuple(
         binding
         for binding in bindings
         if binding.principal_kind is principal_kind
@@ -440,8 +442,15 @@ def _qualification_authority_is_current(
         and binding.workspace_id == requested_scope.workspace_id
         and binding.environment_id == requested_scope.environment_id
     )
-    if not candidates:
+    if not principal_bindings:
         return True
+    candidates = tuple(
+        binding
+        for binding in principal_bindings
+        if binding.purpose == purpose and binding.operation == operation
+    )
+    if not candidates:
+        return False
     current = max(candidates, key=lambda item: item.version)
     return bool(
         current.status is AuthorizationRecordStatus.ACTIVE

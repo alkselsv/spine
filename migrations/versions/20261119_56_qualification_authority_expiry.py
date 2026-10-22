@@ -92,6 +92,8 @@ def upgrade() -> None:
             "environment_id",
             "principal_kind",
             "principal_id",
+            "purpose",
+            "operation",
             sa.text("version DESC"),
         ],
         schema=SCHEMA,
@@ -135,7 +137,8 @@ def upgrade() -> None:
             PERFORM pg_catalog.pg_advisory_xact_lock(
                 pg_catalog.hashtextextended(
                     NEW.workspace_id::text || ':' || NEW.environment_id::text || ':' ||
-                    NEW.principal_kind || ':' || NEW.principal_id::text,
+                    NEW.principal_kind || ':' || NEW.principal_id::text || ':' ||
+                    COALESCE(NEW.purpose, '') || ':' || COALESCE(NEW.operation, ''),
                     0
                 )
             );
@@ -183,6 +186,8 @@ def upgrade() -> None:
                    AND existing.environment_id = NEW.environment_id
                    AND existing.principal_kind = NEW.principal_kind
                    AND existing.principal_id = NEW.principal_id
+                   AND existing.purpose IS NOT DISTINCT FROM NEW.purpose
+                   AND existing.operation IS NOT DISTINCT FROM NEW.operation
                    AND existing.binding_id != NEW.binding_id
             ) THEN
                 RAISE EXCEPTION 'Qualification principal scope already has a binding.'
@@ -386,13 +391,23 @@ def _create_resolvers(runtime_role: str) -> None:
         LANGUAGE sql STABLE SECURITY DEFINER
         SET search_path = pg_catalog, {SCHEMA}
         AS $function$
-            WITH current_qualification AS (
+            WITH any_qualification AS (
+                SELECT 1
+                  FROM {SCHEMA}.qualification_authority_bindings
+                 WHERE workspace_id = requested_workspace_id
+                   AND environment_id = requested_environment_id
+                   AND principal_kind = 'service'
+                   AND principal_id = requested_principal_id
+                 LIMIT 1
+            ), current_qualification AS (
                 SELECT status, purpose, operation, expires_at
                   FROM {SCHEMA}.qualification_authority_bindings
                  WHERE workspace_id = requested_workspace_id
                    AND environment_id = requested_environment_id
                    AND principal_kind = 'service'
                    AND principal_id = requested_principal_id
+                   AND purpose = requested_purpose
+                   AND operation = requested_operation
                  ORDER BY version DESC LIMIT 1
             )
             SELECT generation.generation
@@ -403,7 +418,7 @@ def _create_resolvers(runtime_role: str) -> None:
              WHERE generation.workspace_id = requested_workspace_id
                AND generation.environment_id = requested_environment_id
                AND (
-                    NOT EXISTS (SELECT 1 FROM current_qualification)
+                    NOT EXISTS (SELECT 1 FROM any_qualification)
                     OR EXISTS (
                         SELECT 1 FROM current_qualification
                          WHERE status = 'active'

@@ -46,6 +46,8 @@ from spine.auth.records import (
     AuthorizationDirectoryRecords,
     AuthorizationRecordStatus,
     CanonicalHumanIdentity,
+    QualificationAuthorityBinding,
+    QualificationPrincipalKind,
 )
 from spine.infrastructure.db.authorization_seed import (
     PostgreSQLAuthorizationSeedHelper,
@@ -466,6 +468,75 @@ async def test_database_time_is_the_hard_qualification_deadline(
             )
 
     assert (generation is not None) is allowed
+
+
+async def test_postgresql_service_principal_has_distinct_operation_bindings(
+    authorization_directory_factory: AuthorizationDirectoryFactory,
+    authorization_database: AuthorizationDatabase,
+) -> None:
+    principal_id = UUID("17000000-0000-0000-0000-000000000009")
+    bindings = tuple(
+        QualificationAuthorityBinding(
+            binding_id=binding_id,
+            qualification_id=qualification_id,
+            workspace_id=WORKSPACE_ID,
+            environment_id=ENVIRONMENT_ID,
+            principal_kind=QualificationPrincipalKind.SERVICE,
+            principal_id=principal_id,
+            purpose=purpose,
+            operation=operation,
+            expires_at=datetime(9999, 1, 1, tzinfo=timezone.utc),
+            version=1,
+            status=AuthorizationRecordStatus.ACTIVE,
+            provenance=provenance(change),
+        )
+        for binding_id, qualification_id, purpose, operation, change in (
+            (
+                UUID("15000000-0000-0000-0000-000000000009"),
+                UUID("16000000-0000-0000-0000-000000000009"),
+                "answer_question",
+                "retrieve_context",
+                109,
+            ),
+            (
+                UUID("15000000-0000-0000-0000-000000000010"),
+                UUID("16000000-0000-0000-0000-000000000010"),
+                "governed_qa.execution.v1",
+                "answer_question_run",
+                110,
+            ),
+        )
+    )
+    await authorization_directory_factory(records(qualification_bindings=bindings))
+
+    async with authorization_database.runtime_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "SELECT set_config('spine.workspace_id', :workspace_id, true), "
+                "set_config('spine.environment_id', :environment_id, true)"
+            ),
+            {"workspace_id": str(WORKSPACE_ID), "environment_id": str(ENVIRONMENT_ID)},
+        )
+        generations = tuple(
+            [
+                await connection.scalar(
+                    text(
+                        "SELECT spine.resolve_current_service_authority("
+                        ":principal_id, :workspace_id, :environment_id, :purpose, :operation)"
+                    ),
+                    {
+                        "principal_id": principal_id,
+                        "workspace_id": WORKSPACE_ID,
+                        "environment_id": ENVIRONMENT_ID,
+                        "purpose": binding.purpose,
+                        "operation": binding.operation,
+                    },
+                )
+                for binding in bindings
+            ]
+        )
+
+    assert all(generation is not None for generation in generations)
 
 
 async def test_revocation_denies_and_advances_generation_atomically(

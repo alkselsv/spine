@@ -116,17 +116,20 @@ def service_binding(
     expires_at: datetime,
     version: int = 1,
     status: AuthorizationRecordStatus = AuthorizationRecordStatus.ACTIVE,
+    binding_id: UUID = UUID("15000000-0000-0000-0000-000000000002"),
+    purpose: str = "answer_question",
+    operation: str = "retrieve_context",
 ) -> QualificationAuthorityBinding:
     human = qualification_binding(expires_at=expires_at, version=version, status=status)
     return QualificationAuthorityBinding(
-        binding_id=UUID("15000000-0000-0000-0000-000000000002"),
+        binding_id=binding_id,
         qualification_id=human.qualification_id,
         workspace_id=human.workspace_id,
         environment_id=human.environment_id,
         principal_kind=QualificationPrincipalKind.SERVICE,
         principal_id=UUID("17000000-0000-0000-0000-000000000001"),
-        purpose="answer_question",
-        operation="retrieve_context",
+        purpose=purpose,
+        operation=operation,
         expires_at=expires_at,
         version=version,
         status=status,
@@ -212,3 +215,33 @@ async def test_service_authority_denies_stale_generation() -> None:
             operation="retrieve_context",
             expected_generation=6,
         )
+
+
+@pytest.mark.asyncio
+async def test_service_principal_can_hold_distinct_bounded_operation_bindings() -> None:
+    bindings = (
+        service_binding(expires_at=NOW + timedelta(hours=1)),
+        service_binding(
+            binding_id=UUID("15000000-0000-0000-0000-000000000004"),
+            expires_at=NOW + timedelta(hours=1),
+            purpose="governed_qa.execution.v1",
+            operation="answer_question_run",
+        ),
+    )
+    directory = InMemoryServiceAuthorizationDirectory(
+        records(qualification_bindings=bindings),
+        clock=lambda: NOW,
+    )
+
+    for purpose, operation in (
+        ("answer_question", "retrieve_context"),
+        ("governed_qa.execution.v1", "answer_question_run"),
+    ):
+        generation = await directory.resolve_service_authority(
+            service_principal_id=UUID("17000000-0000-0000-0000-000000000001"),
+            requested_scope=scope(),
+            purpose=purpose,
+            operation=operation,
+            expected_generation=7,
+        )
+        assert generation == 7

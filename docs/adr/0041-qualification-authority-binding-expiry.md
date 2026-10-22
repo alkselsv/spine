@@ -34,6 +34,10 @@ effective binding changes cannot commit without the generation change.  A
 revoked binding is terminal and cannot be reactivated; it is denied even if
 credentials or cleanup state remain. Conflicting principal/scope insertions are
 serialized by a transaction-scoped database lock before the uniqueness check.
+Service authority scopes are distinct by purpose and operation, so one service
+principal may hold separate immutable qualification bindings for the bounded
+operations used by an end-to-end worker path. Human authority remains one
+binding per principal and Workspace/Environment.
 
 Human bindings are evaluated in both request authorization and later protected
 consumption.  Service bindings are evaluated from the server-selected service
