@@ -162,14 +162,22 @@ class PersistedQARunHistoryService:
                 limit=limit,
                 after=after,
             )
-            items = tuple(
-                QARunListItem(
-                    run=run,
-                    attempt_count=len(await uow.answer_question_runs.list_attempts(run.run_id)),
-                    message_link=await uow.answer_question_runs.resolve_message_link(run.run_id),
+            materialized_items: list[QARunListItem] = []
+            for run in page.runs:
+                materialized_items.append(
+                    QARunListItem(
+                        run=run,
+                        attempt_count=len(
+                            await uow.answer_question_runs.list_attempts(run.run_id)
+                        ),
+                        message_link=(
+                            await uow.answer_question_runs.resolve_message_link(
+                                run.run_id
+                            )
+                        ),
+                    )
                 )
-                for run in page.runs
-            )
+            items = tuple(materialized_items)
             await uow.commit()
         return QARunHistoryPage(items=items, has_more=page.has_more)
 

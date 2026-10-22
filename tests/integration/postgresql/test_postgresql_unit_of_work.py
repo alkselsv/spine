@@ -12,6 +12,7 @@ import sys
 from types import SimpleNamespace
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+import httpx
 import pytest
 import pytest_asyncio
 from pydantic import BaseModel, ConfigDict, SecretStr
@@ -25,6 +26,9 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from spine.api.authorization import get_authorized_persistence_context
+from spine.api.qa_runs import install_qa_run_routes
+from spine.application.qa_run_history import PersistedQARunHistoryService
 from spine.application.persistence.context import (
     EnvironmentScope,
     PersistenceOperation,
@@ -145,6 +149,7 @@ from spine.infrastructure.persistence.postgresql_operational_metrics import (
     PostgreSQLOperationalMetricsStore,
 )
 from spine.application.telemetry import OperationalMetricsQuery
+from spine.auth import InMemoryAuthorizationDirectory
 from spine.domain.capabilities.answer_question import AnswerQuestionOutcome
 from spine.domain.capabilities.answer_question_runs import (
     AnswerQuestionAttempt,
@@ -174,6 +179,11 @@ from tests.contracts.persistence.test_outbox_writer_contract import (
     test_rollback_discards_canonical_mutation_and_intent as contract_outbox_rollback,
     test_trace_mismatch_is_terminal_and_discards_pending_mutation as contract_outbox_trace_scope,
     workspace as outbox_workspace,
+)
+from tests.api.test_authorization import (
+    IDENTITY_ID as API_IDENTITY_ID,
+    authorization_entry,
+    authorized_app,
 )
 from tests.contracts.persistence.test_projection_contract import (
     test_projection_successor_rollback_advances_the_canonical_pointer as contract_projection_publication,
@@ -641,6 +651,108 @@ async def postgresql_adapter(
         )
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_qa_run_collection_returns_empty_page_from_postgresql(
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    workspace_id = UUID("53600000-0000-4000-8000-000000000001")
+    environment_id = UUID("53600000-0000-4000-8000-000000000002")
+    engine = create_async_engine(
+        postgresql_contract_database.runtime_url.get_secret_value(),
+        hide_parameters=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    boundary = TrustedContextBoundary.for_testing(
+        issuer_id=synthetic_uuid(536),
+        secret=b"issue-536-postgresql-context-secret",
+    )
+    persistence = PostgreSQLPersistence(
+        session_factory=async_sessionmaker(
+            engine,
+            expire_on_commit=False,
+            autoflush=False,
+        ),
+        context_verifier=boundary,
+        outbox_events=create_outbox_event_registry(),
+    )
+    workspace_context = boundary.interactive(
+        scope=WorkspaceScope(workspace_id=workspace_id),
+        acting_subject_id=API_IDENTITY_ID,
+        purpose=PersistencePurpose("knowledge_control"),
+        operation=PersistenceOperation("qa_run_history"),
+        trace_id=synthetic_uuid(5360),
+    )
+    async with persistence.uow_factory(workspace_context) as uow:
+        await uow.workspaces.add(
+            Workspace(
+                id=workspace_id,
+                slug="issue-536-workspace",
+                display_name="Issue 536 workspace",
+            )
+        )
+        await uow.environments.add(
+            Environment(
+                id=environment_id,
+                workspace_id=workspace_id,
+                kind=EnvironmentKind.PRODUCTION,
+                display_name="Issue 536 environment",
+            )
+        )
+        await uow.commit()
+    context = boundary.interactive(
+        scope=EnvironmentScope(
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+        ),
+        acting_subject_id=API_IDENTITY_ID,
+        purpose=PersistencePurpose("knowledge_control"),
+        operation=PersistenceOperation("qa_run_history"),
+        trace_id=synthetic_uuid(5361),
+    )
+    application = authorized_app(
+        [],
+        directory=InMemoryAuthorizationDirectory(
+            entries=(
+                authorization_entry().model_copy(
+                    update={
+                        "workspace_id": workspace_id,
+                        "environment_id": environment_id,
+                        "environment_workspace_id": workspace_id,
+                    }
+                ),
+            )
+        ),
+    )
+    service = PersistedQARunHistoryService(persistence.uow_factory)
+    install_qa_run_routes(
+        application,
+        service=service,
+        cursor_secret=b"issue-536-run-history-cursor-secret",
+    )
+    application.dependency_overrides[get_authorized_persistence_context] = (
+        lambda: context
+    )
+
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://test",
+        ) as client:
+            response = await client.get(
+                "/api/v1/qa/runs",
+                headers={
+                    "Authorization": "Bearer opaque-provider-token",
+                    "X-Workspace-ID": str(workspace_id),
+                    "X-Environment-ID": str(environment_id),
+                },
+            )
+    finally:
+        await engine.dispose()
+
+    assert response.status_code == 200, response.text
+    assert response.json()["items"] == []
 
 
 @pytest_asyncio.fixture(loop_scope="session")
