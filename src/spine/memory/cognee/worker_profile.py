@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timezone
 from decimal import Decimal
-from enum import StrEnum
+from enum import Enum
 from hashlib import sha256
 import json
 import logging
@@ -207,7 +207,7 @@ class ProfileApproval(DefinitionModel):
     approved: bool
 
 
-class SecretReferenceState(StrEnum):
+class SecretReferenceState(str, Enum):
     VALID = "valid"
     MISSING = "missing"
     MALFORMED = "malformed"
@@ -264,7 +264,7 @@ class InvocationDecision(DefinitionModel):
     refusals: tuple[InvocationRefusal, ...] = ()
 
 
-class WorkerProfileLoadStatus(StrEnum):
+class WorkerProfileLoadStatus(str, Enum):
     LOADED = "loaded"
     INVALID = "invalid"
 
@@ -295,7 +295,7 @@ def load_worker_profile(values: Mapping[str, object]) -> WorkerProfileLoadResult
     )
 
 
-class ProfileConfigurationStatus(StrEnum):
+class ProfileConfigurationStatus(str, Enum):
     PROFILE_MISSING = "profile_missing"
     APPROVAL_MISSING = "approval_missing"
     PROFILE_UNAPPROVED = "profile_unapproved"
