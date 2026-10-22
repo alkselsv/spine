@@ -233,6 +233,7 @@ services:
       SPINE_WORKER_TEMPORAL_ADDRESS: temporal:7233
       SPINE_WORKER_TEMPORAL_NAMESPACE: default
       SPINE_WORKER_TEMPORAL_TASK_QUEUE: spine-r1-qa
+      SPINE_COGNEE_WORKER_BINDING_JSON: ${SPINE_COGNEE_WORKER_BINDING_JSON}
     command: ["spine-outbox-worker"]
     tmpfs:
       - /app/.spine:uid=65532,gid=65532,mode=0700

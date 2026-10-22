@@ -56,6 +56,10 @@ from spine.infrastructure.db.settings import (
     POSTGRESQL_SEARCH_PATH_OPTIONS,
     RuntimeDatabaseSettings,
 )
+from spine.infrastructure.cognee_worker_settings import (
+    CogneeWorkerBindingConfiguration,
+    CogneeWorkerBindingSettings,
+)
 from spine.infrastructure.diagnostics import JsonLoggingDiagnosticSink
 from spine.infrastructure.ingestion_composition import register_ingestion_outbox_events
 from spine.infrastructure.outbox.delivery import PostgreSQLOutboxDeliveryRepository
@@ -63,12 +67,19 @@ from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.persistence.parsed_artifacts import PostgreSQLParsedArtifactRepository
 from spine.infrastructure.persistence.postgresql import PostgreSQLPersistence
 from spine.infrastructure.persistence.projection_composition import (
-    build_postgresql_cognee_projection_request_binding,
+    create_production_outbox_worker,
     register_projection_delivery_routes,
 )
 from spine.memory.cognee.context_projection import CogneeContextProjection
 from spine.memory.cognee.indexing import CogneeChunkProjectionStore
+from spine.memory.cognee.projection_profile_binding import (
+    BudgetAuthorizationResolver,
+    CogneeProviderCallExecutor,
+    CogneeProjectionProfileBinding,
+    bind_cognee_projection_profile,
+)
 from spine.memory.cognee.retrieval import CogneeStructuredRetrieval
+from spine.memory.cognee.worker_profile import SecretReferenceResolver
 from spine.memory.contracts import ProjectionCommand, ProjectionEffect
 from spine.domain.projections import (
     OntologyVersion,
@@ -95,7 +106,7 @@ from spine.memory.validation import (
     PhysicalProjectionSource,
     validate_physical_projection,
 )
-from spine.workers import OutboxConsumerBinding, OutboxWorker, create_outbox_worker
+from spine.workers import OutboxWorker
 from spine.workflows.temporal.bootstrap import (
     build_ask_admission_delivery_binding,
     build_ask_cancellation_delivery_binding,
@@ -416,20 +427,6 @@ class _ProjectionRequestPreparer:
                 )
             )
             await uow.commit()
-
-
-@dataclass(frozen=True, slots=True)
-class _PreparingProjectionConsumer:
-    preparer: _ProjectionRequestPreparer
-    consumer: object
-
-    async def consume(
-        self,
-        intent: OutboxIntent,
-        diagnostic_context: DiagnosticContext,
-    ) -> OutboxConsumerSuccess:
-        await self.preparer.prepare(intent)
-        return await self.consumer.consume(intent, diagnostic_context)  # type: ignore[attr-defined,no-any-return]
 
 
 def _definition_digest(schema: str, payload: object) -> str:
@@ -921,10 +918,18 @@ def create_production_outbox_worker_runtime(
     runtime_database: RuntimeDatabaseSettings | None = None,
     dispatcher_database: DispatcherDatabaseSettings | None = None,
     worker_settings: OutboxWorkerSettings | None = None,
+    cognee_binding_configuration: CogneeWorkerBindingConfiguration | None = None,
+    secret_resolver: SecretReferenceResolver | None = None,
+    budget_authorization_resolver: BudgetAuthorizationResolver | None = None,
+    provider_call_executor: CogneeProviderCallExecutor | None = None,
 ) -> ProductionOutboxWorkerRuntime:
     runtime_db = runtime_database or RuntimeDatabaseSettings()
     dispatcher_db = dispatcher_database or DispatcherDatabaseSettings()
     settings = worker_settings or OutboxWorkerSettings()
+    cognee_configuration = (
+        cognee_binding_configuration
+        or CogneeWorkerBindingSettings().load_configuration()
+    )
     runtime_engine = _create_outbox_database_engine(runtime_db)
     dispatcher_engine = _create_outbox_database_engine(dispatcher_db)
     runtime_sessions = async_sessionmaker(runtime_engine, expire_on_commit=False)
@@ -989,9 +994,25 @@ def create_production_outbox_worker_runtime(
         ),
     )
     physical_store = CogneeChunkProjectionStore(artifact_resolver=resolver)
-    projection = CogneeContextProjection(
+    cognee_projection = CogneeContextProjection(
         effect_store=physical_store,
         retrieval=CogneeStructuredRetrieval(),
+    )
+    projection = bind_cognee_projection_profile(
+        cognee_projection,
+        CogneeProjectionProfileBinding(
+            profile=cognee_configuration.profile,
+            approval=cognee_configuration.approval,
+            runtime_identity=cognee_configuration.runtime_identity,
+            deployment_id=cognee_configuration.deployment_id,
+            release_id=cognee_configuration.release_id,
+            secret_resolver=secret_resolver,
+            budget_authorization_resolver=(
+                budget_authorization_resolver or (lambda command: None)
+            ),
+            provider_call_executor=provider_call_executor,
+            clock=lambda: datetime.now(timezone.utc),
+        ),
     )
     completion = _ProjectionPublicationCompletion(
         uow_factory=persistence.uow_factory,
@@ -999,41 +1020,6 @@ def create_production_outbox_worker_runtime(
         artifact_resolver=resolver,
         physical_store=physical_store,
         clock=lambda: datetime.now(timezone.utc),
-    )
-    projection_binding = build_postgresql_cognee_projection_request_binding(
-        session_factory=runtime_sessions,
-        parsed_artifact_context_factory=lambda workspace_id, environment_id: context_for_scope(
-            workspace_id,
-            environment_id,
-            "parsed_artifact",
-            uuid4(),
-        ),
-        context_verifier=boundary,
-        uow_factory=persistence.uow_factory,
-        request_context_factory=lambda envelope: context_for_scope(
-            envelope.workspace_id,
-            envelope.environment_id,
-            "projection_request",
-            envelope.event_id,
-        ),
-        projection_context_factory=lambda command: _projection_receipt_context(
-            boundary,
-            settings.service_principal_id,
-            command,
-        ),
-        projection=projection,
-        clock=lambda: datetime.now(timezone.utc),
-        completion=completion,
-    )
-    projection_binding = OutboxConsumerBinding(
-        consumer_name=projection_binding.consumer_name,
-        consumer=_PreparingProjectionConsumer(
-            preparer=_ProjectionRequestPreparer(
-                uow_factory=persistence.uow_factory,
-                context_factory=context_for_scope,
-            ),
-            consumer=projection_binding.consumer,
-        ),
     )
     routes = OutboxDeliveryRouteRegistry(version="issue508.worker.v1")
     register_projection_delivery_routes(routes)
@@ -1046,10 +1032,9 @@ def create_production_outbox_worker_runtime(
         audit_events=audit_events,
     )
     temporal_client = _LazyTemporalWorkflowClient(settings)
-    worker = create_outbox_worker(
+    worker = create_production_outbox_worker(
         repository=repository,
         consumer_bindings=(
-            projection_binding,
             build_ask_admission_delivery_binding(temporal_client),
             build_ask_cancellation_delivery_binding(temporal_client),
         ),
@@ -1071,6 +1056,38 @@ def create_production_outbox_worker_runtime(
         lease_duration=timedelta(seconds=settings.lease_seconds),
         handler_timeout=timedelta(seconds=settings.handler_timeout_seconds),
         maximum_attempts=settings.maximum_attempts,
+        session_factory=runtime_sessions,
+        uow_factory=persistence.uow_factory,
+        request_context_factory=lambda envelope: context_for_scope(
+            envelope.workspace_id,
+            envelope.environment_id,
+            "projection_request",
+            envelope.event_id,
+        ),
+        projection_context_factory=lambda command: _projection_receipt_context(
+            boundary,
+            settings.service_principal_id,
+            command,
+        ),
+        parsed_artifact_context_factory=lambda workspace_id, environment_id: context_for_scope(
+            workspace_id,
+            environment_id,
+            "parsed_artifact",
+            uuid4(),
+        ),
+        context_verifier=boundary,
+        projection=projection,
+        recovery_context_factory=lambda envelope: context_for_scope(
+            envelope.workspace_id,
+            envelope.environment_id,
+            "projection_recovery",
+            envelope.event_id,
+        ),
+        projection_request_completion=completion,
+        projection_request_preparer=_ProjectionRequestPreparer(
+            uow_factory=persistence.uow_factory,
+            context_factory=context_for_scope,
+        ).prepare,
     )
     return ProductionOutboxWorkerRuntime(
         worker=worker,

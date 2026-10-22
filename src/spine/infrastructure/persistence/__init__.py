@@ -26,9 +26,12 @@ from spine.infrastructure.persistence.projection_composition import (
     build_postgresql_cognee_projection_delivery_binding,
     build_postgresql_cognee_projection_request_binding,
     build_postgresql_cognee_projection_request_consumer,
+    build_projection_delivery_route_binding,
+    build_production_projection_delivery_binding,
     build_production_projection_request_binding,
     build_production_projection_request_consumer,
     create_production_outbox_worker,
+    prepare_projection_delivery_binding,
 )
 
 __all__ = [
@@ -45,7 +48,10 @@ __all__ = [
     "build_postgresql_cognee_projection_delivery_binding",
     "build_postgresql_cognee_projection_request_binding",
     "build_postgresql_cognee_projection_request_consumer",
+    "build_projection_delivery_route_binding",
+    "build_production_projection_delivery_binding",
     "build_production_projection_request_binding",
     "build_production_projection_request_consumer",
     "create_production_outbox_worker",
+    "prepare_projection_delivery_binding",
 ]

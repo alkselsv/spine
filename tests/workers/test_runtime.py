@@ -9,6 +9,11 @@ import pytest
 from spine.application.outbox.dispatch import DispatchReport
 from spine.application.persistence.projection import PROJECTION_RECEIPT_OPERATION
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
+from spine.infrastructure.cognee_worker_settings import CogneeWorkerConfigurationError
+from spine.infrastructure.db.settings import (
+    DispatcherDatabaseSettings,
+    RuntimeDatabaseSettings,
+)
 from spine.memory.cognee.indexing import CogneeChunkProjectionStore
 from spine.workers.runtime import (
     OutboxWorkerSettings,
@@ -251,3 +256,24 @@ def test_chunk_data_identity_is_scoped_to_publication_namespace() -> None:
 
     assert first != segment_id
     assert successor != first
+
+
+def test_runtime_missing_profile_binding_fails_closed_before_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import spine.workers.runtime as runtime_module
+
+    monkeypatch.delenv("SPINE_COGNEE_WORKER_BINDING_JSON", raising=False)
+
+    with pytest.raises(CogneeWorkerConfigurationError) as error:
+        runtime_module.create_production_outbox_worker_runtime(
+            runtime_database=RuntimeDatabaseSettings(
+                url="postgresql+psycopg://spine_runtime:secret@localhost/spine"
+            ),
+            dispatcher_database=DispatcherDatabaseSettings(
+                url="postgresql+psycopg://spine_dispatcher:secret@localhost/spine"
+            ),
+            worker_settings=OutboxWorkerSettings(service_principal_id=UUID(int=500)),
+        )
+
+    assert error.value.reason_code == "profile_binding_missing"
