@@ -24,6 +24,7 @@ from spine.application.production_qa_deployment import (
     ProductionQAADeploymentProfile,
     ProductionQAAProfileMismatch,
 )
+from spine.infrastructure.db.readiness import load_migration_inventory
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.application.workflows.ask_admission_dispatch import AskAdmissionWorkflowInput
 
@@ -56,7 +57,7 @@ def _deployment_profile(**overrides: object) -> ProductionQAADeploymentProfile:
         "release_identity": "issue-529-test",
         "commit_sha": "b" * 40,
         "database_profile_id": "spine-source-postgresql-17",
-        "migration_revision": "20261119_56",
+        "migration_revision": load_migration_inventory().supported_head,
         "authentication_profile_id": "local-development-v1",
         "authentication_mode": "local_development",
         "scope_policy_id": "workspace-environment-v1",

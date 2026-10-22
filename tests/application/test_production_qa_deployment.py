@@ -7,6 +7,7 @@ from spine.application.production_qa_deployment import (
     ProductionQAADeploymentProfile,
     ProductionQAAProfileMismatch,
 )
+from spine.infrastructure.db.readiness import load_migration_inventory
 from spine.infrastructure.qa_deployment_settings import ProductionQAADeploymentSettings
 
 
@@ -18,7 +19,7 @@ def _profile(**overrides: object) -> ProductionQAADeploymentProfile:
         "release_identity": "r1-local-2026.10",
         "commit_sha": "b" * 40,
         "database_profile_id": "spine-source-postgresql-17",
-        "migration_revision": "20261119_56",
+        "migration_revision": load_migration_inventory().supported_head,
         "authentication_profile_id": "local-development-v1",
         "authentication_mode": "local_development",
         "scope_policy_id": "workspace-environment-v1",
