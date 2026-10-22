@@ -65,6 +65,7 @@ async def test_evidence_text_uses_canonical_segment_identity() -> None:
         endpoint="https://example.invalid/v1",
         workspace_id=UUID(int=1),
         environment_id=UUID(int=2),
+        authority_generation_resolver=lambda *_: _generation(4),
     )
     candidate_input = SimpleNamespace(
         context_bundle=SimpleNamespace(
@@ -78,6 +79,56 @@ async def test_evidence_text_uses_canonical_segment_identity() -> None:
     evidence = await runtime._evidence_text(candidate_input)  # type: ignore[arg-type]
 
     assert evidence == {evidence_id: "Synthetic qualification evidence."}
+
+
+async def _generation(value: int | None) -> int | None:
+    return value
+
+
+@pytest.mark.asyncio
+async def test_evidence_read_rejects_revoked_service_authority() -> None:
+    runtime = ConfiguredLLMRuntime(
+        artifacts=_Artifacts(),  # type: ignore[arg-type]
+        api_key="synthetic",
+        model="synthetic",
+        endpoint="https://example.invalid/v1",
+        workspace_id=UUID(int=1),
+        environment_id=UUID(int=2),
+        authority_generation_resolver=lambda *_: _generation(None),
+    )
+    candidate_input = SimpleNamespace(
+        context_bundle=SimpleNamespace(
+            evidence_references=(SimpleNamespace(evidence_id="segment-1"),)
+        ),
+        question=SimpleNamespace(
+            scope=SimpleNamespace(workspace_id=UUID(int=1), environment_id=UUID(int=2))
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="authority is unavailable"):
+        await runtime._evidence_text(candidate_input)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_protected_action_rejects_authority_revoked_after_prior_check() -> None:
+    generations = iter((4, None))
+
+    async def resolve(*_: object) -> int | None:
+        return next(generations)
+
+    runtime = ConfiguredLLMRuntime(
+        artifacts=_Artifacts(),  # type: ignore[arg-type]
+        api_key="synthetic",
+        model="synthetic",
+        endpoint="https://example.invalid/v1",
+        workspace_id=UUID(int=1),
+        environment_id=UUID(int=2),
+        authority_generation_resolver=resolve,
+    )
+
+    await runtime._require_current_authority()
+    with pytest.raises(RuntimeError, match="authority is unavailable"):
+        await runtime._require_current_authority()
 
 
 def test_semantic_support_prompt_does_not_treat_absence_claims_as_grounded() -> None:

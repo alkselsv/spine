@@ -31,7 +31,9 @@ deadline.  A successor may change lifecycle status only.  Appending an
 effective version advances the Workspace/Environment authorization generation
 in the same transaction.  Consequently activation, revocation, and other
 effective binding changes cannot commit without the generation change.  A
-revoked binding is denied even if credentials or cleanup state remain.
+revoked binding is terminal and cannot be reactivated; it is denied even if
+credentials or cleanup state remain. Conflicting principal/scope insertions are
+serialized by a transaction-scoped database lock before the uniqueness check.
 
 Human bindings are evaluated in both request authorization and later protected
 consumption.  Service bindings are evaluated from the server-selected service
@@ -50,7 +52,7 @@ The repository has the following applicable canonical paths:
 | Protected HTTP request composition | Human | `resolve_current_authorization_snapshot` in the request transaction |
 | Initial upload policy authority refresh | Human | the same human snapshot resolver |
 | Tenant PostgreSQL Unit of Work entry | Human and/or service | qualification authority is rechecked after trusted context binding and before protected repository work |
-| Durable Ask activity admission | Service plus admitted human generation | the service resolver runs for every activity/action boundary and the current generation must equal the admitted generation |
+| Durable Ask activity admission | Service plus admitted human generation | admission persists the generation in the dispatch payload; the service resolver runs for every protected activity/action boundary and the current generation must equal that admitted generation |
 | Q&A content/evidence/citation decisions | Human plus service | identity-authority revalidation resolves both principals before each protected decision |
 
 The API, worker, ingestion, Q&A, document lifecycle, audit, and outbox

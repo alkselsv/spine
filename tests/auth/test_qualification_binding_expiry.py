@@ -94,23 +94,43 @@ def test_binding_successor_cannot_extend_deadline() -> None:
         )
 
 
+def test_revoked_binding_cannot_be_reactivated() -> None:
+    revoked = qualification_binding(
+        expires_at=NOW + timedelta(hours=1),
+        status=AuthorizationRecordStatus.REVOKED,
+    )
+    reactivated = qualification_binding(
+        expires_at=revoked.expires_at,
+        version=2,
+        status=AuthorizationRecordStatus.ACTIVE,
+    )
+
+    with pytest.raises(ValueError, match="cannot be reactivated"):
+        InMemoryAuthorizationDirectory(
+            records=records(qualification_bindings=(revoked, reactivated))
+        )
+
+
 def service_binding(
     *,
     expires_at: datetime,
     version: int = 1,
     status: AuthorizationRecordStatus = AuthorizationRecordStatus.ACTIVE,
 ) -> QualificationAuthorityBinding:
-    human = qualification_binding(expires_at=expires_at)
-    return human.model_copy(
-        update={
-            "binding_id": UUID("15000000-0000-0000-0000-000000000002"),
-            "principal_kind": QualificationPrincipalKind.SERVICE,
-            "principal_id": UUID("17000000-0000-0000-0000-000000000001"),
-            "purpose": "answer_question",
-            "operation": "retrieve_context",
-            "version": version,
-            "status": status,
-        }
+    human = qualification_binding(expires_at=expires_at, version=version, status=status)
+    return QualificationAuthorityBinding(
+        binding_id=UUID("15000000-0000-0000-0000-000000000002"),
+        qualification_id=human.qualification_id,
+        workspace_id=human.workspace_id,
+        environment_id=human.environment_id,
+        principal_kind=QualificationPrincipalKind.SERVICE,
+        principal_id=UUID("17000000-0000-0000-0000-000000000001"),
+        purpose="answer_question",
+        operation="retrieve_context",
+        expires_at=expires_at,
+        version=version,
+        status=status,
+        provenance=human.provenance,
     )
 
 
@@ -150,23 +170,13 @@ async def test_service_authority_uses_hard_deadline_without_cleanup(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("binding_status", "expected_generation"),
-    (
-        (AuthorizationRecordStatus.REVOKED, 7),
-        (AuthorizationRecordStatus.ACTIVE, 6),
-    ),
-    ids=("revoked", "stale-generation"),
-)
-async def test_service_authority_denies_revocation_and_stale_generation(
-    binding_status: AuthorizationRecordStatus,
-    expected_generation: int,
-) -> None:
+async def test_service_authority_denies_revocation() -> None:
     directory = InMemoryServiceAuthorizationDirectory(
         records(
             qualification_bindings=(
                 service_binding(
-                    expires_at=NOW + timedelta(hours=1), status=binding_status
+                    expires_at=NOW + timedelta(hours=1),
+                    status=AuthorizationRecordStatus.REVOKED,
                 ),
             )
         ),
@@ -179,5 +189,26 @@ async def test_service_authority_denies_revocation_and_stale_generation(
             requested_scope=scope(),
             purpose="answer_question",
             operation="retrieve_context",
-            expected_generation=expected_generation,
+            expected_generation=7,
+        )
+
+
+@pytest.mark.asyncio
+async def test_service_authority_denies_stale_generation() -> None:
+    directory = InMemoryServiceAuthorizationDirectory(
+        records(
+            qualification_bindings=(
+                service_binding(expires_at=NOW + timedelta(hours=1)),
+            )
+        ),
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(AuthorizationDeniedError):
+        await directory.resolve_service_authority(
+            service_principal_id=UUID("17000000-0000-0000-0000-000000000001"),
+            requested_scope=scope(),
+            purpose="answer_question",
+            operation="retrieve_context",
+            expected_generation=6,
         )

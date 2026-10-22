@@ -130,13 +130,26 @@ def upgrade() -> None:
         AS $function$
         DECLARE
             first_record {SCHEMA}.qualification_authority_bindings%ROWTYPE;
+            latest_status text;
         BEGIN
+            PERFORM pg_catalog.pg_advisory_xact_lock(
+                pg_catalog.hashtextextended(
+                    NEW.workspace_id::text || ':' || NEW.environment_id::text || ':' ||
+                    NEW.principal_kind || ':' || NEW.principal_id::text,
+                    0
+                )
+            );
             SELECT * INTO first_record
               FROM {SCHEMA}.qualification_authority_bindings
              WHERE binding_id = NEW.binding_id
              ORDER BY version
              LIMIT 1;
             IF FOUND THEN
+                SELECT status INTO latest_status
+                  FROM {SCHEMA}.qualification_authority_bindings
+                 WHERE binding_id = NEW.binding_id
+                 ORDER BY version DESC
+                 LIMIT 1;
                 IF NEW.version != (
                     SELECT max(version) + 1
                     FROM {SCHEMA}.qualification_authority_bindings
@@ -152,6 +165,11 @@ def upgrade() -> None:
                     RAISE EXCEPTION 'Qualification binding scope and deadline are immutable.'
                         USING ERRCODE = '23514',
                               CONSTRAINT = 'ck_qualification_authority_binding_immutable';
+                END IF;
+                IF latest_status = 'revoked' THEN
+                    RAISE EXCEPTION 'Revoked qualification authority cannot be reactivated.'
+                        USING ERRCODE = '23514',
+                              CONSTRAINT = 'ck_qualification_authority_revocation_terminal';
                 END IF;
             ELSIF NEW.version != 1 THEN
                 RAISE EXCEPTION 'Qualification binding history must start at version 1.'

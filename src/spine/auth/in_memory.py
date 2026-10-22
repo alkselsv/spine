@@ -398,9 +398,16 @@ def _validate_qualification_binding_history(
         "expires_at",
     )
     first_by_binding: dict[UUID, QualificationAuthorityBinding] = {}
+    latest_by_binding: dict[UUID, QualificationAuthorityBinding] = {}
     principal_bindings: dict[tuple[object, ...], UUID] = {}
     for binding in sorted(bindings, key=lambda item: (item.binding_id.int, item.version)):
         first = first_by_binding.setdefault(binding.binding_id, binding)
+        previous = latest_by_binding.get(binding.binding_id)
+        if (
+            previous is not None
+            and previous.status is AuthorizationRecordStatus.REVOKED
+        ):
+            raise ValueError("revoked qualification authority cannot be reactivated")
         if any(getattr(binding, field) != getattr(first, field) for field in immutable_fields):
             raise ValueError("qualification binding scope and deadline are immutable")
         key = (
@@ -412,6 +419,7 @@ def _validate_qualification_binding_history(
         previous_id = principal_bindings.setdefault(key, binding.binding_id)
         if previous_id != binding.binding_id:
             raise ValueError("qualification principal scope has multiple bindings")
+        latest_by_binding[binding.binding_id] = binding
 
 
 def _qualification_authority_is_current(

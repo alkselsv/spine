@@ -182,7 +182,7 @@ async def test_expired_qualification_binding_denies_without_cleanup(
     authorization_directory_factory: AuthorizationDirectoryFactory,
 ) -> None:
     expired = qualification_binding(
-        expires_at=datetime.now(timezone.utc) - timedelta(days=1)
+        expires_at=datetime(2000, 1, 1, tzinfo=timezone.utc)
     )
     directory = await authorization_directory_factory(
         records(qualification_bindings=(expired,))
@@ -199,7 +199,7 @@ async def test_unexpired_qualification_binding_allows_current_authority(
     authorization_directory_factory: AuthorizationDirectoryFactory,
 ) -> None:
     current = qualification_binding(
-        expires_at=datetime.now(timezone.utc) + timedelta(days=1)
+        expires_at=datetime(9999, 1, 1, tzinfo=timezone.utc)
     )
     directory = await authorization_directory_factory(
         records(qualification_bindings=(current,))
@@ -432,8 +432,18 @@ async def test_same_identity_has_strictly_workspace_local_authority(
                     workspace_id=OTHER_WORKSPACE_ID,
                 ),
             ),
+            qualification_bindings=(
+                qualification_binding(
+                    expires_at=datetime(2000, 1, 1, tzinfo=timezone.utc)
+                ),
+            ),
         )
     )
+
+    with pytest.raises(AuthorizationDeniedError):
+        await directory.resolve_request_authority(
+            authenticated_alias(), scope(), route_policy()
+        )
 
     second = await directory.resolve_request_authority(
         authenticated_alias(),

@@ -2965,6 +2965,60 @@ async def test_concurrent_duplicate_claims_have_one_owner_and_stable_replay(
         await uow.commit()
 
 
+async def test_environment_uow_rejects_expired_service_qualification(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    from spine.application.persistence.errors import InvalidPersistenceContextError
+
+    workspace_id = synthetic_uuid(54100)
+    environment_id = synthetic_uuid(54101)
+    await persist_idempotency_workspace(postgresql_adapter, workspace_id)
+    workspace_context = postgresql_adapter.workspace_context(workspace_id)
+    async with postgresql_adapter.uow_factory(workspace_context) as uow:
+        await uow.environments.add(
+            Environment(
+                id=environment_id,
+                workspace_id=workspace_id,
+                kind=EnvironmentKind.PRODUCTION,
+                display_name="Expired qualification",
+            )
+        )
+        await uow.commit()
+
+    migration_engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    try:
+        async with migration_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.qualification_authority_bindings ("
+                    "binding_id, version, qualification_id, workspace_id, environment_id, "
+                    "principal_kind, principal_id, purpose, operation, expires_at, status, "
+                    "change_id, recorded_by) VALUES ("
+                    ":binding_id, 1, :qualification_id, :workspace_id, :environment_id, "
+                    "'service', :principal_id, 'contract_test', 'environment_repository', "
+                    "transaction_timestamp(), 'active', :change_id, 'uow-expiry-test')"
+                ),
+                {
+                    "binding_id": synthetic_uuid(54102),
+                    "qualification_id": synthetic_uuid(54103),
+                    "workspace_id": workspace_id,
+                    "environment_id": environment_id,
+                    "principal_id": synthetic_uuid(953),
+                    "change_id": synthetic_uuid(54104),
+                },
+            )
+    finally:
+        await migration_engine.dispose()
+
+    context = postgresql_adapter.environment_context(workspace_id, environment_id)
+    with pytest.raises(InvalidPersistenceContextError):
+        async with postgresql_adapter.uow_factory(context):
+            pass
+
 async def test_receipt_identity_collision_keeps_primary_key_conflict_meaning(
     postgresql_adapter: PersistenceAdapter,
     postgresql_contract_database: PostgreSQLContractDatabase,

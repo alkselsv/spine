@@ -102,6 +102,7 @@ class AskAdmissionDispatchPayload(BaseModel):
     session_id: UUID
     message_id: UUID
     run_id: UUID
+    authorization_generation: int = Field(default=1, ge=1)
     capture_id: UUID | None = None
     capture_subscription: AskCaptureSubscription | None = None
     schema_version: int = Field(default=1, gt=0)
@@ -138,6 +139,7 @@ class AskAdmissionCommand:
     question: str
     idempotency_key: IdempotencyKey
     digest: CommandDigest
+    authorization_generation: int = 1
     clarification_of_message_id: UUID | None = None
     capture_id: UUID | None = None
     capture_subscription: AskCaptureSubscription | None = None
@@ -155,6 +157,8 @@ class AskAdmissionCommand:
             raise ValueError("Ask admission identity must be non-zero")
         if not self.question or not self.question.strip() or len(self.question) > 32768:
             raise ValueError("Ask question must be a bounded non-blank string")
+        if self.authorization_generation < 1:
+            raise ValueError("Ask admission authorization generation must be positive")
         if self.digest.operation != QA_ASK_ADMISSION_OPERATION:
             raise ValueError("Ask admission digest operation is invalid")
         if self.digest.operation_schema_version != QA_ASK_ADMISSION_SCHEMA_VERSION:
@@ -178,6 +182,7 @@ class AskAdmissionCommand:
         clarification_of_message_id: UUID | None = None,
         capture_id: UUID | None = None,
         capture_subscription: AskCaptureSubscription | None = None,
+        authorization_generation: int = 1,
     ) -> "AskAdmissionCommand":
         digest = digest_command(
             operation=QA_ASK_ADMISSION_OPERATION,
@@ -192,6 +197,7 @@ class AskAdmissionCommand:
                 "question": question,
                 "clarification_of_message_id": clarification_of_message_id,
                 "idempotency_key": idempotency_key.value,
+                "authorization_generation": authorization_generation,
             },
         )
         return cls(
@@ -203,6 +209,7 @@ class AskAdmissionCommand:
             question=question,
             idempotency_key=idempotency_key,
             digest=digest,
+            authorization_generation=authorization_generation,
             clarification_of_message_id=clarification_of_message_id,
             capture_id=capture_id,
             capture_subscription=capture_subscription,

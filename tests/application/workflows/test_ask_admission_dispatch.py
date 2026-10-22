@@ -162,6 +162,7 @@ def test_observer_subscription_dispatch_uses_typed_v3_routing_metadata() -> None
             run_id=RUN_ID,
             capture_id=subscription.capture_id,
             capture_subscription=subscription,
+            authorization_generation=9,
             schema_version=3,
         ),
         aggregate=OpaqueObjectReference(
@@ -177,6 +178,7 @@ def test_observer_subscription_dispatch_uses_typed_v3_routing_metadata() -> None
     assert restored.schema_version == 3
     assert restored.capture_id == subscription.capture_id
     assert restored.capture_subscription == subscription
+    assert restored.authorization_generation == 9
     assert "question" not in restored.model_dump(mode="json")
     assert "answer" not in restored.model_dump(mode="json")
     assert "context_bundle" not in restored.model_dump(mode="json")

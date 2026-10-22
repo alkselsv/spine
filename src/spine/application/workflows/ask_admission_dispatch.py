@@ -78,6 +78,7 @@ class AskAdmissionWorkflowInput(BaseModel):
     message_id: UUID
     run_id: UUID
     trace_id: UUID
+    authorization_generation: int = Field(default=1, ge=1)
     correlation_id: UUID | None = None
     causation_id: UUID | None = None
     capture_id: UUID | None = None
@@ -143,6 +144,7 @@ class AskAdmissionWorkflowInput(BaseModel):
             message_id=payload.message_id,
             run_id=payload.run_id,
             trace_id=intent.trace_id,
+            authorization_generation=payload.authorization_generation,
             correlation_id=intent.correlation_id,
             causation_id=intent.event_id,
             capture_id=payload.capture_id,
@@ -585,9 +587,7 @@ class AskAdmissionWorkflowExecutor:
         if self._run_starter is not None:
             await self._run_starter(workflow_input)
         context = self._persistence_context_factory(workflow_input)
-        authorization_generation = await self._resolve_authorization_generation(
-            workflow_input, command
-        )
+        authorization_generation = workflow_input.authorization_generation
         result = await self._service.execute_admitted(
             AskExecutionCommand(
                 request_context=AskRequestContext(

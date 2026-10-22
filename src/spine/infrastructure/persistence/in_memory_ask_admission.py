@@ -173,6 +173,7 @@ class InMemoryAskAdmissionRepository(AskAdmissionRepository):
                     session_id=command.session_id,
                     message_id=message_id,
                     run_id=run_id,
+                    authorization_generation=command.authorization_generation,
                     capture_id=command.capture_id,
                     capture_subscription=command.capture_subscription,
                     schema_version=(

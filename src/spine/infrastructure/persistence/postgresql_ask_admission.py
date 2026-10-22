@@ -77,6 +77,7 @@ class PostgreSQLAskAdmissionRepository(AskAdmissionRepository):
             question=command.question,
             idempotency_key=command.idempotency_key,
             clarification_of_message_id=command.clarification_of_message_id,
+            authorization_generation=command.authorization_generation,
         ).digest
         if command.digest != expected_digest:
             await self._uow._fail(ConstraintConflictError("Ask admission digest is invalid."))
@@ -179,6 +180,7 @@ class PostgreSQLAskAdmissionRepository(AskAdmissionRepository):
             session_id=command.session_id,
             message_id=message_id,
             run_id=run_id,
+            authorization_generation=command.authorization_generation,
             capture_id=command.capture_id,
             capture_subscription=command.capture_subscription,
             schema_version=(

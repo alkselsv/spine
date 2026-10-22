@@ -542,6 +542,28 @@ async def test_revocation_denies_and_advances_generation_atomically(
     assert after == before + 1
     assert authority is None
 
+    with pytest.raises(IntegrityError) as captured:
+        async with authorization_database.migration_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.qualification_authority_bindings ("
+                    "binding_id, version, qualification_id, workspace_id, environment_id, "
+                    "principal_kind, principal_id, purpose, operation, expires_at, status, "
+                    "change_id, recorded_by) "
+                    "SELECT binding_id, 3, qualification_id, workspace_id, environment_id, "
+                    "principal_kind, principal_id, purpose, operation, expires_at, 'active', "
+                    "'90000000-0000-0000-0000-000000000163', 'postgresql-reactivation-test' "
+                    "FROM spine.qualification_authority_bindings "
+                    "WHERE binding_id = :binding_id AND version = 2"
+                ),
+                parameters,
+            )
+
+    assert (
+        captured.value.orig.diag.constraint_name
+        == "ck_qualification_authority_revocation_terminal"
+    )
+
 
 async def test_postgresql_same_identity_is_strictly_tenant_local(
     authorization_directory_factory: AuthorizationDirectoryFactory,

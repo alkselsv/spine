@@ -614,6 +614,23 @@ class _CurrentIdentityAuthority:
         )
 
 
+class _CurrentQAServiceAuthority:
+    def __init__(self, session_factory: object, service_principal_id: UUID) -> None:
+        self._resolver = PostgreSQLQualificationAuthorityResolver(session_factory)  # type: ignore[arg-type]
+        self._service_principal_id = service_principal_id
+
+    async def __call__(self, workspace_id: UUID, environment_id: UUID) -> int | None:
+        return await self._resolver.resolve_service_authority(
+            principal_id=self._service_principal_id,
+            requested_scope=RequestedAuthorizationScope(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+            ),
+            purpose="governed_qa.execution.v1",
+            operation="answer_question_run",
+        )
+
+
 class _CanonicalSourceIsolation:
     async def can_express(self, scope: object) -> bool:
         constraints = getattr(scope, "source_constraints", ())
@@ -1467,6 +1484,9 @@ async def build_production_qa_capability_graph(
             api_key=llm_api_key,
             model=llm_model,
             endpoint=llm_endpoint,
+            authority_generation_resolver=_CurrentQAServiceAuthority(
+                session_factory, service_principal_id
+            ),
         ),
     )
     uow_factory = persistence.uow_factory
