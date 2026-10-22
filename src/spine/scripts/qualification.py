@@ -1,15 +1,15 @@
-"""Explicit bootstrap for the disposable governed-Q&A qualification stack."""
+"""Explicit fixtures for the disposable governed-Q&A qualification stack."""
 
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from uuid import UUID, NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from sqlalchemy import insert, text
-from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from spine.auth import (
@@ -44,15 +44,13 @@ from spine.domain.context_profiles import (
     PartialAnswerFallback,
     RetrievalStrategy,
 )
-from spine.infrastructure.db.authorization_seed import PostgreSQLAuthorizationSeedHelper
 from spine.infrastructure.db.settings import POSTGRESQL_SEARCH_PATH_OPTIONS
-from spine.infrastructure.persistence.postgresql_mappings import (
-    access_policy_grants,
-    access_policy_versions,
-    source_objects,
-)
-from spine.infrastructure.persistence.postgresql_authorization_mappings import (
-    qualification_target_bindings,
+from spine.infrastructure.persistence.postgresql_qualification_fixtures import (
+    PostgreSQLQualificationFixtureProvisioner,
+    QualificationEnvironmentFixture,
+    QualificationFixturePlan,
+    QualificationSourceAccessFixture,
+    QualificationWorkspaceFixture,
 )
 from spine.infrastructure.persistence.postgresql_qualification_targets import (
     PostgreSQLQualificationTargetBindingResolver,
@@ -140,6 +138,18 @@ class QualificationVerificationSettings(BaseSettings):
         return self
 
 
+@dataclass(frozen=True)
+class _QualificationActorFixture:
+    name: str
+    identity_id: UUID
+    subject: str
+    workspace_id: UUID
+    environment_id: UUID
+    has_administrator_role: bool
+    qualification_status: AuthorizationRecordStatus | None
+    qualification_expires_at: datetime | None
+
+
 def build_authorization_records(
     settings: QualificationBootstrapSettings,
 ) -> AuthorizationDirectoryRecords:
@@ -153,117 +163,121 @@ def build_authorization_records(
 
     active = AuthorizationRecordStatus.ACTIVE
     actors = (
-        (
-            "approved",
-            settings.identity_id,
-            settings.authentication_alias_subject,
-            settings.workspace_a_id,
-            settings.environment_a_id,
-            True,
-            active,
-            settings.authority_expires_at,
+        _QualificationActorFixture(
+            name="approved",
+            identity_id=settings.identity_id,
+            subject=settings.authentication_alias_subject,
+            workspace_id=settings.workspace_a_id,
+            environment_id=settings.environment_a_id,
+            has_administrator_role=True,
+            qualification_status=active,
+            qualification_expires_at=settings.authority_expires_at,
         ),
-        (
-            "insufficient-role",
-            _stable_id(settings, "identity:insufficient-role"),
-            f"{settings.authentication_alias_subject}-insufficient-role",
-            settings.workspace_a_id,
-            settings.environment_a_id,
-            False,
-            None,
-            None,
+        _QualificationActorFixture(
+            name="insufficient-role",
+            identity_id=_stable_id(settings, "identity:insufficient-role"),
+            subject=f"{settings.authentication_alias_subject}-insufficient-role",
+            workspace_id=settings.workspace_a_id,
+            environment_id=settings.environment_a_id,
+            has_administrator_role=False,
+            qualification_status=None,
+            qualification_expires_at=None,
         ),
-        (
-            "revoked",
-            _stable_id(settings, "identity:revoked"),
-            f"{settings.authentication_alias_subject}-revoked",
-            settings.workspace_a_id,
-            settings.environment_a_id,
-            True,
-            AuthorizationRecordStatus.REVOKED,
-            settings.authority_expires_at,
+        _QualificationActorFixture(
+            name="revoked",
+            identity_id=_stable_id(settings, "identity:revoked"),
+            subject=f"{settings.authentication_alias_subject}-revoked",
+            workspace_id=settings.workspace_a_id,
+            environment_id=settings.environment_a_id,
+            has_administrator_role=True,
+            qualification_status=AuthorizationRecordStatus.REVOKED,
+            qualification_expires_at=settings.authority_expires_at,
         ),
-        (
-            "expired",
-            _stable_id(settings, "identity:expired"),
-            f"{settings.authentication_alias_subject}-expired",
-            settings.workspace_a_id,
-            settings.environment_a_id,
-            True,
-            active,
-            datetime(2000, 1, 1, tzinfo=timezone.utc),
+        _QualificationActorFixture(
+            name="expired",
+            identity_id=_stable_id(settings, "identity:expired"),
+            subject=f"{settings.authentication_alias_subject}-expired",
+            workspace_id=settings.workspace_a_id,
+            environment_id=settings.environment_a_id,
+            has_administrator_role=True,
+            qualification_status=active,
+            qualification_expires_at=datetime(2000, 1, 1, tzinfo=timezone.utc),
         ),
-        (
-            "foreign-scope",
-            _stable_id(settings, "identity:foreign-scope"),
-            f"{settings.authentication_alias_subject}-foreign-scope",
-            settings.workspace_b_id,
-            settings.environment_b_id,
-            True,
-            active,
-            settings.authority_expires_at,
+        _QualificationActorFixture(
+            name="foreign-scope",
+            identity_id=_stable_id(settings, "identity:foreign-scope"),
+            subject=f"{settings.authentication_alias_subject}-foreign-scope",
+            workspace_id=settings.workspace_b_id,
+            environment_id=settings.environment_b_id,
+            has_administrator_role=True,
+            qualification_status=active,
+            qualification_expires_at=settings.authority_expires_at,
         ),
     )
     return AuthorizationDirectoryRecords(
         identities=tuple(
             CanonicalHumanIdentity(
-                identity_id=identity_id,
+                identity_id=actor.identity_id,
                 version=1,
                 status=active,
-                provenance=provenance(f"identity:{name}"),
+                provenance=provenance(f"identity:{actor.name}"),
             )
-            for name, identity_id, *_ in actors
+            for actor in actors
         ),
         alias_bindings=tuple(
             AuthenticationAliasBinding(
-                binding_id=_stable_id(settings, f"authentication-alias:{name}"),
+                binding_id=_stable_id(settings, f"authentication-alias:{actor.name}"),
                 alias=AuthenticationAlias(
                     issuer=settings.authentication_alias_issuer,
-                    subject=subject,
+                    subject=actor.subject,
                 ),
-                canonical_human_identity_id=identity_id,
+                canonical_human_identity_id=actor.identity_id,
                 version=1,
                 status=active,
-                provenance=provenance(f"authentication-alias:{name}"),
+                provenance=provenance(f"authentication-alias:{actor.name}"),
             )
-            for name, identity_id, subject, *_ in actors
+            for actor in actors
         ),
         workspace_memberships=tuple(
             WorkspaceMembership(
-                membership_id=_stable_id(settings, f"workspace-membership:{name}"),
-                workspace_id=workspace_id,
-                canonical_human_identity_id=identity_id,
+                membership_id=_stable_id(
+                    settings, f"workspace-membership:{actor.name}"
+                ),
+                workspace_id=actor.workspace_id,
+                canonical_human_identity_id=actor.identity_id,
                 version=1,
                 status=active,
-                provenance=provenance(f"workspace-membership:{name}"),
+                provenance=provenance(f"workspace-membership:{actor.name}"),
             )
-            for name, identity_id, _, workspace_id, *_ in actors
+            for actor in actors
         ),
         environment_memberships=tuple(
             EnvironmentMembership(
-                membership_id=_stable_id(settings, f"environment-membership:{name}"),
-                workspace_id=workspace_id,
-                environment_id=environment_id,
-                canonical_human_identity_id=identity_id,
+                membership_id=_stable_id(
+                    settings, f"environment-membership:{actor.name}"
+                ),
+                workspace_id=actor.workspace_id,
+                environment_id=actor.environment_id,
+                canonical_human_identity_id=actor.identity_id,
                 version=1,
                 status=active,
-                provenance=provenance(f"environment-membership:{name}"),
+                provenance=provenance(f"environment-membership:{actor.name}"),
             )
-            for name, identity_id, _, workspace_id, environment_id, *_ in actors
+            for actor in actors
         ),
         role_bindings=tuple(
             EnvironmentRoleBinding(
-                binding_id=_stable_id(settings, f"administrator:{name}"),
-                workspace_id=workspace_id,
-                environment_id=environment_id,
-                canonical_human_identity_id=identity_id,
+                binding_id=_stable_id(settings, f"administrator:{actor.name}"),
+                workspace_id=actor.workspace_id,
+                environment_id=actor.environment_id,
+                canonical_human_identity_id=actor.identity_id,
                 role=AuthorizationRole.ADMINISTRATOR,
                 version=1,
                 status=active,
-                provenance=provenance(f"administrator:{name}"),
+                provenance=provenance(f"administrator:{actor.name}"),
             )
-            for name, identity_id, _, workspace_id, environment_id, has_role, *_ in actors
-            if has_role
+            for actor in actors
+            if actor.has_administrator_role
         ),
         generations=tuple(
             AuthorizationGeneration(
@@ -288,28 +302,24 @@ def build_authorization_records(
         ),
         qualification_bindings=tuple(
             QualificationAuthorityBinding(
-                binding_id=_stable_id(settings, f"qualification-binding:{name}"),
-                qualification_id=_stable_id(settings, f"qualification:{name}"),
-                workspace_id=workspace_id,
-                environment_id=environment_id,
+                binding_id=_stable_id(
+                    settings, f"qualification-binding:{actor.name}"
+                ),
+                qualification_id=_stable_id(
+                    settings, f"qualification:{actor.name}"
+                ),
+                workspace_id=actor.workspace_id,
+                environment_id=actor.environment_id,
                 principal_kind=QualificationPrincipalKind.HUMAN,
-                principal_id=identity_id,
-                expires_at=expires_at,
+                principal_id=actor.identity_id,
+                expires_at=actor.qualification_expires_at,
                 version=1,
-                status=binding_status,
-                provenance=provenance(f"qualification-binding:{name}"),
+                status=actor.qualification_status,
+                provenance=provenance(f"qualification-binding:{actor.name}"),
             )
-            for (
-                name,
-                identity_id,
-                _,
-                workspace_id,
-                environment_id,
-                _,
-                binding_status,
-                expires_at,
-            ) in actors
-            if binding_status is not None and expires_at is not None
+            for actor in actors
+            if actor.qualification_status is not None
+            and actor.qualification_expires_at is not None
         ),
     )
 
@@ -354,9 +364,7 @@ def build_target_binding(
         binding_series_id=binding_id,
         binding_version=1,
         predecessor_binding_id=None,
-        authority_binding_id=_stable_id(
-            settings, "qualification-binding:approved"
-        ),
+        authority_binding_id=_stable_id(settings, "qualification-binding:approved"),
         authority_binding_version=1,
         qualification_id=_stable_id(settings, "qualification:approved"),
         workspace_id=settings.workspace_a_id,
@@ -368,7 +376,7 @@ def build_target_binding(
         principal_kind=QualificationPrincipalKind.HUMAN,
         purpose=None,
         operation=None,
-        alias_reference="qualification-principal:approved:v1",
+        alias_reference=f"qualification-principal:{settings.identity_id}:approved:v1",
         secret=ExternalSecretReference(
             provider_reference=settings.secret_provider_reference,
             secret_reference=settings.secret_reference,
@@ -415,7 +423,53 @@ def build_target_binding_request(
 def qualification_workspace_slug(workspace_id: UUID, suffix: str) -> str:
     """Keep disposable qualification scopes unique across repeated live runs."""
 
-    return f"issue-508-{suffix}-{workspace_id.hex}"
+    return f"q16-{suffix}-{workspace_id.hex}"
+
+
+def build_fixture_plan(
+    settings: QualificationBootstrapSettings,
+) -> QualificationFixturePlan:
+    """Build one exact immutable plan for the migration-owner adapter."""
+
+    binding = build_target_binding(settings)
+    created_at = datetime(2026, 10, 21, tzinfo=timezone.utc)
+    return QualificationFixturePlan(
+        workspaces=tuple(
+            QualificationWorkspaceFixture(
+                workspace_id=workspace_id,
+                slug=qualification_workspace_slug(workspace_id, suffix),
+                display_name=f"Q16 Qualification {suffix.upper()}",
+            )
+            for workspace_id, suffix in (
+                (settings.workspace_a_id, "a"),
+                (settings.workspace_b_id, "b"),
+            )
+        ),
+        environments=tuple(
+            QualificationEnvironmentFixture(
+                environment_id=environment_id,
+                workspace_id=workspace_id,
+                display_name=f"Q16 Qualification {suffix.upper()}",
+            )
+            for workspace_id, environment_id, suffix in (
+                (settings.workspace_a_id, settings.environment_a_id, "a"),
+                (settings.workspace_b_id, settings.environment_b_id, "b"),
+            )
+        ),
+        context_profiles=build_context_profiles(settings),
+        authorization_records=build_authorization_records(settings),
+        source_access=QualificationSourceAccessFixture(
+            source_object_id=_stable_id(settings, "source-object:qualification-source"),
+            policy_id=binding.access_policy_references[0],
+            grant_id=_stable_id(settings, "access-grant:approved-human"),
+            workspace_id=settings.workspace_a_id,
+            environment_id=settings.environment_a_id,
+            principal_id=settings.identity_id,
+            origin_reference=_stable_id(settings, "access-policy-origin:v1"),
+            created_at=created_at,
+        ),
+        target_binding=binding,
+    )
 
 
 async def provision(settings: QualificationBootstrapSettings) -> None:
@@ -427,83 +481,43 @@ async def provision(settings: QualificationBootstrapSettings) -> None:
         pool_pre_ping=True,
         connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
     )
-    records = build_authorization_records(settings)
     try:
-        async with engine.begin() as connection:
-            existing = await connection.scalar(
-                text(
-                    "SELECT count(*) FROM spine.canonical_human_identities "
-                    "WHERE identity_id = :identity_id"
-                ),
-                {"identity_id": settings.identity_id},
-            )
-            for workspace_id, suffix in (
-                (settings.workspace_a_id, "a"),
-                (settings.workspace_b_id, "b"),
-            ):
-                await connection.execute(
-                    text(
-                        "INSERT INTO spine.workspaces (id, slug, display_name) "
-                        "VALUES (:id, :slug, :display_name) ON CONFLICT (id) DO NOTHING"
-                    ),
-                    {
-                        "id": workspace_id,
-                        "slug": qualification_workspace_slug(workspace_id, suffix),
-                        "display_name": f"Issue 508 Qualification {suffix.upper()}",
-                    },
-                )
-            for workspace_id, environment_id, suffix in (
-                (settings.workspace_a_id, settings.environment_a_id, "a"),
-                (settings.workspace_b_id, settings.environment_b_id, "b"),
-            ):
-                await connection.execute(
-                    text(
-                        "INSERT INTO spine.environments "
-                        "(id, workspace_id, kind, display_name, created_at) "
-                        "VALUES (:id, :workspace_id, 'production', :display_name, :created_at) "
-                        "ON CONFLICT (id) DO NOTHING"
-                    ),
-                    {
-                        "id": environment_id,
-                        "workspace_id": workspace_id,
-                        "display_name": f"Issue 508 Qualification {suffix.upper()}",
-                        "created_at": datetime.now(timezone.utc),
-                    },
-                )
-            for profile in build_context_profiles(settings):
-                values = profile.model_dump(mode="python")
-                values["retrieval_strategy"] = profile.retrieval_strategy.value
-                values["completeness_requirement"] = (
-                    profile.completeness_requirement.value
-                )
-                values["partial_answer_fallback"] = (
-                    profile.partial_answer_fallback.value
-                )
-                await connection.execute(
-                    text(
-                        "INSERT INTO spine.context_profiles ("
-                        "profile_id, workspace_id, environment_id, profile_version, "
-                        "profile_digest, schema_version, retrieval_strategy, max_results, "
-                        "max_tokens, max_relation_hops, freshness_max_age_seconds, "
-                        "completeness_requirement, partial_answer_fallback, server_approved, "
-                        "revoked, predecessor_profile_id, created_at"
-                        ") VALUES ("
-                        ":profile_id, :workspace_id, :environment_id, :profile_version, "
-                        ":profile_digest, :schema_version, :retrieval_strategy, :max_results, "
-                        ":max_tokens, :max_relation_hops, :freshness_max_age_seconds, "
-                        ":completeness_requirement, :partial_answer_fallback, :server_approved, "
-                        ":revoked, :predecessor_profile_id, :created_at"
-                        ") ON CONFLICT (workspace_id, environment_id, profile_id, profile_version) "
-                        "DO NOTHING"
-                    ),
-                    values,
-                )
-        if existing == 0:
-            await PostgreSQLAuthorizationSeedHelper(
-                async_sessionmaker(engine, expire_on_commit=False)
-            ).append(records)
-        await _provision_target_fixture(engine, settings)
+        await PostgreSQLQualificationFixtureProvisioner(
+            async_sessionmaker(engine, expire_on_commit=False)
+        ).provision(build_fixture_plan(settings))
         await _verify_existing_authority(engine, settings)
+    finally:
+        await engine.dispose()
+
+
+async def advance_authorization_generation(
+    settings: QualificationBootstrapSettings,
+) -> None:
+    """Append the one-shot record used after admission to make it stale."""
+
+    engine = create_async_engine(
+        settings.migration_database_url,
+        hide_parameters=True,
+        pool_pre_ping=True,
+        connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
+    )
+    record = EnvironmentRoleBinding(
+        binding_id=_stable_id(settings, "administrator:approved:generation-advance"),
+        workspace_id=settings.workspace_a_id,
+        environment_id=settings.environment_a_id,
+        canonical_human_identity_id=settings.identity_id,
+        role=AuthorizationRole.ADMINISTRATOR,
+        version=2,
+        status=AuthorizationRecordStatus.ACTIVE,
+        provenance=AuthorizationRecordProvenance(
+            change_id=_stable_id(settings, "authority-change:generation-advance"),
+            recorded_by="qualification-fixture-operator",
+        ),
+    )
+    try:
+        await PostgreSQLQualificationFixtureProvisioner(
+            async_sessionmaker(engine, expire_on_commit=False)
+        ).advance_generation(record)
     finally:
         await engine.dispose()
 
@@ -527,103 +541,6 @@ async def verify(settings: QualificationVerificationSettings) -> None:
         await _verify_existing_authority(engine, settings)
     finally:
         await engine.dispose()
-
-
-async def _provision_target_fixture(
-    engine: AsyncEngine,
-    settings: QualificationBootstrapSettings,
-) -> None:
-    binding = build_target_binding(settings)
-    source_object_id = _stable_id(settings, "source-object:qualification-source")
-    policy_id = binding.access_policy_references[0]
-    async with engine.begin() as connection:
-        await connection.execute(
-            postgresql_insert(source_objects)
-            .values(
-                source_object_id=source_object_id,
-                workspace_id=settings.workspace_a_id,
-                environment_id=settings.environment_a_id,
-                source_kind="qualification",
-                identity_mode="upload",
-                upload_identity="qualification-source-authority-fixture",
-                created_at=text("transaction_timestamp()"),
-            )
-            .on_conflict_do_nothing(index_elements=[source_objects.c.source_object_id])
-        )
-        await connection.execute(
-            postgresql_insert(access_policy_versions)
-            .values(
-                access_policy_version_id=policy_id,
-                workspace_id=settings.workspace_a_id,
-                environment_id=settings.environment_a_id,
-                source_object_id=source_object_id,
-                version=1,
-                predecessor_policy_version_id=None,
-                document_schema_version="access-policy.v1",
-                document_hash="a" * 64,
-                origin_kind="approved_source_configuration",
-                origin_reference=_stable_id(settings, "access-policy-origin:v1"),
-                origin_version=1,
-                origin_hash="b" * 64,
-                created_by_canonical_human_id=settings.identity_id,
-                created_at=text("transaction_timestamp()"),
-            )
-            .on_conflict_do_nothing(
-                index_elements=[access_policy_versions.c.access_policy_version_id]
-            )
-        )
-        await connection.execute(
-            postgresql_insert(access_policy_grants)
-            .values(
-                access_grant_id=_stable_id(settings, "access-grant:approved-human"),
-                workspace_id=settings.workspace_a_id,
-                environment_id=settings.environment_a_id,
-                source_object_id=source_object_id,
-                access_policy_version_id=policy_id,
-                principal_kind="human",
-                principal_id=settings.identity_id,
-                permission="read_content",
-                purpose=None,
-                operation=None,
-                valid_from=None,
-                valid_until=None,
-            )
-            .on_conflict_do_nothing(
-                index_elements=[access_policy_grants.c.access_grant_id]
-            )
-        )
-        await connection.execute(
-            postgresql_insert(qualification_target_bindings)
-            .values(
-                binding_id=binding.binding_id,
-                binding_series_id=binding.binding_series_id,
-                binding_version=binding.binding_version,
-                predecessor_binding_id=binding.predecessor_binding_id,
-                authority_binding_id=binding.authority_binding_id,
-                authority_binding_version=binding.authority_binding_version,
-                qualification_id=binding.qualification_id,
-                workspace_id=binding.workspace_id,
-                environment_id=binding.environment_id,
-                target=binding.target.value,
-                target_reference=binding.target_reference,
-                target_scope_reference=binding.target_scope_reference,
-                principal_kind=binding.principal_kind.value,
-                principal_id=binding.principal_id,
-                purpose=binding.purpose,
-                operation=binding.operation,
-                alias_reference=binding.alias_reference,
-                secret_provider_reference=binding.secret.provider_reference,
-                secret_reference=binding.secret.secret_reference,
-                database_role_reference=binding.database_role_reference,
-                target_role=binding.target_role.value,
-                database_access=binding.database_access.value,
-                access_policy_references=list(binding.access_policy_references),
-                binding_digest=qualification_target_binding_digest(binding),
-            )
-            .on_conflict_do_nothing(
-                index_elements=[qualification_target_bindings.c.binding_id]
-            )
-        )
 
 
 async def _verify_existing_authority(
@@ -703,7 +620,9 @@ async def _verify_existing_authority(
             )
             verified_cases += acting_subject_id == expected_identity_id
     if verified_cases != len(cases):
-        raise RuntimeError("existing qualification authority does not match configuration")
+        raise RuntimeError(
+            "existing qualification authority does not match configuration"
+        )
     resolver = PostgreSQLQualificationTargetBindingResolver(
         async_sessionmaker(engine, expire_on_commit=False)
     )
@@ -723,7 +642,9 @@ def _stable_id(
     settings: QualificationBootstrapSettings | QualificationVerificationSettings,
     name: str,
 ) -> UUID:
-    return uuid5(NAMESPACE_URL, f"spine:issue-508:{settings.identity_id}:{name}")
+    return uuid5(
+        NAMESPACE_URL, f"spine:q16-qualification:v1:{settings.identity_id}:{name}"
+    )
 
 
 def main() -> None:
@@ -734,15 +655,22 @@ def main_verify() -> None:
     asyncio.run(verify(QualificationVerificationSettings()))
 
 
+def main_advance_generation() -> None:
+    asyncio.run(advance_authorization_generation(QualificationBootstrapSettings()))
+
+
 __all__ = [
     "QualificationBootstrapSettings",
     "QualificationVerificationSettings",
+    "advance_authorization_generation",
     "bootstrap",
     "build_authorization_records",
     "build_context_profiles",
+    "build_fixture_plan",
     "build_target_binding",
     "build_target_binding_request",
     "main",
+    "main_advance_generation",
     "main_verify",
     "provision",
     "verify",

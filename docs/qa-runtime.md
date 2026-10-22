@@ -51,6 +51,18 @@ target references. Set `SPINE_QUALIFICATION_AUTHORITY_EXPIRES_AT` explicitly for
 each run; changing authority or target inputs requires a fresh isolated Compose
 project rather than mutating immutable fixture history.
 
+To exercise stale authorization after an Ask has been admitted and before its
+worker attempt starts, append the deterministic generation-advance record once:
+
+```bash
+docker compose -p spine560 --profile qualification-provisioning run --rm \
+  qualification-authority-provisioner spine-qualification-advance-generation
+```
+
+Repeating this command is idempotent. It leaves the approved actor active while
+making the previously admitted authorization generation stale; use a fresh
+isolated project for another stale-generation journey.
+
 The worker exposes content-free `/health/live` and `/health/ready` endpoints on
 port 8081. Readiness separately reports PostgreSQL, Temporal reachability,
 worker polling and whether a real application execution has completed in this
