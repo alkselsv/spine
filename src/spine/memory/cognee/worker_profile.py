@@ -406,7 +406,7 @@ async def check_invocation_eligibility(
 
     if runtime is None:
         refusals.append(InvocationRefusal(code="runtime_identity_missing"))
-    elif not _runtime_matches(profile, runtime):
+    elif not runtime_identity_matches_profile(profile, runtime):
         refusals.append(InvocationRefusal(code="runtime_identity_mismatch"))
 
     if budget_authorization is None:
@@ -495,7 +495,12 @@ def _profile_binding_refusal_codes(
     return tuple(refusals)
 
 
-def _runtime_matches(profile: CogneeWorkerProfile, runtime: RuntimeIdentity) -> bool:
+def runtime_identity_matches_profile(
+    profile: CogneeWorkerProfile,
+    runtime: RuntimeIdentity,
+) -> bool:
+    """Compare independently observed runtime identities with the approved profile."""
+
     identity_fields = (
         "cognee_version",
         "postgres_server_major",
@@ -536,4 +541,5 @@ __all__ = [
     "guarded_provider_call",
     "load_worker_profile",
     "profile_configuration_status",
+    "runtime_identity_matches_profile",
 ]
