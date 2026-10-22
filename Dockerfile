@@ -19,4 +19,4 @@ ENV PATH="/app/.venv/bin:$PATH" \
 
 USER 65532:65532
 
-CMD ["uvicorn", "spine.api.runtime:create_production_app", "--factory", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["spine-api"]

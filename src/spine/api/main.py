@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -253,23 +253,39 @@ def create_app(
     operational_observer: OperationalObservationEmitter | None = None,
     operational_metrics_reader: OperationalMetricsReader | None = None,
     operational_correlation_reader: OperationalCorrelationReaderPort | None = None,
+    startup_verifiers: tuple[Callable[[], Awaitable[None]], ...] = (),
+    startup_verification_timeout_seconds: float = 5.0,
 ) -> FastAPI:
     """Compose the HTTP API with injectable deterministic diagnostics."""
 
     if health_readiness_timeout_seconds <= 0 or health_readiness_timeout_seconds > 5:
         raise ValueError("health readiness timeout must be between 0 and 5 seconds")
+    if startup_verification_timeout_seconds <= 0 or startup_verification_timeout_seconds > 30:
+        raise ValueError("startup verification timeout must be between 0 and 30 seconds")
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         validate_api_route_authorization(application)
         runtime = application.state.authorization_runtime
         try:
+            for verify_startup in startup_verifiers:
+                await asyncio.wait_for(
+                    verify_startup(), timeout=startup_verification_timeout_seconds
+                )
             if type(runtime) is ApiAuthorizationRuntime:
                 await runtime.startup()
             yield
         finally:
-            if type(runtime) is ApiAuthorizationRuntime:
-                await runtime.aclose()
+            try:
+                if type(runtime) is ApiAuthorizationRuntime:
+                    await runtime.aclose()
+            finally:
+                for close in reversed(
+                    getattr(application.state, "shutdown_closers", ())
+                ):
+                    await asyncio.wait_for(
+                        close(), timeout=startup_verification_timeout_seconds
+                    )
 
     application = FastAPI(
         title="Spine",
@@ -302,6 +318,7 @@ def create_app(
     application.state.diagnostic_sink = resolved_diagnostic_sink
     application.state.diagnostic_clock = resolved_clock
     application.state.authorization_runtime = authorization_runtime
+    application.state.shutdown_closers = []
     application.state.document_ingestion_service = document_ingestion_service
     application.state.batch_document_ingestion_service = (
         batch_document_ingestion_service

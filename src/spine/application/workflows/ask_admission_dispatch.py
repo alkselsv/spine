@@ -451,6 +451,7 @@ class AskAdmissionWorkflowExecutor:
         monotonic_ns: Callable[[], int] | None = None,
         execution_elapsed_port: WorkerExecutionElapsedCapturePort | None = None,
         capture_publisher: WorkerCapturePublisher | None = None,
+        on_terminal_execution: Callable[[], None] | None = None,
     ) -> None:
         if authorization_generation < 1:
             raise ValueError("authorization generation must be positive")
@@ -463,6 +464,7 @@ class AskAdmissionWorkflowExecutor:
         self._monotonic_ns = monotonic_ns
         self._execution_elapsed_port = execution_elapsed_port
         self._capture_publisher = capture_publisher
+        self._on_terminal_execution = on_terminal_execution
 
     async def execute(self, workflow_input: AskAdmissionWorkflowInput) -> AuthorizedAskResult:
         command = await self._loader.load(workflow_input)
@@ -514,6 +516,13 @@ class AskAdmissionWorkflowExecutor:
             or result.run_id != workflow_input.run_id
         ):
             raise InvalidAskAdmissionIntent("Ask execution returned mismatched identity.")
+        if self._on_terminal_execution is not None:
+            try:
+                self._on_terminal_execution()
+            except Exception:
+                # Process readiness is observational and cannot change the
+                # canonical result or Temporal retry behavior.
+                pass
         if (
             getattr(result, "same_execution_capture", None) is not None
             and getattr(result, "capture_subscription", None) is not None

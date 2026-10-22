@@ -8,6 +8,10 @@ import pytest
 import spine.api.runtime as runtime_module
 from spine.api.authorization import ApiAuthorizationRuntime
 from spine.api.runtime import DeployableApiSettings, create_production_app
+from spine.application.production_qa_deployment import (
+    ProductionQAADeploymentProfile,
+    ProductionQAAProfileMismatch,
+)
 from spine.application.diagnostics import AuditEventRegistry, DiagnosticEventRegistry
 from spine.application.ingestion_history import IngestionHistoryPage
 from spine.auth import InMemoryAuthorizationDirectory, RoutePolicyRegistry
@@ -45,7 +49,7 @@ class EmptyIngestionHistoryService:
         return IngestionHistoryPage(items=(), has_more=False)
 
 
-def _production_app():
+def _production_app(*, profile: ProductionQAADeploymentProfile | None = None):
     return create_production_app(
         database_settings=RuntimeDatabaseSettings(
             url="postgresql+psycopg://spine_runtime:secret@postgres/spine"
@@ -67,8 +71,48 @@ def _production_app():
                 "50800000-0000-4000-8000-000000000004"
             ),
             original_storage_root="/tmp/spine-test-originals",
+            commit_sha="b" * 40,
+            database_profile_id="spine-source-postgresql-17",
+            scope_policy_id="workspace-environment-v1",
+            ingestion_service_alias_issuer="https://local.spine.invalid",
+            ingestion_service_alias_subject="issue-508-ingestion",
+            qa_capture_worker_credential="worker-capture-credential-for-tests-0001",
+            qa_capture_observer_credential="observer-capture-credential-for-tests-0001",
+            temporal_cluster_profile_id="local-temporal-v1",
+            capture_service_profile_id="api-qa-capture-v1",
+            capture_service_url="http://api:8080",
+            projection_profile_id="r1-cognee-local-v1",
+            model_profile_id="r1-provider-local-v1",
         ),
+        deployment_profile=profile or _deployment_profile(),
     )
+
+
+def _deployment_profile(**overrides: object) -> ProductionQAADeploymentProfile:
+    values: dict[str, object] = {
+        "profile_id": "spine-r1-local",
+        "profile_version": "2026.10.22",
+        "deployment_fingerprint": "a" * 64,
+        "release_identity": "issue-508-test",
+        "commit_sha": "b" * 40,
+        "database_profile_id": "spine-source-postgresql-17",
+        "migration_revision": "20261119_56",
+        "authentication_profile_id": "issue-508-local",
+        "authentication_mode": "local_development",
+        "scope_policy_id": "workspace-environment-v1",
+        "temporal_cluster_profile_id": "local-temporal-v1",
+        "temporal_namespace": "default",
+        "temporal_task_queue": "spine-r1-qa",
+        "workflow_contract_version": "spine.qa.ask-admission:v1",
+        "capture_service_profile_id": "api-qa-capture-v1",
+        "capture_worker_workload_id": "spine-qa-worker",
+        "capture_observer_workload_id": "spine-qa-observer",
+        "capture_contract_version": "r1-qa-observer-capture:v1",
+        "projection_profile_id": "r1-cognee-local-v1",
+        "model_profile_id": "r1-provider-local-v1",
+    }
+    values.update(overrides)
+    return ProductionQAADeploymentProfile.model_validate(values)
 
 
 def _authorization_runtime() -> ApiAuthorizationRuntime:
@@ -125,7 +169,7 @@ def _production_app_with_empty_ingestion_history(
 def test_production_app_exposes_protected_canonical_document_surface() -> None:
     application = _production_app()
 
-    paths = {route.path for route in application.routes}
+    paths = set(application.openapi()["paths"])
 
     assert "/api/v1/documents" in paths
     assert "/api/v1/documents/{source_object_id}" in paths
@@ -247,3 +291,90 @@ async def test_production_app_rejects_unauthorized_ingestion_runs_collection(
 
     assert response.status_code == expected_status
     assert all(identifier not in response.text for identifier in protected_identifiers)
+
+
+@pytest.mark.asyncio
+async def test_production_app_exposes_authenticated_ephemeral_capture_route() -> None:
+    application = _production_app()
+    transport = httpx.ASGITransport(app=application)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        denied = await client.post(
+            "/internal/qa-capture/subscriptions",
+            json={"capture_id": str(UUID(int=9001)), "ttl_ms": 5000},
+        )
+        accepted = await client.post(
+            "/internal/qa-capture/subscriptions",
+            headers={"Authorization": "Bearer observer-capture-credential-for-tests-0001"},
+            json={"capture_id": str(UUID(int=9001)), "ttl_ms": 5000},
+        )
+
+    assert denied.status_code == 401
+    assert accepted.status_code == 200
+    assert accepted.json()["capture_id"] == str(UUID(int=9001))
+    assert "/internal/qa-capture/subscriptions" not in application.openapi()["paths"]
+
+
+def test_production_app_rejects_profile_release_mismatch_without_values() -> None:
+    profile = _deployment_profile(release_identity="other-release")
+
+    with pytest.raises(ProductionQAAProfileMismatch) as error:
+        create_production_app(
+            database_settings=RuntimeDatabaseSettings(
+                url="postgresql+psycopg://spine_runtime:secret@postgres/spine"
+            ),
+            authentication_settings=LocalAuthenticationSettings(
+                deployment_mode="development",
+                configuration_version="issue-508-local",
+                authentication_alias_issuer="https://local.spine.invalid",
+                authentication_alias_subject="issue-508-operator",
+                bearer_credential="issue-508-local-credential-000000000000",
+            ),
+            api_settings=DeployableApiSettings(
+                cursor_secret="issue-508-cursor-secret-00000000000000000000",
+                build_version="issue-508-test",
+                ingestion_service_principal_id=UUID("50800000-0000-4000-8000-000000000002"),
+                qa_service_principal_id=UUID("50800000-0000-4000-8000-000000000004"),
+                original_storage_root="/tmp/spine-test-originals",
+                commit_sha="b" * 40,
+            database_profile_id="spine-source-postgresql-17",
+            scope_policy_id="workspace-environment-v1",
+            ingestion_service_alias_issuer="https://local.spine.invalid",
+            ingestion_service_alias_subject="issue-508-ingestion",
+                qa_capture_worker_credential="worker-capture-credential-for-tests-0001",
+                qa_capture_observer_credential="observer-capture-credential-for-tests-0001",
+                temporal_cluster_profile_id="local-temporal-v1",
+                capture_service_profile_id="api-qa-capture-v1",
+                capture_service_url="http://api:8080",
+                projection_profile_id="r1-cognee-local-v1",
+                model_profile_id="r1-provider-local-v1",
+            ),
+            deployment_profile=profile,
+        )
+
+    assert error.value.reason_code == "PROFILE_MISMATCH"
+    assert "other-release" not in str(error.value)
+
+
+def test_production_app_rejects_authentication_mode_drift() -> None:
+    with pytest.raises(ProductionQAAProfileMismatch) as error:
+        _production_app(profile=_deployment_profile(authentication_mode="oidc"))
+
+    assert error.value.reason_code == "AUTHORITY_BINDING_MISMATCH"
+
+
+@pytest.mark.asyncio
+async def test_oidc_api_mode_rejects_local_development_authenticator() -> None:
+    application = _production_app()
+    oidc_api_settings = application.state.production_api_settings.model_copy(
+        update={"authentication_mode": "oidc"}
+    )
+
+    with pytest.raises(ProductionQAAProfileMismatch) as error:
+        runtime_module._validate_authentication_mode(
+            oidc_api_settings,
+            application.state.production_authentication_settings,
+        )
+
+    await application.state.production_engine.dispose()
+    assert error.value.reason_code == "AUTHORITY_BINDING_MISMATCH"

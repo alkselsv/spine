@@ -7,7 +7,10 @@ from uuid import UUID
 import httpx
 import pytest
 
-from spine.api.authorized_ask import install_authorized_ask_routes
+from spine.api.authorized_ask import (
+    install_authorized_ask_routes,
+    install_qa_observer_admission_route,
+)
 from spine.application.authorized_ask import (
     AuthorizedAskResult,
     AuthorizedAskServiceUnavailable,
@@ -24,6 +27,8 @@ from spine.application.ask_admission import (
     AskCancellationNotFound,
     AskCancellationStatus,
 )
+from spine.application.qa_observation.admission import ObserverAskAdmission
+from spine.application.qa_observation.contracts import CaptureSubscription
 from spine.application.persistence.errors import IdempotencyConflictError
 from spine.application.telemetry import (
     OperationalComponent,
@@ -301,6 +306,65 @@ async def test_ask_admission_returns_stable_ids_without_content_before_execution
     assert response.json()["result"]["run_id"] == str(RUN_ID)
     assert "protected question" not in response.text
     assert "answer" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_observer_admission_registers_capture_before_canonical_admission() -> None:
+    calls: list[str] = []
+    admission = FakeAdmissionService(
+        AskAdmissionResult(
+            command_id=COMMAND_ID,
+            session_id=SESSION_ID,
+            message_id=MESSAGE_ID,
+            run_id=RUN_ID,
+            dispatch_event_id=UUID(int=700),
+            replay=False,
+        )
+    )
+
+    class OrderedAdmission(FakeAdmissionService):
+        async def admit(self, *, context, command):
+            calls.append("admit")
+            assert command.capture_id is not None
+            assert command.capture_subscription is not None
+            return await super().admit(context=context, command=command)
+
+    class CaptureChannel:
+        async def register(self, *, capture_id, ttl):
+            del ttl
+            calls.append("register")
+            return CaptureSubscription(
+                capture_id=capture_id,
+                subscription_id=UUID(int=701),
+                expires_at=NOW.replace(year=2027),
+            )
+
+        async def cleanup(self, *, subscription_id):
+            del subscription_id
+
+    admission = OrderedAdmission(admission.result)
+    observer = ObserverAskAdmission(admission=admission, channel=CaptureChannel())
+    application = authorized_app([])
+    application.state.ask_admission_service = admission
+    install_qa_observer_admission_route(application, observer_admission=observer)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/v1/qa-observer/admissions",
+            json={
+                "schema_version": 1,
+                "session_id": str(SESSION_ID),
+                "question": "synthetic observer question",
+            },
+            headers={**headers(), "Idempotency-Key": "observer-admission-1"},
+        )
+
+    assert response.status_code == 202
+    assert calls == ["register", "admit"]
+    assert response.json()["result"]["run_identity"]["run_id"] == str(RUN_ID)
+    assert "synthetic observer question" not in response.text
 
 
 @pytest.mark.asyncio

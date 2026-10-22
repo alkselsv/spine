@@ -439,6 +439,7 @@ async def test_workflow_executor_releases_only_scoped_admitted_identity_to_capab
 
     service = Service()
     timings = []
+    terminal_executions = []
     capture_id = UUID("a0000000-0000-0000-0000-000000000427")
 
     class ElapsedPort:
@@ -451,6 +452,7 @@ async def test_workflow_executor_releases_only_scoped_admitted_identity_to_capab
         persistence_context_factory=lambda workflow_input: object(),
         monotonic_ns=iter((100, 130, 500, 570)).__next__,
         execution_elapsed_port=ElapsedPort(),
+        on_terminal_execution=lambda: terminal_executions.append("persisted"),
     )
 
     capture_input = workflow_input().model_copy(
@@ -479,6 +481,7 @@ async def test_workflow_executor_releases_only_scoped_admitted_identity_to_capab
     ]
     assert [sample.worker_execution_elapsed_ns for sample in timings] == [30, 70]
     assert [sample.capture_id for sample in timings] == [capture_id, capture_id]
+    assert terminal_executions == ["persisted", "persisted"]
 
 
 @pytest.mark.asyncio
