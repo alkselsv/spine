@@ -2,12 +2,27 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
 
+from spine.application.production_qa_composition import _issue_production_qa_composition_evidence
+from spine.application.production_runtime_readiness import (
+    ProductionRuntimeInspection,
+    ProductionRuntimeProfile,
+    TrustedProductionRuntimePreflight,
+)
+from spine.evals.real_benchmark_qualification import (
+    PrerequisiteState,
+    RealBenchmarkPreflight,
+    RuntimePrerequisite,
+    RuntimePrerequisiteCheck,
+    _issue_trusted_real_benchmark_preflight,
+)
 from spine.evals.real_baseline import BaselineCaseInput, BaselineMetricInput, build_r1_baseline_report
-from spine.evals.real_benchmark_runner import RuntimeVersionPins
+from spine.evals.real_benchmark_runner import RealBenchmarkRunner, RuntimeVersionPins
+from spine.evals.threshold_gate_composition import build_threshold_evidence
 from spine.evaluations.release_gates.thresholds import (
     MandatorySafetyResult,
     MetricThreshold,
@@ -19,6 +34,7 @@ from spine.evaluations.release_gates.thresholds import (
     ThresholdPolicyV2,
     VerifiedThresholdApproval,
     evaluate_threshold_policy as _evaluate_threshold_policy,
+    _issue_verified_threshold_approval,
     policy_digest,
 )
 from spine.evaluations.release_gates.threshold_approval_verifier import (
@@ -167,7 +183,7 @@ def _policy(
 
 
 def _verified_approval(policy: ThresholdPolicyV2) -> VerifiedThresholdApproval:
-    return VerifiedThresholdApproval(
+    return _issue_verified_threshold_approval(
         decision_id="decision-42",
         record_reference="https://github.com/alkselsv/spine/issues/557#issuecomment-42",
         actor_id=167317615,
@@ -336,6 +352,77 @@ def test_optional_not_applicable_metric_does_not_replace_required_decision() -> 
 def test_policy_identity_digest_excludes_approval_and_is_stable() -> None:
     policy = _policy(approved=False)
     assert policy_digest(policy) == policy_digest(policy)
+
+
+@pytest.mark.asyncio
+async def test_threshold_evidence_rejects_report_not_emitted_by_production_runner() -> None:
+    profile = ProductionRuntimeProfile(
+        postgresql_major=17,
+        migration_revision="20261020_issue506",
+        temporal_namespace="spine-r1",
+        temporal_task_queue="spine-r1-qa",
+        worker_roles=("observer",),
+        authentication_mode="oidc",
+        storage_profile="filesystem-v1",
+        context_projection_provider="cognee:v1",
+        projection_backend_versions=("pgvector:v1",),
+        llm_model_version="model:v1",
+        embedding_model_version="embed:v1",
+        embedding_dimensions=1536,
+        web_release_identity="web:v1",
+        api_release_identity="api:v1",
+        commit_sha="b" * 40,
+        deployment_fingerprint="a" * 64,
+    )
+    composition_evidence = _issue_production_qa_composition_evidence(object(), object())
+
+    class Inspector:
+        is_fake = False
+
+        async def inspect(self):
+            return ProductionRuntimeInspection(
+                profile=profile,
+                preflight=RealBenchmarkPreflight(
+                    workspace_id=UUID(int=1),
+                    environment_id=UUID(int=2),
+                    prerequisites=tuple(
+                        RuntimePrerequisiteCheck(
+                            prerequisite=prerequisite,
+                            state=PrerequisiteState.READY,
+                        )
+                        for prerequisite in RuntimePrerequisite
+                    ),
+                ),
+            )
+
+    inspector = Inspector()
+    trusted_runtime = TrustedProductionRuntimePreflight(
+        profile=profile,
+        preflight=_issue_trusted_real_benchmark_preflight(
+            inspector=inspector,
+            production_evidence=composition_evidence,
+        ),
+        inspector=inspector,
+    )
+    runner = RealBenchmarkRunner(
+        mapping=object(),
+        readiness=object(),
+        trusted_persistence_context=object(),
+        observer=object(),
+        gold=object(),
+        pins=_runtime_binding().runtime_pins,
+        workspace_selector=UUID(int=1),
+        environment_selector=UUID(int=2),
+    )
+
+    with pytest.raises(ValueError, match="runner's accepted production result"):
+        await build_threshold_evidence(
+            trusted_runtime=trusted_runtime,
+            runner=runner,
+            report=object(),
+            dataset_id="dataset:v1",
+            runtime_scope="production",
+        )
 
 
 def test_wrong_verified_actor_is_not_approved() -> None:
@@ -529,6 +616,7 @@ def _decision_comment(
     status: str = "approved",
     actor_id: int = 167317615,
     comment_id: int = 42,
+    decision_id: str = "decision-42",
     updated_at: datetime | None = None,
     dataset_digest: str | None = None,
     policy_digest_value: str | None = None,
@@ -540,7 +628,7 @@ def _decision_comment(
     decided_at = datetime(2026, 10, 19, tzinfo=timezone.utc)
     decision = {
         "schema_version": "spine-r1-threshold-decision:v1",
-        "decision_id": "decision-42",
+        "decision_id": decision_id,
         "status": status,
         "policy_id": policy.policy_id,
         "policy_version": policy_version or policy.version,
@@ -641,6 +729,24 @@ async def test_github_verifier_rejects_superseded_decision() -> None:
 
 
 @pytest.mark.asyncio
+async def test_github_verifier_checks_supersession_across_policy_versions() -> None:
+    policy = _policy()
+    original = _decision_comment(policy)
+    successor = _decision_comment(
+        policy,
+        comment_id=43,
+        decision_id="decision-43",
+        policy_version="threshold-policy-v2",
+        supersedes=("decision-42",),
+    )
+    approval = await GitHubThresholdApprovalVerifier(
+        _DecisionSource((original, successor))
+    ).verify(policy=policy, evidence=_evidence())
+
+    assert approval is None
+
+
+@pytest.mark.asyncio
 async def test_github_verifier_rejects_conflicting_current_decisions() -> None:
     policy = _policy()
     comments = (
@@ -675,6 +781,22 @@ def test_v2_policy_without_verifier_evidence_cannot_pass() -> None:
         safety_results=_safety(),
         required_safety_gates=("hard-safety",),
         verified_approval=None,
+    )
+
+    assert result.status == "not_approved"
+
+
+def test_serialized_approval_record_cannot_recreate_verifier_issued_evidence() -> None:
+    policy = _policy()
+    caller_constructed = VerifiedThresholdApproval.model_validate(
+        _verified_approval(policy).model_dump()
+    )
+    result = _evaluate_threshold_policy(
+        policy=policy,
+        evidence=_evidence(),
+        safety_results=_safety(),
+        required_safety_gates=("hard-safety",),
+        verified_approval=caller_constructed,
     )
 
     assert result.status == "not_approved"

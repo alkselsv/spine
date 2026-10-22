@@ -13,15 +13,11 @@ import json
 import math
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, PrivateAttr, model_validator
 
 from spine.domain.common import DefinitionModel
-from spine.application.production_runtime_readiness import (
-    ProductionRuntimeInspection,
-    TrustedProductionRuntimePreflight,
-)
 from spine.evals.real_baseline import R1BaselineReport
-from spine.evals.real_benchmark_runner import RealBenchmarkReportV3, RuntimeVersionPins
+from spine.evals.real_benchmark_runner import RuntimeVersionPins
 from spine.evals.real_qa_r1 import REAL_R1_DATASET_CASE_COUNT
 
 
@@ -179,6 +175,9 @@ class ThresholdEvidenceV2(DefinitionModel):
         return self
 
 
+_VERIFIED_APPROVAL_ISSUER = object()
+
+
 class VerifiedThresholdApproval(DefinitionModel):
     """Typed approval evidence emitted by the trusted GitHub decision verifier."""
 
@@ -201,79 +200,17 @@ class VerifiedThresholdApproval(DefinitionModel):
         "github-r1-threshold-decision-verifier:v1"
     )
     source_snapshot_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    _issuer: object | None = PrivateAttr(default=None)
+
+    def _issued_by_verifier(self) -> bool:
+        return self._issuer is _VERIFIED_APPROVAL_ISSUER
 
 
-def _bind_trusted_runtime(
-    *, inspection: ProductionRuntimeInspection, report: RealBenchmarkReportV3
-) -> RuntimeIdentityBinding:
-    """Bind a report's accepted run to the observed production profile."""
-    if type(inspection) is not ProductionRuntimeInspection:
-        raise TypeError("threshold runtime binding requires trusted runtime inspection")
-    if type(report) is not RealBenchmarkReportV3:
-        raise TypeError("threshold runtime binding requires a versioned benchmark report")
-    if (
-        report.structural_validation_status != "passed"
-        or report.production_observation_status != "completed"
-        or report.evaluation_status != "completed"
-        or report.readiness_status != "ready"
-        or report.baseline.baseline_status != "completed"
-        or report.case_counts.observed != report.case_counts.total
-        or any(
-            getattr(report.case_counts, field) != 0
-            for field in (
-                "partial",
-                "unavailable",
-                "denied",
-                "failed",
-                "readiness_blocked",
-                "mapping_unavailable",
-            )
-        )
-    ):
-        raise ValueError("benchmark report is not an accepted completed run")
-    profile_payload = json.dumps(
-        inspection.profile.model_dump(mode="json"),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-    )
-    return RuntimeIdentityBinding(
-        profile_identity=hashlib.sha256(profile_payload.encode("ascii")).hexdigest(),
-        profile_version=inspection.profile.schema_version,
-        deployment_fingerprint=inspection.profile.deployment_fingerprint,
-        commit_sha=inspection.profile.commit_sha,
-        runtime_pins=report.run.runtime_pins,
-    )
-
-
-async def build_threshold_evidence(
-    *,
-    trusted_runtime: TrustedProductionRuntimePreflight,
-    report: RealBenchmarkReportV3,
-    dataset_id: str,
-    runtime_scope: str,
-) -> ThresholdEvidenceV2:
-    """Create v2 evidence from ready trusted runtime and a completed typed run."""
-    if type(trusted_runtime) is not TrustedProductionRuntimePreflight:
-        raise TypeError("threshold evidence requires trusted production runtime composition")
-    inspection = await trusted_runtime.inspect_runtime()
-    binding = _bind_trusted_runtime(inspection=inspection, report=report)
-    if (
-        report.run.dataset_version != report.baseline.dataset_version
-        or report.run.dataset_sha256 != report.baseline.dataset_sha256
-    ):
-        raise ValueError("benchmark run dataset digest does not match its baseline")
-    return ThresholdEvidenceV2(
-        evidence_version=report.schema_version,
-        run_id=report.run.run_id,
-        dataset_id=dataset_id,
-        dataset_version=report.run.dataset_version,
-        dataset_digest=report.run.dataset_sha256,
-        runtime_identity=binding.profile_identity,
-        runtime_scope=runtime_scope,
-        runtime_binding=binding,
-        baseline=report.baseline,
-    )
+def _issue_verified_threshold_approval(**values: object) -> VerifiedThresholdApproval:
+    """Mark approval evidence issued after the trusted GitHub verification."""
+    approval = VerifiedThresholdApproval(**values)
+    approval._issuer = _VERIFIED_APPROVAL_ISSUER
+    return approval
 
 
 class ThresholdEvidence(DefinitionModel):
@@ -448,6 +385,7 @@ def evaluate_threshold_policy(
         type(policy) is ThresholdPolicyV2
         and type(evidence) is ThresholdEvidenceV2
         and type(verified_approval) is VerifiedThresholdApproval
+        and verified_approval._issued_by_verifier()
         and verified_approval.decision_status == "approved"
         and verified_approval.actor_id == R1_PRODUCT_OWNER_GITHUB_ACTOR_ID
         and verified_approval.authority_reference
@@ -597,6 +535,5 @@ __all__ = [
     "RuntimeIdentityBinding", "ThresholdEvidence", "ThresholdEvidenceV2",
     "ThresholdGateResult", "ThresholdPolicy", "ThresholdPolicyV2",
     "VerifiedThresholdApproval", "R1_PRODUCT_OWNER_GITHUB_ACTOR_ID",
-    "build_threshold_evidence",
     "evaluate_threshold_policy", "policy_digest",
 ]

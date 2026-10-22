@@ -18,11 +18,14 @@ The runtime binding contains:
 - Every accepted run `RuntimeVersionPins` value: observer seam, application,
   projection, model, prompt, validation policy and projection kind.
 
-The v2 evidence builder accepts only `TrustedProductionRuntimePreflight` and a
-completed `RealBenchmarkReportV3`. It requires every trusted prerequisite to be
-ready, the observed profile to match the trusted composition, and the run's
-dataset digest to match its baseline. Runtime profile strings are not assembled
-from gate-call arguments.
+The v2 evidence builder accepts `TrustedProductionRuntimePreflight`, the
+`RealBenchmarkRunner` and its completed `RealBenchmarkReportV3`. It requires the
+exact in-memory report emitted by that runner, a production runner, and matching
+composition evidence between the runner and readiness preflight. It then requires
+every trusted prerequisite to be ready, the observed profile to match the trusted
+composition, and the run's dataset digest to match its baseline. Runtime profile
+strings are not assembled from gate-call arguments or attached to an unrelated
+benchmark report.
 
 ## Approval source and verifier
 

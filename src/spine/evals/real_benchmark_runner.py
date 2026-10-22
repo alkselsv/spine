@@ -264,6 +264,7 @@ class RealBenchmarkRunner:
         self._pins = pins
         self._workspace = workspace_selector
         self._environment = environment_selector
+        self._last_report: RealBenchmarkReport | None = None
         self._report_schema = getattr(
             observer, "report_schema_version", REAL_BENCHMARK_REPORT_SCHEMA
         )
@@ -290,6 +291,10 @@ class RealBenchmarkRunner:
         if not self.supports_real_qualification:
             return None
         return self._observer._observer.composition.real_qualification_evidence
+
+    def owns_completed_report(self, report: RealBenchmarkReport) -> bool:
+        """Whether this exact in-memory report was emitted by this runner."""
+        return self._last_report is report and self.supports_real_qualification
 
     async def run(
         self,
@@ -621,11 +626,13 @@ class RealBenchmarkRunner:
                     observer_attempt_count=observer_attempts,
                     failure_counts=dict(failure_reasons),
                 )
-                return RealBenchmarkReportV3(
+                report = RealBenchmarkReportV3(
                     **report_values,
                     execution_timings=tuple(execution_timings),
                     baseline=baseline,
                 )
+                self._last_report = report
+                return report
             return RealBenchmarkReportV2(
                 **report_values,
                 execution_timings=tuple(execution_timings),

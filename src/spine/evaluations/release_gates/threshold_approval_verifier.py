@@ -23,6 +23,8 @@ from spine.evaluations.release_gates.thresholds import (
     ThresholdEvidenceV2,
     ThresholdPolicyV2,
     VerifiedThresholdApproval,
+    RuntimeIdentityBinding,
+    _issue_verified_threshold_approval,
     R1_PRODUCT_OWNER_GITHUB_ACTOR_ID,
     evaluate_threshold_policy,
     policy_digest,
@@ -49,7 +51,7 @@ class _DecisionRecord(BaseModel):
     dataset_id: str = Field(min_length=1, max_length=128)
     dataset_version: str = Field(min_length=1, max_length=128)
     dataset_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
-    runtime_binding: dict[str, object]
+    runtime_binding: RuntimeIdentityBinding
     release_scope: str = Field(min_length=1, max_length=128)
     decided_at: datetime
     supersedes_decision_ids: tuple[str, ...] = ()
@@ -194,12 +196,15 @@ class GitHubThresholdApprovalVerifier:
             if authority_actor_id != R1_PRODUCT_OWNER_GITHUB_ACTOR_ID:
                 return None
 
-            records = tuple(
+            all_records = tuple(
                 (comment, record)
                 for comment in comments
                 if (record := _record(comment)) is not None
-                and record.policy_id == policy.policy_id
-                and record.policy_version == policy.version
+            )
+            records = tuple(
+                pair for pair in all_records
+                if pair[1].policy_id == policy.policy_id
+                and pair[1].policy_version == policy.version
             )
             exact_scope_records = tuple(
                 (comment, record)
@@ -224,7 +229,7 @@ class GitHubThresholdApprovalVerifier:
                 or any(
                     record.decision_id in other.supersedes_decision_ids
                     or record.decision_id in other.revokes_decision_ids
-                    for _, other in records
+                    for _, other in all_records
                     if other.decision_id != record.decision_id
                 )
             ):
@@ -235,7 +240,7 @@ class GitHubThresholdApprovalVerifier:
                 record.policy_digest != policy_digest(policy)
                 or (record.dataset_id, record.dataset_version, record.dataset_digest)
                 != (policy.dataset_id, policy.dataset_version, policy.dataset_digest)
-                or record.runtime_binding != expected_binding.model_dump(mode="json")
+                or record.runtime_binding != expected_binding
                 or record.release_scope != policy.runtime_scope
                 or (evidence.dataset_id, evidence.dataset_version, evidence.dataset_digest)
                 != (policy.dataset_id, policy.dataset_version, policy.dataset_digest)
@@ -261,7 +266,7 @@ class GitHubThresholdApprovalVerifier:
                 sort_keys=True,
                 separators=(",", ":"),
             )
-            return VerifiedThresholdApproval(
+            return _issue_verified_threshold_approval(
                 decision_id=record.decision_id,
                 record_reference=comment.html_url,
                 actor_id=comment.actor_id,

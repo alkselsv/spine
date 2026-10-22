@@ -23,7 +23,6 @@ from spine.evaluations.release_gates.thresholds import (
     ThresholdPolicy,
     ThresholdPolicyV2,
     VerifiedThresholdApproval,
-    build_threshold_evidence,
     evaluate_threshold_policy,
     policy_digest,
 )
@@ -54,7 +53,6 @@ __all__ = [
     "ThresholdPolicy",
     "ThresholdPolicyV2",
     "VerifiedThresholdApproval",
-    "build_threshold_evidence",
     "evaluate_threshold_policy",
     "policy_digest",
     "GitHubRestThresholdDecisionSource",
