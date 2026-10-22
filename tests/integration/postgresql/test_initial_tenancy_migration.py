@@ -88,6 +88,7 @@ ENVIRONMENT_B = UUID("30000000-0000-0000-0000-000000000003")
 AUTHORIZATION_DIRECTORY_TABLES = {
     "authentication_alias_bindings",
     "authorization_generations",
+    "qualification_authority_bindings",
     "canonical_human_identities",
     "canonical_human_identity_states",
     "environment_memberships",
@@ -101,6 +102,11 @@ AUTHORIZATION_DIRECTORY_CONSTRAINTS = {
     "ck_authentication_alias_bindings_subject_length",
     "ck_authentication_alias_bindings_version_positive",
     "ck_authorization_generations_generation_positive",
+    "ck_qualification_binding_principal_kind",
+    "ck_qualification_binding_recorded_by_length",
+    "ck_qualification_binding_scope_shape",
+    "ck_qualification_binding_status",
+    "ck_qualification_binding_version_positive",
     "ck_canonical_human_identities_created_by_length",
     "ck_canonical_human_identity_states_recorded_by_length",
     "ck_canonical_human_identity_states_status",
@@ -117,6 +123,7 @@ AUTHORIZATION_DIRECTORY_CONSTRAINTS = {
     "ck_workspace_memberships_version_positive",
     "fk_alias_bindings_identity",
     "fk_authorization_generations_scope_environments",
+    "fk_qualification_binding_environment",
     "fk_environment_memberships_identity",
     "fk_environment_memberships_scope_environments",
     "fk_environment_role_bindings_identity",
@@ -126,6 +133,7 @@ AUTHORIZATION_DIRECTORY_CONSTRAINTS = {
     "fk_workspace_memberships_workspace_id_workspaces",
     "pk_authentication_alias_bindings",
     "pk_authorization_generations",
+    "pk_qualification_authority_bindings",
     "pk_canonical_human_identities",
     "pk_canonical_human_identity_states",
     "pk_environment_memberships",
@@ -134,6 +142,7 @@ AUTHORIZATION_DIRECTORY_CONSTRAINTS = {
     "uq_authentication_alias_bindings_alias_version",
     "uq_authentication_alias_bindings_change_id",
     "uq_canonical_human_identities_created_change_id",
+    "uq_qualification_binding_change_id",
     "uq_canonical_human_identity_states_change_id",
     "uq_environment_memberships_change_id",
     "uq_environment_memberships_scope_version",
@@ -148,6 +157,8 @@ AUTHORIZATION_DIRECTORY_INDEXES = {
     "ix_workspace_memberships_current_lookup",
     "pk_authentication_alias_bindings",
     "pk_authorization_generations",
+    "ix_qualification_authority_current_principal",
+    "pk_qualification_authority_bindings",
     "pk_canonical_human_identities",
     "pk_canonical_human_identity_states",
     "pk_environment_memberships",
@@ -156,6 +167,7 @@ AUTHORIZATION_DIRECTORY_INDEXES = {
     "uq_authentication_alias_bindings_alias_version",
     "uq_authentication_alias_bindings_change_id",
     "uq_canonical_human_identities_created_change_id",
+    "uq_qualification_binding_change_id",
     "uq_canonical_human_identity_states_change_id",
     "uq_environment_memberships_change_id",
     "uq_environment_memberships_scope_version",
@@ -201,6 +213,14 @@ AUTHORIZATION_DIRECTORY_COLUMNS = {
 } | {
     ("authorization_generations", column)
     for column in ("workspace_id", "environment_id", "generation", "updated_at")
+} | {
+    ("qualification_authority_bindings", column)
+    for column in (
+        "binding_id", "version", "qualification_id", "workspace_id",
+        "environment_id", "principal_kind", "principal_id", "purpose",
+        "operation", "expires_at", "status", "change_id", "recorded_by",
+        "recorded_at",
+    )
 }
 
 AUDIT_CONSTRAINTS = {
@@ -1395,6 +1415,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "audit_events",
         "authentication_alias_bindings",
         "authorization_generations",
+        "qualification_authority_bindings",
         "canonical_human_identities",
         "canonical_human_identity_states",
         "environment_memberships",
@@ -2268,6 +2289,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "environment_memberships": (True, True),
         "environment_role_bindings": (True, True),
         "authorization_generations": (True, True),
+        "qualification_authority_bindings": (True, True),
         "canonical_human_identities": (False, False),
         "canonical_human_identity_states": (False, False),
         "authentication_alias_bindings": (False, False),
@@ -2400,6 +2422,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "outbox_deliveries": (True, False, False, False),
         "authentication_alias_bindings": (False, False, False, False),
         "authorization_generations": (False, False, False, False),
+        "qualification_authority_bindings": (False, False, False, False),
         "canonical_human_identities": (False, False, False, False),
         "canonical_human_identity_states": (False, False, False, False),
         "environment_memberships": (False, False, False, False),
@@ -2747,7 +2770,8 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
         "admission_decisions",
         "audit_events",
         "authentication_alias_bindings",
-        "authorization_generations",
+            "authorization_generations",
+            "qualification_authority_bindings",
         "canonical_human_identities",
         "canonical_human_identity_states",
         "environment_memberships",
@@ -3385,6 +3409,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
                         "'outbox_deliveries', "
                         "'workspace_memberships', 'environment_memberships', "
                         "'environment_role_bindings', 'authorization_generations', "
+                        "'qualification_authority_bindings', "
                         "'admission_decisions', "
                         "'source_objects', 'source_revisions', "
                         "'source_revision_provenance', 'source_revision_receipt_associations', "
@@ -3462,6 +3487,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
         "environment_memberships": (True, True),
         "environment_role_bindings": (True, True),
         "authorization_generations": (True, True),
+        "qualification_authority_bindings": (True, True),
         "source_objects": (True, True),
         "source_revisions": (True, True),
         "source_revision_provenance": (True, True),
@@ -4816,13 +4842,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261116_53_qa_agent_artifacts.py",
         "20261117_54_worker_authorization_generation_read.py",
         "20261118_55_runtime_outbox_correlation_read.py",
+        "20261119_56_qualification_authority_expiry.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261119_56_injected_failure.py").write_text(
+    (target / "versions" / "20261120_57_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261119_56'\n"
-        "down_revision = '20261118_55'\n"
+        "revision = '20261120_57'\n"
+        "down_revision = '20261119_56'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"

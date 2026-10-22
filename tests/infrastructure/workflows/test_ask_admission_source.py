@@ -45,6 +45,7 @@ def workflow_input() -> AskAdmissionWorkflowInput:
         message_id=MESSAGE_ID,
         run_id=RUN_ID,
         trace_id=TRACE_ID,
+        authorization_generation=1,
     )
 
 

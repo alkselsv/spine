@@ -31,13 +31,13 @@ from spine.domain.capabilities.answer_question_runs import AnswerQuestionRunStat
 
 QA_ASK_ADMISSION_OPERATION = PersistenceOperation("qa.ask-admission-cancellation")
 QA_ASK_LEGACY_OPERATION = PersistenceOperation("qa.ask")
-QA_ASK_ADMISSION_SCHEMA_VERSION = 1
+QA_ASK_ADMISSION_SCHEMA_VERSION = 2
 QA_ASK_ADMISSION_RESULT_TYPE = "qa_ask_admission"
 QA_ASK_ADMISSION_EVENT_TYPE = "qa.ask-admitted"
-QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION = 1
+QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION = 2
 QA_ASK_CANCELLATION_EVENT_TYPE = "qa.ask-cancellation-requested"
 QA_ASK_CANCELLATION_EVENT_SCHEMA_VERSION = 1
-QA_ASK_ADMISSION_REQUEST_SCHEMA = "qa.ask-admission-request:v1"
+QA_ASK_ADMISSION_REQUEST_SCHEMA = "qa.ask-admission-request:v2"
 ASK_CAPTURE_SUBSCRIPTION_SCHEMA = "r1-qa-observer-subscription:v1"
 
 
@@ -69,12 +69,14 @@ class AskCaptureSubscription(ValidatedDefinitionModel):
 def ask_admission_metadata_schema_version(
     capture_id: UUID | None,
     capture_subscription: AskCaptureSubscription | None = None,
+    authorization_generation: int | None = None,
 ) -> int:
     """Version opaque observer routing while retaining v1/v2 history support."""
 
+    offset = 3 if authorization_generation is not None else 0
     if capture_subscription is not None:
-        return 3
-    return 2 if capture_id is not None else 1
+        return 3 + offset
+    return (2 if capture_id is not None else 1) + offset
 
 
 class AskCancellationDispatchPayload(BaseModel):
@@ -102,6 +104,7 @@ class AskAdmissionDispatchPayload(BaseModel):
     session_id: UUID
     message_id: UUID
     run_id: UUID
+    authorization_generation: int | None = Field(default=None, ge=1)
     capture_id: UUID | None = None
     capture_subscription: AskCaptureSubscription | None = None
     schema_version: int = Field(default=1, gt=0)
@@ -116,7 +119,9 @@ class AskAdmissionDispatchPayload(BaseModel):
     @model_validator(mode="after")
     def validate_payload_version(self) -> "AskAdmissionDispatchPayload":
         if self.schema_version != ask_admission_metadata_schema_version(
-            self.capture_id, self.capture_subscription
+            self.capture_id,
+            self.capture_subscription,
+            self.authorization_generation,
         ):
             raise ValueError("Ask admission dispatch payload version is invalid")
         if self.capture_subscription is not None and (
@@ -138,6 +143,7 @@ class AskAdmissionCommand:
     question: str
     idempotency_key: IdempotencyKey
     digest: CommandDigest
+    authorization_generation: int
     clarification_of_message_id: UUID | None = None
     capture_id: UUID | None = None
     capture_subscription: AskCaptureSubscription | None = None
@@ -155,6 +161,8 @@ class AskAdmissionCommand:
             raise ValueError("Ask admission identity must be non-zero")
         if not self.question or not self.question.strip() or len(self.question) > 32768:
             raise ValueError("Ask question must be a bounded non-blank string")
+        if self.authorization_generation < 1:
+            raise ValueError("Ask admission authorization generation must be positive")
         if self.digest.operation != QA_ASK_ADMISSION_OPERATION:
             raise ValueError("Ask admission digest operation is invalid")
         if self.digest.operation_schema_version != QA_ASK_ADMISSION_SCHEMA_VERSION:
@@ -178,6 +186,7 @@ class AskAdmissionCommand:
         clarification_of_message_id: UUID | None = None,
         capture_id: UUID | None = None,
         capture_subscription: AskCaptureSubscription | None = None,
+        authorization_generation: int,
     ) -> "AskAdmissionCommand":
         digest = digest_command(
             operation=QA_ASK_ADMISSION_OPERATION,
@@ -192,6 +201,7 @@ class AskAdmissionCommand:
                 "question": question,
                 "clarification_of_message_id": clarification_of_message_id,
                 "idempotency_key": idempotency_key.value,
+                "authorization_generation": authorization_generation,
             },
         )
         return cls(
@@ -203,6 +213,7 @@ class AskAdmissionCommand:
             question=question,
             idempotency_key=idempotency_key,
             digest=digest,
+            authorization_generation=authorization_generation,
             clarification_of_message_id=clarification_of_message_id,
             capture_id=capture_id,
             capture_subscription=capture_subscription,

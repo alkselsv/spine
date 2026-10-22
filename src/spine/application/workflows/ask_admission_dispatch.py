@@ -70,7 +70,7 @@ class AskAdmissionWorkflowInput(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    schema_version: int = Field(default=1, gt=0)
+    schema_version: int = Field(default=4, gt=0)
     command_id: UUID
     workspace_id: UUID
     environment_id: UUID
@@ -78,6 +78,7 @@ class AskAdmissionWorkflowInput(BaseModel):
     message_id: UUID
     run_id: UUID
     trace_id: UUID
+    authorization_generation: int = Field(ge=1)
     correlation_id: UUID | None = None
     causation_id: UUID | None = None
     capture_id: UUID | None = None
@@ -104,7 +105,9 @@ class AskAdmissionWorkflowInput(BaseModel):
             if value is not None:
                 _require_id(value, field_name)
         if self.schema_version != ask_admission_metadata_schema_version(
-            self.capture_id, self.capture_subscription
+            self.capture_id,
+            self.capture_subscription,
+            self.authorization_generation,
         ):
             raise ValueError("Ask workflow input version is invalid")
         if self.capture_subscription is not None and (
@@ -120,7 +123,7 @@ class AskAdmissionWorkflowInput(BaseModel):
             or intent.schema_version != QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION
             or intent.environment_id is None
             or type(intent.payload) is not AskAdmissionDispatchPayload
-            or intent.payload.schema_version not in {1, 2, 3}
+            or intent.payload.schema_version not in {4, 5, 6}
             or intent.aggregate is None
             or intent.aggregate.object_type != "answer_question_run"
         ):
@@ -133,6 +136,7 @@ class AskAdmissionWorkflowInput(BaseModel):
             or payload.session_id.int == 0
             or payload.message_id.int == 0
             or payload.run_id.int == 0
+            or payload.authorization_generation is None
         ):
             raise InvalidAskAdmissionIntent("Ask admission intent lineage is invalid.")
         return cls(
@@ -143,6 +147,7 @@ class AskAdmissionWorkflowInput(BaseModel):
             message_id=payload.message_id,
             run_id=payload.run_id,
             trace_id=intent.trace_id,
+            authorization_generation=payload.authorization_generation,
             correlation_id=intent.correlation_id,
             causation_id=intent.event_id,
             capture_id=payload.capture_id,
@@ -585,9 +590,7 @@ class AskAdmissionWorkflowExecutor:
         if self._run_starter is not None:
             await self._run_starter(workflow_input)
         context = self._persistence_context_factory(workflow_input)
-        authorization_generation = await self._resolve_authorization_generation(
-            workflow_input, command
-        )
+        authorization_generation = workflow_input.authorization_generation
         result = await self._service.execute_admitted(
             AskExecutionCommand(
                 request_context=AskRequestContext(

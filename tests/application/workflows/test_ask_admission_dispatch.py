@@ -34,6 +34,7 @@ from spine.application.workflows.ask_admission_dispatch import (
     AskAdmissionWorkflowHandle,
     AskAdmissionWorkflowInput,
     AskAdmissionWorkflowLauncher,
+    InvalidAskAdmissionIntent,
     AskCancellationDispatchConsumer,
     ScopedAskAdmissionCommandLoader,
     TemporalWorkflowAlreadyStarted,
@@ -66,6 +67,7 @@ def workflow_input() -> AskAdmissionWorkflowInput:
         message_id=MESSAGE_ID,
         run_id=RUN_ID,
         trace_id=TRACE_ID,
+        authorization_generation=1,
         causation_id=UUID("80000000-0000-0000-0000-000000000427"),
     )
 
@@ -87,6 +89,8 @@ def admission_intent():
             session_id=SESSION_ID,
             message_id=MESSAGE_ID,
             run_id=RUN_ID,
+            authorization_generation=1,
+            schema_version=4,
         ),
         aggregate=OpaqueObjectReference(
             object_type="answer_question_run",
@@ -98,7 +102,7 @@ def admission_intent():
     )
 
 
-def test_capture_enabled_dispatch_uses_compatible_v2_workflow_metadata() -> None:
+def test_capture_enabled_dispatch_uses_v5_workflow_metadata() -> None:
     capture_id = UUID("90000000-0000-0000-0000-000000000427")
     registry = OutboxEventRegistry()
     from spine.application.persistence.ask_admission import (
@@ -117,8 +121,9 @@ def test_capture_enabled_dispatch_uses_compatible_v2_workflow_metadata() -> None
             session_id=SESSION_ID,
             message_id=MESSAGE_ID,
             run_id=RUN_ID,
+            authorization_generation=1,
             capture_id=capture_id,
-            schema_version=2,
+            schema_version=5,
         ),
         aggregate=OpaqueObjectReference(
             object_type="answer_question_run", object_id=RUN_ID, schema_version=1
@@ -132,12 +137,12 @@ def test_capture_enabled_dispatch_uses_compatible_v2_workflow_metadata() -> None
         workflow.model_dump_json()
     )
 
-    assert restored.schema_version == 2
+    assert restored.schema_version == 5
     assert restored.capture_id == capture_id
     assert "question" not in restored.model_dump(mode="json")
 
 
-def test_observer_subscription_dispatch_uses_typed_v3_routing_metadata() -> None:
+def test_observer_subscription_dispatch_uses_typed_v6_routing_metadata() -> None:
     subscription = AskCaptureSubscription(
         capture_id=UUID("90000000-0000-0000-0000-000000000427"),
         subscription_id=UUID("91000000-0000-0000-0000-000000000427"),
@@ -162,7 +167,8 @@ def test_observer_subscription_dispatch_uses_typed_v3_routing_metadata() -> None
             run_id=RUN_ID,
             capture_id=subscription.capture_id,
             capture_subscription=subscription,
-            schema_version=3,
+            authorization_generation=9,
+            schema_version=6,
         ),
         aggregate=OpaqueObjectReference(
             object_type="answer_question_run", object_id=RUN_ID, schema_version=1
@@ -174,12 +180,30 @@ def test_observer_subscription_dispatch_uses_typed_v3_routing_metadata() -> None
     workflow = AskAdmissionWorkflowInput.from_intent(intent)
     restored = AskAdmissionWorkflowInput.model_validate_json(workflow.model_dump_json())
 
-    assert restored.schema_version == 3
+    assert restored.schema_version == 6
     assert restored.capture_id == subscription.capture_id
     assert restored.capture_subscription == subscription
+    assert restored.authorization_generation == 9
     assert "question" not in restored.model_dump(mode="json")
     assert "answer" not in restored.model_dump(mode="json")
     assert "context_bundle" not in restored.model_dump(mode="json")
+
+
+def test_legacy_dispatch_without_admitted_generation_fails_closed() -> None:
+    legacy = admission_intent().model_copy(
+        update={
+            "payload": AskAdmissionDispatchPayload(
+                command_id=COMMAND_ID,
+                session_id=SESSION_ID,
+                message_id=MESSAGE_ID,
+                run_id=RUN_ID,
+                schema_version=1,
+            )
+        }
+    )
+
+    with pytest.raises(InvalidAskAdmissionIntent):
+        AskAdmissionWorkflowInput.from_intent(legacy)
 
 
 class FakeTemporal:
@@ -430,7 +454,7 @@ async def test_workflow_executor_releases_only_scoped_admitted_identity_to_capab
     )
 
     capture_input = workflow_input().model_copy(
-        update={"capture_id": capture_id, "schema_version": 2}
+            update={"capture_id": capture_id, "schema_version": 5}
     )
     result = await executor.execute(capture_input)
     retry_result = await executor.execute(capture_input)
@@ -628,9 +652,10 @@ async def test_observer_capture_publishes_only_after_canonical_terminal_commit(
         message_id=identity.message_id,
         run_id=identity.run_id,
         trace_id=capture.question.correlation.trace_id,
+        authorization_generation=1,
         capture_id=subscription.capture_id,
         capture_subscription=subscription,
-        schema_version=3,
+        schema_version=6,
     )
     command = AskAdmissionCommandData(
         command_id=identity.command_id,

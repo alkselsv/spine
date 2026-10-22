@@ -333,6 +333,14 @@ _BIND_CONTEXT = text(
 _BIND_ENVIRONMENT = text(
     "SELECT set_config('spine.environment_id', :environment_id, true)"
 )
+_VALIDATE_CURRENT_PERSISTENCE_AUTHORITY = text(
+    "SELECT "
+    "(:acting_subject_id = '' OR spine.resolve_current_qualification_human_authority("
+    "nullif(:acting_subject_id, '')::uuid, :workspace_id, :environment_id) IS NOT NULL) "
+    "AND (:service_principal_id = '' OR spine.resolve_current_service_authority("
+    "nullif(:service_principal_id, '')::uuid, :workspace_id, :environment_id, "
+    ":purpose, :operation) IS NOT NULL)"
+)
 
 
 def _admission_serialization_key(
@@ -6524,6 +6532,7 @@ class PostgreSQLTenantUnitOfWork:
             self._active_context = snapshot
             if isinstance(snapshot.scope, EnvironmentScope):
                 await self._validate_environment_scope(snapshot.scope)
+                await self._validate_current_authority(snapshot)
         except BaseException as error:
             await self._terminate(error)
         self._lifecycle = _Lifecycle.ACTIVE
@@ -6621,6 +6630,25 @@ class PostgreSQLTenantUnitOfWork:
             )
         )
         if result.scalar_one_or_none() is None:
+            raise InvalidPersistenceContextError("Persistence context is invalid.")
+
+    async def _validate_current_authority(
+        self, context: TrustedPersistenceContext
+    ) -> None:
+        scope = context.scope
+        assert isinstance(scope, EnvironmentScope)
+        result = await self._execute_during_entry(
+            _VALIDATE_CURRENT_PERSISTENCE_AUTHORITY,
+            {
+                "workspace_id": str(scope.workspace_id),
+                "environment_id": str(scope.environment_id),
+                "acting_subject_id": str(context.acting_subject_id or ""),
+                "service_principal_id": str(context.service_principal_id or ""),
+                "purpose": context.purpose.value,
+                "operation": context.operation.value,
+            },
+        )
+        if result.scalar_one_or_none() is not True:
             raise InvalidPersistenceContextError("Persistence context is invalid.")
 
     async def _bind_environment(self, environment_id: UUID) -> None:

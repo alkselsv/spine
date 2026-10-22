@@ -173,6 +173,7 @@ class DurableProductionQAAFlow(ProductionContractApplicationFlow):
                 environment=authorized.environment,
                 question=request.question,
                 idempotency_key=IdempotencyKey(f"r1-observer-ask:{key_suffix}"),
+                authorization_generation=authorized.authorization_generation,
             )
         except Exception:
             raise ProductionContractUnavailable() from None

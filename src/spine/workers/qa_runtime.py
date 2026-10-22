@@ -123,10 +123,15 @@ class _DiscardWorkerElapsed:
 
 
 class _CurrentAuthorizationGeneration:
-    """Resolve current canonical authority for the admitted worker scope."""
+    """Resolve fresh service authority at one durable activity/action boundary."""
 
-    def __init__(self, session_factory: object) -> None:
+    def __init__(
+        self,
+        session_factory: object,
+        service_principal_id: UUID,
+    ) -> None:
         self._session_factory = session_factory
+        self._service_principal_id = service_principal_id
 
     async def __call__(
         self,
@@ -156,12 +161,16 @@ class _CurrentAuthorizationGeneration:
                 generation = (
                     await session.execute(
                         text(
-                            "SELECT spine.resolve_current_authorization_generation("
-                            ":workspace_id, :environment_id)"
+                            "SELECT spine.resolve_current_service_authority("
+                            ":service_principal_id, :workspace_id, :environment_id, "
+                            ":purpose, :operation)"
                         ),
                         {
+                            "service_principal_id": str(self._service_principal_id),
                             "workspace_id": str(workflow_input.workspace_id),
                             "environment_id": str(workflow_input.environment_id),
+                            "purpose": "governed_qa.execution.v1",
+                            "operation": "answer_question_run",
                         },
                     )
                 ).scalar_one_or_none()
@@ -169,6 +178,7 @@ class _CurrentAuthorizationGeneration:
             not isinstance(generation, int)
             or isinstance(generation, bool)
             or generation < 1
+            or generation != workflow_input.authorization_generation
         ):
             raise AskAdmissionCommandUnavailable(
                 "Current authorization generation is unavailable."
@@ -286,7 +296,8 @@ async def create_production_qa_worker_runtime(
         worker_execution_elapsed_port=_DiscardWorkerElapsed(),
         authorization_generation=settings.authorization_generation,
         authorization_generation_resolver=_CurrentAuthorizationGeneration(
-            session_factory
+            session_factory,
+            settings.service_principal_id,
         ),
         run_starter=PersistenceAskAdmissionRunStarter(
             uow_factory=persistence.uow_factory,

@@ -416,6 +416,7 @@ class PersistedAuthorizedAskService:
                     question=command.question,
                     idempotency_key=command.idempotency_key,
                     clarification_of_message_id=command.clarification_of_message_id,
+                    authorization_generation=command.request_context.authorization_generation,
                 ),
             )
             return await self.execute_admitted(

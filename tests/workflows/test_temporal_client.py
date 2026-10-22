@@ -24,6 +24,7 @@ def workflow_input() -> AskAdmissionWorkflowInput:
         message_id=UUID("50000000-0000-0000-0000-000000000427"),
         run_id=RUN_ID,
         trace_id=UUID("70000000-0000-0000-0000-000000000427"),
+        authorization_generation=1,
     )
 
 

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from uuid import UUID
 
-from pydantic import Field, ValidationInfo, field_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from spine.auth.contracts import AuthenticationAlias, AuthorizationRole
 from spine.domain.common import DefinitionModel
@@ -23,6 +24,13 @@ class AuthorizationRecordStatus(str, Enum):
     ACTIVE = "active"
     DISABLED = "disabled"
     REVOKED = "revoked"
+
+
+class QualificationPrincipalKind(str, Enum):
+    """The two bounded principal kinds allowed by qualification bindings."""
+
+    HUMAN = "human"
+    SERVICE = "service"
 
 
 class AuthorizationRecordProvenance(DefinitionModel):
@@ -151,6 +159,50 @@ class EnvironmentOwnership(DefinitionModel):
         return _non_nil_uuid(value, info)
 
 
+class QualificationAuthorityBinding(DefinitionModel):
+    """One immutable-deadline version of temporary qualification authority."""
+
+    binding_id: UUID
+    qualification_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    principal_kind: QualificationPrincipalKind
+    principal_id: UUID
+    purpose: str | None = Field(default=None, min_length=1, max_length=64)
+    operation: str | None = Field(default=None, min_length=1, max_length=64)
+    expires_at: datetime
+    version: int = Field(ge=1)
+    status: AuthorizationRecordStatus
+    provenance: AuthorizationRecordProvenance
+
+    @field_validator(
+        "binding_id",
+        "qualification_id",
+        "workspace_id",
+        "environment_id",
+        "principal_id",
+    )
+    @classmethod
+    def _validate_ids(cls, value: UUID, info: ValidationInfo) -> UUID:
+        return _non_nil_uuid(value, info)
+
+    @field_validator("expires_at")
+    @classmethod
+    def _validate_deadline(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("expires_at must be timezone-aware")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_scope(self) -> "QualificationAuthorityBinding":
+        if self.principal_kind is QualificationPrincipalKind.HUMAN:
+            if self.purpose is not None or self.operation is not None:
+                raise ValueError("human qualification authority cannot carry service scope")
+        elif self.purpose is None or self.operation is None:
+            raise ValueError("service qualification authority requires purpose and operation")
+        return self
+
+
 class AuthorizationDirectoryRecords(DefinitionModel):
     """Detached immutable record set used by deterministic directory adapters."""
 
@@ -161,6 +213,7 @@ class AuthorizationDirectoryRecords(DefinitionModel):
     role_bindings: tuple[EnvironmentRoleBinding, ...] = ()
     generations: tuple[AuthorizationGeneration, ...] = ()
     environment_owners: tuple[EnvironmentOwnership, ...] = ()
+    qualification_bindings: tuple[QualificationAuthorityBinding, ...] = ()
 
 
 class CurrentAuthorizationSnapshot(DefinitionModel):
@@ -199,5 +252,7 @@ __all__ = [
     "EnvironmentMembership",
     "EnvironmentOwnership",
     "EnvironmentRoleBinding",
+    "QualificationAuthorityBinding",
+    "QualificationPrincipalKind",
     "WorkspaceMembership",
 ]

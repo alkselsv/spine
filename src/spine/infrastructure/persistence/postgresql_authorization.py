@@ -34,6 +34,14 @@ _RESOLVE_CURRENT_SNAPSHOT = text(
     "FROM spine.resolve_current_authorization_snapshot("
     ":issuer, :subject, :workspace_id, :environment_id)"
 )
+_RESOLVE_CURRENT_HUMAN_AUTHORITY = text(
+    "SELECT spine.resolve_current_human_authority("
+    ":principal_id, :workspace_id, :environment_id)"
+)
+_RESOLVE_CURRENT_SERVICE_AUTHORITY = text(
+    "SELECT spine.resolve_current_service_authority("
+    ":principal_id, :workspace_id, :environment_id, :purpose, :operation)"
+)
 
 
 class PostgreSQLAuthorizationSnapshotRepository:
@@ -116,6 +124,87 @@ class PostgreSQLAuthorizationDirectory:
         )
 
 
+class PostgreSQLQualificationAuthorityResolver:
+    """Resolve current human/service authority without exposing binding records."""
+
+    def __init__(self, session_factory: SessionFactory) -> None:
+        self._session_factory = session_factory
+
+    async def resolve_human_authority(
+        self,
+        *,
+        principal_id: UUID,
+        requested_scope: RequestedAuthorizationScope,
+    ) -> int | None:
+        return await self._resolve(
+            _RESOLVE_CURRENT_HUMAN_AUTHORITY,
+            {
+                "principal_id": str(principal_id),
+                "workspace_id": str(requested_scope.workspace_id),
+                "environment_id": str(requested_scope.environment_id),
+            },
+            requested_scope,
+        )
+
+    async def resolve_service_authority(
+        self,
+        *,
+        principal_id: UUID,
+        requested_scope: RequestedAuthorizationScope,
+        purpose: str,
+        operation: str,
+    ) -> int | None:
+        return await self._resolve(
+            _RESOLVE_CURRENT_SERVICE_AUTHORITY,
+            {
+                "principal_id": str(principal_id),
+                "workspace_id": str(requested_scope.workspace_id),
+                "environment_id": str(requested_scope.environment_id),
+                "purpose": purpose,
+                "operation": operation,
+            },
+            requested_scope,
+        )
+
+    async def _resolve(
+        self,
+        statement: object,
+        parameters: dict[str, str],
+        requested_scope: RequestedAuthorizationScope,
+    ) -> int | None:
+        try:
+            session = self._session_factory()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            raise AuthorizationUnavailableError() from None
+        try:
+            async with session:
+                async with session.begin():
+                    await session.execute(
+                        _BIND_RESOLUTION_SCOPE,
+                        {
+                            "workspace_id": str(requested_scope.workspace_id),
+                            "environment_id": str(requested_scope.environment_id),
+                        },
+                    )
+                    generation = (
+                        await session.execute(statement, parameters)
+                    ).scalar_one_or_none()
+            if generation is None:
+                return None
+            if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+                raise AuthorizationUnavailableError()
+            return generation
+        except asyncio.CancelledError:
+            raise
+        except AuthorizationUnavailableError:
+            raise
+        except Exception as error:
+            translate_persistence_error(error)
+            raise AuthorizationUnavailableError() from None
+
+
 async def check_postgresql_authorization_store_readiness(
     session_factory: SessionFactory,
 ) -> bool:
@@ -143,5 +232,6 @@ async def check_postgresql_authorization_store_readiness(
 __all__ = [
     "PostgreSQLAuthorizationDirectory",
     "PostgreSQLAuthorizationSnapshotRepository",
+    "PostgreSQLQualificationAuthorityResolver",
     "check_postgresql_authorization_store_readiness",
 ]

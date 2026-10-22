@@ -84,6 +84,7 @@ class ObserverAskAdmission:
                     clarification_of_message_id=command.clarification_of_message_id,
                     capture_id=capture_id,
                     capture_subscription=subscription,
+                    authorization_generation=command.authorization_generation,
                 ),
             )
             run_identity = AdmittedRunIdentity(

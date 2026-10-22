@@ -217,11 +217,26 @@ async def verify_database_readiness(
                         "'spine.resolve_current_authorization_snapshot"
                         "(text,text,uuid,uuid)', 'EXECUTE') AS snapshot_public, "
                         "has_function_privilege(current_user, "
-                        "'spine.resolve_current_authorization_generation"
-                        "(uuid,uuid)', 'EXECUTE') AS generation_runtime, "
+                        "'spine.resolve_current_qualification_human_authority"
+                        "(uuid,uuid,uuid)', 'EXECUTE') AS qualification_human_runtime, "
                         "has_function_privilege('public', "
+                        "'spine.resolve_current_qualification_human_authority"
+                        "(uuid,uuid,uuid)', 'EXECUTE') AS qualification_human_public, "
+                        "has_function_privilege(current_user, "
+                        "'spine.resolve_current_human_authority"
+                        "(uuid,uuid,uuid)', 'EXECUTE') AS human_runtime, "
+                        "has_function_privilege('public', "
+                        "'spine.resolve_current_human_authority"
+                        "(uuid,uuid,uuid)', 'EXECUTE') AS human_public, "
+                        "has_function_privilege(current_user, "
+                        "'spine.resolve_current_service_authority"
+                        "(uuid,uuid,uuid,text,text)', 'EXECUTE') AS service_runtime, "
+                        "has_function_privilege('public', "
+                        "'spine.resolve_current_service_authority"
+                        "(uuid,uuid,uuid,text,text)', 'EXECUTE') AS service_public, "
+                        "has_function_privilege(current_user, "
                         "'spine.resolve_current_authorization_generation"
-                        "(uuid,uuid)', 'EXECUTE') AS generation_public, "
+                        "(uuid,uuid)', 'EXECUTE') AS legacy_generation_runtime, "
                         "has_function_privilege(current_user, "
                         "'spine.resolve_run_outbox_delivery_correlation"
                         "(uuid,uuid,uuid)', 'EXECUTE') AS correlation_runtime, "
@@ -234,8 +249,13 @@ async def verify_database_readiness(
             if (
                 not resolver_privileges.snapshot_runtime
                 or resolver_privileges.snapshot_public
-                or not resolver_privileges.generation_runtime
-                or resolver_privileges.generation_public
+                or not resolver_privileges.qualification_human_runtime
+                or resolver_privileges.qualification_human_public
+                or not resolver_privileges.human_runtime
+                or resolver_privileges.human_public
+                or not resolver_privileges.service_runtime
+                or resolver_privileges.service_public
+                or resolver_privileges.legacy_generation_runtime
                 or not resolver_privileges.correlation_runtime
                 or resolver_privileges.correlation_public
             ):
@@ -412,6 +432,9 @@ def _runtime_table_privileges_are_safe(tables: dict[str, object]) -> bool:
         "environment_memberships": ExpectedTablePrivileges(True, False, False, False, False),
         "environment_role_bindings": ExpectedTablePrivileges(True, False, False, False, False),
         "authorization_generations": ExpectedTablePrivileges(True, False, False, False, False),
+        "qualification_authority_bindings": ExpectedTablePrivileges(
+            True, False, False, False, False
+        ),
     }
     if set(tables) != set(expected):
         return False

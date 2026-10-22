@@ -2965,6 +2965,60 @@ async def test_concurrent_duplicate_claims_have_one_owner_and_stable_replay(
         await uow.commit()
 
 
+async def test_environment_uow_rejects_expired_service_qualification(
+    postgresql_adapter: PersistenceAdapter,
+    postgresql_contract_database: PostgreSQLContractDatabase,
+) -> None:
+    from spine.application.persistence.errors import InvalidPersistenceContextError
+
+    workspace_id = synthetic_uuid(54100)
+    environment_id = synthetic_uuid(54101)
+    await persist_idempotency_workspace(postgresql_adapter, workspace_id)
+    workspace_context = postgresql_adapter.workspace_context(workspace_id)
+    async with postgresql_adapter.uow_factory(workspace_context) as uow:
+        await uow.environments.add(
+            Environment(
+                id=environment_id,
+                workspace_id=workspace_id,
+                kind=EnvironmentKind.PRODUCTION,
+                display_name="Expired qualification",
+            )
+        )
+        await uow.commit()
+
+    migration_engine = create_async_engine(
+        postgresql_contract_database.migration_url.get_secret_value(),
+        hide_parameters=True,
+    )
+    try:
+        async with migration_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO spine.qualification_authority_bindings ("
+                    "binding_id, version, qualification_id, workspace_id, environment_id, "
+                    "principal_kind, principal_id, purpose, operation, expires_at, status, "
+                    "change_id, recorded_by) VALUES ("
+                    ":binding_id, 1, :qualification_id, :workspace_id, :environment_id, "
+                    "'service', :principal_id, 'contract_test', 'environment_repository', "
+                    "transaction_timestamp(), 'active', :change_id, 'uow-expiry-test')"
+                ),
+                {
+                    "binding_id": synthetic_uuid(54102),
+                    "qualification_id": synthetic_uuid(54103),
+                    "workspace_id": workspace_id,
+                    "environment_id": environment_id,
+                    "principal_id": synthetic_uuid(953),
+                    "change_id": synthetic_uuid(54104),
+                },
+            )
+    finally:
+        await migration_engine.dispose()
+
+    context = postgresql_adapter.environment_context(workspace_id, environment_id)
+    with pytest.raises(InvalidPersistenceContextError):
+        async with postgresql_adapter.uow_factory(context):
+            pass
+
 async def test_receipt_identity_collision_keeps_primary_key_conflict_meaning(
     postgresql_adapter: PersistenceAdapter,
     postgresql_contract_database: PostgreSQLContractDatabase,
@@ -4053,6 +4107,7 @@ async def test_postgresql_ask_admission_replays_after_application_process_recrea
         environment=EnvironmentKind.PRODUCTION,
         question="Restart-safe question",
         idempotency_key=IdempotencyKey("issue-430-process-restart-admission"),
+        authorization_generation=1,
     )
     async with postgresql_adapter.uow_factory(ask_context) as uow:
         first = await uow.ask_admissions.admit(command)
@@ -4089,7 +4144,7 @@ async def main():
     boundary = TrustedContextBoundary.for_testing(issuer_id=synthetic_uuid(950), secret=b"issue-45-postgresql-contract-secret")
     persistence = PostgreSQLPersistence(session_factory=async_sessionmaker(engine, expire_on_commit=False, autoflush=False), context_verifier=boundary, outbox_events=create_outbox_event_registry())
     context = boundary.worker(scope=EnvironmentScope(workspace_id=workspace_id, environment_id=environment_id), service_principal_id=synthetic_uuid(959), purpose=PersistencePurpose("contract_test"), operation=PersistenceOperation(QA_ASK_ADMISSION_OPERATION.value), trace_id=synthetic_uuid(960))
-    command = AskAdmissionCommand.create(workspace_id=workspace_id, environment_id=environment_id, session_id=session_id, subject=ActorRef(kind=ActorKind.SERVICE, id=subject_id), environment=EnvironmentKind.PRODUCTION, question="Restart-safe question", idempotency_key=IdempotencyKey("issue-430-process-restart-admission"))
+    command = AskAdmissionCommand.create(workspace_id=workspace_id, environment_id=environment_id, session_id=session_id, subject=ActorRef(kind=ActorKind.SERVICE, id=subject_id), environment=EnvironmentKind.PRODUCTION, question="Restart-safe question", idempotency_key=IdempotencyKey("issue-430-process-restart-admission"), authorization_generation=1)
     async with persistence.uow_factory(context) as uow:
         replay = await uow.ask_admissions.admit(command)
         run = await uow.answer_question_runs.resolve_run(replay.run_id)
@@ -4261,6 +4316,7 @@ asyncio.run(main())
         message_id=first.message_id,
         run_id=first.run_id,
         trace_id=cancellation_event["trace_id"],
+        authorization_generation=1,
         correlation_id=cancellation_event["correlation_id"],
         causation_id=first.dispatch_event_id,
     )
@@ -5081,6 +5137,7 @@ async def test_temporal_retry_after_terminal_commit_failure_persists_one_postgre
         message_id=MESSAGE_ID,
         run_id=RUN_ID,
         trace_id=TRACE_ID,
+        authorization_generation=1,
     )
     async with await WorkflowEnvironment.start_time_skipping(
         data_converter=pydantic_data_converter

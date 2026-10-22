@@ -25,7 +25,7 @@ def test_temporal_bootstrap_registers_admission_and_cancellation_routes() -> Non
     register_ask_admission_delivery_route(routes)
     routes.seal()
 
-    route = routes.resolve("qa.ask-admitted", 1)
+    route = routes.resolve("qa.ask-admitted", 2)
     assert route.consumer_name == ASK_ADMISSION_CONSUMER_NAME
     cancellation_route = routes.resolve("qa.ask-cancellation-requested", 1)
     assert cancellation_route.consumer_name == ASK_CANCELLATION_CONSUMER_NAME

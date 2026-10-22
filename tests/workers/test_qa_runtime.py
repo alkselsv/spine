@@ -5,7 +5,10 @@ from uuid import UUID
 import pytest
 
 from spine.domain.common import ActorKind, ActorRef, EnvironmentKind
-from spine.application.workflows.ask_admission_dispatch import AskAdmissionCommandData
+from spine.application.workflows.ask_admission_dispatch import (
+    AskAdmissionCommandData,
+    AskAdmissionCommandUnavailable,
+)
 from spine.workers.qa_runtime import (
     QAWorkerSettings,
     _CurrentAuthorizationGeneration,
@@ -36,6 +39,7 @@ def test_qa_worker_context_is_scoped_to_workflow_input() -> None:
         message_id=UUID(int=50807),
         run_id=UUID(int=50808),
         trace_id=UUID(int=50809),
+        authorization_generation=4,
     )
 
     context = _qa_worker_context(boundary, UUID(int=50810), workflow_input)
@@ -57,6 +61,7 @@ async def test_current_authorization_generation_reads_exact_worker_scope() -> No
         message_id=UUID(int=50807),
         run_id=UUID(int=50808),
         trace_id=UUID(int=50809),
+        authorization_generation=4,
     )
     command = AskAdmissionCommandData(
         command_id=workflow_input.command_id,
@@ -93,15 +98,77 @@ async def test_current_authorization_generation_reads_exact_worker_scope() -> No
             statements.append((str(statement), parameters))
             return Result(4 if len(statements) == 2 else None)
 
-    generation = await _CurrentAuthorizationGeneration(Session)(
+    service_principal_id = UUID(int=50812)
+    generation = await _CurrentAuthorizationGeneration(
+        Session, service_principal_id
+    )(
         workflow_input, command
     )
 
     assert generation == 4
-    assert all(
-        parameters == {
-            "workspace_id": str(workflow_input.workspace_id),
-            "environment_id": str(workflow_input.environment_id),
-        }
-        for _, parameters in statements
+    assert statements[0][1] == {
+        "workspace_id": str(workflow_input.workspace_id),
+        "environment_id": str(workflow_input.environment_id),
+    }
+    assert statements[1][1] == {
+        "service_principal_id": str(service_principal_id),
+        "workspace_id": str(workflow_input.workspace_id),
+        "environment_id": str(workflow_input.environment_id),
+        "purpose": "governed_qa.execution.v1",
+        "operation": "answer_question_run",
+    }
+    assert "resolve_current_service_authority" in statements[1][0]
+
+
+@pytest.mark.asyncio
+async def test_current_authorization_generation_rejects_stale_admitted_generation() -> None:
+    workflow_input = AskAdmissionWorkflowInput(
+        command_id=UUID(int=1),
+        workspace_id=UUID(int=2),
+        environment_id=UUID(int=3),
+        session_id=UUID(int=4),
+        message_id=UUID(int=5),
+        run_id=UUID(int=6),
+        trace_id=UUID(int=7),
+        authorization_generation=4,
     )
+    command = AskAdmissionCommandData(
+        command_id=workflow_input.command_id,
+        workspace_id=workflow_input.workspace_id,
+        environment_id=workflow_input.environment_id,
+        session_id=workflow_input.session_id,
+        message_id=workflow_input.message_id,
+        run_id=workflow_input.run_id,
+        question="synthetic question",
+        subject=ActorRef(kind=ActorKind.HUMAN, id=UUID(int=8)),
+        environment=EnvironmentKind.PRODUCTION,
+        idempotency_key="stale-generation",
+    )
+
+    class Result:
+        def __init__(self, value=None) -> None:
+            self.value = value
+
+        def scalar_one_or_none(self):
+            return self.value
+
+    class Session:
+        calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        def begin(self):
+            return self
+
+        async def execute(self, *_):
+            type(self).calls += 1
+            return Result(5 if type(self).calls == 2 else None)
+
+    with pytest.raises(AskAdmissionCommandUnavailable):
+        await _CurrentAuthorizationGeneration(Session, UUID(int=9))(
+            workflow_input, command
+        )

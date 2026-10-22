@@ -85,6 +85,7 @@ def _command(question: str = "Cafe\u0301?") -> AskAdmissionCommand:
         environment=EnvironmentKind.PRODUCTION,
         question=question,
         idempotency_key=IdempotencyKey("ask-426"),
+        authorization_generation=1,
     )
 
 
@@ -461,6 +462,7 @@ async def test_ask_admission_missing_clarification_target_is_rejected() -> None:
         question="Follow up?",
         clarification_of_message_id=UUID("a0000000-0000-0000-0000-000000000426"),
         idempotency_key=IdempotencyKey("ask-426-clarification"),
+        authorization_generation=1,
     )
 
     async with persistence.uow_factory(context) as uow:

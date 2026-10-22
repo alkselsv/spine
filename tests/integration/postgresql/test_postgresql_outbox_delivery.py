@@ -1105,7 +1105,8 @@ async def test_postgresql_temporal_production_ask_composition_reaches_terminal_s
                     subject=ActorRef(kind=ActorKind.SERVICE, id=subject_id),
                     environment=EnvironmentKind.PRODUCTION,
                     question="Where is the approved policy?",
-                    idempotency_key=IdempotencyKey("issue-506-admission"),
+                        idempotency_key=IdempotencyKey("issue-506-admission"),
+                        authorization_generation=1,
                 ),
             )
 

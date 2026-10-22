@@ -21,6 +21,7 @@ from spine.infrastructure.persistence.postgresql_authorization_mappings import (
     canonical_human_identity_states,
     environment_memberships,
     environment_role_bindings,
+    qualification_authority_bindings,
     workspace_memberships,
 )
 
@@ -166,6 +167,28 @@ class PostgreSQLAuthorizationSeedHelper:
                             ),
                             role=record.role.value,
                             version=record.version,
+                            status=record.status.value,
+                            change_id=record.provenance.change_id,
+                            recorded_by=record.provenance.recorded_by,
+                        )
+                    )
+
+                for record in sorted(
+                    records.qualification_bindings,
+                    key=lambda value: (value.binding_id.int, value.version),
+                ):
+                    await session.execute(
+                        insert(qualification_authority_bindings).values(
+                            binding_id=record.binding_id,
+                            version=record.version,
+                            qualification_id=record.qualification_id,
+                            workspace_id=record.workspace_id,
+                            environment_id=record.environment_id,
+                            principal_kind=record.principal_kind.value,
+                            principal_id=record.principal_id,
+                            purpose=record.purpose,
+                            operation=record.operation,
+                            expires_at=record.expires_at,
                             status=record.status.value,
                             change_id=record.provenance.change_id,
                             recorded_by=record.provenance.recorded_by,

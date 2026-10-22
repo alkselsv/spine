@@ -33,6 +33,7 @@ _CAPTURE_COMMAND = AskAdmissionCommand.create(
     environment=EnvironmentKind.PRODUCTION,
     question="synthetic question",
     idempotency_key=IdempotencyKey("observer-476"),
+    authorization_generation=1,
 )
 CAPTURE_ID = uuid5(
     NAMESPACE_URL,
@@ -87,6 +88,7 @@ async def test_failed_admission_cleans_pre_registered_subscription() -> None:
         environment=EnvironmentKind.PRODUCTION,
         question="synthetic question",
         idempotency_key=IdempotencyKey("observer-failure-476"),
+        authorization_generation=1,
     )
 
     with pytest.raises(RuntimeError, match="admission failed"):
@@ -139,6 +141,7 @@ async def test_observer_registers_before_admission_and_keeps_attempt_unresolved(
         environment=EnvironmentKind.PRODUCTION,
         question="synthetic question",
         idempotency_key=IdempotencyKey("observer-476"),
+        authorization_generation=1,
     )
 
     result = await service.admit(context=object(), command=command)
@@ -173,6 +176,7 @@ async def test_conflicting_idempotency_request_preserves_first_observer_subscrip
         environment=EnvironmentKind.PRODUCTION,
         question="synthetic question",
         idempotency_key=IdempotencyKey("observer-conflict-476"),
+        authorization_generation=1,
     )
     conflicting = AskAdmissionCommand.create(
         workspace_id=WORKSPACE_ID,
@@ -182,6 +186,7 @@ async def test_conflicting_idempotency_request_preserves_first_observer_subscrip
         environment=EnvironmentKind.PRODUCTION,
         question="different synthetic question",
         idempotency_key=IdempotencyKey("observer-conflict-476"),
+        authorization_generation=1,
     )
 
     class ConflictAwareAdmission:

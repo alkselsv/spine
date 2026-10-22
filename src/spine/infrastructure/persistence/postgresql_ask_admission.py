@@ -18,6 +18,7 @@ from spine.application.persistence.ask_admission import (
     QA_ASK_ADMISSION_EVENT_TYPE,
     QA_ASK_ADMISSION_RESULT_TYPE,
     QA_ASK_ADMISSION_SCHEMA_VERSION,
+    ask_admission_metadata_schema_version,
     validate_ask_admission_context,
 )
 from spine.application.persistence.errors import (
@@ -77,6 +78,7 @@ class PostgreSQLAskAdmissionRepository(AskAdmissionRepository):
             question=command.question,
             idempotency_key=command.idempotency_key,
             clarification_of_message_id=command.clarification_of_message_id,
+            authorization_generation=command.authorization_generation,
         ).digest
         if command.digest != expected_digest:
             await self._uow._fail(ConstraintConflictError("Ask admission digest is invalid."))
@@ -179,12 +181,13 @@ class PostgreSQLAskAdmissionRepository(AskAdmissionRepository):
             session_id=command.session_id,
             message_id=message_id,
             run_id=run_id,
+            authorization_generation=command.authorization_generation,
             capture_id=command.capture_id,
             capture_subscription=command.capture_subscription,
-            schema_version=(
-                3
-                if command.capture_subscription is not None
-                else 2 if command.capture_id is not None else 1
+            schema_version=ask_admission_metadata_schema_version(
+                command.capture_id,
+                command.capture_subscription,
+                command.authorization_generation,
             ),
         )
         intent = self._uow._outbox_events.build_intent(

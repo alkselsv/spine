@@ -243,6 +243,7 @@ def install_authorized_ask_routes(
                         request.headers.getlist("Idempotency-Key")
                     ),
                     clarification_of_message_id=body.clarification_of_message_id,
+                    authorization_generation=request_context.authorization_generation,
                 ),
             )
             status = await _admission_status(

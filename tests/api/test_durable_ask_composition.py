@@ -46,7 +46,7 @@ def test_durable_ask_composition_wires_api_outbox_and_temporal_executor(
         ASK_ADMISSION_CONSUMER_NAME,
         ASK_CANCELLATION_CONSUMER_NAME,
     ]
-    assert routes.resolve("qa.ask-admitted", 1).consumer_name == (
+    assert routes.resolve("qa.ask-admitted", 2).consumer_name == (
         ASK_ADMISSION_CONSUMER_NAME
     )
     assert routes.resolve("qa.ask-cancellation-requested", 1).consumer_name == (
