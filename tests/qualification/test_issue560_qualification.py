@@ -39,16 +39,21 @@ def test_issue560_report_preserves_each_readiness_dimension() -> None:
 
     assert readiness["configuration"] == "BLOCKED"
     assert readiness["reachability"] == "NOT_VERIFIED"
-    assert readiness["authorization"] == "BLOCKED"
+    assert readiness["authorization"] == "NOT_VERIFIED"
     assert readiness["runtime_provider_bindings"] == "PASS"
-    assert readiness["qualification_authority_binding"] == "NOT_VERIFIED"
-    assert readiness["qualification_target_binding"] == "NOT_VERIFIED"
+    assert readiness["qualification_authority_binding"] == "PASS"
+    assert readiness["qualification_target_binding"] == "PASS"
     assert readiness["application_execution"] == "BLOCKED"
     assert readiness["qualification"] == "BLOCKED"
     assert readiness["provider_calls_observed"] == 0
 
     observations = report["authorization_observations"]
-    assert observations["approved_scope"] == "INVALID_BOOTSTRAPPED_AUTHORITY"
+    assert observations["approved_scope"] == "PASS_API_ADMITTED"
+
+    provisioning = report["fixture_provisioning"]
+    assert provisioning["mode"] == "explicit_operator_profile_before_runtime_start"
+    assert provisioning["idempotent_replay"] == "PASS"
+    assert provisioning["counts_unchanged_after_runtime_verification"] is True
 
 
 def test_issue560_synthetic_run_does_not_elevate_partial_correlation() -> None:
