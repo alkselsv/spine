@@ -37,6 +37,17 @@ if TYPE_CHECKING:
     from .production_qa_capability import (
         ProductionAnswerQuestionCapability,
     )
+    from .qualification_provisioning import (
+        InMemoryQualificationProvisioningStore,
+        QualificationInvocationRejected,
+        QualificationInvocationSource,
+        QualificationOperationConflict,
+        QualificationOperationRequest,
+        QualificationOperationUnavailable,
+        QualificationOperatorDenied,
+        QualificationProfileRejected,
+        QualificationProvisioningService,
+    )
 
 __all__ = [
     "AnswerQuestionAuthorizedContext",
@@ -61,6 +72,15 @@ __all__ = [
     "context_bundle_id_for_request",
     "request_command_digest",
     "ProductionAnswerQuestionCapability",
+    "InMemoryQualificationProvisioningStore",
+    "QualificationInvocationRejected",
+    "QualificationInvocationSource",
+    "QualificationOperationConflict",
+    "QualificationOperationRequest",
+    "QualificationOperationUnavailable",
+    "QualificationOperatorDenied",
+    "QualificationProfileRejected",
+    "QualificationProvisioningService",
     "CandidateOutputStreamingError",
     "CursorScopeError",
     "InMemoryQAEventLog",
@@ -91,6 +111,19 @@ def __getattr__(name: str) -> object:
         "map_context_outcome_to_retrieval_outcome",
     }:
         module = import_module("spine.application.answer_question_context")
+        return getattr(module, name)
+    if name in {
+        "InMemoryQualificationProvisioningStore",
+        "QualificationInvocationRejected",
+        "QualificationInvocationSource",
+        "QualificationOperationConflict",
+        "QualificationOperationRequest",
+        "QualificationOperationUnavailable",
+        "QualificationOperatorDenied",
+        "QualificationProfileRejected",
+        "QualificationProvisioningService",
+    }:
+        module = import_module("spine.application.qualification_provisioning")
         return getattr(module, name)
     if name in __all__:
         module_name = (
