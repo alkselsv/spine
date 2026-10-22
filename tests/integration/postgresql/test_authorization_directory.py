@@ -75,6 +75,10 @@ from spine.infrastructure.persistence.postgresql import PostgreSQLPersistence
 from spine.infrastructure.persistence.postgresql_authorization_mappings import (
     workspace_memberships,
 )
+from spine.scripts.qualification import (
+    QualificationBootstrapSettings,
+    bootstrap as bootstrap_qualification,
+)
 from tests.contracts.auth.adapter import AuthorizationDirectoryFactory
 from tests.contracts.auth.test_authorization_directory_contract import (
     DENIED_RECORD_OVERRIDES,
@@ -375,6 +379,38 @@ async def test_postgresql_unexpired_qualification_binding_allows_current_authori
     authorization_directory_factory: AuthorizationDirectoryFactory,
 ) -> None:
     await contract_unexpired_binding(authorization_directory_factory)
+
+
+async def test_qualification_bootstrap_reuses_existing_tenant_scoped_authority(
+    authorization_database: AuthorizationDatabase,
+) -> None:
+    settings = QualificationBootstrapSettings(
+        deployment_mode="development",
+        migration_database_url=authorization_database.migration_engine.url.render_as_string(
+            hide_password=False
+        ),
+        identity_id=UUID("50800000-0000-4000-8000-000000000091"),
+        authentication_alias_issuer="https://qualification-retry.spine.invalid",
+        authentication_alias_subject="qualification-retry-operator",
+        workspace_a_id=UUID("50800000-0000-4000-8000-000000000092"),
+        workspace_b_id=UUID("50800000-0000-4000-8000-000000000093"),
+        environment_a_id=UUID("50800000-0000-4000-8000-000000000094"),
+        environment_b_id=UUID("50800000-0000-4000-8000-000000000095"),
+    )
+
+    await bootstrap_qualification(settings)
+    await bootstrap_qualification(settings)
+
+    async with authorization_database.migration_engine.connect() as connection:
+        identity_count = await connection.scalar(
+            text(
+                "SELECT count(*) FROM spine.canonical_human_identities "
+                "WHERE identity_id = :identity_id"
+            ),
+            {"identity_id": settings.identity_id},
+        )
+
+    assert identity_count == 1
 
 
 @pytest.mark.parametrize(

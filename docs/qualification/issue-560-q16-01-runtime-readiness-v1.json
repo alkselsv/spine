@@ -52,10 +52,12 @@
     }
   },
   "readiness": {
-    "configuration": "PASS",
-    "reachability": "PASS",
-    "authorization": "NOT_VERIFIED",
-    "bindings": "PASS",
+    "configuration": "BLOCKED",
+    "reachability": "NOT_VERIFIED",
+    "authorization": "BLOCKED",
+    "runtime_provider_bindings": "PASS",
+    "qualification_authority_binding": "NOT_VERIFIED",
+    "qualification_target_binding": "NOT_VERIFIED",
     "application_execution": "BLOCKED",
     "qualification": "BLOCKED",
     "api": "ready",
@@ -77,7 +79,7 @@
     "spine_tables": 82
   },
   "authorization_observations": {
-    "approved_scope": "PASS",
+    "approved_scope": "INVALID_BOOTSTRAPPED_AUTHORITY",
     "wrong_environment_pair": "PASS_DENIED_403",
     "unknown_workspace": "PASS_DENIED_403",
     "foreign_credential": "PASS_DENIED_401",
@@ -108,6 +110,18 @@
     "canonical_cleanup": "BLOCKED_ADMITTED"
   },
   "blockers": [
+    {
+      "code": "authority_created_by_target_startup",
+      "meaning": "The clean SOURCE profile did not contain the confirmed pre-existing qualification principal and scope. Its qualification-authority-bootstrap service created the identity, memberships, role bindings and generation during target startup, so the apparent approved-scope response is not admissible qualification evidence."
+    },
+    {
+      "code": "qualification_binding_lineage_not_verified",
+      "meaning": "No current Qualification Authority Binding and immutable Qualification Target Binding were resolved for the exact caller, authority version, target inventory, database-role reference and AccessPolicy references."
+    },
+    {
+      "code": "access_policy_rls_combination_not_exercised",
+      "meaning": "Table-level RLS posture was inspected, but the mandatory live AccessPolicy plus RLS allow, deny and workspace-isolation matrix was not exercised with pre-existing Security-owned fixtures."
+    },
     {
       "code": "active_projection_unavailable",
       "meaning": "The SOURCE target has no active Q&A publication. The worker fails closed while preparing the pinned production configuration before capability invocation. Creating or activating a projection is owned by issue 562, which currently depends on issue 560."

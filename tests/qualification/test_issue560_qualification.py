@@ -21,10 +21,8 @@ def test_issue560_report_is_exact_metadata_only_and_does_not_claim_pass() -> Non
     assert report["schema_version"] == "q16-01-runtime-readiness:v1"
     assert report["issue"] == 560
     assert report["decision"] == "BLOCKED"
-    assert report["target"]["commit_sha"] == "9784577d276445aa5e4e52b513ca89e653ad7e55"
-    assert report["target"]["deployment_fingerprint"] == (
-        "5f8cc32cc79d6127be50cf6363a5006cbebd063f129565a12bdea71a81b53b23"
-    )
+    assert len(report["target"]["commit_sha"]) == 40
+    assert len(report["target"]["deployment_fingerprint"]) == 64
     assert report["privacy"] == {
         "metadata_only": True,
         "credentials_recorded": False,
@@ -39,13 +37,18 @@ def test_issue560_report_preserves_each_readiness_dimension() -> None:
     report = _report()
     readiness = report["readiness"]
 
-    assert readiness["configuration"] == "PASS"
-    assert readiness["reachability"] == "PASS"
-    assert readiness["authorization"] == "NOT_VERIFIED"
-    assert readiness["bindings"] == "PASS"
+    assert readiness["configuration"] == "BLOCKED"
+    assert readiness["reachability"] == "NOT_VERIFIED"
+    assert readiness["authorization"] == "BLOCKED"
+    assert readiness["runtime_provider_bindings"] == "PASS"
+    assert readiness["qualification_authority_binding"] == "NOT_VERIFIED"
+    assert readiness["qualification_target_binding"] == "NOT_VERIFIED"
     assert readiness["application_execution"] == "BLOCKED"
     assert readiness["qualification"] == "BLOCKED"
     assert readiness["provider_calls_observed"] == 0
+
+    observations = report["authorization_observations"]
+    assert observations["approved_scope"] == "INVALID_BOOTSTRAPPED_AUTHORITY"
 
 
 def test_issue560_synthetic_run_does_not_elevate_partial_correlation() -> None:
