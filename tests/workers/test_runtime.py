@@ -122,12 +122,18 @@ async def test_shutdown_drain_timeout_emits_only_a_bounded_reason_code(
     worker = RecordingWorker()
     runtime = outbox_runtime(worker, shutdown_timeout_seconds=0.01)
     stop = asyncio.Event()
+    logger = logging.getLogger("spine.worker")
+    previous_disabled = logger.disabled
+    logger.disabled = True
 
-    with caplog.at_level(logging.WARNING, logger="spine.worker"):
-        task = asyncio.create_task(runtime.run_forever(stop))
-        await worker.started.wait()
-        stop.set()
-        await asyncio.wait_for(task, timeout=1)
+    try:
+        with caplog.at_level(logging.WARNING, logger="spine.worker"):
+            task = asyncio.create_task(runtime.run_forever(stop))
+            await worker.started.wait()
+            stop.set()
+            await asyncio.wait_for(task, timeout=1)
+    finally:
+        logger.disabled = previous_disabled
 
     assert caplog.records[0].reason_code == "dispatcher.shutdown_drain_timeout"
     assert "payload" not in caplog.text.lower()
@@ -180,10 +186,16 @@ def test_process_failure_log_omits_raw_exception_details(
         "create_production_outbox_worker_runtime",
         fail_with_sensitive_detail,
     )
+    logger = logging.getLogger("spine.worker")
+    previous_disabled = logger.disabled
+    logger.disabled = True
 
-    with caplog.at_level(logging.ERROR, logger="spine.worker"):
-        with pytest.raises(SystemExit):
-            runtime_module.main()
+    try:
+        with caplog.at_level(logging.ERROR, logger="spine.worker"):
+            with pytest.raises(SystemExit):
+                runtime_module.main()
+    finally:
+        logger.disabled = previous_disabled
 
     assert caplog.records[-1].reason_code == "dispatcher.process_failure"
     assert "secret-password" not in caplog.text

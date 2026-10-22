@@ -145,6 +145,16 @@ class OutboxWorkerSettings(BaseSettings):
         return self
 
 
+def _log_dispatcher_event(
+    *, level: int, message: str, reason_code: str
+) -> None:
+    """Keep bounded dispatcher diagnostics available after SDK log setup."""
+
+    logger = logging.getLogger("spine.worker")
+    logger.disabled = False
+    logger.log(level, message, extra={"reason_code": reason_code})
+
+
 class _LazyTemporalWorkflowClient:
     """Connect to Temporal only when an Ask delivery is actually claimed."""
 
@@ -873,9 +883,10 @@ class ProductionOutboxWorkerRuntime:
                 except (TimeoutError, asyncio.TimeoutError):
                     batch.cancel()
                     await asyncio.gather(batch, return_exceptions=True)
-                    logging.getLogger("spine.worker").warning(
-                        "outbox dispatcher shutdown drain exceeded its bound",
-                        extra={"reason_code": "dispatcher.shutdown_drain_timeout"},
+                    _log_dispatcher_event(
+                        level=logging.WARNING,
+                        message="outbox dispatcher shutdown drain exceeded its bound",
+                        reason_code="dispatcher.shutdown_drain_timeout",
                     )
                 finally:
                     if not batch.done():
@@ -1106,9 +1117,10 @@ def main() -> None:
     except KeyboardInterrupt:
         return
     except Exception:
-        logging.getLogger("spine.worker").error(
-            "outbox dispatcher process stopped",
-            extra={"reason_code": "dispatcher.process_failure"},
+        _log_dispatcher_event(
+            level=logging.ERROR,
+            message="outbox dispatcher process stopped",
+            reason_code="dispatcher.process_failure",
         )
         raise SystemExit(1) from None
 
