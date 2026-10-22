@@ -355,7 +355,7 @@ def test_policy_identity_digest_excludes_approval_and_is_stable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_threshold_evidence_rejects_report_not_emitted_by_production_runner() -> None:
+async def test_threshold_evidence_rejects_report_emitted_by_another_runner(monkeypatch) -> None:
     profile = ProductionRuntimeProfile(
         postgresql_major=17,
         migration_revision="20261020_issue506",
@@ -414,12 +414,31 @@ async def test_threshold_evidence_rejects_report_not_emitted_by_production_runne
         workspace_selector=UUID(int=1),
         environment_selector=UUID(int=2),
     )
+    other_runner = RealBenchmarkRunner(
+        mapping=object(),
+        readiness=object(),
+        trusted_persistence_context=object(),
+        observer=object(),
+        gold=object(),
+        pins=_runtime_binding().runtime_pins,
+        workspace_selector=UUID(int=1),
+        environment_selector=UUID(int=2),
+    )
+    monkeypatch.setattr(
+        RealBenchmarkRunner,
+        "supports_real_qualification",
+        property(lambda _runner: True),
+    )
+    report = object()
+    other_runner._last_report = report
+    assert other_runner.owns_completed_report(report)
+    assert not runner.owns_completed_report(report)
 
     with pytest.raises(ValueError, match="runner's accepted production result"):
         await build_threshold_evidence(
             trusted_runtime=trusted_runtime,
             runner=runner,
-            report=object(),
+            report=report,
             dataset_id="dataset:v1",
             runtime_scope="production",
         )
@@ -797,6 +816,22 @@ def test_serialized_approval_record_cannot_recreate_verifier_issued_evidence() -
         safety_results=_safety(),
         required_safety_gates=("hard-safety",),
         verified_approval=caller_constructed,
+    )
+
+    assert result.status == "not_approved"
+
+
+def test_modified_copy_of_approval_evidence_cannot_pass_gate() -> None:
+    policy = _policy()
+    copied_approval = _verified_approval(policy).model_copy(
+        update={"record_reference": "https://github.com/alkselsv/spine/issues/557#issuecomment-999"}
+    )
+    result = _evaluate_threshold_policy(
+        policy=policy,
+        evidence=_evidence(),
+        safety_results=_safety(),
+        required_safety_gates=("hard-safety",),
+        verified_approval=copied_approval,
     )
 
     assert result.status == "not_approved"

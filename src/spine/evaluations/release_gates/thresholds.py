@@ -201,15 +201,31 @@ class VerifiedThresholdApproval(DefinitionModel):
     )
     source_snapshot_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     _issuer: object | None = PrivateAttr(default=None)
+    _issued_payload_digest: str | None = PrivateAttr(default=None)
 
     def _issued_by_verifier(self) -> bool:
-        return self._issuer is _VERIFIED_APPROVAL_ISSUER
+        if self._issuer is not _VERIFIED_APPROVAL_ISSUER:
+            return False
+        payload = json.dumps(
+            self.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        )
+        return self._issued_payload_digest == hashlib.sha256(payload.encode("ascii")).hexdigest()
 
 
 def _issue_verified_threshold_approval(**values: object) -> VerifiedThresholdApproval:
     """Mark approval evidence issued after the trusted GitHub verification."""
     approval = VerifiedThresholdApproval(**values)
     approval._issuer = _VERIFIED_APPROVAL_ISSUER
+    payload = json.dumps(
+        approval.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    approval._issued_payload_digest = hashlib.sha256(payload.encode("ascii")).hexdigest()
     return approval
 
 
