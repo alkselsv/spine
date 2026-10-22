@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from uuid import UUID
 
 import pytest
@@ -10,6 +11,7 @@ from spine.scripts.qualification import (
     QualificationBootstrapSettings,
     build_authorization_records,
     build_context_profiles,
+    build_target_binding,
     qualification_workspace_slug,
 )
 
@@ -25,12 +27,18 @@ def settings(**overrides: object) -> QualificationBootstrapSettings:
         "workspace_b_id": UUID("50800000-0000-4000-8000-00000000000b"),
         "environment_a_id": UUID("50800000-0000-4000-8000-00000000000e"),
         "environment_b_id": UUID("50800000-0000-4000-8000-00000000000f"),
+        "authority_expires_at": datetime(2027, 1, 1, tzinfo=timezone.utc),
+        "target_reference": "deployment:source:fingerprint-v1",
+        "target_scope_reference": "scope:workspace-environment:v1",
+        "secret_provider_reference": "provider:local-env:v1",
+        "secret_reference": "secret:qualification-source:v1",
+        "database_role_reference": "postgres-role:spine-runtime:v1",
     }
     values.update(overrides)
     return QualificationBootstrapSettings(**values)
 
 
-def test_authority_records_bind_each_environment_to_exactly_one_workspace() -> None:
+def test_authority_records_cover_approved_and_denied_qualification_scenarios() -> None:
     records = build_authorization_records(settings())
 
     scopes = {
@@ -51,8 +59,28 @@ def test_authority_records_bind_each_environment_to_exactly_one_workspace() -> N
     assert {record.role for record in records.role_bindings} == {
         AuthorizationRole.ADMINISTRATOR
     }
-    assert len(records.workspace_memberships) == 2
-    assert len(records.environment_memberships) == 2
+    assert len(records.identities) == 5
+    assert len(records.alias_bindings) == 5
+    assert len(records.workspace_memberships) == 5
+    assert len(records.environment_memberships) == 5
+    assert len(records.role_bindings) == 4
+    assert len(records.qualification_bindings) == 4
+    assert sum(
+        record.status.value == "revoked"
+        for record in records.qualification_bindings
+    ) == 1
+    assert sum(
+        record.expires_at < datetime(2026, 1, 1, tzinfo=timezone.utc)
+        for record in records.qualification_bindings
+    ) == 1
+    primary_roles = [
+        record
+        for record in records.role_bindings
+        if record.canonical_human_identity_id == settings().identity_id
+    ]
+    assert [(record.workspace_id, record.environment_id) for record in primary_roles] == [
+        (settings().workspace_a_id, settings().environment_a_id)
+    ]
     change_ids = [
         record.provenance.change_id
         for group in (
@@ -83,6 +111,18 @@ def test_context_profiles_are_stable_and_scoped_to_both_environments() -> None:
         ),
     }
     assert all(item.server_approved and not item.revoked for item in first)
+
+
+def test_target_binding_pins_approved_principal_and_access_policy() -> None:
+    selected = settings()
+
+    binding = build_target_binding(selected)
+
+    assert binding.workspace_id == selected.workspace_a_id
+    assert binding.environment_id == selected.environment_a_id
+    assert binding.principal_id == selected.identity_id
+    assert binding.target_reference == "deployment:source:fingerprint-v1"
+    assert binding.access_policy_references
 
 
 @pytest.mark.parametrize("field", ["workspace_b_id", "environment_b_id"])

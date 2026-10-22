@@ -77,7 +77,9 @@ from spine.infrastructure.persistence.postgresql_authorization_mappings import (
 )
 from spine.scripts.qualification import (
     QualificationBootstrapSettings,
-    bootstrap as bootstrap_qualification,
+    QualificationVerificationSettings,
+    provision as provision_qualification,
+    verify as verify_qualification,
 )
 from tests.contracts.auth.adapter import AuthorizationDirectoryFactory
 from tests.contracts.auth.test_authorization_directory_contract import (
@@ -381,7 +383,7 @@ async def test_postgresql_unexpired_qualification_binding_allows_current_authori
     await contract_unexpired_binding(authorization_directory_factory)
 
 
-async def test_qualification_bootstrap_reuses_existing_tenant_scoped_authority(
+async def test_qualification_provisioning_is_idempotent_and_runtime_verifiable(
     authorization_database: AuthorizationDatabase,
 ) -> None:
     settings = QualificationBootstrapSettings(
@@ -396,10 +398,43 @@ async def test_qualification_bootstrap_reuses_existing_tenant_scoped_authority(
         workspace_b_id=UUID("50800000-0000-4000-8000-000000000093"),
         environment_a_id=UUID("50800000-0000-4000-8000-000000000094"),
         environment_b_id=UUID("50800000-0000-4000-8000-000000000095"),
+        authority_expires_at=datetime(2027, 1, 1, tzinfo=timezone.utc),
+        target_reference="deployment:source:integration-v1",
+        target_scope_reference="scope:workspace-environment:integration-v1",
+        secret_provider_reference="provider:integration:v1",
+        secret_reference="secret:qualification-source:integration-v1",
+        database_role_reference="postgres-role:spine-runtime:integration-v1",
     )
 
-    await bootstrap_qualification(settings)
-    await bootstrap_qualification(settings)
+    await provision_qualification(settings)
+    await provision_qualification(settings)
+    verification = QualificationVerificationSettings(
+            deployment_mode="development",
+            runtime_database_url=(
+                authorization_database.runtime_engine.url.render_as_string(
+                    hide_password=False
+                )
+            ),
+            identity_id=settings.identity_id,
+            authentication_alias_issuer=settings.authentication_alias_issuer,
+            authentication_alias_subject=settings.authentication_alias_subject,
+            workspace_a_id=settings.workspace_a_id,
+            workspace_b_id=settings.workspace_b_id,
+            environment_a_id=settings.environment_a_id,
+            environment_b_id=settings.environment_b_id,
+            target_reference=settings.target_reference,
+            target_scope_reference=settings.target_scope_reference,
+            secret_provider_reference=settings.secret_provider_reference,
+            secret_reference=settings.secret_reference,
+            database_role_reference=settings.database_role_reference,
+        )
+    await verify_qualification(verification)
+    with pytest.raises(RuntimeError, match="target binding does not match"):
+        await verify_qualification(
+            verification.model_copy(
+                update={"target_reference": "deployment:source:unexpected-v2"}
+            )
+        )
 
     async with authorization_database.migration_engine.connect() as connection:
         identity_count = await connection.scalar(
@@ -411,6 +446,36 @@ async def test_qualification_bootstrap_reuses_existing_tenant_scoped_authority(
         )
 
     assert identity_count == 1
+
+
+async def test_qualification_verifier_fails_closed_without_provisioning(
+    authorization_database: AuthorizationDatabase,
+) -> None:
+    with pytest.raises(RuntimeError, match="authority does not match"):
+        await verify_qualification(
+            QualificationVerificationSettings(
+                deployment_mode="development",
+                runtime_database_url=(
+                    authorization_database.runtime_engine.url.render_as_string(
+                        hide_password=False
+                    )
+                ),
+                identity_id=UUID("50800000-0000-4000-8000-0000000000a1"),
+                authentication_alias_issuer=(
+                    "https://qualification-missing.spine.invalid"
+                ),
+                authentication_alias_subject="qualification-missing-operator",
+                workspace_a_id=UUID("50800000-0000-4000-8000-0000000000a2"),
+                workspace_b_id=UUID("50800000-0000-4000-8000-0000000000a3"),
+                environment_a_id=UUID("50800000-0000-4000-8000-0000000000a4"),
+                environment_b_id=UUID("50800000-0000-4000-8000-0000000000a5"),
+                target_reference="deployment:source:missing-v1",
+                target_scope_reference="scope:workspace-environment:missing-v1",
+                secret_provider_reference="provider:missing:v1",
+                secret_reference="secret:qualification-source:missing-v1",
+                database_role_reference="postgres-role:spine-runtime:missing-v1",
+            )
+        )
 
 
 @pytest.mark.parametrize(

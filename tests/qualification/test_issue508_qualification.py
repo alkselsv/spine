@@ -166,7 +166,8 @@ def test_issue508_compose_profile_is_reproducible_and_fail_closed() -> None:
     for service in (
         "postgres:",
         "database-bootstrap:",
-        "qualification-authority-bootstrap:",
+        "qualification-authority-provisioner:",
+        "qualification-authority-verifier:",
         "temporal:",
         "temporal-ui:",
         "neo4j:",
@@ -198,7 +199,15 @@ def test_issue508_compose_profile_is_reproducible_and_fail_closed() -> None:
     assert "SPINE_WORKER_SERVICE_PRINCIPAL_ID: ${SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID}" not in compose
     assert "SPINE_QA_WORKER_SERVICE_PRINCIPAL_ID: ${SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID}" not in compose
     assert 'CMD ["spine-api"]' in python_image
-    assert "spine-qualification-bootstrap" in compose
+    assert "spine-qualification-bootstrap" not in compose
+    assert "profiles: [\"qualification-provisioning\"]" in compose
+    assert "spine-qualification-provision" in compose
+    assert "spine-qualification-verify" in compose
+    verifier = compose.split("  qualification-authority-verifier:", 1)[1].split(
+        "  original-storage-bootstrap:", 1
+    )[0]
+    assert "SPINE_QUALIFICATION_RUNTIME_DATABASE_URL" in verifier
+    assert "SPINE_QUALIFICATION_MIGRATION_DATABASE_URL" not in verifier
     assert 'command: ["spine-qa-worker"]' in compose
     assert 'SPINE_QA_WORKER_TEMPORAL_TASK_QUEUE: spine-r1-qa' in compose
     assert "SPINE_API_MODEL_PROFILE_ID: ${SPINE_QA_MODEL_PROFILE_ID:?" in compose

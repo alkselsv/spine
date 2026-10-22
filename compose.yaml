@@ -83,7 +83,8 @@ services:
       - spine-db-bootstrap && spine-db-migrate
     restart: "no"
 
-  qualification-authority-bootstrap:
+  qualification-authority-provisioner:
+    profiles: ["qualification-provisioning"]
     build:
       context: .
       dockerfile: Dockerfile
@@ -100,7 +101,38 @@ services:
       SPINE_QUALIFICATION_WORKSPACE_B_ID: ${SPINE_E2E_WORKSPACE_B_ID}
       SPINE_QUALIFICATION_ENVIRONMENT_A_ID: ${SPINE_E2E_ENVIRONMENT_A_ID}
       SPINE_QUALIFICATION_ENVIRONMENT_B_ID: ${SPINE_E2E_ENVIRONMENT_B_ID}
-    command: ["spine-qualification-bootstrap"]
+      SPINE_QUALIFICATION_AUTHORITY_EXPIRES_AT: ${SPINE_QUALIFICATION_AUTHORITY_EXPIRES_AT:?set an explicit UTC hard expiry}
+      SPINE_QUALIFICATION_TARGET_REFERENCE: ${SPINE_QUALIFICATION_TARGET_REFERENCE:?set the exact SOURCE deployment reference}
+      SPINE_QUALIFICATION_TARGET_SCOPE_REFERENCE: ${SPINE_QUALIFICATION_TARGET_SCOPE_REFERENCE:?set the exact SOURCE scope reference}
+      SPINE_QUALIFICATION_SECRET_PROVIDER_REFERENCE: ${SPINE_QUALIFICATION_SECRET_PROVIDER_REFERENCE:?set the external secret provider reference}
+      SPINE_QUALIFICATION_SECRET_REFERENCE: ${SPINE_QUALIFICATION_SECRET_REFERENCE:?set the external secret reference}
+      SPINE_QUALIFICATION_DATABASE_ROLE_REFERENCE: ${SPINE_QUALIFICATION_DATABASE_ROLE_REFERENCE:-postgres-role:spine-runtime:v1}
+    command: ["spine-qualification-provision"]
+    restart: "no"
+
+  qualification-authority-verifier:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      database-bootstrap:
+        condition: service_completed_successfully
+    environment:
+      SPINE_QUALIFICATION_DEPLOYMENT_MODE: development
+      SPINE_QUALIFICATION_RUNTIME_DATABASE_URL: postgresql+psycopg://spine_runtime:${SPINE_DATABASE_RUNTIME_PASSWORD}@postgres:5432/spine
+      SPINE_QUALIFICATION_IDENTITY_ID: ${SPINE_E2E_IDENTITY_ID}
+      SPINE_QUALIFICATION_AUTHENTICATION_ALIAS_ISSUER: ${SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_ISSUER}
+      SPINE_QUALIFICATION_AUTHENTICATION_ALIAS_SUBJECT: ${SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_SUBJECT}
+      SPINE_QUALIFICATION_WORKSPACE_A_ID: ${SPINE_E2E_WORKSPACE_A_ID}
+      SPINE_QUALIFICATION_WORKSPACE_B_ID: ${SPINE_E2E_WORKSPACE_B_ID}
+      SPINE_QUALIFICATION_ENVIRONMENT_A_ID: ${SPINE_E2E_ENVIRONMENT_A_ID}
+      SPINE_QUALIFICATION_ENVIRONMENT_B_ID: ${SPINE_E2E_ENVIRONMENT_B_ID}
+      SPINE_QUALIFICATION_TARGET_REFERENCE: ${SPINE_QUALIFICATION_TARGET_REFERENCE:?set the exact SOURCE deployment reference}
+      SPINE_QUALIFICATION_TARGET_SCOPE_REFERENCE: ${SPINE_QUALIFICATION_TARGET_SCOPE_REFERENCE:?set the exact SOURCE scope reference}
+      SPINE_QUALIFICATION_SECRET_PROVIDER_REFERENCE: ${SPINE_QUALIFICATION_SECRET_PROVIDER_REFERENCE:?set the external secret provider reference}
+      SPINE_QUALIFICATION_SECRET_REFERENCE: ${SPINE_QUALIFICATION_SECRET_REFERENCE:?set the external secret reference}
+      SPINE_QUALIFICATION_DATABASE_ROLE_REFERENCE: ${SPINE_QUALIFICATION_DATABASE_ROLE_REFERENCE:-postgres-role:spine-runtime:v1}
+    command: ["spine-qualification-verify"]
     restart: "no"
 
   original-storage-bootstrap:
@@ -166,7 +198,7 @@ services:
     depends_on:
       database-bootstrap:
         condition: service_completed_successfully
-      qualification-authority-bootstrap:
+      qualification-authority-verifier:
         condition: service_completed_successfully
       original-storage-bootstrap:
         condition: service_completed_successfully
@@ -246,7 +278,7 @@ services:
     depends_on:
       database-bootstrap:
         condition: service_completed_successfully
-      qualification-authority-bootstrap:
+      qualification-authority-verifier:
         condition: service_completed_successfully
       temporal:
         condition: service_healthy

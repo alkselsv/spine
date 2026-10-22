@@ -31,6 +31,26 @@ the declared isolated target. Supply the lease, handler and shutdown bounds as
 one profile; startup rejects a handler that reaches the lease or a shutdown
 bound that exceeds it.
 
+Provision the disposable qualification authority through the explicit operator
+profile before starting the runtime:
+
+```bash
+docker compose -p spine560 --profile qualification-provisioning run --rm \
+  qualification-authority-provisioner
+docker compose -p spine560 up --build --detach --wait
+```
+
+The provisioning command uses the migration-owner credential, creates the
+versioned synthetic allow/deny identities, hard-expiring Qualification Authority
+Bindings, one exact SOURCE Qualification Target Binding and its synthetic
+metadata-only AccessPolicy reference, and is idempotent for the same inputs. It
+is never a dependency of API or worker startup. Default startup runs only
+`qualification-authority-verifier` through the runtime database role and fails
+closed when records are missing, expired, revoked or do not match the exact
+target references. Set `SPINE_QUALIFICATION_AUTHORITY_EXPIRES_AT` explicitly for
+each run; changing authority or target inputs requires a fresh isolated Compose
+project rather than mutating immutable fixture history.
+
 The worker exposes content-free `/health/live` and `/health/ready` endpoints on
 port 8081. Readiness separately reports PostgreSQL, Temporal reachability,
 worker polling and whether a real application execution has completed in this
@@ -45,8 +65,9 @@ is `development`; the profile records this mode and API startup rejects a
 mismatch. Ingestion's service-principal alias is configured separately from the
 human authentication provider.
 
-This runtime code does not provision identities or grants, approve a provider,
-make paid provider calls during startup, or qualify a physical deployment. The
+This runtime startup does not provision identities or grants, approve a provider,
+make paid provider calls, or qualify a physical deployment. The separate
+operator profile is the only local path that provisions qualification fixtures. The
 existing real Temporal/PostgreSQL integration suite remains the evidence for
 canonical terminal completion; deployment-specific grants and credentials must
 be supplied by their owners.
