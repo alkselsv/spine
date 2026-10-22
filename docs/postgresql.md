@@ -41,7 +41,7 @@ SPINE_DATABASE_CONNECT_TIMEOUT_SECONDS=10
 SPINE_DATABASE_POOL_PRE_PING=true
 SPINE_DATABASE_TRANSACTION_RETRY_LIMIT=3
 
-SPINE_DISPATCHER_DATABASE_URL=postgresql+psycopg://dispatcher_user:secret@db/spine
+SPINE_DISPATCHER_DATABASE_URL=postgresql+psycopg://spine_dispatcher:secret@db/spine
 SPINE_DISPATCHER_DATABASE_DISPATCHER_ROLE=spine_dispatcher
 
 SPINE_MIGRATION_DATABASE_URL=postgresql+psycopg://migration_owner:secret@db/spine

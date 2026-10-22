@@ -1593,6 +1593,18 @@ async def test_dispatcher_role_is_limited_to_outbox_delivery_tables(
     assert function_security.prosecdef is True
     assert function_security.proconfig == ["search_path=pg_catalog, spine"]
 
+    for statement in (
+        "SELECT id FROM spine.workspaces",
+        "INSERT INTO spine.workspaces (id, slug, display_name) "
+        "VALUES ('00000000-0000-0000-0000-000000000001', 'outside', 'outside')",
+        "SELECT * FROM spine.current_access_policies",
+    ):
+        async with delivery_database.dispatcher_engine.connect() as connection:
+            assert await connection.scalar(text("SELECT current_user")) == DISPATCHER_ROLE
+            await connection.execute(text("SET row_security = off"))
+            with pytest.raises(ProgrammingError):
+                await connection.execute(text(statement))
+
 
 async def test_runtime_delivery_reads_are_isolated_between_workspaces(
     postgresql_delivery_adapter: DeliveryPersistenceAdapter,

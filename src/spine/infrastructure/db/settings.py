@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic.fields import FieldInfo
@@ -157,6 +157,15 @@ class DispatcherDatabaseSettings(_DatabaseSettings):
         if not POSTGRESQL_IDENTIFIER.fullmatch(value):
             raise ValueError("dispatcher role must be a safe lowercase identifier")
         return value
+
+    @model_validator(mode="after")
+    def _dispatcher_url_uses_dispatcher_role(self) -> DispatcherDatabaseSettings:
+        username = urlsplit(self.url.get_secret_value()).username
+        if username is None or unquote(username) != self.dispatcher_role:
+            raise ValueError(
+                "dispatcher database URL must authenticate as dispatcher role"
+            )
+        return self
 
 
 class MigrationDatabaseSettings(_DatabaseSettings):

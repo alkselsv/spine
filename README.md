@@ -49,8 +49,8 @@ Spine развивается вертикальными релизами в фи
 - immutable original-storage contracts и filesystem adapter;
 - deployable ingestion composition: PostgreSQL upload ledger, validation,
   parsing, canonical acceptance, initial access policy and transactional outbox;
-- deployable outbox worker for canonical/processing/policy notifications and
-  provider-backed Cognee projection requests;
+- bounded outbox dispatcher for durable Ask admission/cancellation and
+  provider-backed Cognee projection/recovery requests;
 - `SourceObject`/`SourceRevision`, admission decisions, ingestion ledger и
   canonical source/projection lifecycle;
 - versioned ingestion PDF, DOCX, XLSX, Markdown и text через `/api/v1`, включая
