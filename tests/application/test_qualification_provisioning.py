@@ -212,6 +212,48 @@ async def test_provision_is_inactive_first_atomic_and_idempotent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_qualification_audit_is_content_free_and_correlated() -> None:
+    store = InMemoryQualificationProvisioningStore(
+        initial_generations={(WORKSPACE_ID, ENVIRONMENT_ID): 7}
+    )
+    command = request(
+        QualificationOperation.PROVISION,
+        operation_id=UUID("90000000-0000-0000-0000-000000000014"),
+    )
+
+    result = await service(store, SecretProvider()).execute(
+        command, invocation_source=QualificationInvocationSource.OPERATOR_COMMAND
+    )
+
+    audit = store.audits[0]
+    serialized_audit = audit.model_dump_json()
+    assert result.audit_reference is not None
+    assert result.audit_reference.value == f"audit:{audit.event_id.hex}"
+    assert audit.operation_id == command.operation_id
+    assert audit.binding_id == command.profile.binding.binding_id
+    assert (audit.generation_before, audit.generation_after) == (7, 8)
+    assert {
+        "event_id",
+        "operation_id",
+        "operation",
+        "transition",
+        "profile_id",
+        "profile_version",
+        "profile_digest",
+        "target_reference",
+        "operator_reference",
+        "approval_reference",
+        "binding_id",
+        "generation_before",
+        "generation_after",
+        "reason_code",
+    } == set(type(audit).model_fields)
+    assert "secret:source" not in serialized_audit
+    assert "synthetic-secret-value" not in serialized_audit
+    assert "protected qualification content" not in serialized_audit
+
+
+@pytest.mark.asyncio
 async def test_same_operation_id_with_changed_authority_inputs_conflicts() -> None:
     store = InMemoryQualificationProvisioningStore()
     secrets = SecretProvider()
