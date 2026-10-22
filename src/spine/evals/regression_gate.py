@@ -58,7 +58,7 @@ EXPECTED_EVALUATOR_VERSIONS: Final[dict[str, str]] = {
 }
 R1_BASELINE_REPORT_PATH: Final[Path] = Path("docs/qualification/r1-baseline-report.json")
 R1_BASELINE_REPORT_SHA256: Final[str] = (
-    "bf51b00fea5013383b4293657604a01efc1c40bd0ca3f0d0ad706adda2e047c0"
+    "50964e810416fcef6857be1ecf13124fea0d053bbc0511a4980361ff122381e9"
 )
 R1_BASELINE_REPORT_ID: Final[str] = "f05c7bcd-5702-5d2c-a9f2-0dd86c2ba7f6"
 _HARD_EVALUATOR_KEYS = frozenset(
