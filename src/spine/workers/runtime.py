@@ -1,4 +1,4 @@
-"""Executable PostgreSQL/Cognee outbox worker composition."""
+"""Executable bounded PostgreSQL outbox dispatcher composition."""
 
 from __future__ import annotations
 
@@ -6,13 +6,14 @@ import asyncio
 import hashlib
 import json
 import logging
+import signal
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from spine.application.diagnostics import (
     AuditEventRegistry,
@@ -20,17 +21,9 @@ from spine.application.diagnostics import (
     DiagnosticEventRegistry,
 )
 from spine.application.document_ingestion import (
-    PROCESSING_REQUEST_EVENT_TYPE,
-    PROCESSING_REQUEST_SCHEMA_VERSION,
-    PROJECTION_REQUEST_EVENT_TYPE,
-    PROJECTION_REQUEST_SCHEMA_VERSION,
     ProjectionRequestPayload,
 )
 from spine.application.outbox import OutboxConsumerSuccess
-from spine.application.persistence.canonical import (
-    CANONICAL_ACCEPTANCE_OUTBOX_EVENT_TYPE,
-    CANONICAL_ACCEPTANCE_OUTBOX_SCHEMA_VERSION,
-)
 from spine.application.persistence.boundary import CanonicalBoundaryCaptureCommand
 from spine.application.persistence.context import (
     EnvironmentScope,
@@ -41,8 +34,6 @@ from spine.application.persistence.delivery import OutboxDeliveryRouteRegistry
 from spine.application.persistence.outbox import OutboxEventRegistry, OutboxIntent
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.persistence.projection import (
-    PROJECTION_ACTIVATED_OUTBOX_EVENT_TYPE,
-    PROJECTION_OUTBOX_SCHEMA_VERSION,
     PROJECTION_RECEIPT_OPERATION,
     ProjectionActivationCommand,
     ProjectionActivationCommitted,
@@ -72,8 +63,8 @@ from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.persistence.parsed_artifacts import PostgreSQLParsedArtifactRepository
 from spine.infrastructure.persistence.postgresql import PostgreSQLPersistence
 from spine.infrastructure.persistence.projection_composition import (
-    PROJECTION_REQUEST_CONSUMER_NAME,
     build_postgresql_cognee_projection_request_binding,
+    register_projection_delivery_routes,
 )
 from spine.memory.cognee.context_projection import CogneeContextProjection
 from spine.memory.cognee.indexing import CogneeChunkProjectionStore
@@ -124,17 +115,44 @@ class OutboxWorkerSettings(BaseSettings):
     )
 
     service_principal_id: UUID
-    identity: str = Field(default="projection-worker", pattern=r"^[a-z][a-z0-9_.:-]{0,63}$")
+    identity: str = Field(
+        default="outbox-dispatcher", pattern=r"^[a-z][a-z0-9_.:-]{0,63}$"
+    )
     batch_size: int = Field(default=20, ge=1, le=1000)
     poll_interval_seconds: float = Field(default=1.0, gt=0, le=60)
     lease_seconds: float = Field(default=60.0, gt=1, le=3600)
     handler_timeout_seconds: float = Field(default=45.0, gt=0, le=3599)
+    shutdown_timeout_seconds: float = Field(default=50.0, gt=0, le=3600)
+    retry_initial_delay_seconds: float = Field(default=2.0, gt=0, le=300)
+    retry_maximum_delay_seconds: float = Field(default=30.0, gt=0, le=3600)
     maximum_attempts: int = Field(default=5, ge=1, le=100)
-    temporal_address: str = Field(default="temporal:7233", min_length=1, max_length=255)
+    temporal_address: str = Field(
+        default="temporal:7233", min_length=1, max_length=255
+    )
     temporal_namespace: str = Field(default="default", min_length=1, max_length=255)
     temporal_task_queue: str = Field(
         default="spine-r1-qa", min_length=1, max_length=255
     )
+
+    @model_validator(mode="after")
+    def validate_dispatch_bounds(self) -> OutboxWorkerSettings:
+        if self.handler_timeout_seconds >= self.lease_seconds:
+            raise ValueError("handler timeout must be shorter than the delivery lease")
+        if self.shutdown_timeout_seconds > self.lease_seconds:
+            raise ValueError("shutdown timeout must not exceed the delivery lease")
+        if self.retry_initial_delay_seconds > self.retry_maximum_delay_seconds:
+            raise ValueError("initial retry delay must not exceed its maximum")
+        return self
+
+
+def _log_dispatcher_event(
+    *, level: int, message: str, reason_code: str
+) -> None:
+    """Keep bounded dispatcher diagnostics available after SDK log setup."""
+
+    logger = logging.getLogger("spine.worker")
+    logger.disabled = False
+    logger.log(level, message, extra={"reason_code": reason_code})
 
 
 class _LazyTemporalWorkflowClient:
@@ -172,18 +190,6 @@ class _LazyTemporalWorkflowClient:
 
     async def request_cancellation(self, **kwargs):
         return await (await self._resolved()).request_cancellation(**kwargs)
-
-
-class _AcknowledgingConsumer:
-    """Acknowledge a committed notification whose synchronous effect is complete."""
-
-    async def consume(
-        self,
-        intent: OutboxIntent,
-        diagnostic_context: DiagnosticContext,
-    ) -> OutboxConsumerSuccess:
-        del intent
-        return OutboxConsumerSuccess(diagnostic_context=diagnostic_context)
 
 
 @dataclass(frozen=True, slots=True)
@@ -857,15 +863,57 @@ class ProductionOutboxWorkerRuntime:
             worker_identity=self.settings.identity,
         )
 
-    async def run_forever(self) -> None:
-        while True:
-            report = await self.run_once()
+    async def run_forever(self, stop_event: asyncio.Event | None = None) -> None:
+        """Poll until stopped; finish a claimed batch within the drain bound."""
+
+        stop = stop_event or asyncio.Event()
+        while not stop.is_set():
+            batch = asyncio.create_task(self.run_once())
+            stop_requested = asyncio.create_task(stop.wait())
+            done, _ = await asyncio.wait(
+                (batch, stop_requested),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if stop_requested in done:
+                try:
+                    await asyncio.wait_for(
+                        batch,
+                        timeout=self.settings.shutdown_timeout_seconds,
+                    )
+                except (TimeoutError, asyncio.TimeoutError):
+                    batch.cancel()
+                    await asyncio.gather(batch, return_exceptions=True)
+                    _log_dispatcher_event(
+                        level=logging.WARNING,
+                        message="outbox dispatcher shutdown drain exceeded its bound",
+                        reason_code="dispatcher.shutdown_drain_timeout",
+                    )
+                finally:
+                    if not batch.done():
+                        batch.cancel()
+                        await asyncio.gather(batch, return_exceptions=True)
+                return
+
+            stop_requested.cancel()
+            await asyncio.gather(stop_requested, return_exceptions=True)
+            report = await batch
             if report.claimed == 0:
-                await asyncio.sleep(self.settings.poll_interval_seconds)
+                try:
+                    await asyncio.wait_for(
+                        stop.wait(),
+                        timeout=self.settings.poll_interval_seconds,
+                    )
+                except (TimeoutError, asyncio.TimeoutError):
+                    pass
 
     async def close(self) -> None:
-        await self.runtime_engine.dispose()  # type: ignore[attr-defined]
-        await self.dispatcher_engine.dispose()  # type: ignore[attr-defined]
+        results = await asyncio.gather(
+            self.runtime_engine.dispose(),  # type: ignore[attr-defined]
+            self.dispatcher_engine.dispose(),  # type: ignore[attr-defined]
+            return_exceptions=True,
+        )
+        if any(isinstance(result, BaseException) for result in results):
+            raise RuntimeError("outbox dispatcher resource shutdown failed") from None
 
 
 def create_production_outbox_worker_runtime(
@@ -877,25 +925,8 @@ def create_production_outbox_worker_runtime(
     runtime_db = runtime_database or RuntimeDatabaseSettings()
     dispatcher_db = dispatcher_database or DispatcherDatabaseSettings()
     settings = worker_settings or OutboxWorkerSettings()
-    connect_args = {
-        "connect_timeout": runtime_db.connect_timeout_seconds,
-        "options": POSTGRESQL_SEARCH_PATH_OPTIONS,
-    }
-    runtime_engine = create_async_engine(
-        runtime_db.url.get_secret_value(),
-        pool_pre_ping=True,
-        connect_args=connect_args,
-        hide_parameters=True,
-    )
-    dispatcher_engine = create_async_engine(
-        dispatcher_db.url.get_secret_value(),
-        pool_pre_ping=True,
-        connect_args={
-            "connect_timeout": dispatcher_db.connect_timeout_seconds,
-            "options": POSTGRESQL_SEARCH_PATH_OPTIONS,
-        },
-        hide_parameters=True,
-    )
+    runtime_engine = _create_outbox_database_engine(runtime_db)
+    dispatcher_engine = _create_outbox_database_engine(dispatcher_db)
     runtime_sessions = async_sessionmaker(runtime_engine, expire_on_commit=False)
     dispatcher_sessions = async_sessionmaker(dispatcher_engine, expire_on_commit=False)
     boundary = TrustedContextBoundary.create()
@@ -1005,31 +1036,7 @@ def create_production_outbox_worker_runtime(
         ),
     )
     routes = OutboxDeliveryRouteRegistry(version="issue508.worker.v1")
-    routes.register(
-        event_type=CANONICAL_ACCEPTANCE_OUTBOX_EVENT_TYPE,
-        schema_version=CANONICAL_ACCEPTANCE_OUTBOX_SCHEMA_VERSION,
-        consumer_name="canonical_notification",
-    )
-    routes.register(
-        event_type=PROCESSING_REQUEST_EVENT_TYPE,
-        schema_version=PROCESSING_REQUEST_SCHEMA_VERSION,
-        consumer_name="processing_notification",
-    )
-    routes.register(
-        event_type="access_policy.initial.activated",
-        schema_version=1,
-        consumer_name="policy_notification",
-    )
-    routes.register(
-        event_type=PROJECTION_REQUEST_EVENT_TYPE,
-        schema_version=PROJECTION_REQUEST_SCHEMA_VERSION,
-        consumer_name=PROJECTION_REQUEST_CONSUMER_NAME,
-    )
-    routes.register(
-        event_type=PROJECTION_ACTIVATED_OUTBOX_EVENT_TYPE,
-        schema_version=PROJECTION_OUTBOX_SCHEMA_VERSION,
-        consumer_name="projection_activation_notification",
-    )
+    register_projection_delivery_routes(routes)
     register_ask_admission_delivery_route(routes)
     routes.seal()
     repository = PostgreSQLOutboxDeliveryRepository(
@@ -1038,15 +1045,10 @@ def create_production_outbox_worker_runtime(
         delivery_routes=routes,
         audit_events=audit_events,
     )
-    acknowledging = _AcknowledgingConsumer()
     temporal_client = _LazyTemporalWorkflowClient(settings)
     worker = create_outbox_worker(
         repository=repository,
         consumer_bindings=(
-            OutboxConsumerBinding("canonical_notification", acknowledging),
-            OutboxConsumerBinding("processing_notification", acknowledging),
-            OutboxConsumerBinding("policy_notification", acknowledging),
-            OutboxConsumerBinding("projection_activation_notification", acknowledging),
             projection_binding,
             build_ask_admission_delivery_binding(temporal_client),
             build_ask_cancellation_delivery_binding(temporal_client),
@@ -1057,8 +1059,15 @@ def create_production_outbox_worker_runtime(
         service_principal_id=settings.service_principal_id,
         clock=lambda: datetime.now(timezone.utc),
         audit_event_id_source=uuid4,
-        retry_delay=lambda attempt: timedelta(seconds=min(2**attempt, 30)),
-        maximum_retry_delay=timedelta(seconds=30),
+        retry_delay=lambda attempt: timedelta(
+            seconds=min(
+                settings.retry_initial_delay_seconds * 2 ** max(attempt - 1, 0),
+                settings.retry_maximum_delay_seconds,
+            )
+        ),
+        maximum_retry_delay=timedelta(
+            seconds=settings.retry_maximum_delay_seconds
+        ),
         lease_duration=timedelta(seconds=settings.lease_seconds),
         handler_timeout=timedelta(seconds=settings.handler_timeout_seconds),
         maximum_attempts=settings.maximum_attempts,
@@ -1071,16 +1080,49 @@ def create_production_outbox_worker_runtime(
     )
 
 
+def _create_outbox_database_engine(
+    settings: RuntimeDatabaseSettings | DispatcherDatabaseSettings,
+) -> AsyncEngine:
+    return create_async_engine(
+        settings.url.get_secret_value(),
+        pool_size=settings.pool_size,
+        max_overflow=settings.max_overflow,
+        pool_timeout=settings.pool_timeout_seconds,
+        pool_pre_ping=settings.pool_pre_ping,
+        pool_reset_on_return="rollback",
+        isolation_level="READ COMMITTED",
+        connect_args={
+            "connect_timeout": settings.connect_timeout_seconds,
+            "options": POSTGRESQL_SEARCH_PATH_OPTIONS,
+        },
+        hide_parameters=True,
+    )
+
+
 async def _run() -> None:
     runtime = create_production_outbox_worker_runtime()
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
     try:
-        await runtime.run_forever()
+        for termination_signal in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(termination_signal, stop.set)
+        await runtime.run_forever(stop)
     finally:
         await runtime.close()
 
 
 def main() -> None:
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        return
+    except Exception:
+        _log_dispatcher_event(
+            level=logging.ERROR,
+            message="outbox dispatcher process stopped",
+            reason_code="dispatcher.process_failure",
+        )
+        raise SystemExit(1) from None
 
 
 __all__ = [

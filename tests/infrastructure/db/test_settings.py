@@ -12,7 +12,7 @@ from spine.infrastructure.db.settings import (
 )
 
 RUNTIME_URL = "postgresql+psycopg://runtime_user:runtime_secret@db/runtime"
-DISPATCHER_URL = "postgresql+psycopg://dispatcher_user:dispatcher_secret@db/runtime"
+DISPATCHER_URL = "postgresql+psycopg://spine_dispatcher:dispatcher_secret@db/runtime"
 MIGRATION_URL = "postgresql+psycopg://migration_user:migration_secret@db/migration"
 TEST_URL = "postgresql+psycopg://test_user:test_secret@db/spine_test_explicit"
 OPERATOR_URL = "postgresql+psycopg://operator:operator_secret@db/postgres"
@@ -59,6 +59,19 @@ def test_dispatcher_settings_use_a_separate_bounded_role_surface() -> None:
             url=DISPATCHER_URL,
             dispatcher_role='unsafe"role',
         )
+
+
+def test_dispatcher_settings_reject_a_database_login_outside_its_role() -> None:
+    with pytest.raises(
+        ValidationError, match="authenticate as dispatcher role"
+    ) as error:
+        DispatcherDatabaseSettings(
+            url="postgresql+psycopg://admin:secret@db/runtime",
+            dispatcher_role="spine_dispatcher",
+        )
+
+    assert "secret" not in error.value.json()
+    assert "admin" not in error.value.json()
 
 
 def test_database_settings_representations_redact_credentials() -> None:

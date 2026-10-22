@@ -70,6 +70,8 @@ from spine.infrastructure.persistence.projection_composition import (
     PROJECTION_REQUEST_CONSUMER_NAME,
     register_projection_delivery_routes,
 )
+from spine.workers import OutboxConsumerBinding, create_outbox_worker
+from spine.workers.runtime import OutboxWorkerSettings, ProductionOutboxWorkerRuntime
 from tests.contracts.persistence.adapter import DeliveryPersistenceAdapter
 from tests.contracts.persistence.ids import synthetic_uuid
 from tests.contracts.persistence.outbox_events import create_outbox_event_registry
@@ -511,6 +513,121 @@ async def test_postgresql_expired_lease_rejects_stale_worker(
     postgresql_delivery_adapter: DeliveryPersistenceAdapter,
 ) -> None:
     await contract_reclaim(postgresql_delivery_adapter)
+
+
+async def test_postgresql_interrupted_dispatch_reclaims_after_lease_expiry(
+    postgresql_delivery_adapter: DeliveryPersistenceAdapter,
+) -> None:
+    adapter = postgresql_delivery_adapter
+    workspace_id = synthetic_uuid(6901)
+    event_id = synthetic_uuid(6902)
+    context = adapter.workspace_context(workspace_id)
+    async with adapter.uow_factory(context) as uow:
+        await uow.workspaces.add(workspace(workspace_id))
+        await uow.outbox.append(
+            intent(
+                adapter,
+                workspace_id=workspace_id,
+                event_id=event_id,
+                trace_id=context.trace_id,
+                producer_deduplication_id=None,
+            )
+        )
+        await uow.commit()
+
+    claimed_at = datetime(2026, 10, 22, 9, tzinfo=timezone.utc)
+    consumer_started = asyncio.Event()
+    consumer_cancelled = asyncio.Event()
+    logical_effects: set[UUID] = set()
+    consumer_calls: list[UUID] = []
+
+    class IdempotentConsumer:
+        async def consume(
+            self,
+            outbox_intent: OutboxIntent,
+            diagnostic_context: DiagnosticContext,
+        ) -> OutboxConsumerSuccess:
+            assert outbox_intent.event_id == event_id
+            consumer_calls.append(event_id)
+            if event_id not in logical_effects:
+                logical_effects.add(event_id)
+                consumer_started.set()
+                try:
+                    await asyncio.Future()
+                except asyncio.CancelledError:
+                    consumer_cancelled.set()
+                    raise
+            return OutboxConsumerSuccess(diagnostic_context=diagnostic_context)
+
+    diagnostic_events = DiagnosticEventRegistry.with_default_families()
+    clock_now = [claimed_at]
+    diagnostic_sink = RecordingDiagnosticSink(diagnostic_events)
+
+    def build_worker():
+        return create_outbox_worker(
+            repository=adapter.delivery_repository,
+            consumer_bindings=(
+                OutboxConsumerBinding(
+                    consumer_name="workspace_projection",
+                    consumer=IdempotentConsumer(),
+                ),
+            ),
+            audit_events=adapter.audit_events,
+            diagnostic_events=diagnostic_events,
+            diagnostic_sink=diagnostic_sink,
+            service_principal_id=synthetic_uuid(6903),
+            clock=lambda: clock_now[0],
+            audit_event_id_source=lambda: synthetic_uuid(6904),
+            retry_delay=lambda attempt: timedelta(seconds=attempt),
+            maximum_retry_delay=timedelta(minutes=5),
+            lease_duration=timedelta(seconds=5),
+            handler_timeout=timedelta(seconds=4),
+            maximum_attempts=3,
+        )
+
+    worker = build_worker()
+
+    class DisposableEngine:
+        async def dispose(self) -> None:
+            return None
+
+    runtime = ProductionOutboxWorkerRuntime(
+        worker=worker,
+        settings=OutboxWorkerSettings(
+            service_principal_id=synthetic_uuid(6903),
+            lease_seconds=5,
+            handler_timeout_seconds=4,
+            shutdown_timeout_seconds=0.01,
+        ),
+        runtime_engine=DisposableEngine(),
+        dispatcher_engine=DisposableEngine(),
+    )
+    stop = asyncio.Event()
+    task = asyncio.create_task(runtime.run_forever(stop))
+    await asyncio.wait_for(consumer_started.wait(), timeout=1)
+    stop.set()
+    await asyncio.wait_for(task, timeout=1)
+    await runtime.close()
+
+    assert consumer_cancelled.is_set()
+    interrupted = await adapter.delivery_repository.resolve(event_id)
+    assert interrupted is not None
+    assert interrupted.status.value == "in_flight"
+    assert interrupted.attempt_count == 1
+
+    clock_now[0] = claimed_at + timedelta(seconds=6)
+    restarted_worker = build_worker()
+    restarted_report = await restarted_worker.dispatch_batch(
+        limit=1, worker_identity="restarted_dispatcher"
+    )
+    delivered = await adapter.delivery_repository.resolve(event_id)
+
+    assert restarted_report.delivered == 1
+    assert delivered is not None
+    assert delivered.status.value == "delivered"
+    assert delivered.attempt_count == 2
+    assert consumer_calls == [event_id, event_id]
+    assert logical_effects == {event_id}
 
 
 async def test_postgresql_unknown_route_is_quarantined(
@@ -1593,6 +1710,18 @@ async def test_dispatcher_role_is_limited_to_outbox_delivery_tables(
     assert set(routine_privileges) == {("finalize_outbox_delivery", "EXECUTE")}
     assert function_security.prosecdef is True
     assert function_security.proconfig == ["search_path=pg_catalog, spine"]
+
+    for statement in (
+        "SELECT id FROM spine.workspaces",
+        "INSERT INTO spine.workspaces (id, slug, display_name) "
+        "VALUES ('00000000-0000-0000-0000-000000000001', 'outside', 'outside')",
+        "SELECT * FROM spine.current_access_policies",
+    ):
+        async with delivery_database.dispatcher_engine.connect() as connection:
+            assert await connection.scalar(text("SELECT current_user")) == DISPATCHER_ROLE
+            await connection.execute(text("SET row_security = off"))
+            with pytest.raises(ProgrammingError):
+                await connection.execute(text(statement))
 
 
 async def test_runtime_delivery_reads_are_isolated_between_workspaces(

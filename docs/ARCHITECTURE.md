@@ -144,7 +144,7 @@ flowchart LR
 |---|---|---|
 | `api` | REST API, auth context, Q&A, команды и read models | Горизонтально, stateless |
 | `connector-worker` | Webhooks, polling, cursors, rate limits источников | По источнику и workspace |
-| `projection-worker` | Нормализация, identity resolution, Cognee indexing | По очередям и типам данных |
+| `outbox-dispatcher` | Доставка Ask admission/cancellation и projection/recovery intent из PostgreSQL transactional outbox через явный registry | Горизонтально по bounded batch; PostgreSQL lease обеспечивает конкуренцию и восстановление |
 | `agent-runtime` | Запуск локальных agent handlers; extension seam для будущих remote adapters | По capability/model/tool profile |
 | `evaluation-worker` | Проверка step output и handoff contracts | По evaluator type/version |
 | `temporal-worker` | Workflow definitions, routing, timers, gates и Activities | По task queue/domain |

@@ -54,7 +54,7 @@ explicit disposable qualification authority and starts the pinned PGVector,
 Temporal and Neo4j/APOC services before API and Web. It binds published ports
 to loopback and reads secrets only from the gitignored `.env`. The approved
 Issue #508 input directory is mounted read-only. The API composes the durable
-ingestion adapters and the `projection-worker` consumes their transactional
+ingestion adapters and the `outbox-dispatcher` consumes their transactional
 outbox against the same PostgreSQL deployment. A healthy container graph is
 necessary but not sufficient: the browser report remains BLOCKED until the
 complete browser journey produces all required correlated terminal evidence.
