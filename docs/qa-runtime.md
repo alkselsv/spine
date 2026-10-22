@@ -17,10 +17,19 @@ expose bounded reason codes only.
 
 For disposable local Compose use, copy the commented Q&A variables from
 `.env.example` into `.env`. Set one release identity and commit SHA for both
-processes, use the current Alembic head for `migration_revision`, and update the
-profile fingerprint whenever any binding changes. Generate distinct random
-worker and observer credentials. Keep the deployment JSON free of secrets. The
-example identities and fingerprint are placeholders, not deployment approval.
+processes, set `SPINE_QA_MODEL_PROFILE_ID` to a stable deployment profile
+identity distinct from the provider model name, use the current Alembic head for
+`migration_revision`, and update the profile fingerprint whenever any binding
+changes. Generate distinct random worker and observer credentials. Keep the
+deployment JSON free of secrets. The example identities and fingerprint are
+placeholders, not deployment approval.
+
+Use a unique Compose project name for every SOURCE qualification (for example,
+`docker compose -p spine560 ...`). Compose volumes outlive containers, so reusing
+a project name can silently select an older PostgreSQL or Neo4j state instead of
+the declared isolated target. Supply the lease, handler and shutdown bounds as
+one profile; startup rejects a handler that reaches the lease or a shutdown
+bound that exceeds it.
 
 The worker exposes content-free `/health/live` and `/health/ready` endpoints on
 port 8081. Readiness separately reports PostgreSQL, Temporal reachability,

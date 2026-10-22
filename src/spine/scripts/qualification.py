@@ -297,6 +297,17 @@ async def _verify_existing_authority(
             (settings.workspace_a_id, settings.environment_a_id),
             (settings.workspace_b_id, settings.environment_b_id),
         ):
+            await connection.execute(
+                text(
+                    "SELECT "
+                    "set_config('spine.workspace_id', :workspace_id, true), "
+                    "set_config('spine.environment_id', :environment_id, true)"
+                ),
+                {
+                    "workspace_id": str(workspace_id),
+                    "environment_id": str(environment_id),
+                },
+            )
             acting_subject_id = await connection.scalar(
                 text(
                     "SELECT acting_subject_id "

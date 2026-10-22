@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from spine.auth import AuthorizationRole
 from spine.scripts.qualification import (
     QualificationBootstrapSettings,
+    _verify_existing_authority,
     build_authorization_records,
     build_context_profiles,
     qualification_workspace_slug,
@@ -109,3 +110,52 @@ def test_qualification_workspace_slug_is_unique_for_disposable_scope() -> None:
     assert qualification_workspace_slug(first, "a") != qualification_workspace_slug(
         second, "a"
     )
+
+
+@pytest.mark.asyncio
+async def test_existing_authority_verification_sets_each_tenant_context() -> None:
+    selected = settings()
+
+    class Connection:
+        def __init__(self) -> None:
+            self.scope: tuple[UUID, UUID] | None = None
+            self.resolved_scopes: list[tuple[UUID, UUID]] = []
+
+        async def execute(self, statement, parameters):  # type: ignore[no-untyped-def]
+            assert "set_config('spine.workspace_id'" in str(statement)
+            assert "set_config('spine.environment_id'" in str(statement)
+            assert isinstance(parameters["workspace_id"], str)
+            assert isinstance(parameters["environment_id"], str)
+            self.scope = (
+                UUID(parameters["workspace_id"]),
+                UUID(parameters["environment_id"]),
+            )
+
+        async def scalar(self, statement, parameters):  # type: ignore[no-untyped-def]
+            assert "resolve_current_authorization_snapshot" in str(statement)
+            assert self.scope == (
+                parameters["workspace_id"],
+                parameters["environment_id"],
+            )
+            self.resolved_scopes.append(self.scope)
+            return selected.identity_id
+
+    connection = Connection()
+
+    class ConnectionContext:
+        async def __aenter__(self):  # type: ignore[no-untyped-def]
+            return connection
+
+        async def __aexit__(self, *args):  # type: ignore[no-untyped-def]
+            return None
+
+    class Engine:
+        def connect(self) -> ConnectionContext:
+            return ConnectionContext()
+
+    await _verify_existing_authority(Engine(), selected)  # type: ignore[arg-type]
+
+    assert connection.resolved_scopes == [
+        (selected.workspace_a_id, selected.environment_a_id),
+        (selected.workspace_b_id, selected.environment_b_id),
+    ]
