@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from uuid import UUID
 
 import pytest
@@ -29,6 +30,13 @@ from spine.auth.records import (
     AuthorizationRecordStatus,
     QualificationPrincipalKind,
 )
+from spine.domain.sources import (
+    AccessGrant,
+    AccessPermission,
+    AccessPolicyVersion,
+    PolicyOriginKind,
+    PrincipalKind,
+)
 from spine.infrastructure.db.migrations import upgrade_database
 from spine.infrastructure.db.operator import bootstrap_database_roles
 from spine.infrastructure.db.settings import (
@@ -42,6 +50,7 @@ from spine.infrastructure.persistence.postgresql_authorization_mappings import (
     qualification_target_bindings,
 )
 from spine.infrastructure.persistence.postgresql_mappings import (
+    access_policy_grants,
     access_policy_versions,
     source_objects,
 )
@@ -66,10 +75,15 @@ MIGRATION_PASSWORD = "migration-test-secret"
 RUNTIME_PASSWORD = "runtime-test-secret"
 DISPATCHER_PASSWORD = "dispatcher-test-secret"
 WORKSPACE_ID = UUID("72000000-0000-0000-0000-000000000001")
+FOREIGN_WORKSPACE_ID = UUID("72000000-0000-0000-0000-000000000002")
 SOURCE_ENVIRONMENT_ID = UUID("73000000-0000-0000-0000-000000000001")
 RESTORE_ENVIRONMENT_ID = UUID("73000000-0000-0000-0000-000000000002")
+FOREIGN_ENVIRONMENT_ID = UUID("73000000-0000-0000-0000-000000000003")
 SOURCE_POLICY_ID = UUID("77000000-0000-0000-0000-000000000001")
 SOURCE_OBJECT_ID = UUID("77000000-0000-0000-0000-000000000002")
+FOREIGN_POLICY_ID = UUID("77000000-0000-0000-0000-000000000011")
+FOREIGN_SOURCE_OBJECT_ID = UUID("77000000-0000-0000-0000-000000000012")
+POLICY_EVALUATION_TIME = datetime(2026, 10, 22, 12, tzinfo=timezone.utc)
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,20 +137,27 @@ async def qualification_database(
         await connection.execute(
             text(
                 "INSERT INTO spine.workspaces (id, slug, display_name) VALUES "
-                "(:workspace_id, 'qualification-targets', 'Qualification Targets')"
+                "(:workspace_id, 'qualification-targets', 'Qualification Targets'), "
+                "(:foreign_workspace_id, 'qualification-targets-foreign', 'Foreign Targets')"
             ),
-            {"workspace_id": WORKSPACE_ID},
+            {
+                "workspace_id": WORKSPACE_ID,
+                "foreign_workspace_id": FOREIGN_WORKSPACE_ID,
+            },
         )
         await connection.execute(
             text(
                 "INSERT INTO spine.environments (id, workspace_id, kind, display_name) VALUES "
                 "(:source_id, :workspace_id, 'staging', 'Source'), "
-                "(:restore_id, :workspace_id, 'staging', 'Restore')"
+                "(:restore_id, :workspace_id, 'staging', 'Restore'), "
+                "(:foreign_id, :foreign_workspace_id, 'staging', 'Foreign Source')"
             ),
             {
                 "workspace_id": WORKSPACE_ID,
                 "source_id": SOURCE_ENVIRONMENT_ID,
                 "restore_id": RESTORE_ENVIRONMENT_ID,
+                "foreign_workspace_id": FOREIGN_WORKSPACE_ID,
+                "foreign_id": FOREIGN_ENVIRONMENT_ID,
             },
         )
         await connection.execute(
@@ -147,6 +168,17 @@ async def qualification_database(
                 source_kind="qualification",
                 identity_mode="upload",
                 upload_identity="qualification-source-policy",
+                created_at=text("transaction_timestamp()"),
+            )
+        )
+        await connection.execute(
+            insert(source_objects).values(
+                source_object_id=FOREIGN_SOURCE_OBJECT_ID,
+                workspace_id=FOREIGN_WORKSPACE_ID,
+                environment_id=FOREIGN_ENVIRONMENT_ID,
+                source_kind="qualification",
+                identity_mode="upload",
+                upload_identity="qualification-foreign-policy",
                 created_at=text("transaction_timestamp()"),
             )
         )
@@ -168,6 +200,54 @@ async def qualification_database(
                     "77000000-0000-0000-0000-000000000004"
                 ),
                 created_at=text("transaction_timestamp()"),
+            )
+        )
+        await connection.execute(
+            insert(access_policy_versions).values(
+                access_policy_version_id=FOREIGN_POLICY_ID,
+                workspace_id=FOREIGN_WORKSPACE_ID,
+                environment_id=FOREIGN_ENVIRONMENT_ID,
+                source_object_id=FOREIGN_SOURCE_OBJECT_ID,
+                version=1,
+                predecessor_policy_version_id=None,
+                document_schema_version="access-policy.v1",
+                document_hash="3" * 64,
+                origin_kind="approved_source_configuration",
+                origin_reference=UUID("77000000-0000-0000-0000-000000000013"),
+                origin_version=1,
+                origin_hash="4" * 64,
+                created_by_canonical_human_id=UUID(
+                    "77000000-0000-0000-0000-000000000014"
+                ),
+                created_at=text("transaction_timestamp()"),
+            )
+        )
+        await connection.execute(
+            insert(access_policy_grants).values(
+                access_grant_id=UUID("77000000-0000-0000-0000-000000000004"),
+                workspace_id=WORKSPACE_ID,
+                environment_id=SOURCE_ENVIRONMENT_ID,
+                source_object_id=SOURCE_OBJECT_ID,
+                access_policy_version_id=SOURCE_POLICY_ID,
+                principal_kind="service",
+                principal_id=UUID("75000000-0000-0000-0000-000000000004"),
+                permission="process_content",
+                purpose="qualification_recovery",
+                operation="source_operator",
+            )
+        )
+        await connection.execute(
+            insert(access_policy_grants).values(
+                access_grant_id=UUID("77000000-0000-0000-0000-000000000015"),
+                workspace_id=FOREIGN_WORKSPACE_ID,
+                environment_id=FOREIGN_ENVIRONMENT_ID,
+                source_object_id=FOREIGN_SOURCE_OBJECT_ID,
+                access_policy_version_id=FOREIGN_POLICY_ID,
+                principal_kind="service",
+                principal_id=UUID("75000000-0000-0000-0000-000000000015"),
+                permission="process_content",
+                purpose="qualification_recovery",
+                operation="foreign_operator",
             )
         )
     try:
@@ -676,3 +756,208 @@ async def test_postgresql_resolver_denies_corrupted_binding_digest(
     )
     with pytest.raises(QualificationBindingDeniedError):
         await resolver.resolve(binding_request(successor))
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_issue544_composition_keeps_policy_and_authorization_tables_restricted(
+    qualification_database: QualificationDatabase,
+) -> None:
+    tables = (
+        "qualification_authority_bindings",
+        "qualification_target_bindings",
+        "access_policy_versions",
+        "access_policy_grants",
+        "current_access_policies",
+    )
+    functions = (
+        "spine.resolve_current_authorization_snapshot(text,text,uuid,uuid)",
+        "spine.resolve_current_qualification_target_binding(uuid,text,uuid,uuid)",
+    )
+
+    async with qualification_database.runtime_engine.connect() as connection:
+        privileges = {
+            row.table_name: row.has_select
+            for row in (
+                await connection.execute(
+                    text(
+                        "SELECT relation.relname AS table_name, "
+                        "has_table_privilege(current_user, relation.oid, 'SELECT') "
+                        "AS has_select "
+                        "FROM pg_class AS relation "
+                        "JOIN pg_namespace AS namespace "
+                        "ON namespace.oid = relation.relnamespace "
+                        "WHERE namespace.nspname = 'spine' "
+                        "AND relation.relname = ANY(:tables)"
+                    ),
+                    {"tables": list(tables)},
+                )
+            ).mappings()
+        }
+        rls = {
+            row.table_name: (row.enabled, row.forced)
+            for row in (
+                await connection.execute(
+                    text(
+                        "SELECT relation.relname AS table_name, "
+                        "relation.relrowsecurity AS enabled, "
+                        "relation.relforcerowsecurity AS forced "
+                        "FROM pg_class AS relation "
+                        "JOIN pg_namespace AS namespace "
+                        "ON namespace.oid = relation.relnamespace "
+                        "WHERE namespace.nspname = 'spine' "
+                        "AND relation.relname = ANY(:tables)"
+                    ),
+                    {"tables": list(tables)},
+                )
+            ).mappings()
+        }
+        function_privileges = {
+            function_name: await connection.scalar(
+                text(
+                    "SELECT has_function_privilege(current_user, :function_name, "
+                    "'EXECUTE')"
+                ),
+                {"function_name": function_name},
+            )
+            for function_name in functions
+        }
+
+    assert privileges == {
+        "qualification_authority_bindings": False,
+        "qualification_target_bindings": False,
+        "access_policy_versions": True,
+        "access_policy_grants": True,
+        "current_access_policies": True,
+    }
+    assert rls == {table: (True, True) for table in tables}
+    assert function_privileges == {function: True for function in functions}
+
+    for table in ("qualification_authority_bindings", "qualification_target_bindings"):
+        async with qualification_database.runtime_engine.connect() as connection:
+            with pytest.raises(ProgrammingError):
+                await connection.execute(text(f"SELECT * FROM spine.{table}"))
+
+    async with qualification_database.runtime_engine.connect() as connection:
+        await connection.execute(
+            text(
+                "SELECT set_config('spine.workspace_id', :workspace_id, true), "
+                "set_config('spine.environment_id', :environment_id, true)"
+            ),
+            {
+                "workspace_id": str(WORKSPACE_ID),
+                "environment_id": str(SOURCE_ENVIRONMENT_ID),
+            },
+        )
+        source_policy_count = await connection.scalar(
+            text("SELECT count(*) FROM spine.access_policy_versions")
+        )
+        source_grant_count = await connection.scalar(
+            text("SELECT count(*) FROM spine.access_policy_grants")
+        )
+        source_grant = (
+            await connection.execute(
+                text(
+                    "SELECT principal_kind, principal_id, permission, purpose, operation "
+                    "FROM spine.access_policy_grants"
+                )
+            )
+        ).mappings().one()
+        await connection.execute(
+            text("SELECT set_config('spine.environment_id', :environment_id, true)"),
+            {"environment_id": str(RESTORE_ENVIRONMENT_ID)},
+        )
+        restore_policy_count = await connection.scalar(
+            text("SELECT count(*) FROM spine.access_policy_versions")
+        )
+        restore_grant_count = await connection.scalar(
+            text("SELECT count(*) FROM spine.access_policy_grants")
+        )
+        await connection.execute(
+            text(
+                "SELECT set_config('spine.workspace_id', :workspace_id, true), "
+                "set_config('spine.environment_id', :environment_id, true)"
+            ),
+            {
+                "workspace_id": str(FOREIGN_WORKSPACE_ID),
+                "environment_id": str(FOREIGN_ENVIRONMENT_ID),
+            },
+        )
+        foreign_policy_count = await connection.scalar(
+            text("SELECT count(*) FROM spine.access_policy_versions")
+        )
+        foreign_grant = (
+            await connection.execute(
+                text(
+                    "SELECT principal_kind, permission, purpose, operation "
+                    "FROM spine.access_policy_grants"
+                )
+            )
+        ).mappings().one()
+        await connection.execute(
+            text(
+                "SELECT set_config('spine.workspace_id', :workspace_id, true), "
+                "set_config('spine.environment_id', :environment_id, true)"
+            ),
+            {
+                "workspace_id": str(WORKSPACE_ID),
+                "environment_id": str(FOREIGN_ENVIRONMENT_ID),
+            },
+        )
+        cross_scope_policy_count = await connection.scalar(
+            text("SELECT count(*) FROM spine.access_policy_versions")
+        )
+        cross_scope_grant_count = await connection.scalar(
+            text("SELECT count(*) FROM spine.access_policy_grants")
+        )
+
+    assert source_policy_count == 1
+    assert source_grant_count == 1
+    persisted_source_policy = AccessPolicyVersion(
+        access_policy_version_id=SOURCE_POLICY_ID,
+        workspace_id=WORKSPACE_ID,
+        environment_id=SOURCE_ENVIRONMENT_ID,
+        source_object_id=SOURCE_OBJECT_ID,
+        version=1,
+        predecessor_policy_version_id=None,
+        document_schema_version="access-policy.v1",
+        document_hash="1" * 64,
+        origin_kind=PolicyOriginKind.APPROVED_SOURCE_CONFIGURATION,
+        origin_reference=UUID("77000000-0000-0000-0000-000000000003"),
+        origin_version=1,
+        origin_hash="2" * 64,
+        created_by_canonical_human_id=UUID("77000000-0000-0000-0000-000000000004"),
+        created_at=POLICY_EVALUATION_TIME,
+        grants=(
+            AccessGrant(
+                access_grant_id=UUID("77000000-0000-0000-0000-000000000004"),
+                principal_kind=PrincipalKind(source_grant["principal_kind"]),
+                principal_id=source_grant["principal_id"],
+                permission=AccessPermission(source_grant["permission"]),
+                purpose=source_grant["purpose"],
+                operation=source_grant["operation"],
+            ),
+        ),
+    )
+    assert persisted_source_policy.allows_service_processing(
+        UUID("75000000-0000-0000-0000-000000000004"),
+        "qualification_recovery",
+        "source_operator",
+        POLICY_EVALUATION_TIME,
+    )
+    assert not persisted_source_policy.allows_service_processing(
+        UUID("75000000-0000-0000-0000-000000000004"),
+        "qualification_recovery",
+        "foreign_operator",
+        POLICY_EVALUATION_TIME,
+    )
+    assert restore_policy_count == 0
+    assert restore_grant_count == 0
+    assert foreign_policy_count == 1
+    assert foreign_grant == {
+        "principal_kind": "service",
+        "permission": "process_content",
+        "purpose": "qualification_recovery",
+        "operation": "foreign_operator",
+    }
+    assert cross_scope_policy_count == 0
+    assert cross_scope_grant_count == 0

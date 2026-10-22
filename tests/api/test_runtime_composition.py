@@ -17,6 +17,7 @@ from spine.application.ingestion_history import IngestionHistoryPage
 from spine.auth import InMemoryAuthorizationDirectory, RoutePolicyRegistry
 from spine.infrastructure.auth import LocalAuthenticationSettings
 from spine.infrastructure.auth import RequestAuthorizationComposer, TrustedRequestContextBoundary
+from spine.infrastructure.db.readiness import load_migration_inventory
 from spine.infrastructure.db.settings import RuntimeDatabaseSettings
 from spine.infrastructure.diagnostics import RecordingDiagnosticSink
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
@@ -96,7 +97,7 @@ def _deployment_profile(**overrides: object) -> ProductionQAADeploymentProfile:
         "release_identity": "issue-508-test",
         "commit_sha": "b" * 40,
         "database_profile_id": "spine-source-postgresql-17",
-        "migration_revision": "20261119_56",
+        "migration_revision": load_migration_inventory().supported_head,
         "authentication_profile_id": "issue-508-local",
         "authentication_mode": "local_development",
         "scope_policy_id": "workspace-environment-v1",
