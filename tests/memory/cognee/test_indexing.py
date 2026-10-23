@@ -3,12 +3,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
+import logging
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
 
-from spine.domain.artifacts import ParsedDocument
+from spine.domain.artifacts import (
+    OoxmlBlockPathStep,
+    OoxmlTextLocator,
+    PageTextLocator,
+    ParsedDocument,
+    PhysicalLineLocator,
+    XlsxCellLocator,
+)
 from spine.domain.sources import RevisionMetadata, SourceRevision, content_revision
 from spine.domain.sources.original_reference import ObjectReference
 from spine.ingestion.parsers import parse_document
@@ -25,7 +34,12 @@ from spine.memory.contracts import (
 )
 from spine.memory.namespace import ProjectionNamespaceContext, ProjectionNamespaceRouter
 
-from spine.memory.cognee.indexing import CogneeChunkProjectionStore, CogneeVersionError
+from spine.memory.cognee.indexing import (
+    ChunkProjectionMapping,
+    CogneeChunkProjectionStore,
+    CogneePublicSdk,
+    CogneeVersionError,
+)
 from spine.memory.cognee.validation import PhysicalArtifact
 
 
@@ -41,6 +55,40 @@ PARTITION_ID = UUID("70000000-0000-4000-8000-000000000001")
 CONFIG_ID = UUID("80000000-0000-4000-8000-000000000001")
 BOUNDARY_ID = UUID("90000000-0000-4000-8000-000000000001")
 DATASET_ID = UUID("a0000000-0000-4000-8000-000000000001")
+
+
+@pytest.mark.parametrize(
+    "locator",
+    (
+        PhysicalLineLocator(line_number=1, start_codepoint=0, end_codepoint=4),
+        PageTextLocator(page_number=1, start_codepoint=0, end_codepoint=4),
+        OoxmlTextLocator(
+            block_path=(OoxmlBlockPathStep(kind="paragraph", index=0),),
+            start_codepoint=0,
+            end_codepoint=4,
+        ),
+        XlsxCellLocator(sheet="Sheet1", row=1, cell_range="A1"),
+    ),
+)
+def test_chunk_projection_mapping_accepts_every_parsed_locator(locator: object) -> None:
+    mapping = ChunkProjectionMapping(
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        namespace_digest="1" * 64,
+        source_object_id=SOURCE_OBJECT_ID,
+        source_revision_id=REVISION_ID,
+        revision_digest="2" * 64,
+        revision_number=1,
+        projection_config_id=CONFIG_ID,
+        projection_config_version="1",
+        projection_config_digest="3" * 64,
+        segment_id=UUID("d0000000-0000-4000-8000-000000000001"),
+        segment_digest="4" * 64,
+        data_id=UUID("e0000000-0000-4000-8000-000000000001"),
+        locator=locator,
+    )
+
+    assert mapping.locator == locator
 
 
 @dataclass(frozen=True)
@@ -104,10 +152,57 @@ class FakeCogneeSdk:
     async def list_datasets(self) -> list[object]:
         return [SimpleNamespace(id=DATASET_ID, name="unused")]
 
+    async def list_data(self, dataset_id: UUID) -> list[object]:
+        del dataset_id
+        return []
+
     def _record(self, name: str, **payload: object) -> None:
         if self.fail_on == name:
             raise RuntimeError("synthetic provider failure containing protected text")
         self.calls.append((name, payload))
+
+
+class PublicSdkDelegate:
+    __version__ = "1.5.4"
+
+    def __init__(self) -> None:
+        self.add_kwargs: dict[str, object] | None = None
+
+    async def add(self, **kwargs: object) -> None:
+        self.add_kwargs = kwargs
+
+
+@pytest.mark.asyncio
+async def test_public_add_disables_both_incremental_paths_for_rehydration() -> None:
+    delegate = PublicSdkDelegate()
+    sdk = CogneePublicSdk(sdk=delegate)
+
+    await sdk.add(
+        data=[object()],
+        dataset_name="dataset",
+        dataset_id=DATASET_ID,
+        node_set=["1" * 64],
+    )
+
+    assert delegate.add_kwargs is not None
+    assert delegate.add_kwargs["incremental_loading"] is False
+    assert delegate.add_kwargs["data_cache"] is False
+
+
+@pytest.mark.asyncio
+async def test_public_dataset_listing_treats_uninitialized_database_as_empty() -> None:
+    class DatabaseNotCreatedError(RuntimeError):
+        pass
+
+    delegate = PublicSdkDelegate()
+    delegate.datasets = SimpleNamespace(
+        list_datasets=AsyncMock(side_effect=DatabaseNotCreatedError())
+    )
+    sdk = CogneePublicSdk(sdk=delegate)
+
+    result = await sdk.list_datasets()
+
+    assert result == ()
 
 
 class DatasetScopedIdentityCogneeSdk(FakeCogneeSdk):
@@ -137,6 +232,59 @@ class DatasetScopedIdentityCogneeSdk(FakeCogneeSdk):
             dataset_id=dataset_id,
             node_set=node_set,
         )
+
+
+class RestartAwareCogneeSdk(FakeCogneeSdk):
+    def __init__(self) -> None:
+        super().__init__()
+        self.dataset_name: str | None = None
+        self.items: dict[UUID, FakeDataItem] = {}
+        self.fail_cognify_once = True
+
+    async def add(
+        self,
+        *,
+        data: list[FakeDataItem],
+        dataset_name: str,
+        dataset_id: UUID | None,
+        node_set: list[str],
+    ) -> dict[str, object]:
+        self.dataset_name = dataset_name
+        self.items.update(
+            (
+                item.data_id,
+                FakeDataItem(
+                    item.data,
+                    item.data_id,
+                    {**item.external_metadata, "node_set": list(node_set)},
+                ),
+            )
+            for item in data
+        )
+        return await super().add(
+            data=data,
+            dataset_name=dataset_name,
+            dataset_id=dataset_id,
+            node_set=node_set,
+        )
+
+    async def cognify(self, *, datasets: list[str]) -> None:
+        self.calls.append(("cognify", {"datasets": datasets}))
+        if self.fail_cognify_once:
+            self.fail_cognify_once = False
+            raise RuntimeError("synthetic cognify interruption")
+
+    async def list_datasets(self) -> list[object]:
+        if self.dataset_name is None:
+            return []
+        return [SimpleNamespace(id=str(DATASET_ID), name=self.dataset_name)]
+
+    async def list_data(self, dataset_id: UUID) -> list[object]:
+        assert dataset_id == DATASET_ID
+        return [
+            SimpleNamespace(id=item.data_id, external_metadata=item.external_metadata)
+            for item in self.items.values()
+        ]
 
 
 def parsed_document(
@@ -307,6 +455,28 @@ async def test_same_effect_replays_without_a_second_physical_write() -> None:
 
 
 @pytest.mark.asyncio
+async def test_restart_after_add_rehydrates_exact_inventory_and_retries_cognify() -> None:
+    source_revision, document = parsed_document(b"first line\n", REVISION_ID)
+    sdk = RestartAwareCogneeSdk()
+    command_effect = effect(source_revision=source_revision)
+
+    interrupted = await CogneeChunkProjectionStore(
+        sdk=sdk,
+        artifacts={REVISION_ID: document},
+    ).apply(command_effect)
+    recovered = await CogneeChunkProjectionStore(
+        sdk=sdk,
+        artifacts={REVISION_ID: document},
+    ).apply(command_effect)
+
+    assert interrupted.status is ProjectionEffectStatus.FAILED
+    assert recovered.status is ProjectionEffectStatus.APPLIED
+    assert [name for name, _ in sdk.calls] == ["add", "cognify", "add", "cognify"]
+    recovered_add = [payload for name, payload in sdk.calls if name == "add"][1]
+    assert recovered_add["dataset_id"] == DATASET_ID
+
+
+@pytest.mark.asyncio
 async def test_one_projection_command_writes_every_source_effect() -> None:
     second_source_id = UUID("20000000-0000-4000-8000-000000000002")
     first_revision, first_document = parsed_document(b"first source\n", REVISION_ID)
@@ -447,17 +617,40 @@ async def test_remove_tombstones_source_and_repeated_remove_does_not_readd_conte
 
 
 @pytest.mark.asyncio
-async def test_physical_failure_returns_failed_effect_without_provider_content() -> None:
+async def test_physical_failure_returns_failed_effect_without_provider_content(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     source_revision, document = parsed_document(b"secret physical text\n", REVISION_ID)
     store = CogneeChunkProjectionStore(
         sdk=FakeCogneeSdk(fail_on="add"),
         artifacts={REVISION_ID: document},
     )
 
-    result = await store.apply(effect(source_revision=source_revision))
+    with caplog.at_level(logging.WARNING, logger="spine.memory.cognee.indexing.store"):
+        result = await store.apply(effect(source_revision=source_revision))
 
     assert result.status is ProjectionEffectStatus.FAILED
+    assert "stage=add exception_class=RuntimeError" in caplog.text
     assert "secret physical text" not in result.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_cognify_failure_logs_only_safe_stage_and_exception_class(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    source_revision, document = parsed_document(b"protected provider text\n", REVISION_ID)
+    store = CogneeChunkProjectionStore(
+        sdk=FakeCogneeSdk(fail_on="cognify"),
+        artifacts={REVISION_ID: document},
+    )
+
+    with caplog.at_level(logging.WARNING, logger="spine.memory.cognee.indexing.store"):
+        result = await store.apply(effect(source_revision=source_revision))
+
+    assert result.status is ProjectionEffectStatus.FAILED
+    assert "stage=cognify exception_class=RuntimeError" in caplog.text
+    assert "protected provider text" not in caplog.text
+    assert "synthetic provider failure" not in caplog.text
 
 
 def test_adapter_rejects_an_unqualified_cognee_version() -> None:

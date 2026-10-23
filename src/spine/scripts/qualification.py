@@ -250,6 +250,18 @@ def build_authorization_records(
                 provenance=provenance(f"workspace-membership:{actor.name}"),
             )
             for actor in actors
+        )
+        + (
+            WorkspaceMembership(
+                membership_id=_stable_id(
+                    settings, "workspace-membership:approved-workspace-b"
+                ),
+                workspace_id=settings.workspace_b_id,
+                canonical_human_identity_id=settings.identity_id,
+                version=1,
+                status=active,
+                provenance=provenance("workspace-membership:approved-workspace-b"),
+            ),
         ),
         environment_memberships=tuple(
             EnvironmentMembership(
@@ -264,6 +276,19 @@ def build_authorization_records(
                 provenance=provenance(f"environment-membership:{actor.name}"),
             )
             for actor in actors
+        )
+        + (
+            EnvironmentMembership(
+                membership_id=_stable_id(
+                    settings, "environment-membership:approved-workspace-b"
+                ),
+                workspace_id=settings.workspace_b_id,
+                environment_id=settings.environment_b_id,
+                canonical_human_identity_id=settings.identity_id,
+                version=1,
+                status=active,
+                provenance=provenance("environment-membership:approved-workspace-b"),
+            ),
         ),
         role_bindings=tuple(
             EnvironmentRoleBinding(
@@ -278,6 +303,18 @@ def build_authorization_records(
             )
             for actor in actors
             if actor.has_administrator_role
+        )
+        + (
+            EnvironmentRoleBinding(
+                binding_id=_stable_id(settings, "administrator:approved-workspace-b"),
+                workspace_id=settings.workspace_b_id,
+                environment_id=settings.environment_b_id,
+                canonical_human_identity_id=settings.identity_id,
+                role=AuthorizationRole.ADMINISTRATOR,
+                version=1,
+                status=active,
+                provenance=provenance("administrator:approved-workspace-b"),
+            ),
         ),
         generations=tuple(
             AuthorizationGeneration(
@@ -320,6 +357,26 @@ def build_authorization_records(
             for actor in actors
             if actor.qualification_status is not None
             and actor.qualification_expires_at is not None
+        )
+        + (
+            QualificationAuthorityBinding(
+                binding_id=_stable_id(
+                    settings, "qualification-binding:approved-workspace-b"
+                ),
+                qualification_id=_stable_id(
+                    settings, "qualification:approved-workspace-b"
+                ),
+                workspace_id=settings.workspace_b_id,
+                environment_id=settings.environment_b_id,
+                principal_kind=QualificationPrincipalKind.HUMAN,
+                principal_id=settings.identity_id,
+                expires_at=settings.authority_expires_at,
+                version=1,
+                status=active,
+                provenance=provenance(
+                    "qualification-binding:approved-workspace-b"
+                ),
+            ),
         ),
     )
 
@@ -582,7 +639,7 @@ async def _verify_existing_authority(
             settings.authentication_alias_subject,
             settings.workspace_b_id,
             settings.environment_b_id,
-            None,
+            settings.identity_id,
         ),
         (
             f"{settings.authentication_alias_subject}-foreign-scope",

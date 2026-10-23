@@ -21,6 +21,7 @@ from spine.application.persistence.ask_admission import (
     AskAdmissionLifecycle,
     AskAdmissionResult,
     AskAdmissionStatus,
+    QA_ASK_ADMISSION_OPERATION,
 )
 from spine.application.ask_admission import (
     AskCancellationLifecycle,
@@ -213,12 +214,14 @@ class FakeAdmissionService:
     result: AskAdmissionResult
     lifecycle: AskAdmissionLifecycle = AskAdmissionLifecycle.ADMITTED
     calls: list[object] = None
+    contexts: list[object] = None
 
     def __post_init__(self) -> None:
         self.calls = [] if self.calls is None else self.calls
+        self.contexts = [] if self.contexts is None else self.contexts
 
     async def admit(self, *, context, command) -> AskAdmissionResult:
-        del context
+        self.contexts.append(context)
         self.calls.append(command)
         if command.question == "conflict":
             raise IdempotencyConflictError("protected payload conflict")
@@ -398,6 +401,7 @@ async def test_durable_ask_route_returns_admission_without_inline_execution() ->
     assert response.json()["result"]["run_id"] == str(RUN_ID)
     assert "protected" not in response.text
     assert len(admission.calls) == 1
+    assert admission.contexts[0].operation == QA_ASK_ADMISSION_OPERATION
     assert service.calls == []
 
 

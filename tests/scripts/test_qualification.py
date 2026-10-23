@@ -61,10 +61,10 @@ def test_authority_records_cover_approved_and_denied_qualification_scenarios() -
     }
     assert len(records.identities) == 5
     assert len(records.alias_bindings) == 5
-    assert len(records.workspace_memberships) == 5
-    assert len(records.environment_memberships) == 5
-    assert len(records.role_bindings) == 4
-    assert len(records.qualification_bindings) == 4
+    assert len(records.workspace_memberships) == 6
+    assert len(records.environment_memberships) == 6
+    assert len(records.role_bindings) == 5
+    assert len(records.qualification_bindings) == 5
     assert sum(
         record.status.value == "revoked"
         for record in records.qualification_bindings
@@ -78,9 +78,10 @@ def test_authority_records_cover_approved_and_denied_qualification_scenarios() -
         for record in records.role_bindings
         if record.canonical_human_identity_id == settings().identity_id
     ]
-    assert [(record.workspace_id, record.environment_id) for record in primary_roles] == [
-        (settings().workspace_a_id, settings().environment_a_id)
-    ]
+    assert {(record.workspace_id, record.environment_id) for record in primary_roles} == {
+        (settings().workspace_a_id, settings().environment_a_id),
+        (settings().workspace_b_id, settings().environment_b_id),
+    }
     change_ids = [
         record.provenance.change_id
         for group in (

@@ -11,12 +11,13 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+import logging
 from typing import Any, Literal, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import Field
 
-from spine.domain.artifacts import ParsedDocument, PhysicalLineLocator
+from spine.domain.artifacts import Locator, ParsedDocument
 from spine.domain.common import DefinitionModel
 from spine.memory.contracts import (
     ProjectionEffect,
@@ -36,10 +37,21 @@ from spine.memory.cognee.validation import PhysicalArtifact
 
 
 SUPPORTED_COGNEE_VERSION = "1.5.4"
+_logger = logging.getLogger(__name__)
 
 
 class CogneeVersionError(ValueError):
     """The configured SDK is outside the adapter's qualified version."""
+
+
+class _PhysicalProjectionStageError(RuntimeError):
+    """Content-free internal marker for one failed physical adapter stage."""
+
+    def __init__(self, *, stage: str, exception_class: str, origin: str = "unknown") -> None:
+        self.stage = stage
+        self.exception_class = exception_class
+        self.origin = origin
+        super().__init__("physical projection stage failed")
 
 
 class CogneeSdk(Protocol):
@@ -79,6 +91,8 @@ class CogneeSdk(Protocol):
     async def delete_data(self, *, dataset_id: UUID, data_id: UUID, mode: str) -> object: ...
 
     async def list_datasets(self) -> Sequence[object]: ...
+
+    async def list_data(self, dataset_id: UUID) -> Sequence[object]: ...
 
 
 class ParsedArtifactResolver(Protocol):
@@ -135,6 +149,8 @@ class CogneePublicSdk:
             dataset_name=dataset_name,
             dataset_id=dataset_id,
             node_set=node_set,
+            incremental_loading=False,
+            data_cache=False,
             run_in_background=False,
         )
 
@@ -170,7 +186,18 @@ class CogneePublicSdk:
         )
 
     async def list_datasets(self) -> Sequence[object]:
-        return await self._sdk.datasets.list_datasets()
+        try:
+            return await self._sdk.datasets.list_datasets()
+        except Exception as error:
+            # A clean Cognee deployment creates its relational schema lazily
+            # inside public add(). Treat only that exact pre-bootstrap signal
+            # as an empty catalog so the first add can perform initialization.
+            if type(error).__name__ == "DatabaseNotCreatedError":
+                return ()
+            raise
+
+    async def list_data(self, dataset_id: UUID) -> Sequence[object]:
+        return await self._sdk.datasets.list_data(dataset_id)
 
 
 class ChunkProjectionMapping(DefinitionModel):
@@ -190,7 +217,7 @@ class ChunkProjectionMapping(DefinitionModel):
     segment_id: UUID
     segment_digest: str = Field(pattern=r"[0-9a-f]{64}")
     data_id: UUID
-    locator: PhysicalLineLocator
+    locator: Locator
 
 
 @dataclass
@@ -300,8 +327,33 @@ class CogneeChunkProjectionStore:
                         "failure_code": ProjectionFailureCode.NAMESPACE_UNAVAILABLE,
                     }
                 )
-            except Exception:
+            except Exception as error:
                 # Provider exceptions may contain source text or credentials.
+                # Log only a fixed stage and the exception type, never its message.
+                stage = (
+                    error.stage
+                    if isinstance(error, _PhysicalProjectionStageError)
+                    else "adapter"
+                )
+                exception_class = (
+                    error.exception_class
+                    if isinstance(error, _PhysicalProjectionStageError)
+                    else type(error).__name__
+                )
+                origin = (
+                    error.origin
+                    if isinstance(error, _PhysicalProjectionStageError)
+                    else "adapter"
+                )
+                # Cognee disables existing loggers while installing its own
+                # handlers. Re-enable only this content-free diagnostic sink.
+                _logger.disabled = False
+                _logger.warning(
+                    "Cognee physical projection failed: stage=%s exception_class=%s origin=%s",
+                    stage,
+                    exception_class,
+                    origin,
+                )
                 # The provider-neutral effect exposes only its status.
                 return effect.model_copy(
                     update={
@@ -390,7 +442,9 @@ class CogneeChunkProjectionStore:
             and pending.revision_number == effect.revision_number
             and pending.revision_digest == effect.revision_digest
         ):
-            await self._sdk.cognify(datasets=[self.dataset_name(effect.physical_namespace)])
+            await self._cognify(
+                datasets=[self.dataset_name(effect.physical_namespace)]
+            )
             self._pending_records.pop(key, None)
             self._records[key] = pending
             return
@@ -437,25 +491,47 @@ class CogneeChunkProjectionStore:
             segment.segment_id: self._data_id(effect, segment.segment_id)
             for segment in document.segments
         }
+        expected_metadata = {
+            data_ids[segment.segment_id]: self._metadata(
+                effect,
+                document,
+                segment,
+                data_id=data_ids[segment.segment_id],
+            )
+            for segment in document.segments
+        }
+        if dataset_id is None:
+            dataset_id = await self._resolve_dataset_id(dataset_name, None)
+        existing_metadata = (
+            await self._existing_metadata(dataset_id) if dataset_id is not None else {}
+        )
+        for data_id, metadata in expected_metadata.items():
+            existing = existing_metadata.get(data_id)
+            if existing is not None:
+                provider_node_set = existing.pop("node_set", None)
+                if provider_node_set != node_set or existing != metadata:
+                    raise ValueError("physical data identity conflict")
+        # Re-ingest exact IDs even when their relational metadata already
+        # exists. Cognee's raw text files live outside its relational tables;
+        # a worker restart may therefore retain the rows while losing their
+        # local backing files. Public add() is idempotent for pinned IDs in the
+        # same dataset and refreshes those paths without creating new objects.
         items = [
             self._sdk.make_data_item(
                 data=segment.text,
                 data_id=data_ids[segment.segment_id],
-                external_metadata=self._metadata(
-                    effect,
-                    document,
-                    segment,
-                    data_id=data_ids[segment.segment_id],
-                ),
+                external_metadata=expected_metadata[data_ids[segment.segment_id]],
             )
             for segment in document.segments
         ]
-        add_result = await self._sdk.add(
-            data=items,
-            dataset_name=dataset_name,
-            dataset_id=dataset_id,
-            node_set=node_set,
-        )
+        add_result: object | None = None
+        if items:
+            add_result = await self._add(
+                data=items,
+                dataset_name=dataset_name,
+                dataset_id=dataset_id,
+                node_set=node_set,
+            )
         resolved_dataset_id = await self._resolve_dataset_id(
             dataset_name,
             dataset_id or self._dataset_id_from_result(add_result),
@@ -477,7 +553,7 @@ class CogneeChunkProjectionStore:
             mappings=mappings,
         )
         self._pending_records[key] = completed_record
-        await self._sdk.cognify(datasets=[dataset_name])
+        await self._cognify(datasets=[dataset_name])
         self._pending_records.pop(key, None)
         self._records[key] = completed_record
 
@@ -544,7 +620,7 @@ class CogneeChunkProjectionStore:
                 )
                 for segment in new_segments
             ]
-            await self._sdk.add(
+            await self._add(
                 data=items,
                 dataset_name=dataset_name,
                 dataset_id=record.dataset_id,
@@ -577,7 +653,7 @@ class CogneeChunkProjectionStore:
             mappings=tuple(new_mappings),
         )
         self._pending_records[key] = completed_record
-        await self._sdk.cognify(datasets=[dataset_name])
+        await self._cognify(datasets=[dataset_name])
         self._pending_records.pop(key, None)
         self._records[key] = completed_record
 
@@ -628,6 +704,46 @@ class CogneeChunkProjectionStore:
             raise ValueError("parsed artifact lineage does not match projection effect")
         return document
 
+    async def _cognify(self, *, datasets: list[str]) -> None:
+        try:
+            await self._sdk.cognify(datasets=datasets)
+        except Exception as error:
+            raise _PhysicalProjectionStageError(
+                stage="cognify",
+                exception_class=type(error).__name__,
+            ) from error
+
+    async def _add(
+        self,
+        *,
+        data: list[object],
+        dataset_name: str,
+        dataset_id: UUID | None,
+        node_set: list[str],
+    ) -> object:
+        try:
+            return await self._sdk.add(
+                data=data,
+                dataset_name=dataset_name,
+                dataset_id=dataset_id,
+                node_set=node_set,
+            )
+        except Exception as error:
+            traceback = error.__traceback__
+            while traceback is not None and traceback.tb_next is not None:
+                traceback = traceback.tb_next
+            origin = (
+                f"{traceback.tb_frame.f_code.co_filename.rsplit('/', 1)[-1]}:"
+                f"{traceback.tb_frame.f_code.co_name}:{traceback.tb_lineno}"
+                if traceback is not None
+                else "unknown"
+            )
+            raise _PhysicalProjectionStageError(
+                stage="add",
+                exception_class=type(error).__name__,
+                origin=origin,
+            ) from error
+
     @staticmethod
     def _mapping(
         effect: ProjectionEffect,
@@ -661,10 +777,31 @@ class CogneeChunkProjectionStore:
         for dataset in datasets:
             name = dataset.get("name") if isinstance(dataset, Mapping) else getattr(dataset, "name", None)
             identifier = dataset.get("id") if isinstance(dataset, Mapping) else getattr(dataset, "id", None)
-            if name == dataset_name and isinstance(identifier, UUID):
-                self._dataset_ids[dataset_name] = identifier
-                return identifier
+            resolved_identifier = self._uuid_or_none(identifier)
+            if name == dataset_name and resolved_identifier is not None:
+                self._dataset_ids[dataset_name] = resolved_identifier
+                return resolved_identifier
         return None
+
+    async def _existing_metadata(
+        self, dataset_id: UUID
+    ) -> dict[UUID, dict[str, object]]:
+        result: dict[UUID, dict[str, object]] = {}
+        for row in await self._sdk.list_data(dataset_id):
+            raw_id = row.get("id") if isinstance(row, Mapping) else getattr(row, "id", None)
+            raw_metadata = (
+                row.get("external_metadata")
+                if isinstance(row, Mapping)
+                else getattr(row, "external_metadata", None)
+            )
+            try:
+                data_id = raw_id if isinstance(raw_id, UUID) else UUID(str(raw_id))
+            except (TypeError, ValueError):
+                raise ValueError("physical data identity is invalid") from None
+            if not isinstance(raw_metadata, Mapping) or data_id in result:
+                raise ValueError("physical data metadata is invalid")
+            result[data_id] = dict(raw_metadata)
+        return result
 
     @staticmethod
     def _dataset_id_from_result(result: object) -> UUID | None:
@@ -672,7 +809,16 @@ class CogneeChunkProjectionStore:
             value = result.get("dataset_id") or result.get("datasetId")
         else:
             value = getattr(result, "dataset_id", getattr(result, "datasetId", None))
-        return value if isinstance(value, UUID) else None
+        return CogneeChunkProjectionStore._uuid_or_none(value)
+
+    @staticmethod
+    def _uuid_or_none(value: object) -> UUID | None:
+        if isinstance(value, UUID):
+            return value
+        try:
+            return UUID(str(value))
+        except (TypeError, ValueError):
+            return None
 
     def _validate_namespace(self, effect: ProjectionEffect) -> None:
         context = ProjectionNamespaceContext(

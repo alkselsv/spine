@@ -36,6 +36,10 @@ from spine.domain.common import ActorKind, ActorRef, SchemaRef
 _SEMANTIC_SUPPORT_SYSTEM_PROMPT = (
     "Determine whether the claim is fully supported by the supplied evidence. "
     "Return JSON with outcome equal to supported, unsupported, or inconclusive. "
+    "Classify a claim as supported when all of its substantive content appears "
+    "directly in the evidence; differences only in case, whitespace, or punctuation "
+    "do not make a directly reproduced claim inconclusive. Faithful paraphrases are "
+    "also supported when the evidence entails the complete claim. "
     "A claim that the documents are insufficient, omit a fact, or do not mention "
     "something is not supported unless the evidence explicitly establishes that absence. "
     "Do not add explanations or infer facts absent from the evidence."
@@ -488,12 +492,20 @@ class ConfiguredLLMRuntime:
 class ConfiguredSemanticSupportValidator:
     """Perform the mandatory second-pass grounding check with the configured LLM."""
 
-    def __init__(self, *, api_key: str, model: str, endpoint: str) -> None:
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        endpoint: str,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         if not api_key or not model:
             raise RuntimeError("configured semantic validator is unavailable")
         self._api_key = api_key
         self._model = model
         self._endpoint = endpoint.rstrip("/")
+        self._transport = transport
 
     async def assess(self, request: SemanticSupportRequest) -> SemanticSupportAssessment:
         payload = {
@@ -510,14 +522,20 @@ class ConfiguredSemanticSupportValidator:
                     "content": json.dumps(
                         {
                             "claim": request.claim.text,
-                            "evidence": [item.content for item in request.evidence],
+                            "evidence": [
+                                {
+                                    "evidence_id": item.citation.evidence_id,
+                                    "content": item.content,
+                                }
+                                for item in request.evidence
+                            ],
                         },
                         ensure_ascii=False,
                     ),
                 },
             ],
         }
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=120, transport=self._transport) as client:
             response = await client.post(
                 f"{self._endpoint}/chat/completions",
                 headers={"Authorization": f"Bearer {self._api_key}"},

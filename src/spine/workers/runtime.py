@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import signal
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -62,6 +63,10 @@ from spine.infrastructure.cognee_worker_settings import (
 )
 from spine.infrastructure.diagnostics import JsonLoggingDiagnosticSink
 from spine.infrastructure.ingestion_composition import register_ingestion_outbox_events
+from spine.infrastructure.local_cognee_provider_guards import (
+    LocalCogneeProviderAuthorizationSettings,
+    build_local_cognee_provider_guards,
+)
 from spine.infrastructure.outbox.delivery import PostgreSQLOutboxDeliveryRepository
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.persistence.parsed_artifacts import PostgreSQLParsedArtifactRepository
@@ -930,6 +935,36 @@ def create_production_outbox_worker_runtime(
         cognee_binding_configuration
         or CogneeWorkerBindingSettings().load_configuration()
     )
+    if (
+        secret_resolver is None
+        and budget_authorization_resolver is None
+        and provider_call_executor is None
+    ):
+        local_authorization = (
+            LocalCogneeProviderAuthorizationSettings().load_optional()
+        )
+        if local_authorization is not None:
+            profile = cognee_configuration.profile
+            available_references: set[str] = set()
+            if os.environ.get("DB_PASSWORD"):
+                available_references.add(profile.postgres_secret_ref)
+            if os.environ.get("GRAPH_DATABASE_PASSWORD"):
+                available_references.add(profile.neo4j_secret_ref)
+            if os.environ.get("LLM_API_KEY") and (
+                os.environ.get("EMBEDDING_API_KEY")
+                or os.environ.get("LLM_API_KEY")
+            ):
+                available_references.add(profile.model_secret_ref)
+            local_guards = build_local_cognee_provider_guards(
+                profile=profile,
+                authorization=local_authorization,
+                available_secret_references=frozenset(available_references),
+            )
+            secret_resolver = local_guards.secret_resolver
+            budget_authorization_resolver = (
+                local_guards.budget_authorization_resolver
+            )
+            provider_call_executor = local_guards.provider_call_executor
     runtime_engine = _create_outbox_database_engine(runtime_db)
     dispatcher_engine = _create_outbox_database_engine(dispatcher_db)
     runtime_sessions = async_sessionmaker(runtime_engine, expire_on_commit=False)

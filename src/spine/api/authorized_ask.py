@@ -491,12 +491,13 @@ def install_authorized_ask_routes(
         return _cancel_command(request_context, result)
 
     policy = _policy()
+    ask_policy = _admission_policy() if admission_service is not None else policy
     add_protected_api_route(
         application,
         "/api/v1/ask",
         ask_endpoint,
         route_id="qa.ask",
-        policy=policy,
+        policy=ask_policy,
         methods=["POST"],
         response_model=ApiCommandResult[AskOutcomeResponse],
         openapi_extra=_idempotency_openapi_extra(),

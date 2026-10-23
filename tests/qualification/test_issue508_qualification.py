@@ -193,11 +193,26 @@ def test_issue508_compose_profile_is_reproducible_and_fail_closed() -> None:
     assert "SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID" not in shared_environment
     api_environment = compose.split("  api:", 1)[1].split("  outbox-dispatcher:", 1)[0]
     assert "SPINE_LOCAL_AUTH_BEARER_CREDENTIAL: ${SPINE_E2E_ACCESS_TOKEN}" in api_environment
+    assert (
+        "SPINE_API_INGESTION_SERVICE_ALIAS_ISSUER: "
+        "${SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_ISSUER}"
+    ) in api_environment
+    assert (
+        "SPINE_API_INGESTION_SERVICE_ALIAS_SUBJECT: "
+        "${SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_SUBJECT}"
+    ) in api_environment
     assert "SPINE_PROJECTION_WORKER_SERVICE_PRINCIPAL_ID" in compose
     assert "SPINE_QA_WORKER_SERVICE_PRINCIPAL_ID" in compose
     assert "SPINE_API_QA_SERVICE_PRINCIPAL_ID: ${SPINE_QA_WORKER_SERVICE_PRINCIPAL_ID}" in compose
     assert "SPINE_WORKER_SERVICE_PRINCIPAL_ID: ${SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID}" not in compose
     assert "SPINE_QA_WORKER_SERVICE_PRINCIPAL_ID: ${SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID}" not in compose
+    dispatcher_environment = compose.split("  outbox-dispatcher:", 1)[1].split(
+        "  qa-worker:", 1
+    )[0]
+    assert (
+        "SPINE_COGNEE_LOCAL_PROVIDER_AUTHORIZATION_JSON: "
+        "${SPINE_COGNEE_LOCAL_PROVIDER_AUTHORIZATION_JSON:-}"
+    ) in dispatcher_environment
     assert 'CMD ["spine-api"]' in python_image
     assert "spine-qualification-bootstrap" not in compose
     assert "profiles: [\"qualification-provisioning\"]" in compose
