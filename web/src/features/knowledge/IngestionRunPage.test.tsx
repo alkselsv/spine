@@ -157,6 +157,52 @@ describe('Knowledge ingestion run view', () => {
     expect(screen.getAllByText('file-1').length).toBeGreaterThan(0);
   });
 
+  it('test_pre_acceptance_failure_explains_upload_retry_without_offering_processing_retry', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof globalThis.fetch>().mockImplementation(async (input) => {
+        const url = new URL((input as Request).url);
+        if (url.pathname === `/api/v1/ingestion/runs/${runId}`) {
+          const response = runStatus();
+          response.items[1] = makeBatchItem({
+            acceptance: 'pending',
+            failures: [
+              {
+                attempt: 1,
+                code: 'pre_acceptance_retryable',
+                failure_id: '60000000-0000-4000-8000-000000000006',
+                retryable: true,
+                stage: 'persisting',
+              },
+            ],
+            item_id: secondItemId,
+            input_identity: 'file-2',
+            input_ordinal: 2,
+            processing: 'failed',
+            retryable: true,
+            source_object_id: '30000000-0000-4000-8000-000000000010',
+            source_revision_id: '40000000-0000-4000-8000-000000000010',
+            status: 'failed',
+          });
+          return Response.json(response);
+        }
+        if (url.pathname === '/api/v1/ingestion/runs') return Response.json(runHistoryCollection());
+        if (url.pathname === '/api/v1/documents/processing-history') {
+          return Response.json(processingHistoryCollection());
+        }
+        return Response.json(processingCommandResponse(false));
+      }),
+    );
+
+    renderRun(`/runs/${runId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}`);
+
+    const file = await screen.findByText('file-2');
+    const fileItem = file.closest('li');
+    expect(fileItem).not.toBeNull();
+    expect(within(fileItem!).getByText(/Повторите исходную загрузку с тем же ключом идемпотентности/)).toBeVisible();
+    expect(within(fileItem!).queryByRole('button', { name: 'Повторить обработку файла' })).toBeNull();
+  });
+
   it('test_history_pagination_updates_and_restores_both_cursor_parameters', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (input) => {
       const url = new URL((input as Request).url);

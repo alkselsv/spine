@@ -31,6 +31,7 @@ class FakeUnitOfWork:
             resolve_item_head=self.resolve_item_head,
             resolve_binding=self.resolve_binding,
             resolve_processing_receipt=self.resolve_processing_receipt,
+            resolve_failures=self.resolve_failures,
         )
         self.committed = False
         self.rolled_back = False
@@ -88,6 +89,10 @@ class FakeUnitOfWork:
             failure_ids=(),
         )
 
+    async def resolve_failures(self, item_id: UUID):
+        assert item_id == ITEM_ID
+        return (SimpleNamespace(ingestion_failure_id=UUID("90000000-0000-0000-0000-000000000007"), code="parser_retryable"),)
+
 
 def context(workspace_id: UUID = WORKSPACE_ID, environment_id: UUID = ENVIRONMENT_ID):
     return SimpleNamespace(
@@ -116,6 +121,7 @@ async def test_status_reads_ledger_binding_and_receipt_in_one_authorized_scope()
     assert status.item_state is IngestionItemState.PROCESSING
     assert status.binding_id == BINDING_ID
     assert status.processing_receipt_id == RECEIPT_ID
+    assert status.failure_reason_codes == ("parser_retryable",)
     assert uow.committed is True
     assert uow.rolled_back is False
 

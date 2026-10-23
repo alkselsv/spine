@@ -125,6 +125,7 @@ class IngestionStatusResponse(BaseModel):
     processing_receipt: IngestionReceiptResponse | None = None
     warning_ids: tuple[UUID, ...] = ()
     failure_ids: tuple[UUID, ...] = ()
+    failure_reason_codes: tuple[str, ...] = ()
 
 
 def install_ingestion_routes(
@@ -357,6 +358,7 @@ def _status_response(snapshot: IngestionStatusSnapshot) -> IngestionStatusRespon
         processing_receipt=receipt,
         warning_ids=snapshot.warning_ids,
         failure_ids=snapshot.failure_ids,
+        failure_reason_codes=snapshot.failure_reason_codes,
     )
 
 

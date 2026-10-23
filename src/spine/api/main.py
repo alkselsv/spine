@@ -26,6 +26,10 @@ from spine.api.health import (
 from spine.api.outbox_inspection import install_outbox_inspection_route
 from spine.api.batch_ingestion import install_batch_ingestion_routes
 from spine.api.ingestion import install_ingestion_routes
+from spine.api.document_replacement_uploads import (
+    DocumentReplacementUploadService,
+    install_document_replacement_upload_route,
+)
 from spine.api.ingestion_history import install_ingestion_history_routes
 from spine.api.documents import install_document_query_routes
 from spine.api.projection_control import install_projection_control_routes
@@ -214,6 +218,7 @@ def create_app(
     clock: Callable[[], datetime] | None = None,
     authorization_runtime: ApiAuthorizationRuntime | None = None,
     document_ingestion_service: DocumentIngestionService | None = None,
+    document_replacement_upload_service: DocumentReplacementUploadService | None = None,
     batch_document_ingestion_service: BatchDocumentIngestionService | None = None,
     ingestion_history_service: IngestionHistoryService | None = None,
     ingestion_history_cursor_secret: bytes | None = None,
@@ -410,6 +415,14 @@ def create_app(
         install_ingestion_routes(
             application,
             service=document_ingestion_service,
+            max_upload_bytes=max_upload_bytes,
+        )
+    if document_replacement_upload_service is not None:
+        if type(authorization_runtime) is not ApiAuthorizationRuntime:
+            raise RuntimeError("Document replacement routes require an authorization runtime.")
+        install_document_replacement_upload_route(
+            application,
+            service=document_replacement_upload_service,
             max_upload_bytes=max_upload_bytes,
         )
     if batch_document_ingestion_service is not None:

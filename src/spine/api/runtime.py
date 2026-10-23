@@ -39,6 +39,7 @@ from spine.application.parsed_content_inspection import (
 )
 from spine.application.qa_observation.contracts import AdmittedExecutionIdentity
 from spine.application.document_queries import CanonicalDocumentQueryService
+from spine.application.document_replacement_upload import DocumentReplacementUploadService
 from spine.application.ingestion_history import OrchestratedIngestionHistoryService
 from spine.application.persistence.outbox import OutboxEventRegistry
 from spine.application.projection_control import (
@@ -73,6 +74,10 @@ from spine.infrastructure.ingestion_composition import (
 from spine.infrastructure.parsed_content_composition import (
     ProductionParsedContentAuthorizer,
     UnitOfWorkParsedContentDecisionAudit,
+)
+from spine.infrastructure.ingestion_fault_injection import (
+    IngestionFaultController,
+    IngestionFaultInjectionSettings,
 )
 from spine.infrastructure.operational_correlation import (
     PostgreSQLOperationalCorrelationReader,
@@ -171,6 +176,14 @@ def create_production_app(
     else:
         resolved_authentication = LocalAuthenticationSettings()
     resolved_profile = deployment_profile or ProductionQAADeploymentSettings().load_profile()
+    fault_controller = IngestionFaultController(
+        IngestionFaultInjectionSettings().load_profile()
+    )
+    fault_controller.assert_deployment_binding(
+        profile_id=resolved_profile.profile_id,
+        profile_version=resolved_profile.profile_version,
+        deployment_fingerprint=resolved_profile.deployment_fingerprint,
+    )
     authentication_mode = _validate_authentication_mode(
         resolved_api, resolved_authentication
     )
@@ -252,6 +265,7 @@ def create_production_app(
         max_bytes=resolved_api.max_upload_bytes,
         authority_alias_issuer=resolved_api.ingestion_service_alias_issuer,
         authority_alias_subject=resolved_api.ingestion_service_alias_subject,
+        fault_controller=fault_controller if fault_controller.enabled else None,
     )
     authorization_arguments = {
         "session_factory": sessions,
@@ -294,7 +308,12 @@ def create_production_app(
             resolved_api.cursor_secret.get_secret_value().encode("utf-8")
         ),
         document_ingestion_service=ingestion.document_service,
+        document_replacement_upload_service=DocumentReplacementUploadService(
+            uow_factory=persistence.uow_factory,
+            ingestion_service=ingestion.document_service,
+        ),
         batch_document_ingestion_service=ingestion.batch_service,
+        processing_command_service=ingestion.processing_service,
         ingestion_history_service=OrchestratedIngestionHistoryService(
             persistence.uow_factory
         ),
@@ -370,6 +389,7 @@ def create_production_app(
     application.state.ask_admission_service = ask_admission
     application.state.qa_session_service = qa_sessions
     application.state.production_qa_deployment_profile = resolved_profile
+    application.state.ingestion_fault_profile_enabled = fault_controller.enabled
     application.include_router(
         create_capture_channel_router(
             authenticator=_capture_authenticator(

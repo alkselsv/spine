@@ -662,6 +662,7 @@ test('test_document_detail_deep_link_reloads_and_preserves_scope_and_subview_nav
 
 test('test_document_lifecycle_actions_are_scope_owned_and_preserve_tombstone_lineage', async ({ page }) => {
   await installControlledDocumentDetail(page);
+  const replacementUploadRequests: Array<{ body: Buffer | null; headers: Record<string, string>; method: string; url: string }> = [];
   const lifecycleRequests: Array<{ body: string; headers: Record<string, string>; method: string; url: string }> = [];
   const statusRequests: Array<{ headers: Record<string, string>; url: string }> = [];
   const statusRequestCounts = new Map<string, number>();
@@ -711,16 +712,31 @@ test('test_document_lifecycle_actions_are_scope_owned_and_preserve_tombstone_lin
       status: 200,
     });
   });
-  await page.route(`**/api/v1/documents/${firstDocument}/replacement`, async (route) => {
+  await page.route(`**/api/v1/documents/${firstDocument}/replacement-upload`, async (route) => {
     const request = route.request();
     if (!isOwnedScope(request.headers(), salesWorkspace, stagingEnvironment)) {
       await fulfillForeignScopeDenied(route);
       return;
     }
-    lifecycleRequests.push({ body: request.postData() ?? '', headers: request.headers(), method: request.method(), url: request.url() });
+    replacementUploadRequests.push({ body: request.postDataBuffer(), headers: request.headers(), method: request.method(), url: request.url() });
     await route.fulfill({
       contentType: 'application/json',
-      body: JSON.stringify(controlledLifecycleReceipt('replacement', 'accepted_processing_pending')),
+      body: JSON.stringify({
+        acceptance: 'accepted',
+        binding_id: firstDocument,
+        failure_ids: [],
+        item_id: secondDocument,
+        processing: 'succeeded',
+        warning_ids: [],
+        replay: false,
+        run_id: firstDocument,
+        schema_version: 1,
+        source_object_id: firstDocument,
+        source_revision_id: secondDocument,
+        status: 'succeeded',
+        status_url: `/api/v1/ingestion/runs/${firstDocument}/items/${secondDocument}`,
+        terminal: true,
+      } satisfies components['schemas']['IngestionUploadResponse']),
       status: 202,
     });
   });
@@ -741,16 +757,15 @@ test('test_document_lifecycle_actions_are_scope_owned_and_preserve_tombstone_lin
   await page.goto(
     `/knowledge/documents/${firstDocument}?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`,
   );
-  await page.getByLabel('Ссылка на подготовленную загрузку').fill('staged-upload:controlled-001');
-  await page.getByLabel('Имя файла новой ревизии').fill('handbook.md');
-  await page.getByLabel('Идентичность загрузки').fill('handbook');
-  await page.getByLabel('Тип содержимого').selectOption('text/markdown');
+  const replacementContent = Buffer.from('# Replacement handbook\n');
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'handbook.md',
+    mimeType: 'text/markdown',
+    buffer: replacementContent,
+  });
   await page.getByRole('button', { name: 'Заменить документ' }).click();
-  await expect(page.locator('[aria-labelledby="document-actions-heading"]').getByRole('status')).toContainText('Операция завершена');
-  await expect(page.locator('[aria-labelledby="document-actions-heading"]')).toContainText('Каноническая приёмка');
-  await expect(page.locator('[aria-labelledby="document-actions-heading"]')).toContainText(firstDocument);
-  await expect(page.locator('[aria-labelledby="document-actions-heading"]')).toContainText('Запуск обработки');
-  await expect(page.getByRole('button', { name: 'Проверить статус операции' })).toBeVisible();
+  await expect(page.locator('[aria-labelledby="document-actions-heading"]').getByRole('status')).toContainText('Новая ревизия принята и обработана');
+  await expect(page.locator('[aria-labelledby="document-actions-heading"]')).toContainText(secondDocument);
 
   const isolatedDetailRequest = page.waitForRequest((request) => {
     const headers = request.headers();
@@ -779,22 +794,25 @@ test('test_document_lifecycle_actions_are_scope_owned_and_preserve_tombstone_lin
   await page.reload();
   await expect(page.getByRole('heading', { name: 'История ревизий' })).toBeVisible();
 
-  expect(lifecycleRequests).toHaveLength(2);
-  expect(lifecycleRequests[0]?.method).toBe('POST');
-  expect(lifecycleRequests[0]?.headers['x-workspace-id']).toBe(salesWorkspace);
-  expect(lifecycleRequests[0]?.headers['x-environment-id']).toBe(stagingEnvironment);
-  expect(lifecycleRequests[0]?.headers['idempotency-key']).toMatch(/^document-replacement-/);
-  expect(lifecycleRequests[0]?.body).toContain(secondDocument);
-  expect(lifecycleRequests[0]?.body).toContain('staged-upload:controlled-001');
-  expect(lifecycleRequests[1]?.headers['idempotency-key']).toMatch(/^document-tombstone-/);
-  expect(lifecycleRequests[1]?.body).toContain('source_deleted');
-  expect(lifecycleRequests[1]?.headers['x-workspace-id']).toBe(primaryWorkspace);
-  expect(lifecycleRequests[1]?.headers['x-environment-id']).toBe(localEnvironment);
+  expect(replacementUploadRequests).toHaveLength(1);
+  expect(replacementUploadRequests[0]?.method).toBe('POST');
+  expect(replacementUploadRequests[0]?.url).toContain(`/api/v1/documents/${firstDocument}/replacement-upload`);
+  expect(replacementUploadRequests[0]?.headers['x-workspace-id']).toBe(salesWorkspace);
+  expect(replacementUploadRequests[0]?.headers['x-environment-id']).toBe(stagingEnvironment);
+  expect(replacementUploadRequests[0]?.headers['idempotency-key']).toMatch(/^batch-upload-/);
+  expect(replacementUploadRequests[0]?.headers['if-match']).toBe(secondDocument);
+  expect(replacementUploadRequests[0]?.headers['x-filename']).toBe('handbook.md');
+  expect(replacementUploadRequests[0]?.headers['content-type']).toBe('text/markdown');
+  expect(replacementUploadRequests[0]?.body).toEqual(replacementContent);
+  expect(lifecycleRequests).toHaveLength(1);
+  expect(lifecycleRequests[0]?.headers['idempotency-key']).toMatch(/^document-tombstone-/);
+  expect(lifecycleRequests[0]?.body).toContain('source_deleted');
+  expect(lifecycleRequests[0]?.headers['x-workspace-id']).toBe(primaryWorkspace);
+  expect(lifecycleRequests[0]?.headers['x-environment-id']).toBe(localEnvironment);
   expect(lifecycleRequests.every(({ body }) => !body.includes('physical') && !body.includes('canonical_acceptance'))).toBe(true);
-  expect(statusRequests).toHaveLength(4);
+  expect(statusRequests).toHaveLength(2);
   expect(statusRequests.every(({ headers }) => headers.authorization === 'Bearer controlled-browser-token')).toBe(true);
-  expect(statusRequests.some(({ headers }) => headers['x-workspace-id'] === salesWorkspace && headers['x-environment-id'] === stagingEnvironment)).toBe(true);
-  expect(statusRequests.some(({ headers }) => headers['x-workspace-id'] === primaryWorkspace && headers['x-environment-id'] === localEnvironment)).toBe(true);
+  expect(statusRequests.every(({ headers }) => headers['x-workspace-id'] === primaryWorkspace && headers['x-environment-id'] === localEnvironment)).toBe(true);
 });
 
 test('test_projection_status_scope_switch_reload_and_safe_degradation', async ({ page }) => {

@@ -62,7 +62,9 @@ class IngestionSubmission:
             processing_receipt_id=(receipt.processing_receipt_id if receipt else None),
             parser_name=receipt.parser_name if receipt else None,
             warning_ids=receipt.warning_ids if receipt else (),
-            failure_ids=receipt.failure_ids if receipt else (),
+            failure_ids=(
+                tuple(dict.fromkeys((receipt.failure_ids if receipt else ()) + result.failure_ids))
+            ),
         )
 
 
@@ -84,6 +86,7 @@ class IngestionStatusSnapshot:
     artifact_digest: str | None
     warning_ids: tuple[UUID, ...]
     failure_ids: tuple[UUID, ...]
+    failure_reason_codes: tuple[str, ...] = ()
 
 
 class DocumentIngestionService(Protocol):
@@ -154,6 +157,7 @@ class OrchestratedDocumentIngestionService:
             head = await uow.ingestion.resolve_item_head(item_id)
             binding = await uow.ingestion.resolve_binding(item_id)
             receipt = await uow.ingestion.resolve_processing_receipt(item_id)
+            failures = await uow.ingestion.resolve_failures(item_id)
             await uow.commit()
 
         if head is None or not isinstance(head.state, IngestionItemState):
@@ -172,7 +176,13 @@ class OrchestratedDocumentIngestionService:
             artifact_id=(receipt.output_reference if receipt else None),
             artifact_digest=(receipt.output_digest if receipt else None),
             warning_ids=receipt.warning_ids if receipt else (),
-            failure_ids=receipt.failure_ids if receipt else (),
+            failure_ids=(
+                tuple(dict.fromkeys(
+                    (receipt.failure_ids if receipt else ())
+                    + tuple(failure.ingestion_failure_id for failure in failures)
+                ))
+            ),
+            failure_reason_codes=tuple(failure.code for failure in failures),
         )
 
     @staticmethod

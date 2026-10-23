@@ -456,23 +456,31 @@ function RunItem({
           </span>
         ))}
         {item.retryable ? <span>{ru.documents.run.retryable}</span> : null}
+        {item.failures.some((failure) => failure.code === 'pre_acceptance_retryable') ? (
+          <span>{ru.documents.run.preAcceptanceRetry}</span>
+        ) : null}
         <span>
           {ru.documents.run.nextAction.replace('{action}', nextActionLabel(state, retryable))}
         </span>
         {item.processing_receipt ? <ReceiptView receipt={item.processing_receipt} /> : null}
       </div>
       {item.retryable && item.source_object_id && item.source_revision_id
-        ? item.failures.filter((failure) => failure.retryable).map((failure) => (
-            <ProcessingCommandAction
-              client={client}
-              currentRevisionId={item.source_revision_id!}
-              key={failure.failure_id}
-              mode={{ kind: 'retry', failureId: failure.failure_id, retryable: failure.retryable }}
-              processingReceiptId={item.processing_receipt?.receipt_id}
-              queryKey={queryKey}
-              sourceObjectId={item.source_object_id!}
-              sourceRevisionId={item.source_revision_id!}
-            />
+        ? item.failures
+            .filter(
+              (failure) =>
+                failure.retryable && failure.code !== 'pre_acceptance_retryable',
+            )
+            .map((failure) => (
+              <ProcessingCommandAction
+                client={client}
+                currentRevisionId={item.source_revision_id!}
+                key={failure.failure_id}
+                mode={{ kind: 'retry', failureId: failure.failure_id, retryable: failure.retryable }}
+                processingReceiptId={item.processing_receipt?.receipt_id}
+                queryKey={queryKey}
+                sourceObjectId={item.source_object_id!}
+                sourceRevisionId={item.source_revision_id!}
+              />
           ))
         : null}
       <Link

@@ -64,6 +64,13 @@ from spine.application.persistence.outbox import (
     OpaqueObjectReference,
     OutboxEventRegistry,
 )
+from spine.application.processing_commands import (
+    OrchestratedProcessingCommandService,
+    ProcessingCommandResult,
+    ReprocessProcessingCommand,
+    RetryProcessingCommand,
+)
+from spine.application.document_lifecycle import ReplacementProcessingIntent
 from spine.application.storage import OriginalUploadOrchestrator
 from spine.domain.audit import (
     AuditObjectReference,
@@ -92,6 +99,10 @@ from spine.infrastructure.object_storage import (
     AuthorizedReadGrantRegistry,
     FilesystemOriginalObjectStore,
     FilesystemStorageProfile,
+)
+from spine.infrastructure.ingestion_fault_injection import (
+    IngestionFaultBoundary,
+    IngestionFaultController,
 )
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.persistence.parsed_artifacts import (
@@ -424,6 +435,7 @@ class ProductionIngestionComposition:
     document_service: "ProductionDocumentIngestionService"
     batch_service: "ProductionBatchDocumentIngestionService"
     parsed_artifacts: PostgreSQLParsedArtifactRepository
+    processing_service: "ProductionProcessingCommandService"
 
 
 @dataclass(frozen=True, slots=True)
@@ -441,6 +453,7 @@ class _SharedIngestion:
     audit_events: AuditEventRegistry
     authority_alias_issuer: str
     authority_alias_subject: str
+    fault_controller: IngestionFaultController | None = None
 
     def context_factory(
         self,
@@ -495,6 +508,21 @@ class _SharedIngestion:
             ),
             outbox_events=self.outbox_events,
             parser=parse_document,
+            fault_injector=self.fault_controller,
+        )
+
+    def processing_commands(
+        self, context: TrustedPersistenceContext
+    ) -> OrchestratedProcessingCommandService:
+        return OrchestratedProcessingCommandService(
+            uow_factory=self.uow_factory,  # type: ignore[arg-type]
+            validation_reader=self.reader,
+            parsed_artifacts=self.parsed_artifacts,
+            parser=parse_document,
+            context_factory=self.context_factory(
+                context, purpose="document.processing.v1"
+            ),
+            outbox_events=self.outbox_events,
         )
 
 
@@ -572,6 +600,39 @@ class ProductionBatchDocumentIngestionService:
         return await service.status(context=context, run_id=run_id)
 
 
+@dataclass(frozen=True, slots=True)
+class ProductionProcessingCommandService:
+    shared: _SharedIngestion
+
+    async def retry(
+        self, *, context: TrustedPersistenceContext, command: RetryProcessingCommand
+    ) -> ProcessingCommandResult:
+        return await self.shared.processing_commands(context).retry(
+            context=context, command=command
+        )
+
+    async def reprocess(
+        self, *, context: TrustedPersistenceContext, command: ReprocessProcessingCommand
+    ) -> ProcessingCommandResult:
+        return await self.shared.processing_commands(context).reprocess(
+            context=context, command=command
+        )
+
+    async def replacement(
+        self, *, context: TrustedPersistenceContext, intent: ReplacementProcessingIntent
+    ) -> ProcessingCommandResult:
+        return await self.shared.processing_commands(context).replacement(
+            context=context, intent=intent
+        )
+
+    async def status(
+        self, *, context: TrustedPersistenceContext, operation_id: UUID
+    ) -> ProcessingCommandResult | None:
+        return await self.shared.processing_commands(context).status(
+            context=context, operation_id=operation_id
+        )
+
+
 def build_production_ingestion(
     *,
     session_factory: object,
@@ -586,6 +647,7 @@ def build_production_ingestion(
     max_bytes: int,
     authority_alias_issuer: str,
     authority_alias_subject: str,
+    fault_controller: IngestionFaultController | None = None,
 ) -> ProductionIngestionComposition:
     grants = AuthorizedReadGrantRegistry()
     object_store = FilesystemOriginalObjectStore(
@@ -634,11 +696,13 @@ def build_production_ingestion(
         audit_events=audit_events,
         authority_alias_issuer=authority_alias_issuer,
         authority_alias_subject=authority_alias_subject,
+        fault_controller=fault_controller,
     )
     return ProductionIngestionComposition(
         document_service=ProductionDocumentIngestionService(shared),
         batch_service=ProductionBatchDocumentIngestionService(shared),
         parsed_artifacts=shared.parsed_artifacts,
+        processing_service=ProductionProcessingCommandService(shared),
     )
 
 
