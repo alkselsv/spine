@@ -33,7 +33,7 @@ from spine.domain.context_bundles import (
 
 
 SEMANTIC_SUPPORT_EVAL_SCHEMA_VERSION = "semantic-support-prompt-eval:v1"
-SEMANTIC_SUPPORT_EVAL_DATASET_VERSION = "2.0.0"
+SEMANTIC_SUPPORT_EVAL_DATASET_VERSION = "2.0.1"
 
 
 class SemanticSupportPromptCase(DefinitionModel):

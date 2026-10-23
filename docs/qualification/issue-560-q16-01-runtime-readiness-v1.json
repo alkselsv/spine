@@ -19,6 +19,16 @@
     "semantic_support_policy_digest": "fd3c4925e6f8dbdacd87ac45f9fc27b28d41325f5da3664032cb6b804eeda2ee",
     "chunk_projection_mapping_contract": "chunk-projection-mapping:v3"
   },
+  "semantic_support_evaluation": {
+    "artifact": "issue-560-semantic-support-eval-v2.json",
+    "artifact_sha256": "a59928352a404dc1b5487d71379a5c7cf9a2385f13691ec1be02ca7491fe87f0",
+    "schema_version": "semantic-support-prompt-eval-report:v2",
+    "dataset_version": "2.0.1",
+    "qualified_model_profile_id": "spine-openai-r1-v1",
+    "result": "PASS",
+    "passed_cases": 4,
+    "total_cases": 4
+  },
   "browser_qualification": {
     "run_id": "issue560-local-065",
     "result": "PASS",
@@ -182,13 +192,14 @@
     "capture_mode": "SAME_EXECUTION_IN_FLIGHT",
     "second_execution_observed": false,
     "attempt_count": 1,
-    "internal_path_invocations": {
+    "contract_expected_path_invocations": {
       "authorization": 1,
       "retrieval": 1,
       "generation": 1,
       "disclosure": 1
     },
-    "path_cardinality_source": "r1-qa-observer-capture:v1-single-attempt-contract",
+    "path_cardinality_basis": "CONTRACT_INFERENCE_NOT_OBSERVED_COUNTERS",
+    "path_cardinality_contract": "r1-qa-observer-capture:v1-single-attempt-contract",
     "safe_reason_code": null
   },
   "blockers": [],

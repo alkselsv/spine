@@ -1,6 +1,6 @@
 {
   "schema_version": "semantic-support-prompt-eval:v1",
-  "dataset_version": "2.0.0",
+  "dataset_version": "2.0.1",
   "policy_binding": "qa.semantic-support:r2",
   "prompt_digest": "fd3c4925e6f8dbdacd87ac45f9fc27b28d41325f5da3664032cb6b804eeda2ee",
   "assumptions": [
@@ -35,7 +35,7 @@
       "scenario": "unsupported_absence_claim",
       "claim": "The evidence does not mention Beta.",
       "evidence": ["Alpha is available."],
-      "expected_outcome": "inconclusive"
+      "expected_outcome": "unsupported"
     }
   ]
 }

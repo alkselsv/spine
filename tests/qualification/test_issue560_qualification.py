@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from pathlib import Path
+
+from spine.evals.semantic_support_prompt import SemanticSupportPromptEvaluationReport
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -9,6 +12,9 @@ REPORT_PATH = (
     ROOT / "docs/qualification/issue-560-q16-01-runtime-readiness-v1.json"
 )
 SUMMARY_PATH = ROOT / "docs/qualification/issue-560-q16-01-runtime-readiness.md"
+SEMANTIC_EVAL_PATH = (
+    ROOT / "docs/qualification/issue-560-semantic-support-eval-v2.json"
+)
 
 
 def _report() -> dict[str, object]:
@@ -137,13 +143,16 @@ def test_issue560_terminal_run_has_complete_same_execution_correlation() -> None
     assert run["capture_mode"] == "SAME_EXECUTION_IN_FLIGHT"
     assert run["second_execution_observed"] is False
     assert run["attempt_count"] == 1
-    assert run["internal_path_invocations"] == {
+    assert run["contract_expected_path_invocations"] == {
         "authorization": 1,
         "retrieval": 1,
         "generation": 1,
         "disclosure": 1,
     }
-    assert run["path_cardinality_source"] == (
+    assert run["path_cardinality_basis"] == (
+        "CONTRACT_INFERENCE_NOT_OBSERVED_COUNTERS"
+    )
+    assert run["path_cardinality_contract"] == (
         "r1-qa-observer-capture:v1-single-attempt-contract"
     )
     assert run["safe_reason_code"] is None
@@ -163,6 +172,28 @@ def test_issue560_terminal_run_has_complete_same_execution_correlation() -> None
     assert stale["attempt_count"] == 0
     assert stale["provider_calls_observed"] == 0
     assert stale["protected_source_disclosure"] is False
+
+
+def test_issue560_semantic_support_eval_is_pinned_content_free_and_passes() -> None:
+    report = _report()
+    evidence = report["semantic_support_evaluation"]
+    raw = SEMANTIC_EVAL_PATH.read_bytes()
+    evaluation = SemanticSupportPromptEvaluationReport.model_validate_json(raw)
+
+    assert evidence["artifact"] == SEMANTIC_EVAL_PATH.name
+    assert evidence["artifact_sha256"] == sha256(raw).hexdigest()
+    assert evidence["result"] == "PASS"
+    assert evaluation.dataset_version == evidence["dataset_version"] == "2.0.1"
+    assert evaluation.configuration.model_profile_id == (
+        evidence["qualified_model_profile_id"]
+    )
+    assert evaluation.prompt_digest == report["component_contracts"][
+        "semantic_support_policy_digest"
+    ]
+    assert evaluation.total_cases == evidence["total_cases"] == 4
+    assert evaluation.passed_cases == evidence["passed_cases"] == 4
+    assert evaluation.failed_case_ids == ()
+    assert all(item.passed for item in evaluation.case_outcomes)
 
 
 def test_issue560_artifacts_omit_protected_or_secret_fields() -> None:

@@ -1,0 +1,44 @@
+{
+  "schema_version": "semantic-support-prompt-eval-report:v2",
+  "dataset_version": "2.0.1",
+  "policy_binding": "qa.semantic-support:r2",
+  "prompt_digest": "fd3c4925e6f8dbdacd87ac45f9fc27b28d41325f5da3664032cb6b804eeda2ee",
+  "configuration": {
+    "evaluator_id": "spine.semantic-support-prompt-evaluation",
+    "evaluator_version": "v2",
+    "validator_id": "spine.configured-semantic-support-validator",
+    "validator_version": "qa.semantic-support:r2",
+    "model_profile_id": "spine-openai-r1-v1",
+    "model_profile_version": "v1",
+    "model_profile_digest": "25fcabea223bf090f736efe01c78a918930fc38b42d104e5b372ee9646dd367e"
+  },
+  "total_cases": 4,
+  "passed_cases": 4,
+  "failed_case_ids": [],
+  "case_outcomes": [
+    {
+      "case_id": "normalized-direct-match",
+      "expected_outcome": "supported",
+      "observed_outcome": "supported",
+      "passed": true
+    },
+    {
+      "case_id": "faithful-paraphrase",
+      "expected_outcome": "supported",
+      "observed_outcome": "supported",
+      "passed": true
+    },
+    {
+      "case_id": "partial-support",
+      "expected_outcome": "unsupported",
+      "observed_outcome": "unsupported",
+      "passed": true
+    },
+    {
+      "case_id": "unsupported-absence-claim",
+      "expected_outcome": "unsupported",
+      "observed_outcome": "unsupported",
+      "passed": true
+    }
+  ]
+}

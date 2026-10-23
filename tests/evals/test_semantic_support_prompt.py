@@ -29,7 +29,7 @@ class LabelledValidator:
             "ALPHA IS AVAILABLE": SemanticSupportOutcome.SUPPORTED,
             "Members can use Alpha.": SemanticSupportOutcome.SUPPORTED,
             "Alpha is available worldwide.": SemanticSupportOutcome.UNSUPPORTED,
-            "The evidence does not mention Beta.": SemanticSupportOutcome.INCONCLUSIVE,
+            "The evidence does not mention Beta.": SemanticSupportOutcome.UNSUPPORTED,
         }
         outcome = outcomes[claim]
         reasons = {
