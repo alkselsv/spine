@@ -60,6 +60,18 @@ def test_issue560_report_preserves_each_readiness_dimension() -> None:
     assert observations["stale_authorization_generation"] == (
         "PASS_DENIED_PRE_ATTEMPT"
     )
+    assert report["authority_bypass_observations"] == {
+        "wrong_environment_selector": "PASS_DENIED_403",
+        "foreign_token_credential": "PASS_DENIED_401",
+        "revoked_administrator": "PASS_DENIED_RUNTIME_VERIFIER",
+        "expired_administrator": "PASS_DENIED_RUNTIME_VERIFIER",
+        "request_controlled_claims": "PASS_DENIED_SCOPE_RESOLUTION",
+        "backup_authority": "PASS_NO_AUTHENTICATION_ALIAS",
+        "runtime_identity_content_authority": (
+            "PASS_NO_HUMAN_AUTHORITY_INHERITANCE"
+        ),
+        "access_policy_and_rls": "PASS_ALLOWED_AND_ISOLATED",
+    }
 
     provisioning = report["fixture_provisioning"]
     assert provisioning["mode"] == "explicit_operator_profile_before_runtime_start"
@@ -79,6 +91,25 @@ def test_issue560_report_preserves_each_readiness_dimension() -> None:
     assert manifest["capture_service_profile_id"] == "api-qa-capture-v1"
     assert manifest["capture_worker_workload_id"] == "spine-qa-worker"
     assert manifest["capture_observer_workload_id"] == "spine-qa-observer"
+    remediation = report["remediation_validation"]
+    assert len(remediation["commit_sha"]) == 40
+    assert len(remediation["deployment_fingerprint"]) == 64
+    assert remediation["browser_qualification"] == "PASS"
+    assert remediation["browser_scenario_count"] == 10
+    assert remediation["browser_terminal_run_count"] == 4
+    assert remediation["citation_locator_validation"] == "PASS"
+    assert remediation["runtime_authority_verifier"] == "PASS"
+    assert remediation["runtime_authority_verifier_case_count"] == 9
+    assert remediation["observer_capture_requalification"] == (
+        "NOT_CLAIMED_PROVIDER_TIMEOUT_AFTER_VERIFIED_RETRIEVAL"
+    )
+    assert remediation["inherits_prior_live_capture_evidence"] is True
+    contracts = remediation["component_contracts"]
+    assert contracts["semantic_support_policy_binding"] == "qa.semantic-support:r2"
+    assert len(contracts["semantic_support_policy_digest"]) == 64
+    assert contracts["chunk_projection_mapping_contract"] == (
+        "chunk-projection-mapping:v3"
+    )
 
 
 def test_issue560_terminal_run_has_complete_same_execution_correlation() -> None:
@@ -105,9 +136,21 @@ def test_issue560_terminal_run_has_complete_same_execution_correlation() -> None
     assert run["same_execution_capture"] == (
         "PASS_AUTHENTICATED_ACKNOWLEDGED"
     )
+    assert run["observer_registration"] == "PASS_BEFORE_ADMISSION"
+    assert run["subscription_id_matches_capture"] is True
+    assert run["capture_run_id_matches_terminal_run"] is True
+    assert run["capture_message_id_matches_terminal_message"] is True
+    assert run["capture_mode"] == "SAME_EXECUTION_IN_FLIGHT"
+    assert run["second_execution_observed"] is False
     assert run["attempt_count"] == 1
     assert run["safe_reason_code"] is None
     assert report["blockers"] == []
+    assert report["operator_amendment"] == {
+        "reference": "issue-560-comment-6368890758",
+        "scope": "disposable_source_profile_synthetic_authority",
+        "runtime_startup_readiness_mutation": False,
+        "production_authority": False,
+    }
 
     stale = report["stale_generation_probe"]
     assert stale["api_admission"] == "PASS_GENERATION_15"

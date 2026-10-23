@@ -13,6 +13,28 @@
     "environment_id": "54400000-0000-4000-8000-00000000000e",
     "authorization_generation": 16
   },
+  "remediation_validation": {
+    "observed_at": "2026-10-23T16:29:12Z",
+    "compose_project": "spine560review",
+    "commit_sha": "4f116e4ebf8814d52c1647ab1e1bac4ae35e0fbc",
+    "deployment_fingerprint": "23bd1ab5255a85f00dcda6bf08ad6ee6b983a66f39dc78a1257f262707e5a421",
+    "api_release_identity": "issue560-local-dev-v6",
+    "web_release_identity": "sha256:f621ed9c14d316c94b7cda7dc54a83ec603e2c4d21a4092b356273092748d544",
+    "browser_qualification_run_id": "issue560-local-064",
+    "browser_qualification": "PASS",
+    "browser_scenario_count": 10,
+    "browser_terminal_run_count": 4,
+    "citation_locator_validation": "PASS",
+    "runtime_authority_verifier": "PASS",
+    "runtime_authority_verifier_case_count": 9,
+    "component_contracts": {
+      "semantic_support_policy_binding": "qa.semantic-support:r2",
+      "semantic_support_policy_digest": "fd3c4925e6f8dbdacd87ac45f9fc27b28d41325f5da3664032cb6b804eeda2ee",
+      "chunk_projection_mapping_contract": "chunk-projection-mapping:v3"
+    },
+    "observer_capture_requalification": "NOT_CLAIMED_PROVIDER_TIMEOUT_AFTER_VERIFIED_RETRIEVAL",
+    "inherits_prior_live_capture_evidence": true
+  },
   "manifest": {
     "profile_id": "spine-local-qa",
     "profile_version": "v1",
@@ -94,11 +116,29 @@
     "cross_workspace_source": "PASS_NOT_FOUND_NO_IDENTITY_DISCLOSURE",
     "stale_authorization_generation": "PASS_DENIED_PRE_ATTEMPT"
   },
+  "authority_bypass_observations": {
+    "wrong_environment_selector": "PASS_DENIED_403",
+    "foreign_token_credential": "PASS_DENIED_401",
+    "revoked_administrator": "PASS_DENIED_RUNTIME_VERIFIER",
+    "expired_administrator": "PASS_DENIED_RUNTIME_VERIFIER",
+    "request_controlled_claims": "PASS_DENIED_SCOPE_RESOLUTION",
+    "backup_authority": "PASS_NO_AUTHENTICATION_ALIAS",
+    "runtime_identity_content_authority": "PASS_NO_HUMAN_AUTHORITY_INHERITANCE",
+    "access_policy_and_rls": "PASS_ALLOWED_AND_ISOLATED"
+  },
+  "operator_amendment": {
+    "reference": "issue-560-comment-6368890758",
+    "scope": "disposable_source_profile_synthetic_authority",
+    "runtime_startup_readiness_mutation": false,
+    "production_authority": false
+  },
   "fixture_provisioning": {
     "mode": "explicit_operator_profile_before_runtime_start",
     "idempotent_replay": "PASS",
     "runtime_verifier_role": "spine_runtime",
     "runtime_verifier_result": "PASS",
+    "runtime_verifier_schema_version": "q16-qualification-verification:v1",
+    "runtime_verifier_case_count": 9,
     "identity_count": 5,
     "qualification_authority_version_count": 5,
     "qualification_target_binding_count": 1,
@@ -141,6 +181,12 @@
     "answer_question_capability": "PASS_ANSWERED",
     "canonical_terminal_readback": "PASS_ANSWERED",
     "same_execution_capture": "PASS_AUTHENTICATED_ACKNOWLEDGED",
+    "observer_registration": "PASS_BEFORE_ADMISSION",
+    "subscription_id_matches_capture": true,
+    "capture_run_id_matches_terminal_run": true,
+    "capture_message_id_matches_terminal_message": true,
+    "capture_mode": "SAME_EXECUTION_IN_FLIGHT",
+    "second_execution_observed": false,
     "attempt_count": 1,
     "safe_reason_code": null
   },
