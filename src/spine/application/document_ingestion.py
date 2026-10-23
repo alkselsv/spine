@@ -463,13 +463,11 @@ class DocumentIngestionOrchestrator:
             update={"access_policy_version_id": policy_id}
         )
         try:
-            if self.fault_injector is not None:
-                self.fault_injector.inject_if_bound(
-                    workspace_id=request.workspace_id,
-                    environment_id=request.environment_id,
-                    command_identity=request.command_identity,
-                    boundary=IngestionFaultBoundary.PRE_ACCEPTANCE,
-                )
+            await self._inject_qualification_fault(
+                request=request,
+                item=item,
+                boundary=IngestionFaultBoundary.PRE_ACCEPTANCE,
+            )
             await self._accept_canonical(
                 governed_request, source, revision, provenance, admission
             )
@@ -810,13 +808,11 @@ class DocumentIngestionOrchestrator:
                 XLSX_MEDIA_TYPE,
             }:
                 raise UnsupportedDocumentFormat()
-            if self.fault_injector is not None:
-                self.fault_injector.inject_if_bound(
-                    workspace_id=request.workspace_id,
-                    environment_id=request.environment_id,
-                    command_identity=request.command_identity,
-                    boundary=IngestionFaultBoundary.ORIGINAL_STORAGE,
-                )
+            await self._inject_qualification_fault(
+                request=request,
+                item=item,
+                boundary=IngestionFaultBoundary.ORIGINAL_STORAGE,
+            )
             stream = self.validation_reader.read_finalized(
                 workspace_id=request.workspace_id,
                 environment_id=request.environment_id,
@@ -824,13 +820,11 @@ class DocumentIngestionOrchestrator:
                 receipt=values["upload"].write_receipt,
                 max_bytes=self.max_parse_bytes,
             )
-            if self.fault_injector is not None:
-                self.fault_injector.inject_if_bound(
-                    workspace_id=request.workspace_id,
-                    environment_id=request.environment_id,
-                    command_identity=request.command_identity,
-                    boundary=IngestionFaultBoundary.PARSER,
-                )
+            await self._inject_qualification_fault(
+                request=request,
+                item=item,
+                boundary=IngestionFaultBoundary.PARSER,
+            )
             artifact = self.parser(
                 revision,
                 await _read_bounded(stream, self.max_parse_bytes),
@@ -901,6 +895,34 @@ class DocumentIngestionOrchestrator:
             admission=values["admission"], status=status, artifact=artifact,
             processing_receipt=stored_receipt, replay=bool(values["replay"]),
             failure_ids=(failure.ingestion_failure_id,) if failure else (),
+        )
+
+    async def _inject_qualification_fault(
+        self,
+        *,
+        request: DocumentUploadCommand,
+        item: IngestionRunSource,
+        boundary: IngestionFaultBoundary,
+    ) -> None:
+        """Apply one configured fault only until its ledger failure is durable."""
+
+        if self.fault_injector is None:
+            return
+        context = self.context_factory(
+            PersistenceOperation("ingestion_run"), _id(request, "fault-check-trace")
+        )
+        async with self.uow_factory(context) as uow:
+            failures = await uow.ingestion.resolve_failures(
+                item.ingestion_run_source_id
+            )
+            await uow.rollback()
+        if failures:
+            return
+        self.fault_injector.inject_if_bound(
+            workspace_id=request.workspace_id,
+            environment_id=request.environment_id,
+            command_identity=request.command_identity,
+            boundary=boundary,
         )
 
     async def _persist_processing(

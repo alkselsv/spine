@@ -201,6 +201,13 @@ class _Ingestion:
     async def resolve_processing_receipt(self, item_id):
         return self.receipt
 
+    async def resolve_failures(self, item_id):
+        return tuple(
+            failure
+            for failure in self.failures
+            if failure.ingestion_run_source_id == item_id
+        )
+
     async def append_warning(self, warning):
         return warning
 
@@ -466,7 +473,10 @@ def _request(media_type: str, *, key: str = "document-1") -> DocumentUploadComma
     }.get(media_type, "document.bin")
     return DocumentUploadCommand(
         workspace_id=WORKSPACE, environment_id=ENVIRONMENT,
-        command_identity="document-upload", idempotency_key=key,
+        command_identity=(
+            "api.document.upload."
+            + hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+        ), idempotency_key=key,
         upload_identity="uploaded-document", purpose="document.upload.v1",
         declared_media_type=media_type, declared_filename=filename,
     )

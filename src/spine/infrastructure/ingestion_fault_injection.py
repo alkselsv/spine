@@ -7,7 +7,6 @@ process-local and one-shot.
 
 from __future__ import annotations
 
-from enum import Enum
 from threading import Lock
 from typing import Literal
 from uuid import UUID
@@ -36,7 +35,12 @@ class IngestionFaultRule(DefinitionModel):
 
     workspace_id: UUID
     environment_id: UUID
-    command_identity: str = Field(pattern=r"^[a-z][a-z0-9_.:-]{0,63}$")
+    command_identity: str = Field(
+        pattern=(
+            r"^api\.document\.(?:upload\.[a-f0-9]{32}|"
+            r"batch-upload\.[a-f0-9]{24}\.item-[1-9][0-9]*)$"
+        )
+    )
     boundary: IngestionFaultBoundary
     reason_code: IngestionFaultReason
 
@@ -60,7 +64,6 @@ class IngestionFaultInjectionProfile(DefinitionModel):
     )
     deployment_profile_version: VersionIdentifier
     deployment_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
-    api_replica_count: Literal[1] = 1
     rules: tuple[IngestionFaultRule, ...] = Field(min_length=1, max_length=32)
 
     @model_validator(mode="after")
@@ -110,10 +113,10 @@ class IngestionFaultController:
         environment_id: UUID,
         command_identity: str,
         boundary: IngestionFaultBoundary,
-    ) -> bool:
+    ) -> None:
         profile = self._profile
         if profile is None:
-            return False
+            return
         matching = next(
             (
                 (index, rule)
@@ -126,11 +129,11 @@ class IngestionFaultController:
             None,
         )
         if matching is None:
-            return False
+            return
         index, rule = matching
         with self._lock:
             if index in self._consumed:
-                return False
+                return
             self._consumed.add(index)
         raise IngestionFaultInjected(rule.reason_code)
 

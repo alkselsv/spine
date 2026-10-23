@@ -37,7 +37,7 @@ class IngestionFaultInjector(Protocol):
         environment_id: UUID,
         command_identity: str,
         boundary: IngestionFaultBoundary,
-    ) -> bool: ...
+    ) -> None: ...
 
 
 __all__ = [

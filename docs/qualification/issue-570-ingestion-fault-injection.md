@@ -4,15 +4,14 @@ Fault injection is disabled unless `SPINE_INGESTION_FAULT_PROFILE_JSON` is set
 on the isolated qualification API deployment. The v1 profile is immutable and
 bound to the running Q&A deployment profile ID, version and fingerprint. Startup
 fails closed if any binding differs. Both profile IDs must begin with
-`qualification-`, and the profile pins one API replica; it contains only
-synthetic workspace/environment IDs,
-synthetic command identities, one of the three fixed boundaries and its matching
-safe reason code.
+`qualification-`; it contains only synthetic workspace/environment IDs,
+server-generated command identities, one of the three fixed boundaries and its
+matching safe reason code.
 
 The profile may arm several distinct commands in one deployment. Each rule is
-consumed once per API process. Use the pinned single API replica for a
-qualification run; do
-not configure these profiles on a customer deployment. A restart resets the
+consumed once per API process, and the ingestion failure ledger prevents a
+second API replica from reinjecting a fault after its failure is durable. Do not
+configure these profiles on a customer deployment. A restart resets process-local
 one-shot state, so each qualification command must be unique within that run.
 
 Example shape (replace all identifiers with the approved isolated deployment's
@@ -26,26 +25,25 @@ non-secret references):
   "deployment_profile_id": "qualification-q16-01",
   "deployment_profile_version": "r1",
   "deployment_fingerprint": "<64 lowercase hex characters>",
-  "api_replica_count": 1,
   "rules": [
     {
       "workspace_id": "<isolated workspace UUID>",
       "environment_id": "<isolated environment UUID>",
-      "command_identity": "api.document.upload.<sha256-key-prefix>",
+      "command_identity": "api.document.upload.<32 lowercase hex characters>",
       "boundary": "parser",
       "reason_code": "parser_retryable"
     },
     {
       "workspace_id": "<isolated workspace UUID>",
       "environment_id": "<isolated environment UUID>",
-      "command_identity": "api.document.upload.<sha256-key-prefix>",
+      "command_identity": "api.document.upload.<32 lowercase hex characters>",
       "boundary": "original_storage",
       "reason_code": "original_storage_unavailable"
     },
     {
       "workspace_id": "<isolated workspace UUID>",
       "environment_id": "<isolated environment UUID>",
-      "command_identity": "api.document.upload.<sha256-key-prefix>",
+      "command_identity": "api.document.upload.<32 lowercase hex characters>",
       "boundary": "pre_acceptance",
       "reason_code": "pre_acceptance_retryable"
     }
