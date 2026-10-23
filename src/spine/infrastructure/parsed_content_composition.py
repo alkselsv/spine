@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from spine.auth.contracts import RequestedAuthorizationScope
@@ -14,7 +15,9 @@ from spine.application.content_authorization import (
     CurrentContentAuthorizationSnapshot,
     TrustedAuthorizationContext,
 )
+from spine.application.diagnostics import AuditEventRegistry
 from spine.application.parsed_content_inspection import (
+    ParsedContentDecisionAudit,
     ParsedContentInspectionRequester,
 )
 from spine.application.persistence.context import (
@@ -23,10 +26,20 @@ from spine.application.persistence.context import (
 )
 from spine.application.persistence.unit_of_work import UnitOfWorkFactory
 from spine.domain.sources import RevisionKind
-from spine.infrastructure.db.engine import SessionFactory
-from spine.infrastructure.persistence.postgresql_authorization import (
-    PostgreSQLQualificationAuthorityResolver,
+from spine.domain.audit import (
+    AuditObjectReference,
+    AuditOutcome,
+    ObjectAccessDecisionAuditPayload,
 )
+
+
+class _HumanAuthorityResolver(Protocol):
+    async def resolve_human_authority(
+        self,
+        *,
+        principal_id: UUID,
+        requested_scope: RequestedAuthorizationScope,
+    ) -> int | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +47,7 @@ class ProductionParsedContentAuthorizer:
     """Revalidate one interactive human and the current source policy."""
 
     uow_factory: UnitOfWorkFactory
-    session_factory: SessionFactory
+    authority_resolver: _HumanAuthorityResolver
 
     async def decide_read_content(
         self,
@@ -72,7 +85,7 @@ class ProductionParsedContentAuthorizer:
             context=context,
         )
         identity_authority = _RequestIdentityAuthority(
-            session_factory=self.session_factory,
+            authority_resolver=self.authority_resolver,
             workspace_id=scope.workspace_id,
             environment_id=scope.environment_id,
         )
@@ -80,6 +93,82 @@ class ProductionParsedContentAuthorizer:
             repository=repository,
             identity_authority=identity_authority,
         ).decide_human_disclosure(trusted, (source_object_id,))
+
+
+@dataclass(frozen=True, slots=True)
+class UnitOfWorkParsedContentDecisionAudit(ParsedContentDecisionAudit):
+    """Commit object-level authorization evidence before content disclosure."""
+
+    uow_factory: UnitOfWorkFactory
+    audit_events: AuditEventRegistry
+
+    async def record_decision(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        decision: ContentAuthorizationDecision,
+        requested_source_revision_id: UUID,
+    ) -> UUID:
+        scope = context.scope
+        if (
+            not isinstance(scope, EnvironmentScope)
+            or decision.workspace_id != scope.workspace_id
+            or decision.environment_id != scope.environment_id
+            or decision.trace_id != context.trace_id
+            or decision.purpose != context.purpose.value
+            or decision.operation != context.operation.value
+            or len(decision.source_object_ids) != 1
+        ):
+            raise ValueError("parsed content decision audit scope is invalid")
+        source_object_id = decision.source_object_ids[0]
+        evidence = decision.policy_evidence[0] if decision.allowed else None
+        if evidence is not None and evidence.source_object_id != source_object_id:
+            raise ValueError("parsed content decision audit evidence is invalid")
+        event = self.audit_events.build_event(
+            workspace_id=scope.workspace_id,
+            environment_id=scope.environment_id,
+            event_type="access.decision",
+            schema_version=3,
+            payload=ObjectAccessDecisionAuditPayload(
+                purpose=decision.purpose,
+                operation=decision.operation,
+                decision_kind=decision.decision_kind.value,
+                decision_reference=decision.decision_reference,
+                authority_snapshot_reference=decision.authority_snapshot_reference,
+                membership_generation=decision.membership_generation,
+                authority_generation=decision.authority_generation,
+                service_authority_generation=decision.service_authority_generation,
+                source_revision_id=requested_source_revision_id,
+                authorized_source_revision_id=(
+                    None if evidence is None else evidence.source_revision_id
+                ),
+                policy_version_id=(
+                    None if evidence is None else evidence.policy_version_id
+                ),
+                policy_generation=(
+                    None if evidence is None else evidence.policy_generation
+                ),
+            ),
+            origin=context.origin,
+            acting_subject_id=context.acting_subject_id,
+            service_principal_id=context.service_principal_id,
+            trace_id=context.trace_id,
+            occurred_at=decision.evaluated_at,
+            target=AuditObjectReference(
+                object_type="source_object",
+                object_id=source_object_id,
+                schema_version=1,
+            ),
+            outcome=(AuditOutcome.ALLOWED if decision.allowed else AuditOutcome.DENIED),
+            reason=decision.reason_code.value,
+            producer_deduplication_id=(
+                f"parsed_content.authorization.{decision.decision_reference.hex}"
+            ),
+        )
+        async with self.uow_factory(context) as uow:
+            audit_reference = await uow.audit.append(event)
+            await uow.commit()
+        return audit_reference
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,11 +233,11 @@ class _RequestIdentityAuthority:
     def __init__(
         self,
         *,
-        session_factory: SessionFactory,
+        authority_resolver: _HumanAuthorityResolver,
         workspace_id: UUID,
         environment_id: UUID,
     ) -> None:
-        self._resolver = PostgreSQLQualificationAuthorityResolver(session_factory)
+        self._resolver = authority_resolver
         self._workspace_id = workspace_id
         self._environment_id = environment_id
 
@@ -179,4 +268,7 @@ class _RequestIdentityAuthority:
         )
 
 
-__all__ = ["ProductionParsedContentAuthorizer"]
+__all__ = [
+    "ProductionParsedContentAuthorizer",
+    "UnitOfWorkParsedContentDecisionAudit",
+]

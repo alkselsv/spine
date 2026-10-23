@@ -72,11 +72,15 @@ from spine.infrastructure.ingestion_composition import (
 )
 from spine.infrastructure.parsed_content_composition import (
     ProductionParsedContentAuthorizer,
+    UnitOfWorkParsedContentDecisionAudit,
 )
 from spine.infrastructure.operational_correlation import (
     PostgreSQLOperationalCorrelationReader,
 )
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
+from spine.infrastructure.persistence.postgresql_authorization import (
+    PostgreSQLQualificationAuthorityResolver,
+)
 from spine.infrastructure.persistence.postgresql import PostgreSQLPersistence
 from spine.infrastructure.qa_observation_capture import (
     CaptureAuthorizer,
@@ -302,7 +306,11 @@ def create_production_app(
             parsed_artifacts=ingestion.parsed_artifacts,
             authorizer=ProductionParsedContentAuthorizer(
                 uow_factory=persistence.uow_factory,
-                session_factory=sessions,
+                authority_resolver=PostgreSQLQualificationAuthorityResolver(sessions),
+            ),
+            decision_audit=UnitOfWorkParsedContentDecisionAudit(
+                uow_factory=persistence.uow_factory,
+                audit_events=audit_registry,
             ),
         ),
         parsed_content_cursor_secret=(

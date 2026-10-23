@@ -115,6 +115,18 @@ class ParsedContentAuthorizer(Protocol):
     ) -> ContentAuthorizationDecision: ...
 
 
+class ParsedContentDecisionAudit(Protocol):
+    """Persist one object-level decision before its outcome is observed."""
+
+    async def record_decision(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        decision: ContentAuthorizationDecision,
+        requested_source_revision_id: UUID,
+    ) -> UUID: ...
+
+
 class TrustedContentAuthorizationContextFactory(Protocol):
     async def create(
         self,
@@ -167,6 +179,7 @@ class PersistedParsedContentInspectionService:
     uow_factory: UnitOfWorkFactory
     parsed_artifacts: ParsedArtifactRepository
     authorizer: ParsedContentAuthorizer
+    decision_audit: ParsedContentDecisionAudit
 
     async def inspect(
         self,
@@ -185,6 +198,11 @@ class PersistedParsedContentInspectionService:
                 context=context,
                 requester=requester,
                 query=query,
+            )
+            await self._record_decision(
+                context=context,
+                decision=decision,
+                requested_source_revision_id=query.source_revision_id,
             )
         except Exception:
             return _status(ParsedContentInspectionStatus.SERVICE_UNAVAILABLE)
@@ -270,6 +288,11 @@ class PersistedParsedContentInspectionService:
                 requester=requester,
                 query=query,
             )
+            await self._record_decision(
+                context=context,
+                decision=final_decision,
+                requested_source_revision_id=query.source_revision_id,
+            )
         except Exception:
             return _status(ParsedContentInspectionStatus.SERVICE_UNAVAILABLE)
         if not _decision_matches(final_decision, context, query):
@@ -301,6 +324,21 @@ class PersistedParsedContentInspectionService:
             source_object_id=query.source_object_id,
             source_revision_id=query.source_revision_id,
         )
+
+    async def _record_decision(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        decision: ContentAuthorizationDecision,
+        requested_source_revision_id: UUID,
+    ) -> None:
+        audit_reference = await self.decision_audit.record_decision(
+            context=context,
+            decision=decision,
+            requested_source_revision_id=requested_source_revision_id,
+        )
+        if not isinstance(audit_reference, UUID) or audit_reference.int == 0:
+            raise RuntimeError("parsed content decision audit is invalid")
 
 
 def _validate_request(
@@ -420,6 +458,7 @@ __all__ = [
     "ParsedContentInspectionResult",
     "ParsedContentInspectionService",
     "ParsedContentInspectionStatus",
+    "ParsedContentDecisionAudit",
     "PersistedParsedContentInspectionService",
     "TrustedContentAuthorizationContextFactory",
 ]

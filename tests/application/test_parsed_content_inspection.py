@@ -55,18 +55,26 @@ class Authorizer:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def decide_read_content(self, **kwargs):
+    async def decide_read_content(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        requester: ParsedContentInspectionRequester,
+        source_object_id: UUID,
+        source_revision_id: UUID,
+    ) -> ContentAuthorizationDecision:
+        del requester
         self.calls += 1
         return ContentAuthorizationDecision(
             allowed=True,
             decision_kind=AuthorizationDecisionKind.HUMAN_DISCLOSURE,
-            workspace_id=kwargs["context"].scope.workspace_id,
-            environment_id=kwargs["context"].scope.environment_id,
-            source_object_ids=(kwargs["source_object_id"],),
+            workspace_id=context.scope.workspace_id,
+            environment_id=context.scope.environment_id,
+            source_object_ids=(source_object_id,),
             policy_evidence=(
                 AuthorizationEvidence(
-                    source_object_id=kwargs["source_object_id"],
-                    source_revision_id=kwargs["source_revision_id"],
+                    source_object_id=source_object_id,
+                    source_revision_id=source_revision_id,
                     policy_version_id=UUID(int=12),
                     policy_generation=1,
                 ),
@@ -78,19 +86,27 @@ class Authorizer:
             operation="inspect_parsed_content",
             reason_code=AuthorizationReasonCode.ALLOWED,
             decision_reference=UUID(int=14),
-            trace_id=kwargs["context"].trace_id,
+            trace_id=context.trace_id,
             evaluated_at=NOW,
         )
 
 
 class DenyAuthorizer:
-    async def decide_read_content(self, **kwargs):
+    async def decide_read_content(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        requester: ParsedContentInspectionRequester,
+        source_object_id: UUID,
+        source_revision_id: UUID,
+    ) -> ContentAuthorizationDecision:
+        del requester, source_revision_id
         return ContentAuthorizationDecision(
             allowed=False,
             decision_kind=AuthorizationDecisionKind.HUMAN_DISCLOSURE,
-            workspace_id=kwargs["context"].scope.workspace_id,
-            environment_id=kwargs["context"].scope.environment_id,
-            source_object_ids=(kwargs["source_object_id"],),
+            workspace_id=context.scope.workspace_id,
+            environment_id=context.scope.environment_id,
+            source_object_ids=(source_object_id,),
             membership_generation=1,
             authority_generation=1,
             authority_snapshot_reference=UUID(int=13),
@@ -98,7 +114,7 @@ class DenyAuthorizer:
             operation="inspect_parsed_content",
             reason_code=AuthorizationReasonCode.AUTHORIZATION_DENIED,
             decision_reference=UUID(int=14),
-            trace_id=kwargs["context"].trace_id,
+            trace_id=context.trace_id,
             evaluated_at=NOW,
         )
 
@@ -108,10 +124,41 @@ class SingleConnectionAuthorizer(Authorizer):
         super().__init__()
         self.transaction_state = transaction_state
 
-    async def decide_read_content(self, **kwargs):
+    async def decide_read_content(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        requester: ParsedContentInspectionRequester,
+        source_object_id: UUID,
+        source_revision_id: UUID,
+    ) -> ContentAuthorizationDecision:
         if self.transaction_state["active"]:
             raise RuntimeError("authorization must not open inside the inspection transaction")
-        return await super().decide_read_content(**kwargs)
+        return await super().decide_read_content(
+            context=context,
+            requester=requester,
+            source_object_id=source_object_id,
+            source_revision_id=source_revision_id,
+        )
+
+
+class RecordingDecisionAudit:
+    def __init__(self, *, unavailable: bool = False) -> None:
+        self.unavailable = unavailable
+        self.decisions: list[ContentAuthorizationDecision] = []
+
+    async def record_decision(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        decision: ContentAuthorizationDecision,
+        requested_source_revision_id: UUID,
+    ) -> UUID:
+        del context, requested_source_revision_id
+        if self.unavailable:
+            raise RuntimeError("parsed content decision audit is unavailable")
+        self.decisions.append(decision)
+        return UUID(int=30 + len(self.decisions))
 
 
 class Uow:
@@ -207,6 +254,7 @@ async def test_authorized_current_receipt_returns_bounded_exact_segments() -> No
         uow_factory=lambda trusted: uow,
         parsed_artifacts=repository,
         authorizer=authorizer,
+        decision_audit=RecordingDecisionAudit(),
     )
 
     result = await service.inspect(
@@ -237,6 +285,7 @@ async def test_administrator_without_current_read_content_receives_no_segment() 
         uow_factory=lambda trusted: Uow(document),
         parsed_artifacts=repository,
         authorizer=DenyAuthorizer(),
+        decision_audit=RecordingDecisionAudit(),
     )
 
     result = await service.inspect(
@@ -265,6 +314,7 @@ async def test_single_connection_authorizer_returns_current_content_without_dead
         uow_factory=lambda trusted: Uow(document, transaction_state),
         parsed_artifacts=repository,
         authorizer=authorizer,
+        decision_audit=RecordingDecisionAudit(),
     )
 
     result = await service.inspect(
@@ -278,3 +328,32 @@ async def test_single_connection_authorizer_returns_current_content_without_dead
     )
 
     assert result.status is ParsedContentInspectionStatus.READY
+
+
+@pytest.mark.asyncio
+async def test_authorized_content_is_not_disclosed_when_decision_audit_is_unavailable() -> None:
+    document = parse_document(revision(b"one\ntwo\n"), b"one\ntwo\n")
+    repository = InMemoryParsedArtifactRepository()
+    await repository.persist(
+        ParsedArtifactCommand.create(document, command_identity="parse-audit-failure")
+    )
+    service = PersistedParsedContentInspectionService(
+        uow_factory=lambda trusted: Uow(document),
+        parsed_artifacts=repository,
+        authorizer=Authorizer(),
+        decision_audit=RecordingDecisionAudit(unavailable=True),
+    )
+
+    result = await service.inspect(
+        context=context(),
+        requester=ParsedContentInspectionRequester(subject_id=SUBJECT),
+        query=ParsedContentInspectionQuery(
+            source_object_id=document.source_object_id,
+            source_revision_id=document.source_revision_id,
+            processing_receipt_id=UUID(int=20),
+        ),
+    )
+
+    assert result.status is ParsedContentInspectionStatus.SERVICE_UNAVAILABLE
+    assert result.segments == ()
+    assert result.metadata is None
