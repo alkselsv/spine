@@ -22,15 +22,36 @@ afterEach(() => {
 });
 
 describe('document upload entry point', () => {
+  it('test_supported_docx_selection_opens_upload_review', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    renderUpload(fetch);
+    const user = userEvent.setup();
+
+    await user.upload(
+      screen.getByLabelText('Выбрать файлы'),
+      new File(
+        ['synthetic docx fixture'],
+        'handbook.docx',
+        { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+      ),
+    );
+
+    expect(await screen.findByRole('region', { name: 'Проверка перед отправкой' })).toBeVisible();
+    expect(screen.getByText('handbook.docx')).toBeVisible();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('test_invalid_selection_shows_russian_feedback_without_network_submission', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     renderUpload(fetch);
 
     fireEvent.change(screen.getByLabelText('Выбрать файлы'), {
-      target: { files: [new File(['secret'], 'protected.pdf', { type: 'application/pdf' })] },
+      target: { files: [new File(['synthetic'], 'unsupported.exe', { type: 'application/x-msdownload' })] },
     });
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('неподдерживаемый тип');
+    expect(await screen.findByRole('alert')).toHaveTextContent('файл неподдерживаемого типа');
+    expect(screen.getByRole('alert')).not.toHaveTextContent('unsupported.exe');
     expect(fetch).not.toHaveBeenCalled();
     expect(screen.queryByRole('button', { name: 'Загрузить документы' })).not.toBeInTheDocument();
   });

@@ -24,6 +24,9 @@ precedence. Keep credentials only in one of those two locations.
   authorized test scopes;
 - `SPINE_E2E_DOCUMENT_PATH`: permitted synthetic or approved anonymized `.txt`,
   `.md`, `.markdown`, `.pdf`, `.docx` or `.xlsx` file outside Git;
+- optionally `SPINE_E2E_DOCX_DOCUMENT_PATH`: permitted synthetic `.docx` file
+  outside Git for the focused UI → upload → parsing → projection regression;
+  when absent, only that focused test is skipped;
 - `SPINE_E2E_ANSWERABLE_QUESTION`, `SPINE_E2E_UNANSWERABLE_QUESTION` and
   `SPINE_E2E_CANCEL_QUESTION`: approved test inputs;
 - `SPINE_E2E_QUALIFICATION_RUN_ID`, `SPINE_E2E_COMMIT_SHA`,

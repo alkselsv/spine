@@ -1,7 +1,7 @@
 import type { components } from '../../../api/generated/schema';
 
 import type { ScopedApiClient } from '../../api/client';
-import type { UploadRow } from './upload';
+import { resolveUploadMediaType, type UploadRow } from './upload';
 
 export type BatchUploadResponse = components['schemas']['BatchIngestionUploadResponse'];
 export type BatchStatusResponse = components['schemas']['BatchIngestionStatusResponse'];
@@ -16,7 +16,7 @@ export async function submitDocumentBatch(
   for (const row of rows) {
     body.append(
       row.inputIdentity,
-      new Blob([row.file], { type: row.file.type || 'application/octet-stream' }),
+      new Blob([row.file], { type: resolveUploadMediaType(row.file) }),
       row.file.name,
     );
   }
