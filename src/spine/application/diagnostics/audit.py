@@ -51,6 +51,7 @@ from spine.domain.audit import (
     CanonicalTransitionAuditPayload,
     CommandAuditPayload,
     FeedbackAuditPayload,
+    ObjectAccessDecisionAuditPayload,
     OutboxDeliveryAuditPayload,
     RequestAccessDecisionAuditPayload,
     StorageOutcomeAuditPayload,
@@ -412,6 +413,15 @@ class AuditEventRegistry:
                 {AuditOutcome.ALLOWED, AuditOutcome.DENIED}
             ),
             requires_target=False,
+        )
+        registry.register(
+            event_type="access.decision",
+            schema_version=3,
+            payload_type=ObjectAccessDecisionAuditPayload,
+            allowed_outcomes=frozenset(
+                {AuditOutcome.ALLOWED, AuditOutcome.DENIED}
+            ),
+            requires_target=True,
         )
         registry.seal()
         return registry

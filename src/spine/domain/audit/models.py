@@ -169,6 +169,54 @@ class RequestAccessDecisionAuditPayload(BaseModel):
         return require_version_identifier(value, field_name=info.field_name)
 
 
+class ObjectAccessDecisionAuditPayload(BaseModel):
+    """Version-three object decision with immutable policy evidence."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    purpose: AuditIdentifier
+    operation: AuditIdentifier
+    decision_kind: AuditIdentifier
+    decision_reference: UUID
+    authority_snapshot_reference: UUID
+    membership_generation: int = Field(ge=1)
+    authority_generation: int = Field(ge=1)
+    service_authority_generation: int | None = Field(default=None, ge=1)
+    source_revision_id: UUID
+    authorized_source_revision_id: UUID | None = None
+    policy_version_id: UUID | None = None
+    policy_generation: int | None = Field(default=None, ge=1)
+
+    @field_validator("purpose", "operation", "decision_kind")
+    @classmethod
+    def validate_policy_identifier(cls, value: str, info: Any) -> str:
+        return _require_identifier(value, field_name=info.field_name)
+
+    @field_validator(
+        "decision_reference",
+        "authority_snapshot_reference",
+        "source_revision_id",
+        "authorized_source_revision_id",
+        "policy_version_id",
+    )
+    @classmethod
+    def validate_reference(cls, value: UUID | None, info: Any) -> UUID | None:
+        return _require_non_zero_uuid(value, field_name=info.field_name)
+
+    @model_validator(mode="after")
+    def validate_policy_evidence(self) -> ObjectAccessDecisionAuditPayload:
+        policy_evidence = (
+            self.authorized_source_revision_id,
+            self.policy_version_id,
+            self.policy_generation,
+        )
+        if any(item is not None for item in policy_evidence) and not all(
+            item is not None for item in policy_evidence
+        ):
+            raise ValueError("object access policy evidence must be complete")
+        return self
+
+
 class OutboxDeliveryAuditPayload(BaseModel):
     """Safe delivery-attempt payload."""
 

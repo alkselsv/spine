@@ -182,6 +182,10 @@ def test_production_app_exposes_protected_canonical_document_surface() -> None:
     assert "/api/v1/documents/processing-history" in paths
     assert "/api/v1/ingestion/runs" in paths
     assert "/api/v1/ingestion/runs/{run_id}" in paths
+    assert (
+        "/api/v1/knowledge/documents/{source_object_id}/revisions/"
+        "{source_revision_id}/parsed-content"
+    ) in paths
     assert "/api/v1/projections/{projection_kind}/status" in paths
     assert "/api/v1/projections/{projection_kind}/recovery" in paths
     assert "/api/v1/qa/sessions" in paths
@@ -196,6 +200,7 @@ def test_production_app_exposes_protected_canonical_document_surface() -> None:
     assert "/api/v1/qa/citations/{citation_id}" in paths
     assert application.state.document_ingestion_service is not None
     assert application.state.batch_document_ingestion_service is not None
+    assert application.state.parsed_content_inspection_service is not None
     assert application.state.document_lifecycle_command_service is not None
     assert application.state.projection_status_service is not None
     assert application.state.projection_recovery_service is not None
