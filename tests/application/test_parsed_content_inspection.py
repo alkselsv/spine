@@ -103,8 +103,19 @@ class DenyAuthorizer:
         )
 
 
+class SingleConnectionAuthorizer(Authorizer):
+    def __init__(self, transaction_state: dict[str, bool]) -> None:
+        super().__init__()
+        self.transaction_state = transaction_state
+
+    async def decide_read_content(self, **kwargs):
+        if self.transaction_state["active"]:
+            raise RuntimeError("authorization must not open inside the inspection transaction")
+        return await super().decide_read_content(**kwargs)
+
+
 class Uow:
-    def __init__(self, document):
+    def __init__(self, document, transaction_state=None):
         source = SimpleNamespace(
             source_object_id=document.source_object_id,
             workspace_id=document.workspace_id,
@@ -131,11 +142,16 @@ class Uow:
             )
         )
         self.committed = False
+        self.transaction_state = transaction_state
 
     async def __aenter__(self):
+        if self.transaction_state is not None:
+            self.transaction_state["active"] = True
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback):
+        if self.transaction_state is not None:
+            self.transaction_state["active"] = False
         return None
 
     async def commit(self):
@@ -236,3 +252,29 @@ async def test_administrator_without_current_read_content_receives_no_segment() 
     assert result.status is ParsedContentInspectionStatus.CONTENT_UNAVAILABLE
     assert result.segments == ()
     assert result.metadata is None
+
+
+@pytest.mark.asyncio
+async def test_single_connection_authorizer_returns_current_content_without_deadlock() -> None:
+    document = parse_document(revision(b"one\ntwo\n"), b"one\ntwo\n")
+    repository = InMemoryParsedArtifactRepository()
+    await repository.persist(ParsedArtifactCommand.create(document, command_identity="parse-3"))
+    transaction_state = {"active": False}
+    authorizer = SingleConnectionAuthorizer(transaction_state)
+    service = PersistedParsedContentInspectionService(
+        uow_factory=lambda trusted: Uow(document, transaction_state),
+        parsed_artifacts=repository,
+        authorizer=authorizer,
+    )
+
+    result = await service.inspect(
+        context=context(),
+        requester=ParsedContentInspectionRequester(subject_id=SUBJECT),
+        query=ParsedContentInspectionQuery(
+            source_object_id=document.source_object_id,
+            source_revision_id=document.source_revision_id,
+            processing_receipt_id=UUID(int=20),
+        ),
+    )
+
+    assert result.status is ParsedContentInspectionStatus.READY

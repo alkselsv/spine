@@ -423,6 +423,7 @@ class ProductionIngestionComposition:
 
     document_service: "ProductionDocumentIngestionService"
     batch_service: "ProductionBatchDocumentIngestionService"
+    parsed_artifacts: PostgreSQLParsedArtifactRepository
 
 
 @dataclass(frozen=True, slots=True)
@@ -637,6 +638,7 @@ def build_production_ingestion(
     return ProductionIngestionComposition(
         document_service=ProductionDocumentIngestionService(shared),
         batch_service=ProductionBatchDocumentIngestionService(shared),
+        parsed_artifacts=shared.parsed_artifacts,
     )
 
 

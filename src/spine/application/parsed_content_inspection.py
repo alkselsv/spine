@@ -180,6 +180,17 @@ class PersistedParsedContentInspectionService:
         except Exception:
             raise InvalidParsedContentRequest("parsed content request is invalid") from None
 
+        try:
+            decision = await self._authorize(
+                context=context,
+                requester=requester,
+                query=query,
+            )
+        except Exception:
+            return _status(ParsedContentInspectionStatus.SERVICE_UNAVAILABLE)
+        if not _decision_matches(decision, context, query):
+            return _safe_unavailable()
+
         async with self.uow_factory(context) as uow:
             try:
                 source = await uow.sources.resolve_source(query.source_object_id)
@@ -195,15 +206,6 @@ class PersistedParsedContentInspectionService:
                     or revision.workspace_id != context.scope.workspace_id
                     or revision.environment_id != context.scope.environment_id
                 ):
-                    await uow.commit()
-                    return _safe_unavailable()
-
-                decision = await self._authorize(
-                    context=context,
-                    requester=requester,
-                    query=query,
-                )
-                if not _decision_matches(decision, context, query):
                     await uow.commit()
                     return _safe_unavailable()
 
@@ -253,24 +255,35 @@ class PersistedParsedContentInspectionService:
                 ):
                     await uow.commit()
                     return _status(ParsedContentInspectionStatus.INTEGRITY_MISMATCH)
-                final_head = await uow.canonical.resolve_current(query.source_object_id)
-                final_decision = await self._authorize(
-                    context=context,
-                    requester=requester,
-                    query=query,
-                )
-                if not _current_revision_matches(source, final_head, context, query):
-                    await uow.commit()
-                    return _safe_unavailable()
-                if not _decision_matches(final_decision, context, query):
-                    await uow.commit()
-                    return _safe_unavailable()
                 result = _bounded_result(page, query)
                 await uow.commit()
-                return result
             except InvalidParsedContentRequest:
                 await uow.rollback()
                 raise
+            except Exception:
+                await uow.rollback()
+                return _status(ParsedContentInspectionStatus.SERVICE_UNAVAILABLE)
+
+        try:
+            final_decision = await self._authorize(
+                context=context,
+                requester=requester,
+                query=query,
+            )
+        except Exception:
+            return _status(ParsedContentInspectionStatus.SERVICE_UNAVAILABLE)
+        if not _decision_matches(final_decision, context, query):
+            return _safe_unavailable()
+
+        async with self.uow_factory(context) as uow:
+            try:
+                source = await uow.sources.resolve_source(query.source_object_id)
+                final_head = await uow.canonical.resolve_current(query.source_object_id)
+                if not _current_revision_matches(source, final_head, context, query):
+                    await uow.commit()
+                    return _safe_unavailable()
+                await uow.commit()
+                return result
             except Exception:
                 await uow.rollback()
                 return _status(ParsedContentInspectionStatus.SERVICE_UNAVAILABLE)

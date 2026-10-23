@@ -34,6 +34,9 @@ from spine.application.production_qa_deployment import (
     ProductionQAADeploymentProfile,
     ProductionQAAProfileMismatch,
 )
+from spine.application.parsed_content_inspection import (
+    PersistedParsedContentInspectionService,
+)
 from spine.application.qa_observation.contracts import AdmittedExecutionIdentity
 from spine.application.document_queries import CanonicalDocumentQueryService
 from spine.application.ingestion_history import OrchestratedIngestionHistoryService
@@ -66,6 +69,9 @@ from spine.infrastructure.document_lifecycle import (
 from spine.infrastructure.ingestion_composition import (
     build_production_ingestion,
     register_ingestion_outbox_events,
+)
+from spine.infrastructure.parsed_content_composition import (
+    ProductionParsedContentAuthorizer,
 )
 from spine.infrastructure.operational_correlation import (
     PostgreSQLOperationalCorrelationReader,
@@ -289,6 +295,17 @@ def create_production_app(
             persistence.uow_factory
         ),
         ingestion_history_cursor_secret=(
+            resolved_api.cursor_secret.get_secret_value().encode("utf-8")
+        ),
+        parsed_content_inspection_service=PersistedParsedContentInspectionService(
+            uow_factory=persistence.uow_factory,
+            parsed_artifacts=ingestion.parsed_artifacts,
+            authorizer=ProductionParsedContentAuthorizer(
+                uow_factory=persistence.uow_factory,
+                session_factory=sessions,
+            ),
+        ),
+        parsed_content_cursor_secret=(
             resolved_api.cursor_secret.get_secret_value().encode("utf-8")
         ),
         document_lifecycle_command_service=ProductionDocumentLifecycleCommandService(
