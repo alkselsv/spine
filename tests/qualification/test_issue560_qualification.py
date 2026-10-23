@@ -15,7 +15,7 @@ def _report() -> dict[str, object]:
     return json.loads(REPORT_PATH.read_text(encoding="utf-8"))
 
 
-def test_issue560_report_is_exact_metadata_only_and_does_not_claim_pass() -> None:
+def test_issue560_report_is_exact_metadata_only_and_reports_current_blocker() -> None:
     report = _report()
 
     assert report["schema_version"] == "q16-01-runtime-readiness:v1"
@@ -37,9 +37,9 @@ def test_issue560_report_preserves_each_readiness_dimension() -> None:
     report = _report()
     readiness = report["readiness"]
 
-    assert readiness["configuration"] == "BLOCKED"
-    assert readiness["reachability"] == "NOT_VERIFIED"
-    assert readiness["authorization"] == "NOT_VERIFIED"
+    assert readiness["configuration"] == "PASS"
+    assert readiness["reachability"] == "BLOCKED"
+    assert readiness["authorization"] == "PASS"
     assert readiness["runtime_provider_bindings"] == "PASS"
     assert readiness["qualification_authority_binding"] == "PASS"
     assert readiness["qualification_target_binding"] == "PASS"
@@ -48,7 +48,14 @@ def test_issue560_report_preserves_each_readiness_dimension() -> None:
     assert readiness["provider_calls_observed"] == 0
 
     observations = report["authorization_observations"]
-    assert observations["approved_scope"] == "PASS_API_ADMITTED"
+    assert observations["approved_scope_a"] == "PASS_200"
+    assert observations["approved_scope_b"] == "PASS_200"
+    assert observations["cross_workspace_source"] == (
+        "PASS_NOT_FOUND_NO_IDENTITY_DISCLOSURE"
+    )
+    assert observations["stale_authorization_generation"] == (
+        "PASS_DENIED_PRE_ATTEMPT"
+    )
 
     provisioning = report["fixture_provisioning"]
     assert provisioning["mode"] == "explicit_operator_profile_before_runtime_start"
@@ -70,18 +77,25 @@ def test_issue560_report_preserves_each_readiness_dimension() -> None:
     assert manifest["capture_observer_workload_id"] == "spine-qa-observer"
 
 
-def test_issue560_synthetic_run_does_not_elevate_partial_correlation() -> None:
+def test_issue560_provider_blocker_does_not_elevate_partial_correlation() -> None:
     report = _report()
     run = report["synthetic_ask"]
 
-    assert run["api_admission"] == "PASS"
-    assert run["canonical_outbox"] == "PASS_DELIVERED"
-    assert run["dispatcher_delivery"] == "PASS"
-    assert run["temporal_admission"] == "PASS_RUNNING"
-    assert run["answer_question_capability"] == "BLOCKED"
-    assert run["canonical_terminal_readback"] == "BLOCKED_ADMITTED"
+    assert run["api_admission"] == "BLOCKED"
+    assert run["canonical_outbox"] == "BLOCKED"
+    assert run["dispatcher_delivery"] == "BLOCKED_PROVIDER_REACHABILITY"
+    assert run["temporal_admission"] == "NOT_VERIFIED"
+    assert run["answer_question_capability"] == "NOT_VERIFIED"
+    assert run["canonical_terminal_readback"] == "NOT_VERIFIED"
     assert run["same_execution_capture"] == "NOT_VERIFIED"
     assert run["attempt_count"] == 0
+
+    stale = report["stale_generation_probe"]
+    assert stale["api_admission"] == "PASS_GENERATION_15"
+    assert stale["worker_authorization"] == "PASS_DENIED_AT_GENERATION_16"
+    assert stale["attempt_count"] == 0
+    assert stale["provider_calls_observed"] == 0
+    assert stale["protected_source_disclosure"] is False
 
 
 def test_issue560_artifacts_omit_protected_or_secret_fields() -> None:

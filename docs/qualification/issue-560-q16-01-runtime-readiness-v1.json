@@ -1,14 +1,14 @@
 {
   "schema_version": "q16-01-runtime-readiness:v1",
   "issue": 560,
-  "observed_at": "2026-10-22T19:50:10Z",
+  "observed_at": "2026-10-23T12:10:50Z",
   "decision": "BLOCKED",
   "target": {
     "kind": "repository-owned-isolated-source-compose",
-    "compose_project": "spine560r",
-    "commit_sha": "4d68588878ee33a82a5db1692fb713fcde32b624",
-    "deployment_fingerprint": "773a23659b64597b491c339c5c7d715f15b1bfcb9ec5988f8946f422856f456d",
-    "release_identity": "issue560-local-dev-v3",
+    "compose_project": "spine560final",
+    "commit_sha": "b7784c97baf4a991e96d7cc0ba6e69fcca390521",
+    "deployment_fingerprint": "8de5cb3c9ab97bc12607cd5ef3fdced872e0c0f68ed8e58234043b7dc6f19479",
+    "release_identity": "issue560-local-dev-v4",
     "workspace_id": "54400000-0000-4000-8000-00000000000a",
     "environment_id": "54400000-0000-4000-8000-00000000000e",
     "authorization_generation": 16
@@ -35,29 +35,29 @@
     "projection_profile_id": "spine-cognee-local-v1",
     "model_profile_id": "spine-openai-r1-v1",
     "provider_profile_id": "cognee-approved-production",
-    "provider_profile_digest": "a4b5b13cef86d86b6c257205f1485108e0d833b780f66ff8ad15f5bccd135c15",
+    "provider_profile_digest": "8935297e3def5e786f7e3d34db87d13c2106fbb7f82f8d695c747cee4fe1c84f",
     "cognee_version": "1.5.4",
     "neo4j_apoc_version": "5.26.32",
     "pgvector_available_version": "0.8.7",
-    "pgvector_installed_version": null,
+    "pgvector_installed_version": "0.8.7",
     "neo4j_python_version": "5.28.6",
     "pgvector_python_version": "0.3.6",
     "llm_model": "openai/gpt-5.4-nano",
     "embedding_model": "openai/text-embedding-3-small",
     "images": {
-      "api": "sha256:9ff7bca067776a0a56ee69a002ce5917b09a98c126b77123acc2909858b29f85",
-      "qa_worker": "sha256:8ec8f469c7e577aedd8c09744609edddf395539b71c3095be7fc2519291bf8a1",
-      "outbox_dispatcher": "sha256:408bce5f6372e4f1142eea893adb5ff3be96f01a69ab68b67f3ea84106d7b674",
-      "web": "sha256:c7e953d8bee5c4b0e2025173c8e08b637bff3c2b120520917e315c6f25440261",
+      "api": "sha256:aedc4a79a2624f7771658c891a57ef1441cd7f5b4d1c5553ea44033c9f038143",
+      "qa_worker": "sha256:b85dd1c455356c2e13fe85628c82b0aa8e20bd9896752d118addafa802d306af",
+      "outbox_dispatcher": "sha256:3e406896c885c1a4dc5317410784fdc3ff9c3882c700404055329d8851d5b021",
+      "web": "sha256:33f2cf685b69bf710647a570069263e7a4ed3b9c10d3d4283ceefa030cd50983",
       "postgresql": "sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d",
       "temporal": "sha256:607d68caa111338d754771efb876c92dfcdae06d056e4530bb31cd0f37406e6a",
-      "neo4j": "sha256:69dfd805f2e306aafe713a979092723c6d66f9dd3573deace05b52a37396abd3"
+      "neo4j": "sha256:95f3c5ade14911d038bc15af04028c2f0ad6a73d352cd029d26ff199b498001d"
     }
   },
   "readiness": {
-    "configuration": "BLOCKED",
-    "reachability": "NOT_VERIFIED",
-    "authorization": "NOT_VERIFIED",
+    "configuration": "PASS",
+    "reachability": "BLOCKED",
+    "authorization": "PASS",
     "runtime_provider_bindings": "PASS",
     "qualification_authority_binding": "PASS",
     "qualification_target_binding": "PASS",
@@ -70,7 +70,8 @@
     "worker_polling": "polling",
     "dispatcher": "running",
     "observer_capture": "NOT_VERIFIED",
-    "provider_calls_observed": 0
+    "provider_calls_observed": 0,
+    "qualification_provider_attempts": 5
   },
   "database_posture": {
     "migration_current": true,
@@ -82,14 +83,16 @@
     "spine_tables": 82
   },
   "authorization_observations": {
-    "approved_scope": "PASS_API_ADMITTED",
+    "approved_scope_a": "PASS_200",
+    "approved_scope_b": "PASS_200",
     "wrong_environment_pair": "PASS_DENIED_403",
     "unknown_workspace": "PASS_DENIED_403",
     "foreign_credential": "PASS_DENIED_401",
     "insufficient_role": "PASS_DENIED_RUNTIME_VERIFIER",
     "revoked_or_expired_authority": "PASS_DENIED_RUNTIME_VERIFIER",
     "foreign_scope": "PASS_DENIED_RUNTIME_VERIFIER",
-    "stale_authorization_generation": "NOT_VERIFIED"
+    "cross_workspace_source": "PASS_NOT_FOUND_NO_IDENTITY_DISCLOSURE",
+    "stale_authorization_generation": "PASS_DENIED_PRE_ATTEMPT"
   },
   "fixture_provisioning": {
     "mode": "explicit_operator_profile_before_runtime_start",
@@ -97,7 +100,7 @@
     "runtime_verifier_role": "spine_runtime",
     "runtime_verifier_result": "PASS",
     "identity_count": 5,
-    "qualification_authority_version_count": 4,
+    "qualification_authority_version_count": 5,
     "qualification_target_binding_count": 1,
     "access_policy_version_count": 1,
     "access_policy_grant_count": 1,
@@ -109,48 +112,46 @@
     "generation_after_advance": 16,
     "generation_after_advance_retry": 16
   },
+  "stale_generation_probe": {
+    "command_id": "c3975519-ebc5-412d-b97d-fdb9c061e4c1",
+    "message_id": "f6a76e4f-bb69-4e2d-ada4-fe4a769bd0ca",
+    "run_id": "d6b3dcda-c1c2-4b49-b688-63bf59550087",
+    "api_admission": "PASS_GENERATION_15",
+    "canonical_outbox": "PASS_DELIVERED",
+    "temporal_admission": "PASS_RUNNING",
+    "worker_authorization": "PASS_DENIED_AT_GENERATION_16",
+    "attempt_count": 0,
+    "provider_calls_observed": 0,
+    "protected_source_disclosure": false,
+    "temporal_cleanup": "CANCELLED"
+  },
   "synthetic_ask": {
-    "command_id": "b0f99f05-0232-4e9a-9dc0-3f7fc9baa33f",
-    "message_id": "d3c30504-bf7c-41c9-9a96-e013d477f971",
-    "run_id": "e3c4c51b-0e01-4ff8-8c34-f7e38ed9a6ad",
-    "trace_id": "1e8dc295-ef9d-4df9-af65-21d24d76dae3",
+    "command_id": null,
+    "message_id": null,
+    "run_id": null,
+    "trace_id": null,
     "capture_id": null,
     "subscription_id": null,
-    "outbox_event_id": "c5d7021b-0fd9-535c-82ea-f2faa21a9267",
-    "temporal_run_id": "01a16529-8f7b-7ddd-86ea-9789a0a7a6c1",
-    "api_admission": "PASS",
-    "canonical_outbox": "PASS_DELIVERED",
-    "dispatcher_delivery": "PASS",
-    "temporal_admission": "PASS_RUNNING",
-    "answer_question_capability": "BLOCKED",
-    "canonical_terminal_readback": "BLOCKED_ADMITTED",
+    "outbox_event_id": null,
+    "temporal_run_id": null,
+    "api_admission": "BLOCKED",
+    "canonical_outbox": "BLOCKED",
+    "dispatcher_delivery": "BLOCKED_PROVIDER_REACHABILITY",
+    "temporal_admission": "NOT_VERIFIED",
+    "answer_question_capability": "NOT_VERIFIED",
+    "canonical_terminal_readback": "NOT_VERIFIED",
     "same_execution_capture": "NOT_VERIFIED",
     "attempt_count": 0,
-    "safe_reason_code": "active_projection_unavailable",
-    "supported_api_cancellation": "BLOCKED_503",
-    "temporal_cleanup": "CANCELLED",
-    "canonical_cleanup": "BLOCKED_ADMITTED"
+    "safe_reason_code": "provider_endpoint_tls_unavailable"
   },
   "blockers": [
     {
-      "code": "access_policy_rls_combination_not_exercised",
-      "meaning": "The exact target binding exists and its AccessPolicy reference resolves, but the full protected-content AccessPolicy plus RLS allow, deny and workspace-isolation matrix cannot run without an active publication."
+      "code": "provider_endpoint_tls_unavailable",
+      "meaning": "The configured external model service resolved and accepted TCP but closed TLS before HTTP from both the host and two independent Docker networks. Five bounded projection attempts failed and the outbox delivery was quarantined without activating a projection."
     },
     {
-      "code": "active_projection_unavailable",
-      "meaning": "The SOURCE target has no active Q&A publication. The worker fails closed while preparing the pinned production configuration before capability invocation. Creating or activating a projection is owned by issue 562, which currently depends on issue 560."
-    },
-    {
-      "code": "pre_attempt_failure_not_terminalized",
-      "meaning": "Configuration failure occurs before attempt allocation; Temporal retries while the canonical run remains admitted, and the supported cancellation request returns a bounded unavailable response."
-    },
-    {
-      "code": "stale_authorization_generation_not_exercised",
-      "meaning": "The one-shot operator fixture advanced generation 15 to 16 and replay held at 16, but a request admitted at 15 has not yet been exercised through the protected application path."
-    },
-    {
-      "code": "pgvector_extension_not_installed",
-      "meaning": "The pinned PostgreSQL image offers PGVector 0.8.7, but the extension is not installed in the selected database."
+      "code": "terminal_capability_and_capture_not_exercised",
+      "meaning": "Without a provider-backed active projection, the exact profile cannot yet produce a terminal production AnswerQuestionCapability execution or authenticated same-execution observer capture."
     }
   ],
   "privacy": {
