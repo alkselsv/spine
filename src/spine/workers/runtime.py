@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import json
 import logging
-import os
 import signal
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -65,6 +64,7 @@ from spine.infrastructure.diagnostics import JsonLoggingDiagnosticSink
 from spine.infrastructure.ingestion_composition import register_ingestion_outbox_events
 from spine.infrastructure.local_cognee_provider_guards import (
     LocalCogneeProviderAuthorizationSettings,
+    LocalCogneeProviderSecretPresenceSettings,
     build_local_cognee_provider_guards,
 )
 from spine.infrastructure.outbox.delivery import PostgreSQLOutboxDeliveryRepository
@@ -927,6 +927,7 @@ def create_production_outbox_worker_runtime(
     secret_resolver: SecretReferenceResolver | None = None,
     budget_authorization_resolver: BudgetAuthorizationResolver | None = None,
     provider_call_executor: CogneeProviderCallExecutor | None = None,
+    secret_presence_settings: LocalCogneeProviderSecretPresenceSettings | None = None,
 ) -> ProductionOutboxWorkerRuntime:
     runtime_db = runtime_database or RuntimeDatabaseSettings()
     dispatcher_db = dispatcher_database or DispatcherDatabaseSettings()
@@ -945,20 +946,14 @@ def create_production_outbox_worker_runtime(
         )
         if local_authorization is not None:
             profile = cognee_configuration.profile
-            available_references: set[str] = set()
-            if os.environ.get("DB_PASSWORD"):
-                available_references.add(profile.postgres_secret_ref)
-            if os.environ.get("GRAPH_DATABASE_PASSWORD"):
-                available_references.add(profile.neo4j_secret_ref)
-            if os.environ.get("LLM_API_KEY") and (
-                os.environ.get("EMBEDDING_API_KEY")
-                or os.environ.get("LLM_API_KEY")
-            ):
-                available_references.add(profile.model_secret_ref)
+            available_references = (
+                secret_presence_settings
+                or LocalCogneeProviderSecretPresenceSettings()
+            ).available_references(profile)
             local_guards = build_local_cognee_provider_guards(
                 profile=profile,
                 authorization=local_authorization,
-                available_secret_references=frozenset(available_references),
+                available_secret_references=available_references,
             )
             secret_resolver = local_guards.secret_resolver
             budget_authorization_resolver = (

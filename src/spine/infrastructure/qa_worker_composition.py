@@ -134,6 +134,9 @@ from spine.infrastructure.qa_agent_runtime import (
     ConfiguredLLMRuntimeProvider,
     ConfiguredSemanticSupportValidator,
     PostgreSQLQAArtifactStore,
+    SEMANTIC_SUPPORT_POLICY_BINDING,
+    SEMANTIC_SUPPORT_POLICY_DIGEST,
+    SEMANTIC_SUPPORT_POLICY_VERSION,
 )
 
 
@@ -384,9 +387,9 @@ class _ScopedConfigurationCatalog:
             semantic_support_policy=PinnedConfigurationVersion(
                 **common,
                 identity_id=scoped("semantic-policy"),
-                binding_key="qa.semantic-support:r1",
-                version="r1",
-                digest=uuid5(NAMESPACE_URL, "qa.semantic-support:r1").hex * 2,
+                binding_key=SEMANTIC_SUPPORT_POLICY_BINDING,
+                version=SEMANTIC_SUPPORT_POLICY_VERSION,
+                digest=SEMANTIC_SUPPORT_POLICY_DIGEST,
             ),
             approved=True,
         )
@@ -1096,12 +1099,12 @@ class _ValidationPlans:
             requests.append(
                 SemanticSupportRequest(
                     policy=SemanticSupportPolicy(
-                        policy_id=uuid5(NAMESPACE_URL, "spine:qa-semantic-policy:r1"),
-                        policy_version="qa.semantic-support:r1",
-                        policy_digest=uuid5(
-                            NAMESPACE_URL, "spine:qa-semantic-policy:r1:digest"
-                        ).hex
-                        * 2,
+                        policy_id=uuid5(
+                            NAMESPACE_URL,
+                            f"spine:{SEMANTIC_SUPPORT_POLICY_BINDING}",
+                        ),
+                        policy_version=SEMANTIC_SUPPORT_POLICY_BINDING,
+                        policy_digest=SEMANTIC_SUPPORT_POLICY_DIGEST,
                     ),
                     scope=question.scope,
                     correlation=question.correlation,

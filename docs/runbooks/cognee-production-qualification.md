@@ -97,6 +97,27 @@ in-memory parsed-artifact repository or fabricate a Cognee adapter receipt from
 fixture input. The target fails at the end if any gate failed or was not run;
 provider exception text is never serialized.
 
+## Chunk projection mapping v3 rollout
+
+`chunk-projection-mapping:v3` adds the complete parsed-locator union. Adapter
+mapping records are an in-process retry cache, so `v2` records are not migrated
+or accepted as `v3`. Roll out the format only through this sequence:
+
+1. create a new shadow namespace and rebuild it from the canonical accepted
+   SourceRevision set and immutable parsed artifacts;
+2. validate every mapping against the expected namespace, source revision,
+   projection configuration and locator digest;
+3. run `tests/memory/cognee/test_indexing.py`,
+   `tests/evals/test_retrieval_replay.py`, the retrieval/provenance/ACL suites,
+   and the opt-in production qualification command below;
+4. seal and activate only the validated candidate through the canonical
+   publication boundary.
+
+If any rebuild, validation or regression gate fails, leave the v3 candidate
+unpublished. Roll back by creating the ADR-0018 successor snapshot from the
+last validated active inputs; never reinterpret v2 mappings, mutate the active
+provider namespace in place or rewind a publication pointer.
+
 ## Interpreting the result
 
 The current committed result is **go** from coherent live run

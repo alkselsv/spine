@@ -10,6 +10,7 @@ from spine.infrastructure.local_cognee_provider_guards import (
     LocalCogneeProviderAuthorization,
     LocalCogneeProviderAuthorizationSet,
     LocalCogneeProviderAuthorizationSettings,
+    LocalCogneeProviderSecretPresenceSettings,
     build_local_cognee_provider_guards,
 )
 from spine.memory.cognee.projection_profile_binding import (
@@ -80,6 +81,52 @@ def test_local_authorization_settings_are_explicit_and_optional(
     )
 
     assert LocalCogneeProviderAuthorizationSettings().load_optional() == authorization
+
+
+def test_secret_presence_settings_resolve_only_available_profile_references(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = _profile()
+    for name in (
+        "DB_PASSWORD",
+        "GRAPH_DATABASE_PASSWORD",
+        "LLM_API_KEY",
+        "EMBEDDING_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    assert (
+        LocalCogneeProviderSecretPresenceSettings().available_references(profile)
+        == frozenset()
+    )
+
+    monkeypatch.setenv("DB_PASSWORD", "synthetic-postgres")
+    monkeypatch.setenv("GRAPH_DATABASE_PASSWORD", "synthetic-graph")
+    monkeypatch.setenv("LLM_API_KEY", "synthetic-model")
+    settings = LocalCogneeProviderSecretPresenceSettings()
+
+    assert settings.available_references(profile) == frozenset(
+        {
+            profile.postgres_secret_ref,
+            profile.neo4j_secret_ref,
+            profile.model_secret_ref,
+        }
+    )
+    assert "synthetic" not in repr(settings)
+
+
+def test_embedding_key_without_llm_key_does_not_satisfy_model_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = _profile()
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.setenv("EMBEDDING_API_KEY", "synthetic-embedding")
+
+    available = LocalCogneeProviderSecretPresenceSettings().available_references(
+        profile
+    )
+
+    assert profile.model_secret_ref not in available
 
 
 @pytest.mark.asyncio

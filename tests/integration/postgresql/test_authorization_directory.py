@@ -480,6 +480,33 @@ async def test_qualification_provisioning_repairs_matching_partial_fixture(
     )
 
 
+async def test_qualification_runtime_verifier_rejects_unprovisioned_backup_and_runtime_aliases(
+    authorization_database: AuthorizationDatabase,
+) -> None:
+    settings = _qualification_settings(
+        authorization_database,
+        prefix="non-human-authority",
+        identity_offset=0xB8,
+    )
+    await provision_qualification(settings)
+
+    report = await verify_qualification(
+        _qualification_verification_settings(authorization_database, settings)
+    )
+
+    assert report.verified_case_ids == (
+        "approved-scope-a",
+        "foreign-approved-scope",
+        "insufficient-role",
+        "revoked-administrator",
+        "expired-administrator",
+        "approved-scope-b",
+        "request-controlled-foreign-scope",
+        "backup-authority-alias",
+        "runtime-identity-alias",
+    )
+
+
 async def test_qualification_provisioning_rejects_conflicting_immutable_fixture(
     authorization_database: AuthorizationDatabase,
 ) -> None:

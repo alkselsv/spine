@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import Literal, TypeVar
 from uuid import UUID
 
-from pydantic import Field, TypeAdapter, ValidationError, field_validator
+from pydantic import Field, SecretStr, TypeAdapter, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from spine.domain.common import DefinitionModel
@@ -109,6 +109,57 @@ class LocalCogneeProviderAuthorizationSettings(BaseSettings):
             raise LocalCogneeProviderAuthorizationError(
                 "authorization_invalid"
             ) from None
+
+
+class LocalCogneeProviderSecretPresenceSettings(BaseSettings):
+    """Map deployment secret presence to approved profile references.
+
+    Values remain ``SecretStr`` and never leave this settings boundary. Cognee's
+    local profile permits ``LLM_API_KEY`` to back both LLM and embedding calls;
+    an embedding-only key cannot satisfy the shared model secret reference.
+    """
+
+    model_config = SettingsConfigDict(
+        extra="forbid",
+        frozen=True,
+        env_file=None,
+        case_sensitive=True,
+        hide_input_in_errors=True,
+        populate_by_name=True,
+    )
+
+    postgres_password: SecretStr | None = Field(
+        default=None,
+        repr=False,
+        validation_alias="DB_PASSWORD",
+    )
+    graph_database_password: SecretStr | None = Field(
+        default=None,
+        repr=False,
+        validation_alias="GRAPH_DATABASE_PASSWORD",
+    )
+    llm_api_key: SecretStr | None = Field(
+        default=None,
+        repr=False,
+        validation_alias="LLM_API_KEY",
+    )
+    embedding_api_key: SecretStr | None = Field(
+        default=None,
+        repr=False,
+        validation_alias="EMBEDDING_API_KEY",
+    )
+
+    def available_references(
+        self, profile: CogneeWorkerProfile
+    ) -> frozenset[str]:
+        references: set[str] = set()
+        if self.postgres_password is not None:
+            references.add(profile.postgres_secret_ref)
+        if self.graph_database_password is not None:
+            references.add(profile.neo4j_secret_ref)
+        if self.llm_api_key is not None:
+            references.add(profile.model_secret_ref)
+        return frozenset(references)
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,6 +296,7 @@ __all__ = [
     "LocalCogneeProviderAuthorizationError",
     "LocalCogneeProviderAuthorizationSet",
     "LocalCogneeProviderAuthorizationSettings",
+    "LocalCogneeProviderSecretPresenceSettings",
     "LocalCogneeProviderGuards",
     "build_local_cognee_provider_guards",
 ]

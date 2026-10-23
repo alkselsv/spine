@@ -203,7 +203,7 @@ class CogneePublicSdk:
 class ChunkProjectionMapping(DefinitionModel):
     """Content-free mapping from a parsed segment to its physical data ID."""
 
-    schema_version: Literal["chunk-projection-mapping:v2"] = "chunk-projection-mapping:v2"
+    schema_version: Literal["chunk-projection-mapping:v3"] = "chunk-projection-mapping:v3"
     workspace_id: UUID
     environment_id: UUID
     namespace_digest: str = Field(pattern=r"[0-9a-f]{64}")

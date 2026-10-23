@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Literal
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import Field, model_validator
@@ -44,6 +45,7 @@ from spine.domain.context_profiles import (
     PartialAnswerFallback,
     RetrievalStrategy,
 )
+from spine.domain.common import DefinitionModel
 from spine.infrastructure.db.settings import POSTGRESQL_SEARCH_PATH_OPTIONS
 from spine.infrastructure.persistence.postgresql_qualification_fixtures import (
     PostgreSQLQualificationFixtureProvisioner,
@@ -57,85 +59,66 @@ from spine.infrastructure.persistence.postgresql_qualification_targets import (
 )
 
 
-class QualificationBootstrapSettings(BaseSettings):
+class _QualificationScopeSettings(BaseSettings):
+    """Shared immutable identity and target scope for Q16 operator commands."""
+
+    model_config = SettingsConfigDict(
+        extra="forbid",
+        frozen=True,
+        env_file=None,
+        env_prefix="SPINE_QUALIFICATION_",
+        case_sensitive=False,
+        hide_input_in_errors=True,
+    )
+
+    deployment_mode: str = Field(pattern="^development$")
+    identity_id: UUID
+    authentication_alias_issuer: str = Field(min_length=1, max_length=2048)
+    authentication_alias_subject: str = Field(min_length=1, max_length=512)
+    workspace_a_id: UUID
+    workspace_b_id: UUID
+    environment_a_id: UUID
+    environment_b_id: UUID
+    target_reference: str = Field(min_length=1, max_length=255)
+    target_scope_reference: str = Field(min_length=1, max_length=255)
+    secret_provider_reference: str = Field(min_length=1, max_length=255)
+    secret_reference: str = Field(min_length=1, max_length=255)
+    database_role_reference: str = Field(min_length=1, max_length=255)
+
+    @model_validator(mode="after")
+    def validate_distinct_scopes(self) -> "_QualificationScopeSettings":
+        if self.workspace_a_id == self.workspace_b_id:
+            raise ValueError("qualification workspaces must be distinct")
+        if self.environment_a_id == self.environment_b_id:
+            raise ValueError("qualification environments must be distinct")
+        AuthenticationAlias(
+            issuer=self.authentication_alias_issuer,
+            subject=self.authentication_alias_subject,
+        )
+        return self
+
+
+class QualificationBootstrapSettings(_QualificationScopeSettings):
     """Closed settings for an explicitly disposable development deployment."""
 
-    model_config = SettingsConfigDict(
-        extra="forbid",
-        frozen=True,
-        env_file=None,
-        env_prefix="SPINE_QUALIFICATION_",
-        case_sensitive=False,
-        hide_input_in_errors=True,
-    )
-
-    deployment_mode: str = Field(pattern="^development$")
     migration_database_url: str = Field(min_length=1)
-    identity_id: UUID
-    authentication_alias_issuer: str = Field(min_length=1, max_length=2048)
-    authentication_alias_subject: str = Field(min_length=1, max_length=512)
-    workspace_a_id: UUID
-    workspace_b_id: UUID
-    environment_a_id: UUID
-    environment_b_id: UUID
     authority_expires_at: datetime
-    target_reference: str = Field(min_length=1, max_length=255)
-    target_scope_reference: str = Field(min_length=1, max_length=255)
-    secret_provider_reference: str = Field(min_length=1, max_length=255)
-    secret_reference: str = Field(min_length=1, max_length=255)
-    database_role_reference: str = Field(min_length=1, max_length=255)
-
-    @model_validator(mode="after")
-    def validate_distinct_scopes(self) -> "QualificationBootstrapSettings":
-        if self.workspace_a_id == self.workspace_b_id:
-            raise ValueError("qualification workspaces must be distinct")
-        if self.environment_a_id == self.environment_b_id:
-            raise ValueError("qualification environments must be distinct")
-        AuthenticationAlias(
-            issuer=self.authentication_alias_issuer,
-            subject=self.authentication_alias_subject,
-        )
-        return self
 
 
-class QualificationVerificationSettings(BaseSettings):
+class QualificationVerificationSettings(_QualificationScopeSettings):
     """Runtime-role settings for mutation-free qualification verification."""
 
-    model_config = SettingsConfigDict(
-        extra="forbid",
-        frozen=True,
-        env_file=None,
-        env_prefix="SPINE_QUALIFICATION_",
-        case_sensitive=False,
-        hide_input_in_errors=True,
-    )
-
-    deployment_mode: str = Field(pattern="^development$")
     runtime_database_url: str = Field(min_length=1)
-    identity_id: UUID
-    authentication_alias_issuer: str = Field(min_length=1, max_length=2048)
-    authentication_alias_subject: str = Field(min_length=1, max_length=512)
-    workspace_a_id: UUID
-    workspace_b_id: UUID
-    environment_a_id: UUID
-    environment_b_id: UUID
-    target_reference: str = Field(min_length=1, max_length=255)
-    target_scope_reference: str = Field(min_length=1, max_length=255)
-    secret_provider_reference: str = Field(min_length=1, max_length=255)
-    secret_reference: str = Field(min_length=1, max_length=255)
-    database_role_reference: str = Field(min_length=1, max_length=255)
 
-    @model_validator(mode="after")
-    def validate_distinct_scopes(self) -> "QualificationVerificationSettings":
-        if self.workspace_a_id == self.workspace_b_id:
-            raise ValueError("qualification workspaces must be distinct")
-        if self.environment_a_id == self.environment_b_id:
-            raise ValueError("qualification environments must be distinct")
-        AuthenticationAlias(
-            issuer=self.authentication_alias_issuer,
-            subject=self.authentication_alias_subject,
-        )
-        return self
+
+class QualificationVerificationReport(DefinitionModel):
+    """Content-free result of least-privilege runtime authority verification."""
+
+    schema_version: Literal["q16-qualification-verification:v1"] = (
+        "q16-qualification-verification:v1"
+    )
+    verified_case_ids: tuple[str, ...]
+    target_binding_verified: bool
 
 
 @dataclass(frozen=True)
@@ -585,7 +568,9 @@ async def bootstrap(settings: QualificationBootstrapSettings) -> None:
     await provision(settings)
 
 
-async def verify(settings: QualificationVerificationSettings) -> None:
+async def verify(
+    settings: QualificationVerificationSettings,
+) -> QualificationVerificationReport:
     """Verify pre-provisioned authority through the least-privilege runtime role."""
 
     engine = create_async_engine(
@@ -595,7 +580,7 @@ async def verify(settings: QualificationVerificationSettings) -> None:
         connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
     )
     try:
-        await _verify_existing_authority(engine, settings)
+        return await _verify_existing_authority(engine, settings)
     finally:
         await engine.dispose()
 
@@ -603,46 +588,67 @@ async def verify(settings: QualificationVerificationSettings) -> None:
 async def _verify_existing_authority(
     engine: AsyncEngine,
     settings: QualificationBootstrapSettings | QualificationVerificationSettings,
-) -> None:
+) -> QualificationVerificationReport:
     cases = (
         (
+            "approved-scope-a",
             settings.authentication_alias_subject,
             settings.workspace_a_id,
             settings.environment_a_id,
             settings.identity_id,
         ),
         (
+            "foreign-approved-scope",
             f"{settings.authentication_alias_subject}-foreign-scope",
             settings.workspace_b_id,
             settings.environment_b_id,
             _stable_id(settings, "identity:foreign-scope"),
         ),
         (
+            "insufficient-role",
             f"{settings.authentication_alias_subject}-insufficient-role",
             settings.workspace_a_id,
             settings.environment_a_id,
             None,
         ),
         (
+            "revoked-administrator",
             f"{settings.authentication_alias_subject}-revoked",
             settings.workspace_a_id,
             settings.environment_a_id,
             None,
         ),
         (
+            "expired-administrator",
             f"{settings.authentication_alias_subject}-expired",
             settings.workspace_a_id,
             settings.environment_a_id,
             None,
         ),
         (
+            "approved-scope-b",
             settings.authentication_alias_subject,
             settings.workspace_b_id,
             settings.environment_b_id,
             settings.identity_id,
         ),
         (
+            "request-controlled-foreign-scope",
             f"{settings.authentication_alias_subject}-foreign-scope",
+            settings.workspace_a_id,
+            settings.environment_a_id,
+            None,
+        ),
+        (
+            "backup-authority-alias",
+            f"{settings.authentication_alias_subject}-backup-authority",
+            settings.workspace_a_id,
+            settings.environment_a_id,
+            None,
+        ),
+        (
+            "runtime-identity-alias",
+            f"{settings.authentication_alias_subject}-runtime-identity",
             settings.workspace_a_id,
             settings.environment_a_id,
             None,
@@ -650,7 +656,13 @@ async def _verify_existing_authority(
     )
     verified_cases = 0
     async with engine.connect() as connection:
-        for subject, workspace_id, environment_id, expected_identity_id in cases:
+        for (
+            _case_id,
+            subject,
+            workspace_id,
+            environment_id,
+            expected_identity_id,
+        ) in cases:
             await connection.execute(
                 text(
                     "SELECT "
@@ -693,6 +705,10 @@ async def _verify_existing_authority(
         raise RuntimeError(
             "existing qualification target binding does not match configuration"
         )
+    return QualificationVerificationReport(
+        verified_case_ids=tuple(case[0] for case in cases),
+        target_binding_verified=True,
+    )
 
 
 def _stable_id(
@@ -719,6 +735,7 @@ def main_advance_generation() -> None:
 __all__ = [
     "QualificationBootstrapSettings",
     "QualificationVerificationSettings",
+    "QualificationVerificationReport",
     "advance_authorization_generation",
     "bootstrap",
     "build_authorization_records",

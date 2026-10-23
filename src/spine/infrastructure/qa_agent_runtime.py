@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
 import json
 from collections.abc import Awaitable, Callable
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -44,6 +45,11 @@ _SEMANTIC_SUPPORT_SYSTEM_PROMPT = (
     "something is not supported unless the evidence explicitly establishes that absence. "
     "Do not add explanations or infer facts absent from the evidence."
 )
+SEMANTIC_SUPPORT_POLICY_BINDING = "qa.semantic-support:r2"
+SEMANTIC_SUPPORT_POLICY_VERSION = "r2"
+SEMANTIC_SUPPORT_POLICY_DIGEST = sha256(
+    _SEMANTIC_SUPPORT_SYSTEM_PROMPT.encode("utf-8")
+).hexdigest()
 
 
 class PostgreSQLQAArtifactStore:

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
+from pydantic import ValidationError
 
 from spine.domain.artifacts import (
     OoxmlBlockPathStep,
@@ -89,6 +90,35 @@ def test_chunk_projection_mapping_accepts_every_parsed_locator(locator: object) 
     )
 
     assert mapping.locator == locator
+    assert mapping.schema_version == "chunk-projection-mapping:v3"
+
+
+def test_chunk_projection_mapping_rejects_legacy_v2_as_current_contract() -> None:
+    mapping = ChunkProjectionMapping(
+        workspace_id=WORKSPACE_ID,
+        environment_id=ENVIRONMENT_ID,
+        namespace_digest="1" * 64,
+        source_object_id=SOURCE_OBJECT_ID,
+        source_revision_id=REVISION_ID,
+        revision_digest="2" * 64,
+        revision_number=1,
+        projection_config_id=CONFIG_ID,
+        projection_config_version="1",
+        projection_config_digest="3" * 64,
+        segment_id=UUID("d0000000-0000-4000-8000-000000000001"),
+        segment_digest="4" * 64,
+        data_id=UUID("e0000000-0000-4000-8000-000000000001"),
+        locator=PageTextLocator(
+            page_number=1,
+            start_codepoint=0,
+            end_codepoint=4,
+        ),
+    )
+    payload = mapping.model_dump(mode="json")
+    payload["schema_version"] = "chunk-projection-mapping:v2"
+
+    with pytest.raises(ValidationError, match="chunk-projection-mapping:v3"):
+        ChunkProjectionMapping.model_validate(payload)
 
 
 @dataclass(frozen=True)
