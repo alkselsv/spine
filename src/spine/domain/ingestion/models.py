@@ -275,7 +275,19 @@ class IngestionFailure(_FrozenRecord):
     ingestion_run_source_id: UUID
     attempt: PositiveInt
     stage: FailureStage
-    code: Literal["invalid_input", "storage_unavailable", "storage_integrity_conflict", "observation_conflict", "parser_failed", "locator_failed", "persistence_failed", "cancelled"]
+    code: Literal[
+        "invalid_input",
+        "storage_unavailable",
+        "storage_integrity_conflict",
+        "observation_conflict",
+        "parser_failed",
+        "locator_failed",
+        "persistence_failed",
+        "cancelled",
+        "parser_retryable",
+        "original_storage_unavailable",
+        "pre_acceptance_retryable",
+    ]
     retryable: bool
     safe_detail: SafeDiagnosticDetail
     occurred_at: datetime

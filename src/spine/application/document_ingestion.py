@@ -28,6 +28,11 @@ from spine.application.ingestion import (
     ValidationOutcome,
     _assert_evidence_matches_receipt,
 )
+from spine.application.ingestion_faults import (
+    IngestionFaultBoundary,
+    IngestionFaultInjected,
+    IngestionFaultInjector,
+)
 from spine.application.persistence.canonical import CanonicalAcceptanceCommand
 from spine.application.persistence.context import (
     PersistenceOperation,
@@ -299,6 +304,7 @@ class DocumentIngestionResult:
     artifact: ParsedDocument | None = None
     processing_receipt: ProcessingReceipt | None = None
     replay: bool = False
+    failure_ids: tuple[UUID, ...] = ()
 
 
 class _UploadService(Protocol):
@@ -324,6 +330,7 @@ class DocumentIngestionOrchestrator:
     canonical_command_factory: CanonicalAcceptanceCommandFactory
     outbox_events: OutboxEventRegistry
     parser: DocumentParser
+    fault_injector: IngestionFaultInjector | None = None
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
     max_validation_bytes: int = 10_000_000
     max_parse_bytes: int = 10_000_000
@@ -455,9 +462,35 @@ class DocumentIngestionOrchestrator:
         governed_request = request.model_copy(
             update={"access_policy_version_id": policy_id}
         )
-        await self._accept_canonical(
-            governed_request, source, revision, provenance, admission
-        )
+        try:
+            await self._inject_qualification_fault(
+                request=request,
+                item=item,
+                boundary=IngestionFaultBoundary.PRE_ACCEPTANCE,
+            )
+            await self._accept_canonical(
+                governed_request, source, revision, provenance, admission
+            )
+        except IngestionFaultInjected as error:
+            failure_id = await self.record_item_failure(
+                request=request,
+                item=item,
+                retryable=True,
+                code=error.reason_code.value,
+            )
+            return DocumentIngestionResult(
+                run=run,
+                item=item,
+                source=source,
+                revision=revision,
+                provenance=provenance,
+                binding=binding,
+                validation=validation,
+                admission=admission,
+                status=DocumentIngestionStatus.FAILED,
+                replay=replay,
+                failure_ids=(failure_id,) if failure_id is not None else (),
+            )
         await self._advance_to_processing(request, run, item)
         return await self._process(
             request=request,
@@ -479,7 +512,8 @@ class DocumentIngestionOrchestrator:
         request: DocumentUploadCommand,
         item: IngestionRunSource,
         retryable: bool = True,
-    ) -> None:
+        code: str = "persistence_failed",
+    ) -> UUID | None:
         """Persist a safe batch-boundary failure after an item exception."""
 
         context = self.context_factory(
@@ -489,10 +523,10 @@ class DocumentIngestionOrchestrator:
             head = await uow.ingestion.resolve_item_head(item.ingestion_run_source_id)
             if head is None:
                 await uow.rollback()
-                return
+                return None
             failure = self._failure(
                 item,
-                code="persistence_failed",
+                code=code,
                 stage=FailureStage.PERSISTING,
                 retryable=retryable,
                 attempt=head.attempt,
@@ -509,6 +543,7 @@ class DocumentIngestionOrchestrator:
                     uow, item, IngestionItemState.PROCESSING_FAILED, self._now()
                 )
             await uow.commit()
+            return failure.ingestion_failure_id
 
     async def _ensure_run(
         self, request: DocumentUploadCommand, command_digest: str
@@ -773,12 +808,22 @@ class DocumentIngestionOrchestrator:
                 XLSX_MEDIA_TYPE,
             }:
                 raise UnsupportedDocumentFormat()
+            await self._inject_qualification_fault(
+                request=request,
+                item=item,
+                boundary=IngestionFaultBoundary.ORIGINAL_STORAGE,
+            )
             stream = self.validation_reader.read_finalized(
                 workspace_id=request.workspace_id,
                 environment_id=request.environment_id,
                 source_revision_id=revision.revision_id,
                 receipt=values["upload"].write_receipt,
                 max_bytes=self.max_parse_bytes,
+            )
+            await self._inject_qualification_fault(
+                request=request,
+                item=item,
+                boundary=IngestionFaultBoundary.PARSER,
             )
             artifact = self.parser(
                 revision,
@@ -791,6 +836,19 @@ class DocumentIngestionOrchestrator:
                 status = DocumentIngestionStatus.PARTIAL
         except UnsupportedDocumentFormat:
             status = DocumentIngestionStatus.UNSUPPORTED
+        except IngestionFaultInjected as error:
+            status = DocumentIngestionStatus.FAILED
+            failure = self._failure(
+                item,
+                code=error.reason_code.value,
+                stage=(
+                    FailureStage.STORING
+                    if error.reason_code.value == "original_storage_unavailable"
+                    else FailureStage.PARSING
+                ),
+                retryable=True,
+                attempt=attempt,
+            )
         except Exception:
             status = DocumentIngestionStatus.FAILED
 
@@ -802,7 +860,10 @@ class DocumentIngestionOrchestrator:
                 warning = self._warning(
                     item, code="partial_coverage", stage=WarningStage.PARSING, attempt=attempt
                 )
-        if status in {DocumentIngestionStatus.FAILED, DocumentIngestionStatus.UNSUPPORTED}:
+        if failure is None and status in {
+            DocumentIngestionStatus.FAILED,
+            DocumentIngestionStatus.UNSUPPORTED,
+        }:
             failure = self._failure(
                 item,
                 code="parser_failed",
@@ -833,6 +894,35 @@ class DocumentIngestionOrchestrator:
             provenance=values["provenance"], binding=values["binding"], validation=values["validation"],
             admission=values["admission"], status=status, artifact=artifact,
             processing_receipt=stored_receipt, replay=bool(values["replay"]),
+            failure_ids=(failure.ingestion_failure_id,) if failure else (),
+        )
+
+    async def _inject_qualification_fault(
+        self,
+        *,
+        request: DocumentUploadCommand,
+        item: IngestionRunSource,
+        boundary: IngestionFaultBoundary,
+    ) -> None:
+        """Apply one configured fault only until its ledger failure is durable."""
+
+        if self.fault_injector is None:
+            return
+        context = self.context_factory(
+            PersistenceOperation("ingestion_run"), _id(request, "fault-check-trace")
+        )
+        async with self.uow_factory(context) as uow:
+            failures = await uow.ingestion.resolve_failures(
+                item.ingestion_run_source_id
+            )
+            await uow.rollback()
+        if failures:
+            return
+        self.fault_injector.inject_if_bound(
+            workspace_id=request.workspace_id,
+            environment_id=request.environment_id,
+            command_identity=request.command_identity,
+            boundary=boundary,
         )
 
     async def _persist_processing(

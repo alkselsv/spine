@@ -540,6 +540,15 @@ unchanged, and missing bindings have no inferred default.
   историю.
 - Частичное обновление: собрать новую каноническую ревизию, не заменять неизвестные поля `null`.
 
+Qualification-only fault injection for local ingestion ports is disabled by
+default. An enabled versioned profile is bound to one isolated deployment
+fingerprint, Workspace/Environment and explicit synthetic command identities;
+each rule carries one allowlisted failure reason and is consumed once. The
+injected failure is recorded in the ingestion ledger and cannot itself write a
+canonical acceptance. Processing retries use the existing operator command and
+remain idempotent; a pre-acceptance retry repeats the original upload command so
+canonical acceptance remains the only current-revision transition.
+
 Canonical acceptance tombstone немедленно прекращает ordinary disclosure из
 published projections, caches, citations и derived evidence; asynchronous
 physical cleanup не продлевает доступ. Verified reappearance создаёт новую

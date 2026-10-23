@@ -3776,6 +3776,14 @@
             "title": "Failure Ids",
             "type": "array"
           },
+          "failure_reason_codes": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Failure Reason Codes",
+            "type": "array"
+          },
           "item_id": {
             "format": "uuid",
             "title": "Item Id",
