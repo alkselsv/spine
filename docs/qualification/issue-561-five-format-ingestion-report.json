@@ -1,0 +1,82 @@
+{
+  "schema_version": "issue-561-five-format-ingestion:v1",
+  "ticket": 561,
+  "status": "blocked",
+  "reason_code": "q16_01_exact_target_not_qualified",
+  "required_formats": [
+    "pdf",
+    "docx",
+    "xlsx",
+    "markdown",
+    "text"
+  ],
+  "required_scenarios": [
+    "five_format_upload",
+    "duplicate_idempotent_replay",
+    "changed_content_new_revision",
+    "tombstone_fences_disclosure",
+    "parser_failure_retry",
+    "original_storage_failure_retry",
+    "post_write_pre_acceptance_failure_retry",
+    "workspace_environment_isolation",
+    "safe_ui_states"
+  ],
+  "formats": [],
+  "scenarios": [],
+  "ui_states": [],
+  "q16_01_compatibility": "not_verified",
+  "authorization": {
+    "corpus_approval": "pass",
+    "trusted_upload_authority": "not_verified"
+  },
+  "deployment": {
+    "api_release_identity": "issue561-local-dev-v3",
+    "authorization_generation": 15,
+    "commit_sha": "1b02a48dca1d912d658ae049a1526a28f1594bac",
+    "deployment_fingerprint": "47480e062b3b2d1b30dfe21e3038f14dd87d64d61effcde7543ffd4e2f9283c3",
+    "provider_profile_identity": "provider-local-8935297e3def5e",
+    "qualification_run_id": "issue561-local-002",
+    "web_release_identity": "source:1b02a48dca1d912d658ae049a1526a28f1594bac"
+  },
+  "format_observations": [],
+  "attempted_observations": [],
+  "lifecycle": {},
+  "failures": {},
+  "isolation": {},
+  "execution": {
+    "api_mocking": false,
+    "browser": "chromium",
+    "cli_user_actions": false,
+    "controlled_fixture": false,
+    "route_fulfillment": false
+  },
+  "privacy": {
+    "content_fields_recorded": false,
+    "credentials_recorded": false,
+    "filenames_recorded": false,
+    "metadata_only": true,
+    "raw_errors_recorded": false,
+    "screenshots": false,
+    "trace": false,
+    "video": false
+  },
+  "operator_endpoints": {
+    "retry": "/api/v1/documents/processing/retry",
+    "tombstone_suffix": "/tombstone"
+  },
+  "blockers": [
+    569,
+    570
+  ],
+  "unverified_scenarios": [
+    "five_format_upload",
+    "duplicate_idempotent_replay",
+    "changed_content_new_revision",
+    "tombstone_fences_disclosure",
+    "parser_failure_retry",
+    "original_storage_failure_retry",
+    "post_write_pre_acceptance_failure_retry",
+    "workspace_environment_isolation",
+    "safe_ui_states"
+  ]
+}
