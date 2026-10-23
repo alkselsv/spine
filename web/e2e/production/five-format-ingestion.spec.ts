@@ -5,32 +5,46 @@ import { basename, dirname } from 'node:path';
 import {
   readIngestionQualificationConfig,
   type IngestionQualificationConfig,
-  type QualificationFormat,
 } from './ingestion-qualification-config';
+import {
+  createIngestionQualificationReport,
+  requireCompleteIngestionQualificationReport,
+  REQUIRED_FORMATS,
+  type IngestionQualificationReport,
+  type QualificationFormat,
+} from '../../src/qualification/ingestion-qualification-report';
+import {
+  requireSafeCode,
+  requireSafeDigest,
+  requireSafeUuid,
+  SAFE_CODE_PATTERN,
+} from '../../src/qualification/safe-metadata';
 
-const REQUIRED_FORMATS: QualificationFormat[] = ['pdf', 'docx', 'xlsx', 'markdown', 'text'];
-const REQUIRED_SCENARIOS = [
-  'five_format_upload',
-  'duplicate_idempotent_replay',
-  'changed_content_new_revision',
-  'tombstone_fences_disclosure',
-  'parser_failure_retry',
-  'original_storage_failure_retry',
-  'post_write_pre_acceptance_failure_retry',
-  'workspace_environment_isolation',
-  'safe_ui_states',
-] as const;
 const RETRY_PATH = '/api/v1/documents/processing/retry';
 const TOMBSTONE_SUFFIX = '/tombstone';
 
 test('test_real_browser_qualifies_five_format_canonical_ingestion', async ({ page, request }) => {
   test.setTimeout(45 * 60_000);
   const config = readIngestionQualificationConfig(process.env);
-  const report = baseReport(config);
+  const report = createIngestionQualificationReport({
+    api_release_identity: config.apiReleaseIdentity,
+    authorization_generation: config.authorizationGeneration,
+    commit_sha: config.commitSha,
+    deployment_fingerprint: config.deploymentFingerprint,
+    provider_profile_identity: config.providerProfileIdentity,
+    qualification_run_id: config.qualificationRunId,
+    web_release_identity: config.webReleaseIdentity,
+  });
 
   try {
     await verifyQ16Compatibility(config);
     report.q16_01_compatibility = 'pass';
+    report.authorization = {
+      corpus_approval: 'pass',
+      corpus_approval_reference: config.corpusApprovalReference,
+      trusted_upload_authority: 'pass',
+      trusted_upload_authority_reference: config.trustedUploadAuthorityReference,
+    };
     await installRuntimeBinding(page, config);
     const listResponse = page.waitForResponse((response) =>
       new URL(response.url()).pathname === '/api/v1/documents',
@@ -40,11 +54,12 @@ test('test_real_browser_qualifies_five_format_canonical_ingestion', async ({ pag
 
     await page.locator('input[type="file"]').setInputFiles(REQUIRED_FORMATS.map((format) => config.corpus[format]));
     await page.getByRole('region', { name: 'Проверка перед отправкой' }).waitFor({ state: 'visible' });
-    report.ui_states.push('running');
     const uploadResponsePromise = page.waitForResponse((response) =>
       new URL(response.url()).pathname === '/api/v1/documents/batches',
     );
     await page.getByRole('button', { name: 'Загрузить документы' }).click();
+    await page.getByRole('button', { name: 'Остановить в браузере' }).waitFor({ state: 'visible' });
+    report.ui_states.push('running');
     const uploadResponse = await uploadResponsePromise;
     if (![200, 201, 202].includes(uploadResponse.status())) throw new Error('five_format_upload_rejected');
     const upload = record(await uploadResponse.json(), 'five_format_upload_schema_invalid');
@@ -91,22 +106,35 @@ test('test_real_browser_qualifies_five_format_canonical_ingestion', async ({ pag
       });
       report.formats.push(format);
     }
+    await page.getByText('Готов', { exact: true }).first().waitFor({ state: 'visible' });
+    if (await page.getByText('Готов', { exact: true }).count() < REQUIRED_FORMATS.length) {
+      throw new Error('five_format_ui_not_accepted');
+    }
     report.scenarios.push('five_format_upload');
     report.ui_states.push('accepted');
-    report.authorization.trusted_upload_authority = 'pass';
 
     await qualifyDuplicateReplay(request, config, report);
-    const parserFailureRunId = await qualifyParserFailureAndRetry(request, config, report);
-    await qualifyIsolation(request, config, parserFailureRunId, report);
-    if (report.scenarios.includes('parser_failure_retry')) {
-      await qualifySafeFailureUi(page, config, parserFailureRunId, report);
-    }
-    await qualifyTombstone(page, request, config, report);
-    report.status = 'not_verified';
-    report.reason_code = 'remaining_lifecycle_edges_not_exercised';
-    report.unverified_scenarios = REQUIRED_SCENARIOS.filter(
-      (scenario) => !report.scenarios.includes(scenario),
+    await qualifyChangedRevision(page, request, config, report);
+    const parserFailureRunId = await qualifyProcessingFailureAndRetry(
+      page,
+      request,
+      config,
+      report,
+      'parser',
+      'parser_retryable',
     );
+    await qualifyProcessingFailureAndRetry(
+      undefined,
+      request,
+      config,
+      report,
+      'original_storage',
+      'original_storage_unavailable',
+    );
+    await qualifyPreAcceptanceFailureAndRetry(request, config, report);
+    await qualifyIsolation(request, config, parserFailureRunId, report);
+    await qualifyTombstone(page, request, config, report);
+    requireCompleteIngestionQualificationReport(report);
     await writeReport(config.reportPath, report);
   } catch (error) {
     const reason = safeReason(error);
@@ -150,7 +178,7 @@ async function verifyQ16Compatibility(config: IngestionQualificationConfig): Pro
 async function qualifyDuplicateReplay(
   request: APIRequestContext,
   config: IngestionQualificationConfig,
-  report: ReturnType<typeof baseReport>,
+  report: IngestionQualificationReport,
 ): Promise<void> {
   const path = config.corpus.text;
   const key = `issue561-duplicate-${config.qualificationRunId}`;
@@ -165,7 +193,9 @@ async function qualifyDuplicateReplay(
     throw new Error('duplicate_replay_not_accepted');
   }
   report.lifecycle.duplicate = {
+    logical_effect_count: 1,
     replay: true,
+    result_stable: true,
     run_reference: firstRunId,
     source_reference: safeUuid(item.source_object_id, 'duplicate_replay_schema_invalid'),
     revision_reference: safeUuid(item.source_revision_id, 'duplicate_replay_schema_invalid'),
@@ -173,109 +203,276 @@ async function qualifyDuplicateReplay(
   report.scenarios.push('duplicate_idempotent_replay');
 }
 
-async function qualifyParserFailureAndRetry(
+async function qualifyChangedRevision(
+  page: Page,
   request: APIRequestContext,
   config: IngestionQualificationConfig,
-  report: ReturnType<typeof baseReport>,
-): Promise<string> {
-  const key = `issue561-parser-failure-${config.qualificationRunId}`;
-  const upload = await submitBatch(request, config, [config.malformedPdfPath], key);
-  const runId = safeUuid(upload.run_id, 'parser_failure_schema_invalid');
-  const terminal = await waitForTerminal(request, config, runId);
-  const item = arrayOfRecords(terminal.items, 'parser_failure_schema_invalid')[0];
-  report.failures.parser_attempt = {
-    acceptance: safeAcceptance(item?.acceptance, 'parser_failure_schema_invalid'),
-    failures: item ? arrayOfRecords(item.failures, 'parser_failure_schema_invalid').map((failure) => ({
-      code: safeCode(failure.code, 'parser_failure_schema_invalid'),
-      retryable: safeBoolean(failure.retryable, 'parser_failure_schema_invalid'),
-      stage: safeCode(failure.stage, 'parser_failure_schema_invalid'),
-    })) : [],
-    retryable: safeBoolean(item?.retryable, 'parser_failure_schema_invalid'),
-    run_reference: runId,
-    status: safeIngestionStatus(item?.status, 'parser_failure_schema_invalid'),
+  report: IngestionQualificationReport,
+): Promise<void> {
+  const predecessor = report.format_observations.find((item) => item.format === 'text');
+  if (!predecessor) throw new Error('replacement_target_unavailable');
+  const sourceReference = safeUuid(predecessor.source_reference, 'replacement_target_invalid');
+  const predecessorReference = safeUuid(predecessor.revision_reference, 'replacement_target_invalid');
+  await page.goto(scoped(
+    `/knowledge/documents/${sourceReference}`,
+    config.workspaceAId,
+    config.environmentAId,
+  ));
+  await page.getByLabel('Файл новой ревизии').setInputFiles(config.replacementPath);
+  const key = `issue561-replacement-${config.qualificationRunId}`;
+  const first = await submitReplacementUpload(
+    request,
+    config,
+    sourceReference,
+    predecessorReference,
+    config.replacementPath,
+    key,
+  );
+  const replay = await submitReplacementUpload(
+    request,
+    config,
+    sourceReference,
+    predecessorReference,
+    config.replacementPath,
+    key,
+  );
+  const runReference = safeUuid(first.run_id, 'replacement_schema_invalid');
+  const itemReference = safeUuid(first.item_id, 'replacement_schema_invalid');
+  const newRevisionReference = safeUuid(first.source_revision_id, 'replacement_schema_invalid');
+  if (
+    newRevisionReference === predecessorReference
+    || safeUuid(replay.run_id, 'replacement_schema_invalid') !== runReference
+    || safeUuid(replay.item_id, 'replacement_schema_invalid') !== itemReference
+    || safeUuid(replay.source_revision_id, 'replacement_schema_invalid') !== newRevisionReference
+    || replay.replay !== true
+  ) throw new Error('replacement_replay_not_stable');
+  const terminal = await waitForItemTerminal(request, config, runReference, itemReference);
+  if (terminal.acceptance !== 'accepted' || terminal.status !== 'succeeded') {
+    throw new Error('replacement_not_accepted');
+  }
+  const receipt = record(terminal.processing_receipt, 'replacement_schema_invalid');
+  const receiptReference = safeUuid(receipt.receipt_id, 'replacement_schema_invalid');
+  const revisionsResponse = await request.get(`/api/v1/documents/${sourceReference}/revisions`, {
+    headers: qualificationHeaders(config),
+  });
+  if (revisionsResponse.status() !== 200) throw new Error('replacement_history_unavailable');
+  const revisionsEnvelope = record(await revisionsResponse.json(), 'replacement_history_schema_invalid');
+  const revisions = arrayOfRecords(revisionsEnvelope.items, 'replacement_history_schema_invalid');
+  const prior = revisions.find((revision) => revision.source_revision_id === predecessorReference);
+  const current = revisions.find((revision) => revision.source_revision_id === newRevisionReference);
+  if (
+    prior?.lifecycle !== 'superseded'
+    || prior.superseded_by_revision_id !== newRevisionReference
+    || current?.lifecycle !== 'current'
+    || current.predecessor_revision_id !== predecessorReference
+  ) throw new Error('replacement_history_not_preserved');
+  const conflictResponse = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === `/api/v1/documents/${sourceReference}/replacement-upload`,
+  );
+  await page.getByRole('button', { name: 'Заменить документ' }).click();
+  if ((await conflictResponse).status() !== 409) throw new Error('replacement_stale_command_not_rejected');
+  await page.getByRole('alert', { name: 'Команда конфликтует с текущим состоянием' })
+    .waitFor({ state: 'visible' });
+  report.ui_states.push('stale');
+  await page.goto(scoped(
+    `/knowledge/documents/${sourceReference}?tab=revisions`,
+    config.workspaceAId,
+    config.environmentAId,
+  ));
+  await page.getByText('Замещён', { exact: true }).first().waitFor({ state: 'visible' });
+  report.lifecycle.changed_revision = {
+    new_revision_reference: newRevisionReference,
+    predecessor_preserved: true,
+    predecessor_revision_reference: predecessorReference,
+    processing_receipt_reference: receiptReference,
+    replay: true,
+    result_stable: true,
+    source_reference: sourceReference,
   };
-  if (!item || item.acceptance === 'accepted') {
-    throw new Error('parser_failure_false_acceptance');
+}
+
+async function qualifyProcessingFailureAndRetry(
+  page: Page | undefined,
+  request: APIRequestContext,
+  config: IngestionQualificationConfig,
+  report: IngestionQualificationReport,
+  reportKey: 'parser' | 'original_storage',
+  reasonCode: 'parser_retryable' | 'original_storage_unavailable',
+): Promise<string> {
+  const key = `issue561-${reportKey}-failure-${config.qualificationRunId}`;
+  const paths = reportKey === 'parser'
+    ? [config.corpus.text, config.corpus.markdown]
+    : [config.corpus.text];
+  const upload = await submitBatch(request, config, paths, key);
+  const runId = safeUuid(upload.run_id, 'processing_failure_schema_invalid');
+  const terminal = await waitForTerminal(request, config, runId);
+  const items = arrayOfRecords(terminal.items, 'processing_failure_schema_invalid');
+  const item = items.find((candidate) => candidate.input_ordinal === 1);
+  if (reportKey === 'parser') {
+    const unaffected = items.find((candidate) => candidate.input_ordinal === 2);
+    if (terminal.status !== 'partial' || unaffected?.status !== 'succeeded') {
+      throw new Error('partial_failure_not_visible');
+    }
   }
-  if (item.retryable !== true || item.status !== 'failed') {
-    report.failures.parser_attempt.unverified_reason = 'retryable_parser_failure_not_injectable';
-    return runId;
+  if (item?.status === 'succeeded') throw new Error(`${reportKey}_failure_not_injected`);
+  if (!item || item.acceptance !== 'accepted' || item.retryable !== true || item.status !== 'failed') {
+    throw new Error('processing_failure_state_invalid');
   }
-  const failures = arrayOfRecords(item.failures, 'parser_failure_schema_invalid');
-  const failure = failures[0];
-  if (!failure || failure.code !== 'parser_failed' || failure.retryable !== true) {
-    throw new Error('parser_failure_reason_invalid');
-  }
-  const sourceReference = safeUuid(item.source_object_id, 'parser_failure_schema_invalid');
-  const revisionReference = safeUuid(item.source_revision_id, 'parser_failure_schema_invalid');
-  const failureReference = safeUuid(failure.failure_id, 'parser_failure_schema_invalid');
-  const retryKey = `issue561-parser-retry-${config.qualificationRunId}`;
+  const failure = arrayOfRecords(item.failures, 'processing_failure_schema_invalid')
+    .find((candidate) => candidate.code === reasonCode);
+  if (!failure || failure.retryable !== true) throw new Error('processing_failure_reason_invalid');
+  if (page) await qualifySafeFailureUi(page, config, runId, report);
+  const sourceReference = safeUuid(item.source_object_id, 'processing_failure_schema_invalid');
+  const revisionReference = safeUuid(item.source_revision_id, 'processing_failure_schema_invalid');
+  const failureReference = safeUuid(failure.failure_id, 'processing_failure_schema_invalid');
+  const processingReceipt = item.processing_receipt === null || item.processing_receipt === undefined
+    ? null
+    : record(item.processing_receipt, 'processing_failure_schema_invalid');
+  const retryKey = `issue561-${reportKey}-retry-${config.qualificationRunId}`;
   const retryBody = {
     expected_current_revision_id: revisionReference,
     parent_failure_id: failureReference,
-    parent_processing_receipt_id: null,
+    parent_processing_receipt_id: processingReceipt
+      ? safeUuid(processingReceipt.receipt_id, 'processing_failure_schema_invalid')
+      : null,
     source_object_id: sourceReference,
     source_revision_id: revisionReference,
   };
   const firstRetry = await submitJson(request, config, RETRY_PATH, retryKey, retryBody);
   const secondRetry = await submitJson(request, config, RETRY_PATH, retryKey, retryBody);
-  const operationReference = safeUuid(firstRetry.operation_id, 'parser_retry_schema_invalid');
+  const operationReference = safeUuid(firstRetry.operation_id, 'processing_retry_schema_invalid');
   if (
-    operationReference !== safeUuid(secondRetry.operation_id, 'parser_retry_schema_invalid')
+    operationReference !== safeUuid(secondRetry.operation_id, 'processing_retry_schema_invalid')
     || secondRetry.replay !== true
-  ) throw new Error('parser_retry_replay_not_stable');
-  report.failures.parser = {
+  ) throw new Error('processing_retry_replay_not_stable');
+  const retryTerminal = await waitForProcessingOperation(request, config, operationReference);
+  if (retryTerminal.status !== 'accepted') {
+    throw new Error('processing_retry_not_ready');
+  }
+  safeUuid(retryTerminal.processing_receipt_id, 'processing_retry_schema_invalid');
+  const retryItem = await waitForItemTerminal(
+    request,
+    config,
+    safeUuid(retryTerminal.run_id, 'processing_retry_schema_invalid'),
+    safeUuid(retryTerminal.item_id, 'processing_retry_schema_invalid'),
+  );
+  if (retryItem.status !== 'succeeded' || retryItem.acceptance !== 'accepted') {
+    throw new Error('processing_retry_not_ready');
+  }
+  report.failures[reportKey] = {
+    accepted_before_retry: item.acceptance === 'accepted',
     failure_reference: failureReference,
     initial_run_reference: runId,
+    logical_effect_count: 1,
+    reason_code: reasonCode,
     retry_operation_reference: operationReference,
+    retry_passed: true,
     retry_replay: true,
-    safe_code: 'parser_failed',
-    terminal_acceptance: safeAcceptance(item.acceptance, 'parser_failure_schema_invalid'),
   };
-  report.scenarios.push('parser_failure_retry');
   report.ui_states.push('retryable_failure');
   return runId;
+}
+
+async function qualifyPreAcceptanceFailureAndRetry(
+  request: APIRequestContext,
+  config: IngestionQualificationConfig,
+  report: IngestionQualificationReport,
+): Promise<void> {
+  const key = `issue561-pre-acceptance-${config.qualificationRunId}`;
+  const first = await submitSingleUpload(request, config, config.corpus.text, key);
+  const runReference = safeUuid(first.run_id, 'pre_acceptance_schema_invalid');
+  const itemReference = safeUuid(first.item_id, 'pre_acceptance_schema_invalid');
+  const failed = await waitForItemTerminal(request, config, runReference, itemReference);
+  const failureCodes = arrayOfSafeCodes(failed.failure_reason_codes, 'pre_acceptance_schema_invalid');
+  const failureIds = arrayOfSafeUuids(failed.failure_ids, 'pre_acceptance_schema_invalid');
+  if (failed.status === 'succeeded') throw new Error('pre_acceptance_failure_not_injected');
+  if (
+    failed.acceptance === 'accepted'
+    || failed.status !== 'failed'
+    || !failureCodes.includes('pre_acceptance_retryable')
+    || failureIds.length !== 1
+  ) throw new Error('pre_acceptance_failure_state_invalid');
+  const retry = await submitSingleUpload(request, config, config.corpus.text, key);
+  const replay = await submitSingleUpload(request, config, config.corpus.text, key);
+  if (
+    retry.replay !== true
+    || replay.replay !== true
+    || safeUuid(retry.run_id, 'pre_acceptance_schema_invalid') !== runReference
+    || safeUuid(replay.run_id, 'pre_acceptance_schema_invalid') !== runReference
+    || safeUuid(retry.item_id, 'pre_acceptance_schema_invalid') !== itemReference
+    || safeUuid(replay.item_id, 'pre_acceptance_schema_invalid') !== itemReference
+  ) throw new Error('pre_acceptance_retry_replay_not_stable');
+  const succeeded = await waitForItemTerminal(request, config, runReference, itemReference);
+  if (succeeded.acceptance !== 'accepted' || succeeded.status !== 'succeeded') {
+    throw new Error('pre_acceptance_retry_not_accepted');
+  }
+  report.failures.post_write_pre_acceptance = {
+    accepted_before_retry: false,
+    failure_reference: failureIds[0]!,
+    initial_run_reference: runReference,
+    logical_effect_count: 1,
+    reason_code: 'pre_acceptance_retryable',
+    retry_passed: true,
+    retry_replay: true,
+  };
 }
 
 async function qualifyIsolation(
   request: APIRequestContext,
   config: IngestionQualificationConfig,
   runId: string,
-  report: ReturnType<typeof baseReport>,
+  report: IngestionQualificationReport,
 ): Promise<void> {
-  const foreignStatus = await request.get(`/api/v1/ingestion/runs/${runId}`, {
-    headers: qualificationHeaders(config, config.workspaceBId, config.environmentBId),
-  });
-  if (foreignStatus.status() !== 404) throw new Error('foreign_status_existence_leak');
-
   const path = config.corpus.text;
   const buffer = await readFile(path);
-  const denied = await request.post('/api/v1/documents/batches', {
-    headers: {
-      ...qualificationHeaders(config, config.workspaceAId, config.environmentBId),
-      'Idempotency-Key': `issue561-denied-${config.qualificationRunId}`,
+  const deniedScopes = [
+    {
+      dimension: 'workspace' as const,
+      environmentId: config.environmentAId,
+      workspaceId: config.workspaceBId,
     },
-    multipart: { file: { buffer, mimeType: 'text/plain', name: basename(path) } },
-  });
-  if (denied.status() !== 403) throw new Error('cross_environment_upload_not_denied');
-  const deniedBody = await denied.text();
-  if (deniedBody.includes(basename(path)) || deniedBody.includes(buffer.toString('utf8'))) {
-    throw new Error('denied_upload_disclosed_content');
+    {
+      dimension: 'environment' as const,
+      environmentId: config.environmentBId,
+      workspaceId: config.workspaceAId,
+    },
+  ];
+  for (const scope of deniedScopes) {
+    const statusResponse = await request.get(`/api/v1/ingestion/runs/${runId}`, {
+      headers: qualificationHeaders(config, scope.workspaceId, scope.environmentId),
+    });
+    if (![403, 404].includes(statusResponse.status())) throw new Error('foreign_status_existence_leak');
+    await assertDeniedResponseIsSafe(statusResponse, path, buffer, 'spine.authorization.denied');
+
+    const uploadResponse = await request.post('/api/v1/documents/batches', {
+      headers: {
+        ...qualificationHeaders(config, scope.workspaceId, scope.environmentId),
+        'Idempotency-Key': `issue561-denied-${scope.dimension}-${config.qualificationRunId}`,
+      },
+      multipart: { file: { buffer, mimeType: 'text/plain', name: basename(path) } },
+    });
+    if (uploadResponse.status() !== 403) throw new Error(`cross_${scope.dimension}_upload_not_denied`);
+    await assertDeniedResponseIsSafe(uploadResponse, path, buffer, 'spine.authorization.denied');
+    if (scope.dimension === 'workspace') {
+      report.isolation.denied_workspace_status_read = 'pass';
+      report.isolation.denied_workspace_upload = 'pass';
+    } else {
+      report.isolation.denied_environment_status_read = 'pass';
+      report.isolation.denied_environment_upload = 'pass';
+    }
   }
-  report.isolation.workspace_status = 404;
-  report.isolation.cross_environment_upload = 403;
-  report.isolation.protected_content_disclosed = false;
-  report.scenarios.push('workspace_environment_isolation');
+  report.isolation.protected_metadata_disclosed = false;
 }
 
 async function qualifySafeFailureUi(
   page: Page,
   config: IngestionQualificationConfig,
   runId: string,
-  report: ReturnType<typeof baseReport>,
+  report: IngestionQualificationReport,
 ): Promise<void> {
   await page.goto(scoped(`/runs/${runId}`, config.workspaceAId, config.environmentAId));
   await page.getByRole('heading', { name: 'Запуск обработки' }).waitFor({ state: 'visible' });
+  await page.getByText('parser_retryable', { exact: true }).waitFor({ state: 'visible' });
   await page.getByRole('button', { name: 'Повторить обработку файла' }).waitFor({ state: 'visible' });
   report.ui_states.push('partial', 'retryable_failure');
 }
@@ -284,12 +481,12 @@ async function qualifyTombstone(
   page: Page,
   request: APIRequestContext,
   config: IngestionQualificationConfig,
-  report: ReturnType<typeof baseReport>,
+  report: IngestionQualificationReport,
 ): Promise<void> {
-  const target = report.format_observations.find((item) => item.format === 'text');
+  const target = report.lifecycle.changed_revision;
   if (!target) throw new Error('tombstone_target_unavailable');
   const sourceReference = safeUuid(target.source_reference, 'tombstone_target_invalid');
-  const revisionReference = safeUuid(target.revision_reference, 'tombstone_target_invalid');
+  const revisionReference = safeUuid(target.new_revision_reference, 'tombstone_target_invalid');
   const receiptReference = safeUuid(target.processing_receipt_reference, 'tombstone_target_invalid');
   const response = await submitJson(
     request,
@@ -311,12 +508,25 @@ async function qualifyTombstone(
     receiptReference,
   );
   if (disclosure.status !== 'content_unavailable') throw new Error('tombstone_disclosure_not_fenced');
+  const revisionsResponse = await request.get(`/api/v1/documents/${sourceReference}/revisions`, {
+    headers: qualificationHeaders(config),
+  });
+  if (revisionsResponse.status() !== 200) throw new Error('tombstone_history_unavailable');
+  const revisionsEnvelope = record(await revisionsResponse.json(), 'tombstone_history_schema_invalid');
+  const revisions = arrayOfRecords(revisionsEnvelope.items, 'tombstone_history_schema_invalid');
+  const retainedRevision = revisions.find((revision) => revision.source_revision_id === revisionReference);
+  const tombstoneReference = safeUuid(terminal.accepted_revision_id, 'tombstone_schema_invalid');
+  const tombstoneRevision = revisions.find((revision) => revision.source_revision_id === tombstoneReference);
+  if (!retainedRevision || tombstoneRevision?.lifecycle !== 'tombstoned') {
+    throw new Error('tombstone_history_not_preserved');
+  }
   await page.goto(scoped(`/knowledge/documents/${sourceReference}`, config.workspaceAId, config.environmentAId));
   await page.getByText('Удалён', { exact: true }).first().waitFor({ state: 'visible' });
   report.lifecycle.tombstone = {
-    disclosure_status: 'content_unavailable',
+    disclosure_fenced: true,
+    history_preserved: true,
     operation_reference: operationReference,
-    tombstone_revision_reference: safeUuid(terminal.accepted_revision_id, 'tombstone_schema_invalid'),
+    tombstone_revision_reference: tombstoneReference,
   };
   report.scenarios.push('tombstone_fences_disclosure');
   report.ui_states.push('deleted');
@@ -385,6 +595,87 @@ async function submitBatch(
   });
   if (response.status() !== 202) throw new Error('batch_upload_rejected');
   return record(await response.json(), 'batch_upload_schema_invalid');
+}
+
+async function submitReplacementUpload(
+  request: APIRequestContext,
+  config: IngestionQualificationConfig,
+  sourceObjectId: string,
+  expectedRevisionId: string,
+  path: string,
+  idempotencyKey: string,
+): Promise<Record<string, unknown>> {
+  const response = await request.post(`/api/v1/documents/${sourceObjectId}/replacement-upload`, {
+    data: await readFile(path),
+    headers: {
+      ...qualificationHeaders(config),
+      'Content-Type': mediaType(path),
+      'Idempotency-Key': idempotencyKey,
+      'If-Match': expectedRevisionId,
+      'X-Filename': basename(path),
+    },
+  });
+  if (response.status() !== 202) throw new Error('replacement_upload_rejected');
+  return record(await response.json(), 'replacement_schema_invalid');
+}
+
+async function submitSingleUpload(
+  request: APIRequestContext,
+  config: IngestionQualificationConfig,
+  path: string,
+  idempotencyKey: string,
+): Promise<Record<string, unknown>> {
+  const response = await request.post('/api/v1/documents/uploads', {
+    data: await readFile(path),
+    headers: {
+      ...qualificationHeaders(config),
+      'Content-Type': mediaType(path),
+      'Idempotency-Key': idempotencyKey,
+      'X-Filename': basename(path),
+    },
+  });
+  if (response.status() !== 202) throw new Error('single_upload_rejected');
+  return record(await response.json(), 'single_upload_schema_invalid');
+}
+
+async function waitForItemTerminal(
+  request: APIRequestContext,
+  config: IngestionQualificationConfig,
+  runId: string,
+  itemId: string,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + 10 * 60_000;
+  while (Date.now() < deadline) {
+    const response = await request.get(`/api/v1/ingestion/runs/${runId}/items/${itemId}`, {
+      headers: qualificationHeaders(config),
+    });
+    if (response.status() !== 200) throw new Error('ingestion_item_status_unavailable');
+    const value = record(await response.json(), 'ingestion_item_status_schema_invalid');
+    if (value.terminal === true) return value;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 750));
+  }
+  throw new Error('ingestion_item_status_timeout');
+}
+
+async function waitForProcessingOperation(
+  request: APIRequestContext,
+  config: IngestionQualificationConfig,
+  operationId: string,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + 10 * 60_000;
+  while (Date.now() < deadline) {
+    const response = await request.get(`/api/v1/documents/processing/operations/${operationId}`, {
+      headers: qualificationHeaders(config),
+    });
+    if (response.status() !== 200) throw new Error('processing_operation_unavailable');
+    const value = record(await response.json(), 'processing_operation_schema_invalid');
+    if (
+      (value.status === 'accepted' && value.processing_receipt_id !== null)
+      || ['partial', 'failed', 'cancelled', 'unavailable'].includes(String(value.status))
+    ) return value;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
+  }
+  throw new Error('processing_operation_timeout');
 }
 
 async function submitJson(
@@ -468,59 +759,38 @@ function qualificationHeaders(
   };
 }
 
-function baseReport(config: IngestionQualificationConfig) {
-  return {
-    schema_version: 'issue-561-five-format-ingestion:v1',
-    ticket: 561,
-    status: 'blocked',
-    reason_code: 'execution_not_started' as string | null,
-    required_formats: REQUIRED_FORMATS,
-    required_scenarios: REQUIRED_SCENARIOS,
-    formats: [] as QualificationFormat[],
-    scenarios: [] as string[],
-    ui_states: [] as string[],
-    q16_01_compatibility: 'not_verified',
-    authorization: { corpus_approval: 'pass', trusted_upload_authority: 'not_verified' },
-    deployment: {
-      api_release_identity: config.apiReleaseIdentity,
-      authorization_generation: config.authorizationGeneration,
-      commit_sha: config.commitSha,
-      deployment_fingerprint: config.deploymentFingerprint,
-      provider_profile_identity: config.providerProfileIdentity,
-      qualification_run_id: config.qualificationRunId,
-      web_release_identity: config.webReleaseIdentity,
-    },
-    format_observations: [] as Array<Record<string, unknown>>,
-    attempted_observations: [] as Array<Record<string, unknown>>,
-    lifecycle: {} as Record<string, Record<string, unknown>>,
-    failures: {} as Record<string, Record<string, unknown>>,
-    isolation: {} as Record<string, unknown>,
-    execution: {
-      api_mocking: false,
-      browser: 'chromium',
-      cli_user_actions: false,
-      controlled_fixture: false,
-      route_fulfillment: false,
-    },
-    privacy: {
-      content_fields_recorded: false,
-      credentials_recorded: false,
-      filenames_recorded: false,
-      metadata_only: true,
-      raw_errors_recorded: false,
-      screenshots: false,
-      trace: false,
-      video: false,
-    },
-    operator_endpoints: { retry: RETRY_PATH, tombstone_suffix: TOMBSTONE_SUFFIX },
-    blockers: [569, 570],
-    unverified_scenarios: [...REQUIRED_SCENARIOS] as string[],
-  };
-}
-
 async function writeReport(path: string, report: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+}
+
+async function assertDeniedResponseIsSafe(
+  response: Awaited<ReturnType<APIRequestContext['get']>>,
+  path: string,
+  content: Buffer,
+  expectedCode: 'spine.authorization.denied',
+): Promise<void> {
+  const body = await response.text();
+  const lower = body.toLowerCase();
+  let envelope: Record<string, unknown>;
+  try {
+    envelope = record(JSON.parse(body), 'denied_response_schema_invalid');
+  } catch {
+    throw new Error('denied_response_schema_invalid');
+  }
+  if (safeCode(envelope.code, 'denied_response_schema_invalid') !== expectedCode) {
+    throw new Error('denied_response_reason_invalid');
+  }
+  if (envelope.safe_message !== 'Authorization is denied.') {
+    throw new Error('denied_response_schema_invalid');
+  }
+  if (
+    body.includes(basename(path))
+    || body.includes(content.toString('utf8'))
+    || lower.includes('traceback')
+    || lower.includes('stack trace')
+    || lower.includes('exception:')
+  ) throw new Error('denied_response_disclosed_protected_data');
 }
 
 function locatorKinds(value: unknown): string[] {
@@ -582,39 +852,25 @@ function arrayOfRecords(value: unknown, reason: string): Array<Record<string, un
 }
 
 function safeUuid(value: unknown, reason: string): string {
-  if (typeof value !== 'string' || !/^[0-9a-f-]{36}$/i.test(value)) throw new Error(reason);
-  return value;
+  return requireSafeUuid(value, reason);
 }
 
 function safeDigest(value: unknown, reason: string): string {
-  if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) throw new Error(reason);
-  return value;
+  return requireSafeDigest(value, reason);
 }
 
 function safeCode(value: unknown, reason: string): string {
-  if (typeof value !== 'string' || !/^[a-z][a-z0-9_.:-]{0,63}$/.test(value)) throw new Error(reason);
-  return value;
+  return requireSafeCode(value, reason);
 }
 
-function safeAcceptance(value: unknown, reason: string): string {
-  if (!['pending', 'accepted', 'rejected', 'quarantined'].includes(String(value))) {
-    throw new Error(reason);
-  }
-  return String(value);
+function arrayOfSafeCodes(value: unknown, reason: string): string[] {
+  if (!Array.isArray(value)) throw new Error(reason);
+  return value.map((item) => safeCode(item, reason));
 }
 
-function safeIngestionStatus(value: unknown, reason: string): string {
-  const statuses = [
-    'non_terminal', 'succeeded', 'partial', 'failed', 'rejected', 'quarantined', 'unsupported',
-    'cancelled',
-  ];
-  if (!statuses.includes(String(value))) throw new Error(reason);
-  return String(value);
-}
-
-function safeBoolean(value: unknown, reason: string): boolean {
-  if (typeof value !== 'boolean') throw new Error(reason);
-  return value;
+function arrayOfSafeUuids(value: unknown, reason: string): string[] {
+  if (!Array.isArray(value)) throw new Error(reason);
+  return value.map((item) => safeUuid(item, reason));
 }
 
 function mediaType(path: string): string {
@@ -633,33 +889,59 @@ function mediaType(path: string): string {
 }
 
 function safeReason(error: unknown): string {
-  if (error instanceof Error && /^[a-z][a-z0-9_]{0,63}$/.test(error.message)) return error.message;
+  if (error instanceof Error && SAFE_CODE_PATTERN.test(error.message)) return error.message;
   return 'ingestion_qualification_failed';
 }
 
-function failureStatus(reason: string): 'blocked' | 'fail' {
+function failureStatus(reason: string): 'blocked' | 'fail' | 'not_verified' {
+  if ([
+    'original_storage_failure_not_injected',
+    'parser_failure_not_injected',
+    'pre_acceptance_failure_not_injected',
+    'remaining_lifecycle_edges_not_exercised',
+  ].includes(reason)) return 'not_verified';
   const invariantFailures = new Set([
+    'cross_workspace_upload_not_denied',
     'cross_environment_upload_not_denied',
     'batch_upload_rejected',
-    'denied_upload_disclosed_content',
+    'denied_response_disclosed_protected_data',
+    'denied_response_reason_invalid',
     'documents_page_unavailable',
     'duplicate_replay_not_accepted',
     'duplicate_replay_not_stable',
     'five_format_upload_incomplete',
     'five_format_upload_not_accepted',
     'five_format_upload_rejected',
+    'five_format_ui_not_accepted',
     'foreign_status_existence_leak',
+    'ingestion_item_status_unavailable',
+    'partial_failure_not_visible',
     'parsed_content_checksum_unavailable',
     'parsed_content_inspection_unavailable',
     'parsed_content_not_ready',
-    'parser_failure_false_acceptance',
-    'parser_failure_reason_invalid',
-    'parser_retry_replay_not_stable',
+    'pre_acceptance_failure_state_invalid',
+    'pre_acceptance_retry_not_accepted',
+    'pre_acceptance_retry_replay_not_stable',
+    'processing_failure_reason_invalid',
+    'processing_failure_state_invalid',
+    'processing_operation_unavailable',
+    'processing_retry_not_ready',
+    'processing_retry_replay_not_stable',
     'operator_command_rejected',
+    'replacement_history_not_preserved',
+    'replacement_history_unavailable',
+    'replacement_not_accepted',
+    'replacement_replay_not_stable',
+    'replacement_stale_command_not_rejected',
+    'replacement_target_unavailable',
+    'replacement_upload_rejected',
+    'single_upload_rejected',
     'stable_locator_coordinates_invalid',
     'stable_locator_kind_invalid',
     'stable_locator_missing',
     'tombstone_disclosure_not_fenced',
+    'tombstone_history_not_preserved',
+    'tombstone_history_unavailable',
     'tombstone_not_completed',
     'tombstone_target_unavailable',
   ]);

@@ -26,7 +26,7 @@
   "ui_states": [],
   "q16_01_compatibility": "not_verified",
   "authorization": {
-    "corpus_approval": "pass",
+    "corpus_approval": "not_verified",
     "trusted_upload_authority": "not_verified"
   },
   "deployment": {
@@ -60,13 +60,8 @@
     "trace": false,
     "video": false
   },
-  "operator_endpoints": {
-    "retry": "/api/v1/documents/processing/retry",
-    "tombstone_suffix": "/tombstone"
-  },
   "blockers": [
-    569,
-    570
+    560
   ],
   "unverified_scenarios": [
     "five_format_upload",

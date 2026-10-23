@@ -1,10 +1,13 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$/;
-const SHA_PATTERN = /^[a-f0-9]{40}$/;
-const DIGEST_PATTERN = /^[a-f0-9]{64}$/;
+import type { QualificationFormat } from '../../src/qualification/ingestion-qualification-report';
+import {
+  COMMIT_SHA_PATTERN,
+  DIGEST_PATTERN,
+  SAFE_ID_PATTERN,
+  UUID_PATTERN,
+} from '../../src/qualification/safe-metadata';
 
 const FORMAT_SUFFIXES = {
   pdf: ['.pdf'],
@@ -14,12 +17,11 @@ const FORMAT_SUFFIXES = {
   text: ['.txt'],
 } as const;
 
-export type QualificationFormat = keyof typeof FORMAT_SUFFIXES;
-
 export interface IngestionQualificationConfig {
   accessToken: string;
   authorizationGeneration: number;
   apiReleaseIdentity: string;
+  corpusApprovalReference: string;
   commitSha: string;
   corpus: Readonly<Record<QualificationFormat, string>>;
   corpusDirectory: string;
@@ -27,11 +29,12 @@ export interface IngestionQualificationConfig {
   environmentAId: string;
   environmentBId: string;
   identityVersion: string;
-  malformedPdfPath: string;
   providerProfileIdentity: string;
   q16ReportPath: string;
   qualificationRunId: string;
+  replacementPath: string;
   reportPath: string;
+  trustedUploadAuthorityReference: string;
   webReleaseIdentity: string;
   workspaceAId: string;
   workspaceBId: string;
@@ -75,12 +78,12 @@ export function readIngestionQualificationConfig(
   if (!Number.isSafeInteger(authorizationGeneration) || authorizationGeneration < 1) {
     throw new Error('qualification_configuration_invalid:SPINE_E2E_AUTHORIZATION_GENERATION');
   }
-  const malformedPdfPath = resolve(corpusDirectory, 'failures', 'malformed.pdf');
-  if (!existsSync(malformedPdfPath) || !statSync(malformedPdfPath).isFile()) {
-    throw new Error('qualification_corpus_invalid:malformed_pdf');
+  const replacementPath = resolve(corpusDirectory, 'lifecycle', 'replacement.txt');
+  if (!existsSync(replacementPath) || !statSync(replacementPath).isFile()) {
+    throw new Error('qualification_corpus_invalid:replacement');
   }
   const deploymentFingerprint = required('SPINE_E2E_DEPLOYMENT_FINGERPRINT');
-  if (!SHA_PATTERN.test(commitSha)) throw new Error('qualification_configuration_invalid:SPINE_E2E_COMMIT_SHA');
+  if (!COMMIT_SHA_PATTERN.test(commitSha)) throw new Error('qualification_configuration_invalid:SPINE_E2E_COMMIT_SHA');
   if (!DIGEST_PATTERN.test(deploymentFingerprint)) {
     throw new Error('qualification_configuration_invalid:SPINE_E2E_DEPLOYMENT_FINGERPRINT');
   }
@@ -91,16 +94,18 @@ export function readIngestionQualificationConfig(
     apiReleaseIdentity: safeId('SPINE_E2E_API_RELEASE_IDENTITY'),
     commitSha,
     corpus: Object.freeze(corpus),
+    corpusApprovalReference: safeId('SPINE_INGESTION_QUALIFICATION_CORPUS_APPROVAL_REFERENCE'),
     corpusDirectory,
     deploymentFingerprint,
     environmentAId: uuid('SPINE_E2E_ENVIRONMENT_A_ID'),
     environmentBId: uuid('SPINE_E2E_ENVIRONMENT_B_ID'),
     identityVersion: safeId('SPINE_E2E_IDENTITY_VERSION'),
-    malformedPdfPath,
     providerProfileIdentity: safeId('SPINE_E2E_PROVIDER_PROFILE_IDENTITY'),
     q16ReportPath: resolve(required('SPINE_INGESTION_Q16_REPORT_PATH')),
     qualificationRunId: safeId('SPINE_E2E_QUALIFICATION_RUN_ID'),
+    replacementPath,
     reportPath: resolve(required('SPINE_INGESTION_QUALIFICATION_REPORT_PATH')),
+    trustedUploadAuthorityReference: safeId('SPINE_E2E_TRUSTED_UPLOAD_AUTHORITY_REFERENCE'),
     webReleaseIdentity: safeId('SPINE_E2E_WEB_RELEASE_IDENTITY'),
     workspaceAId: uuid('SPINE_E2E_WORKSPACE_A_ID'),
     workspaceBId: uuid('SPINE_E2E_WORKSPACE_B_ID'),

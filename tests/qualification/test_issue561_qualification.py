@@ -35,6 +35,57 @@ def _report() -> dict[str, Any]:
     return value
 
 
+def _assert_pass_report(report: dict[str, Any]) -> None:
+    assert set(report["formats"]) == REQUIRED_FORMATS
+    assert set(report["scenarios"]) == REQUIRED_SCENARIOS
+    assert set(report["ui_states"]) == REQUIRED_UI_STATES
+    assert report["reason_code"] is None
+    assert report["q16_01_compatibility"] == "pass"
+    assert report["authorization"] == {
+        "corpus_approval": "pass",
+        "corpus_approval_reference": report["authorization"]["corpus_approval_reference"],
+        "trusted_upload_authority": "pass",
+        "trusted_upload_authority_reference": report["authorization"]["trusted_upload_authority_reference"],
+    }
+    assert report["authorization"]["corpus_approval_reference"]
+    assert report["authorization"]["trusted_upload_authority_reference"]
+    assert report["isolation"] == {
+        "denied_environment_upload": "pass",
+        "denied_environment_status_read": "pass",
+        "denied_workspace_upload": "pass",
+        "denied_workspace_status_read": "pass",
+        "protected_metadata_disclosed": False,
+    }
+    assert len(report["deployment"]["commit_sha"]) == 40
+    assert len(report["deployment"]["deployment_fingerprint"]) == 64
+    assert report["deployment"]["authorization_generation"] >= 1
+    observations = report["format_observations"]
+    assert {item["format"] for item in observations} == REQUIRED_FORMATS
+    assert all(item["accepted"] for item in observations)
+    assert all(item["checksum_reference"] for item in observations)
+    assert all(item["locator_kinds"] for item in observations)
+    assert all(item["source_reference"] for item in observations)
+    assert all(item["revision_reference"] for item in observations)
+    duplicate = report["lifecycle"]["duplicate"]
+    assert duplicate["logical_effect_count"] == 1
+    assert duplicate["replay"] is True
+    assert duplicate["result_stable"] is True
+    changed_revision = report["lifecycle"]["changed_revision"]
+    assert changed_revision["predecessor_preserved"] is True
+    assert changed_revision["replay"] is True
+    assert changed_revision["result_stable"] is True
+    assert report["lifecycle"]["tombstone"]["disclosure_fenced"] is True
+    assert report["lifecycle"]["tombstone"]["history_preserved"] is True
+    for name in ("parser", "original_storage", "post_write_pre_acceptance"):
+        failure = report["failures"][name]
+        assert failure["accepted_before_retry"] is (
+            name != "post_write_pre_acceptance"
+        )
+        assert failure["logical_effect_count"] == 1
+        assert failure["retry_passed"] is True
+        assert failure["retry_replay"] is True
+
+
 def test_issue561_report_is_metadata_only_and_fail_closed() -> None:
     report = _report()
 
@@ -81,34 +132,64 @@ def test_issue561_pass_requires_every_live_format_and_lifecycle_edge() -> None:
         assert report["reason_code"]
         return
 
-    assert set(report["formats"]) == REQUIRED_FORMATS
-    assert set(report["scenarios"]) == REQUIRED_SCENARIOS
-    assert set(report["ui_states"]) == REQUIRED_UI_STATES
-    assert report["reason_code"] is None
-    assert report["q16_01_compatibility"] == "pass"
-    assert report["authorization"]["corpus_approval"] == "pass"
-    assert report["authorization"]["trusted_upload_authority"] == "pass"
-    assert report["isolation"] == {
-        "denied_upload": "pass",
-        "denied_status_read": "pass",
-        "environment_isolation": "pass",
-        "protected_metadata_disclosed": False,
-        "workspace_isolation": "pass",
-    }
-    assert len(report["deployment"]["commit_sha"]) == 40
-    assert len(report["deployment"]["deployment_fingerprint"]) == 64
-    assert report["deployment"]["authorization_generation"] >= 1
-    observations = report["format_observations"]
-    assert {item["format"] for item in observations} == REQUIRED_FORMATS
-    assert all(item["accepted"] for item in observations)
-    assert all(item["checksum_reference"] for item in observations)
-    assert all(item["locator_kinds"] for item in observations)
-    assert all(item["source_reference"] for item in observations)
-    assert all(item["revision_reference"] for item in observations)
-    assert report["lifecycle"]["duplicate_logical_effect_count"] == 1
-    assert report["lifecycle"]["duplicate_result_stable"] is True
-    assert report["lifecycle"]["changed_revision_preserved_history"] is True
-    assert report["lifecycle"]["tombstone_fenced_disclosure"] is True
-    assert report["failures"]["parser"]["retry_passed"] is True
-    assert report["failures"]["original_storage"]["retry_passed"] is True
-    assert report["failures"]["post_write_pre_acceptance"]["retry_passed"] is True
+    _assert_pass_report(report)
+
+
+def test_issue561_complete_pass_evidence_satisfies_gate() -> None:
+    report = _report()
+    report.update(
+        status="pass",
+        reason_code=None,
+        formats=sorted(REQUIRED_FORMATS),
+        scenarios=sorted(REQUIRED_SCENARIOS),
+        ui_states=sorted(REQUIRED_UI_STATES),
+        q16_01_compatibility="pass",
+        authorization={
+            "corpus_approval": "pass",
+            "corpus_approval_reference": "corpus-approval-42",
+            "trusted_upload_authority": "pass",
+            "trusted_upload_authority_reference": "authority-approval-17",
+        },
+        isolation={
+            "denied_environment_upload": "pass",
+            "denied_environment_status_read": "pass",
+            "denied_workspace_upload": "pass",
+            "denied_workspace_status_read": "pass",
+            "protected_metadata_disclosed": False,
+        },
+        lifecycle={
+            "duplicate": {
+                "logical_effect_count": 1,
+                "replay": True,
+                "result_stable": True,
+            },
+            "changed_revision": {
+                "predecessor_preserved": True,
+                "replay": True,
+                "result_stable": True,
+            },
+            "tombstone": {"disclosure_fenced": True, "history_preserved": True},
+        },
+        failures={
+            name: {
+                "accepted_before_retry": name != "post_write_pre_acceptance",
+                "logical_effect_count": 1,
+                "retry_passed": True,
+                "retry_replay": True,
+            }
+            for name in ("parser", "original_storage", "post_write_pre_acceptance")
+        },
+    )
+    report["format_observations"] = [
+        {
+            "accepted": True,
+            "checksum_reference": "a" * 64,
+            "format": format_name,
+            "locator_kinds": ["stable_locator"],
+            "source_reference": "10000000-0000-4000-8000-000000000001",
+            "revision_reference": "20000000-0000-4000-8000-000000000001",
+        }
+        for format_name in REQUIRED_FORMATS
+    ]
+
+    _assert_pass_report(report)
