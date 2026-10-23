@@ -1,39 +1,32 @@
 {
   "schema_version": "q16-01-runtime-readiness:v1",
   "issue": 560,
-  "observed_at": "2026-10-23T15:05:51Z",
+  "observed_at": "2026-10-23T17:14:02Z",
   "decision": "PASS",
   "target": {
     "kind": "repository-owned-isolated-source-compose",
-    "compose_project": "spine560pass",
-    "commit_sha": "4fc7e24bff70abed903db4d6c9b4be76bf5ab7a6",
-    "deployment_fingerprint": "5b44c855b71fb488290c8983461f27a98f41b9633c83831d3b4499125e8f9f8d",
-    "release_identity": "issue560-local-dev-v5",
+    "compose_project": "spine560exact2",
+    "commit_sha": "18d5ecd95655f827221e578241732e55cf4cca7f",
+    "deployment_fingerprint": "06702153601e3322604989a3e79aabde26fa60d7342aa51bd56bf644b0e61bf1",
+    "api_release_identity": "issue560-local-dev-v7",
+    "web_release_identity": "sha256:01d8da81f501b77c198c3886b22b8edbec26709b0ea895372b3ef982eedc6404",
     "workspace_id": "54400000-0000-4000-8000-00000000000a",
     "environment_id": "54400000-0000-4000-8000-00000000000e",
     "authorization_generation": 16
   },
-  "remediation_validation": {
-    "observed_at": "2026-10-23T16:29:12Z",
-    "compose_project": "spine560review",
-    "commit_sha": "4f116e4ebf8814d52c1647ab1e1bac4ae35e0fbc",
-    "deployment_fingerprint": "23bd1ab5255a85f00dcda6bf08ad6ee6b983a66f39dc78a1257f262707e5a421",
-    "api_release_identity": "issue560-local-dev-v6",
-    "web_release_identity": "sha256:f621ed9c14d316c94b7cda7dc54a83ec603e2c4d21a4092b356273092748d544",
-    "browser_qualification_run_id": "issue560-local-064",
-    "browser_qualification": "PASS",
-    "browser_scenario_count": 10,
-    "browser_terminal_run_count": 4,
+  "component_contracts": {
+    "semantic_support_policy_binding": "qa.semantic-support:r2",
+    "semantic_support_policy_digest": "fd3c4925e6f8dbdacd87ac45f9fc27b28d41325f5da3664032cb6b804eeda2ee",
+    "chunk_projection_mapping_contract": "chunk-projection-mapping:v3"
+  },
+  "browser_qualification": {
+    "run_id": "issue560-local-065",
+    "result": "PASS",
+    "scenario_count": 10,
+    "terminal_run_count": 4,
     "citation_locator_validation": "PASS",
     "runtime_authority_verifier": "PASS",
-    "runtime_authority_verifier_case_count": 9,
-    "component_contracts": {
-      "semantic_support_policy_binding": "qa.semantic-support:r2",
-      "semantic_support_policy_digest": "fd3c4925e6f8dbdacd87ac45f9fc27b28d41325f5da3664032cb6b804eeda2ee",
-      "chunk_projection_mapping_contract": "chunk-projection-mapping:v3"
-    },
-    "observer_capture_requalification": "NOT_CLAIMED_PROVIDER_TIMEOUT_AFTER_VERIFIED_RETRIEVAL",
-    "inherits_prior_live_capture_evidence": true
+    "runtime_authority_verifier_case_count": 9
   },
   "manifest": {
     "profile_id": "spine-local-qa",
@@ -67,13 +60,13 @@
     "llm_model": "openai/gpt-5.4-nano",
     "embedding_model": "openai/text-embedding-3-small",
     "images": {
-      "api": "sha256:8129389151fdc6666f073fd74f85f6744fe9422213a2db2c83597657c9bbbcf0",
-      "qa_worker": "sha256:d308ef338990c9c90bfd55cffb0be21346717ff6144a244c6c13f10bf102519f",
-      "outbox_dispatcher": "sha256:2900cefda0fdd4ac9e3d1aff6f27fd61b668d5e19af43ac4ede4d64e9fcebda6",
-      "web": "sha256:f2405c7cfebb0f5e8a28d649ac34d8d6cce2ccd77f2a0c895d43668dba991007",
+      "api": "sha256:afd192dc6dbe015c576589455f465453417a0fae4caff1fcd28c182f250af12e",
+      "qa_worker": "sha256:42d33484a09182b9e87cfc484b844ab92b254a5f96ff219daeaa7493a561b95a",
+      "outbox_dispatcher": "sha256:8014029790a40499835332b1655a8c34e026583e9be5285ad12767e852035e55",
+      "web": "sha256:57c3a62aa62d4977472e0024560300d4b99a0a51a789b38687e9908672f2f942",
       "postgresql": "sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d",
       "temporal": "sha256:607d68caa111338d754771efb876c92dfcdae06d056e4530bb31cd0f37406e6a",
-      "neo4j": "sha256:33a8e2fe867c31dcfe4b46f82b27e5625a50219a0f5c2ba9f1e7c4ef4de7a8e3"
+      "neo4j": "sha256:5c085d2cf9e4d944a18d5e00e082f472b95b9c299cbb73dedc4b6181691f225c"
     }
   },
   "readiness": {
@@ -153,9 +146,10 @@
     "generation_after_advance_retry": 16
   },
   "stale_generation_probe": {
-    "command_id": "ed1e6a49-254b-4953-a7e8-87d8a2c88d53",
-    "message_id": "82c2f6c7-a582-407f-8b4d-21f1bb983853",
-    "run_id": "b9764aa3-3110-4889-8fe4-89016da4ef16",
+    "command_id": "0ce41442-768d-49c8-8a6d-06297c8af4a9",
+    "message_id": "cbdb0426-b5a5-45e3-bca7-436a77db4485",
+    "run_id": "e101ee11-371a-4cd7-add8-6bf24ea069be",
+    "temporal_run_id": "01a169bc-47eb-767f-9b25-bdcc8d63e720",
     "api_admission": "PASS_GENERATION_15",
     "canonical_outbox": "PASS_DELIVERED",
     "temporal_admission": "PASS_RUNNING",
@@ -163,17 +157,17 @@
     "attempt_count": 0,
     "provider_calls_observed": 0,
     "protected_source_disclosure": false,
-    "temporal_cleanup": "CANCELLED"
+    "temporal_cleanup": "CANCELED"
   },
   "synthetic_ask": {
-    "command_id": "44240fb8-6cc8-4f8f-8fdc-d0420ed5885b",
-    "message_id": "b8048426-3552-4ad0-819b-a2fbef8cdb10",
-    "run_id": "468c2d16-592a-4238-85b8-0f308f93bf23",
-    "trace_id": "86b11a6b-8608-4f70-a7a2-993e5377a273",
-    "capture_id": "3bcca86f-2c97-595c-880b-7cf54530f818",
-    "subscription_id": "db692eec-ca51-581d-ade9-a8fcf23e4835",
-    "outbox_event_id": "67662282-9638-579c-ab1c-64d0253b67d3",
-    "temporal_run_id": "01a16910-92c0-7ef3-8445-215e35b4c786",
+    "command_id": "39e00c7d-a6ee-4b95-80e2-6bc841007387",
+    "message_id": "eca45a9b-b661-49d9-bdbd-0739e3d62b10",
+    "run_id": "80217745-f410-4605-b064-17404427b00a",
+    "trace_id": "9f89e54c-8b8e-434b-8eef-0de5f7b28574",
+    "capture_id": "4bf01e31-6c0a-5fc0-9240-d9d7f17776e0",
+    "subscription_id": "6c550567-f063-5178-875d-3737b701d0f8",
+    "outbox_event_id": "036a89ee-2117-5180-9509-c53396191789",
+    "temporal_run_id": "01a169c0-a130-7767-9121-656cfaafe7ec",
     "api_admission": "PASS",
     "canonical_outbox": "PASS_DELIVERED",
     "dispatcher_delivery": "PASS_DELIVERED",
@@ -188,6 +182,13 @@
     "capture_mode": "SAME_EXECUTION_IN_FLIGHT",
     "second_execution_observed": false,
     "attempt_count": 1,
+    "internal_path_invocations": {
+      "authorization": 1,
+      "retrieval": 1,
+      "generation": 1,
+      "disclosure": 1
+    },
+    "path_cardinality_source": "r1-qa-observer-capture:v1-single-attempt-contract",
     "safe_reason_code": null
   },
   "blockers": [],

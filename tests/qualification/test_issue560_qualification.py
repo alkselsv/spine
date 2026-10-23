@@ -91,20 +91,14 @@ def test_issue560_report_preserves_each_readiness_dimension() -> None:
     assert manifest["capture_service_profile_id"] == "api-qa-capture-v1"
     assert manifest["capture_worker_workload_id"] == "spine-qa-worker"
     assert manifest["capture_observer_workload_id"] == "spine-qa-observer"
-    remediation = report["remediation_validation"]
-    assert len(remediation["commit_sha"]) == 40
-    assert len(remediation["deployment_fingerprint"]) == 64
-    assert remediation["browser_qualification"] == "PASS"
-    assert remediation["browser_scenario_count"] == 10
-    assert remediation["browser_terminal_run_count"] == 4
-    assert remediation["citation_locator_validation"] == "PASS"
-    assert remediation["runtime_authority_verifier"] == "PASS"
-    assert remediation["runtime_authority_verifier_case_count"] == 9
-    assert remediation["observer_capture_requalification"] == (
-        "NOT_CLAIMED_PROVIDER_TIMEOUT_AFTER_VERIFIED_RETRIEVAL"
-    )
-    assert remediation["inherits_prior_live_capture_evidence"] is True
-    contracts = remediation["component_contracts"]
+    browser = report["browser_qualification"]
+    assert browser["result"] == "PASS"
+    assert browser["scenario_count"] == 10
+    assert browser["terminal_run_count"] == 4
+    assert browser["citation_locator_validation"] == "PASS"
+    assert browser["runtime_authority_verifier"] == "PASS"
+    assert browser["runtime_authority_verifier_case_count"] == 9
+    contracts = report["component_contracts"]
     assert contracts["semantic_support_policy_binding"] == "qa.semantic-support:r2"
     assert len(contracts["semantic_support_policy_digest"]) == 64
     assert contracts["chunk_projection_mapping_contract"] == (
@@ -143,6 +137,15 @@ def test_issue560_terminal_run_has_complete_same_execution_correlation() -> None
     assert run["capture_mode"] == "SAME_EXECUTION_IN_FLIGHT"
     assert run["second_execution_observed"] is False
     assert run["attempt_count"] == 1
+    assert run["internal_path_invocations"] == {
+        "authorization": 1,
+        "retrieval": 1,
+        "generation": 1,
+        "disclosure": 1,
+    }
+    assert run["path_cardinality_source"] == (
+        "r1-qa-observer-capture:v1-single-attempt-contract"
+    )
     assert run["safe_reason_code"] is None
     assert report["blockers"] == []
     assert report["operator_amendment"] == {
