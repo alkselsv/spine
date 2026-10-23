@@ -64,6 +64,16 @@ from spine.ingestion.parsers import (
     XlsxParser,
     parse_document,
 )
+from spine.application.ingestion_faults import (
+    IngestionFaultInjected,
+    IngestionFaultReason,
+)
+from spine.infrastructure.ingestion_fault_injection import (
+    IngestionFaultBoundary,
+    IngestionFaultController,
+    IngestionFaultInjectionProfile,
+    IngestionFaultRule,
+)
 from tests.ingestion.test_pdf_parser import pdf_bytes
 
 
@@ -130,6 +140,7 @@ class _Ingestion:
         self.transitions: list[IngestionTransition] = []
         self.binding = None
         self.receipt: ProcessingReceipt | None = None
+        self.failures = []
 
     def _head(self, *, kind: IngestionTargetKind, run_id: UUID, item_id: UUID | None = None):
         candidates = [
@@ -194,6 +205,7 @@ class _Ingestion:
         return warning
 
     async def append_failure(self, failure):
+        self.failures.append(failure)
         return failure
 
     async def record_processing_receipt(self, command):
@@ -307,7 +319,14 @@ class _Outbox:
         self.pending.clear()
 
 
-def _orchestrator(content: bytes, *, media_type: str, parser_calls: list[int]):
+def _orchestrator(
+    content: bytes,
+    *,
+    media_type: str,
+    parser_calls: list[int],
+    pre_acceptance_faults: list[bool] | None = None,
+    fault_injector=None,
+):
     ingestion = _Ingestion()
     admissions = _Admissions()
     canonical = _Canonical()
@@ -325,6 +344,10 @@ def _orchestrator(content: bytes, *, media_type: str, parser_calls: list[int]):
 
     def canonical_command_factory(**kwargs):
         assert kwargs["request"].access_policy_version_id == _id("policy")
+        if pre_acceptance_faults and pre_acceptance_faults.pop():
+            raise IngestionFaultInjected(
+                IngestionFaultReason.PRE_ACCEPTANCE_RETRYABLE
+            )
         return SimpleNamespace(revision=kwargs["revision"])
 
     class PolicyEnsurer:
@@ -343,10 +366,94 @@ def _orchestrator(content: bytes, *, media_type: str, parser_calls: list[int]):
         canonical_command_factory=canonical_command_factory,
         outbox_events=OutboxEventRegistry(),
         parser=parse,
+        fault_injector=fault_injector,
         clock=lambda: NOW,
         max_validation_bytes=10_000_000,
         max_parse_bytes=10_000_000,
     ), uploader, reader, canonical, outbox, ingestion
+
+
+@pytest.mark.asyncio
+async def test_pre_acceptance_fault_is_visible_and_retry_does_not_create_early_current_revision() -> None:
+    parser_calls: list[int] = []
+    orchestrator, _, _, canonical, _, ingestion = _orchestrator(
+        b"qualification source\n",
+        media_type="text/plain",
+        parser_calls=parser_calls,
+        pre_acceptance_faults=[True],
+    )
+
+    failed = await orchestrator.ingest(
+        request=_request("text/plain"), chunks=_stream(b"qualification source\n")
+    )
+
+    assert failed.status is DocumentIngestionStatus.FAILED
+    assert failed.failure_ids
+    assert canonical.current_revision_id is None
+    assert ingestion.failures[0].code == "pre_acceptance_retryable"
+    assert ingestion.failures[0].retryable is True
+
+    retried = await orchestrator.ingest(
+        request=_request("text/plain"), chunks=_stream(b"qualification source\n")
+    )
+
+    assert retried.status is DocumentIngestionStatus.SUCCEEDED
+    assert retried.revision.revision_id == failed.revision.revision_id
+    assert canonical.current_revision_id == retried.revision.revision_id
+
+
+@pytest.mark.parametrize(
+    ("boundary", "reason"),
+    (
+        (IngestionFaultBoundary.PARSER, IngestionFaultReason.PARSER_RETRYABLE),
+        (
+            IngestionFaultBoundary.ORIGINAL_STORAGE,
+            IngestionFaultReason.ORIGINAL_STORAGE_UNAVAILABLE,
+        ),
+    ),
+)
+async def test_processing_fault_is_reported_with_safe_reason_code(
+    boundary: IngestionFaultBoundary,
+    reason: IngestionFaultReason,
+) -> None:
+    command = _request("text/plain")
+    controller = IngestionFaultController(
+        IngestionFaultInjectionProfile(
+            profile_id="qualification-ingestion-test",
+            profile_version="r1",
+            deployment_profile_id="qualification-isolated-test",
+            deployment_profile_version="r1",
+            deployment_fingerprint="a" * 64,
+            rules=(
+                IngestionFaultRule(
+                    workspace_id=WORKSPACE,
+                    environment_id=ENVIRONMENT,
+                    command_identity=command.command_identity,
+                    boundary=boundary,
+                    reason_code=reason,
+                ),
+            ),
+        )
+    )
+    orchestrator, _, reader, canonical, _, ingestion = _orchestrator(
+        b"qualification source\n",
+        media_type="text/plain",
+        parser_calls=[],
+        fault_injector=controller,
+    )
+
+    result = await orchestrator.ingest(
+        request=command, chunks=_stream(b"qualification source\n")
+    )
+
+    assert result.status is DocumentIngestionStatus.FAILED
+    assert result.processing_receipt is not None
+    assert result.failure_ids
+    assert ingestion.failures[0].code == reason.value
+    assert ingestion.failures[0].retryable is True
+    assert canonical.current_revision_id == result.revision.revision_id
+    if boundary is IngestionFaultBoundary.ORIGINAL_STORAGE:
+        assert reader.calls == 1
 
 
 def _request(media_type: str, *, key: str = "document-1") -> DocumentUploadCommand:

@@ -537,6 +537,7 @@ export const ru = {
       failureId: 'ID ошибки',
       failureRetryable: 'Повтор этой ошибки разрешён.',
       failureFinal: 'Повтор этой ошибки запрещён.',
+      preAcceptanceRetry: 'Повторите исходную загрузку с тем же ключом идемпотентности; ревизия ещё не принята.',
       retryable: 'Повтор операции разрешён',
       nextAction: 'Следующее действие: {action}',
       nextActions: {

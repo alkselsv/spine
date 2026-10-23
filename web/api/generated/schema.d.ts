@@ -2403,6 +2403,11 @@ export interface components {
              */
             failure_ids: string[];
             /**
+             * Failure Reason Codes
+             * @default []
+             */
+            failure_reason_codes: string[];
+            /**
              * Item Id
              * Format: uuid
              */
