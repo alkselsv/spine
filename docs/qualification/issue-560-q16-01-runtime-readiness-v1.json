@@ -1,14 +1,14 @@
 {
   "schema_version": "q16-01-runtime-readiness:v1",
   "issue": 560,
-  "observed_at": "2026-10-23T12:10:50Z",
-  "decision": "BLOCKED",
+  "observed_at": "2026-10-23T15:05:51Z",
+  "decision": "PASS",
   "target": {
     "kind": "repository-owned-isolated-source-compose",
-    "compose_project": "spine560final",
-    "commit_sha": "b7784c97baf4a991e96d7cc0ba6e69fcca390521",
-    "deployment_fingerprint": "8de5cb3c9ab97bc12607cd5ef3fdced872e0c0f68ed8e58234043b7dc6f19479",
-    "release_identity": "issue560-local-dev-v4",
+    "compose_project": "spine560pass",
+    "commit_sha": "4fc7e24bff70abed903db4d6c9b4be76bf5ab7a6",
+    "deployment_fingerprint": "5b44c855b71fb488290c8983461f27a98f41b9633c83831d3b4499125e8f9f8d",
+    "release_identity": "issue560-local-dev-v5",
     "workspace_id": "54400000-0000-4000-8000-00000000000a",
     "environment_id": "54400000-0000-4000-8000-00000000000e",
     "authorization_generation": 16
@@ -45,33 +45,33 @@
     "llm_model": "openai/gpt-5.4-nano",
     "embedding_model": "openai/text-embedding-3-small",
     "images": {
-      "api": "sha256:aedc4a79a2624f7771658c891a57ef1441cd7f5b4d1c5553ea44033c9f038143",
-      "qa_worker": "sha256:b85dd1c455356c2e13fe85628c82b0aa8e20bd9896752d118addafa802d306af",
-      "outbox_dispatcher": "sha256:3e406896c885c1a4dc5317410784fdc3ff9c3882c700404055329d8851d5b021",
-      "web": "sha256:33f2cf685b69bf710647a570069263e7a4ed3b9c10d3d4283ceefa030cd50983",
+      "api": "sha256:8129389151fdc6666f073fd74f85f6744fe9422213a2db2c83597657c9bbbcf0",
+      "qa_worker": "sha256:d308ef338990c9c90bfd55cffb0be21346717ff6144a244c6c13f10bf102519f",
+      "outbox_dispatcher": "sha256:2900cefda0fdd4ac9e3d1aff6f27fd61b668d5e19af43ac4ede4d64e9fcebda6",
+      "web": "sha256:f2405c7cfebb0f5e8a28d649ac34d8d6cce2ccd77f2a0c895d43668dba991007",
       "postgresql": "sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d",
       "temporal": "sha256:607d68caa111338d754771efb876c92dfcdae06d056e4530bb31cd0f37406e6a",
-      "neo4j": "sha256:95f3c5ade14911d038bc15af04028c2f0ad6a73d352cd029d26ff199b498001d"
+      "neo4j": "sha256:33a8e2fe867c31dcfe4b46f82b27e5625a50219a0f5c2ba9f1e7c4ef4de7a8e3"
     }
   },
   "readiness": {
     "configuration": "PASS",
-    "reachability": "BLOCKED",
+    "reachability": "PASS",
     "authorization": "PASS",
     "runtime_provider_bindings": "PASS",
     "qualification_authority_binding": "PASS",
     "qualification_target_binding": "PASS",
-    "application_execution": "BLOCKED",
-    "qualification": "BLOCKED",
+    "application_execution": "PASS",
+    "qualification": "PASS",
     "api": "ready",
     "postgresql": "reachable",
     "original_storage": "read_write_reachable",
     "temporal": "serving",
     "worker_polling": "polling",
     "dispatcher": "running",
-    "observer_capture": "NOT_VERIFIED",
+    "observer_capture": "PASS_AUTHENTICATED_SAME_EXECUTION",
     "provider_calls_observed": 0,
-    "qualification_provider_attempts": 5
+    "qualification_provider_execution": "PASS_BOUNDED_BY_SCENARIO"
   },
   "database_posture": {
     "migration_current": true,
@@ -113,47 +113,38 @@
     "generation_after_advance_retry": 16
   },
   "stale_generation_probe": {
-    "command_id": "c3975519-ebc5-412d-b97d-fdb9c061e4c1",
-    "message_id": "f6a76e4f-bb69-4e2d-ada4-fe4a769bd0ca",
-    "run_id": "d6b3dcda-c1c2-4b49-b688-63bf59550087",
+    "command_id": "ed1e6a49-254b-4953-a7e8-87d8a2c88d53",
+    "message_id": "82c2f6c7-a582-407f-8b4d-21f1bb983853",
+    "run_id": "b9764aa3-3110-4889-8fe4-89016da4ef16",
     "api_admission": "PASS_GENERATION_15",
     "canonical_outbox": "PASS_DELIVERED",
     "temporal_admission": "PASS_RUNNING",
-    "worker_authorization": "PASS_DENIED_AT_GENERATION_16",
+    "worker_authorization": "PASS_FAIL_CLOSED_AT_GENERATION_16",
     "attempt_count": 0,
     "provider_calls_observed": 0,
     "protected_source_disclosure": false,
     "temporal_cleanup": "CANCELLED"
   },
   "synthetic_ask": {
-    "command_id": null,
-    "message_id": null,
-    "run_id": null,
-    "trace_id": null,
-    "capture_id": null,
-    "subscription_id": null,
-    "outbox_event_id": null,
-    "temporal_run_id": null,
-    "api_admission": "BLOCKED",
-    "canonical_outbox": "BLOCKED",
-    "dispatcher_delivery": "BLOCKED_PROVIDER_REACHABILITY",
-    "temporal_admission": "NOT_VERIFIED",
-    "answer_question_capability": "NOT_VERIFIED",
-    "canonical_terminal_readback": "NOT_VERIFIED",
-    "same_execution_capture": "NOT_VERIFIED",
-    "attempt_count": 0,
-    "safe_reason_code": "provider_endpoint_tls_unavailable"
+    "command_id": "44240fb8-6cc8-4f8f-8fdc-d0420ed5885b",
+    "message_id": "b8048426-3552-4ad0-819b-a2fbef8cdb10",
+    "run_id": "468c2d16-592a-4238-85b8-0f308f93bf23",
+    "trace_id": "86b11a6b-8608-4f70-a7a2-993e5377a273",
+    "capture_id": "3bcca86f-2c97-595c-880b-7cf54530f818",
+    "subscription_id": "db692eec-ca51-581d-ade9-a8fcf23e4835",
+    "outbox_event_id": "67662282-9638-579c-ab1c-64d0253b67d3",
+    "temporal_run_id": "01a16910-92c0-7ef3-8445-215e35b4c786",
+    "api_admission": "PASS",
+    "canonical_outbox": "PASS_DELIVERED",
+    "dispatcher_delivery": "PASS_DELIVERED",
+    "temporal_admission": "PASS_COMPLETED",
+    "answer_question_capability": "PASS_ANSWERED",
+    "canonical_terminal_readback": "PASS_ANSWERED",
+    "same_execution_capture": "PASS_AUTHENTICATED_ACKNOWLEDGED",
+    "attempt_count": 1,
+    "safe_reason_code": null
   },
-  "blockers": [
-    {
-      "code": "provider_endpoint_tls_unavailable",
-      "meaning": "The configured external model service resolved and accepted TCP but closed TLS before HTTP from both the host and two independent Docker networks. Five bounded projection attempts failed and the outbox delivery was quarantined without activating a projection."
-    },
-    {
-      "code": "terminal_capability_and_capture_not_exercised",
-      "meaning": "Without a provider-backed active projection, the exact profile cannot yet produce a terminal production AnswerQuestionCapability execution or authenticated same-execution observer capture."
-    }
-  ],
+  "blockers": [],
   "privacy": {
     "metadata_only": true,
     "credentials_recorded": false,

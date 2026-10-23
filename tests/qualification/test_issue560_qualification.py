@@ -15,12 +15,12 @@ def _report() -> dict[str, object]:
     return json.loads(REPORT_PATH.read_text(encoding="utf-8"))
 
 
-def test_issue560_report_is_exact_metadata_only_and_reports_current_blocker() -> None:
+def test_issue560_report_is_exact_metadata_only_and_passes() -> None:
     report = _report()
 
     assert report["schema_version"] == "q16-01-runtime-readiness:v1"
     assert report["issue"] == 560
-    assert report["decision"] == "BLOCKED"
+    assert report["decision"] == "PASS"
     assert len(report["target"]["commit_sha"]) == 40
     assert len(report["target"]["deployment_fingerprint"]) == 64
     assert report["privacy"] == {
@@ -38,14 +38,18 @@ def test_issue560_report_preserves_each_readiness_dimension() -> None:
     readiness = report["readiness"]
 
     assert readiness["configuration"] == "PASS"
-    assert readiness["reachability"] == "BLOCKED"
+    assert readiness["reachability"] == "PASS"
     assert readiness["authorization"] == "PASS"
     assert readiness["runtime_provider_bindings"] == "PASS"
     assert readiness["qualification_authority_binding"] == "PASS"
     assert readiness["qualification_target_binding"] == "PASS"
-    assert readiness["application_execution"] == "BLOCKED"
-    assert readiness["qualification"] == "BLOCKED"
+    assert readiness["application_execution"] == "PASS"
+    assert readiness["qualification"] == "PASS"
+    assert readiness["observer_capture"] == "PASS_AUTHENTICATED_SAME_EXECUTION"
     assert readiness["provider_calls_observed"] == 0
+    assert readiness["qualification_provider_execution"] == (
+        "PASS_BOUNDED_BY_SCENARIO"
+    )
 
     observations = report["authorization_observations"]
     assert observations["approved_scope_a"] == "PASS_200"
@@ -77,22 +81,39 @@ def test_issue560_report_preserves_each_readiness_dimension() -> None:
     assert manifest["capture_observer_workload_id"] == "spine-qa-observer"
 
 
-def test_issue560_provider_blocker_does_not_elevate_partial_correlation() -> None:
+def test_issue560_terminal_run_has_complete_same_execution_correlation() -> None:
     report = _report()
     run = report["synthetic_ask"]
 
-    assert run["api_admission"] == "BLOCKED"
-    assert run["canonical_outbox"] == "BLOCKED"
-    assert run["dispatcher_delivery"] == "BLOCKED_PROVIDER_REACHABILITY"
-    assert run["temporal_admission"] == "NOT_VERIFIED"
-    assert run["answer_question_capability"] == "NOT_VERIFIED"
-    assert run["canonical_terminal_readback"] == "NOT_VERIFIED"
-    assert run["same_execution_capture"] == "NOT_VERIFIED"
-    assert run["attempt_count"] == 0
+    correlation_fields = (
+        "command_id",
+        "message_id",
+        "run_id",
+        "trace_id",
+        "capture_id",
+        "subscription_id",
+        "outbox_event_id",
+        "temporal_run_id",
+    )
+    assert all(run[field] for field in correlation_fields)
+    assert run["api_admission"] == "PASS"
+    assert run["canonical_outbox"] == "PASS_DELIVERED"
+    assert run["dispatcher_delivery"] == "PASS_DELIVERED"
+    assert run["temporal_admission"] == "PASS_COMPLETED"
+    assert run["answer_question_capability"] == "PASS_ANSWERED"
+    assert run["canonical_terminal_readback"] == "PASS_ANSWERED"
+    assert run["same_execution_capture"] == (
+        "PASS_AUTHENTICATED_ACKNOWLEDGED"
+    )
+    assert run["attempt_count"] == 1
+    assert run["safe_reason_code"] is None
+    assert report["blockers"] == []
 
     stale = report["stale_generation_probe"]
     assert stale["api_admission"] == "PASS_GENERATION_15"
-    assert stale["worker_authorization"] == "PASS_DENIED_AT_GENERATION_16"
+    assert stale["worker_authorization"] == (
+        "PASS_FAIL_CLOSED_AT_GENERATION_16"
+    )
     assert stale["attempt_count"] == 0
     assert stale["provider_calls_observed"] == 0
     assert stale["protected_source_disclosure"] is False
