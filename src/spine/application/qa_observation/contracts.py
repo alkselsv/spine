@@ -15,7 +15,10 @@ from spine.domain.capabilities import (
     AnswerQuestionOutcome,
     AnswerQuestionOutput,
 )
-from spine.domain.capabilities.answer_disclosure import AnswerDisclosureRecord
+from spine.domain.capabilities.answer_disclosure import (
+    AnswerDisclosureRecord,
+    AnswerDisclosureRecordV2,
+)
 from spine.domain.common import ActorRef, ValidatedDefinitionModel
 from spine.domain.context_bundles import ContextBundle
 from spine.memory.contracts import (
@@ -228,7 +231,7 @@ class SameExecutionCapture(ValidatedDefinitionModel):
     projection_retrieval: ProjectionRetrievalResult
     retrieval: RetrievalResult
     answer: AnswerQuestionOutput
-    disclosure: AnswerDisclosureRecord
+    disclosure: AnswerDisclosureRecordV2 | AnswerDisclosureRecord
 
     @model_validator(mode="after")
     def validate_execution_lineage(self) -> "SameExecutionCapture":

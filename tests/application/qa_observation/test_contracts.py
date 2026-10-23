@@ -17,6 +17,10 @@ from spine.application.qa_observation.contracts import (
 )
 from spine.application.workflows.ask_admission_dispatch import AskAdmissionWorkflowInput
 from spine.domain.capabilities import AnswerQuestionOutcome
+from spine.domain.capabilities.answer_disclosure import (
+    AnswerDisclosureRecordV2,
+    AnswerExecutionCheckpoint,
+)
 from spine.domain.common import ActorKind, ActorRef
 from tests.application.qa_observation.factories import (
     capture_envelope,
@@ -79,6 +83,29 @@ def test_capture_envelope_round_trips_as_a_typed_same_execution_capture() -> Non
     assert parsed == envelope
     assert parsed.worker_execution_elapsed_ns == 123_456
     assert parsed.capture.answer.outcome is AnswerQuestionOutcome.DENIED
+
+
+def test_capture_envelope_json_round_trip_preserves_v2_disclosure_record() -> None:
+    envelope = capture_envelope(worker_execution_elapsed_ns=123_456)
+    historical = envelope.capture.disclosure
+    current = AnswerDisclosureRecordV2(
+        **historical.model_dump(mode="python", exclude={"schema_version"}),
+        execution_checkpoint=AnswerExecutionCheckpoint(
+            execution_pin_digest="d" * 64,
+        ),
+    )
+    envelope = envelope.model_copy(
+        update={
+            "capture": envelope.capture.model_copy(
+                update={"disclosure": current}
+            )
+        }
+    )
+
+    parsed = CaptureEnvelope.model_validate_json(envelope.model_dump_json())
+
+    assert isinstance(parsed.capture.disclosure, AnswerDisclosureRecordV2)
+    assert parsed.capture.disclosure == current
 
 
 def test_capture_envelope_accepts_missing_worker_sample_without_fabricating_zero() -> (

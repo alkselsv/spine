@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import TypeVar
 from uuid import UUID
@@ -73,7 +73,21 @@ from spine.infrastructure.diagnostics import RecordingDiagnosticSink
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.persistence.postgresql import PostgreSQLPersistence
 from spine.infrastructure.persistence.postgresql_authorization_mappings import (
+    canonical_human_identities,
     workspace_memberships,
+)
+from spine.infrastructure.persistence.postgresql_qualification_fixtures import (
+    PostgreSQLQualificationFixtureProvisioner,
+    QualificationFixtureConflictError,
+)
+from spine.scripts.qualification import (
+    QualificationBootstrapSettings,
+    QualificationVerificationSettings,
+    advance_authorization_generation as advance_qualification_generation,
+    build_authorization_records as build_qualification_authorization_records,
+    build_fixture_plan as build_qualification_fixture_plan,
+    provision as provision_qualification,
+    verify as verify_qualification,
 )
 from tests.contracts.auth.adapter import AuthorizationDirectoryFactory
 from tests.contracts.auth.test_authorization_directory_contract import (
@@ -375,6 +389,274 @@ async def test_postgresql_unexpired_qualification_binding_allows_current_authori
     authorization_directory_factory: AuthorizationDirectoryFactory,
 ) -> None:
     await contract_unexpired_binding(authorization_directory_factory)
+
+
+async def test_qualification_provisioning_is_idempotent_and_runtime_verifiable(
+    authorization_database: AuthorizationDatabase,
+) -> None:
+    settings = QualificationBootstrapSettings(
+        deployment_mode="development",
+        migration_database_url=authorization_database.migration_engine.url.render_as_string(
+            hide_password=False
+        ),
+        identity_id=UUID("50800000-0000-4000-8000-000000000091"),
+        authentication_alias_issuer="https://qualification-retry.spine.invalid",
+        authentication_alias_subject="qualification-retry-operator",
+        workspace_a_id=UUID("50800000-0000-4000-8000-000000000092"),
+        workspace_b_id=UUID("50800000-0000-4000-8000-000000000093"),
+        environment_a_id=UUID("50800000-0000-4000-8000-000000000094"),
+        environment_b_id=UUID("50800000-0000-4000-8000-000000000095"),
+        authority_expires_at=datetime(2027, 1, 1, tzinfo=timezone.utc),
+        target_reference="deployment:source:integration-v1",
+        target_scope_reference="scope:workspace-environment:integration-v1",
+        secret_provider_reference="provider:integration:v1",
+        secret_reference="secret:qualification-source:integration-v1",
+        database_role_reference="postgres-role:spine-runtime:integration-v1",
+    )
+
+    await provision_qualification(settings)
+    await provision_qualification(settings)
+    verification = QualificationVerificationSettings(
+        deployment_mode="development",
+        runtime_database_url=(
+            authorization_database.runtime_engine.url.render_as_string(
+                hide_password=False
+            )
+        ),
+        identity_id=settings.identity_id,
+        authentication_alias_issuer=settings.authentication_alias_issuer,
+        authentication_alias_subject=settings.authentication_alias_subject,
+        workspace_a_id=settings.workspace_a_id,
+        workspace_b_id=settings.workspace_b_id,
+        environment_a_id=settings.environment_a_id,
+        environment_b_id=settings.environment_b_id,
+        target_reference=settings.target_reference,
+        target_scope_reference=settings.target_scope_reference,
+        secret_provider_reference=settings.secret_provider_reference,
+        secret_reference=settings.secret_reference,
+        database_role_reference=settings.database_role_reference,
+    )
+    await verify_qualification(verification)
+    with pytest.raises(RuntimeError, match="target binding does not match"):
+        await verify_qualification(
+            verification.model_copy(
+                update={"target_reference": "deployment:source:unexpected-v2"}
+            )
+        )
+
+    async with authorization_database.migration_engine.connect() as connection:
+        identity_count = await connection.scalar(
+            text(
+                "SELECT count(*) FROM spine.canonical_human_identities "
+                "WHERE identity_id = :identity_id"
+            ),
+            {"identity_id": settings.identity_id},
+        )
+
+    assert identity_count == 1
+
+
+async def test_qualification_provisioning_repairs_matching_partial_fixture(
+    authorization_database: AuthorizationDatabase,
+) -> None:
+    settings = _qualification_settings(
+        authorization_database,
+        prefix="partial",
+        identity_offset=0xB1,
+    )
+    identity = build_qualification_authorization_records(settings).identities[0]
+    async with authorization_database.migration_engine.begin() as connection:
+        await connection.execute(
+            insert(canonical_human_identities).values(
+                identity_id=identity.identity_id,
+                created_change_id=identity.provenance.change_id,
+                created_by=identity.provenance.recorded_by,
+            )
+        )
+
+    await provision_qualification(settings)
+    await verify_qualification(
+        _qualification_verification_settings(authorization_database, settings)
+    )
+
+
+async def test_qualification_runtime_verifier_rejects_unprovisioned_backup_and_runtime_aliases(
+    authorization_database: AuthorizationDatabase,
+) -> None:
+    settings = _qualification_settings(
+        authorization_database,
+        prefix="non-human-authority",
+        identity_offset=0xB8,
+    )
+    await provision_qualification(settings)
+
+    report = await verify_qualification(
+        _qualification_verification_settings(authorization_database, settings)
+    )
+
+    assert report.verified_case_ids == (
+        "approved-scope-a",
+        "foreign-approved-scope",
+        "insufficient-role",
+        "revoked-administrator",
+        "expired-administrator",
+        "approved-scope-b",
+        "request-controlled-foreign-scope",
+        "backup-authority-alias",
+        "runtime-identity-alias",
+    )
+
+
+async def test_qualification_provisioning_rejects_conflicting_immutable_fixture(
+    authorization_database: AuthorizationDatabase,
+) -> None:
+    settings = _qualification_settings(
+        authorization_database,
+        prefix="conflict",
+        identity_offset=0xC1,
+    )
+    plan = build_qualification_fixture_plan(settings)
+    await PostgreSQLQualificationFixtureProvisioner(
+        async_sessionmaker(
+            authorization_database.migration_engine, expire_on_commit=False
+        )
+    ).provision(
+        replace(
+            plan,
+            source_access=replace(plan.source_access, principal_kind="team"),
+        )
+    )
+
+    with pytest.raises(QualificationFixtureConflictError, match="access_policy_grants"):
+        await provision_qualification(settings)
+
+
+async def test_qualification_generation_advance_is_idempotent_and_preserves_current_authority(
+    authorization_database: AuthorizationDatabase,
+) -> None:
+    settings = _qualification_settings(
+        authorization_database,
+        prefix="stale",
+        identity_offset=0xD1,
+    )
+    await provision_qualification(settings)
+    before = await _authorization_generation(
+        authorization_database, settings.workspace_a_id, settings.environment_a_id
+    )
+
+    await advance_qualification_generation(settings)
+    after_first = await _authorization_generation(
+        authorization_database, settings.workspace_a_id, settings.environment_a_id
+    )
+    await advance_qualification_generation(settings)
+    after_retry = await _authorization_generation(
+        authorization_database, settings.workspace_a_id, settings.environment_a_id
+    )
+    await verify_qualification(
+        _qualification_verification_settings(authorization_database, settings)
+    )
+
+    assert after_first == before + 1
+    assert after_retry == after_first
+
+
+def _qualification_settings(
+    authorization_database: AuthorizationDatabase,
+    *,
+    prefix: str,
+    identity_offset: int,
+) -> QualificationBootstrapSettings:
+    base = UUID("50800000-0000-4000-8000-000000000000").int
+    return QualificationBootstrapSettings(
+        deployment_mode="development",
+        migration_database_url=authorization_database.migration_engine.url.render_as_string(
+            hide_password=False
+        ),
+        identity_id=UUID(int=base + identity_offset),
+        authentication_alias_issuer=f"https://qualification-{prefix}.spine.invalid",
+        authentication_alias_subject=f"qualification-{prefix}-operator",
+        workspace_a_id=UUID(int=base + identity_offset + 1),
+        workspace_b_id=UUID(int=base + identity_offset + 2),
+        environment_a_id=UUID(int=base + identity_offset + 3),
+        environment_b_id=UUID(int=base + identity_offset + 4),
+        authority_expires_at=datetime(2027, 1, 1, tzinfo=timezone.utc),
+        target_reference=f"deployment:source:{prefix}-v1",
+        target_scope_reference=f"scope:workspace-environment:{prefix}-v1",
+        secret_provider_reference=f"provider:{prefix}:v1",
+        secret_reference=f"secret:qualification-source:{prefix}-v1",
+        database_role_reference=f"postgres-role:spine-runtime:{prefix}-v1",
+    )
+
+
+def _qualification_verification_settings(
+    authorization_database: AuthorizationDatabase,
+    settings: QualificationBootstrapSettings,
+) -> QualificationVerificationSettings:
+    return QualificationVerificationSettings(
+        deployment_mode="development",
+        runtime_database_url=authorization_database.runtime_engine.url.render_as_string(
+            hide_password=False
+        ),
+        identity_id=settings.identity_id,
+        authentication_alias_issuer=settings.authentication_alias_issuer,
+        authentication_alias_subject=settings.authentication_alias_subject,
+        workspace_a_id=settings.workspace_a_id,
+        workspace_b_id=settings.workspace_b_id,
+        environment_a_id=settings.environment_a_id,
+        environment_b_id=settings.environment_b_id,
+        target_reference=settings.target_reference,
+        target_scope_reference=settings.target_scope_reference,
+        secret_provider_reference=settings.secret_provider_reference,
+        secret_reference=settings.secret_reference,
+        database_role_reference=settings.database_role_reference,
+    )
+
+
+async def _authorization_generation(
+    authorization_database: AuthorizationDatabase,
+    workspace_id: UUID,
+    environment_id: UUID,
+) -> int:
+    async with authorization_database.migration_engine.connect() as connection:
+        generation = await connection.scalar(
+            text(
+                "SELECT generation FROM spine.authorization_generations "
+                "WHERE workspace_id = :workspace_id AND environment_id = :environment_id"
+            ),
+            {"workspace_id": workspace_id, "environment_id": environment_id},
+        )
+    assert isinstance(generation, int)
+    return generation
+
+
+async def test_qualification_verifier_fails_closed_without_provisioning(
+    authorization_database: AuthorizationDatabase,
+) -> None:
+    with pytest.raises(RuntimeError, match="authority does not match"):
+        await verify_qualification(
+            QualificationVerificationSettings(
+                deployment_mode="development",
+                runtime_database_url=(
+                    authorization_database.runtime_engine.url.render_as_string(
+                        hide_password=False
+                    )
+                ),
+                identity_id=UUID("50800000-0000-4000-8000-0000000000a1"),
+                authentication_alias_issuer=(
+                    "https://qualification-missing.spine.invalid"
+                ),
+                authentication_alias_subject="qualification-missing-operator",
+                workspace_a_id=UUID("50800000-0000-4000-8000-0000000000a2"),
+                workspace_b_id=UUID("50800000-0000-4000-8000-0000000000a3"),
+                environment_a_id=UUID("50800000-0000-4000-8000-0000000000a4"),
+                environment_b_id=UUID("50800000-0000-4000-8000-0000000000a5"),
+                target_reference="deployment:source:missing-v1",
+                target_scope_reference="scope:workspace-environment:missing-v1",
+                secret_provider_reference="provider:missing:v1",
+                secret_reference="secret:qualification-source:missing-v1",
+                database_role_reference="postgres-role:spine-runtime:missing-v1",
+            )
+        )
 
 
 @pytest.mark.parametrize(

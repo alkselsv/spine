@@ -28,6 +28,7 @@ import styles from './SessionBrowserPage.module.css';
 
 const SESSION_CURSOR = 'session_cursor';
 const MESSAGE_CURSOR = 'message_cursor';
+const ACTIVE_DISCLOSURE_REFRESH_MS = 15_000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
@@ -111,6 +112,8 @@ function ChatExperience() {
       queryKey: qaSessionQueryKeys.session(scope, validSessionId ?? '', identityVersion),
     }),
     enabled: Boolean(auth.getBearerCredential && identityVersion && validSessionId && !scopeChanged),
+    refetchInterval: (query) =>
+      query.state.status !== 'error' ? ACTIVE_DISCLOSURE_REFRESH_MS : false,
   });
   const messagesQuery = useQuery({
     ...apiQueryOptions({
@@ -358,7 +361,11 @@ function SessionDetails({
     }),
     enabled: Boolean(session?.status === 'active' && requestedMessageId),
     refetchInterval: (query) =>
-      query.state.status !== 'error' && query.state.data?.state !== 'terminal' ? 2_000 : false,
+      query.state.status !== 'error'
+        ? query.state.data?.state === 'terminal'
+          ? ACTIVE_DISCLOSURE_REFRESH_MS
+          : 2_000
+        : false,
   });
   const admissionIsTerminal = Boolean(
     admission &&
@@ -405,13 +412,22 @@ function SessionDetails({
     ),
   );
   const deepLinkNeedsActiveSession = Boolean(deepLinkMessageId && session && session.status !== 'active');
+  const admittedMessageAvailable = Boolean(
+    admission &&
+    admittedMessageQuery.data?.message_id === admission.messageId &&
+    admittedMessageQuery.data.session_id === session?.session_id,
+  );
   const historyUnavailable =
     invalidDeepLink ||
     deepLinkMismatch ||
     deepLinkNeedsActiveSession ||
     Boolean(admittedMessageQuery.error) ||
     Boolean(admittedMessageQuery.isStale && admittedMessageQuery.data) ||
-    Boolean(!deepLinkMessageId && (messageQuery.error || (messageQuery.isStale && messageQuery.data)));
+    Boolean(
+      !deepLinkMessageId &&
+      !admittedMessageAvailable &&
+      (messageQuery.error || (messageQuery.isStale && messageQuery.data)),
+    );
   const messages = historyUnavailable
     ? undefined
     : deepLinkMessageId

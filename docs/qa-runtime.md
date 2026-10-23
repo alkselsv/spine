@@ -17,10 +17,51 @@ expose bounded reason codes only.
 
 For disposable local Compose use, copy the commented Q&A variables from
 `.env.example` into `.env`. Set one release identity and commit SHA for both
-processes, use the current Alembic head for `migration_revision`, and update the
-profile fingerprint whenever any binding changes. Generate distinct random
-worker and observer credentials. Keep the deployment JSON free of secrets. The
-example identities and fingerprint are placeholders, not deployment approval.
+processes, set `SPINE_QA_MODEL_PROFILE_ID` to a stable deployment profile
+identity distinct from the provider model name, use the current Alembic head for
+`migration_revision`, and update the profile fingerprint whenever any binding
+changes. Generate distinct random worker and observer credentials. Keep the
+deployment JSON free of secrets. The example identities and fingerprint are
+placeholders, not deployment approval.
+
+Use a unique Compose project name for every SOURCE qualification (for example,
+`docker compose -p spine560 ...`). Compose volumes outlive containers, so reusing
+a project name can silently select an older PostgreSQL or Neo4j state instead of
+the declared isolated target. Supply the lease, handler and shutdown bounds as
+one profile; startup rejects a handler that reaches the lease or a shutdown
+bound that exceeds it.
+
+Provision the disposable qualification authority through the explicit operator
+profile before starting the runtime:
+
+```bash
+docker compose -p spine560 --profile qualification-provisioning run --rm \
+  qualification-authority-provisioner
+docker compose -p spine560 up --build --detach --wait
+```
+
+The provisioning command uses the migration-owner credential, creates the
+versioned synthetic allow/deny identities, hard-expiring Qualification Authority
+Bindings, one exact SOURCE Qualification Target Binding and its synthetic
+metadata-only AccessPolicy reference, and is idempotent for the same inputs. It
+is never a dependency of API or worker startup. Default startup runs only
+`qualification-authority-verifier` through the runtime database role and fails
+closed when records are missing, expired, revoked or do not match the exact
+target references. Set `SPINE_QUALIFICATION_AUTHORITY_EXPIRES_AT` explicitly for
+each run; changing authority or target inputs requires a fresh isolated Compose
+project rather than mutating immutable fixture history.
+
+To exercise stale authorization after an Ask has been admitted and before its
+worker attempt starts, append the deterministic generation-advance record once:
+
+```bash
+docker compose -p spine560 --profile qualification-provisioning run --rm \
+  qualification-authority-provisioner spine-qualification-advance-generation
+```
+
+Repeating this command is idempotent. It leaves the approved actor active while
+making the previously admitted authorization generation stale; use a fresh
+isolated project for another stale-generation journey.
 
 The worker exposes content-free `/health/live` and `/health/ready` endpoints on
 port 8081. Readiness separately reports PostgreSQL, Temporal reachability,
@@ -36,8 +77,9 @@ is `development`; the profile records this mode and API startup rejects a
 mismatch. Ingestion's service-principal alias is configured separately from the
 human authentication provider.
 
-This runtime code does not provision identities or grants, approve a provider,
-make paid provider calls during startup, or qualify a physical deployment. The
+This runtime startup does not provision identities or grants, approve a provider,
+make paid provider calls, or qualify a physical deployment. The separate
+operator profile is the only local path that provisions qualification fixtures. The
 existing real Temporal/PostgreSQL integration suite remains the evidence for
 canonical terminal completion; deployment-specific grants and credentials must
 be supplied by their owners.

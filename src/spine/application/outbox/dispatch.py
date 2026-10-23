@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections.abc import Callable
 from datetime import datetime, timedelta
@@ -46,6 +47,7 @@ from spine.domain.audit import AuditEvent, AuditOutcome, OutboxDeliveryAuditPayl
 from spine.domain.common import ContextOrigin
 
 
+_LOGGER = logging.getLogger(__name__)
 _IDENTIFIER = re.compile(r"[a-z][a-z0-9_.:-]{0,127}")
 
 
@@ -420,6 +422,10 @@ class OutboxDispatcher:
         error_code: str,
     ) -> OutboxDeliveryFinalization:
         if claim.attempt_number >= self._maximum_attempts:
+            _LOGGER.warning(
+                "Outbox delivery exhausted attempts after safe failure code: %s",
+                error_code,
+            )
             return OutboxDeliveryFinalization(
                 status=OutboxDeliveryStatus.QUARANTINED,
                 occurred_at=failed_at,

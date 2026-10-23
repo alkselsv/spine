@@ -166,7 +166,8 @@ def test_issue508_compose_profile_is_reproducible_and_fail_closed() -> None:
     for service in (
         "postgres:",
         "database-bootstrap:",
-        "qualification-authority-bootstrap:",
+        "qualification-authority-provisioner:",
+        "qualification-authority-verifier:",
         "temporal:",
         "temporal-ui:",
         "neo4j:",
@@ -175,6 +176,8 @@ def test_issue508_compose_profile_is_reproducible_and_fail_closed() -> None:
         "web:",
     ):
         assert f"  {service}" in compose
+    assert "image: pgvector/pgvector:0.8.7-pg17-bookworm" in compose
+    assert "image: pgvector/pgvector:0.8.1-pg17-bookworm" not in compose
     assert "condition: service_healthy" in compose
     assert "condition: service_completed_successfully" in compose
     assert "127.0.0.1:${SPINE_WEB_PORT:-4175}:8080" in compose
@@ -190,15 +193,42 @@ def test_issue508_compose_profile_is_reproducible_and_fail_closed() -> None:
     assert "SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID" not in shared_environment
     api_environment = compose.split("  api:", 1)[1].split("  outbox-dispatcher:", 1)[0]
     assert "SPINE_LOCAL_AUTH_BEARER_CREDENTIAL: ${SPINE_E2E_ACCESS_TOKEN}" in api_environment
+    assert (
+        "SPINE_API_INGESTION_SERVICE_ALIAS_ISSUER: "
+        "${SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_ISSUER}"
+    ) in api_environment
+    assert (
+        "SPINE_API_INGESTION_SERVICE_ALIAS_SUBJECT: "
+        "${SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_SUBJECT}"
+    ) in api_environment
     assert "SPINE_PROJECTION_WORKER_SERVICE_PRINCIPAL_ID" in compose
     assert "SPINE_QA_WORKER_SERVICE_PRINCIPAL_ID" in compose
     assert "SPINE_API_QA_SERVICE_PRINCIPAL_ID: ${SPINE_QA_WORKER_SERVICE_PRINCIPAL_ID}" in compose
     assert "SPINE_WORKER_SERVICE_PRINCIPAL_ID: ${SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID}" not in compose
     assert "SPINE_QA_WORKER_SERVICE_PRINCIPAL_ID: ${SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID}" not in compose
+    dispatcher_environment = compose.split("  outbox-dispatcher:", 1)[1].split(
+        "  qa-worker:", 1
+    )[0]
+    assert (
+        "SPINE_COGNEE_LOCAL_PROVIDER_AUTHORIZATION_JSON: "
+        "${SPINE_COGNEE_LOCAL_PROVIDER_AUTHORIZATION_JSON:-}"
+    ) in dispatcher_environment
     assert 'CMD ["spine-api"]' in python_image
-    assert "spine-qualification-bootstrap" in compose
+    assert "spine-qualification-bootstrap" not in compose
+    assert "profiles: [\"qualification-provisioning\"]" in compose
+    assert "spine-qualification-provision" in compose
+    assert "spine-qualification-verify" in compose
+    verifier = compose.split("  qualification-authority-verifier:", 1)[1].split(
+        "  original-storage-bootstrap:", 1
+    )[0]
+    assert "SPINE_QUALIFICATION_RUNTIME_DATABASE_URL" in verifier
+    assert "SPINE_QUALIFICATION_MIGRATION_DATABASE_URL" not in verifier
     assert 'command: ["spine-qa-worker"]' in compose
     assert 'SPINE_QA_WORKER_TEMPORAL_TASK_QUEUE: spine-r1-qa' in compose
+    assert "SPINE_API_MODEL_PROFILE_ID: ${SPINE_QA_MODEL_PROFILE_ID:?" in compose
+    assert "SPINE_QA_WORKER_MODEL_PROFILE_ID: ${SPINE_QA_MODEL_PROFILE_ID:?" in compose
+    assert "SPINE_API_MODEL_PROFILE_ID: ${LLM_MODEL}" not in compose
+    assert "SPINE_QA_WORKER_MODEL_PROFILE_ID: ${LLM_MODEL}" not in compose
     assert "uv sync --frozen --no-dev" in python_image
     assert "pnpm install --frozen-lockfile" in web_image
     assert "resolver 127.0.0.11" in web_proxy

@@ -198,6 +198,7 @@ function renderSessionMessages(messages: unknown[]) {
 afterEach(() => {
   cleanup();
   onlineManager.setOnline(true);
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -701,6 +702,74 @@ describe('final Chat experience', () => {
     expect(hydratedMessageRequested).toBe(true);
     expect(screen.getAllByRole('button', { name: 'Остановить выполнение' })).toHaveLength(1);
     expect(await screen.findByRole('alert')).toHaveTextContent(ru.chat.eventStreamFailed);
+  });
+
+  it('test_admitted_terminal_message_remains_visible_when_message_page_refresh_fails', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    let admissionAccepted = false;
+    let sessionReads = 0;
+    let admittedMessageReads = 0;
+    const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}`) {
+        sessionReads += 1;
+        return response({ data: session(), workspace_id: scope.workspaceId, environment_id: scope.environmentId, trace_id: traceId });
+      }
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages`) {
+        if (!admissionAccepted) return collection(request, [], null);
+        return new Response(JSON.stringify({ code: 'spine.persistence.unavailable' }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.pathname === '/api/v1/ask/admissions' && request.method === 'POST') {
+        admissionAccepted = true;
+        return response({
+          schema_version: 1,
+          command_id: askCommandId,
+          workspace_id: scope.workspaceId,
+          environment_id: scope.environmentId,
+          trace_id: traceId,
+          status: 'accepted',
+          replay: false,
+          result: {
+            schema_version: 1,
+            command_id: askCommandId,
+            session_id: sessionId,
+            message_id: messageId,
+            run_id: runId,
+            status: 'admitted',
+          },
+        });
+      }
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages/${messageId}`) {
+        admittedMessageReads += 1;
+        return response({
+          data: message('Текущий вопрос', 'Проверенный принятый ответ.'),
+          schema_version: 1,
+          workspace_id: scope.workspaceId,
+          environment_id: scope.environmentId,
+          trace_id: traceId,
+        });
+      }
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages/${messageId}/events`) {
+        return new Response('', { headers: { 'content-type': 'text/event-stream' } });
+      }
+      return response({ error: 'unexpected request' });
+    });
+    vi.stubGlobal('fetch', fetcher);
+    renderPage(`/chat/${sessionId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}`);
+
+    await user.type(await screen.findByRole('textbox', { name: 'Вопрос' }), 'Текущий вопрос');
+    await user.click(screen.getByRole('button', { name: 'Отправить' }));
+
+    expect(await screen.findByText('Проверенный принятый ответ.')).toBeVisible();
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(screen.getByText('Проверенный принятый ответ.')).toBeVisible();
+    expect(sessionReads).toBeGreaterThan(1);
+    expect(admittedMessageReads).toBeGreaterThan(1);
   });
 
   it('test_clarification_reply_links_to_the_canonical_message', async () => {

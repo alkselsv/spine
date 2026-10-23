@@ -380,7 +380,9 @@ async def test_terminal_failure_is_quarantined_with_safe_code() -> None:
 
 
 @pytest.mark.asyncio
-async def test_retryable_failure_at_attempt_limit_is_quarantined() -> None:
+async def test_retryable_failure_at_attempt_limit_is_quarantined(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     adapter = await create_in_memory_adapter()
     workspace_id = synthetic_uuid(6630)
     event_id = synthetic_uuid(6631)
@@ -436,6 +438,10 @@ async def test_retryable_failure_at_attempt_limit_is_quarantined() -> None:
     assert delivery is not None
     assert delivery.status is OutboxDeliveryStatus.QUARANTINED
     assert delivery.last_error_code == "delivery.attempts_exhausted"
+    assert (
+        "Outbox delivery exhausted attempts after safe failure code: "
+        "consumer.unavailable"
+    ) in caplog.messages
 
 
 @pytest.mark.asyncio

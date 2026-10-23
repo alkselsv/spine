@@ -1,12 +1,17 @@
+import json
 from types import SimpleNamespace
 from uuid import UUID
 
+import httpx
 import pytest
 
+from spine.domain.capabilities import SemanticSupportOutcome
 from spine.infrastructure.qa_agent_runtime import (
     ConfiguredLLMRuntime,
+    ConfiguredSemanticSupportValidator,
     _SEMANTIC_SUPPORT_SYSTEM_PROMPT,
 )
+from tests.application.test_semantic_support import request as semantic_request
 from tests.agents.test_answer_question_candidate_runtime import (
     candidate_context,
     input_artifact,
@@ -205,3 +210,67 @@ def test_semantic_support_prompt_does_not_treat_absence_claims_as_grounded() -> 
     assert "not supported unless the evidence explicitly establishes that absence" in (
         _SEMANTIC_SUPPORT_SYSTEM_PROMPT
     )
+
+
+@pytest.mark.asyncio
+async def test_semantic_support_validator_accepts_claim_reproduced_by_evidence() -> None:
+    def provider(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        system_prompt = payload["messages"][0]["content"]
+        user_payload = json.loads(payload["messages"][1]["content"])
+        evidence = user_payload["evidence"]
+        direct_match_rule = "case, whitespace, or punctuation" in system_prompt
+        structured_evidence = all(
+            set(item) == {"evidence_id", "content"} for item in evidence
+        )
+        outcome = "supported" if direct_match_rule and structured_evidence else "inconclusive"
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": json.dumps({"outcome": outcome})}}]},
+        )
+
+    validator = ConfiguredSemanticSupportValidator(
+        api_key="synthetic",
+        model="synthetic",
+        endpoint="https://example.invalid/v1",
+        transport=httpx.MockTransport(provider),
+    )
+
+    assessment = await validator.assess(semantic_request())
+
+    assert assessment.outcome is SemanticSupportOutcome.SUPPORTED
+    assert assessment.evidence_ids == ("evidence-a",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider_outcome",
+    ["unsupported", "inconclusive"],
+)
+async def test_semantic_support_validator_preserves_non_supported_outcome(
+    provider_outcome: str,
+) -> None:
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps({"outcome": provider_outcome})
+                        }
+                    }
+                ]
+            },
+        )
+    )
+    validator = ConfiguredSemanticSupportValidator(
+        api_key="synthetic",
+        model="synthetic",
+        endpoint="https://example.invalid/v1",
+        transport=transport,
+    )
+
+    assessment = await validator.assess(semantic_request())
+
+    assert assessment.outcome is SemanticSupportOutcome(provider_outcome)

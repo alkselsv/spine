@@ -1,0 +1,41 @@
+{
+  "schema_version": "semantic-support-prompt-eval:v1",
+  "dataset_version": "2.0.1",
+  "policy_binding": "qa.semantic-support:r2",
+  "prompt_digest": "fd3c4925e6f8dbdacd87ac45f9fc27b28d41325f5da3664032cb6b804eeda2ee",
+  "assumptions": [
+    "All claims and evidence are synthetic.",
+    "Expected outcomes are human-labelled against ADR-0019 semantic support semantics.",
+    "Provider failures are evaluated by the application fail-closed contract, not this quality dataset."
+  ],
+  "cases": [
+    {
+      "case_id": "normalized-direct-match",
+      "scenario": "normalized_direct_match",
+      "claim": "ALPHA IS AVAILABLE",
+      "evidence": ["Alpha is available."],
+      "expected_outcome": "supported"
+    },
+    {
+      "case_id": "faithful-paraphrase",
+      "scenario": "faithful_paraphrase",
+      "claim": "Members can use Alpha.",
+      "evidence": ["Alpha is available to every registered member."],
+      "expected_outcome": "supported"
+    },
+    {
+      "case_id": "partial-support",
+      "scenario": "partial_support",
+      "claim": "Alpha is available worldwide.",
+      "evidence": ["Alpha is available to registered members."],
+      "expected_outcome": "unsupported"
+    },
+    {
+      "case_id": "unsupported-absence-claim",
+      "scenario": "unsupported_absence_claim",
+      "claim": "The evidence does not mention Beta.",
+      "evidence": ["Alpha is available."],
+      "expected_outcome": "unsupported"
+    }
+  ]
+}

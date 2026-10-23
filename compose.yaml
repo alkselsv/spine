@@ -44,7 +44,7 @@ x-app-environment: &app-environment
 
 services:
   postgres:
-    image: pgvector/pgvector:0.8.1-pg17-bookworm
+    image: pgvector/pgvector:0.8.7-pg17-bookworm
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${SPINE_DATABASE_OPERATOR_PASSWORD}
@@ -83,7 +83,8 @@ services:
       - spine-db-bootstrap && spine-db-migrate
     restart: "no"
 
-  qualification-authority-bootstrap:
+  qualification-authority-provisioner:
+    profiles: ["qualification-provisioning"]
     build:
       context: .
       dockerfile: Dockerfile
@@ -100,7 +101,38 @@ services:
       SPINE_QUALIFICATION_WORKSPACE_B_ID: ${SPINE_E2E_WORKSPACE_B_ID}
       SPINE_QUALIFICATION_ENVIRONMENT_A_ID: ${SPINE_E2E_ENVIRONMENT_A_ID}
       SPINE_QUALIFICATION_ENVIRONMENT_B_ID: ${SPINE_E2E_ENVIRONMENT_B_ID}
-    command: ["spine-qualification-bootstrap"]
+      SPINE_QUALIFICATION_AUTHORITY_EXPIRES_AT: ${SPINE_QUALIFICATION_AUTHORITY_EXPIRES_AT:?set an explicit UTC hard expiry}
+      SPINE_QUALIFICATION_TARGET_REFERENCE: ${SPINE_QUALIFICATION_TARGET_REFERENCE:?set the exact SOURCE deployment reference}
+      SPINE_QUALIFICATION_TARGET_SCOPE_REFERENCE: ${SPINE_QUALIFICATION_TARGET_SCOPE_REFERENCE:?set the exact SOURCE scope reference}
+      SPINE_QUALIFICATION_SECRET_PROVIDER_REFERENCE: ${SPINE_QUALIFICATION_SECRET_PROVIDER_REFERENCE:?set the external secret provider reference}
+      SPINE_QUALIFICATION_SECRET_REFERENCE: ${SPINE_QUALIFICATION_SECRET_REFERENCE:?set the external secret reference}
+      SPINE_QUALIFICATION_DATABASE_ROLE_REFERENCE: ${SPINE_QUALIFICATION_DATABASE_ROLE_REFERENCE:-postgres-role:spine-runtime:v1}
+    command: ["spine-qualification-provision"]
+    restart: "no"
+
+  qualification-authority-verifier:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      database-bootstrap:
+        condition: service_completed_successfully
+    environment:
+      SPINE_QUALIFICATION_DEPLOYMENT_MODE: development
+      SPINE_QUALIFICATION_RUNTIME_DATABASE_URL: postgresql+psycopg://spine_runtime:${SPINE_DATABASE_RUNTIME_PASSWORD}@postgres:5432/spine
+      SPINE_QUALIFICATION_IDENTITY_ID: ${SPINE_E2E_IDENTITY_ID}
+      SPINE_QUALIFICATION_AUTHENTICATION_ALIAS_ISSUER: ${SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_ISSUER}
+      SPINE_QUALIFICATION_AUTHENTICATION_ALIAS_SUBJECT: ${SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_SUBJECT}
+      SPINE_QUALIFICATION_WORKSPACE_A_ID: ${SPINE_E2E_WORKSPACE_A_ID}
+      SPINE_QUALIFICATION_WORKSPACE_B_ID: ${SPINE_E2E_WORKSPACE_B_ID}
+      SPINE_QUALIFICATION_ENVIRONMENT_A_ID: ${SPINE_E2E_ENVIRONMENT_A_ID}
+      SPINE_QUALIFICATION_ENVIRONMENT_B_ID: ${SPINE_E2E_ENVIRONMENT_B_ID}
+      SPINE_QUALIFICATION_TARGET_REFERENCE: ${SPINE_QUALIFICATION_TARGET_REFERENCE:?set the exact SOURCE deployment reference}
+      SPINE_QUALIFICATION_TARGET_SCOPE_REFERENCE: ${SPINE_QUALIFICATION_TARGET_SCOPE_REFERENCE:?set the exact SOURCE scope reference}
+      SPINE_QUALIFICATION_SECRET_PROVIDER_REFERENCE: ${SPINE_QUALIFICATION_SECRET_PROVIDER_REFERENCE:?set the external secret provider reference}
+      SPINE_QUALIFICATION_SECRET_REFERENCE: ${SPINE_QUALIFICATION_SECRET_REFERENCE:?set the external secret reference}
+      SPINE_QUALIFICATION_DATABASE_ROLE_REFERENCE: ${SPINE_QUALIFICATION_DATABASE_ROLE_REFERENCE:-postgres-role:spine-runtime:v1}
+    command: ["spine-qualification-verify"]
     restart: "no"
 
   original-storage-bootstrap:
@@ -166,7 +198,7 @@ services:
     depends_on:
       database-bootstrap:
         condition: service_completed_successfully
-      qualification-authority-bootstrap:
+      qualification-authority-verifier:
         condition: service_completed_successfully
       original-storage-bootstrap:
         condition: service_completed_successfully
@@ -191,12 +223,12 @@ services:
       SPINE_API_CAPTURE_SERVICE_PROFILE_ID: api-qa-capture-v1
       SPINE_API_CAPTURE_SERVICE_URL: http://127.0.0.1:8080
       SPINE_API_PROJECTION_PROFILE_ID: spine-cognee-local-v1
-      SPINE_API_MODEL_PROFILE_ID: ${LLM_MODEL}
+      SPINE_API_MODEL_PROFILE_ID: ${SPINE_QA_MODEL_PROFILE_ID:?SPINE_QA_MODEL_PROFILE_ID is required}
       SPINE_API_QA_CAPTURE_WORKER_CREDENTIAL: ${SPINE_QA_CAPTURE_WORKER_CREDENTIAL}
       SPINE_API_QA_CAPTURE_OBSERVER_CREDENTIAL: ${SPINE_QA_CAPTURE_OBSERVER_CREDENTIAL}
       SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID: ${SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID}
       SPINE_API_INGESTION_SERVICE_ALIAS_ISSUER: ${SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_ISSUER}
-      SPINE_API_INGESTION_SERVICE_ALIAS_SUBJECT: spine-api-ingestion
+      SPINE_API_INGESTION_SERVICE_ALIAS_SUBJECT: ${SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_SUBJECT}
       SPINE_API_QA_SERVICE_PRINCIPAL_ID: ${SPINE_QA_WORKER_SERVICE_PRINCIPAL_ID}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/v1/health/live', timeout=2)"]
@@ -234,6 +266,7 @@ services:
       SPINE_WORKER_TEMPORAL_NAMESPACE: default
       SPINE_WORKER_TEMPORAL_TASK_QUEUE: spine-r1-qa
       SPINE_COGNEE_WORKER_BINDING_JSON: ${SPINE_COGNEE_WORKER_BINDING_JSON}
+      SPINE_COGNEE_LOCAL_PROVIDER_AUTHORIZATION_JSON: ${SPINE_COGNEE_LOCAL_PROVIDER_AUTHORIZATION_JSON:-}
     command: ["spine-outbox-worker"]
     tmpfs:
       - /app/.spine:uid=65532,gid=65532,mode=0700
@@ -246,7 +279,7 @@ services:
     depends_on:
       database-bootstrap:
         condition: service_completed_successfully
-      qualification-authority-bootstrap:
+      qualification-authority-verifier:
         condition: service_completed_successfully
       temporal:
         condition: service_healthy
@@ -266,7 +299,7 @@ services:
       SPINE_QA_WORKER_CAPTURE_SERVICE_URL: http://api:8080
       SPINE_QA_WORKER_CAPTURE_WORKER_CREDENTIAL: ${SPINE_QA_CAPTURE_WORKER_CREDENTIAL}
       SPINE_QA_WORKER_PROJECTION_PROFILE_ID: spine-cognee-local-v1
-      SPINE_QA_WORKER_MODEL_PROFILE_ID: ${LLM_MODEL}
+      SPINE_QA_WORKER_MODEL_PROFILE_ID: ${SPINE_QA_MODEL_PROFILE_ID:?SPINE_QA_MODEL_PROFILE_ID is required}
       SPINE_QA_WORKER_HEALTH_HOST: 0.0.0.0
       SPINE_QA_WORKER_HEALTH_PORT: "8081"
     command: ["spine-qa-worker"]

@@ -62,6 +62,11 @@ from spine.infrastructure.cognee_worker_settings import (
 )
 from spine.infrastructure.diagnostics import JsonLoggingDiagnosticSink
 from spine.infrastructure.ingestion_composition import register_ingestion_outbox_events
+from spine.infrastructure.local_cognee_provider_guards import (
+    LocalCogneeProviderAuthorizationSettings,
+    LocalCogneeProviderSecretPresenceSettings,
+    build_local_cognee_provider_guards,
+)
 from spine.infrastructure.outbox.delivery import PostgreSQLOutboxDeliveryRepository
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.persistence.parsed_artifacts import PostgreSQLParsedArtifactRepository
@@ -922,6 +927,7 @@ def create_production_outbox_worker_runtime(
     secret_resolver: SecretReferenceResolver | None = None,
     budget_authorization_resolver: BudgetAuthorizationResolver | None = None,
     provider_call_executor: CogneeProviderCallExecutor | None = None,
+    secret_presence_settings: LocalCogneeProviderSecretPresenceSettings | None = None,
 ) -> ProductionOutboxWorkerRuntime:
     runtime_db = runtime_database or RuntimeDatabaseSettings()
     dispatcher_db = dispatcher_database or DispatcherDatabaseSettings()
@@ -930,6 +936,30 @@ def create_production_outbox_worker_runtime(
         cognee_binding_configuration
         or CogneeWorkerBindingSettings().load_configuration()
     )
+    if (
+        secret_resolver is None
+        and budget_authorization_resolver is None
+        and provider_call_executor is None
+    ):
+        local_authorization = (
+            LocalCogneeProviderAuthorizationSettings().load_optional()
+        )
+        if local_authorization is not None:
+            profile = cognee_configuration.profile
+            available_references = (
+                secret_presence_settings
+                or LocalCogneeProviderSecretPresenceSettings()
+            ).available_references(profile)
+            local_guards = build_local_cognee_provider_guards(
+                profile=profile,
+                authorization=local_authorization,
+                available_secret_references=available_references,
+            )
+            secret_resolver = local_guards.secret_resolver
+            budget_authorization_resolver = (
+                local_guards.budget_authorization_resolver
+            )
+            provider_call_executor = local_guards.provider_call_executor
     runtime_engine = _create_outbox_database_engine(runtime_db)
     dispatcher_engine = _create_outbox_database_engine(dispatcher_db)
     runtime_sessions = async_sessionmaker(runtime_engine, expire_on_commit=False)

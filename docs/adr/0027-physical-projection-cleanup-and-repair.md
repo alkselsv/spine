@@ -25,6 +25,14 @@ non-current source revisions are fenced before a physical write, so a retry
 cannot resurrect content. A newer accepted revision must be projected through
 the normal successor workflow.
 
+Repair is mapping-version exact. A `chunk-projection-mapping:v2` recovery plan
+cannot write into a `v3` candidate or be interpreted as carrying a non-line
+locator. Moving from `v2` to `v3` is a full shadow rebuild from canonical parsed
+artifacts followed by validation and publication. If validation or regression
+evaluation fails, the candidate stays unpublished; rollback publishes a new
+successor from the last validated active inputs and never rewinds the active
+pointer.
+
 The coordinator and Cognee adapter expose only typed status, counts, stable
 identifiers and safe failure codes. Provider exceptions and payloads never cross
 the seam. PostgreSQL remains the authority for SourceRevision, tombstones,
