@@ -36,6 +36,7 @@ from spine.application.production_qa_deployment import (
 )
 from spine.application.qa_observation.contracts import AdmittedExecutionIdentity
 from spine.application.document_queries import CanonicalDocumentQueryService
+from spine.application.document_replacement_upload import DocumentReplacementUploadService
 from spine.application.ingestion_history import OrchestratedIngestionHistoryService
 from spine.application.persistence.outbox import OutboxEventRegistry
 from spine.application.projection_control import (
@@ -297,6 +298,10 @@ def create_production_app(
             resolved_api.cursor_secret.get_secret_value().encode("utf-8")
         ),
         document_ingestion_service=ingestion.document_service,
+        document_replacement_upload_service=DocumentReplacementUploadService(
+            uow_factory=persistence.uow_factory,
+            ingestion_service=ingestion.document_service,
+        ),
         batch_document_ingestion_service=ingestion.batch_service,
         processing_command_service=ingestion.processing_service,
         ingestion_history_service=OrchestratedIngestionHistoryService(

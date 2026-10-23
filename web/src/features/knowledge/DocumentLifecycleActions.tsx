@@ -6,13 +6,12 @@ import type { components } from '../../../api/generated/schema';
 import { SpineApiError, type ApiScope, type ScopedApiClient } from '../../api/client';
 import { ApiErrorPanel } from '../../app/status';
 import { ru } from '../../i18n/resources';
+import { DocumentReplacementUpload } from './DocumentReplacementUpload';
 import {
   createLifecycleIdempotencyKey,
   loadLifecycleOperation,
-  submitDocumentReplacement,
   submitDocumentTombstone,
   type DocumentLifecycleReceipt,
-  type ReplaceDocumentRequest,
   type TombstoneDocumentRequest,
 } from './lifecycle-api';
 import styles from './DocumentDetailPage.module.css';
@@ -30,9 +29,7 @@ type LifecyclePhase =
   | 'failed'
   | 'unavailable';
 
-type LifecycleCommand =
-  | { kind: 'replacement'; body: ReplaceDocumentRequest; idempotencyKey: string }
-  | { kind: 'tombstone'; body: TombstoneDocumentRequest; idempotencyKey: string };
+type LifecycleCommand = { kind: 'tombstone'; body: TombstoneDocumentRequest; idempotencyKey: string };
 
 interface LifecycleFeedback {
   command: LifecycleCommand | null;
@@ -48,7 +45,6 @@ export function DocumentLifecycleActions({
   queryKey,
   scope,
   sourceObjectId,
-  uploadIdentity,
 }: {
   client: ScopedApiClient;
   currentRevisionId: string | null | undefined;
@@ -56,15 +52,8 @@ export function DocumentLifecycleActions({
   queryKey: (resource: string) => readonly unknown[];
   scope: ApiScope;
   sourceObjectId: string;
-  uploadIdentity?: string | null;
 }) {
   const queryClient = useQueryClient();
-  const [replacement, setReplacement] = useState({
-    filename: '',
-    mediaType: 'text/plain',
-    storageRequestReference: '',
-    uploadIdentity: validUploadIdentity(uploadIdentity) ?? '',
-  });
   const [deletionReason, setDeletionReason] = useState<TombstoneDocumentRequest['deletion_reason']>('source_deleted');
   const [feedback, setFeedback] = useState<LifecycleFeedback>({
     command: null,
@@ -116,33 +105,14 @@ export function DocumentLifecycleActions({
   async function execute(command: LifecycleCommand, retrying: boolean) {
     setFeedback({ command, error: null, phase: retrying ? 'retrying' : 'submitting', receipt: null });
     try {
-      const receipt = command.kind === 'replacement'
-        ? await submitDocumentReplacement(client, sourceObjectId, command.body, command.idempotencyKey, new AbortController().signal)
-        : await submitDocumentTombstone(client, sourceObjectId, command.body, command.idempotencyKey, new AbortController().signal);
+      const receipt = await submitDocumentTombstone(
+        client, sourceObjectId, command.body, command.idempotencyKey, new AbortController().signal,
+      );
       applyReceipt(receipt, setFeedback);
       if (receipt.status === 'completed') completeOnce(receipt.operation_id);
     } catch (error) {
       setFeedback({ command, error, phase: phaseFromError(error), receipt: null });
     }
-  }
-
-  function submitReplacement(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!currentRevisionId || !replacementReady(replacement) || isBusy(feedback.phase)) return;
-    const command: LifecycleCommand = {
-      kind: 'replacement',
-      body: {
-        expected_current_revision_id: currentRevisionId,
-        upload_intent: {
-          declared_filename: replacement.filename,
-          declared_media_type: replacement.mediaType,
-          storage_request_reference: replacement.storageRequestReference,
-          upload_identity: replacement.uploadIdentity,
-        },
-      },
-      idempotencyKey: createLifecycleIdempotencyKey('replacement'),
-    };
-    void execute(command, false);
   }
 
   function submitTombstone(event: React.FormEvent<HTMLFormElement>) {
@@ -176,55 +146,14 @@ export function DocumentLifecycleActions({
         {currentRevisionId ? `${ru.documents.documentActions.currentRevision}: ${currentRevisionId}` : ru.documents.documentActions.noRevision}
       </p>
       <div className={styles.lifecycleGrid}>
-        <form className={styles.lifecycleForm} onSubmit={submitReplacement}>
-          <h4>{ru.documents.documentActions.replacementTitle}</h4>
-          <p className={styles.cardDescription}>{ru.documents.documentActions.replacementDescription}</p>
-          <label className={styles.lifecycleField}>
-            {ru.documents.documentActions.uploadReference}
-            <input
-              required
-              maxLength={255}
-              name="storage_request_reference"
-              onChange={(event) => setReplacement((value) => ({ ...value, storageRequestReference: event.target.value }))}
-              value={replacement.storageRequestReference}
-            />
-          </label>
-          <label className={styles.lifecycleField}>
-            {ru.documents.documentActions.filename}
-            <input
-              required
-              maxLength={255}
-              name="declared_filename"
-              onChange={(event) => setReplacement((value) => ({ ...value, filename: event.target.value }))}
-              value={replacement.filename}
-            />
-          </label>
-          <label className={styles.lifecycleField}>
-            {ru.documents.documentActions.mediaType}
-            <select
-              name="declared_media_type"
-              onChange={(event) => setReplacement((value) => ({ ...value, mediaType: event.target.value }))}
-              value={replacement.mediaType}
-            >
-              <option value="text/plain">text/plain</option>
-              <option value="text/markdown">text/markdown</option>
-            </select>
-          </label>
-          <label className={styles.lifecycleField}>
-            {ru.documents.documentActions.uploadIdentity}
-            <input
-              required
-              maxLength={64}
-              name="upload_identity"
-              onChange={(event) => setReplacement((value) => ({ ...value, uploadIdentity: event.target.value }))}
-              pattern="[a-z][a-z0-9_.:-]{0,63}"
-              value={replacement.uploadIdentity}
-            />
-          </label>
-          <button className={styles.lifecyclePrimaryButton} disabled={!currentRevisionId || !replacementReady(replacement) || isBusy(feedback.phase)} type="submit">
-            {ru.documents.documentActions.submitReplacement}
-          </button>
-        </form>
+        <DocumentReplacementUpload
+          client={client}
+          currentRevisionId={currentRevisionId}
+          onRefresh={onRefresh}
+          queryKey={queryKey}
+          scope={scope}
+          sourceObjectId={sourceObjectId}
+        />
 
         <form className={styles.lifecycleForm} onSubmit={submitTombstone}>
           <h4>{ru.documents.documentActions.tombstoneTitle}</h4>
@@ -324,18 +253,6 @@ function isBusy(phase: LifecyclePhase): boolean {
 
 function isPollable(status: LifecycleOperationStatus | null | undefined): boolean {
   return status === 'accepted_processing_pending' || status === 'processing_dispatched';
-}
-
-function replacementReady(value: {
-  filename: string;
-  storageRequestReference: string;
-  uploadIdentity: string;
-}): boolean {
-  return Boolean(value.filename && value.storageRequestReference && value.uploadIdentity);
-}
-
-function validUploadIdentity(value: string | null | undefined): string | null {
-  return value && /^[a-z][a-z0-9_.:-]{0,63}$/.test(value) ? value : null;
 }
 
 function isExplicitlyRetryableError(error: unknown): boolean {
