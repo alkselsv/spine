@@ -12,6 +12,7 @@ import {
   applyBatchItems,
   createIdempotencyKey,
   createUploadRows,
+  DOCUMENT_UPLOAD_ACCEPT,
   type UploadRow,
   validateUploadFiles,
   type UploadValidationIssue,
@@ -248,7 +249,7 @@ export function DocumentUpload({
           {ru.documents.upload.chooseFiles}
         </label>
         <input
-          accept=".txt,.md,.markdown,text/plain,text/markdown"
+          accept={DOCUMENT_UPLOAD_ACCEPT}
           className={styles.visuallyHidden}
           disabled={disabled || busy}
           id="document-upload-input"
@@ -355,7 +356,7 @@ function ValidationErrors({ result }: { result: UploadValidationResult }) {
       <strong>{ru.documents.upload.review}</strong>
       <ul>
         {result.issues.map((issue, index) => (
-          <li key={`${issue.code}-${issue.filename ?? 'batch'}-${index}`}>{validationMessage(issue)}</li>
+          <li key={`${issue.code}-${index}`}>{validationMessage(issue)}</li>
         ))}
       </ul>
     </div>
@@ -363,8 +364,7 @@ function ValidationErrors({ result }: { result: UploadValidationResult }) {
 }
 
 function validationMessage(issue: UploadValidationIssue): string {
-  const message = ru.documents.upload.validation[issue.code];
-  return message.replace('{filename}', issue.filename ?? '');
+  return ru.documents.upload.validation[issue.code];
 }
 
 function uploadStateLabel(row: UploadRow): string {

@@ -44,6 +44,29 @@ describe('document batch upload API adapter', () => {
     expect((submittedForm!.get('file-2') as File).name).toBe('readme.md');
   });
 
+  it('test_supported_docx_without_browser_media_type_uses_canonical_multipart_type', async () => {
+    let submittedForm: FormData | undefined;
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (input) => {
+      submittedForm = await (input as Request).formData();
+      return Response.json(uploadResponse());
+    });
+    const client = createScopedApiClient({
+      baseUrl: 'https://spine.test',
+      fetch,
+      getBearerCredential: () => 'test-token',
+      scope: { workspaceId, environmentId },
+    });
+    const rows = createUploadRows([new File(['synthetic'], 'handbook.docx')]);
+
+    await submitDocumentBatch(client, rows, 'batch-upload-docx', new AbortController().signal);
+
+    const submitted = submittedForm!.get('file-1') as File;
+    expect(submitted.name).toBe('handbook.docx');
+    expect(submitted.type).toBe(
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    );
+  });
+
   it('test_batch_status_reads_the_published_run_endpoint', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(statusResponse()));
     const client = createScopedApiClient({

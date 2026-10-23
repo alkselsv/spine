@@ -6,8 +6,23 @@ export const DEFAULT_UPLOAD_LIMITS = {
   maxBatchBytes: 50_000_000,
 } as const;
 
-const SUPPORTED_EXTENSIONS = new Set(['.md', '.markdown', '.txt']);
-const SUPPORTED_MEDIA_TYPES = new Set(['text/markdown', 'text/plain']);
+const DOCX_MEDIA_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const XLSX_MEDIA_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const SUPPORTED_FILE_TYPES = new Map<string, ReadonlySet<string>>([
+  ['.docx', new Set([DOCX_MEDIA_TYPE])],
+  ['.md', new Set(['text/markdown', 'text/plain', 'text/x-markdown'])],
+  ['.markdown', new Set(['text/markdown', 'text/plain', 'text/x-markdown'])],
+  ['.pdf', new Set(['application/pdf'])],
+  ['.txt', new Set(['text/plain'])],
+  ['.xlsx', new Set([XLSX_MEDIA_TYPE])],
+]);
+const SUPPORTED_MEDIA_TYPES = new Set(
+  Array.from(SUPPORTED_FILE_TYPES.values()).flatMap((mediaTypes) => Array.from(mediaTypes)),
+);
+export const DOCUMENT_UPLOAD_ACCEPT = [
+  ...SUPPORTED_FILE_TYPES.keys(),
+  ...SUPPORTED_MEDIA_TYPES,
+].join(',');
 const MULTIPART_OVERHEAD_RESERVE_PER_FILE = 1_024;
 
 export type UploadValidationIssueCode =
@@ -19,7 +34,6 @@ export type UploadValidationIssueCode =
 
 export interface UploadValidationIssue {
   code: UploadValidationIssueCode;
-  filename?: string;
 }
 
 export interface UploadValidationResult {
@@ -60,8 +74,8 @@ export function validateUploadFiles(
   if (estimatedRequestBytes > limits.maxBatchBytes) issues.push({ code: 'batch_too_large' });
 
   for (const file of files) {
-    if (!isSupportedFile(file)) issues.push({ code: 'unsupported_type', filename: file.name });
-    if (file.size > limits.maxFileBytes) issues.push({ code: 'file_too_large', filename: file.name });
+    if (!isSupportedFile(file)) issues.push({ code: 'unsupported_type' });
+    if (file.size > limits.maxFileBytes) issues.push({ code: 'file_too_large' });
   }
 
   return { valid: issues.length === 0, issues };
@@ -81,6 +95,14 @@ export function createIdempotencyKey(): string {
   const crypto = globalThis.crypto;
   if (crypto?.randomUUID) return `batch-upload-${crypto.randomUUID()}`;
   return `batch-upload-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+export function resolveUploadMediaType(file: File): string {
+  const declaredMediaType = file.type.trim().toLowerCase();
+  if (declaredMediaType) return declaredMediaType;
+  const extension = uploadExtension(file.name);
+  const canonicalMediaType = SUPPORTED_FILE_TYPES.get(extension)?.values().next().value;
+  return canonicalMediaType ?? 'application/octet-stream';
 }
 
 export function mapBatchItemState(
@@ -122,10 +144,15 @@ export function applyBatchItems(
 }
 
 function isSupportedFile(file: File): boolean {
-  const dot = file.name.lastIndexOf('.');
-  const extension = dot > 0 ? file.name.slice(dot).toLowerCase() : '';
-  const mediaType = file.type.toLowerCase();
-  if (extension && !SUPPORTED_EXTENSIONS.has(extension)) return false;
-  if (mediaType && !SUPPORTED_MEDIA_TYPES.has(mediaType)) return false;
-  return SUPPORTED_EXTENSIONS.has(extension) || SUPPORTED_MEDIA_TYPES.has(mediaType);
+  const extension = uploadExtension(file.name);
+  const mediaType = file.type.trim().toLowerCase();
+  if (!extension) return false;
+  const allowedMediaTypes = SUPPORTED_FILE_TYPES.get(extension);
+  if (!allowedMediaTypes) return false;
+  return !mediaType || allowedMediaTypes.has(mediaType);
+}
+
+function uploadExtension(filename: string): string {
+  const dot = filename.lastIndexOf('.');
+  return dot > 0 ? filename.slice(dot).toLowerCase() : '';
 }

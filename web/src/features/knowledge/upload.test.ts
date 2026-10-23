@@ -14,14 +14,49 @@ function file(name: string, size: number, type = 'text/plain'): File {
 }
 
 describe('document batch upload contract', () => {
+  it.each([
+    ['handbook.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    ['policy.pdf', 'application/pdf'],
+    ['prices.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+    ['notes.md', 'text/markdown'],
+    ['readme.txt', 'text/plain'],
+  ])('test_supported_file_%s_is_accepted_for_upload', (name, type) => {
+    expect(validateUploadFiles([file(name, 10, type)])).toEqual({ valid: true, issues: [] });
+  });
+
+  it('test_supported_extension_with_conflicting_media_type_is_rejected', () => {
+    expect(
+      validateUploadFiles([
+        file(
+          'policy.pdf',
+          10,
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        ),
+      ]),
+    ).toEqual({
+      valid: false,
+      issues: [{ code: 'unsupported_type' }],
+    });
+  });
+
+  it('test_supported_media_type_without_extension_is_rejected', () => {
+    expect(validateUploadFiles([file('payload', 10, 'application/pdf')])).toEqual({
+      valid: false,
+      issues: [{ code: 'unsupported_type' }],
+    });
+  });
+
   it('test_invalid_files_are_rejected_before_submission_as_one_batch', () => {
-    const files = [file('notes.pdf', 10, 'application/pdf'), file('large.txt', DEFAULT_UPLOAD_LIMITS.maxFileBytes + 1)];
+    const files = [
+      file('malware.exe', 10, 'application/x-msdownload'),
+      file('large.txt', DEFAULT_UPLOAD_LIMITS.maxFileBytes + 1),
+    ];
 
     expect(validateUploadFiles(files)).toEqual({
       valid: false,
       issues: [
-        { code: 'unsupported_type', filename: 'notes.pdf' },
-        { code: 'file_too_large', filename: 'large.txt' },
+        { code: 'unsupported_type' },
+        { code: 'file_too_large' },
       ],
     });
   });

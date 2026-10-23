@@ -249,10 +249,11 @@ OpenAPI типы. Минимальные ресурсы:
   по отдельным документам; cursor нельзя перенести между workspace/environment,
   operation или page limit.
 - Все перечисленные endpoints требуют Bearer authentication, роль `administrator` и exact
-  workspace/environment request scope. TXT/Markdown поддерживаются текущим
-  parser path; PDF/DOCX/XLSX могут быть приняты в ledger, но возвращаются как
-  processing failure/unsupported outcome до поставки соответствующих parser
-  adapters.
+  workspace/environment request scope. Публичный ingestion path и интерфейс
+  администратора поддерживают PDF, DOCX, XLSX, Markdown и TXT. Клиент сверяет
+  расширение с известным MIME-типом до отправки; неизвестные и противоречивые
+  сочетания отклоняются, а отсутствие browser MIME нормализуется по разрешённому
+  расширению перед multipart-загрузкой.
 
 API возвращает structured errors и сохраняет workspace, environment, acting
 subject и trace ID. Ответ Q&A включает как минимум outcome, structured citations

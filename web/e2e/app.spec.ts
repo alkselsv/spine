@@ -215,6 +215,31 @@ test('test_documents_upload_reviews_batch_polls_processing_and_links_run', async
   expect(uploadRequests[0]?.body).toContain('context.md');
 });
 
+test('test_documents_upload_accepts_docx_and_displays_completed_ingestion_status', async ({ page }) => {
+  await installControlledDocuments(page);
+  const uploadRequests = await installControlledBatchUpload(page);
+
+  await page.goto(
+    `/knowledge/documents?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`,
+  );
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'handbook.docx',
+    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    buffer: Buffer.from('synthetic docx fixture'),
+  });
+
+  await expect(page.getByRole('region', { name: 'Проверка перед отправкой' })).toBeVisible();
+  await expect(page.getByText('handbook.docx')).toBeVisible();
+  await page.getByRole('button', { name: 'Загрузить документы' }).click();
+  await expect(page.getByRole('listitem').filter({ hasText: 'Готов' })).toHaveCount(1);
+
+  expect(uploadRequests).toHaveLength(1);
+  expect(uploadRequests[0]?.body).toContain('handbook.docx');
+  expect(uploadRequests[0]?.body).toContain(
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  );
+});
+
 test('test_ingestion_run_displays_partial_outcomes_retryability_and_safe_diagnostics', async ({ page }) => {
   await installControlledRunReadModels(page);
   const runRequests: Array<Record<string, string>> = [];
@@ -564,12 +589,15 @@ test('test_documents_upload_rejects_invalid_file_before_network_submission', asy
     `/knowledge/documents?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`,
   );
   await page.locator('input[type="file"]').setInputFiles({
-    name: 'protected.pdf',
-    mimeType: 'application/pdf',
+    name: 'unsupported.exe',
+    mimeType: 'application/x-msdownload',
     buffer: Buffer.from('synthetic invalid fixture'),
   });
 
-  await expect(page.getByRole('alert')).toContainText('неподдерживаемый тип');
+  await expect(page.getByRole('alert')).toContainText(
+    'Используйте PDF, DOCX, XLSX, Markdown или TXT',
+  );
+  await expect(page.getByRole('alert')).not.toContainText('unsupported.exe');
   expect(uploadRequests).toHaveLength(0);
 });
 
