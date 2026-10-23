@@ -66,19 +66,47 @@ class SemanticSupportPromptDataset(DefinitionModel):
     cases: tuple[SemanticSupportPromptCase, ...] = Field(min_length=1)
 
 
+class SemanticSupportEvaluationConfiguration(DefinitionModel):
+    """Immutable identities for one reproducible evaluator execution."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    evaluator_id: str = Field(min_length=1)
+    evaluator_version: str = Field(min_length=1)
+    validator_id: str = Field(min_length=1)
+    validator_version: str = Field(min_length=1)
+    model_profile_id: str = Field(min_length=1)
+    model_profile_version: str = Field(min_length=1)
+    model_profile_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class SemanticSupportCaseOutcome(DefinitionModel):
+    """Content-free labelled outcome for one pinned dataset case."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    case_id: str
+    expected_outcome: SemanticSupportOutcome
+    observed_outcome: SemanticSupportOutcome
+    passed: bool
+
+
 class SemanticSupportPromptEvaluationReport(DefinitionModel):
     """Content-free result of executing the labelled prompt cases."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["semantic-support-prompt-eval-report:v1"] = (
-        "semantic-support-prompt-eval-report:v1"
+    schema_version: Literal["semantic-support-prompt-eval-report:v2"] = (
+        "semantic-support-prompt-eval-report:v2"
     )
     dataset_version: str
     policy_binding: str
+    prompt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    configuration: SemanticSupportEvaluationConfiguration
     total_cases: int = Field(ge=1)
     passed_cases: int = Field(ge=0)
     failed_case_ids: tuple[str, ...]
+    case_outcomes: tuple[SemanticSupportCaseOutcome, ...]
 
 
 @lru_cache(maxsize=1)
@@ -90,22 +118,37 @@ def load_semantic_support_prompt_dataset() -> SemanticSupportPromptDataset:
 
 
 async def run_semantic_support_prompt_evaluation(
-    *, validator: SemanticSupportValidator
+    *,
+    validator: SemanticSupportValidator,
+    configuration: SemanticSupportEvaluationConfiguration,
 ) -> SemanticSupportPromptEvaluationReport:
     """Execute every labelled case through the configured validator seam."""
 
     dataset = load_semantic_support_prompt_dataset()
     failed: list[str] = []
+    outcomes: list[SemanticSupportCaseOutcome] = []
     for case in dataset.cases:
         assessment = await validator.assess(_request(case, dataset))
-        if assessment.outcome is not case.expected_outcome:
+        passed = assessment.outcome is case.expected_outcome
+        if not passed:
             failed.append(case.case_id)
+        outcomes.append(
+            SemanticSupportCaseOutcome(
+                case_id=case.case_id,
+                expected_outcome=case.expected_outcome,
+                observed_outcome=assessment.outcome,
+                passed=passed,
+            )
+        )
     return SemanticSupportPromptEvaluationReport(
         dataset_version=dataset.dataset_version,
         policy_binding=dataset.policy_binding,
+        prompt_digest=dataset.prompt_digest,
+        configuration=configuration,
         total_cases=len(dataset.cases),
         passed_cases=len(dataset.cases) - len(failed),
         failed_case_ids=tuple(failed),
+        case_outcomes=tuple(outcomes),
     )
 
 
@@ -212,6 +255,8 @@ def _request(
 
 __all__ = [
     "SEMANTIC_SUPPORT_EVAL_DATASET_VERSION",
+    "SemanticSupportCaseOutcome",
+    "SemanticSupportEvaluationConfiguration",
     "SemanticSupportPromptDataset",
     "SemanticSupportPromptEvaluationReport",
     "load_semantic_support_prompt_dataset",

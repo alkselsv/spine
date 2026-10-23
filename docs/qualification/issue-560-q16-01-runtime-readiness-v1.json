@@ -92,7 +92,7 @@
     "worker_polling": "polling",
     "dispatcher": "running",
     "observer_capture": "PASS_AUTHENTICATED_SAME_EXECUTION",
-    "provider_calls_observed": 0,
+    "startup_readiness_provider_calls_observed": 0,
     "qualification_provider_execution": "PASS_BOUNDED_BY_SCENARIO"
   },
   "database_posture": {

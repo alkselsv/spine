@@ -46,7 +46,7 @@ def test_issue560_report_preserves_each_readiness_dimension() -> None:
     assert readiness["application_execution"] == "PASS"
     assert readiness["qualification"] == "PASS"
     assert readiness["observer_capture"] == "PASS_AUTHENTICATED_SAME_EXECUTION"
-    assert readiness["provider_calls_observed"] == 0
+    assert readiness["startup_readiness_provider_calls_observed"] == 0
     assert readiness["qualification_provider_execution"] == (
         "PASS_BOUNDED_BY_SCENARIO"
     )

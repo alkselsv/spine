@@ -130,25 +130,22 @@ class LocalCogneeProviderSecretPresenceSettings(BaseSettings):
 
     postgres_password: SecretStr | None = Field(
         default=None,
+        min_length=1,
         repr=False,
         validation_alias="DB_PASSWORD",
     )
     graph_database_password: SecretStr | None = Field(
         default=None,
+        min_length=1,
         repr=False,
         validation_alias="GRAPH_DATABASE_PASSWORD",
     )
     llm_api_key: SecretStr | None = Field(
         default=None,
+        min_length=1,
         repr=False,
         validation_alias="LLM_API_KEY",
     )
-    embedding_api_key: SecretStr | None = Field(
-        default=None,
-        repr=False,
-        validation_alias="EMBEDDING_API_KEY",
-    )
-
     def available_references(
         self, profile: CogneeWorkerProfile
     ) -> frozenset[str]:

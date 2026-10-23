@@ -11,6 +11,7 @@ from spine.domain.capabilities import (
 )
 from spine.evals.semantic_support_prompt import (
     SEMANTIC_SUPPORT_EVAL_DATASET_VERSION,
+    SemanticSupportEvaluationConfiguration,
     load_semantic_support_prompt_dataset,
     run_semantic_support_prompt_evaluation,
 )
@@ -47,6 +48,17 @@ class LabelledValidator:
         )
 
 
+CONFIGURATION = SemanticSupportEvaluationConfiguration(
+    evaluator_id="spine.semantic-support-labelled-evaluator",
+    evaluator_version="v1",
+    validator_id="configured-semantic-support-validator",
+    validator_version="r2",
+    model_profile_id="spine-openai-r1-v1",
+    model_profile_version="v1",
+    model_profile_digest="1" * 64,
+)
+
+
 def test_semantic_support_dataset_pins_current_policy_prompt() -> None:
     dataset = load_semantic_support_prompt_dataset()
 
@@ -68,14 +80,23 @@ def test_semantic_support_dataset_pins_current_policy_prompt() -> None:
 @pytest.mark.asyncio
 async def test_semantic_support_evaluation_scores_human_labelled_cases() -> None:
     report = await run_semantic_support_prompt_evaluation(
-        validator=LabelledValidator()
+        validator=LabelledValidator(), configuration=CONFIGURATION
     )
 
     assert report.dataset_version == SEMANTIC_SUPPORT_EVAL_DATASET_VERSION
     assert report.policy_binding == "qa.semantic-support:r2"
+    assert report.prompt_digest == SEMANTIC_SUPPORT_POLICY_DIGEST
+    assert report.configuration == CONFIGURATION
     assert report.total_cases == 4
     assert report.passed_cases == 4
     assert report.failed_case_ids == ()
+    assert tuple(item.case_id for item in report.case_outcomes) == (
+        "normalized-direct-match",
+        "faithful-paraphrase",
+        "partial-support",
+        "unsupported-absence-claim",
+    )
+    assert all(item.passed for item in report.case_outcomes)
 
 
 @pytest.mark.asyncio
@@ -91,11 +112,17 @@ async def test_semantic_support_evaluation_reports_regression() -> None:
             )
 
     report = await run_semantic_support_prompt_evaluation(
-        validator=AlwaysSupported()
+        validator=AlwaysSupported(), configuration=CONFIGURATION
     )
 
     assert report.passed_cases == 2
     assert report.failed_case_ids == (
         "partial-support",
         "unsupported-absence-claim",
+    )
+    assert tuple(item.observed_outcome for item in report.case_outcomes) == (
+        SemanticSupportOutcome.SUPPORTED,
+        SemanticSupportOutcome.SUPPORTED,
+        SemanticSupportOutcome.SUPPORTED,
+        SemanticSupportOutcome.SUPPORTED,
     )

@@ -129,6 +129,28 @@ def test_embedding_key_without_llm_key_does_not_satisfy_model_reference(
     assert profile.model_secret_ref not in available
 
 
+@pytest.mark.parametrize(
+    "variable",
+    (
+        "DB_PASSWORD",
+        "GRAPH_DATABASE_PASSWORD",
+        "LLM_API_KEY",
+    ),
+)
+def test_empty_secret_value_cannot_satisfy_profile_reference(
+    monkeypatch: pytest.MonkeyPatch,
+    variable: str,
+) -> None:
+    profile = _profile()
+    monkeypatch.setenv("DB_PASSWORD", "synthetic-postgres")
+    monkeypatch.setenv("GRAPH_DATABASE_PASSWORD", "synthetic-graph")
+    monkeypatch.setenv("LLM_API_KEY", "synthetic-model")
+    monkeypatch.setenv(variable, "")
+
+    with pytest.raises(ValueError):
+        LocalCogneeProviderSecretPresenceSettings()
+
+
 @pytest.mark.asyncio
 async def test_local_authorization_allows_only_the_exact_profile_scope_and_secret_set() -> None:
     profile = _profile()
