@@ -258,7 +258,6 @@ function DocumentOverview({
         queryKey={queryKey}
         scope={scope}
         sourceObjectId={document.source_object_id}
-        uploadIdentity={document.identity?.upload_identity}
         key={`${scope.workspaceId}:${scope.environmentId}:${document.source_object_id}`}
       />
 

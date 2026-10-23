@@ -15,6 +15,7 @@ from spine.api.authorization import (
     RouteAuthorizationComposer,
 )
 from spine.api.main import create_app
+from spine.api.document_replacement_uploads import DocumentReplacementUploadService
 from spine.application.batch_ingestion import (
     BatchDocumentInput,
     BatchDocumentUploadCommand,
@@ -382,6 +383,10 @@ def create_openapi_app() -> FastAPI:
         authorization_runtime=authorization_runtime,
         document_ingestion_service=cast(
             DocumentIngestionService,
+            _UnavailableDocumentIngestionService(),
+        ),
+        document_replacement_upload_service=cast(
+            DocumentReplacementUploadService,
             _UnavailableDocumentIngestionService(),
         ),
         batch_document_ingestion_service=cast(
