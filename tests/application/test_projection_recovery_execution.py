@@ -20,6 +20,7 @@ from spine.application.persistence.projection import (
 from spine.application.persistence.delivery import OutboxDeliveryRouteRegistry
 from spine.application.projection_control import ProjectionRecoveryRequestService
 from spine.application.outbox import (
+    OutboxConsumerSuccess,
     RetryableOutboxConsumerFailure,
     TerminalOutboxConsumerFailure,
 )
@@ -123,6 +124,19 @@ class _InjectedFaultCompletion:
             ProjectionPublicationFaultReason.AFTER_VALIDATION_BEFORE_ACTIVATION,
             audit_event_id=UUID(int=9255),
         )
+
+
+class _FaultOnceCompletion:
+    def __init__(self) -> None:
+        self.mappings = []
+
+    async def complete(self, mapping) -> None:
+        self.mappings.append(mapping)
+        if len(self.mappings) == 1:
+            raise ProjectionPublicationFaultInjected(
+                ProjectionPublicationFaultReason.BEFORE_PHYSICAL_VALIDATION,
+                audit_event_id=UUID(int=9256),
+            )
 
 
 class _RejectingQualificationGuard:
@@ -296,6 +310,45 @@ async def test_successor_injected_publication_fault_preserves_safe_retry_code() 
     assert captured.value.code == (
         "projection.qualification.after_validation_before_activation"
     )
+
+
+@pytest.mark.asyncio
+async def test_successor_retry_after_publication_fault_replays_one_canonical_mapping() -> None:
+    intent = _successor_intent()
+    command = _rebuild_command()
+    projection = DeterministicContextProjection()
+    gateway = DeterministicCanonicalProjectionGateway((_context(command),))
+    completion = _FaultOnceCompletion()
+    consumer = ProjectionRecoveryRequestConsumer(
+        canonical_resolver=_Resolver(command),
+        projection=projection,
+        result_recorder=MappingProjectionRecoveryResultRecorder(
+            receipt_builder=_ReceiptBuilder(),
+            result_bridge=ProjectionResultMappingBridge(
+                gateway,
+                id_source=lambda: UUID(int=9257),
+            ),
+        ),
+        completion=completion,
+    )
+    diagnostic_context = DiagnosticContext(
+        trace_id=intent.trace_id,
+        correlation_id=intent.correlation_id,
+        causation_id=intent.event_id,
+    )
+
+    with pytest.raises(RetryableOutboxConsumerFailure):
+        await consumer.consume(intent, diagnostic_context)
+    result = await consumer.consume(intent, diagnostic_context)
+
+    assert isinstance(result, OutboxConsumerSuccess)
+    assert projection.recorded_commands == (command,)
+    assert len(completion.mappings) == 2
+    assert completion.mappings[0].replay is False
+    assert completion.mappings[1].replay is True
+    replay = await gateway.replay_for(command)
+    assert replay is not None
+    assert replay.handoff == completion.mappings[0].handoff
 
 
 @pytest.mark.asyncio

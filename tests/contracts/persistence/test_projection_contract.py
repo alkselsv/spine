@@ -2270,7 +2270,23 @@ async def test_projection_recovery_result_bridge_persists_and_replays_canonical_
     )
 
     first = await gateway.accept(handoff)
-    replay = await gateway.accept(handoff)
+    replayed_at = NOW + timedelta(seconds=30)
+    replay_handoff = handoff.model_copy(
+        update={
+            "adapter_receipt": handoff.adapter_receipt.model_copy(
+                update={"completed_at": replayed_at}
+            ),
+            "receipt_command": ProjectionReceiptCommand.create(
+                receipt=receipt.model_copy(update={"completed_at": replayed_at}),
+                idempotency_key=handoff.receipt_command.idempotency_key,
+            ),
+            "source_references": tuple(
+                item.model_copy(update={"created_at": replayed_at})
+                for item in handoff.source_references
+            ),
+        }
+    )
+    replay = await gateway.accept(replay_handoff)
     assert first.replay is False
     assert replay.replay is True
     assert await gateway.is_recorded(plan.command) is True
