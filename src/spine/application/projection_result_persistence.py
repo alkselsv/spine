@@ -477,22 +477,24 @@ class PersistenceCanonicalProjectionGateway:
     ) -> None:
         incoming_receipt = handoff.receipt_command.receipt
         if receipt.model_dump(
-            mode="python", exclude={"idempotency_receipt_id"}
+            mode="python", exclude={"idempotency_receipt_id", "completed_at"}
         ) != incoming_receipt.model_dump(
-            mode="python", exclude={"idempotency_receipt_id"}
+            mode="python", exclude={"idempotency_receipt_id", "completed_at"}
         ):
             raise ProjectionMappingConflictError(
                 "projection mapping canonical receipt conflict"
             )
         stored = tuple(
             reference.model_dump(
-                mode="python", exclude={"source_projection_reference_id"}
+                mode="python",
+                exclude={"source_projection_reference_id", "created_at"},
             )
             for reference in sorted(references, key=_reference_sort_key)
         )
         incoming = tuple(
             reference.model_dump(
-                mode="python", exclude={"source_projection_reference_id"}
+                mode="python",
+                exclude={"source_projection_reference_id", "created_at"},
             )
             for reference in sorted(
                 handoff.source_references, key=_reference_sort_key

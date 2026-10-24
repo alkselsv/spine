@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -367,6 +368,29 @@ async def test_duplicate_command_replays_with_new_adapter_idempotency_key() -> N
     first = await bridge.map(command, _adapter_receipt(command))
     redelivery = _adapter_receipt(command).model_copy(
         update={"idempotency_key": "projection-receipt-redelivery"}
+    )
+
+    replay = await bridge.map(command, redelivery)
+
+    assert replay.replay is True
+    assert (
+        replay.handoff.receipt_command.receipt
+        == first.handoff.receipt_command.receipt
+    )
+    assert replay.handoff.source_references == first.handoff.source_references
+    assert store.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_after_mapping_ignores_new_adapter_observation_time() -> None:
+    command = _command()
+    store, _, _, bridge = _case(
+        _context(command),
+        reference_ids=(UUID(int=30), UUID(int=31)),
+    )
+    first = await bridge.map(command, _adapter_receipt(command))
+    redelivery = _adapter_receipt(command).model_copy(
+        update={"completed_at": NOW + timedelta(seconds=30)}
     )
 
     replay = await bridge.map(command, redelivery)

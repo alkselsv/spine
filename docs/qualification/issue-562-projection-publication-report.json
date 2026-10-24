@@ -1,0 +1,194 @@
+{
+  "schema_version": "issue-562-projection-publication:v1",
+  "ticket": 562,
+  "observed_at": "2026-10-24T20:31:00Z",
+  "target": {
+    "commit_sha": "a35f80f0747880f4bbf67788050db1607bc80ce7",
+    "deployment_fingerprint": "85cc8937d8a721a808e32b7086c66721c23a32bf4067e65f3289f7db4d9c05a5",
+    "workspace_id": "54400000-0000-4000-8000-00000000000a",
+    "environment_id": "54400000-0000-4000-8000-00000000000e",
+    "authorization_generation": 2,
+    "provider_profile_id": "cognee-approved-production",
+    "provider_profile_digest": "8935297e3def5e786f7e3d34db87d13c2106fbb7f82f8d695c747cee4fe1c84f"
+  },
+  "q16_01_target": {
+    "commit_sha": "a35f80f0747880f4bbf67788050db1607bc80ce7",
+    "deployment_fingerprint": "85cc8937d8a721a808e32b7086c66721c23a32bf4067e65f3289f7db4d9c05a5",
+    "workspace_id": "54400000-0000-4000-8000-00000000000a",
+    "environment_id": "54400000-0000-4000-8000-00000000000e",
+    "authorization_generation": 2,
+    "provider_profile_id": "cognee-approved-production",
+    "provider_profile_digest": "8935297e3def5e786f7e3d34db87d13c2106fbb7f82f8d695c747cee4fe1c84f"
+  },
+  "r4_target": {
+    "commit_sha": "a35f80f0747880f4bbf67788050db1607bc80ce7",
+    "deployment_fingerprint": "85cc8937d8a721a808e32b7086c66721c23a32bf4067e65f3289f7db4d9c05a5",
+    "workspace_id": "54400000-0000-4000-8000-00000000000a",
+    "environment_id": "54400000-0000-4000-8000-00000000000e",
+    "authorization_generation": 2,
+    "provider_profile_id": "cognee-approved-production",
+    "provider_profile_digest": "8935297e3def5e786f7e3d34db87d13c2106fbb7f82f8d695c747cee4fe1c84f"
+  },
+  "provider_compatibility": {
+    "schema_version": "projection-provider-compatibility:v1",
+    "source_run_id": "issue562-r6-010",
+    "evidence_kind": "fresh_physical_run",
+    "status": "compatible",
+    "target": {
+      "commit_sha": "a35f80f0747880f4bbf67788050db1607bc80ce7",
+      "deployment_fingerprint": "85cc8937d8a721a808e32b7086c66721c23a32bf4067e65f3289f7db4d9c05a5",
+      "workspace_id": "54400000-0000-4000-8000-00000000000a",
+      "environment_id": "54400000-0000-4000-8000-00000000000e",
+      "authorization_generation": 2,
+      "provider_profile_id": "cognee-approved-production",
+      "provider_profile_digest": "8935297e3def5e786f7e3d34db87d13c2106fbb7f82f8d695c747cee4fe1c84f"
+    },
+    "approval_reference": "https://github.com/alkselsv/spine/issues/562#issuecomment-6388915881",
+    "run_authorization_reference": "issue562-r6-010:issue-comment-6388915881",
+    "physical_report_sha256": "dff0caafe702e6c14eec040736535605aaab3da09363d7acc1597439bf626076",
+    "passed_physical_gate_ids": [
+      "public_sdk",
+      "structured_round_trip",
+      "unsafe_evidence",
+      "workspace_isolation",
+      "namespace_isolation",
+      "explicit_retrieval_context",
+      "update_remove_tombstone",
+      "rebuild_recovery_validation_diagnostics",
+      "concurrency_failure_cleanup",
+      "canonical_lifecycle_separation"
+    ],
+    "production_approval": true
+  },
+  "observations": [
+    {
+      "scenario_id": "canonical_uow_separation",
+      "status": "passed",
+      "evidence_references": [
+        "physical-run:issue562-r6-010:canonical_lifecycle_separation",
+        "successor-command:edcedad2-3a3b-4fe5-80ed-39d6e4202ffe",
+        "projection-run:7c1ba0b0-5347-5edc-87bc-a79910f81455",
+        "projection-receipt:3a38be38-a32f-556d-af69-f11064effdea"
+      ]
+    },
+    {
+      "scenario_id": "exact_revision_membership",
+      "status": "passed",
+      "evidence_references": [
+        "canonical-boundary:e180710f-710b-467a-a82b-c076537a58df:accepted-through-15",
+        "projection-snapshot:38971756-e09e-5198-b2b3-7c820bf46a8b:members-11",
+        "snapshot-members:included-8:tombstoned-3",
+        "changed-head-revision:a2896889-dad1-56b3-87dd-583a8c309bc4:tombstoned"
+      ]
+    },
+    {
+      "scenario_id": "physical_validation_and_sealing",
+      "status": "passed",
+      "evidence_references": [
+        "projection-candidate:52f52a83-13b0-5a45-813c-dab517ef4f56:sealed",
+        "projection-receipt:3a38be38-a32f-556d-af69-f11064effdea:physical-artifacts:passed",
+        "physical-run:issue562-r6-010:rebuild_recovery_validation_diagnostics"
+      ]
+    },
+    {
+      "scenario_id": "activation_generation_cas",
+      "status": "passed",
+      "evidence_references": [
+        "projection-activation:84ccccba-7ccf-46fb-8ab1-aea71b542cf8:generation-8",
+        "active-snapshot:38971756-e09e-5198-b2b3-7c820bf46a8b:cas-version-8"
+      ]
+    },
+    {
+      "scenario_id": "failure_before_validation",
+      "status": "passed",
+      "evidence_references": [
+        "successor-command:fcca420a-3ea6-4447-a074-408aa3e4f90a",
+        "projection-candidate:54f1980a-ec34-5522-83f6-7c3c1088bc89:open:no-receipt",
+        "fault-audit:projection.qualification.before_physical_validation:one-shot",
+        "active-before-retry:6653d6a5-430a-5902-b47c-771fd78fe0f4:generation-4"
+      ]
+    },
+    {
+      "scenario_id": "failure_before_activation",
+      "status": "passed",
+      "evidence_references": [
+        "successor-command:2e97c23f-a2f3-4e23-a393-6ac6ccbfa667",
+        "projection-candidate:065a53b2-a2f7-55c7-b9f3-5c6e4e14235b:sealed",
+        "projection-receipt:11b6bc96-1880-57b5-9eae-2534d6c8176b:validated",
+        "fault-audit:projection.qualification.after_validation_before_activation:one-shot",
+        "active-before-retry:da8f5448-7df4-5f4e-95d0-cff8d416717f:generation-5"
+      ]
+    },
+    {
+      "scenario_id": "stale_activation_cas",
+      "status": "passed",
+      "evidence_references": [
+        "stale-cas-probe:rejected",
+        "active-before-after:3382e1d1-18a9-5547-a495-2e4289569e98:generation-7:cas-version-7"
+      ]
+    },
+    {
+      "scenario_id": "changed_source_head",
+      "status": "passed",
+      "evidence_references": [
+        "pre-change-boundary:d2f9e9c8-fb5a-46c5-8621-63189c731fc7:accepted-through-14",
+        "canonical-acceptance:7e11bb2e-71d5-5fb7-baa4-de084fe84f1a:generation-15",
+        "final-boundary:e180710f-710b-467a-a82b-c076537a58df:accepted-through-15"
+      ]
+    },
+    {
+      "scenario_id": "tombstone_disclosure_fence",
+      "status": "passed",
+      "evidence_references": [
+        "projection-snapshot:38971756-e09e-5198-b2b3-7c820bf46a8b:tombstoned-members-3",
+        "ordinary-retrieval:f7477d12-6f85-4340-890a-2a88d25ea4ed:revision-8b78a5f2-61d9-5e6f-8678-5246ad2d47fb:tombstoned:content-absent:stale-projection-refs-6",
+        "ordinary-retrieval:26349408-3b7b-4035-95f6-1ae97aaa8a95:revision-cf8895d5-b2b6-542b-b9d1-394827cb7578:tombstoned:content-absent:stale-projection-refs-10",
+        "ordinary-retrieval:47ff3d48-1aa7-4622-b827-221a7b9553db:revision-a2896889-dad1-56b3-87dd-583a8c309bc4:tombstoned:content-absent:stale-projection-refs-1"
+      ]
+    },
+    {
+      "scenario_id": "rebuild_failure_preserves_active",
+      "status": "passed",
+      "evidence_references": [
+        "pre-validation-failure:active-preserved:6653d6a5-430a-5902-b47c-771fd78fe0f4:generation-4",
+        "pre-activation-failure:active-preserved:da8f5448-7df4-5f4e-95d0-cff8d416717f:generation-5"
+      ]
+    },
+    {
+      "scenario_id": "successor_rollback",
+      "status": "passed",
+      "evidence_references": [
+        "authorization:issue562-r6-010:issue-comment-6388915881",
+        "successor-command:edcedad2-3a3b-4fe5-80ed-39d6e4202ffe:not-replay",
+        "projection-run:7c1ba0b0-5347-5edc-87bc-a79910f81455:catch-up",
+        "projection-candidate:52f52a83-13b0-5a45-813c-dab517ef4f56:sealed",
+        "projection-receipt:3a38be38-a32f-556d-af69-f11064effdea:physical-artifacts:passed",
+        "validated-successor:38971756-e09e-5198-b2b3-7c820bf46a8b:generation-8:predecessor-3382e1d1-18a9-5547-a495-2e4289569e98",
+        "projection-activation:84ccccba-7ccf-46fb-8ab1-aea71b542cf8:generation-8:no-pointer-rewind"
+      ]
+    },
+    {
+      "scenario_id": "workspace_namespace_isolation",
+      "status": "passed",
+      "evidence_references": [
+        "physical-run:issue562-r6-010:workspace_isolation",
+        "physical-run:issue562-r6-010:namespace_isolation",
+        "physical-report-sha256:dff0caafe702e6c14eec040736535605aaab3da09363d7acc1597439bf626076"
+      ]
+    },
+    {
+      "scenario_id": "safe_diagnostics",
+      "status": "passed",
+      "evidence_references": [
+        "successor-status:fcca420a-3ea6-4447-a074-408aa3e4f90a:completed",
+        "successor-status:2e97c23f-a2f3-4e23-a393-6ac6ccbfa667:completed",
+        "successor-status:edcedad2-3a3b-4fe5-80ed-39d6e4202ffe:completed",
+        "fault-reason:projection.qualification.before_physical_validation",
+        "fault-reason:projection.qualification.after_validation_before_activation",
+        "outbox-deliveries:two:retried-one-logical-effect:no-terminal-error"
+      ]
+    }
+  ],
+  "status": "pass",
+  "reason_codes": []
+}

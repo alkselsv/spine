@@ -158,16 +158,20 @@ def test_issue560_terminal_run_has_complete_same_execution_correlation() -> None
     assert run["safe_reason_code"] is None
     assert report["blockers"] == []
     assert report["operator_amendment"] == {
-        "reference": "issue-560-comment-6368890758",
+        "reference": "codex-session-issue562-r6-007-20261024",
         "scope": "disposable_source_profile_synthetic_authority",
         "runtime_startup_readiness_mutation": False,
         "production_authority": False,
     }
 
     stale = report["stale_generation_probe"]
-    assert stale["api_admission"] == "PASS_GENERATION_15"
+    provisioning = report["fixture_provisioning"]
+    assert stale["api_admission"] == (
+        f"PASS_GENERATION_{provisioning['generation_before_advance']}"
+    )
     assert stale["worker_authorization"] == (
-        "PASS_FAIL_CLOSED_AT_GENERATION_16"
+        "PASS_FAIL_CLOSED_AT_GENERATION_"
+        f"{provisioning['generation_after_advance']}"
     )
     assert stale["attempt_count"] == 0
     assert stale["provider_calls_observed"] == 0

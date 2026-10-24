@@ -49,6 +49,7 @@ from spine.domain.projections import (
     ProjectionReceipt,
     ProjectionReconciliationResult,
     ProjectionRun,
+    ProjectionRunState,
     ProjectionRunTransition,
     ProjectionSnapshot,
     ProjectionSnapshotMember,
@@ -330,7 +331,11 @@ class InMemoryProjectionRepository(ProjectionRepository):
                 self._uow._fail(ConstraintConflictError("Projection run does not exist."))
             if run.projection_candidate_id != transition.projection_candidate_id:
                 self._uow._fail(ConstraintConflictError("Projection transition candidate is invalid."))
-            if run.candidate_state is ProjectionCandidateState.SEALED:
+            if (
+                run.candidate_state is ProjectionCandidateState.SEALED
+                and transition.state
+                not in (ProjectionRunState.COMPLETE, ProjectionRunState.FAILED)
+            ):
                 self._uow._fail(OptimisticConflictError("Sealed projection candidates are immutable."))
             transitions = self._all("_base_projection_transitions", "_pending_projection_transitions")
             if transition.projection_run_transition_id in transitions:

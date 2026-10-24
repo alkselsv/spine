@@ -1883,6 +1883,8 @@ async def _prepare_projection_successor_tombstone_case(
 
     return SimpleNamespace(
         prepared=prepared,
+        request=request,
+        resolver=resolver,
         plan=plan,
         mapping=mapping,
         context=context,
@@ -1971,11 +1973,58 @@ async def test_projection_successor_public_resolver_retains_tombstone(
 
 
 @pytest.mark.asyncio
-async def test_projection_pre_validation_fault_avoids_physical_read_and_preserves_active(
+async def test_projection_successor_replay_after_activation_returns_original_plan(
     persistence_adapter,
 ) -> None:
     case = await _prepare_projection_successor_tombstone_case(
         persistence_adapter, seed=26300
+    )
+    completion = _projection_completion(persistence_adapter, case)
+
+    await completion.complete(case.mapping)
+    replay = await case.resolver.resolve(case.request)
+
+    assert replay.command.projection_run_id == case.plan.command.projection_run_id
+    assert replay.command.projection_candidate == case.plan.command.projection_candidate
+    assert replay.command.projection_config == case.plan.command.projection_config
+    assert replay.command.canonical_boundary == case.plan.command.canonical_boundary
+
+
+@pytest.mark.asyncio
+async def test_projection_sealed_successor_accepts_terminal_complete_transition(
+    persistence_adapter,
+) -> None:
+    case = await _prepare_projection_successor_tombstone_case(
+        persistence_adapter, seed=26400
+    )
+    completion = _projection_completion(persistence_adapter, case)
+    lifecycle = PersistenceProjectionRecoveryLifecycle(
+        uow_factory=persistence_adapter.uow_factory,
+        context_factory=lambda command: persistence_adapter.ingestion_context(
+            command.workspace_id, command.environment_id, "projection_run"
+        ),
+        clock=lambda: NOW,
+    )
+
+    await lifecycle.advance(case.plan, ProjectionRunState.BUILDING)
+    await lifecycle.advance(case.plan, ProjectionRunState.VALIDATING)
+    await completion.complete(case.mapping)
+    await lifecycle.advance(case.plan, ProjectionRunState.COMPLETE)
+
+    async with persistence_adapter.uow_factory(case.context) as uow:
+        transitions = await uow.projections.list_transitions(
+            case.plan.command.projection_run_id
+        )
+        await uow.rollback()
+    assert transitions[-1].state is ProjectionRunState.COMPLETE
+
+
+@pytest.mark.asyncio
+async def test_projection_pre_validation_fault_avoids_physical_read_and_preserves_active(
+    persistence_adapter,
+) -> None:
+    case = await _prepare_projection_successor_tombstone_case(
+        persistence_adapter, seed=26500
     )
     controller = _projection_fault_controller(
         persistence_adapter, case, boundary="before_physical_validation"
@@ -2010,7 +2059,7 @@ async def test_projection_post_validation_fault_retains_seal_and_preserves_activ
     persistence_adapter,
 ) -> None:
     case = await _prepare_projection_successor_tombstone_case(
-        persistence_adapter, seed=26400
+        persistence_adapter, seed=26600
     )
     controller = _projection_fault_controller(
         persistence_adapter,
@@ -2221,7 +2270,23 @@ async def test_projection_recovery_result_bridge_persists_and_replays_canonical_
     )
 
     first = await gateway.accept(handoff)
-    replay = await gateway.accept(handoff)
+    replayed_at = NOW + timedelta(seconds=30)
+    replay_handoff = handoff.model_copy(
+        update={
+            "adapter_receipt": handoff.adapter_receipt.model_copy(
+                update={"completed_at": replayed_at}
+            ),
+            "receipt_command": ProjectionReceiptCommand.create(
+                receipt=receipt.model_copy(update={"completed_at": replayed_at}),
+                idempotency_key=handoff.receipt_command.idempotency_key,
+            ),
+            "source_references": tuple(
+                item.model_copy(update={"created_at": replayed_at})
+                for item in handoff.source_references
+            ),
+        }
+    )
+    replay = await gateway.accept(replay_handoff)
     assert first.replay is False
     assert replay.replay is True
     assert await gateway.is_recorded(plan.command) is True

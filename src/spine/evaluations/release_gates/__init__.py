@@ -31,6 +31,15 @@ from spine.evaluations.release_gates.threshold_approval_verifier import (
     GitHubThresholdApprovalVerifier,
     evaluate_threshold_policy_with_github_approval,
 )
+from spine.evaluations.release_gates.projection_publication import (
+    ProjectionLifecycleObservation,
+    ProjectionPublicationGateResult,
+    ProjectionPublicationQualificationReport,
+    ProjectionPublicationTarget,
+    ProviderCompatibilityEvidence,
+    evaluate_projection_publication_gate,
+    required_projection_publication_scenarios,
+)
 
 __all__ = [
     "ApplicabilityFailure",
@@ -58,4 +67,11 @@ __all__ = [
     "GitHubRestThresholdDecisionSource",
     "GitHubThresholdApprovalVerifier",
     "evaluate_threshold_policy_with_github_approval",
+    "ProjectionLifecycleObservation",
+    "ProjectionPublicationGateResult",
+    "ProjectionPublicationQualificationReport",
+    "ProjectionPublicationTarget",
+    "ProviderCompatibilityEvidence",
+    "evaluate_projection_publication_gate",
+    "required_projection_publication_scenarios",
 ]
