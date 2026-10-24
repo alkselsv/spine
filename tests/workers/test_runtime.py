@@ -367,3 +367,56 @@ def test_production_runtime_wires_enabled_projection_fault_controller(
 
     assert recorded == {"guard_enabled": True, "same_controller": True}
     assert runtime.worker is not None
+
+
+def test_production_runtime_successor_resolver_uses_projection_run_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import spine.workers.runtime as runtime_module
+
+    configuration = CogneeWorkerBindingSettings(
+        binding_json=json.dumps(binding_payload())
+    ).load_configuration()
+    recorded: dict[str, object] = {}
+
+    def build_worker(**kwargs: object) -> object:
+        context_factory = kwargs["recovery_context_factory"]
+        envelope = SimpleNamespace(
+            workspace_id=UUID(int=58101),
+            environment_id=UUID(int=58102),
+            event_id=UUID(int=58103),
+        )
+        recorded["context"] = context_factory(envelope)  # type: ignore[operator]
+        return object()
+
+    monkeypatch.setattr(
+        runtime_module.ProjectionPublicationFaultInjectionSettings,
+        "load_profile",
+        lambda self: None,
+    )
+    monkeypatch.setattr(runtime_module, "create_production_outbox_worker", build_worker)
+    monkeypatch.setattr(
+        runtime_module,
+        "CogneeChunkProjectionStore",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "CogneeStructuredRetrieval",
+        lambda: SimpleNamespace(),
+    )
+
+    runtime = runtime_module.create_production_outbox_worker_runtime(
+        runtime_database=RuntimeDatabaseSettings(
+            url="postgresql+psycopg://spine_runtime:secret@localhost/spine"
+        ),
+        dispatcher_database=DispatcherDatabaseSettings(
+            url="postgresql+psycopg://spine_dispatcher:secret@localhost/spine"
+        ),
+        worker_settings=OutboxWorkerSettings(service_principal_id=UUID(int=500)),
+        cognee_binding_configuration=configuration,
+    )
+
+    context = recorded["context"]
+    assert context.operation.value == "projection_run"  # type: ignore[union-attr]
+    assert runtime.worker is not None

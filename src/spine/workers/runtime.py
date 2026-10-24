@@ -1160,7 +1160,7 @@ def create_production_outbox_worker_runtime(
         recovery_context_factory=lambda envelope: context_for_scope(
             envelope.workspace_id,
             envelope.environment_id,
-            "projection_recovery",
+            "projection_run",
             envelope.event_id,
         ),
         projection_request_completion=completion,
