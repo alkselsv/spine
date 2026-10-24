@@ -54,7 +54,7 @@ def test_issue562_report_is_derived_from_exact_q16_target_and_provider_evidence(
     )
     assert report.provider_compatibility is not None
     physical = _json(PHYSICAL_PATH)
-    assert report.provider_compatibility.source_run_id == "issue562-r6-001"
+    assert report.provider_compatibility.source_run_id == "issue562-r6-003"
     assert report.provider_compatibility.evidence_kind == "fresh_physical_run"
     assert report.provider_compatibility.physical_report_sha256 is None
     assert (
@@ -62,7 +62,7 @@ def test_issue562_report_is_derived_from_exact_q16_target_and_provider_evidence(
         != physical["qualification_run_id"]
     )
     assert report.provider_compatibility.run_authorization_reference == (
-        "https://github.com/alkselsv/spine/issues/562#issuecomment-6382335412"
+        "https://github.com/alkselsv/spine/issues/562#issuecomment-6385289811"
     )
 
 
