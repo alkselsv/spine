@@ -320,7 +320,7 @@ class OrchestratedProcessingCommandService:
             command_identity=command_identity,
             command_digest="0" * 64,
             trigger_kind=trigger_kind,  # type: ignore[arg-type]
-            trigger_reference=_bounded_identifier(str(operation_id)),
+            trigger_reference=_bounded_identifier(f"operation:{operation_id}"),
             requested_scope_schema="ingestion-scope:v1",
             requested_scope_digest=command_digest,
             requested_at=requested_at,

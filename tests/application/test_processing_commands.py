@@ -290,6 +290,38 @@ async def test_retry_rejects_stale_current_revision_before_creating_a_process_it
 
 
 @pytest.mark.asyncio
+async def test_retry_with_digit_prefixed_operation_id_uses_valid_trigger_reference() -> None:
+    ingestion = _Ingestion()
+    context = trusted_context()
+    service = OrchestratedProcessingCommandService(
+        uow_factory=lambda _: _Uow(ingestion, _Sources(), _Canonical()),
+        validation_reader=object(),
+        parsed_artifacts=object(),
+        parser=lambda *args, **kwargs: None,
+        context_factory=lambda operation, trace_id: context,
+        outbox_events=OutboxEventRegistry(),
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(ProcessingCommandRejected):
+        await service.retry(
+            context=context,
+            command=RetryProcessingCommand(
+                workspace_id=WORKSPACE,
+                environment_id=ENVIRONMENT,
+                source_object_id=identifier("source"),
+                source_revision_id=identifier("revision"),
+                expected_current_revision_id=identifier("revision"),
+                idempotency_key="issue561-original_storage-retry-issue561-r4-008",
+                parent_failure_id=identifier("failure"),
+            ),
+        )
+
+    assert len(ingestion.created_runs) == 1
+    assert ingestion.created_runs[0].trigger_reference.startswith("operation:")
+
+
+@pytest.mark.asyncio
 async def test_replacement_processing_uses_internal_trigger_and_fails_closed_on_stale_head() -> None:
     ingestion = _Ingestion()
     context = trusted_context()
