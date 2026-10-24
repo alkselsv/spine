@@ -307,7 +307,11 @@ def _expected_physical_artifacts(
         PhysicalArtifact(
             artifact_kind=ArtifactKind.CHUNK,
             artifact_id=str(segment.segment_id),
-            data_id=segment.segment_id,
+            data_id=CogneeChunkProjectionStore.data_id_for(
+                namespace_digest=namespace.namespace_digest,
+                source_object_id=source.source_object_id,
+                segment_id=segment.segment_id,
+            ),
             locators=(
                 PhysicalArtifactLocator.from_payload(
                     kind=segment.locator.kind,
@@ -1356,7 +1360,8 @@ async def _assert_canonical_lifecycle_separation(
     canonical = await resolver.resolve(request)
     assert unit_of_work_is_active() is False
 
-    source = canonical.source_revision
+    assert len(canonical.source_revisions) == 1
+    source = canonical.source_revisions[0]
     base_extraction = extraction_result(
         workspace_id=canonical.workspace_id,
         environment_id=canonical.environment_id,

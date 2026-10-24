@@ -158,7 +158,7 @@ def test_issue560_terminal_run_has_complete_same_execution_correlation() -> None
     assert run["safe_reason_code"] is None
     assert report["blockers"] == []
     assert report["operator_amendment"] == {
-        "reference": "issue-560-comment-6368890758",
+        "reference": "codex-session-issue562-r6-007-20261024",
         "scope": "disposable_source_profile_synthetic_authority",
         "runtime_startup_readiness_mutation": False,
         "production_authority": False,

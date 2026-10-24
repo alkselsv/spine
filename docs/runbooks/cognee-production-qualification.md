@@ -73,8 +73,14 @@ control is not production evidence.
 After installing the declared development dependencies, opt in explicitly:
 
 ```text
-SPINE_COGNEE_PRODUCTION_QUALIFICATION=1 uv run pytest -q -m cognee_production tests/integration/cognee/test_production_profile.py
+PYTHON_DOTENV_DISABLED=1 SPINE_COGNEE_PRODUCTION_QUALIFICATION=1 uv run pytest -q -m cognee_production tests/integration/cognee/test_production_profile.py
 ```
+
+Keep `PYTHON_DOTENV_DISABLED=1` when the exact target is supplied by the
+operator environment. Cognee otherwise loads a nearby `.env` file with
+override semantics, which can silently replace the approved database or model
+binding. A run whose effective binding differs from its authorization is not
+qualification evidence.
 
 Set `SPINE_COGNEE_QUALIFICATION_REPORT` to an operator-controlled output path
 to serialize the validated observations from that run. Do not point it at the

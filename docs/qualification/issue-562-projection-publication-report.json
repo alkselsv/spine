@@ -1,10 +1,10 @@
 {
   "schema_version": "issue-562-projection-publication:v1",
   "ticket": 562,
-  "observed_at": "2026-10-24T14:51:18Z",
+  "observed_at": "2026-10-24T19:13:00Z",
   "target": {
-    "commit_sha": "1fa3e9ee5047c081c1113c8eabd699f995d140b9",
-    "deployment_fingerprint": "3a08998510a6e34a464de43df1887dac04d59156ec779b91257b621a4a9a0d66",
+    "commit_sha": "a35f80f0747880f4bbf67788050db1607bc80ce7",
+    "deployment_fingerprint": "85cc8937d8a721a808e32b7086c66721c23a32bf4067e65f3289f7db4d9c05a5",
     "workspace_id": "54400000-0000-4000-8000-00000000000a",
     "environment_id": "54400000-0000-4000-8000-00000000000e",
     "authorization_generation": 2,
@@ -12,8 +12,8 @@
     "provider_profile_digest": "8935297e3def5e786f7e3d34db87d13c2106fbb7f82f8d695c747cee4fe1c84f"
   },
   "q16_01_target": {
-    "commit_sha": "1fa3e9ee5047c081c1113c8eabd699f995d140b9",
-    "deployment_fingerprint": "3a08998510a6e34a464de43df1887dac04d59156ec779b91257b621a4a9a0d66",
+    "commit_sha": "a35f80f0747880f4bbf67788050db1607bc80ce7",
+    "deployment_fingerprint": "85cc8937d8a721a808e32b7086c66721c23a32bf4067e65f3289f7db4d9c05a5",
     "workspace_id": "54400000-0000-4000-8000-00000000000a",
     "environment_id": "54400000-0000-4000-8000-00000000000e",
     "authorization_generation": 2,
@@ -21,8 +21,8 @@
     "provider_profile_digest": "8935297e3def5e786f7e3d34db87d13c2106fbb7f82f8d695c747cee4fe1c84f"
   },
   "r4_target": {
-    "commit_sha": "1fa3e9ee5047c081c1113c8eabd699f995d140b9",
-    "deployment_fingerprint": "3a08998510a6e34a464de43df1887dac04d59156ec779b91257b621a4a9a0d66",
+    "commit_sha": "a35f80f0747880f4bbf67788050db1607bc80ce7",
+    "deployment_fingerprint": "85cc8937d8a721a808e32b7086c66721c23a32bf4067e65f3289f7db4d9c05a5",
     "workspace_id": "54400000-0000-4000-8000-00000000000a",
     "environment_id": "54400000-0000-4000-8000-00000000000e",
     "authorization_generation": 2,
@@ -31,12 +31,12 @@
   },
   "provider_compatibility": {
     "schema_version": "projection-provider-compatibility:v1",
-    "source_run_id": "issue562-r6-003",
+    "source_run_id": "issue562-r6-007",
     "evidence_kind": "fresh_physical_run",
-    "status": "not_verified",
+    "status": "compatible",
     "target": {
-      "commit_sha": "1fa3e9ee5047c081c1113c8eabd699f995d140b9",
-      "deployment_fingerprint": "3a08998510a6e34a464de43df1887dac04d59156ec779b91257b621a4a9a0d66",
+      "commit_sha": "a35f80f0747880f4bbf67788050db1607bc80ce7",
+      "deployment_fingerprint": "85cc8937d8a721a808e32b7086c66721c23a32bf4067e65f3289f7db4d9c05a5",
       "workspace_id": "54400000-0000-4000-8000-00000000000a",
       "environment_id": "54400000-0000-4000-8000-00000000000e",
       "authorization_generation": 2,
@@ -44,40 +44,144 @@
       "provider_profile_digest": "8935297e3def5e786f7e3d34db87d13c2106fbb7f82f8d695c747cee4fe1c84f"
     },
     "approval_reference": "https://github.com/alkselsv/spine/issues/562#issuecomment-6385289811",
-    "run_authorization_reference": "https://github.com/alkselsv/spine/issues/562#issuecomment-6385289811",
-    "physical_report_sha256": null,
-    "passed_physical_gate_ids": [],
+    "run_authorization_reference": "codex-session-issue562-r6-007-20261024",
+    "physical_report_sha256": "6af5671a3b6fd8c8bc40f87e3a10be777ebc33c9aac9b3eab4f2d9436952fca9",
+    "passed_physical_gate_ids": [
+      "public_sdk",
+      "structured_round_trip",
+      "unsafe_evidence",
+      "workspace_isolation",
+      "namespace_isolation",
+      "explicit_retrieval_context",
+      "update_remove_tombstone",
+      "rebuild_recovery_validation_diagnostics",
+      "concurrency_failure_cleanup",
+      "canonical_lifecycle_separation"
+    ],
     "production_approval": true
   },
   "observations": [
     {
+      "scenario_id": "canonical_uow_separation",
+      "status": "passed",
+      "evidence_references": [
+        "physical-run:issue562-r6-007:canonical_lifecycle_separation",
+        "successor-command:7b92cdce-0545-4ada-a0a5-dca264b5c620",
+        "projection-run:ea4538df-326f-516d-b0e2-c9810cca7b35",
+        "projection-receipt:bf2fd91f-e2c1-5399-9466-7b77985546f8"
+      ]
+    },
+    {
+      "scenario_id": "exact_revision_membership",
+      "status": "passed",
+      "evidence_references": [
+        "canonical-boundary:b73d093f-8b72-4fa2-a41d-a35452d1bef4:accepted-through-14",
+        "projection-snapshot:d3205816-19f2-56ee-9eb4-79225a639baa:members-11",
+        "snapshot-members:included-9:tombstoned-2",
+        "source-references:17:revisions-9:processing-receipts-9"
+      ]
+    },
+    {
+      "scenario_id": "physical_validation_and_sealing",
+      "status": "passed",
+      "evidence_references": [
+        "projection-candidate:8eb7157a-5c0f-5735-b6b7-e79cb1dc116d:sealed",
+        "projection-validation:0e7993c5-9e03-5187-a69f-35e4e0276442:physical_artifacts-r1:passed",
+        "physical-run:issue562-r6-007:rebuild_recovery_validation_diagnostics"
+      ]
+    },
+    {
+      "scenario_id": "activation_generation_cas",
+      "status": "passed",
+      "evidence_references": [
+        "projection-activation:b7b6efe8-968a-467e-98e8-047cf4befef2:generation-3",
+        "active-snapshot:d3205816-19f2-56ee-9eb4-79225a639baa:cas-version-3"
+      ]
+    },
+    {
+      "scenario_id": "failure_before_validation",
+      "status": "passed",
+      "evidence_references": [
+        "successor-command:d316f1b1-094b-4b97-9116-c966bf017a12",
+        "projection-candidate:07f26eb8-1031-50e6-b9ec-9b179fe4db3b:open:no-evidence",
+        "fault-audit:projection.qualification.before_physical_validation:one-shot",
+        "active-before-retry:2360bcc9-53e6-5779-81fb-d2314e6cf2b4:generation-1"
+      ]
+    },
+    {
+      "scenario_id": "failure_before_activation",
+      "status": "passed",
+      "evidence_references": [
+        "successor-command:7b92cdce-0545-4ada-a0a5-dca264b5c620",
+        "projection-candidate:8eb7157a-5c0f-5735-b6b7-e79cb1dc116d:sealed",
+        "fault-audit:projection.qualification.after_validation_before_activation:one-shot",
+        "active-before-retry:61bba04f-73d5-504d-b569-08dcdbd11642:generation-2"
+      ]
+    },
+    {
+      "scenario_id": "stale_activation_cas",
+      "status": "passed",
+      "evidence_references": [
+        "stale-cas-probe:rejected",
+        "active-before-after:d3205816-19f2-56ee-9eb4-79225a639baa:generation-3:cas-version-3"
+      ]
+    },
+    {
       "scenario_id": "changed_source_head",
       "status": "passed",
       "evidence_references": [
-        "active-snapshot:130886bf-c04d-5e9e-9222-d6d145859c68:drift-13",
-        "successor-command:5107f424-355d-4d69-a65d-90ae324ce65c:failed-before-run",
-        "intent:45e9b127-4aa0-524e-bf09-c389a3ce37ae"
+        "initial-boundary:195b2d2d-c2eb-4302-9410-1921bdcfb63a:drift-13",
+        "successor-boundary:a0c04b10-683f-4f70-9e64-9a43ce95c7dc:accepted-through-14",
+        "final-boundary:b73d093f-8b72-4fa2-a41d-a35452d1bef4:accepted-through-14"
+      ]
+    },
+    {
+      "scenario_id": "tombstone_disclosure_fence",
+      "status": "passed",
+      "evidence_references": [
+        "projection-snapshot:d3205816-19f2-56ee-9eb4-79225a639baa:tombstoned-members-2",
+        "source-revision:8b78a5f2-61d9-5e6f-8678-5246ad2d47fb:tombstoned",
+        "source-revision:cf8895d5-b2b6-542b-b9d1-394827cb7578:tombstoned",
+        "physical-run:issue562-r6-007:update_remove_tombstone"
       ]
     },
     {
       "scenario_id": "rebuild_failure_preserves_active",
       "status": "passed",
       "evidence_references": [
-        "command:5107f424-355d-4d69-a65d-90ae324ce65c",
-        "active-before-after:130886bf-c04d-5e9e-9222-d6d145859c68:generation-1"
+        "pre-validation-failure:active-preserved:2360bcc9-53e6-5779-81fb-d2314e6cf2b4:generation-1",
+        "pre-activation-failure:active-preserved:61bba04f-73d5-504d-b569-08dcdbd11642:generation-2"
+      ]
+    },
+    {
+      "scenario_id": "successor_rollback",
+      "status": "passed",
+      "evidence_references": [
+        "failed-attempt-predecessor:61bba04f-73d5-504d-b569-08dcdbd11642:generation-2",
+        "validated-successor:d3205816-19f2-56ee-9eb4-79225a639baa:generation-3",
+        "delivery:09e4cb8d-90c6-5a71-880c-dddc3185892c:delivered-attempt-2"
+      ]
+    },
+    {
+      "scenario_id": "workspace_namespace_isolation",
+      "status": "passed",
+      "evidence_references": [
+        "physical-run:issue562-r6-007:workspace_isolation",
+        "physical-run:issue562-r6-007:namespace_isolation",
+        "physical-report-sha256:6af5671a3b6fd8c8bc40f87e3a10be777ebc33c9aac9b3eab4f2d9436952fca9"
       ]
     },
     {
       "scenario_id": "safe_diagnostics",
       "status": "passed",
       "evidence_references": [
-        "trace:41ef339b-28be-4abf-8dda-d572c5f40b08",
-        "successor-status:failed:no-run:no-candidate:no-receipt"
+        "successor-status:7b92cdce-0545-4ada-a0a5-dca264b5c620:completed",
+        "fault-reason:projection.qualification.before_physical_validation",
+        "fault-reason:projection.qualification.after_validation_before_activation",
+        "outbox-deliveries:two:delivered-attempt-2:no-error"
       ]
     }
   ],
-  "status": "not_verified",
-  "reason_codes": [
-    "provider_compatibility_incompatible"
-  ]
+  "status": "pass",
+  "reason_codes": []
 }

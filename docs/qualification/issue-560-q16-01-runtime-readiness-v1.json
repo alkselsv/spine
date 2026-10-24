@@ -1,15 +1,15 @@
 {
   "schema_version": "q16-01-runtime-readiness:v1",
   "issue": 560,
-  "observed_at": "2026-10-24T14:44:39Z",
+  "observed_at": "2026-10-24T18:13:53Z",
   "decision": "PASS",
   "target": {
     "kind": "repository-owned-isolated-source-compose",
-    "compose_project": "spine562r6v2",
-    "commit_sha": "1fa3e9ee5047c081c1113c8eabd699f995d140b9",
-    "deployment_fingerprint": "3a08998510a6e34a464de43df1887dac04d59156ec779b91257b621a4a9a0d66",
-    "api_release_identity": "issue562-local-dev-v2",
-    "web_release_identity": "source:1fa3e9ee5047c081c1113c8eabd699f995d140b9",
+    "compose_project": "spine562r6v7",
+    "commit_sha": "a35f80f0747880f4bbf67788050db1607bc80ce7",
+    "deployment_fingerprint": "85cc8937d8a721a808e32b7086c66721c23a32bf4067e65f3289f7db4d9c05a5",
+    "api_release_identity": "issue562-local-dev-v5",
+    "web_release_identity": "source:a35f80f0747880f4bbf67788050db1607bc80ce7",
     "workspace_id": "54400000-0000-4000-8000-00000000000a",
     "environment_id": "54400000-0000-4000-8000-00000000000e",
     "authorization_generation": 2
@@ -30,7 +30,7 @@
     "total_cases": 4
   },
   "browser_qualification": {
-    "run_id": "issue562-r6-003",
+    "run_id": "issue562-r6-007",
     "result": "PASS",
     "scenario_count": 10,
     "terminal_run_count": 4,
@@ -43,7 +43,7 @@
     "profile_version": "v1",
     "database_profile_id": "spine-local-postgresql-v1",
     "postgresql_version": "17.11",
-    "migration_revision": "20261121_58",
+    "migration_revision": "20261122_59",
     "original_storage_profile": "compose-volume-v1",
     "temporal_version": "1.28.1",
     "temporal_namespace": "default",
@@ -70,13 +70,13 @@
     "llm_model": "openai/gpt-5.4-nano",
     "embedding_model": "openai/text-embedding-3-small",
     "images": {
-      "api": "sha256:c55580db60f9d5ccb43119a2bd3bbf6e808618647de9d9d4904c2d2580763c5e",
-      "qa_worker": "sha256:8e9a70acd00c13d10423f39660d5bec8306b5e80713ee8a52d58e88b26dfc270",
-      "outbox_dispatcher": "sha256:902854e41f89d2f8afe7d98822cb34c42c5d1c9320e6d07a48b35217771df907",
-      "web": "sha256:dcf3208e110ca6daa90974e22ca73117d77b73f6699a394aa26ed734a842df88",
-      "postgresql": "sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d",
+      "api": "sha256:97b524b88e29d0e077181c26325a61c96704e0cbaa74e7efac8b2e75717cf155",
+      "qa_worker": "sha256:190b58e093f4350ee2fa3676e5f7b81198bed522a14d24c983fe06d650e2eb34",
+      "outbox_dispatcher": "sha256:20c947cceda611ccd18a5a66c289ec152252f28c91e741acbecd6edaef493c7b",
+      "web": "sha256:d90c4116f21c080e296035ba9750abeb673a96aa06a8d2708c9651a265c49ea4",
+      "postgresql": "sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3",
       "temporal": "sha256:607d68caa111338d754771efb876c92dfcdae06d056e4530bb31cd0f37406e6a",
-      "neo4j": "sha256:3f2217160381bacb3c49d95592780ae519cb5e58a587ab847c46c83e24728fe3"
+      "neo4j": "sha256:67037d28b36a98433dc70e119faafcb88de6727ba2995d412b42742dd1aea489"
     }
   },
   "readiness": {
@@ -130,7 +130,7 @@
     "access_policy_and_rls": "PASS_ALLOWED_AND_ISOLATED"
   },
   "operator_amendment": {
-    "reference": "issue-560-comment-6368890758",
+    "reference": "codex-session-issue562-r6-007-20261024",
     "scope": "disposable_source_profile_synthetic_authority",
     "runtime_startup_readiness_mutation": false,
     "production_authority": false

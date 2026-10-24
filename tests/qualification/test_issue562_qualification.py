@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from pathlib import Path
 
 from spine.evaluations.release_gates.projection_publication import (
     ProjectionPublicationQualificationReport,
     required_projection_publication_scenarios,
 )
+from spine.memory.cognee.production_qualification import Issue212QualificationReport
 
 ROOT = Path(__file__).resolve().parents[2]
 REPORT_PATH = ROOT / "docs/qualification/issue-562-projection-publication-report.json"
 Q16_PATH = ROOT / "docs/qualification/issue-560-q16-01-runtime-readiness-v1.json"
 R4_PATH = ROOT / "docs/qualification/issue-561-five-format-ingestion-report.json"
-PHYSICAL_PATH = ROOT / "docs/qualification/issue-212-cognee-production-report.json"
+PHYSICAL_PATH = ROOT / "docs/qualification/issue-562-cognee-production-report.json"
 SUMMARY_PATH = ROOT / "docs/qualification/issue-562-projection-publication.md"
 RUNBOOK_PATH = ROOT / "docs/runbooks/r1-projection-publication-qualification.md"
 
@@ -53,16 +55,27 @@ def test_issue562_report_is_derived_from_exact_q16_target_and_provider_evidence(
         == r4["deployment"]["deployment_fingerprint"]
     )
     assert report.provider_compatibility is not None
-    physical = _json(PHYSICAL_PATH)
-    assert report.provider_compatibility.source_run_id == "issue562-r6-003"
-    assert report.provider_compatibility.evidence_kind == "fresh_physical_run"
-    assert report.provider_compatibility.physical_report_sha256 is None
-    assert (
-        report.provider_compatibility.source_run_id
-        != physical["qualification_run_id"]
+    physical_report = Issue212QualificationReport.model_validate_json(
+        PHYSICAL_PATH.read_text(encoding="utf-8")
     )
+    physical = physical_report.model_dump(mode="json")
+    assert report.provider_compatibility.source_run_id == "issue562-r6-007"
+    assert report.provider_compatibility.evidence_kind == "fresh_physical_run"
+    assert report.provider_compatibility.status == "compatible"
+    assert report.provider_compatibility.source_run_id == physical[
+        "qualification_run_id"
+    ]
+    assert report.provider_compatibility.physical_report_sha256 == sha256(
+        PHYSICAL_PATH.read_bytes()
+    ).hexdigest()
+    assert report.provider_compatibility.passed_physical_gate_ids == tuple(
+        item["gate_id"] for item in physical["observations"]
+    )
+    assert report.provider_compatibility.production_approval is True
+    assert physical["decision"] == "go"
+    assert physical["production_approval"] is True
     assert report.provider_compatibility.run_authorization_reference == (
-        "https://github.com/alkselsv/spine/issues/562#issuecomment-6385289811"
+        "codex-session-issue562-r6-007-20261024"
     )
 
 
@@ -71,15 +84,13 @@ def test_issue562_report_cannot_hide_missing_live_scenarios_or_sensitive_data() 
         REPORT_PATH.read_text(encoding="utf-8")
     )
 
-    assert report.status == "not_verified"
-    assert report.reason_codes == ("provider_compatibility_incompatible",)
+    assert report.status == "pass"
+    assert report.reason_codes == ()
     assert report.provider_compatibility is not None
-    assert report.provider_compatibility.status == "not_verified"
-    assert {item.scenario_id for item in report.observations} == {
-        "changed_source_head",
-        "rebuild_failure_preserves_active",
-        "safe_diagnostics",
-    }
+    assert report.provider_compatibility.status == "compatible"
+    assert {item.scenario_id for item in report.observations} == set(
+        required_projection_publication_scenarios()
+    )
     assert all(item.status == "passed" for item in report.observations)
     assert len(required_projection_publication_scenarios()) == 13
 
@@ -105,5 +116,8 @@ def test_issue562_runbook_names_every_scenario_and_stops_before_unapproved_calls
     for scenario_id in required_projection_publication_scenarios():
         assert f"`{scenario_id}`" in runbook
     assert "do not start the dispatcher" in runbook.lower()
-    assert "NOT_VERIFIED" in summary
-    assert "issue507-composed-002" in summary
+    assert "PYTHON_DOTENV_DISABLED=1" in (
+        ROOT / "docs/runbooks/cognee-production-qualification.md"
+    ).read_text(encoding="utf-8")
+    assert "Status: **PASS**" in summary
+    assert "issue562-r6-007" in summary
