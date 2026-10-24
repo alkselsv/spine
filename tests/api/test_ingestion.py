@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterable
+from dataclasses import replace
 import hashlib
 import json
 from types import SimpleNamespace
@@ -240,6 +241,33 @@ async def test_status_exposes_acceptance_processing_and_receipt_without_content(
         "artifact_digest": "a" * 64,
     }
     assert "hello" not in response.text
+
+
+async def test_pre_acceptance_failure_status_keeps_acceptance_pending() -> None:
+    service = FakeIngestionService()
+    service.snapshot = replace(
+        service.snapshot,
+        run_state=IngestionRunState.FAILED,
+        item_state=IngestionItemState.PROCESSING_FAILED,
+        processing_receipt_id=None,
+        processing_coverage=None,
+        parser_name=None,
+        artifact_id=None,
+        artifact_digest=None,
+        failure_ids=(UUID("90000000-0000-0000-0000-000000000008"),),
+        failure_reason_codes=("pre_acceptance_retryable",),
+    )
+    transport = httpx.ASGITransport(app=_app(service))
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            f"/api/v1/ingestion/runs/{RUN_ID}/items/{ITEM_ID}",
+            headers=_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["acceptance"] == "pending"
 
 
 async def test_unsupported_format_has_explicit_non_success_status() -> None:

@@ -20,6 +20,7 @@ from spine.application.document_ingestion import (
     DocumentIngestionStatus,
     DocumentUploadCommand,
 )
+from spine.application.ingestion_faults import IngestionFaultReason
 from spine.application.ingestion_api import (
     DocumentIngestionService,
     IngestionStatusSnapshot,
@@ -416,7 +417,15 @@ def _snapshot_phases(snapshot: IngestionStatusSnapshot) -> tuple[PublicAcceptanc
         return PublicAcceptanceStatus.QUARANTINED, PublicProcessingStatus.NOT_STARTED
     if state == "rejected":
         return PublicAcceptanceStatus.REJECTED, PublicProcessingStatus.NOT_STARTED
-    if state in {"accepted", "processing", "processed", "projection_requested", "processing_failed"}:
+    pre_acceptance_failure = (
+        IngestionFaultReason.PRE_ACCEPTANCE_RETRYABLE.value
+        in snapshot.failure_reason_codes
+    )
+    if (
+        state
+        in {"accepted", "processing", "processed", "projection_requested", "processing_failed"}
+        and not pre_acceptance_failure
+    ):
         acceptance = PublicAcceptanceStatus.ACCEPTED
     else:
         acceptance = PublicAcceptanceStatus.PENDING
