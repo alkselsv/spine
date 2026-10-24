@@ -420,6 +420,7 @@ def _snapshot_phases(snapshot: IngestionStatusSnapshot) -> tuple[PublicAcceptanc
     pre_acceptance_failure = (
         IngestionFaultReason.PRE_ACCEPTANCE_RETRYABLE.value
         in snapshot.failure_reason_codes
+        and snapshot.processing_coverage is not ProcessingCoverage.COMPLETE
     )
     if (
         state

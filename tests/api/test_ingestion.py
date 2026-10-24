@@ -270,6 +270,26 @@ async def test_pre_acceptance_failure_status_keeps_acceptance_pending() -> None:
     assert response.json()["acceptance"] == "pending"
 
 
+async def test_successful_retry_accepts_despite_retained_pre_acceptance_failure() -> None:
+    service = FakeIngestionService()
+    service.snapshot = replace(
+        service.snapshot,
+        failure_ids=(UUID("90000000-0000-0000-0000-000000000008"),),
+        failure_reason_codes=("pre_acceptance_retryable",),
+    )
+    transport = httpx.ASGITransport(app=_app(service))
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            f"/api/v1/ingestion/runs/{RUN_ID}/items/{ITEM_ID}",
+            headers=_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "succeeded"
+    assert response.json()["acceptance"] == "accepted"
+
+
 async def test_unsupported_format_has_explicit_non_success_status() -> None:
     service = FakeIngestionService()
     service.submission_status = DocumentIngestionStatus.UNSUPPORTED
