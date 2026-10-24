@@ -253,7 +253,7 @@ class PersistenceCanonicalProjectionRecoveryResolver:
                     boundary_record.boundary_id
                 )
                 source_revisions = await self._successor_source_revisions(
-                    uow, boundary_record, boundary_members, config
+                    uow, boundary_record, boundary_members
                 )
                 canonical_boundary_id = boundary_record.boundary_id
                 canonical_boundary_digest = boundary_record.manifest_digest
@@ -439,7 +439,6 @@ class PersistenceCanonicalProjectionRecoveryResolver:
         uow: CanonicalProjectionRecoveryUnitOfWork,
         boundary: DomainCanonicalBoundary,
         members: tuple[CanonicalBoundaryMember, ...],
-        config: DomainProjectionConfigVersion,
     ) -> tuple[ProjectionSourceRevision, ...]:
         if len({member.source_object_id for member in members}) != len(members):
             raise ProjectionMappingConflictError(
@@ -511,8 +510,6 @@ class PersistenceCanonicalProjectionRecoveryResolver:
             if (
                 revision.kind is not RevisionKind.CONTENT
                 or revision.original_sha256 != receipt.original_sha256
-                or receipt.locator_contract_version
-                != config.locator_contract_version
             ):
                 raise ProjectionMappingConflictError(
                     "successor processing lineage is invalid"

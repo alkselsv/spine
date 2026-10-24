@@ -61,6 +61,7 @@ class _Uow:
         current_revision_id=REVISION,
         current_revision_kind=RevisionKind.CONTENT,
         additional_boundary_member=None,
+        locator_contract_version="locator:v1",
     ) -> None:
         command = _command()
         context = _context(command)
@@ -74,7 +75,11 @@ class _Uow:
                     "revision_digest": "f" * 64,
                 }
             )
-        self.ingestion = _Ingestion(source, additional_source)
+        self.ingestion = _Ingestion(
+            source,
+            additional_source,
+            locator_contract_version=locator_contract_version,
+        )
         self.sources = SimpleNamespace(resolve_revision=self._resolve_revision)
         self.canonical = SimpleNamespace(resolve_current=self._resolve_current)
         self.boundaries = SimpleNamespace(
@@ -177,9 +182,16 @@ class _Uow:
 
 
 class _Ingestion:
-    def __init__(self, source, additional_source=None) -> None:
+    def __init__(
+        self,
+        source,
+        additional_source=None,
+        *,
+        locator_contract_version="locator:v1",
+    ) -> None:
         self._source = source
         self._additional_source = additional_source
+        self._locator_contract_version = locator_contract_version
 
     async def resolve_item(self, item_id):
         return IngestionRunSource(
@@ -261,7 +273,7 @@ class _Ingestion:
             parser_name="text",
             parser_version="parser:v1",
             parser_config_reference="parser-default:v1",
-            locator_contract_version="locator:v1",
+            locator_contract_version=self._locator_contract_version,
             original_sha256=original_sha256,
             output_kind="parsed-document",
             output_reference=ARTIFACT,
@@ -337,7 +349,9 @@ class _ParsedArtifacts:
         return None
 
 
-def _request() -> ProjectionRequestEnvelope:
+def _request(
+    *, locator_contract_version: str = "locator:v1"
+) -> ProjectionRequestEnvelope:
     return ProjectionRequestEnvelope(
         event_id=UUID(int=20),
         workspace_id=WORKSPACE,
@@ -350,7 +364,7 @@ def _request() -> ProjectionRequestEnvelope:
             processor_kind="document-ingestion",
             parser_version="parser:v1",
             parser_config_reference="parser-default:v1",
-            locator_contract_version="locator:v1",
+            locator_contract_version=locator_contract_version,
         ),
     )
 
@@ -374,6 +388,32 @@ async def test_production_resolver_returns_detached_canonical_command_context() 
     assert resolved.source_revisions[0].source_revision_id == REVISION
     assert resolved.command_identity == "partition-project-1"
     assert resolved.physical_namespace.state.value == "shadow"
+
+
+@pytest.mark.asyncio
+async def test_production_resolver_accepts_format_specific_locator_contract() -> None:
+    locator_contract_version = "pdf-page-extracted-codepoint:v1"
+    context = _context(_command())
+    additional = context.boundary_members[0].model_copy(
+        update={
+            "source_object_id": UUID(int=121),
+            "source_revision_id": UUID(int=122),
+            "acceptance_id": UUID(int=123),
+            "accepted_generation": 2,
+        }
+    )
+
+    resolved = await _resolver(
+        _Uow(
+            additional_boundary_member=additional,
+            locator_contract_version=locator_contract_version,
+        )
+    ).resolve(_request(locator_contract_version=locator_contract_version))
+
+    assert {value.locator_contract_version for value in resolved.source_revisions} == {
+        locator_contract_version,
+        "locator:v1",
+    }
 
 
 @pytest.mark.asyncio

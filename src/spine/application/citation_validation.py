@@ -422,7 +422,6 @@ def _canonical_record_matches_bundle(record: CanonicalCitationEvidence, bundle: 
             or member.canonical_boundary_member_id != reference.source_object_id
             or member.projection_receipt_id != receipt.projection_receipt_id
             or member.projection_partition_id != receipt.projection_partition_id
-            or reference.locator_contract_version != bundle.projection_config_version.locator_contract_version
             or reference.locator_digest != locator_digest
         ):
             return False

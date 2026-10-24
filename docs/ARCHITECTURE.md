@@ -647,6 +647,14 @@ Cognee pipeline, parser, extractor, embedding model и физических stor
 позволяет adapter сопоставить graph/chunk identifiers с конкретными
 `SourceRevision` и stable locators.
 
+Stable locator contract pin-ится по каждой source lineage: processing receipt,
+physical projection source, source-to-projection reference и disclosed evidence
+несут одну exact format-specific version. Одна publication может объединять PDF,
+DOCX, XLSX, Markdown и text contracts; legacy locator value в
+`ProjectionConfigVersion` является producer default, а не projection-wide
+equality constraint. Проверки по-прежнему fail-closed сравнивают locator version
+внутри одной source lineage вместе с receipt, revision, digest и tenant scope.
+
 Spine хранит в Postgres source revisions, versioned Access Policies, опубликованные ontology и
 projection configurations, logical snapshot manifests, состояние runs, receipts, activation history и
 evidence/context bundles, использованные значимыми agent runs. Все graph nodes,

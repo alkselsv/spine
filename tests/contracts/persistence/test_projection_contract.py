@@ -10,6 +10,11 @@ from uuid import UUID
 import pytest
 
 from spine.application.persistence.idempotency import IdempotencyKey
+from spine.application.persistence.ingestion import (
+    IngestionBindingCommand,
+    IngestionRunCommand,
+    ProcessingReceiptCommand as IngestionProcessingReceiptCommand,
+)
 from spine.application.persistence.errors import OptimisticConflictError
 from spine.application.persistence.boundary import CanonicalBoundaryCaptureCommand
 from spine.application.persistence.canonical import CanonicalAcceptanceCommand
@@ -37,18 +42,29 @@ from spine.application.projection_publication_faults import (
     ProjectionPublicationFaultReason,
 )
 from spine.application.projection_result_mapping import (
+    AdapterProjectedObject,
     AdapterProjectionReceipt,
+    AdapterSourceProjectionReference,
+    CanonicalProjectionLocator,
     ProjectionMappingHandoff,
+    ProjectionResultMappingBridge,
 )
 from spine.application.projection_result_persistence import (
     PersistenceCanonicalProjectionGateway,
 )
 from spine.domain.ingestion import (
+    IngestionRun,
+    IngestionRunSource,
     IngestionRunSourceBinding,
     ProcessingCoverage,
     ProcessingReceipt,
 )
-from spine.domain.sources import RevisionKind
+from spine.domain.sources import (
+    AdmissionDecision,
+    AdmissionDisposition,
+    RevisionKind,
+    content_revision,
+)
 from spine.domain.projections import ProjectionActivationKind, PublishedActivePublication
 from spine.domain.projections import (
     OntologyVersion,
@@ -76,6 +92,7 @@ from spine.memory.contracts import (
     ProjectionOperation as PhysicalProjectionOperation,
     ProjectionOutcome,
     ProjectionResult,
+    StableLocator,
 )
 from spine.workers.runtime import ProjectionPublicationCompletion
 from spine.infrastructure.projection_publication_fault_injection import (
@@ -83,8 +100,11 @@ from spine.infrastructure.projection_publication_fault_injection import (
     ProjectionPublicationFaultInjectionProfile,
 )
 from tests.contracts.persistence.test_canonical_acceptance_contract import (
+    _activate_policy,
     _audit,
     _canonical_outbox,
+    _original_receipt,
+    _receipt_association,
     prepare_case,
 )
 from tests.contracts.persistence.test_source_observation_contract import (
@@ -889,98 +909,371 @@ async def test_projection_recovery_resolver_replays_one_shadow_rebuild_plan(
     assert partitions[0].partition_identity == "default"
 
 
+async def _accept_additional_canonical_source(
+    persistence_adapter,
+    prepared: _PreparedProjectionPublication,
+    *,
+    seed: int,
+):
+    case = prepared.canonical_case
+    source = case.source.model_copy(
+        update={
+            "source_object_id": UUID(int=seed),
+            "upload_identity": f"projection-mixed-format-{seed}",
+        }
+    )
+    original_reference = case.revision.original_reference
+    assert original_reference is not None
+    revision_values = case.revision.model_dump(
+        mode="python", exclude={"revision_digest"}
+    )
+    revision_values.update(
+        revision_id=UUID(int=seed + 1),
+        source_object_id=source.source_object_id,
+        original_reference=original_reference.model_copy(
+            update={
+                "object_id": UUID(int=seed + 2),
+                "storage_generation": UUID(int=seed + 3),
+            }
+        ),
+    )
+    revision = content_revision(**revision_values)
+    provenance = case.provenance.model_copy(
+        update={
+            "provenance_id": UUID(int=seed + 4),
+            "source_object_id": source.source_object_id,
+            "revision_id": revision.revision_id,
+            "event_identity": f"projection-mixed-format-{seed}",
+        }
+    )
+    source_context = persistence_adapter.source_context(
+        source.workspace_id, source.environment_id
+    )
+    original_receipt_id = await _original_receipt(
+        persistence_adapter, source_context, seed
+    )
+    association = _receipt_association(
+        source,
+        revision,
+        provenance,
+        receipt_id=original_receipt_id,
+        number=seed,
+    )
+    observation = SourceObservationCommand.create(
+        source=source,
+        revision=revision,
+        provenance=provenance,
+        idempotency_key=IdempotencyKey(f"projection-mixed-observation-{seed}"),
+        receipt_association=association,
+    )
+    async with persistence_adapter.uow_factory(source_context) as uow:
+        await uow.sources.record_observation(observation)
+        await uow.commit()
+
+    policy_context = persistence_adapter.ingestion_context(
+        source.workspace_id, source.environment_id, "access_policy_activation"
+    )
+    policy_id = await _activate_policy(
+        persistence_adapter,
+        context=policy_context,
+        source_object=source,
+        number=seed,
+    )
+    canonical_context = persistence_adapter.ingestion_context(
+        source.workspace_id, source.environment_id, "canonical_acceptance"
+    )
+    admission_id = UUID(int=seed + 5)
+    async with persistence_adapter.uow_factory(canonical_context) as uow:
+        await uow.admissions.append_decision(
+            AdmissionDecision(
+                decision_id=admission_id,
+                source_object_id=source.source_object_id,
+                revision_id=revision.revision_id,
+                workspace_id=source.workspace_id,
+                environment_id=source.environment_id,
+                decision_version=1,
+                disposition=AdmissionDisposition.ADMITTED,
+                validator_profile_version="admission:r1",
+                reason_schema_version="reason.v1",
+                reason_codes=("clean",),
+                authority_reference={
+                    "reference_type": "validator",
+                    "reference_id": UUID(int=seed + 6),
+                    "schema_version": 1,
+                },
+                trace_id=canonical_context.trace_id,
+                audit_event_id=UUID(int=seed + 7),
+                decided_at=NOW,
+            )
+        )
+        await uow.commit()
+    acceptance_id = UUID(int=seed + 8)
+    audit_id = UUID(int=seed + 9)
+    outbox_id = UUID(int=seed + 10)
+    acceptance = CanonicalAcceptanceCommand.create(
+        source=source,
+        revision=revision,
+        provenance=provenance,
+        expected_current_revision_id=None,
+        idempotency_key=IdempotencyKey(f"projection-mixed-acceptance-{seed}"),
+        canonical_acceptance_id=acceptance_id,
+        admission_decision_id=admission_id,
+        access_policy_version_id=policy_id,
+        audit_event_id=audit_id,
+        outbox_event_id=outbox_id,
+        accepted_at=NOW,
+        audit_event=_audit(
+            context=canonical_context,
+            source_revision_id=revision.revision_id,
+            event_id=audit_id,
+            reason="source_accepted",
+        ),
+        outbox_intent=_canonical_outbox(
+            persistence_adapter,
+            context=canonical_context,
+            source_object_id=source.source_object_id,
+            source_revision_id=revision.revision_id,
+            acceptance_id=acceptance_id,
+            generation=2,
+            audit_event_id=audit_id,
+            event_id=outbox_id,
+        ),
+    )
+    async with persistence_adapter.uow_factory(canonical_context) as uow:
+        await uow.canonical.accept(acceptance)
+        await uow.commit()
+    return source, revision, provenance
+
+
+async def _record_projection_processing_receipts(
+    persistence_adapter,
+    *,
+    workspace_id: UUID,
+    environment_id: UUID,
+    sources: tuple[tuple[object, object, object, str], ...],
+) -> tuple[ProcessingReceipt, ...]:
+    run = IngestionRun(
+        ingestion_run_id=UUID(int=58120),
+        workspace_id=workspace_id,
+        environment_id=environment_id,
+        command_identity="projection-mixed-run",
+        command_digest="1" * 64,
+        trigger_kind="reprocess",
+        requested_scope_schema="ingestion-scope:v1",
+        requested_scope_digest="2" * 64,
+        requested_at=NOW,
+    )
+    context = persistence_adapter.ingestion_context(
+        workspace_id, environment_id, "ingestion_run"
+    )
+    async with persistence_adapter.uow_factory(context) as uow:
+        await uow.ingestion.create_run(
+            IngestionRunCommand.create(
+                run=run,
+                idempotency_key=IdempotencyKey("projection-mixed-run-58120"),
+            )
+        )
+        for index, (source, revision, _, _) in enumerate(sources, start=1):
+            item = IngestionRunSource(
+                ingestion_run_source_id=UUID(int=58120 + index),
+                ingestion_run_id=run.ingestion_run_id,
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+                input_ordinal=index,
+                input_identity=f"projection-mixed-input-{index}",
+                input_digest=str(index) * 64,
+                command_identity=f"projection-mixed-item-{index}",
+                command_digest=str(index + 2) * 64,
+                created_at=NOW,
+            )
+            await uow.ingestion.create_item(item)
+        await uow.commit()
+
+    receipts = []
+    for index, (source, revision, provenance, locator_contract) in enumerate(
+        sources, start=1
+    ):
+        item_id = UUID(int=58120 + index)
+        binding = IngestionRunSourceBinding(
+            binding_id=UUID(int=58130 + index),
+            ingestion_run_source_id=item_id,
+            source_object_id=source.source_object_id,
+            source_revision_id=revision.revision_id,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            binding_command_identity=f"projection-mixed-binding-{index}",
+            binding_command_digest="4" * 64,
+            original_reference=revision.original_reference,
+            original_receipt_kind="issue6.write_receipt",
+            original_receipt_id=await _original_receipt(
+                persistence_adapter,
+                persistence_adapter.source_context(workspace_id, environment_id),
+                58300 + index,
+            ),
+            original_receipt_digest=revision.original_sha256,
+            bound_at=NOW,
+        )
+        item = IngestionRunSource(
+            ingestion_run_source_id=item_id,
+            ingestion_run_id=run.ingestion_run_id,
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            input_ordinal=index,
+            input_identity=f"projection-mixed-input-{index}",
+            input_digest=str(index) * 64,
+            command_identity=f"projection-mixed-item-{index}",
+            command_digest=str(index + 2) * 64,
+            created_at=NOW,
+        )
+        binding_context = persistence_adapter.ingestion_context(
+            workspace_id, environment_id, "ingestion_binding"
+        )
+        binding_provenance = provenance.model_copy(
+            update={
+                "provenance_id": UUID(int=58310 + index),
+                "event_identity": f"projection-mixed-binding-{index}",
+            }
+        )
+        association = _receipt_association(
+            source,
+            revision,
+            binding_provenance,
+            receipt_id=binding.original_receipt_id,
+            number=58320 + index,
+        )
+        observation = SourceObservationCommand.create(
+            source=source,
+            revision=revision,
+            provenance=binding_provenance,
+            idempotency_key=IdempotencyKey(
+                f"projection-mixed-binding-observation-{index}"
+            ),
+            receipt_association=association,
+        )
+        async with persistence_adapter.uow_factory(binding_context) as uow:
+            await uow.ingestion.bind_source(
+                IngestionBindingCommand.create(
+                    item=item,
+                    binding=binding,
+                    observation=observation,
+                    idempotency_key=IdempotencyKey(
+                        f"projection-mixed-binding-{index}"
+                    ),
+                )
+            )
+            await uow.commit()
+        receipt = ProcessingReceipt(
+            processing_receipt_id=UUID(int=58140 + index),
+            workspace_id=workspace_id,
+            environment_id=environment_id,
+            ingestion_run_source_id=item_id,
+            binding_id=binding.binding_id,
+            source_object_id=source.source_object_id,
+            source_revision_id=revision.revision_id,
+            processor_kind="document-ingestion",
+            parser_name="synthetic",
+            parser_version="parser:v1",
+            parser_config_reference="parser-default:v1",
+            locator_contract_version=locator_contract,
+            original_sha256=revision.original_sha256,
+            output_kind="parsed-document",
+            output_reference=UUID(int=58150 + index),
+            output_digest="5" * 64,
+            coverage=ProcessingCoverage.COMPLETE,
+            command_identity=f"projection-mixed-processing-{index}",
+            command_digest="6" * 64,
+            idempotency_receipt_id=UUID(int=58160 + index),
+            completed_at=NOW,
+        )
+        receipt_context = persistence_adapter.ingestion_context(
+            workspace_id, environment_id, "processing_receipt"
+        )
+        async with persistence_adapter.uow_factory(receipt_context) as uow:
+            result = await uow.ingestion.record_processing_receipt(
+                IngestionProcessingReceiptCommand.create(
+                    receipt=receipt,
+                    idempotency_key=IdempotencyKey(
+                        f"projection-mixed-processing-{index}"
+                    ),
+                )
+            )
+            await uow.commit()
+        receipts.append(result.value)
+    return tuple(receipts)
+
+
 @pytest.mark.asyncio
-async def test_projection_successor_resolver_uses_exact_captured_current_boundary(
+async def test_projection_successor_resolver_accepts_canonical_multi_format_boundary(
     persistence_adapter,
 ) -> None:
     prepared = await _prepare_projection_publication(
         persistence_adapter,
-        seed=26000,
+        seed=58100,
     )
     activation = prepared.activated.activation
-    boundary_context = persistence_adapter.ingestion_context(
-        activation.workspace_id,
-        activation.environment_id,
-        "canonical_boundary_capture",
+    second_source, second_revision, second_provenance = await _accept_additional_canonical_source(
+        persistence_adapter,
+        prepared,
+        seed=58200,
     )
-    async with persistence_adapter.uow_factory(boundary_context) as uow:
-        captured = await uow.boundaries.capture(
-            CanonicalBoundaryCaptureCommand.create(
-                projection_kind="context",
-                scope_version="r1",
-                idempotency_key=IdempotencyKey("projection-successor-boundary-26000"),
-            )
-        )
-        member = captured.members[0]
-        revision = await uow.sources.resolve_revision(member.source_revision_id)
-        await uow.commit()
-    assert revision is not None
-
-    item_id = UUID(int=26080)
-    binding = IngestionRunSourceBinding(
-        binding_id=UUID(int=26081),
-        ingestion_run_source_id=item_id,
-        source_object_id=member.source_object_id,
-        source_revision_id=member.source_revision_id,
+    receipt, second_receipt = await _record_projection_processing_receipts(
+        persistence_adapter,
         workspace_id=activation.workspace_id,
         environment_id=activation.environment_id,
-        binding_command_identity="successor-binding-26000",
-        binding_command_digest="1" * 64,
-        bound_at=NOW,
-    )
-    receipt = ProcessingReceipt(
-        processing_receipt_id=UUID(int=26082),
-        workspace_id=activation.workspace_id,
-        environment_id=activation.environment_id,
-        ingestion_run_source_id=item_id,
-        binding_id=binding.binding_id,
-        source_object_id=member.source_object_id,
-        source_revision_id=member.source_revision_id,
-        processor_kind="document-ingestion",
-        parser_name="text",
-        parser_version="parser:v1",
-        parser_config_reference="parser-default:v1",
-        locator_contract_version="locator:v1",
-        original_sha256=revision.original_sha256,
-        output_kind="parsed-document",
-        output_reference=UUID(int=26083),
-        output_digest="2" * 64,
-        coverage=ProcessingCoverage.COMPLETE,
-        command_identity="successor-processing-26000",
-        command_digest="3" * 64,
-        idempotency_receipt_id=UUID(int=26084),
-        completed_at=NOW,
+        sources=(
+            (
+                prepared.canonical_case.source,
+                prepared.canonical_case.revision,
+                prepared.canonical_case.provenance,
+                "pdf-page-extracted-codepoint:v1",
+            ),
+            (
+                second_source,
+                second_revision,
+                second_provenance,
+                "physical-line-codepoint:v1",
+            ),
+        ),
     )
 
-    class Ingestion:
-        async def list_bindings_for_source_revision(self, source_object_id, revision_id):
-            return (
-                (binding,)
-                if (source_object_id, revision_id)
-                == (member.source_object_id, member.source_revision_id)
-                else ()
-            )
+    captured_intents = []
 
-        async def resolve_processing_receipt(self, candidate_item_id):
-            return receipt if candidate_item_id == item_id else None
-
-    class UnitOfWork:
+    class Outbox:
         def __init__(self, inner):
             self._inner = inner
-            self.ingestion = Ingestion()
+
+        async def append(self, intent):
+            captured_intents.append(intent)
+            return await self._inner.append(intent)
+
+        async def resolve_delivery_status(self, event_id):
+            return await self._inner.resolve_delivery_status(event_id)
+
+    class RequestUnitOfWork:
+        def __init__(self, inner):
+            self._inner = inner
 
         async def __aenter__(self):
             await self._inner.__aenter__()
+            self.idempotency = self._inner.idempotency
+            self.boundaries = self._inner.boundaries
+            self.projections = self._inner.projections
+            self.outbox = Outbox(self._inner.outbox)
             return self
 
         async def __aexit__(self, exc_type, exc_value, traceback):
             await self._inner.__aexit__(exc_type, exc_value, traceback)
 
-        def __getattr__(self, name):
-            return getattr(self._inner, name)
+        async def commit(self):
+            await self._inner.commit()
+
+        async def rollback(self):
+            await self._inner.rollback()
 
     successor_service = ProjectionRecoveryRequestService(
-        uow_factory=persistence_adapter.uow_factory,
+        uow_factory=lambda context: RequestUnitOfWork(
+            persistence_adapter.uow_factory(context)
+        ),
         outbox_events=persistence_adapter.outbox_events,
     )
     successor_context = persistence_adapter.ingestion_context(
@@ -992,21 +1285,11 @@ async def test_projection_successor_resolver_uses_exact_captured_current_boundar
         context=successor_context,
         projection_kind="qa",
         action=ProjectionRecoveryAction.SUCCESSOR,
-        idempotency_key=IdempotencyKey("projection-successor-public-path-26000"),
+        idempotency_key=IdempotencyKey("projection-successor-public-path-58100"),
     )
     assert accepted.intent_id is not None
-    await persistence_adapter.delivery_repository.materialize(
-        limit=10,
-        materialized_at=NOW,
-    )
-    claims = await persistence_adapter.delivery_repository.claim_due(
-        limit=10,
-        worker_identity="successor_public_resolver_test",
-        claimed_at=NOW,
-        lease_duration=timedelta(minutes=1),
-    )
     intent = next(
-        claim.intent for claim in claims if claim.intent.event_id == accepted.intent_id
+        value for value in captured_intents if value.event_id == accepted.intent_id
     )
     assert intent is not None
     assert isinstance(intent.payload, ProjectionSuccessorRequestedOutboxPayload)
@@ -1017,9 +1300,7 @@ async def test_projection_successor_resolver_uses_exact_captured_current_boundar
         payload=intent.payload,
     )
     resolver = PersistenceCanonicalProjectionRecoveryResolver(
-        uow_factory=lambda context: UnitOfWork(
-            persistence_adapter.uow_factory(context)
-        ),
+        uow_factory=persistence_adapter.uow_factory,
         context_factory=lambda envelope: persistence_adapter.ingestion_context(
             envelope.workspace_id, envelope.environment_id, "projection_run"
         ),
@@ -1030,18 +1311,154 @@ async def test_projection_successor_resolver_uses_exact_captured_current_boundar
 
     assert plan.action is ProjectionRecoveryAction.SUCCESSOR
     assert plan.command.canonical_boundary.boundary_id == request.payload.canonical_boundary_id
-    assert plan.command.source_revisions[0].source_revision_id == member.source_revision_id
-    assert plan.command.source_revisions[0].processing_receipt_id == receipt.processing_receipt_id
+    async with persistence_adapter.uow_factory(
+        persistence_adapter.ingestion_context(
+            activation.workspace_id,
+            activation.environment_id,
+            "canonical_boundary_capture",
+        )
+    ) as uow:
+        members = await uow.boundaries.resolve_members(
+            request.payload.canonical_boundary_id
+        )
+        await uow.rollback()
+    assert len(members) == 2
+    member_by_source = {value.source_object_id: value for value in members}
+    member = member_by_source[prepared.canonical_case.source.source_object_id]
+    second_member = member_by_source[second_source.source_object_id]
+    source_revisions = {
+        value.source_revision_id: value for value in plan.command.source_revisions
+    }
+    assert source_revisions[member.source_revision_id].processing_receipt_id == receipt.processing_receipt_id
+    assert source_revisions[member.source_revision_id].locator_contract_version == "pdf-page-extracted-codepoint:v1"
+    assert source_revisions[second_member.source_revision_id].processing_receipt_id == second_receipt.processing_receipt_id
+    assert source_revisions[second_member.source_revision_id].locator_contract_version == "physical-line-codepoint:v1"
+
+    locators = tuple(
+        CanonicalProjectionLocator(
+            source_object_id=source.source_object_id,
+            source_revision_id=source.source_revision_id,
+            revision_digest=source.revision_digest,
+            processing_receipt_id=source.processing_receipt_id,
+            segment_id=f"segment-{index}",
+            locator_schema_version=source.locator_contract_version,
+            locator=StableLocator(
+                kind="page" if index == 1 else "character_range",
+                value="page:1:0-4" if index == 1 else "line:1:0-4",
+            ),
+            locator_digest=str(index + 6) * 64,
+        )
+        for index, source in enumerate(plan.command.source_revisions, start=1)
+    )
+
+    class LocatorResolver:
+        async def resolve(self, evidence_request):
+            assert evidence_request.command == plan.command
+            return locators
+
+    gateway = PersistenceCanonicalProjectionGateway(
+        uow_factory=persistence_adapter.uow_factory,
+        context_factory=lambda command: persistence_adapter.ingestion_context(
+            command.workspace_id, command.environment_id, "projection_receipt"
+        ),
+        locator_resolver=LocatorResolver(),
+    )
+    references = tuple(
+        AdapterSourceProjectionReference(
+            workspace_id=plan.workspace_id,
+            environment_id=plan.environment_id,
+            namespace_digest=plan.command.physical_namespace.namespace_digest,
+            source_object_id=locator.source_object_id,
+            source_revision_id=locator.source_revision_id,
+            revision_digest=locator.revision_digest,
+            processing_receipt_id=locator.processing_receipt_id,
+            segment_id=locator.segment_id,
+            locator_schema_version=locator.locator_schema_version,
+            locator=locator.locator,
+            locator_digest=locator.locator_digest,
+            projected_kind="chunk",
+            projected_object_id=f"chunk-{index}",
+            projection_config_version_id=plan.command.projection_config.config_id,
+            security_domain_reference="security-domain:default",
+            security_domain_version="r1",
+        )
+        for index, locator in enumerate(locators, start=1)
+    )
+    effects = tuple(
+        ProjectionEffect(
+            effect_id=f"projection-mixed-effect-{index}",
+            operation=plan.command.operation,
+            action=ProjectionEffectAction.UPSERT_SOURCE,
+            status=ProjectionEffectStatus.APPLIED,
+            workspace_id=plan.workspace_id,
+            environment_id=plan.environment_id,
+            command_identity=plan.command.command_identity,
+            command_digest=plan.command.command_digest,
+            projection_candidate=plan.command.projection_candidate,
+            projection_config=plan.command.projection_config,
+            canonical_boundary=plan.command.canonical_boundary,
+            physical_namespace=plan.command.physical_namespace,
+            source_object_id=source.source_object_id,
+            source_revision_id=source.source_revision_id,
+            revision_digest=source.revision_digest,
+            revision_number=source.revision_number,
+            processing_receipt_id=source.processing_receipt_id,
+            locator_contract_version=source.locator_contract_version,
+        )
+        for index, source in enumerate(plan.command.source_revisions, start=1)
+    )
+    adapter_receipt = AdapterProjectionReceipt(
+        result=ProjectionResult(
+            operation=plan.command.operation,
+            outcome=ProjectionOutcome.SUCCEEDED,
+            lifecycle=ProjectionLifecycle.SUCCEEDED,
+            command_identity=plan.command.command_identity,
+            command_digest=plan.command.command_digest,
+            artifact_reference="artifact:projection-mixed-58100",
+            counts=(ProjectionCount(name="chunks", value=2),),
+            effects=effects,
+        ),
+        artifact_kind="cognee-shadow",
+        artifact_integrity_digest="9" * 64,
+        emitted_objects=tuple(
+            AdapterProjectedObject(kind="chunk", object_id=f"chunk-{index}")
+            for index in range(1, 3)
+        ),
+        source_references=references,
+        implementation_schema_version="cognee-context-projection:v1",
+        implementation_metadata={"adapter_contract": "adapter:v1"},
+        idempotency_key="projection-mixed-mapping-58100",
+        completed_at=NOW,
+    )
+    mapped = await ProjectionResultMappingBridge(
+        gateway,
+        id_source=iter((UUID(int=58170), UUID(int=58171))).__next__,
+    ).map(plan.command, adapter_receipt)
+    mapped_lineage = {
+        value.source_revision_id: value
+        for value in mapped.handoff.source_references
+    }
+    assert mapped_lineage[member.source_revision_id].processing_receipt_id == receipt.processing_receipt_id
+    assert mapped_lineage[member.source_revision_id].locator_schema_version == "pdf-page-extracted-codepoint:v1"
+    assert mapped_lineage[second_member.source_revision_id].processing_receipt_id == second_receipt.processing_receipt_id
+    assert mapped_lineage[second_member.source_revision_id].locator_schema_version == "physical-line-codepoint:v1"
     async with persistence_adapter.uow_factory(
         persistence_adapter.ingestion_context(
             activation.workspace_id, activation.environment_id, "projection_run"
         )
     ) as uow:
         run = await uow.projections.resolve_run(plan.command.projection_run_id)
+        persisted_references = await uow.projections.list_source_references(
+            plan.command.projection_run_id
+        )
         await uow.rollback()
     assert run is not None
     assert run.operation is ProjectionOperation.CATCH_UP
     assert run.predecessor_snapshot_id == prepared.assembled.value.projection_snapshot_id
+    persisted_lineage = {
+        value.source_revision_id: value for value in persisted_references
+    }
+    assert persisted_lineage == mapped_lineage
     status = await successor_service.successor_status(
         context=persistence_adapter.ingestion_context(
             activation.workspace_id,

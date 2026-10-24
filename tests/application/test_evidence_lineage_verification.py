@@ -1449,7 +1449,7 @@ async def test_processing_receipt_for_different_original_bytes_is_rejected() -> 
 
 
 @pytest.mark.asyncio
-async def test_locator_contract_must_match_pinned_projection_config() -> None:
+async def test_format_specific_locator_contract_is_verified_against_source_lineage() -> None:
     lineage, item, pin = _lineage()
     config = lineage.projection_config_version.model_copy(
         update={"locator_contract_version": "locator:v2"}
@@ -1478,7 +1478,7 @@ async def test_locator_contract_must_match_pinned_projection_config() -> None:
             "publication_pin_digest": changed_pin.pin_digest,
         }
     )
-    unsafe = lineage.model_copy(
+    format_specific_lineage = lineage.model_copy(
         update={
             "projection_config_version": config,
             "authorization_pin": lineage.authorization_pin.model_copy(
@@ -1486,17 +1486,40 @@ async def test_locator_contract_must_match_pinned_projection_config() -> None:
             ),
         }
     )
-    unsafe_item = item.model_copy(
+    format_specific_item = item.model_copy(
         update={"read_context": context, "read_contexts": (context,)}
     )
 
-    result = await _verifier(unsafe, _AuthorizationRepository(REVISION)).verify(
-        item=unsafe_item,
+    result = await _verifier(
+        format_specific_lineage, _AuthorizationRepository(REVISION)
+    ).verify(
+        item=format_specific_item,
         publication_pin=changed_pin,
         authorization_context=_authorization_context(),
     )
 
+    assert isinstance(result, VerifiedEvidenceItem)
+
+
+@pytest.mark.asyncio
+async def test_locator_contract_forged_outside_source_lineage_is_rejected() -> None:
+    lineage, item, pin = _lineage()
+    forged = lineage.model_copy(
+        update={
+            "processing_receipt": lineage.processing_receipt.model_copy(
+                update={"locator_contract_version": "locator:forged-v1"}
+            )
+        }
+    )
+
+    result = await _verifier(forged, _AuthorizationRepository(REVISION)).verify(
+        item=item,
+        publication_pin=pin,
+        authorization_context=_authorization_context(),
+    )
+
     assert isinstance(result, RejectedEvidenceItem)
+    assert result.reason_code is EvidenceVerificationReasonCode.EVIDENCE_UNVERIFIED
 
 
 @pytest.mark.asyncio
@@ -1614,7 +1637,7 @@ async def test_boundary_semantics_must_match_publication_pin(
 
 
 @pytest.mark.asyncio
-async def test_versioned_lineage_evaluation_passes_without_a_comparable_baseline() -> None:
+async def test_versioned_lineage_evaluation_preserves_score_with_mixed_format_cases() -> None:
     lineage, item, pin = _lineage()
     verified = await _verifier(lineage, _AuthorizationRepository(REVISION)).verify(
         item=item,
@@ -1638,14 +1661,79 @@ async def test_versioned_lineage_evaluation_passes_without_a_comparable_baseline
         publication_pin=entity_pin,
         authorization_context=_authorization_context(),
     )
+    config = lineage.projection_config_version.model_copy(
+        update={"locator_contract_version": "locator:v2"}
+    )
+    publication = PublishedActivePublication(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        projection_kind="qa",
+        projection_snapshot=lineage.projection_snapshot,
+        projection_activation=lineage.projection_activation,
+        activation_generation=lineage.projection_activation.activation_generation,
+        active_pointer_cas_version=pin.active_pointer_cas_version,
+        canonical_boundary_id=BOUNDARY,
+        canonical_boundary_manifest_digest=lineage.canonical_boundary.manifest_digest,
+        accepted_through_generation=lineage.canonical_boundary.accepted_through_generation,
+        canonical_boundary_membership_ref="canonical-boundary-members:r1",
+        as_of=pin.as_of,
+        projection_config_version=config,
+        freshness="current",
+        health="healthy",
+    )
+    format_pin = PublicationPin.from_publication(publication)
+    format_context = item.read_contexts[0].model_copy(
+        update={
+            "publication_pin_id": format_pin.pin_id,
+            "publication_pin_digest": format_pin.pin_digest,
+        }
+    )
+    format_lineage = lineage.model_copy(
+        update={
+            "projection_config_version": config,
+            "authorization_pin": lineage.authorization_pin.model_copy(
+                update={"read_context": format_context}
+            ),
+        }
+    )
+    format_item = item.model_copy(
+        update={
+            "read_context": format_context,
+            "read_contexts": (format_context,),
+        }
+    )
+    format_specific = await _verifier(
+        format_lineage, _AuthorizationRepository(REVISION)
+    ).verify(
+        item=format_item,
+        publication_pin=format_pin,
+        authorization_context=_authorization_context(),
+    )
+    forged_locator = await _verifier(
+        lineage.model_copy(
+            update={
+                "processing_receipt": lineage.processing_receipt.model_copy(
+                    update={"locator_contract_version": "locator:forged-v1"}
+                )
+            }
+        ),
+        _AuthorizationRepository(REVISION),
+    ).verify(
+        item=item,
+        publication_pin=pin,
+        authorization_context=_authorization_context(),
+    )
 
     report = evaluate_evidence_lineage_outcomes(
         {
             "authorized-single-source": verified,
             "forged-evidence-digest": forged,
             "mixed-access-derived-entity": mixed_access,
+            "format-specific-locator-lineage": format_specific,
+            "forged-cross-lineage-locator": forged_locator,
         },
         dataset=load_evidence_lineage_v1_dataset(),
+        baseline_exact_decision_rate=1.0,
     )
     artifact_path = (
         Path(__file__).resolve().parents[2]
@@ -1655,8 +1743,8 @@ async def test_versioned_lineage_evaluation_passes_without_a_comparable_baseline
     assert report.passed is True
     assert report.exact_decision_rate == 1.0
     assert report.safe_rejection_rate == 1.0
-    assert report.comparison_status == "new_gate_no_baseline"
-    assert report.exact_decision_delta is None
+    assert report.comparison_status == "compared"
+    assert report.exact_decision_delta == 0.0
     assert json.loads(artifact_path.read_text(encoding="utf-8")) == report.model_dump(
         mode="json"
     )

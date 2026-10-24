@@ -185,6 +185,12 @@ An immutable, durably identified reference from an Answer Claim to one exact
 evidence item and its Source Revision-scoped provenance.
 _Avoid_: Markdown link, excerpt, filename, retrieval result
 
+**Stable Locator**:
+A versioned, format-specific address for an evidence span inside one immutable
+Source Revision. Its contract belongs to the parsed source lineage, not to a
+projection-wide default.
+_Avoid_: Page label, projection locator, universal locator format
+
 **Claim Evidence Relationship**:
 The explicit semantic relationship connecting an Answer Claim to independently
 supporting, jointly supporting or derivation-input evidence.
