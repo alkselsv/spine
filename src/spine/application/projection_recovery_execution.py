@@ -28,12 +28,16 @@ from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.persistence.projection import (
     PROJECTION_OUTBOX_SCHEMA_VERSION,
     PROJECTION_RECOVERY_REQUESTED_OUTBOX_EVENT_TYPE,
+    PROJECTION_SUCCESSOR_REQUESTED_OUTBOX_EVENT_TYPE,
     ProjectionRecoveryAction,
     ProjectionRecoveryRequestedOutboxPayload,
+    ProjectionSuccessorRequestedOutboxPayload,
     ProjectionRepository,
     ProjectionRunCommand,
 )
 from spine.application.persistence.canonical import CanonicalAcceptanceRepository
+from spine.application.persistence.boundary import CanonicalBoundaryRepository
+from spine.application.persistence.ingestion import IngestionRepository
 from spine.application.persistence.repositories import SourceObservationRepository
 from spine.application.persistence.unit_of_work_activity import unit_of_work_is_active
 from spine.application.telemetry import (
@@ -51,6 +55,8 @@ from spine.application.projection_result_mapping import (
     ProjectionMappingResult,
     ProjectionPreparationStatus,
 )
+from spine.application.projection_request_execution import ProjectionRequestCompletion
+from spine.application.projection_identity import projection_recovery_entity_id
 from spine.memory.contracts import (
     CanonicalBoundary,
     ContextProjection,
@@ -71,7 +77,13 @@ from spine.domain.projections import (
     ProjectionRunTransition,
     PublishedActivePublication,
 )
-from spine.domain.sources import RevisionKind
+from spine.domain.ingestion import ProcessingCoverage
+from spine.domain.projections import ProjectionConfigVersion as DomainProjectionConfigVersion
+from spine.domain.sources import (
+    CanonicalBoundary as DomainCanonicalBoundary,
+    CanonicalBoundaryMember,
+    RevisionKind,
+)
 
 
 class ProjectionRecoveryRequestEnvelope(BaseModel):
@@ -85,7 +97,10 @@ class ProjectionRecoveryRequestEnvelope(BaseModel):
     event_id: UUID
     workspace_id: UUID
     environment_id: UUID
-    payload: ProjectionRecoveryRequestedOutboxPayload
+    payload: (
+        ProjectionRecoveryRequestedOutboxPayload
+        | ProjectionSuccessorRequestedOutboxPayload
+    )
 
 
 class CanonicalProjectionRecoveryPlan(BaseModel):
@@ -119,6 +134,12 @@ class CanonicalProjectionRecoveryUnitOfWork(Protocol):
 
     @property
     def canonical(self) -> CanonicalAcceptanceRepository: ...
+
+    @property
+    def boundaries(self) -> CanonicalBoundaryRepository: ...
+
+    @property
+    def ingestion(self) -> IngestionRepository: ...
 
     async def __aenter__(self) -> "CanonicalProjectionRecoveryUnitOfWork": ...
 
@@ -157,12 +178,20 @@ class PersistenceCanonicalProjectionRecoveryResolver:
         request: ProjectionRecoveryRequestEnvelope,
     ) -> CanonicalProjectionRecoveryPlan:
         payload = request.payload
-        run_id = self._id(payload.command_id, "run")
-        candidate_id = self._id(payload.command_id, "candidate")
-        partition_id = self._id(payload.command_id, "partition")
-        transition_id = self._id(payload.command_id, "transition")
-        receipt_id = self._id(payload.command_id, "run-receipt")
-        command_identity = f"recovery-{payload.command_id.hex}"
+        successor = isinstance(payload, ProjectionSuccessorRequestedOutboxPayload)
+        action = (
+            ProjectionRecoveryAction.SUCCESSOR if successor else payload.action
+        )
+        run_id = projection_recovery_entity_id(payload.command_id, "run")
+        candidate_id = projection_recovery_entity_id(payload.command_id, "candidate")
+        partition_id = projection_recovery_entity_id(payload.command_id, "partition")
+        transition_id = projection_recovery_entity_id(payload.command_id, "transition")
+        receipt_id = projection_recovery_entity_id(payload.command_id, "run-receipt")
+        command_identity = (
+            f"successor-{payload.command_id.hex}"
+            if successor
+            else f"recovery-{payload.command_id.hex}"
+        )
         async with self._uow_factory(self._context_factory(request)) as uow:
             publication = await uow.projections.resolve_active_publication(
                 payload.projection_kind
@@ -187,16 +216,65 @@ class PersistenceCanonicalProjectionRecoveryResolver:
                     "recovery requires exactly one active projection partition"
                 )
             active_partition = active_partitions[0]
-            source_revisions = await self._source_revisions(uow, publication)
+            if (
+                active_partition.projection_run_id
+                != publication.projection_snapshot.projection_run_id
+                or active_partition.projection_candidate_id
+                != publication.projection_snapshot.projection_candidate_id
+                or active_partition.workspace_id != request.workspace_id
+                or active_partition.environment_id != request.environment_id
+            ):
+                raise ProjectionMappingConflictError(
+                    "active projection partition lineage is invalid"
+                )
+            if successor:
+                boundary_record = await uow.boundaries.resolve(
+                    payload.canonical_boundary_id
+                )
+                if (
+                    boundary_record is None
+                    or boundary_record.workspace_id != request.workspace_id
+                    or boundary_record.environment_id != request.environment_id
+                    or boundary_record.projection_kind != payload.projection_kind
+                    or boundary_record.manifest_digest
+                    != payload.canonical_boundary_digest
+                    or boundary_record.accepted_through_generation
+                    != payload.accepted_through_generation
+                ):
+                    raise ProjectionMappingConflictError(
+                        "successor boundary does not match request"
+                    )
+                boundary_members = await uow.boundaries.resolve_members(
+                    boundary_record.boundary_id
+                )
+                source_revisions = await self._successor_source_revisions(
+                    uow, boundary_record, boundary_members, config
+                )
+                canonical_boundary_id = boundary_record.boundary_id
+                canonical_boundary_digest = boundary_record.manifest_digest
+                accepted_through_generation = (
+                    boundary_record.accepted_through_generation
+                )
+            else:
+                source_revisions = await self._source_revisions(uow, publication)
+                canonical_boundary_id = publication.canonical_boundary_id
+                canonical_boundary_digest = (
+                    publication.canonical_boundary_manifest_digest
+                )
+                accepted_through_generation = publication.accepted_through_generation
             run = ProjectionRun(
                 projection_run_id=run_id,
                 projection_candidate_id=candidate_id,
                 workspace_id=request.workspace_id,
                 environment_id=request.environment_id,
                 projection_kind=payload.projection_kind,
-                operation=ProjectionOperation.REBUILD,
+                operation=(
+                    ProjectionOperation.CATCH_UP
+                    if successor
+                    else ProjectionOperation.REBUILD
+                ),
                 projection_config_version_id=config.projection_config_version_id,
-                canonical_boundary_id=publication.canonical_boundary_id,
+                canonical_boundary_id=canonical_boundary_id,
                 predecessor_snapshot_id=(
                     publication.projection_snapshot.projection_snapshot_id
                 ),
@@ -266,9 +344,9 @@ class PersistenceCanonicalProjectionRecoveryResolver:
             adapter_contract_version=config.adapter_contract_version,
         )
         boundary = CanonicalBoundary(
-            boundary_id=publication.canonical_boundary_id,
-            boundary_digest=publication.canonical_boundary_manifest_digest,
-            accepted_through_generation=publication.accepted_through_generation,
+            boundary_id=canonical_boundary_id,
+            boundary_digest=canonical_boundary_digest,
+            accepted_through_generation=accepted_through_generation,
         )
         namespace = self._namespace_router.route(
             ProjectionNamespaceContext(
@@ -285,7 +363,7 @@ class PersistenceCanonicalProjectionRecoveryResolver:
             workspace_id=request.workspace_id,
             environment_id=request.environment_id,
             command_id=payload.command_id,
-            action=payload.action,
+            action=action,
             request_digest=payload.command_digest,
             command=RebuildCommand(
                 workspace_id=request.workspace_id,
@@ -351,10 +429,101 @@ class PersistenceCanonicalProjectionRecoveryResolver:
             raise ProjectionMappingError("active projection has no rebuildable sources")
         return tuple(result)
 
-    @staticmethod
-    def _id(command_id: UUID, role: str) -> UUID:
-        return uuid5(NAMESPACE_URL, f"spine:projection-recovery:{command_id}:{role}")
-
+    async def _successor_source_revisions(
+        self,
+        uow: CanonicalProjectionRecoveryUnitOfWork,
+        boundary: DomainCanonicalBoundary,
+        members: tuple[CanonicalBoundaryMember, ...],
+        config: DomainProjectionConfigVersion,
+    ) -> tuple[ProjectionSourceRevision, ...]:
+        if len({member.source_object_id for member in members}) != len(members):
+            raise ProjectionMappingConflictError(
+                "successor boundary membership is ambiguous"
+            )
+        result: list[ProjectionSourceRevision] = []
+        for member in members:
+            if (
+                member.boundary_id != boundary.boundary_id
+                or member.workspace_id != boundary.workspace_id
+                or member.environment_id != boundary.environment_id
+            ):
+                raise ProjectionMappingConflictError(
+                    "successor boundary membership is foreign"
+                )
+            revision = await uow.sources.resolve_revision(member.source_revision_id)
+            current = await uow.canonical.resolve_current(member.source_object_id)
+            if (
+                revision is None
+                or current is None
+                or revision.source_object_id != member.source_object_id
+                or revision.workspace_id != boundary.workspace_id
+                or revision.environment_id != boundary.environment_id
+                or revision.kind is not member.revision_kind
+                or current.current_revision_id != member.source_revision_id
+                or current.current_revision_kind is not member.revision_kind
+                or current.accepted_generation != member.accepted_generation
+            ):
+                raise ProjectionMappingError(
+                    "successor source revision is missing, stale, or foreign"
+                )
+            if member.revision_kind is RevisionKind.TOMBSTONE:
+                continue
+            bindings = await uow.ingestion.list_bindings_for_source_revision(
+                member.source_object_id,
+                member.source_revision_id,
+            )
+            receipts = []
+            for binding in bindings:
+                if (
+                    binding.source_object_id != member.source_object_id
+                    or binding.source_revision_id != member.source_revision_id
+                    or binding.workspace_id != boundary.workspace_id
+                    or binding.environment_id != boundary.environment_id
+                ):
+                    raise ProjectionMappingConflictError(
+                        "successor processing binding is foreign"
+                    )
+                receipt = await uow.ingestion.resolve_processing_receipt(
+                    binding.ingestion_run_source_id
+                )
+                if (
+                    receipt is not None
+                    and receipt.binding_id == binding.binding_id
+                    and receipt.source_object_id == member.source_object_id
+                    and receipt.source_revision_id == member.source_revision_id
+                    and receipt.workspace_id == boundary.workspace_id
+                    and receipt.environment_id == boundary.environment_id
+                    and receipt.coverage is not ProcessingCoverage.FAILED
+                    and receipt.output_reference is not None
+                    and receipt.output_digest is not None
+                ):
+                    receipts.append(receipt)
+            if len(receipts) != 1:
+                raise ProjectionMappingError(
+                    "successor processing receipt is missing or ambiguous"
+                )
+            receipt = receipts[0]
+            if (
+                revision.kind is not RevisionKind.CONTENT
+                or revision.original_sha256 != receipt.original_sha256
+                or receipt.locator_contract_version
+                != config.locator_contract_version
+            ):
+                raise ProjectionMappingConflictError(
+                    "successor processing lineage is invalid"
+                )
+            result.append(
+                ProjectionSourceRevision(
+                    source_object_id=member.source_object_id,
+                    source_revision_id=member.source_revision_id,
+                    revision_digest=revision.revision_digest,
+                    revision_number=member.accepted_generation,
+                    status="current",
+                    processing_receipt_id=receipt.processing_receipt_id,
+                    locator_contract_version=receipt.locator_contract_version,
+                )
+            )
+        return tuple(sorted(result, key=lambda value: value.source_object_id.hex))
 
 class ProjectionRecoveryResultRecorder(Protocol):
     """Canonical result bridge; implementations own validation and publication."""
@@ -366,7 +535,7 @@ class ProjectionRecoveryResultRecorder(Protocol):
         self,
         plan: CanonicalProjectionRecoveryPlan,
         result: ProjectionResult,
-    ) -> None: ...
+    ) -> ProjectionMappingResult | None: ...
 
 
 class ProjectionRecoveryLifecycle(Protocol):
@@ -537,9 +706,9 @@ class MappingProjectionRecoveryResultRecorder:
         self,
         plan: CanonicalProjectionRecoveryPlan,
         result: ProjectionResult,
-    ) -> None:
+    ) -> ProjectionMappingResult:
         receipt = await self._receipt_builder.build(plan.command, result)
-        await self._result_bridge.map(plan.command, receipt)
+        return await self._result_bridge.map(plan.command, receipt)
 
 
 class ProjectionRecoveryRequestConsumer:
@@ -551,12 +720,14 @@ class ProjectionRecoveryRequestConsumer:
         canonical_resolver: CanonicalProjectionRecoveryResolver,
         projection: ContextProjection,
         result_recorder: ProjectionRecoveryResultRecorder,
+        completion: ProjectionRequestCompletion | None = None,
         lifecycle: ProjectionRecoveryLifecycle | None = None,
         operational_observer: OperationalObservationEmitter | None = None,
     ) -> None:
         self._canonical_resolver = canonical_resolver
         self._projection = projection
         self._result_recorder = result_recorder
+        self._completion = completion
         self._lifecycle = lifecycle
         self._operational_observer = operational_observer
 
@@ -582,8 +753,15 @@ class ProjectionRecoveryRequestConsumer:
             ) from None
 
         self._validate_plan(request, plan)
+        requires_completion = (
+            plan.action is ProjectionRecoveryAction.SUCCESSOR
+            and self._completion is not None
+        )
         try:
-            if await self._result_recorder.prepare(plan):
+            if (
+                await self._result_recorder.prepare(plan)
+                and not requires_completion
+            ):
                 await self._advance(plan, ProjectionRunState.COMPLETE)
                 return OutboxConsumerSuccess(diagnostic_context=diagnostic_context)
         except ProjectionMappingConflictError:
@@ -650,7 +828,14 @@ class ProjectionRecoveryRequestConsumer:
 
         await self._advance(plan, ProjectionRunState.VALIDATING)
         try:
-            await self._result_recorder.record(plan, result)
+            mapping = await self._result_recorder.record(plan, result)
+            if requires_completion:
+                assert self._completion is not None
+                if mapping is None:
+                    raise ProjectionMappingError(
+                        "projection recovery mapping is unavailable"
+                    )
+                await self._completion.complete(mapping)
         except ProjectionMappingConflictError:
             await self._advance(
                 plan,
@@ -729,9 +914,17 @@ class ProjectionRecoveryRequestConsumer:
         if (
             intent.event_id is None
             or intent.environment_id is None
-            or intent.event_type != PROJECTION_RECOVERY_REQUESTED_OUTBOX_EVENT_TYPE
+            or intent.event_type
+            not in {
+                PROJECTION_RECOVERY_REQUESTED_OUTBOX_EVENT_TYPE,
+                PROJECTION_SUCCESSOR_REQUESTED_OUTBOX_EVENT_TYPE,
+            }
             or intent.schema_version != PROJECTION_OUTBOX_SCHEMA_VERSION
-            or type(intent.payload) is not ProjectionRecoveryRequestedOutboxPayload
+            or type(intent.payload)
+            not in {
+                ProjectionRecoveryRequestedOutboxPayload,
+                ProjectionSuccessorRequestedOutboxPayload,
+            }
             or diagnostic_context.trace_id != intent.trace_id
             or diagnostic_context.correlation_id != intent.correlation_id
             or diagnostic_context.causation_id != intent.event_id
@@ -739,13 +932,23 @@ class ProjectionRecoveryRequestConsumer:
             raise TerminalOutboxConsumerFailure("projection.recovery.invalid")
         payload = intent.payload
         aggregate = intent.aggregate
+        successor = isinstance(payload, ProjectionSuccessorRequestedOutboxPayload)
         if (
             aggregate is None
-            or aggregate.object_type != "projection_recovery_request"
+            or aggregate.object_type
+            != (
+                "projection_successor_request"
+                if successor
+                else "projection_recovery_request"
+            )
             or aggregate.object_id != payload.command_id
             or aggregate.schema_version != 1
             or intent.producer_deduplication_id
-            != f"projection-recovery:{payload.command_id}"
+            != (
+                f"projection-successor:{payload.command_id}"
+                if successor
+                else f"projection-recovery:{payload.command_id}"
+            )
         ):
             raise TerminalOutboxConsumerFailure(
                 "projection.recovery.lineage_invalid"
@@ -767,7 +970,14 @@ class ProjectionRecoveryRequestConsumer:
             plan.workspace_id != request.workspace_id
             or plan.environment_id != request.environment_id
             or plan.command_id != request.payload.command_id
-            or plan.action is not request.payload.action
+            or plan.action
+            is not (
+                ProjectionRecoveryAction.SUCCESSOR
+                if isinstance(
+                    request.payload, ProjectionSuccessorRequestedOutboxPayload
+                )
+                else request.payload.action
+            )
             or plan.request_digest != request.payload.command_digest
             or command.workspace_id != request.workspace_id
             or command.environment_id != request.environment_id

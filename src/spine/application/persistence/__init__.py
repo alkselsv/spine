@@ -14,6 +14,7 @@ from spine.application.persistence.boundary import (
     CANONICAL_BOUNDARY_RESULT_TYPE,
     CANONICAL_BOUNDARY_SCHEMA_VERSION,
     CanonicalBoundaryCaptureCommand,
+    CanonicalBoundaryClaimCaptureResult,
     CanonicalBoundaryCaptureResult,
     CanonicalBoundaryRepository,
 )
@@ -218,6 +219,7 @@ __all__ = [
     "CanonicalAcceptanceRepository",
     "CanonicalAcceptanceResult",
     "CanonicalBoundaryCaptureCommand",
+    "CanonicalBoundaryClaimCaptureResult",
     "CanonicalBoundaryCaptureResult",
     "CanonicalBoundaryRepository",
     "CANONICAL_BOUNDARY_RESULT_TYPE",

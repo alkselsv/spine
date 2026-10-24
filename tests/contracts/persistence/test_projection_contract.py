@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -11,6 +12,8 @@ import pytest
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.persistence.errors import OptimisticConflictError
 from spine.application.persistence.boundary import CanonicalBoundaryCaptureCommand
+from spine.application.persistence.canonical import CanonicalAcceptanceCommand
+from spine.application.persistence.repositories import SourceObservationCommand
 from spine.application.persistence.projection import (
     ProjectionActivationCommand,
     ProjectionCandidateSealCommand,
@@ -20,12 +23,15 @@ from spine.application.persistence.projection import (
     ProjectionValidationCommand,
     ProjectionRecoveryAction,
     ProjectionRecoveryRequestedOutboxPayload,
+    ProjectionSuccessorRequestedOutboxPayload,
 )
 from spine.application.projection_recovery_execution import (
     PersistenceCanonicalProjectionRecoveryResolver,
     PersistenceProjectionRecoveryLifecycle,
+    ProjectionMappingError,
     ProjectionRecoveryRequestEnvelope,
 )
+from spine.application.projection_control import ProjectionRecoveryRequestService
 from spine.application.projection_result_mapping import (
     AdapterProjectionReceipt,
     ProjectionMappingHandoff,
@@ -33,6 +39,12 @@ from spine.application.projection_result_mapping import (
 from spine.application.projection_result_persistence import (
     PersistenceCanonicalProjectionGateway,
 )
+from spine.domain.ingestion import (
+    IngestionRunSourceBinding,
+    ProcessingCoverage,
+    ProcessingReceipt,
+)
+from spine.domain.sources import RevisionKind
 from spine.domain.projections import ProjectionActivationKind, PublishedActivePublication
 from spine.domain.projections import (
     OntologyVersion,
@@ -60,7 +72,16 @@ from spine.memory.contracts import (
     ProjectionOutcome,
     ProjectionResult,
 )
-from tests.contracts.persistence.test_canonical_acceptance_contract import prepare_case
+from spine.workers.runtime import ProjectionPublicationCompletion
+from tests.contracts.persistence.test_canonical_acceptance_contract import (
+    _audit,
+    _canonical_outbox,
+    prepare_case,
+)
+from tests.contracts.persistence.test_source_observation_contract import (
+    provenance,
+    tombstone,
+)
 
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
@@ -68,6 +89,7 @@ NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
 
 @dataclass(frozen=True, slots=True)
 class _PreparedProjectionPublication:
+    canonical_case: object
     persistence_adapter: object
     activation_context: object
     seal_context: object
@@ -91,7 +113,27 @@ def _digest(schema: str, payload: object) -> str:
     ).hexdigest()
 
 
-def _ontology(workspace_id: UUID, environment_id: UUID) -> OntologyVersion:
+def _successor_request(activation, captured, *, command_id: UUID):
+    return ProjectionRecoveryRequestEnvelope(
+        event_id=UUID(int=command_id.int + 1),
+        workspace_id=activation.workspace_id,
+        environment_id=activation.environment_id,
+        payload=ProjectionSuccessorRequestedOutboxPayload(
+            command_id=command_id,
+            projection_kind=activation.projection_kind,
+            canonical_boundary_id=captured.boundary.boundary_id,
+            canonical_boundary_digest=captured.boundary.manifest_digest,
+            accepted_through_generation=(
+                captured.boundary.accepted_through_generation
+            ),
+            command_digest="4" * 64,
+        ),
+    )
+
+
+def _ontology(
+    workspace_id: UUID, environment_id: UUID, projection_kind: str = "qa"
+) -> OntologyVersion:
     payload = {
         "schema_version": "ontology-definition:r1",
         "entity_types": [{"name": "document"}],
@@ -101,7 +143,7 @@ def _ontology(workspace_id: UUID, environment_id: UUID) -> OntologyVersion:
         ontology_version_id=UUID(int=workspace_id.int + 40),
         workspace_id=workspace_id,
         environment_id=environment_id,
-        ontology_name="qa",
+        ontology_name=projection_kind,
         version=1,
         definition_payload=payload,
         definition_digest=_digest("ontology-definition:r1", payload),
@@ -118,6 +160,7 @@ async def _prepare_projection_publication(
     *,
     seed: int = 24000,
     include_shared_segment_graph_reference: bool = False,
+    projection_kind: str = "qa",
 ) -> _PreparedProjectionPublication:
     case = await prepare_case(persistence_adapter, seed)
     async with persistence_adapter.uow_factory(case.context) as uow:
@@ -129,7 +172,7 @@ async def _prepare_projection_publication(
     async with persistence_adapter.uow_factory(boundary_context) as uow:
         boundary = await uow.boundaries.capture(
             CanonicalBoundaryCaptureCommand.create(
-                projection_kind="qa",
+                projection_kind=projection_kind,
                 scope_version="r1",
                 idempotency_key=IdempotencyKey("projection-boundary-24000"),
             )
@@ -139,13 +182,17 @@ async def _prepare_projection_publication(
     projection_context = persistence_adapter.ingestion_context(
         case.source.workspace_id, case.source.environment_id, "projection_run"
     )
-    ontology = _ontology(case.source.workspace_id, case.source.environment_id)
+    ontology = _ontology(
+        case.source.workspace_id,
+        case.source.environment_id,
+        projection_kind,
+    )
     config_payload = {"extractor": "provider-neutral:v1"}
     config = ProjectionConfigVersion(
         projection_config_version_id=UUID(int=case.source.workspace_id.int + 41),
         workspace_id=case.source.workspace_id,
         environment_id=case.source.environment_id,
-        projection_kind="qa",
+        projection_kind=projection_kind,
         version=1,
         ontology_version_id=ontology.ontology_version_id,
         parser_contract_version="parser:v1",
@@ -162,7 +209,7 @@ async def _prepare_projection_publication(
         projection_candidate_id=UUID(int=case.source.workspace_id.int + 43),
         workspace_id=case.source.workspace_id,
         environment_id=case.source.environment_id,
-        projection_kind="qa",
+        projection_kind=projection_kind,
         operation=ProjectionOperation.BUILD,
         projection_config_version_id=config.projection_config_version_id,
         canonical_boundary_id=boundary.boundary.boundary_id,
@@ -440,7 +487,7 @@ async def _prepare_projection_publication(
         case.source.workspace_id, case.source.environment_id, "projection_activation"
     )
     activation = ProjectionActivationCommand.create(
-        projection_kind="qa",
+        projection_kind=projection_kind,
         projection_snapshot_id=assembled.value.projection_snapshot_id,
         activation_kind=ProjectionActivationKind.PUBLISH,
         expected_predecessor_snapshot_id=None,
@@ -666,6 +713,7 @@ async def _prepare_projection_publication(
         idempotency_key=IdempotencyKey("projection-rollback-activation-24000"),
     )
     return _PreparedProjectionPublication(
+        canonical_case=case,
         persistence_adapter=persistence_adapter,
         activation_context=activation_context,
         seal_context=seal_context,
@@ -830,6 +878,592 @@ async def test_projection_recovery_resolver_replays_one_shadow_rebuild_plan(
     assert partitions[0].security_domain_reference == "security-domain:default"
     assert partitions[0].security_domain_version == "r1"
     assert partitions[0].partition_identity == "default"
+
+
+@pytest.mark.asyncio
+async def test_projection_successor_resolver_uses_exact_captured_current_boundary(
+    persistence_adapter,
+) -> None:
+    prepared = await _prepare_projection_publication(
+        persistence_adapter,
+        seed=26000,
+    )
+    activation = prepared.activated.activation
+    boundary_context = persistence_adapter.ingestion_context(
+        activation.workspace_id,
+        activation.environment_id,
+        "canonical_boundary_capture",
+    )
+    async with persistence_adapter.uow_factory(boundary_context) as uow:
+        captured = await uow.boundaries.capture(
+            CanonicalBoundaryCaptureCommand.create(
+                projection_kind="context",
+                scope_version="r1",
+                idempotency_key=IdempotencyKey("projection-successor-boundary-26000"),
+            )
+        )
+        member = captured.members[0]
+        revision = await uow.sources.resolve_revision(member.source_revision_id)
+        await uow.commit()
+    assert revision is not None
+
+    item_id = UUID(int=26080)
+    binding = IngestionRunSourceBinding(
+        binding_id=UUID(int=26081),
+        ingestion_run_source_id=item_id,
+        source_object_id=member.source_object_id,
+        source_revision_id=member.source_revision_id,
+        workspace_id=activation.workspace_id,
+        environment_id=activation.environment_id,
+        binding_command_identity="successor-binding-26000",
+        binding_command_digest="1" * 64,
+        bound_at=NOW,
+    )
+    receipt = ProcessingReceipt(
+        processing_receipt_id=UUID(int=26082),
+        workspace_id=activation.workspace_id,
+        environment_id=activation.environment_id,
+        ingestion_run_source_id=item_id,
+        binding_id=binding.binding_id,
+        source_object_id=member.source_object_id,
+        source_revision_id=member.source_revision_id,
+        processor_kind="document-ingestion",
+        parser_name="text",
+        parser_version="parser:v1",
+        parser_config_reference="parser-default:v1",
+        locator_contract_version="locator:v1",
+        original_sha256=revision.original_sha256,
+        output_kind="parsed-document",
+        output_reference=UUID(int=26083),
+        output_digest="2" * 64,
+        coverage=ProcessingCoverage.COMPLETE,
+        command_identity="successor-processing-26000",
+        command_digest="3" * 64,
+        idempotency_receipt_id=UUID(int=26084),
+        completed_at=NOW,
+    )
+
+    class Ingestion:
+        async def list_bindings_for_source_revision(self, source_object_id, revision_id):
+            return (
+                (binding,)
+                if (source_object_id, revision_id)
+                == (member.source_object_id, member.source_revision_id)
+                else ()
+            )
+
+        async def resolve_processing_receipt(self, candidate_item_id):
+            return receipt if candidate_item_id == item_id else None
+
+    class UnitOfWork:
+        def __init__(self, inner):
+            self._inner = inner
+            self.ingestion = Ingestion()
+
+        async def __aenter__(self):
+            await self._inner.__aenter__()
+            return self
+
+        async def __aexit__(self, exc_type, exc_value, traceback):
+            await self._inner.__aexit__(exc_type, exc_value, traceback)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    successor_service = ProjectionRecoveryRequestService(
+        uow_factory=persistence_adapter.uow_factory,
+        outbox_events=persistence_adapter.outbox_events,
+    )
+    successor_context = persistence_adapter.ingestion_context(
+        activation.workspace_id,
+        activation.environment_id,
+        "request_projection_recovery",
+    )
+    accepted = await successor_service.request(
+        context=successor_context,
+        projection_kind="qa",
+        action=ProjectionRecoveryAction.SUCCESSOR,
+        idempotency_key=IdempotencyKey("projection-successor-public-path-26000"),
+    )
+    assert accepted.intent_id is not None
+    await persistence_adapter.delivery_repository.materialize(
+        limit=10,
+        materialized_at=NOW,
+    )
+    claims = await persistence_adapter.delivery_repository.claim_due(
+        limit=10,
+        worker_identity="successor_public_resolver_test",
+        claimed_at=NOW,
+        lease_duration=timedelta(minutes=1),
+    )
+    intent = next(
+        claim.intent for claim in claims if claim.intent.event_id == accepted.intent_id
+    )
+    assert intent is not None
+    assert isinstance(intent.payload, ProjectionSuccessorRequestedOutboxPayload)
+    request = ProjectionRecoveryRequestEnvelope(
+        event_id=accepted.intent_id,
+        workspace_id=activation.workspace_id,
+        environment_id=activation.environment_id,
+        payload=intent.payload,
+    )
+    resolver = PersistenceCanonicalProjectionRecoveryResolver(
+        uow_factory=lambda context: UnitOfWork(
+            persistence_adapter.uow_factory(context)
+        ),
+        context_factory=lambda envelope: persistence_adapter.ingestion_context(
+            envelope.workspace_id, envelope.environment_id, "projection_run"
+        ),
+        clock=lambda: NOW,
+    )
+
+    plan = await resolver.resolve(request)
+
+    assert plan.action is ProjectionRecoveryAction.SUCCESSOR
+    assert plan.command.canonical_boundary.boundary_id == request.payload.canonical_boundary_id
+    assert plan.command.source_revisions[0].source_revision_id == member.source_revision_id
+    assert plan.command.source_revisions[0].processing_receipt_id == receipt.processing_receipt_id
+    async with persistence_adapter.uow_factory(
+        persistence_adapter.ingestion_context(
+            activation.workspace_id, activation.environment_id, "projection_run"
+        )
+    ) as uow:
+        run = await uow.projections.resolve_run(plan.command.projection_run_id)
+        await uow.rollback()
+    assert run is not None
+    assert run.operation is ProjectionOperation.CATCH_UP
+    assert run.predecessor_snapshot_id == prepared.assembled.value.projection_snapshot_id
+    status = await successor_service.successor_status(
+        context=persistence_adapter.ingestion_context(
+            activation.workspace_id,
+            activation.environment_id,
+            "inspect_projection_status",
+        ),
+        projection_kind="qa",
+        command_id=request.payload.command_id,
+    )
+    assert status.status == "running"
+    assert status.run_id == plan.command.projection_run_id
+    assert status.candidate_id == plan.command.projection_candidate.candidate_id
+
+
+@pytest.mark.asyncio
+async def test_projection_successor_public_resolver_rejects_changed_head(
+    persistence_adapter,
+) -> None:
+    prepared = await _prepare_projection_publication(persistence_adapter, seed=26100)
+    activation = prepared.activated.activation
+    context = persistence_adapter.ingestion_context(
+        activation.workspace_id, activation.environment_id, "projection_run"
+    )
+    capture_context = persistence_adapter.ingestion_context(
+        activation.workspace_id,
+        activation.environment_id,
+        "canonical_boundary_capture",
+    )
+    async with persistence_adapter.uow_factory(capture_context) as uow:
+        captured = await uow.boundaries.capture(
+            CanonicalBoundaryCaptureCommand.create(
+                projection_kind="qa",
+                scope_version="r1",
+                idempotency_key=IdempotencyKey("successor-stale-boundary-26100"),
+            )
+        )
+        current = await uow.canonical.resolve_current(captured.members[0].source_object_id)
+        await uow.commit()
+    assert current is not None
+
+    class Canonical:
+        async def resolve_current(self, source_object_id):
+            assert source_object_id == captured.members[0].source_object_id
+            return current.model_copy(
+                update={"current_revision_id": UUID(int=26199)}
+            )
+
+    class UnitOfWork:
+        def __init__(self, inner):
+            self._inner = inner
+            self.canonical = Canonical()
+
+        async def __aenter__(self):
+            await self._inner.__aenter__()
+            return self
+
+        async def __aexit__(self, exc_type, exc_value, traceback):
+            await self._inner.__aexit__(exc_type, exc_value, traceback)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    request = _successor_request(activation, captured, command_id=UUID(int=26198))
+    resolver = PersistenceCanonicalProjectionRecoveryResolver(
+        uow_factory=lambda trusted: UnitOfWork(
+            persistence_adapter.uow_factory(trusted)
+        ),
+        context_factory=lambda _: context,
+        clock=lambda: NOW,
+    )
+    with pytest.raises(ProjectionMappingError, match="stale"):
+        await resolver.resolve(request)
+
+
+@pytest.mark.asyncio
+async def test_projection_successor_public_resolver_rejects_foreign_boundary_member(
+    persistence_adapter,
+) -> None:
+    prepared = await _prepare_projection_publication(persistence_adapter, seed=26120)
+    activation = prepared.activated.activation
+    context = persistence_adapter.ingestion_context(
+        activation.workspace_id, activation.environment_id, "projection_run"
+    )
+    capture_context = persistence_adapter.ingestion_context(
+        activation.workspace_id,
+        activation.environment_id,
+        "canonical_boundary_capture",
+    )
+    async with persistence_adapter.uow_factory(capture_context) as uow:
+        captured = await uow.boundaries.capture(
+            CanonicalBoundaryCaptureCommand.create(
+                projection_kind="qa",
+                scope_version="r1",
+                idempotency_key=IdempotencyKey("successor-foreign-boundary-26120"),
+            )
+        )
+        await uow.commit()
+
+    class Boundaries:
+        def __init__(self, inner):
+            self._inner = inner
+
+        async def resolve(self, boundary_id):
+            return await self._inner.resolve(boundary_id)
+
+        async def resolve_members(self, boundary_id):
+            members = await self._inner.resolve_members(boundary_id)
+            return (
+                members[0].model_copy(update={"workspace_id": UUID(int=26129)}),
+            )
+
+    class UnitOfWork:
+        def __init__(self, inner):
+            self._inner = inner
+            self.boundaries = None
+
+        async def __aenter__(self):
+            await self._inner.__aenter__()
+            self.boundaries = Boundaries(self._inner.boundaries)
+            return self
+
+        async def __aexit__(self, exc_type, exc_value, traceback):
+            await self._inner.__aexit__(exc_type, exc_value, traceback)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    resolver = PersistenceCanonicalProjectionRecoveryResolver(
+        uow_factory=lambda trusted: UnitOfWork(
+            persistence_adapter.uow_factory(trusted)
+        ),
+        context_factory=lambda _: context,
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(ProjectionMappingError, match="foreign"):
+        await resolver.resolve(
+            _successor_request(activation, captured, command_id=UUID(int=26128))
+        )
+
+
+@pytest.mark.parametrize("receipt_count", [0, 2], ids=["missing", "ambiguous"])
+@pytest.mark.asyncio
+async def test_projection_successor_public_resolver_rejects_non_unique_receipt(
+    persistence_adapter,
+    receipt_count: int,
+) -> None:
+    prepared = await _prepare_projection_publication(persistence_adapter, seed=26140)
+    activation = prepared.activated.activation
+    context = persistence_adapter.ingestion_context(
+        activation.workspace_id, activation.environment_id, "projection_run"
+    )
+    capture_context = persistence_adapter.ingestion_context(
+        activation.workspace_id,
+        activation.environment_id,
+        "canonical_boundary_capture",
+    )
+    async with persistence_adapter.uow_factory(capture_context) as uow:
+        captured = await uow.boundaries.capture(
+            CanonicalBoundaryCaptureCommand.create(
+                projection_kind="qa",
+                scope_version="r1",
+                idempotency_key=IdempotencyKey("successor-receipt-boundary-26140"),
+            )
+        )
+        member = captured.members[0]
+        revision = await uow.sources.resolve_revision(member.source_revision_id)
+        await uow.commit()
+    assert revision is not None
+    bindings = tuple(
+        IngestionRunSourceBinding(
+            binding_id=UUID(int=26141 + index),
+            ingestion_run_source_id=UUID(int=26151 + index),
+            source_object_id=member.source_object_id,
+            source_revision_id=member.source_revision_id,
+            workspace_id=activation.workspace_id,
+            environment_id=activation.environment_id,
+            binding_command_identity=f"successor-binding-26140-{index}",
+            binding_command_digest="1" * 64,
+            bound_at=NOW,
+        )
+        for index in range(receipt_count)
+    )
+    receipts = {
+        binding.ingestion_run_source_id: ProcessingReceipt(
+            processing_receipt_id=UUID(int=26161 + index),
+            workspace_id=activation.workspace_id,
+            environment_id=activation.environment_id,
+            ingestion_run_source_id=binding.ingestion_run_source_id,
+            binding_id=binding.binding_id,
+            source_object_id=member.source_object_id,
+            source_revision_id=member.source_revision_id,
+            processor_kind="document-ingestion",
+            parser_name="text",
+            parser_version="parser:v1",
+            parser_config_reference="parser-default:v1",
+            locator_contract_version="locator:v1",
+            original_sha256=revision.original_sha256,
+            output_kind="parsed-document",
+            output_reference=UUID(int=26171 + index),
+            output_digest="2" * 64,
+            coverage=ProcessingCoverage.COMPLETE,
+            command_identity=f"successor-processing-26140-{index}",
+            command_digest="3" * 64,
+            idempotency_receipt_id=UUID(int=26181 + index),
+            completed_at=NOW,
+        )
+        for index, binding in enumerate(bindings)
+    }
+
+    class Ingestion:
+        async def list_bindings_for_source_revision(self, *args):
+            del args
+            return bindings
+
+        async def resolve_processing_receipt(self, item_id):
+            return receipts.get(item_id)
+
+    class UnitOfWork:
+        def __init__(self, inner):
+            self._inner = inner
+            self.ingestion = Ingestion()
+
+        async def __aenter__(self):
+            await self._inner.__aenter__()
+            return self
+
+        async def __aexit__(self, exc_type, exc_value, traceback):
+            await self._inner.__aexit__(exc_type, exc_value, traceback)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    resolver = PersistenceCanonicalProjectionRecoveryResolver(
+        uow_factory=lambda trusted: UnitOfWork(
+            persistence_adapter.uow_factory(trusted)
+        ),
+        context_factory=lambda _: context,
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(ProjectionMappingError, match="missing or ambiguous"):
+        await resolver.resolve(
+            _successor_request(activation, captured, command_id=UUID(int=26188))
+        )
+
+
+@pytest.mark.asyncio
+async def test_projection_successor_public_resolver_retains_tombstone(
+    persistence_adapter,
+) -> None:
+    prepared = await _prepare_projection_publication(
+        persistence_adapter,
+        seed=26200,
+        projection_kind="context",
+    )
+    activation = prepared.activated.activation
+    case = prepared.canonical_case
+    context = persistence_adapter.ingestion_context(
+        activation.workspace_id, activation.environment_id, "projection_run"
+    )
+    tombstone_revision = tombstone(case.source, UUID(int=26299))
+    tombstone_provenance = provenance(
+        case.source, tombstone_revision.revision_id, "event-2"
+    )
+    source_context = persistence_adapter.source_context(
+        activation.workspace_id, activation.environment_id
+    )
+    async with persistence_adapter.uow_factory(source_context) as uow:
+        await uow.sources.record_observation(
+            SourceObservationCommand.create(
+                source=case.source,
+                revision=tombstone_revision,
+                provenance=tombstone_provenance,
+                idempotency_key=IdempotencyKey("successor-tombstone-observation-26200"),
+            )
+        )
+        await uow.commit()
+    audit_id = UUID(int=26296)
+    outbox_id = UUID(int=26297)
+    acceptance_id = UUID(int=26295)
+    tombstone_acceptance = CanonicalAcceptanceCommand.create(
+        source=case.source,
+        revision=tombstone_revision,
+        provenance=tombstone_provenance,
+        expected_current_revision_id=case.revision.revision_id,
+        idempotency_key=IdempotencyKey("successor-tombstone-acceptance-26200"),
+        canonical_acceptance_id=acceptance_id,
+        admission_decision_id=None,
+        access_policy_version_id=None,
+        audit_event_id=audit_id,
+        outbox_event_id=outbox_id,
+        accepted_at=NOW,
+        audit_event=_audit(
+            context=case.context,
+            source_revision_id=tombstone_revision.revision_id,
+            event_id=audit_id,
+            reason="source_tombstoned",
+            transition="source.tombstoned",
+        ),
+        outbox_intent=_canonical_outbox(
+            persistence_adapter,
+            context=case.context,
+            source_object_id=case.source.source_object_id,
+            source_revision_id=tombstone_revision.revision_id,
+            acceptance_id=acceptance_id,
+            generation=2,
+            audit_event_id=audit_id,
+            event_id=outbox_id,
+            transition="source.tombstoned",
+        ),
+    )
+    async with persistence_adapter.uow_factory(case.context) as uow:
+        await uow.canonical.accept(tombstone_acceptance)
+        await uow.commit()
+    capture_context = persistence_adapter.ingestion_context(
+        activation.workspace_id,
+        activation.environment_id,
+        "canonical_boundary_capture",
+    )
+    async with persistence_adapter.uow_factory(capture_context) as uow:
+        captured = await uow.boundaries.capture(
+            CanonicalBoundaryCaptureCommand.create(
+                projection_kind="context",
+                scope_version="r1",
+                idempotency_key=IdempotencyKey("successor-tombstone-boundary-26200"),
+            )
+        )
+        await uow.commit()
+    request = _successor_request(activation, captured, command_id=UUID(int=26298))
+    resolver = PersistenceCanonicalProjectionRecoveryResolver(
+        uow_factory=persistence_adapter.uow_factory,
+        context_factory=lambda _: context,
+        clock=lambda: NOW,
+    )
+
+    plan = await resolver.resolve(request)
+    assert plan.command.source_revisions == ()
+
+    result = ProjectionResult(
+        operation=PhysicalProjectionOperation.REBUILD,
+        outcome=ProjectionOutcome.SUCCEEDED,
+        lifecycle=ProjectionLifecycle.RECOVERED,
+        command_identity=plan.command.command_identity,
+        command_digest=plan.command.command_digest,
+        artifact_reference="artifact:successor:tombstone",
+        counts=(),
+        effects=(),
+    )
+    adapter_receipt = AdapterProjectionReceipt(
+        result=result,
+        artifact_kind="cognee-shadow",
+        artifact_integrity_digest="e" * 64,
+        implementation_schema_version="cognee-context-projection:v1",
+        implementation_metadata={"adapter_contract": "adapter:v1"},
+        idempotency_key="successor-tombstone-receipt-26200",
+        completed_at=NOW,
+    )
+    receipt = ProjectionReceipt(
+        projection_receipt_id=UUID(int=26290),
+        projection_run_id=plan.command.projection_run_id,
+        projection_candidate_id=plan.command.projection_candidate.candidate_id,
+        projection_partition_id=plan.command.projection_candidate.partition_id,
+        workspace_id=plan.workspace_id,
+        environment_id=plan.environment_id,
+        command_identity=plan.command.command_identity,
+        command_digest=plan.command.command_digest,
+        artifact_kind="cognee-shadow",
+        artifact_reference="artifact:successor:tombstone",
+        artifact_integrity_digest="e" * 64,
+        counts={},
+        implementation_schema_version="cognee-context-projection:v1",
+        implementation_metadata={"adapter_contract": "adapter:v1"},
+        idempotency_receipt_id=UUID(int=26291),
+        completed_at=NOW,
+    )
+    handoff = ProjectionMappingHandoff(
+        command=plan.command,
+        adapter_receipt=adapter_receipt,
+        receipt_command=ProjectionReceiptCommand.create(
+            receipt=receipt,
+            idempotency_key=IdempotencyKey("successor-tombstone-mapping-26200"),
+        ),
+        source_references=(),
+    )
+    gateway = PersistenceCanonicalProjectionGateway(
+        uow_factory=persistence_adapter.uow_factory,
+        context_factory=lambda command: persistence_adapter.ingestion_context(
+            command.workspace_id, command.environment_id, "projection_receipt"
+        ),
+        locator_resolver=_UnusedLocatorResolver(),
+    )
+    mapping = await gateway.accept(handoff)
+
+    class PhysicalStore:
+        async def physical_artifacts_for(self, **kwargs):
+            del kwargs
+            return ()
+
+        def data_id_for(self, **kwargs):
+            raise AssertionError("tombstone projection has no physical artifacts")
+
+    class ArtifactResolver:
+        async def document_for(self, command, processing_receipt_id):
+            del command, processing_receipt_id
+            raise AssertionError("tombstone projection has no parsed content")
+
+    completion = ProjectionPublicationCompletion(
+        uow_factory=persistence_adapter.uow_factory,
+        context_factory=lambda workspace_id, environment_id, operation, run_id: (
+            persistence_adapter.ingestion_context(
+                workspace_id, environment_id, operation
+            )
+        ),
+        artifact_resolver=ArtifactResolver(),
+        physical_store=PhysicalStore(),
+        clock=lambda: NOW,
+    )
+    await completion.complete(mapping)
+
+    async with persistence_adapter.uow_factory(context) as uow:
+        publication = await uow.projections.resolve_active_publication("context")
+        assert isinstance(publication, PublishedActivePublication)
+        members = await uow.projections.list_snapshot_members(
+            publication.projection_snapshot.projection_snapshot_id
+        )
+        await uow.rollback()
+    assert publication.projection_kind == "context"
+    assert publication.projection_snapshot.projection_kind == "context"
+    assert len(members) == 1
+    assert members[0].disposition is ProjectionSnapshotMemberDisposition.TOMBSTONED
 
 
 @pytest.mark.asyncio

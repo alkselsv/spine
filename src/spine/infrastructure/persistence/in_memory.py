@@ -125,6 +125,7 @@ from spine.application.persistence.projection import (
 from spine.application.persistence.boundary import (
     CANONICAL_BOUNDARY_RESULT_TYPE,
     CANONICAL_BOUNDARY_SCHEMA_VERSION,
+    CanonicalBoundaryClaimCaptureResult,
     CanonicalBoundaryCaptureCommand,
     CanonicalBoundaryCaptureResult,
 )
@@ -2638,6 +2639,63 @@ class _CanonicalBoundaryRepository:
                 boundary, members, True, claim, claim.result
             )
 
+        captured = self._capture_owned(
+            projection_kind=command.projection_kind,
+            scope_version=command.scope_version,
+            receipt_id=claim.receipt_id,
+        )
+        reference = OpaqueResultReference(
+            result_type=CANONICAL_BOUNDARY_RESULT_TYPE,
+            result_id=captured.boundary.boundary_id,
+            schema_version=CANONICAL_BOUNDARY_SCHEMA_VERSION,
+        )
+        await self._uow.idempotency.complete(claim, reference)
+        return CanonicalBoundaryCaptureResult(
+            captured.boundary, captured.members, False, claim, reference
+        )
+
+    async def capture_for_claim(
+        self,
+        *,
+        projection_kind: str,
+        scope_version: str,
+        claim: OwnedIdempotencyClaim,
+    ) -> CanonicalBoundaryClaimCaptureResult:
+        self._uow._guard_active()
+        receipt_key = self._uow._receipt_key(
+            operation=claim.operation,
+            operation_schema_version=claim.operation_schema_version,
+            key=claim.key,
+        )
+        pending = self._uow._pending_receipts.get(receipt_key)
+        if (
+            claim.operation != self._uow._operation_snapshot()
+            or pending is None
+            or pending.receipt_id != claim.receipt_id
+            or pending.digest != claim.digest
+            or pending.result is not None
+        ):
+            self._uow._fail(IdempotencyConflictError("Idempotency claim is invalid."))
+        if not self._uow._canonical_lock_held:
+            await self._uow._store.canonical_lock.acquire()
+            self._uow._canonical_lock_held = True
+        return self._capture_owned(
+            projection_kind=projection_kind,
+            scope_version=scope_version,
+            receipt_id=claim.receipt_id,
+        )
+
+    def _capture_owned(
+        self,
+        *,
+        projection_kind: str,
+        scope_version: str,
+        receipt_id: UUID,
+    ) -> CanonicalBoundaryClaimCaptureResult:
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            self._uow._fail(InvalidPersistenceContextError("Persistence context is invalid."))
+
         generation_key = (scope.workspace_id, scope.environment_id)
         accepted_through_generation = max(
             self._uow._base_canonical_generations.get(generation_key, 0),
@@ -2675,12 +2733,12 @@ class _CanonicalBoundaryRepository:
             boundary_id=boundary_id,
             workspace_id=scope.workspace_id,
             environment_id=scope.environment_id,
-            projection_kind=command.projection_kind,
-            scope_version=command.scope_version,
+            projection_kind=projection_kind,
+            scope_version=scope_version,
             accepted_through_generation=accepted_through_generation,
             boundary_time=boundary_time,
             manifest_digest="0" * 64,
-            idempotency_receipt_id=claim.receipt_id,
+            idempotency_receipt_id=receipt_id,
         )
         boundary = boundary_without_digest.model_copy(
             update={"manifest_digest": canonical_boundary_manifest_digest(boundary_without_digest, members)}
@@ -2690,13 +2748,7 @@ class _CanonicalBoundaryRepository:
             self._uow._pending_canonical_boundary_members[
                 (member.boundary_id, member.source_object_id)
             ] = member
-        reference = OpaqueResultReference(
-            result_type=CANONICAL_BOUNDARY_RESULT_TYPE,
-            result_id=boundary.boundary_id,
-            schema_version=CANONICAL_BOUNDARY_SCHEMA_VERSION,
-        )
-        await self._uow.idempotency.complete(claim, reference)
-        return CanonicalBoundaryCaptureResult(boundary, members, False, claim, reference)
+        return CanonicalBoundaryClaimCaptureResult(boundary, members)
 
 
 class _InMemoryIngestionRepository:
@@ -3577,6 +3629,23 @@ class _OutboxWriter:
             copied = canonical.model_copy(deep=True, update={"event_id": event_id})
             self._uow._pending_outbox_intents[event_id] = copied
             return event_id
+
+        return self._uow._repository_call(repository_operation)
+
+    async def resolve_delivery_status(self, event_id: UUID) -> str | None:
+        self._uow._guard_active()
+
+        def repository_operation() -> str | None:
+            delivery = self._uow._store.outbox_deliveries.get(event_id)
+            if delivery is None:
+                return None
+            expected_environment = getattr(self._uow.scope, "environment_id", None)
+            if (
+                delivery.workspace_id != self._uow.scope.workspace_id
+                or delivery.environment_id != expected_environment
+            ):
+                return None
+            return delivery.status.value
 
         return self._uow._repository_call(repository_operation)
 

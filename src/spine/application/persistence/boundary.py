@@ -13,6 +13,7 @@ from spine.application.persistence.idempotency import (
     IdempotencyClaimResult,
     IdempotencyKey,
     OpaqueResultReference,
+    OwnedIdempotencyClaim,
 )
 from spine.domain.sources import CanonicalBoundary, CanonicalBoundaryMember
 
@@ -84,10 +85,26 @@ class CanonicalBoundaryCaptureResult:
     result_reference: OpaqueResultReference
 
 
+@dataclass(frozen=True, slots=True)
+class CanonicalBoundaryClaimCaptureResult:
+    """A boundary captured as one effect of an already-owned command claim."""
+
+    boundary: CanonicalBoundary
+    members: tuple[CanonicalBoundaryMember, ...]
+
+
 class CanonicalBoundaryRepository(Protocol):
     async def capture(
         self, command: CanonicalBoundaryCaptureCommand
     ) -> CanonicalBoundaryCaptureResult: ...
+
+    async def capture_for_claim(
+        self,
+        *,
+        projection_kind: str,
+        scope_version: str,
+        claim: OwnedIdempotencyClaim,
+    ) -> CanonicalBoundaryClaimCaptureResult: ...
 
     async def resolve(self, boundary_id: UUID) -> CanonicalBoundary | None: ...
 
@@ -100,6 +117,7 @@ __all__ = [
     "CANONICAL_BOUNDARY_RESULT_TYPE",
     "CANONICAL_BOUNDARY_SCHEMA_VERSION",
     "CanonicalBoundaryCaptureCommand",
+    "CanonicalBoundaryClaimCaptureResult",
     "CanonicalBoundaryCaptureResult",
     "CanonicalBoundaryRepository",
 ]

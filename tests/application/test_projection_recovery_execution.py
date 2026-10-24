@@ -11,8 +11,10 @@ from spine.application.persistence.outbox import OpaqueObjectReference, OutboxEv
 from spine.application.persistence.projection import (
     PROJECTION_OUTBOX_SCHEMA_VERSION,
     PROJECTION_RECOVERY_REQUESTED_OUTBOX_EVENT_TYPE,
+    PROJECTION_SUCCESSOR_REQUESTED_OUTBOX_EVENT_TYPE,
     ProjectionRecoveryAction,
     ProjectionRecoveryRequestedOutboxPayload,
+    ProjectionSuccessorRequestedOutboxPayload,
     register_projection_outbox_events,
 )
 from spine.application.persistence.delivery import OutboxDeliveryRouteRegistry
@@ -73,7 +75,13 @@ class _Resolver:
             workspace_id=request.workspace_id,
             environment_id=request.environment_id,
             command_id=request.payload.command_id,
-            action=request.payload.action,
+            action=(
+                ProjectionRecoveryAction.SUCCESSOR
+                if isinstance(
+                    request.payload, ProjectionSuccessorRequestedOutboxPayload
+                )
+                else request.payload.action
+            ),
             request_digest=request.payload.command_digest,
             command=self.command,
         )
@@ -86,8 +94,18 @@ class _Recorder:
     async def prepare(self, plan: CanonicalProjectionRecoveryPlan) -> bool:
         return bool(self.results)
 
-    async def record(self, plan, result) -> None:
-        self.results.append((plan, result))
+    async def record(self, plan, result):
+        mapping = (plan, result)
+        self.results.append(mapping)
+        return mapping
+
+
+class _Completion:
+    def __init__(self) -> None:
+        self.mappings = []
+
+    async def complete(self, mapping) -> None:
+        self.mappings.append(mapping)
 
 
 class _ReceiptBuilder:
@@ -126,6 +144,34 @@ def _intent():
     )
 
 
+def _successor_intent():
+    registry = OutboxEventRegistry()
+    register_projection_outbox_events(registry)
+    command_id = UUID(int=9251)
+    return registry.build_intent(
+        event_id=UUID(int=9252),
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        event_type=PROJECTION_SUCCESSOR_REQUESTED_OUTBOX_EVENT_TYPE,
+        schema_version=PROJECTION_OUTBOX_SCHEMA_VERSION,
+        payload=ProjectionSuccessorRequestedOutboxPayload(
+            command_id=command_id,
+            projection_kind="context",
+            canonical_boundary_id=UUID(int=9253),
+            canonical_boundary_digest="a" * 64,
+            accepted_through_generation=2,
+            command_digest="9" * 64,
+        ),
+        aggregate=OpaqueObjectReference(
+            object_type="projection_successor_request",
+            object_id=command_id,
+            schema_version=1,
+        ),
+        producer_deduplication_id=f"projection-successor:{command_id}",
+        trace_id=UUID(int=9254),
+    )
+
+
 def test_projection_delivery_routes_include_operator_recovery_requests() -> None:
     routes = OutboxDeliveryRouteRegistry(version="issue364.v1")
 
@@ -137,6 +183,40 @@ def test_projection_delivery_routes_include_operator_recovery_requests() -> None
         PROJECTION_OUTBOX_SCHEMA_VERSION,
     )
     assert route.consumer_name == PROJECTION_REQUEST_CONSUMER_NAME
+    successor_route = routes.resolve(
+        PROJECTION_SUCCESSOR_REQUESTED_OUTBOX_EVENT_TYPE,
+        PROJECTION_OUTBOX_SCHEMA_VERSION,
+    )
+    assert successor_route.consumer_name == PROJECTION_REQUEST_CONSUMER_NAME
+
+
+@pytest.mark.asyncio
+async def test_successor_intent_uses_rebuild_worker_without_active_recovery_payload() -> None:
+    intent = _successor_intent()
+    command = _rebuild_command()
+    resolver = _Resolver(command)
+    projection = DeterministicContextProjection()
+    recorder = _Recorder()
+    completion = _Completion()
+    consumer = ProjectionRecoveryRequestConsumer(
+        canonical_resolver=resolver,
+        projection=projection,
+        result_recorder=recorder,
+        completion=completion,
+    )
+
+    await consumer.consume(
+        intent,
+        DiagnosticContext(
+            trace_id=intent.trace_id,
+            correlation_id=intent.correlation_id,
+            causation_id=intent.event_id,
+        ),
+    )
+
+    assert resolver.requests[0].payload.canonical_boundary_id == UUID(int=9253)
+    assert projection.recorded_commands == (command,)
+    assert completion.mappings == recorder.results
 
 
 @pytest.mark.asyncio

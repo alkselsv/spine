@@ -30,6 +30,7 @@ from spine.application.projection_control import (
     ProjectionRecoveryAction,
     ProjectionRecoveryCommandService,
     ProjectionPublicationStatus,
+    ProjectionSuccessorStatusSnapshot,
     ProjectionStatusService,
     ProjectionStatusSnapshot,
     UnavailableProjectionStatusService,
@@ -127,6 +128,21 @@ class ProjectionRecoveryResponse(BaseModel):
     state: Literal["accepted"] = "accepted"
 
 
+class ProjectionSuccessorStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    command_id: UUID
+    intent_id: UUID
+    projection_kind: ProjectionKind
+    status: Literal["accepted", "running", "completed", "failed", "unavailable"]
+    run_id: UUID | None = None
+    candidate_id: UUID | None = None
+    receipt_ids: tuple[UUID, ...] = ()
+    snapshot_id: UUID | None = None
+    activation_id: UUID | None = None
+
+
 def install_projection_control_routes(
     application: FastAPI,
     *,
@@ -196,6 +212,26 @@ def install_projection_control_routes(
             ),
         )
 
+    async def successor_status_endpoint(
+        request: Request,
+        command_id: UUID,
+        projection_kind: ProjectionKind = Path(pattern=PROJECTION_KIND_PATTERN),
+        context: TrustedPersistenceContext = Depends(get_authorized_persistence_context),
+        request_context: AuthorizedRequestContext[object] = Depends(
+            get_authorized_request_context
+        ),
+    ) -> ApiResponseEnvelope[ProjectionSuccessorStatusResponse]:
+        snapshot = await _recovery_service(request, recovery_service).successor_status(
+            context=context,
+            projection_kind=projection_kind,
+            command_id=command_id,
+        )
+        return ApiResponseEnvelope(
+            workspace_id=request_context.scope.workspace_id,
+            environment_id=request_context.scope.environment_id,
+            trace_id=request_context.diagnostic_context.trace_id,
+            data=_successor_status_response(snapshot),
+        )
     policy = _policy("inspect_projection_status")
     add_protected_api_route(
         application,
@@ -225,6 +261,15 @@ def install_projection_control_routes(
                 }
             ]
         },
+    )
+    add_protected_api_route(
+        application,
+        "/api/v1/projections/{projection_kind}/successors/{command_id}",
+        successor_status_endpoint,
+        route_id="projection.successor_status",
+        policy=policy,
+        methods=["GET"],
+        response_model=ApiResponseEnvelope[ProjectionSuccessorStatusResponse],
     )
 
 
@@ -313,6 +358,12 @@ def _status_response(snapshot: ProjectionStatusSnapshot) -> ProjectionStatusResp
     )
 
 
+def _successor_status_response(
+    snapshot: ProjectionSuccessorStatusSnapshot,
+) -> ProjectionSuccessorStatusResponse:
+    return ProjectionSuccessorStatusResponse(**snapshot.model_dump())
+
+
 def _policy(operation: str) -> RouteAuthorizationPolicy:
     return RouteAuthorizationPolicy(
         required_roles=frozenset({AuthorizationRole.ADMINISTRATOR}),
@@ -325,6 +376,7 @@ def _policy(operation: str) -> RouteAuthorizationPolicy:
 __all__ = [
     "ProjectionRecoveryRequest",
     "ProjectionRecoveryResponse",
+    "ProjectionSuccessorStatusResponse",
     "ProjectionStatusResponse",
     "install_projection_control_routes",
 ]

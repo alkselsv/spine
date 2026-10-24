@@ -40,16 +40,25 @@ from spine.application.persistence.outbox import (
 from spine.application.persistence.projection import (
     PROJECTION_OUTBOX_SCHEMA_VERSION,
     PROJECTION_RECOVERY_REQUESTED_OUTBOX_EVENT_TYPE,
+    PROJECTION_SUCCESSOR_REQUESTED_OUTBOX_EVENT_TYPE,
     ProjectionRecoveryAction,
     ProjectionRecoveryRequestedOutboxPayload,
+    ProjectionSuccessorRequestedOutboxPayload,
 )
 from spine.application.persistence.unit_of_work import UnitOfWorkFactory
+from spine.application.projection_identity import (
+    projection_publication_entity_id,
+    projection_recovery_entity_id,
+    projection_successor_intent_id,
+)
 from spine.domain.projections import (
     ProjectionFreshness,
     ProjectionHealth,
     ProjectionKind,
     PROJECTION_KIND_PATTERN,
     ProjectionReconciliationOutcome,
+    ProjectionOperation,
+    ProjectionRunState,
     PublishedActivePublication,
     UnavailableActivePublication,
     UnpublishedActivePublication,
@@ -58,6 +67,7 @@ from spine.domain.projections import (
 
 PROJECTION_RECOVERY_REQUEST_SCHEMA_VERSION = 1
 _PROJECTION_RECOVERY_RESULT_TYPE = "projection_recovery_request"
+_PROJECTION_SUCCESSOR_RESULT_TYPE = "projection_successor_request"
 
 
 class InvalidProjectionControlRequest(ValueError):
@@ -226,6 +236,14 @@ class ProjectionRecoveryCommandService(Protocol):
         idempotency_key: IdempotencyKey,
     ) -> "ProjectionRecoveryRequestResult": ...
 
+    async def successor_status(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        projection_kind: ProjectionKind,
+        command_id: UUID,
+    ) -> "ProjectionSuccessorStatusSnapshot": ...
+
 
 class ProjectionRecoveryRequestResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -234,7 +252,25 @@ class ProjectionRecoveryRequestResult(BaseModel):
     command_id: UUID
     projection_kind: ProjectionKind
     action: ProjectionRecoveryAction
+    intent_id: UUID | None = None
     replay: bool = False
+
+
+class ProjectionSuccessorStatusSnapshot(BaseModel):
+    """Content-free correlation across one normal-successor lifecycle."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    command_id: UUID
+    intent_id: UUID
+    projection_kind: ProjectionKind
+    status: Literal["accepted", "running", "completed", "failed", "unavailable"]
+    run_id: UUID | None = None
+    candidate_id: UUID | None = None
+    receipt_ids: tuple[UUID, ...] = ()
+    snapshot_id: UUID | None = None
+    activation_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,6 +303,16 @@ class UnavailableProjectionRecoveryService:
         idempotency_key: IdempotencyKey,
     ) -> ProjectionRecoveryRequestResult:
         del context, projection_kind, action, idempotency_key
+        raise ProjectionControlServiceUnavailable()
+
+    async def successor_status(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        projection_kind: ProjectionKind,
+        command_id: UUID,
+    ) -> ProjectionSuccessorStatusSnapshot:
+        del context, projection_kind, command_id
         raise ProjectionControlServiceUnavailable()
 
 
@@ -351,6 +397,12 @@ class ProjectionRecoveryRequestService:
         _validate_projection_kind(projection_kind)
         if not isinstance(action, ProjectionRecoveryAction):
             raise InvalidProjectionControlRequest()
+        successor = action is ProjectionRecoveryAction.SUCCESSOR
+        result_type = (
+            _PROJECTION_SUCCESSOR_RESULT_TYPE
+            if successor
+            else _PROJECTION_RECOVERY_RESULT_TYPE
+        )
         digest = digest_command(
             operation=PersistenceOperation("request_projection_recovery"),
             operation_schema_version=PROJECTION_RECOVERY_REQUEST_SCHEMA_VERSION,
@@ -366,7 +418,7 @@ class ProjectionRecoveryRequestService:
                 digest=digest,
             )
             if isinstance(claim, IdempotencyReplay):
-                if claim.result.result_type != _PROJECTION_RECOVERY_RESULT_TYPE:
+                if claim.result.result_type != result_type:
                     raise IdempotencyConflictError(
                         "Projection recovery result reference is invalid."
                     )
@@ -375,38 +427,68 @@ class ProjectionRecoveryRequestService:
                     command_id=claim.result.result_id,
                     projection_kind=projection_kind,
                     action=action,
+                    intent_id=(
+                        projection_successor_intent_id(claim.result.result_id)
+                        if successor
+                        else None
+                    ),
                     replay=True,
                 )
 
             if not isinstance(claim, OwnedIdempotencyClaim):
                 raise IdempotencyConflictError("Projection recovery claim is invalid.")
             command_id = claim.receipt_id
-            payload = ProjectionRecoveryRequestedOutboxPayload(
-                command_id=command_id,
-                projection_kind=projection_kind,
-                action=action,
-                command_digest=digest.value,
-            )
+            if successor:
+                captured = await uow.boundaries.capture_for_claim(
+                    projection_kind=projection_kind,
+                    scope_version="r1",
+                    claim=claim,
+                )
+                payload = ProjectionSuccessorRequestedOutboxPayload(
+                    command_id=command_id,
+                    projection_kind=projection_kind,
+                    canonical_boundary_id=captured.boundary.boundary_id,
+                    canonical_boundary_digest=captured.boundary.manifest_digest,
+                    accepted_through_generation=(
+                        captured.boundary.accepted_through_generation
+                    ),
+                    command_digest=digest.value,
+                )
+                event_type = PROJECTION_SUCCESSOR_REQUESTED_OUTBOX_EVENT_TYPE
+                deduplication_id = f"projection-successor:{command_id}"
+            else:
+                payload = ProjectionRecoveryRequestedOutboxPayload(
+                    command_id=command_id,
+                    projection_kind=projection_kind,
+                    action=action,
+                    command_digest=digest.value,
+                )
+                event_type = PROJECTION_RECOVERY_REQUESTED_OUTBOX_EVENT_TYPE
+                deduplication_id = f"projection-recovery:{command_id}"
             intent = self.outbox_events.build_intent(
-                event_id=None,
+                event_id=(
+                    projection_successor_intent_id(command_id)
+                    if successor
+                    else None
+                ),
                 workspace_id=context.scope.workspace_id,
                 environment_id=context.scope.environment_id,
-                event_type=PROJECTION_RECOVERY_REQUESTED_OUTBOX_EVENT_TYPE,
+                event_type=event_type,
                 schema_version=PROJECTION_OUTBOX_SCHEMA_VERSION,
                 payload=payload,
                 aggregate=OpaqueObjectReference(
-                    object_type=_PROJECTION_RECOVERY_RESULT_TYPE,
+                    object_type=result_type,
                     object_id=command_id,
                     schema_version=1,
                 ),
-                producer_deduplication_id=f"projection-recovery:{command_id}",
+                producer_deduplication_id=deduplication_id,
                 trace_id=context.trace_id,
             )
             await uow.outbox.append(intent)
             await uow.idempotency.complete(
                 claim,
                 OpaqueResultReference(
-                    result_type=_PROJECTION_RECOVERY_RESULT_TYPE,
+                    result_type=result_type,
                     result_id=command_id,
                     schema_version=1,
                 ),
@@ -416,7 +498,104 @@ class ProjectionRecoveryRequestService:
                 command_id=command_id,
                 projection_kind=projection_kind,
                 action=action,
+                intent_id=(
+                    projection_successor_intent_id(command_id)
+                    if successor
+                    else None
+                ),
                 replay=False,
+            )
+
+    async def successor_status(
+        self,
+        *,
+        context: TrustedPersistenceContext,
+        projection_kind: ProjectionKind,
+        command_id: UUID,
+    ) -> ProjectionSuccessorStatusSnapshot:
+        _scope_ids(context)
+        _validate_projection_kind(projection_kind)
+        if not isinstance(command_id, UUID) or command_id.int == 0:
+            raise InvalidProjectionControlRequest()
+        intent_id = projection_successor_intent_id(command_id)
+        run_id = projection_recovery_entity_id(command_id, "run")
+        async with self.uow_factory(context) as uow:
+            delivery_status = await uow.outbox.resolve_delivery_status(intent_id)
+            run = await uow.projections.resolve_run(run_id)
+            if run is None:
+                await uow.commit()
+                return ProjectionSuccessorStatusSnapshot(
+                    command_id=command_id,
+                    intent_id=intent_id,
+                    projection_kind=projection_kind,
+                    status=(
+                        "failed"
+                        if delivery_status == "quarantined"
+                        else "accepted"
+                        if delivery_status in {"pending", "in_flight", "retry_scheduled"}
+                        else "unavailable"
+                    ),
+                )
+            workspace_id, environment_id = _scope_ids(context)
+            if (
+                run.workspace_id != workspace_id
+                or run.environment_id != environment_id
+                or run.projection_kind != projection_kind
+                or run.operation is not ProjectionOperation.CATCH_UP
+                or run.command_identity != f"successor-{command_id.hex}"
+            ):
+                raise InvalidProjectionControlRequest()
+            transitions = await uow.projections.list_transitions(run_id)
+            receipts = await uow.projections.list_receipts(run_id)
+            snapshot = await uow.projections.resolve_snapshot(
+                projection_publication_entity_id(run_id, "snapshot")
+            )
+            activations = await uow.projections.list_activations(projection_kind)
+            activation = next(
+                (
+                    value
+                    for value in activations
+                    if snapshot is not None
+                    and value.projection_snapshot_id
+                    == snapshot.projection_snapshot_id
+                ),
+                None,
+            )
+            states = {transition.state for transition in transitions}
+            status: Literal[
+                "accepted", "running", "completed", "failed", "unavailable"
+            ]
+            if (
+                ProjectionRunState.FAILED in states
+                or delivery_status == "quarantined"
+            ):
+                status = "failed"
+            elif activation is not None and ProjectionRunState.COMPLETE in states:
+                status = "completed"
+            else:
+                status = "running"
+            await uow.commit()
+            return ProjectionSuccessorStatusSnapshot(
+                command_id=command_id,
+                intent_id=intent_id,
+                projection_kind=projection_kind,
+                status=status,
+                run_id=run.projection_run_id,
+                candidate_id=run.projection_candidate_id,
+                receipt_ids=tuple(
+                    sorted(
+                        (receipt.projection_receipt_id for receipt in receipts),
+                        key=lambda value: value.hex,
+                    )
+                ),
+                snapshot_id=(
+                    snapshot.projection_snapshot_id if snapshot is not None else None
+                ),
+                activation_id=(
+                    activation.projection_activation_id
+                    if activation is not None
+                    else None
+                ),
             )
 
 
@@ -518,6 +697,7 @@ __all__ = [
     "ProjectionRecoveryRequestResult",
     "ProjectionRecoveryRequestService",
     "ProjectionRecoveryState",
+    "ProjectionSuccessorStatusSnapshot",
     "ProjectionReconciliationSnapshot",
     "ProjectionStatusService",
     "ProjectionStatusSnapshot",

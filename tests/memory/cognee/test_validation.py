@@ -3,6 +3,8 @@ from __future__ import annotations
 from hashlib import sha256
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+import pytest
+
 from spine.memory.cognee.validation import (
     ArtifactKind,
     PhysicalArtifact,
@@ -107,6 +109,39 @@ def test_valid_physical_projection_passes_with_content_free_diagnostics() -> Non
         ("entity", 0),
         ("relation", 0),
     )
+
+
+def test_explicit_empty_source_projection_passes_without_artifacts() -> None:
+    empty = PhysicalProjectionExpectation(
+        workspace_id=WORKSPACE,
+        environment_id=ENVIRONMENT,
+        namespace_digest=NAMESPACE_DIGEST,
+        projection_config_id=CONFIG,
+        projection_config_version="config-1",
+        projection_config_digest=CONFIG_DIGEST,
+        sources=(),
+        expected_artifacts=(),
+        allows_empty_source_set=True,
+    )
+
+    result = validate_physical_projection(empty, ())
+
+    assert result.passed is True
+    assert result.diagnostics == ()
+
+
+def test_empty_source_projection_requires_explicit_allowance() -> None:
+    with pytest.raises(ValueError, match="requires at least one source"):
+        PhysicalProjectionExpectation(
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+            namespace_digest=NAMESPACE_DIGEST,
+            projection_config_id=CONFIG,
+            projection_config_version="config-1",
+            projection_config_digest=CONFIG_DIGEST,
+            sources=(),
+            expected_artifacts=(),
+        )
 
 
 def test_foreign_scope_namespace_and_configuration_fail_without_content() -> None:

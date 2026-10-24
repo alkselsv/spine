@@ -51,6 +51,7 @@ from spine.application.physical_projection_validation import (
     PhysicalProjectionReconciliationRequest,
 )
 from spine.application.projection_result_mapping import ProjectionMappingResult
+from spine.application.projection_identity import projection_publication_entity_id
 from spine.infrastructure.db.settings import (
     DispatcherDatabaseSettings,
     POSTGRESQL_SEARCH_PATH_OPTIONS,
@@ -512,7 +513,7 @@ class _DurableArtifactResolver:
 
 
 @dataclass(frozen=True, slots=True)
-class _ProjectionPublicationCompletion:
+class ProjectionPublicationCompletion:
     """Resume validation and publication after the canonical receipt boundary."""
 
     uow_factory: object
@@ -642,6 +643,9 @@ class _ProjectionPublicationCompletion:
             projection_config_digest=command.projection_config.config_digest,
             sources=tuple(sources),
             expected_artifacts=tuple(expected),
+            allows_empty_source_set=(
+                not sources and command.command_identity.startswith("successor-")
+            ),
         )
         actual = await self.physical_store.physical_artifacts_for(
             workspace_id=command.workspace_id,
@@ -663,7 +667,9 @@ class _ProjectionPublicationCompletion:
             command.projection_run_id,
         )
         async with self.uow_factory(context) as uow:  # type: ignore[operator]
-            active = await uow.projections.resolve_active_publication("qa")
+            active = await uow.projections.resolve_active_publication(
+                command.physical_namespace.projection_kind
+            )
             await uow.commit()
             return active
 
@@ -756,7 +762,7 @@ class _ProjectionPublicationCompletion:
                 workspace_id=command.workspace_id,
                 environment_id=command.environment_id,
                 snapshot_state=ProjectionSnapshotState.ASSEMBLING,
-                projection_kind="qa",
+                projection_kind=command.physical_namespace.projection_kind,
                 projection_config_version_id=command.projection_config.config_id,
                 canonical_boundary_id=command.canonical_boundary.boundary_id,
                 predecessor_snapshot_id=predecessor_snapshot_id,
@@ -787,7 +793,7 @@ class _ProjectionPublicationCompletion:
     async def _activate(self, snapshot: ProjectionSnapshot, active) -> object:
         published = active if isinstance(active, PublishedActivePublication) else None
         command = ProjectionActivationCommand.create(
-            projection_kind="qa",
+            projection_kind=snapshot.projection_kind,
             projection_snapshot_id=snapshot.projection_snapshot_id,
             activation_kind=ProjectionActivationKind.PUBLISH,
             expected_predecessor_snapshot_id=(
@@ -821,9 +827,9 @@ class _ProjectionPublicationCompletion:
 
 
 def _publication_id(command: ProjectionCommand, name: str) -> UUID:
-    return uuid5(
-        NAMESPACE_URL,
-        f"spine:projection-publication:v1:{command.projection_run_id}:{name}",
+    return projection_publication_entity_id(
+        command.projection_run_id,
+        name,
     )
 
 
@@ -1044,7 +1050,7 @@ def create_production_outbox_worker_runtime(
             clock=lambda: datetime.now(timezone.utc),
         ),
     )
-    completion = _ProjectionPublicationCompletion(
+    completion = ProjectionPublicationCompletion(
         uow_factory=persistence.uow_factory,
         context_factory=context_for_scope,
         artifact_resolver=resolver,
@@ -1174,6 +1180,7 @@ def main() -> None:
 
 __all__ = [
     "OutboxWorkerSettings",
+    "ProjectionPublicationCompletion",
     "ProductionOutboxWorkerRuntime",
     "create_production_outbox_worker_runtime",
     "main",

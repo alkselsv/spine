@@ -249,14 +249,21 @@ class PhysicalProjectionExpectation(DefinitionModel):
     projection_config_id: UUID
     projection_config_version: str = Field(min_length=1, max_length=128)
     projection_config_digest: str = Field(pattern=_DIGEST)
-    sources: tuple[PhysicalProjectionSource, ...] = Field(min_length=1)
+    sources: tuple[PhysicalProjectionSource, ...] = ()
     expected_artifacts: tuple[PhysicalArtifact, ...] = ()
+    allows_empty_source_set: bool = False
 
     @model_validator(mode="after")
     def validate_expectation(self) -> "PhysicalProjectionExpectation":
         _require_id(self.workspace_id, "workspace_id")
         _require_id(self.environment_id, "environment_id")
         _require_id(self.projection_config_id, "projection_config_id")
+        if not self.sources and not self.allows_empty_source_set:
+            raise ValueError("physical projection requires at least one source")
+        if self.sources and self.allows_empty_source_set:
+            raise ValueError("empty-source allowance requires an empty source set")
+        if self.allows_empty_source_set and self.expected_artifacts:
+            raise ValueError("empty-source projection cannot expect physical artifacts")
         source_keys = [source.source_object_id for source in self.sources]
         if len(source_keys) != len(set(source_keys)):
             raise ValueError("physical projection sources must be unique")
