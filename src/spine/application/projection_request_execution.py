@@ -275,8 +275,6 @@ class PersistenceCanonicalProjectionRequestResolver:
                 or config.workspace_id != run.workspace_id
                 or config.environment_id != run.environment_id
                 or config.projection_kind != run.projection_kind
-                or config.locator_contract_version
-                != receipt.locator_contract_version
             ):
                 self._reject()
 
@@ -410,8 +408,6 @@ class PersistenceCanonicalProjectionRequestResolver:
                     or boundary_revision.kind is not RevisionKind.CONTENT
                     or boundary_revision.original_sha256
                     != selected_receipt.original_sha256
-                    or selected_receipt.locator_contract_version
-                    != config.locator_contract_version
                 ):
                     self._reject()
                 projection_sources.append(

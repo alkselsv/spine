@@ -188,6 +188,7 @@ from tests.api.test_authorization import (
 from tests.contracts.persistence.test_projection_contract import (
     test_projection_post_validation_fault_retains_seal_and_preserves_active as contract_projection_post_validation_fault,
     test_projection_pre_validation_fault_avoids_physical_read_and_preserves_active as contract_projection_pre_validation_fault,
+    test_projection_successor_resolver_accepts_canonical_multi_format_boundary as contract_projection_successor_locator_contract,
     test_projection_successor_rollback_advances_the_canonical_pointer as contract_projection_publication,
     test_projection_successor_public_resolver_retains_tombstone as contract_projection_successor_tombstone,
     test_projection_recovery_resolver_replays_one_shadow_rebuild_plan as contract_projection_recovery_resolver,
@@ -1546,6 +1547,12 @@ async def test_postgresql_projection_successor_tombstone_satisfies_contract(
     postgresql_adapter: PersistenceAdapter,
 ) -> None:
     await contract_projection_successor_tombstone(postgresql_adapter)
+
+
+async def test_postgresql_projection_successor_locator_contract_satisfies_contract(
+    postgresql_adapter: PersistenceAdapter,
+) -> None:
+    await contract_projection_successor_locator_contract(postgresql_adapter)
 
 
 async def test_postgresql_projection_pre_validation_fault_satisfies_contract(

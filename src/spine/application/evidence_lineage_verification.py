@@ -576,7 +576,6 @@ def _lineage_matches(
         and processing.source_revision_id == revision.revision_id
         and processing.locator_contract_version
         == evidence.locator_contract_version
-        and processing.locator_contract_version == config.locator_contract_version
         and (processing.workspace_id, processing.environment_id) == scope
         and reference.workspace_id == scope[0]
         and reference.environment_id == scope[1]

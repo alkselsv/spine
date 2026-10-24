@@ -25,7 +25,7 @@ class EvidenceLineageDataset(DefinitionModel):
     """All version pins needed to reproduce the deterministic evaluation."""
 
     dataset_id: Literal["evidence-lineage-synthetic"]
-    version: Literal["1.0.0"]
+    version: Literal["1.1.0"]
     schema_version: Literal["evidence-lineage-eval:v1"]
     retrieval_contract_version: VersionIdentifier
     parser_version: VersionIdentifier

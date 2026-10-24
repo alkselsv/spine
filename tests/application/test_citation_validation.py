@@ -403,6 +403,69 @@ async def test_exact_current_authorized_citation_is_valid() -> None:
     assert result.facts.context_bundle_digest == bundle.bundle_digest
 
 
+@pytest.mark.asyncio
+async def test_format_specific_locator_contract_is_valid() -> None:
+    reference = _reference()
+    locator_contract_version = "pdf-page-extracted-codepoint:v1"
+    reference = reference.model_copy(
+        update={
+            "locator_contract_version": locator_contract_version,
+            "locator_digest": canonical_projection_locator_digest(
+                locator_contract_version=locator_contract_version,
+                locator=reference.locator,
+            ),
+        }
+    )
+    bundle = _bundle(reference)
+    record = _record(bundle, reference)
+
+    result = await _service(
+        bundle,
+        record,
+        _AuthorizationRepository({SOURCE: REVISION}),
+    ).validate(
+        citation=_citation(bundle, reference),
+        expected_context_bundle=bundle.lineage_reference,
+        authorization_context=_context(),
+    )
+
+    assert isinstance(result, ValidCitation)
+
+
+@pytest.mark.asyncio
+async def test_locator_contract_forged_outside_processing_lineage_is_rejected() -> None:
+    reference = _reference()
+    bundle = _bundle(reference)
+    record = _record(bundle, reference)
+    contributor = record.contributors[0]
+    forged = record.model_copy(
+        update={
+            "contributors": (
+                contributor.model_copy(
+                    update={
+                        "processing_receipt": contributor.processing_receipt.model_copy(
+                            update={"locator_contract_version": "locator:forged-v1"}
+                        )
+                    }
+                ),
+            )
+        }
+    )
+
+    result = await _service(
+        bundle,
+        forged,
+        _AuthorizationRepository({SOURCE: REVISION}),
+    ).validate(
+        citation=_citation(bundle, reference),
+        expected_context_bundle=bundle.lineage_reference,
+        authorization_context=_context(),
+    )
+
+    assert isinstance(result, RejectedCitation)
+    assert result.reason_code is CitationValidationReasonCode.IDENTITY_INVALID
+
+
 @pytest.mark.parametrize("claim_update", [{"evidence_digest": "f" * 64}, {"activation_generation": 2}])
 @pytest.mark.asyncio
 async def test_fabricated_or_wrong_generation_citation_fails_closed_without_source_details(
