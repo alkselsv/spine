@@ -140,6 +140,7 @@ describe('Knowledge ingestion run view', () => {
     const fileItem = file.closest('li');
     expect(fileItem).not.toBeNull();
     expect(within(fileItem!).getAllByRole('button', { name: 'Повторить обработку файла' })).toHaveLength(1);
+    expect(within(fileItem!).getByText(/parser\.invalid/)).toBeVisible();
     const unaffectedFile = screen.getAllByText('file-1')[0]?.closest('li');
     expect(unaffectedFile).not.toBeNull();
     expect(within(unaffectedFile!).getByText('Частичный результат')).toBeVisible();
