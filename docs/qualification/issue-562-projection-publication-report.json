@@ -1,7 +1,7 @@
 {
   "schema_version": "issue-562-projection-publication:v1",
   "ticket": 562,
-  "observed_at": "2026-10-24T19:13:00Z",
+  "observed_at": "2026-10-24T20:31:00Z",
   "target": {
     "commit_sha": "a35f80f0747880f4bbf67788050db1607bc80ce7",
     "deployment_fingerprint": "85cc8937d8a721a808e32b7086c66721c23a32bf4067e65f3289f7db4d9c05a5",
@@ -31,7 +31,7 @@
   },
   "provider_compatibility": {
     "schema_version": "projection-provider-compatibility:v1",
-    "source_run_id": "issue562-r6-007",
+    "source_run_id": "issue562-r6-010",
     "evidence_kind": "fresh_physical_run",
     "status": "compatible",
     "target": {
@@ -43,9 +43,9 @@
       "provider_profile_id": "cognee-approved-production",
       "provider_profile_digest": "8935297e3def5e786f7e3d34db87d13c2106fbb7f82f8d695c747cee4fe1c84f"
     },
-    "approval_reference": "https://github.com/alkselsv/spine/issues/562#issuecomment-6385289811",
-    "run_authorization_reference": "codex-session-issue562-r6-007-20261024",
-    "physical_report_sha256": "6af5671a3b6fd8c8bc40f87e3a10be777ebc33c9aac9b3eab4f2d9436952fca9",
+    "approval_reference": "https://github.com/alkselsv/spine/issues/562#issuecomment-6388915881",
+    "run_authorization_reference": "issue562-r6-010:issue-comment-6388915881",
+    "physical_report_sha256": "dff0caafe702e6c14eec040736535605aaab3da09363d7acc1597439bf626076",
     "passed_physical_gate_ids": [
       "public_sdk",
       "structured_round_trip",
@@ -65,57 +65,58 @@
       "scenario_id": "canonical_uow_separation",
       "status": "passed",
       "evidence_references": [
-        "physical-run:issue562-r6-007:canonical_lifecycle_separation",
-        "successor-command:7b92cdce-0545-4ada-a0a5-dca264b5c620",
-        "projection-run:ea4538df-326f-516d-b0e2-c9810cca7b35",
-        "projection-receipt:bf2fd91f-e2c1-5399-9466-7b77985546f8"
+        "physical-run:issue562-r6-010:canonical_lifecycle_separation",
+        "successor-command:edcedad2-3a3b-4fe5-80ed-39d6e4202ffe",
+        "projection-run:7c1ba0b0-5347-5edc-87bc-a79910f81455",
+        "projection-receipt:3a38be38-a32f-556d-af69-f11064effdea"
       ]
     },
     {
       "scenario_id": "exact_revision_membership",
       "status": "passed",
       "evidence_references": [
-        "canonical-boundary:b73d093f-8b72-4fa2-a41d-a35452d1bef4:accepted-through-14",
-        "projection-snapshot:d3205816-19f2-56ee-9eb4-79225a639baa:members-11",
-        "snapshot-members:included-9:tombstoned-2",
-        "source-references:17:revisions-9:processing-receipts-9"
+        "canonical-boundary:e180710f-710b-467a-a82b-c076537a58df:accepted-through-15",
+        "projection-snapshot:38971756-e09e-5198-b2b3-7c820bf46a8b:members-11",
+        "snapshot-members:included-8:tombstoned-3",
+        "changed-head-revision:a2896889-dad1-56b3-87dd-583a8c309bc4:tombstoned"
       ]
     },
     {
       "scenario_id": "physical_validation_and_sealing",
       "status": "passed",
       "evidence_references": [
-        "projection-candidate:8eb7157a-5c0f-5735-b6b7-e79cb1dc116d:sealed",
-        "projection-validation:0e7993c5-9e03-5187-a69f-35e4e0276442:physical_artifacts-r1:passed",
-        "physical-run:issue562-r6-007:rebuild_recovery_validation_diagnostics"
+        "projection-candidate:52f52a83-13b0-5a45-813c-dab517ef4f56:sealed",
+        "projection-receipt:3a38be38-a32f-556d-af69-f11064effdea:physical-artifacts:passed",
+        "physical-run:issue562-r6-010:rebuild_recovery_validation_diagnostics"
       ]
     },
     {
       "scenario_id": "activation_generation_cas",
       "status": "passed",
       "evidence_references": [
-        "projection-activation:b7b6efe8-968a-467e-98e8-047cf4befef2:generation-3",
-        "active-snapshot:d3205816-19f2-56ee-9eb4-79225a639baa:cas-version-3"
+        "projection-activation:84ccccba-7ccf-46fb-8ab1-aea71b542cf8:generation-8",
+        "active-snapshot:38971756-e09e-5198-b2b3-7c820bf46a8b:cas-version-8"
       ]
     },
     {
       "scenario_id": "failure_before_validation",
       "status": "passed",
       "evidence_references": [
-        "successor-command:d316f1b1-094b-4b97-9116-c966bf017a12",
-        "projection-candidate:07f26eb8-1031-50e6-b9ec-9b179fe4db3b:open:no-evidence",
+        "successor-command:fcca420a-3ea6-4447-a074-408aa3e4f90a",
+        "projection-candidate:54f1980a-ec34-5522-83f6-7c3c1088bc89:open:no-receipt",
         "fault-audit:projection.qualification.before_physical_validation:one-shot",
-        "active-before-retry:2360bcc9-53e6-5779-81fb-d2314e6cf2b4:generation-1"
+        "active-before-retry:6653d6a5-430a-5902-b47c-771fd78fe0f4:generation-4"
       ]
     },
     {
       "scenario_id": "failure_before_activation",
       "status": "passed",
       "evidence_references": [
-        "successor-command:7b92cdce-0545-4ada-a0a5-dca264b5c620",
-        "projection-candidate:8eb7157a-5c0f-5735-b6b7-e79cb1dc116d:sealed",
+        "successor-command:2e97c23f-a2f3-4e23-a393-6ac6ccbfa667",
+        "projection-candidate:065a53b2-a2f7-55c7-b9f3-5c6e4e14235b:sealed",
+        "projection-receipt:11b6bc96-1880-57b5-9eae-2534d6c8176b:validated",
         "fault-audit:projection.qualification.after_validation_before_activation:one-shot",
-        "active-before-retry:61bba04f-73d5-504d-b569-08dcdbd11642:generation-2"
+        "active-before-retry:da8f5448-7df4-5f4e-95d0-cff8d416717f:generation-5"
       ]
     },
     {
@@ -123,62 +124,68 @@
       "status": "passed",
       "evidence_references": [
         "stale-cas-probe:rejected",
-        "active-before-after:d3205816-19f2-56ee-9eb4-79225a639baa:generation-3:cas-version-3"
+        "active-before-after:3382e1d1-18a9-5547-a495-2e4289569e98:generation-7:cas-version-7"
       ]
     },
     {
       "scenario_id": "changed_source_head",
       "status": "passed",
       "evidence_references": [
-        "initial-boundary:195b2d2d-c2eb-4302-9410-1921bdcfb63a:drift-13",
-        "successor-boundary:a0c04b10-683f-4f70-9e64-9a43ce95c7dc:accepted-through-14",
-        "final-boundary:b73d093f-8b72-4fa2-a41d-a35452d1bef4:accepted-through-14"
+        "pre-change-boundary:d2f9e9c8-fb5a-46c5-8621-63189c731fc7:accepted-through-14",
+        "canonical-acceptance:7e11bb2e-71d5-5fb7-baa4-de084fe84f1a:generation-15",
+        "final-boundary:e180710f-710b-467a-a82b-c076537a58df:accepted-through-15"
       ]
     },
     {
       "scenario_id": "tombstone_disclosure_fence",
       "status": "passed",
       "evidence_references": [
-        "projection-snapshot:d3205816-19f2-56ee-9eb4-79225a639baa:tombstoned-members-2",
-        "source-revision:8b78a5f2-61d9-5e6f-8678-5246ad2d47fb:tombstoned",
-        "source-revision:cf8895d5-b2b6-542b-b9d1-394827cb7578:tombstoned",
-        "physical-run:issue562-r6-007:update_remove_tombstone"
+        "projection-snapshot:38971756-e09e-5198-b2b3-7c820bf46a8b:tombstoned-members-3",
+        "ordinary-retrieval:f7477d12-6f85-4340-890a-2a88d25ea4ed:revision-8b78a5f2-61d9-5e6f-8678-5246ad2d47fb:tombstoned:content-absent:stale-projection-refs-6",
+        "ordinary-retrieval:26349408-3b7b-4035-95f6-1ae97aaa8a95:revision-cf8895d5-b2b6-542b-b9d1-394827cb7578:tombstoned:content-absent:stale-projection-refs-10",
+        "ordinary-retrieval:47ff3d48-1aa7-4622-b827-221a7b9553db:revision-a2896889-dad1-56b3-87dd-583a8c309bc4:tombstoned:content-absent:stale-projection-refs-1"
       ]
     },
     {
       "scenario_id": "rebuild_failure_preserves_active",
       "status": "passed",
       "evidence_references": [
-        "pre-validation-failure:active-preserved:2360bcc9-53e6-5779-81fb-d2314e6cf2b4:generation-1",
-        "pre-activation-failure:active-preserved:61bba04f-73d5-504d-b569-08dcdbd11642:generation-2"
+        "pre-validation-failure:active-preserved:6653d6a5-430a-5902-b47c-771fd78fe0f4:generation-4",
+        "pre-activation-failure:active-preserved:da8f5448-7df4-5f4e-95d0-cff8d416717f:generation-5"
       ]
     },
     {
       "scenario_id": "successor_rollback",
       "status": "passed",
       "evidence_references": [
-        "failed-attempt-predecessor:61bba04f-73d5-504d-b569-08dcdbd11642:generation-2",
-        "validated-successor:d3205816-19f2-56ee-9eb4-79225a639baa:generation-3",
-        "delivery:09e4cb8d-90c6-5a71-880c-dddc3185892c:delivered-attempt-2"
+        "authorization:issue562-r6-010:issue-comment-6388915881",
+        "successor-command:edcedad2-3a3b-4fe5-80ed-39d6e4202ffe:not-replay",
+        "projection-run:7c1ba0b0-5347-5edc-87bc-a79910f81455:catch-up",
+        "projection-candidate:52f52a83-13b0-5a45-813c-dab517ef4f56:sealed",
+        "projection-receipt:3a38be38-a32f-556d-af69-f11064effdea:physical-artifacts:passed",
+        "validated-successor:38971756-e09e-5198-b2b3-7c820bf46a8b:generation-8:predecessor-3382e1d1-18a9-5547-a495-2e4289569e98",
+        "projection-activation:84ccccba-7ccf-46fb-8ab1-aea71b542cf8:generation-8:no-pointer-rewind"
       ]
     },
     {
       "scenario_id": "workspace_namespace_isolation",
       "status": "passed",
       "evidence_references": [
-        "physical-run:issue562-r6-007:workspace_isolation",
-        "physical-run:issue562-r6-007:namespace_isolation",
-        "physical-report-sha256:6af5671a3b6fd8c8bc40f87e3a10be777ebc33c9aac9b3eab4f2d9436952fca9"
+        "physical-run:issue562-r6-010:workspace_isolation",
+        "physical-run:issue562-r6-010:namespace_isolation",
+        "physical-report-sha256:dff0caafe702e6c14eec040736535605aaab3da09363d7acc1597439bf626076"
       ]
     },
     {
       "scenario_id": "safe_diagnostics",
       "status": "passed",
       "evidence_references": [
-        "successor-status:7b92cdce-0545-4ada-a0a5-dca264b5c620:completed",
+        "successor-status:fcca420a-3ea6-4447-a074-408aa3e4f90a:completed",
+        "successor-status:2e97c23f-a2f3-4e23-a393-6ac6ccbfa667:completed",
+        "successor-status:edcedad2-3a3b-4fe5-80ed-39d6e4202ffe:completed",
         "fault-reason:projection.qualification.before_physical_validation",
         "fault-reason:projection.qualification.after_validation_before_activation",
-        "outbox-deliveries:two:delivered-attempt-2:no-error"
+        "outbox-deliveries:two:retried-one-logical-effect:no-terminal-error"
       ]
     }
   ],

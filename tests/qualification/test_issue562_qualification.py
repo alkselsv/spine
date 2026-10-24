@@ -59,7 +59,7 @@ def test_issue562_report_is_derived_from_exact_q16_target_and_provider_evidence(
         PHYSICAL_PATH.read_text(encoding="utf-8")
     )
     physical = physical_report.model_dump(mode="json")
-    assert report.provider_compatibility.source_run_id == "issue562-r6-007"
+    assert report.provider_compatibility.source_run_id == "issue562-r6-010"
     assert report.provider_compatibility.evidence_kind == "fresh_physical_run"
     assert report.provider_compatibility.status == "compatible"
     assert report.provider_compatibility.source_run_id == physical[
@@ -74,8 +74,11 @@ def test_issue562_report_is_derived_from_exact_q16_target_and_provider_evidence(
     assert report.provider_compatibility.production_approval is True
     assert physical["decision"] == "go"
     assert physical["production_approval"] is True
+    assert report.provider_compatibility.approval_reference == (
+        "https://github.com/alkselsv/spine/issues/562#issuecomment-6388915881"
+    )
     assert report.provider_compatibility.run_authorization_reference == (
-        "codex-session-issue562-r6-007-20261024"
+        "issue562-r6-010:issue-comment-6388915881"
     )
 
 
@@ -132,4 +135,6 @@ def test_issue562_summary_records_qualified_run() -> None:
     summary = SUMMARY_PATH.read_text(encoding="utf-8")
 
     assert "Status: **PASS**" in summary
-    assert "issue562-r6-007" in summary
+    assert "issue562-r6-010" in summary
+    assert "issue562-r6-007" not in summary
+    assert "issue562-r6-008" not in summary
