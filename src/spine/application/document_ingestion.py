@@ -580,7 +580,12 @@ class DocumentIngestionOrchestrator:
             result = await uow.ingestion.create_run(
                 IngestionRunCommand.create(run=run, idempotency_key=_key(request, "run"))
             )
-            await uow.ingestion.create_item(item)
+            stored_item = (
+                await uow.ingestion.resolve_item(item_id) if result.replay else None
+            )
+            if stored_item is None:
+                stored_item = await uow.ingestion.create_item(item)
+            item = stored_item
             run_head = await uow.ingestion.resolve_run_head(run_id)
             if run_head is not None and run_head.state is IngestionRunState.REQUESTED:
                 await self._advance_run_in_uow(uow, result.value, IngestionRunState.RECEIVING, now)

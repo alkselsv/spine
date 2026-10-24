@@ -172,6 +172,8 @@ class _Ingestion:
                 state=IngestionItemState.RECEIVED, attempt=1, actor_or_service="fake",
                 trace_id=_id("trace"), occurred_at=NOW,
             ))
+        elif self.item != item:
+            raise AssertionError("Ingestion item identity conflicts.")
         return self.item
 
     async def resolve_run_head(self, run_id):
@@ -333,6 +335,7 @@ def _orchestrator(
     parser_calls: list[int],
     pre_acceptance_faults: list[bool] | None = None,
     fault_injector=None,
+    clock=lambda: NOW,
 ):
     ingestion = _Ingestion()
     admissions = _Admissions()
@@ -374,7 +377,7 @@ def _orchestrator(
         outbox_events=OutboxEventRegistry(),
         parser=parse,
         fault_injector=fault_injector,
-        clock=lambda: NOW,
+        clock=clock,
         max_validation_bytes=10_000_000,
         max_parse_bytes=10_000_000,
     ), uploader, reader, canonical, outbox, ingestion
@@ -652,6 +655,29 @@ async def test_document_ingestion_completes_text_path_and_replays_stably() -> No
         IngestionItemState.PROCESSED,
         IngestionItemState.PROJECTION_REQUESTED,
     ]
+
+
+@pytest.mark.asyncio
+async def test_document_ingestion_replay_reuses_item_when_clock_advances() -> None:
+    clock_now = [NOW]
+    orchestrator, _, _, _, _, _ = _orchestrator(
+        b"hello\nworld\n",
+        media_type="text/plain",
+        parser_calls=[],
+        clock=lambda: clock_now[0],
+    )
+    request = _request("text/plain")
+
+    first = await orchestrator.ingest(
+        request=request, chunks=_stream(b"hello\nworld\n")
+    )
+    clock_now[0] = NOW.replace(minute=NOW.minute + 1)
+    replay = await orchestrator.ingest(
+        request=request, chunks=_stream(b"hello\nworld\n")
+    )
+
+    assert replay.replay is True
+    assert replay.item == first.item
 
 
 @pytest.mark.asyncio
