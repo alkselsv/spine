@@ -2024,7 +2024,7 @@ async def test_projection_pre_validation_fault_avoids_physical_read_and_preserve
     persistence_adapter,
 ) -> None:
     case = await _prepare_projection_successor_tombstone_case(
-        persistence_adapter, seed=26300
+        persistence_adapter, seed=26500
     )
     controller = _projection_fault_controller(
         persistence_adapter, case, boundary="before_physical_validation"
@@ -2059,7 +2059,7 @@ async def test_projection_post_validation_fault_retains_seal_and_preserves_activ
     persistence_adapter,
 ) -> None:
     case = await _prepare_projection_successor_tombstone_case(
-        persistence_adapter, seed=26400
+        persistence_adapter, seed=26600
     )
     controller = _projection_fault_controller(
         persistence_adapter,
