@@ -1,15 +1,15 @@
 {
   "schema_version": "q16-01-runtime-readiness:v1",
   "issue": 560,
-  "observed_at": "2026-10-24T07:35:14Z",
+  "observed_at": "2026-10-24T12:06:07Z",
   "decision": "PASS",
   "target": {
     "kind": "repository-owned-isolated-source-compose",
-    "compose_project": "spine560r572v10",
-    "commit_sha": "9d75b1e0e8531ed3534806ab8fc5071901157ece",
-    "deployment_fingerprint": "47be5f0ac4e031de25a6b864ed9874a6a5a5acbef9653dd54fc7892cbf0ea823",
-    "api_release_identity": "issue561-local-dev-v10",
-    "web_release_identity": "source:9d75b1e0e8531ed3534806ab8fc5071901157ece",
+    "compose_project": "spine562r6v1",
+    "commit_sha": "7c37576141ad02d33de77cd3879e9bc82fc6e450",
+    "deployment_fingerprint": "a631a5233bad952c5870d5e835c1940fe1dfa17664982eb7196b5cbd2d69f478",
+    "api_release_identity": "issue562-local-dev-v1",
+    "web_release_identity": "source:7c37576141ad02d33de77cd3879e9bc82fc6e450",
     "workspace_id": "54400000-0000-4000-8000-00000000000a",
     "environment_id": "54400000-0000-4000-8000-00000000000e",
     "authorization_generation": 16
@@ -30,7 +30,7 @@
     "total_cases": 4
   },
   "browser_qualification": {
-    "run_id": "issue560-q16-final-v10",
+    "run_id": "issue562-r6-002",
     "result": "PASS",
     "scenario_count": 10,
     "terminal_run_count": 4,
@@ -70,13 +70,13 @@
     "llm_model": "openai/gpt-5.4-nano",
     "embedding_model": "openai/text-embedding-3-small",
     "images": {
-      "api": "sha256:89422a60290e398f14fa307db59db94dc5e46dc94312556d7b34d5dc5fd9450a",
-      "qa_worker": "sha256:2337ce370d3252a48013e14e6edc0a0e785a6f99e61ce865069fe6ea068ebb68",
-      "outbox_dispatcher": "sha256:67b9eab7bc9256722885a079f6618e4b137eb484fe8908f22ca42cd567593139",
-      "web": "sha256:55b93d97bf5cc1e4becc99cb6037b02fcba77fdfaa5f345c9756c747b8217880",
+      "api": "sha256:8dbe94a0d07d0416282f8814e1a9e40368c892f7f858eda9010cd8b049f197c8",
+      "qa_worker": "sha256:51cd7fea768a265606a57a92949342bec946a51aa885e9ec77df359e01b19f8c",
+      "outbox_dispatcher": "sha256:6b0242d8a11f19ae353f0707bd83aa80a0abd67f8dae6d049494d5533c67985c",
+      "web": "sha256:cdbb2d2661705882465a258a28c33af8f6c7c12df44efa06fddeda19d9951e2c",
       "postgresql": "sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d",
       "temporal": "sha256:607d68caa111338d754771efb876c92dfcdae06d056e4530bb31cd0f37406e6a",
-      "neo4j": "sha256:eb02e07b1067a553f51e5ef259de1e18ac729decb2837b29feed375f2026a7f5"
+      "neo4j": "sha256:9c8ddcb0e2557588e9f6d35fd36a79f204a7d7c7a43e8ae03a863cc112a4db73"
     }
   },
   "readiness": {
@@ -156,10 +156,10 @@
     "generation_after_advance_retry": 16
   },
   "stale_generation_probe": {
-    "command_id": "265914d0-ee3c-458d-9c0e-a24d49c8a412",
-    "message_id": "0c64a667-490d-401d-8c39-07be759816a5",
-    "run_id": "039a0826-233f-4ed0-87a8-9af168f350be",
-    "temporal_run_id": "01a16cd4-d94b-7c27-827a-cbe2dd4cdb87",
+    "command_id": "208072f6-0fd0-4780-9c8d-75f5bf4a0f7d",
+    "message_id": "f4ffa474-d743-4052-90b6-4a5100a2e5c9",
+    "run_id": "0441c405-1111-4ab4-a5ad-3c3d0aba77ca",
+    "temporal_run_id": "01a16dca-4f7d-77d0-b53b-add419df81b1",
     "api_admission": "PASS_GENERATION_15",
     "canonical_outbox": "PASS_DELIVERED",
     "temporal_admission": "PASS_RUNNING",
@@ -170,14 +170,14 @@
     "temporal_cleanup": "CANCELED"
   },
   "synthetic_ask": {
-    "command_id": "4e5a8dfb-cf6e-41fd-baf1-946b0ce7fa71",
-    "message_id": "cbf83880-32c4-46c7-aa75-8b3ea61c6fa8",
-    "run_id": "fdcd53c1-6f0e-48b6-99c5-8ddaef5551cc",
-    "trace_id": "44f1dff4-9cf5-4da5-a45e-846a9a151c7d",
-    "capture_id": "2db52794-8d8a-536e-9f86-8722090c9363",
-    "subscription_id": "2be8d898-4a37-595f-a751-7c35fc3b033d",
-    "outbox_event_id": "50fc9b34-4eef-5ad0-be7e-6c5782039f12",
-    "temporal_run_id": "01a16cd2-b5a6-7014-8c36-6c778740c284",
+    "command_id": "f2cc2833-cc72-4602-8429-36a946345e0f",
+    "message_id": "c210869f-faef-47ed-a91b-43a7917b5886",
+    "run_id": "2a8063e2-6c26-4da6-b3b2-4245b5023ffa",
+    "trace_id": "5bfc96f1-2c7b-4364-9536-937cc8d69a50",
+    "capture_id": "5b3f5325-5db0-5eac-b88e-921febec1c8b",
+    "subscription_id": "527ca447-8b53-54d1-9430-dccdb8a0e845",
+    "outbox_event_id": "721c05d6-96e8-5c8d-af48-cfab2cab1c21",
+    "temporal_run_id": "01a16dcc-85a9-7c2c-a159-f051e1cb1f3f",
     "api_admission": "PASS",
     "canonical_outbox": "PASS_DELIVERED",
     "dispatcher_delivery": "PASS_DELIVERED",
