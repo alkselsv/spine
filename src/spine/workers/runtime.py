@@ -34,6 +34,7 @@ from spine.application.persistence.delivery import OutboxDeliveryRouteRegistry
 from spine.application.persistence.outbox import OutboxEventRegistry, OutboxIntent
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.persistence.projection import (
+    PROJECTION_RUN_OPERATION,
     PROJECTION_RECEIPT_OPERATION,
     ProjectionActivationCommand,
     ProjectionActivationCommitted,
@@ -1160,7 +1161,7 @@ def create_production_outbox_worker_runtime(
         recovery_context_factory=lambda envelope: context_for_scope(
             envelope.workspace_id,
             envelope.environment_id,
-            "projection_run",
+            PROJECTION_RUN_OPERATION.value,
             envelope.event_id,
         ),
         projection_request_completion=completion,

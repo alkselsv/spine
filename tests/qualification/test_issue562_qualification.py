@@ -79,7 +79,7 @@ def test_issue562_report_is_derived_from_exact_q16_target_and_provider_evidence(
     )
 
 
-def test_issue562_report_cannot_hide_missing_live_scenarios_or_sensitive_data() -> None:
+def test_issue562_report_covers_every_required_live_scenario() -> None:
     report = ProjectionPublicationQualificationReport.model_validate_json(
         REPORT_PATH.read_text(encoding="utf-8")
     )
@@ -94,6 +94,8 @@ def test_issue562_report_cannot_hide_missing_live_scenarios_or_sensitive_data() 
     assert all(item.status == "passed" for item in report.observations)
     assert len(required_projection_publication_scenarios()) == 13
 
+
+def test_issue562_report_contains_no_sensitive_data() -> None:
     serialized = REPORT_PATH.read_text(encoding="utf-8").lower()
     for forbidden in (
         "access_token",
@@ -107,17 +109,27 @@ def test_issue562_report_cannot_hide_missing_live_scenarios_or_sensitive_data() 
         assert forbidden not in serialized
 
 
-def test_issue562_runbook_names_every_scenario_and_stops_before_unapproved_calls() -> (
-    None
-):
+def test_issue562_runbook_names_every_required_scenario() -> None:
     runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
-    summary = SUMMARY_PATH.read_text(encoding="utf-8")
 
     for scenario_id in required_projection_publication_scenarios():
         assert f"`{scenario_id}`" in runbook
+
+
+def test_issue562_runbook_stops_before_unapproved_provider_calls() -> None:
+    runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
+
     assert "do not start the dispatcher" in runbook.lower()
+
+
+def test_cognee_runbook_preserves_operator_environment_binding() -> None:
     assert "PYTHON_DOTENV_DISABLED=1" in (
         ROOT / "docs/runbooks/cognee-production-qualification.md"
     ).read_text(encoding="utf-8")
+
+
+def test_issue562_summary_records_qualified_run() -> None:
+    summary = SUMMARY_PATH.read_text(encoding="utf-8")
+
     assert "Status: **PASS**" in summary
     assert "issue562-r6-007" in summary
