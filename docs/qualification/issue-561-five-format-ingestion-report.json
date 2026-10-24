@@ -1,8 +1,8 @@
 {
   "schema_version": "issue-561-five-format-ingestion:v1",
   "ticket": 561,
-  "status": "blocked",
-  "reason_code": "q16_01_exact_target_not_qualified",
+  "status": "pass",
+  "reason_code": null,
   "required_formats": [
     "pdf",
     "docx",
@@ -21,28 +21,202 @@
     "workspace_environment_isolation",
     "safe_ui_states"
   ],
-  "formats": [],
-  "scenarios": [],
-  "ui_states": [],
-  "q16_01_compatibility": "not_verified",
+  "formats": [
+    "pdf",
+    "docx",
+    "xlsx",
+    "markdown",
+    "text"
+  ],
+  "scenarios": [
+    "five_format_upload",
+    "duplicate_idempotent_replay",
+    "changed_content_new_revision",
+    "tombstone_fences_disclosure",
+    "parser_failure_retry",
+    "original_storage_failure_retry",
+    "post_write_pre_acceptance_failure_retry",
+    "workspace_environment_isolation",
+    "safe_ui_states"
+  ],
+  "ui_states": [
+    "running",
+    "accepted",
+    "stale",
+    "partial",
+    "retryable_failure",
+    "retryable_failure",
+    "retryable_failure",
+    "deleted"
+  ],
+  "q16_01_compatibility": "pass",
   "authorization": {
-    "corpus_approval": "not_verified",
-    "trusted_upload_authority": "not_verified"
+    "corpus_approval": "pass",
+    "corpus_approval_reference": "issue-561-comment-6379806058",
+    "trusted_upload_authority": "pass",
+    "trusted_upload_authority_reference": "issue-561-comment-6379800332"
   },
   "deployment": {
-    "api_release_identity": "issue561-local-dev-v3",
-    "authorization_generation": 15,
-    "commit_sha": "1b02a48dca1d912d658ae049a1526a28f1594bac",
-    "deployment_fingerprint": "47480e062b3b2d1b30dfe21e3038f14dd87d64d61effcde7543ffd4e2f9283c3",
-    "provider_profile_identity": "provider-local-8935297e3def5e",
-    "qualification_run_id": "issue561-local-002",
-    "web_release_identity": "source:1b02a48dca1d912d658ae049a1526a28f1594bac"
+    "api_release_identity": "issue561-local-dev-v9",
+    "authorization_generation": 16,
+    "commit_sha": "de6ff6a842d6c3665e50cdd32fcd7eb6cda49d70",
+    "deployment_fingerprint": "c030452aa7f0fb8149ce7fd11333e1b725b1b350feab6dabdb33d7b70f189f22",
+    "provider_profile_identity": "provider-local-8935297e3def5e78",
+    "qualification_run_id": "issue561-r4-final-v9",
+    "web_release_identity": "source:de6ff6a842d6c3665e50cdd32fcd7eb6cda49d70"
   },
-  "format_observations": [],
-  "attempted_observations": [],
-  "lifecycle": {},
-  "failures": {},
-  "isolation": {},
+  "format_observations": [
+    {
+      "accepted": true,
+      "checksum_reference": "fee6eb01d9905ff561ae4e7866907c54ceb33efd518afcbf381a62e87fba662a",
+      "format": "pdf",
+      "locator_kinds": [
+        "page_text"
+      ],
+      "processing_receipt_reference": "e8cd44fc-965b-5bcd-afee-c65817c03565",
+      "revision_reference": "ea4019bd-822b-5c25-ad30-9eeb51361462",
+      "source_reference": "b62d5a83-112f-5e34-b773-fd539dffa10c"
+    },
+    {
+      "accepted": true,
+      "checksum_reference": "001f3e4db50456291fa39cf229d55f92c1ef232d67df98cb62c8d48c8b0aba4e",
+      "format": "docx",
+      "locator_kinds": [
+        "ooxml_text"
+      ],
+      "processing_receipt_reference": "e0af86a5-d3c7-5245-a51b-15b6fed9d385",
+      "revision_reference": "c015bba9-d941-52c6-b76e-1140c4fdd927",
+      "source_reference": "6ee782d0-9973-5762-a931-3a4a03596f85"
+    },
+    {
+      "accepted": true,
+      "checksum_reference": "3737bf06865143530a23fda67e825e54b188cf3300a41b464524379224a4e290",
+      "format": "xlsx",
+      "locator_kinds": [
+        "xlsx_cell"
+      ],
+      "processing_receipt_reference": "ab94ad92-9e90-55f1-bc41-89fbdef0f83b",
+      "revision_reference": "ccc0d5dc-eaa0-5ad4-b717-4af9cbb5af7c",
+      "source_reference": "973a32be-1abd-562f-86a5-9a07f0c024ac"
+    },
+    {
+      "accepted": true,
+      "checksum_reference": "307c9f7fb0b8ad3f90f9ee3e6bbbbb73bca710cf27545ce1154080d373aa67ef",
+      "format": "markdown",
+      "locator_kinds": [
+        "physical_line"
+      ],
+      "processing_receipt_reference": "c6ff3ec3-3991-52cf-a513-5d45803722d1",
+      "revision_reference": "5e43b544-dafc-5dd3-842f-f7228accf2c2",
+      "source_reference": "fe9e46cc-4a69-5582-ae58-082b01e4b911"
+    },
+    {
+      "accepted": true,
+      "checksum_reference": "ca078a371af77e60a275434f3e1599298d157058a15ca6ce1e3de4d8ae8fa2e2",
+      "format": "text",
+      "locator_kinds": [
+        "physical_line"
+      ],
+      "processing_receipt_reference": "931d6149-4b41-53bc-b652-37eb15e009ca",
+      "revision_reference": "befa0a4f-1c2c-5eee-908f-67b4d93f8e57",
+      "source_reference": "6d1b86a2-b318-5488-a746-5680a09b3406"
+    }
+  ],
+  "attempted_observations": [
+    {
+      "format": "pdf",
+      "processing_receipt_reference": "e8cd44fc-965b-5bcd-afee-c65817c03565",
+      "revision_reference": "ea4019bd-822b-5c25-ad30-9eeb51361462",
+      "source_reference": "b62d5a83-112f-5e34-b773-fd539dffa10c"
+    },
+    {
+      "format": "docx",
+      "processing_receipt_reference": "e0af86a5-d3c7-5245-a51b-15b6fed9d385",
+      "revision_reference": "c015bba9-d941-52c6-b76e-1140c4fdd927",
+      "source_reference": "6ee782d0-9973-5762-a931-3a4a03596f85"
+    },
+    {
+      "format": "xlsx",
+      "processing_receipt_reference": "ab94ad92-9e90-55f1-bc41-89fbdef0f83b",
+      "revision_reference": "ccc0d5dc-eaa0-5ad4-b717-4af9cbb5af7c",
+      "source_reference": "973a32be-1abd-562f-86a5-9a07f0c024ac"
+    },
+    {
+      "format": "markdown",
+      "processing_receipt_reference": "c6ff3ec3-3991-52cf-a513-5d45803722d1",
+      "revision_reference": "5e43b544-dafc-5dd3-842f-f7228accf2c2",
+      "source_reference": "fe9e46cc-4a69-5582-ae58-082b01e4b911"
+    },
+    {
+      "format": "text",
+      "processing_receipt_reference": "931d6149-4b41-53bc-b652-37eb15e009ca",
+      "revision_reference": "befa0a4f-1c2c-5eee-908f-67b4d93f8e57",
+      "source_reference": "6d1b86a2-b318-5488-a746-5680a09b3406"
+    }
+  ],
+  "lifecycle": {
+    "duplicate": {
+      "logical_effect_count": 1,
+      "replay": true,
+      "result_stable": true,
+      "run_reference": "85370341-3222-57d8-813d-ed6203c77d43",
+      "source_reference": "a2b7196e-81f5-5922-9007-108d35f23ee1",
+      "revision_reference": "e4ae48b1-58de-532a-bd41-9249c49ee199"
+    },
+    "changed_revision": {
+      "new_revision_reference": "2fdccbd0-5c3a-55fc-8aca-2ec11225861c",
+      "predecessor_preserved": true,
+      "predecessor_revision_reference": "befa0a4f-1c2c-5eee-908f-67b4d93f8e57",
+      "processing_receipt_reference": "77ac8e89-9870-54a6-b92e-0eec8e258662",
+      "replay": true,
+      "result_stable": true,
+      "source_reference": "6d1b86a2-b318-5488-a746-5680a09b3406"
+    },
+    "tombstone": {
+      "disclosure_fenced": true,
+      "history_preserved": true,
+      "operation_reference": "db5b55fb-9bc2-5a77-af4d-4b043957ffa0",
+      "tombstone_revision_reference": "cf6428dd-3b8b-5a1a-a3eb-10f221b77172"
+    }
+  },
+  "failures": {
+    "parser": {
+      "accepted_before_retry": true,
+      "failure_reference": "442946e3-19a4-5027-94f3-58b17437d70c",
+      "initial_run_reference": "2097e654-5796-5bd4-a3a0-701ef270216b",
+      "logical_effect_count": 1,
+      "reason_code": "parser_retryable",
+      "retry_operation_reference": "a296e366-9578-56ba-ba68-07f13810934c",
+      "retry_passed": true,
+      "retry_replay": true
+    },
+    "original_storage": {
+      "accepted_before_retry": true,
+      "failure_reference": "90a23a4c-4405-54a2-b9e4-9e89876595e3",
+      "initial_run_reference": "7cddcf1f-f957-59db-96c9-bbd5a6208f97",
+      "logical_effect_count": 1,
+      "reason_code": "original_storage_unavailable",
+      "retry_operation_reference": "c1d8111b-0d2d-55a4-a6dd-036d087049c6",
+      "retry_passed": true,
+      "retry_replay": true
+    },
+    "post_write_pre_acceptance": {
+      "accepted_before_retry": false,
+      "failure_reference": "3515b6f4-627b-5cbe-8277-a6359237625a",
+      "initial_run_reference": "658dada8-5a83-58bc-b7f8-cd90224ebe4a",
+      "logical_effect_count": 1,
+      "reason_code": "pre_acceptance_retryable",
+      "retry_passed": true,
+      "retry_replay": true
+    }
+  },
+  "isolation": {
+    "denied_workspace_status_read": "pass",
+    "denied_workspace_upload": "pass",
+    "denied_environment_status_read": "pass",
+    "denied_environment_upload": "pass",
+    "protected_metadata_disclosed": false
+  },
   "execution": {
     "api_mocking": false,
     "browser": "chromium",
@@ -60,18 +234,6 @@
     "trace": false,
     "video": false
   },
-  "blockers": [
-    560
-  ],
-  "unverified_scenarios": [
-    "five_format_upload",
-    "duplicate_idempotent_replay",
-    "changed_content_new_revision",
-    "tombstone_fences_disclosure",
-    "parser_failure_retry",
-    "original_storage_failure_retry",
-    "post_write_pre_acceptance_failure_retry",
-    "workspace_environment_isolation",
-    "safe_ui_states"
-  ]
+  "blockers": [],
+  "unverified_scenarios": []
 }
