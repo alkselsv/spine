@@ -1883,6 +1883,8 @@ async def _prepare_projection_successor_tombstone_case(
 
     return SimpleNamespace(
         prepared=prepared,
+        request=request,
+        resolver=resolver,
         plan=plan,
         mapping=mapping,
         context=context,
@@ -1968,6 +1970,53 @@ async def test_projection_successor_public_resolver_retains_tombstone(
     assert publication.projection_snapshot.projection_kind == "context"
     assert len(members) == 1
     assert members[0].disposition is ProjectionSnapshotMemberDisposition.TOMBSTONED
+
+
+@pytest.mark.asyncio
+async def test_projection_successor_replay_after_activation_returns_original_plan(
+    persistence_adapter,
+) -> None:
+    case = await _prepare_projection_successor_tombstone_case(
+        persistence_adapter, seed=26300
+    )
+    completion = _projection_completion(persistence_adapter, case)
+
+    await completion.complete(case.mapping)
+    replay = await case.resolver.resolve(case.request)
+
+    assert replay.command.projection_run_id == case.plan.command.projection_run_id
+    assert replay.command.projection_candidate == case.plan.command.projection_candidate
+    assert replay.command.projection_config == case.plan.command.projection_config
+    assert replay.command.canonical_boundary == case.plan.command.canonical_boundary
+
+
+@pytest.mark.asyncio
+async def test_projection_sealed_successor_accepts_terminal_complete_transition(
+    persistence_adapter,
+) -> None:
+    case = await _prepare_projection_successor_tombstone_case(
+        persistence_adapter, seed=26400
+    )
+    completion = _projection_completion(persistence_adapter, case)
+    lifecycle = PersistenceProjectionRecoveryLifecycle(
+        uow_factory=persistence_adapter.uow_factory,
+        context_factory=lambda command: persistence_adapter.ingestion_context(
+            command.workspace_id, command.environment_id, "projection_run"
+        ),
+        clock=lambda: NOW,
+    )
+
+    await lifecycle.advance(case.plan, ProjectionRunState.BUILDING)
+    await lifecycle.advance(case.plan, ProjectionRunState.VALIDATING)
+    await completion.complete(case.mapping)
+    await lifecycle.advance(case.plan, ProjectionRunState.COMPLETE)
+
+    async with persistence_adapter.uow_factory(case.context) as uow:
+        transitions = await uow.projections.list_transitions(
+            case.plan.command.projection_run_id
+        )
+        await uow.rollback()
+    assert transitions[-1].state is ProjectionRunState.COMPLETE
 
 
 @pytest.mark.asyncio

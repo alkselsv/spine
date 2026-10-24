@@ -5903,7 +5903,15 @@ class _PostgreSQLProjectionRepository(_PostgreSQLProjectionSnapshotMixin, Projec
     async def append_transition(self, transition: ProjectionRunTransition) -> ProjectionRunTransition:
         self._uow._guard_active()
         self._scoped(transition)
-        await self._open_run(transition.projection_run_id, transition.projection_candidate_id)
+        run = await self._resolve_run(transition.projection_run_id)
+        if run is None or run.projection_candidate_id != transition.projection_candidate_id:
+            await self._uow._fail(ConstraintConflictError("Projection candidate lineage is invalid."))
+        if (
+            run.candidate_state is ProjectionCandidateState.SEALED
+            and transition.state
+            not in (ProjectionRunState.COMPLETE, ProjectionRunState.FAILED)
+        ):
+            await self._uow._fail(OptimisticConflictError("Projection candidate is sealed."))
         predecessor = None
         if transition.predecessor_transition_id is not None:
             predecessor_row = (

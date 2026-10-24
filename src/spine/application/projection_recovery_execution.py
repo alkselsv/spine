@@ -212,9 +212,40 @@ class PersistenceCanonicalProjectionRecoveryResolver:
                     "active projection scope does not match recovery request"
                 )
 
-            config = publication.projection_config_version
+            existing_run = (
+                await uow.projections.resolve_run(run_id) if successor else None
+            )
+            if existing_run is not None:
+                if (
+                    existing_run.workspace_id != request.workspace_id
+                    or existing_run.environment_id != request.environment_id
+                    or existing_run.projection_kind != payload.projection_kind
+                    or existing_run.operation is not ProjectionOperation.CATCH_UP
+                    or existing_run.command_identity != command_identity
+                    or existing_run.command_digest != payload.command_digest
+                    or existing_run.canonical_boundary_id
+                    != payload.canonical_boundary_id
+                ):
+                    raise ProjectionMappingConflictError(
+                        "successor run does not match request"
+                    )
+                config = await uow.projections.resolve_config_version(
+                    existing_run.projection_config_version_id
+                )
+                if config is None or config.projection_kind != payload.projection_kind:
+                    raise ProjectionMappingConflictError(
+                        "successor run configuration is unavailable"
+                    )
+                partition_run_id = existing_run.projection_run_id
+                partition_candidate_id = existing_run.projection_candidate_id
+            else:
+                config = publication.projection_config_version
+                partition_run_id = publication.projection_snapshot.projection_run_id
+                partition_candidate_id = (
+                    publication.projection_snapshot.projection_candidate_id
+                )
             active_partitions = await uow.projections.list_partitions(
-                publication.projection_snapshot.projection_run_id
+                partition_run_id
             )
             if len(active_partitions) != 1:
                 raise ProjectionMappingError(
@@ -222,10 +253,8 @@ class PersistenceCanonicalProjectionRecoveryResolver:
                 )
             active_partition = active_partitions[0]
             if (
-                active_partition.projection_run_id
-                != publication.projection_snapshot.projection_run_id
-                or active_partition.projection_candidate_id
-                != publication.projection_snapshot.projection_candidate_id
+                active_partition.projection_run_id != partition_run_id
+                or active_partition.projection_candidate_id != partition_candidate_id
                 or active_partition.workspace_id != request.workspace_id
                 or active_partition.environment_id != request.environment_id
             ):
@@ -267,7 +296,7 @@ class PersistenceCanonicalProjectionRecoveryResolver:
                     publication.canonical_boundary_manifest_digest
                 )
                 accepted_through_generation = publication.accepted_through_generation
-            run = ProjectionRun(
+            run = existing_run or ProjectionRun(
                 projection_run_id=run_id,
                 projection_candidate_id=candidate_id,
                 workspace_id=request.workspace_id,
