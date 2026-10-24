@@ -4882,13 +4882,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261118_55_runtime_outbox_correlation_read.py",
         "20261119_56_qualification_authority_expiry.py",
         "20261120_57_qualification_target_bindings.py",
+        "20261121_58_ingestion_qualification_failure_codes.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261121_58_injected_failure.py").write_text(
+    (target / "versions" / "20261122_59_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261121_58'\n"
-        "down_revision = '20261120_57'\n"
+        "revision = '20261122_59'\n"
+        "down_revision = '20261121_58'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"
