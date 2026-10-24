@@ -19,7 +19,10 @@ from spine.application.persistence.projection import (
 )
 from spine.application.persistence.delivery import OutboxDeliveryRouteRegistry
 from spine.application.projection_control import ProjectionRecoveryRequestService
-from spine.application.outbox import TerminalOutboxConsumerFailure
+from spine.application.outbox import (
+    RetryableOutboxConsumerFailure,
+    TerminalOutboxConsumerFailure,
+)
 from spine.application.telemetry import (
     OperationalComponent,
     OperationalObservationEmitter,
@@ -33,6 +36,11 @@ from spine.application.projection_recovery_execution import (
     MappingProjectionRecoveryResultRecorder,
     ProjectionRecoveryRequestConsumer,
     ProjectionRecoveryRequestEnvelope,
+)
+from spine.application.projection_publication_faults import (
+    ProjectionPublicationFaultInjected,
+    ProjectionPublicationFaultReason,
+    ProjectionPublicationFaultRejected,
 )
 from spine.infrastructure.persistence.projection_composition import (
     PROJECTION_REQUEST_CONSUMER_NAME,
@@ -106,6 +114,24 @@ class _Completion:
 
     async def complete(self, mapping) -> None:
         self.mappings.append(mapping)
+
+
+class _InjectedFaultCompletion:
+    async def complete(self, mapping) -> None:
+        del mapping
+        raise ProjectionPublicationFaultInjected(
+            ProjectionPublicationFaultReason.AFTER_VALIDATION_BEFORE_ACTIVATION,
+            audit_event_id=UUID(int=9255),
+        )
+
+
+class _RejectingQualificationGuard:
+    def __init__(self) -> None:
+        self.commands = []
+
+    def assert_command_allowed(self, command) -> None:
+        self.commands.append(command)
+        raise ProjectionPublicationFaultRejected()
 
 
 class _ReceiptBuilder:
@@ -217,6 +243,59 @@ async def test_successor_intent_uses_rebuild_worker_without_active_recovery_payl
     assert resolver.requests[0].payload.canonical_boundary_id == UUID(int=9253)
     assert projection.recorded_commands == (command,)
     assert completion.mappings == recorder.results
+
+
+@pytest.mark.asyncio
+async def test_successor_fault_binding_mismatch_is_rejected_before_physical_io() -> None:
+    intent = _successor_intent()
+    command = _rebuild_command()
+    projection = DeterministicContextProjection()
+    guard = _RejectingQualificationGuard()
+    consumer = ProjectionRecoveryRequestConsumer(
+        canonical_resolver=_Resolver(command),
+        projection=projection,
+        result_recorder=_Recorder(),
+        qualification_guard=guard,
+    )
+
+    with pytest.raises(TerminalOutboxConsumerFailure) as captured:
+        await consumer.consume(
+            intent,
+            DiagnosticContext(
+                trace_id=intent.trace_id,
+                correlation_id=intent.correlation_id,
+                causation_id=intent.event_id,
+            ),
+        )
+
+    assert captured.value.code == "projection.qualification.binding_rejected"
+    assert guard.commands == [command]
+    assert projection.recorded_commands == ()
+
+
+@pytest.mark.asyncio
+async def test_successor_injected_publication_fault_preserves_safe_retry_code() -> None:
+    intent = _successor_intent()
+    consumer = ProjectionRecoveryRequestConsumer(
+        canonical_resolver=_Resolver(_rebuild_command()),
+        projection=DeterministicContextProjection(),
+        result_recorder=_Recorder(),
+        completion=_InjectedFaultCompletion(),
+    )
+
+    with pytest.raises(RetryableOutboxConsumerFailure) as captured:
+        await consumer.consume(
+            intent,
+            DiagnosticContext(
+                trace_id=intent.trace_id,
+                correlation_id=intent.correlation_id,
+                causation_id=intent.event_id,
+            ),
+        )
+
+    assert captured.value.code == (
+        "projection.qualification.after_validation_before_activation"
+    )
 
 
 @pytest.mark.asyncio

@@ -55,6 +55,11 @@ from spine.application.projection_result_mapping import (
     ProjectionMappingResult,
     ProjectionPreparationStatus,
 )
+from spine.application.projection_publication_faults import (
+    ProjectionPublicationFaultInjected,
+    ProjectionPublicationFaultRejected,
+    ProjectionPublicationQualificationGuard,
+)
 from spine.application.projection_request_execution import ProjectionRequestCompletion
 from spine.application.projection_identity import projection_recovery_entity_id
 from spine.memory.contracts import (
@@ -723,6 +728,7 @@ class ProjectionRecoveryRequestConsumer:
         completion: ProjectionRequestCompletion | None = None,
         lifecycle: ProjectionRecoveryLifecycle | None = None,
         operational_observer: OperationalObservationEmitter | None = None,
+        qualification_guard: ProjectionPublicationQualificationGuard | None = None,
     ) -> None:
         self._canonical_resolver = canonical_resolver
         self._projection = projection
@@ -730,6 +736,7 @@ class ProjectionRecoveryRequestConsumer:
         self._completion = completion
         self._lifecycle = lifecycle
         self._operational_observer = operational_observer
+        self._qualification_guard = qualification_guard
 
     async def consume(
         self,
@@ -753,6 +760,14 @@ class ProjectionRecoveryRequestConsumer:
             ) from None
 
         self._validate_plan(request, plan)
+        if (
+            plan.action is ProjectionRecoveryAction.SUCCESSOR
+            and self._qualification_guard is not None
+        ):
+            try:
+                self._qualification_guard.assert_command_allowed(plan.command)
+            except ProjectionPublicationFaultRejected as error:
+                raise TerminalOutboxConsumerFailure(error.reason_code) from None
         requires_completion = (
             plan.action is ProjectionRecoveryAction.SUCCESSOR
             and self._completion is not None
@@ -854,6 +869,8 @@ class ProjectionRecoveryRequestConsumer:
             raise TerminalOutboxConsumerFailure(
                 "projection.recovery.canonical_rejected"
             ) from None
+        except ProjectionPublicationFaultInjected as error:
+            raise RetryableOutboxConsumerFailure(error.reason_code) from None
         except Exception:
             raise RetryableOutboxConsumerFailure(
                 "projection.recovery.handoff_retryable"

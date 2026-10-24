@@ -51,6 +51,9 @@ from spine.application.projection_recovery_execution import (
     ProjectionRecoveryRequestEnvelope,
     ProjectionRecoveryResultRecorder,
 )
+from spine.application.projection_publication_faults import (
+    ProjectionPublicationQualificationGuard,
+)
 from spine.application.telemetry import OperationalObservationEmitter
 from spine.application.document_ingestion import (
     PROJECTION_REQUEST_EVENT_TYPE,
@@ -187,6 +190,7 @@ def build_postgresql_cognee_projection_delivery_binding(
     parsed_artifacts: ParsedArtifactRepository | None = None,
     receipt_builder: AdapterProjectionReceiptBuilder | None = None,
     result_bridge: ProjectionResultRecorder | None = None,
+    qualification_guard: ProjectionPublicationQualificationGuard | None = None,
 ) -> OutboxConsumerBinding:
     """Compose ordinary and recovery delivery with the owned PostgreSQL/Cognee adapters."""
 
@@ -242,6 +246,7 @@ def build_postgresql_cognee_projection_delivery_binding(
             clock=clock,
         ),
         operational_observer=operational_observer,
+        qualification_guard=qualification_guard,
     )
     return build_projection_delivery_route_binding(
         projection_request_consumer=request_consumer,
@@ -529,6 +534,8 @@ def create_production_outbox_worker(
     projection_request_preparer: Callable[
         [OutboxIntent], Awaitable[None]
     ] | None = None,
+    projection_qualification_guard: ProjectionPublicationQualificationGuard
+    | None = None,
 ) -> OutboxWorker:
     """Build the existing outbox worker with one production projection route."""
 
@@ -547,6 +554,7 @@ def create_production_outbox_worker(
         reference_id_source=reference_id_source,
         recovery_result_recorder=recovery_result_recorder,
         completion=projection_request_completion,
+        qualification_guard=projection_qualification_guard,
     )
     if projection_request_preparer is not None:
         projection_binding = prepare_projection_delivery_binding(
