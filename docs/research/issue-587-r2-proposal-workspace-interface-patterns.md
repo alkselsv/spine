@@ -529,4 +529,3 @@ Research resolution for **Research R2 proposal-workspace interface patterns**:
 This research satisfies the ticket's evidence criteria and makes the dependent
 prototype ready to start after the tracker dependency is released; it does not
 start or resolve that HITL prototype.
-
