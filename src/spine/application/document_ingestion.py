@@ -1052,7 +1052,7 @@ class DocumentIngestionOrchestrator:
         item: IngestionRunSource,
         upload: OriginalUploadOutcome,
     ):
-        now = self._now()
+        now = upload.write_receipt.finalized_at
         source = SourceObject(
             source_object_id=_source_object_id(request),
             workspace_id=request.workspace_id,

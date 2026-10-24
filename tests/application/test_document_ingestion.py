@@ -139,6 +139,7 @@ class _Ingestion:
         self.item = None
         self.transitions: list[IngestionTransition] = []
         self.binding = None
+        self.observation = None
         self.receipt: ProcessingReceipt | None = None
         self.failures = []
 
@@ -185,6 +186,7 @@ class _Ingestion:
     async def bind_source(self, command):
         if self.binding is None:
             self.binding = command.binding
+            self.observation = command.observation
             head = await self.resolve_item_head(command.item.ingestion_run_source_id)
             self.transitions.append(IngestionTransition(
                 ingestion_transition_id=_id("observed"), workspace_id=command.item.workspace_id,
@@ -231,6 +233,7 @@ class _Ingestion:
             self.item,
             list(self.transitions),
             self.binding,
+            self.observation,
             self.receipt,
         )
 
@@ -239,7 +242,8 @@ class _Ingestion:
         self.item = snapshot[1]
         self.transitions = list(snapshot[2])
         self.binding = snapshot[3]
-        self.receipt = snapshot[4]
+        self.observation = snapshot[4]
+        self.receipt = snapshot[5]
 
 
 class _Admissions:
@@ -258,9 +262,12 @@ class _Canonical:
     def __init__(self) -> None:
         self.calls = 0
         self.current_revision_id: UUID | None = None
+        self.expected_revision = None
 
     async def accept(self, command):
         self.calls += 1
+        if self.expected_revision is not None:
+            assert command.revision == self.expected_revision
         self.current_revision_id = command.revision.revision_id
         return command
 
@@ -386,11 +393,13 @@ def _orchestrator(
 @pytest.mark.asyncio
 async def test_pre_acceptance_fault_is_visible_and_retry_does_not_create_early_current_revision() -> None:
     parser_calls: list[int] = []
+    current_time = [NOW]
     orchestrator, _, _, canonical, _, ingestion = _orchestrator(
         b"qualification source\n",
         media_type="text/plain",
         parser_calls=parser_calls,
         pre_acceptance_faults=[True],
+        clock=lambda: current_time[0],
     )
 
     failed = await orchestrator.ingest(
@@ -403,6 +412,8 @@ async def test_pre_acceptance_fault_is_visible_and_retry_does_not_create_early_c
     assert ingestion.failures[0].code == "pre_acceptance_retryable"
     assert ingestion.failures[0].retryable is True
 
+    canonical.expected_revision = ingestion.observation.revision
+    current_time[0] = NOW + timedelta(minutes=5)
     retried = await orchestrator.ingest(
         request=_request("text/plain"), chunks=_stream(b"qualification source\n")
     )
