@@ -43,7 +43,6 @@ from spine.domain.projections import (
 
 PROJECTION_RUN_SCHEMA_VERSION = 2
 PROJECTION_RECEIPT_SCHEMA_VERSION = 1
-PROJECTION_RUN_OPERATION = PersistenceOperation("projection_run")
 PROJECTION_RECEIPT_OPERATION = PersistenceOperation("projection_receipt")
 PROJECTION_SEAL_SCHEMA_VERSION = 1
 PROJECTION_RESULT_SCHEMA_VERSION = 1
@@ -164,7 +163,7 @@ class ProjectionRunCommand:
     @classmethod
     def create(cls, *, run: ProjectionRun, idempotency_key: IdempotencyKey) -> "ProjectionRunCommand":
         digest = digest_command(
-            operation=PROJECTION_RUN_OPERATION,
+            operation=PersistenceOperation("projection_run"),
             operation_schema_version=PROJECTION_RUN_SCHEMA_VERSION,
             payload={
                 "run_id": run.projection_run_id,
@@ -739,7 +738,6 @@ def has_complete_physical_validation(
 __all__ = [
     "PROJECTION_RECOVERY_REQUESTED_OUTBOX_EVENT_TYPE",
     "PROJECTION_SUCCESSOR_REQUESTED_OUTBOX_EVENT_TYPE",
-    "PROJECTION_RUN_OPERATION",
     "PROJECTION_RECEIPT_SCHEMA_VERSION",
     "PROJECTION_RESULT_SCHEMA_VERSION",
     "PROJECTION_RUN_SCHEMA_VERSION",
