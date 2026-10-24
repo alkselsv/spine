@@ -1,0 +1,83 @@
+{
+  "schema_version": "issue-562-projection-publication:v1",
+  "ticket": 562,
+  "observed_at": "2026-10-24T09:15:25Z",
+  "target": {
+    "commit_sha": "9d75b1e0e8531ed3534806ab8fc5071901157ece",
+    "deployment_fingerprint": "47be5f0ac4e031de25a6b864ed9874a6a5a5acbef9653dd54fc7892cbf0ea823",
+    "workspace_id": "54400000-0000-4000-8000-00000000000a",
+    "environment_id": "54400000-0000-4000-8000-00000000000e",
+    "authorization_generation": 16,
+    "provider_profile_id": "cognee-approved-production",
+    "provider_profile_digest": "8935297e3def5e786f7e3d34db87d13c2106fbb7f82f8d695c747cee4fe1c84f"
+  },
+  "q16_01_target": {
+    "commit_sha": "9d75b1e0e8531ed3534806ab8fc5071901157ece",
+    "deployment_fingerprint": "47be5f0ac4e031de25a6b864ed9874a6a5a5acbef9653dd54fc7892cbf0ea823",
+    "workspace_id": "54400000-0000-4000-8000-00000000000a",
+    "environment_id": "54400000-0000-4000-8000-00000000000e",
+    "authorization_generation": 16,
+    "provider_profile_id": "cognee-approved-production",
+    "provider_profile_digest": "8935297e3def5e786f7e3d34db87d13c2106fbb7f82f8d695c747cee4fe1c84f"
+  },
+  "r4_target": {
+    "commit_sha": "9d75b1e0e8531ed3534806ab8fc5071901157ece",
+    "deployment_fingerprint": "47be5f0ac4e031de25a6b864ed9874a6a5a5acbef9653dd54fc7892cbf0ea823",
+    "workspace_id": "54400000-0000-4000-8000-00000000000a",
+    "environment_id": "54400000-0000-4000-8000-00000000000e",
+    "authorization_generation": 16,
+    "provider_profile_id": "cognee-approved-production",
+    "provider_profile_digest": "8935297e3def5e786f7e3d34db87d13c2106fbb7f82f8d695c747cee4fe1c84f"
+  },
+  "provider_compatibility": {
+    "schema_version": "projection-provider-compatibility:v1",
+    "source_run_id": "issue562-r6-001",
+    "evidence_kind": "fresh_physical_run",
+    "status": "not_verified",
+    "target": {
+      "commit_sha": "9d75b1e0e8531ed3534806ab8fc5071901157ece",
+      "deployment_fingerprint": "47be5f0ac4e031de25a6b864ed9874a6a5a5acbef9653dd54fc7892cbf0ea823",
+      "workspace_id": "54400000-0000-4000-8000-00000000000a",
+      "environment_id": "54400000-0000-4000-8000-00000000000e",
+      "authorization_generation": 16,
+      "provider_profile_id": "cognee-approved-production",
+      "provider_profile_digest": "8935297e3def5e786f7e3d34db87d13c2106fbb7f82f8d695c747cee4fe1c84f"
+    },
+    "approval_reference": "https://github.com/alkselsv/spine/issues/562#issuecomment-6382335412",
+    "run_authorization_reference": "https://github.com/alkselsv/spine/issues/562#issuecomment-6382335412",
+    "physical_report_sha256": null,
+    "passed_physical_gate_ids": [],
+    "production_approval": true
+  },
+  "observations": [
+    {
+      "scenario_id": "changed_source_head",
+      "status": "passed",
+      "evidence_references": [
+        "active-snapshot:1720972a-48fe-517e-8297-d7cb2c203ff0:one-stale-member",
+        "canonical-heads:9-content-2-tombstones",
+        "delivery:4ecde047-3ff9-4f82-872f-9dc1ce51271f:projection.recovery.canonical_rejected"
+      ]
+    },
+    {
+      "scenario_id": "rebuild_failure_preserves_active",
+      "status": "passed",
+      "evidence_references": [
+        "command:d185f024-bbf9-41cb-9aee-d068fcb77be0",
+        "active-before-after:1720972a-48fe-517e-8297-d7cb2c203ff0:generation-1:cas-1"
+      ]
+    },
+    {
+      "scenario_id": "safe_diagnostics",
+      "status": "passed",
+      "evidence_references": [
+        "trace:0add2a7f-1622-49f8-ac19-83d5096e4bfe",
+        "bounded-code:projection.recovery.canonical_rejected"
+      ]
+    }
+  ],
+  "status": "not_verified",
+  "reason_codes": [
+    "provider_compatibility_incompatible"
+  ]
+}
