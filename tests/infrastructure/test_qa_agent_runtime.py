@@ -213,6 +213,60 @@ def test_semantic_support_prompt_does_not_treat_absence_claims_as_grounded() -> 
 
 
 @pytest.mark.asyncio
+async def test_semantic_support_validator_classifies_unproven_absence_as_unsupported() -> None:
+    def provider(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        system_prompt = payload["messages"][0]["content"]
+        user_payload = json.loads(payload["messages"][1]["content"])
+        absence_rule = (
+            "Classify an absence claim as unsupported, not inconclusive"
+            in system_prompt
+        )
+        unproven_absence = (
+            user_payload["claim"] == "The evidence does not mention Beta."
+            and all(
+                "Beta" not in item["content"]
+                for item in user_payload["evidence"]
+            )
+        )
+        outcome = (
+            "unsupported"
+            if absence_rule and unproven_absence
+            else "inconclusive"
+        )
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": json.dumps({"outcome": outcome})}}]},
+        )
+
+    validator = ConfiguredSemanticSupportValidator(
+        api_key="synthetic",
+        model="synthetic",
+        endpoint="https://example.invalid/v1",
+        transport=httpx.MockTransport(provider),
+    )
+
+    request = semantic_request()
+    absence_claim = "The evidence does not mention Beta."
+    assessment = await validator.assess(
+        request.model_copy(
+            update={
+                "claim": request.claim.model_copy(
+                    update={
+                        "text": absence_claim,
+                        "location": request.claim.location.model_copy(
+                            update={"end_offset": len(absence_claim)}
+                        ),
+                    }
+                )
+            }
+        )
+    )
+
+    assert assessment.outcome is SemanticSupportOutcome.UNSUPPORTED
+
+
+@pytest.mark.asyncio
 async def test_semantic_support_validator_accepts_claim_reproduced_by_evidence() -> None:
     def provider(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)

@@ -43,6 +43,8 @@ _SEMANTIC_SUPPORT_SYSTEM_PROMPT = (
     "also supported when the evidence entails the complete claim. "
     "A claim that the documents are insufficient, omit a fact, or do not mention "
     "something is not supported unless the evidence explicitly establishes that absence. "
+    "Classify an absence claim as unsupported, not inconclusive, whenever the evidence "
+    "does not explicitly establish the claimed absence. "
     "Do not add explanations or infer facts absent from the evidence."
 )
 SEMANTIC_SUPPORT_POLICY_BINDING = "qa.semantic-support:r2"
