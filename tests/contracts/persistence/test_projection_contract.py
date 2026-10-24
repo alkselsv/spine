@@ -32,6 +32,10 @@ from spine.application.projection_recovery_execution import (
     ProjectionRecoveryRequestEnvelope,
 )
 from spine.application.projection_control import ProjectionRecoveryRequestService
+from spine.application.projection_publication_faults import (
+    ProjectionPublicationFaultInjected,
+    ProjectionPublicationFaultReason,
+)
 from spine.application.projection_result_mapping import (
     AdapterProjectionReceipt,
     ProjectionMappingHandoff,
@@ -49,6 +53,7 @@ from spine.domain.projections import ProjectionActivationKind, PublishedActivePu
 from spine.domain.projections import (
     OntologyVersion,
     ProjectionConfigVersion,
+    ProjectionCandidateState,
     ProjectionOperation,
     ProjectionPartition,
     ProjectionReceipt,
@@ -73,6 +78,10 @@ from spine.memory.contracts import (
     ProjectionResult,
 )
 from spine.workers.runtime import ProjectionPublicationCompletion
+from spine.infrastructure.projection_publication_fault_injection import (
+    ProjectionPublicationFaultController,
+    ProjectionPublicationFaultInjectionProfile,
+)
 from tests.contracts.persistence.test_canonical_acceptance_contract import (
     _audit,
     _canonical_outbox,
@@ -1280,13 +1289,14 @@ async def test_projection_successor_public_resolver_rejects_non_unique_receipt(
         )
 
 
-@pytest.mark.asyncio
-async def test_projection_successor_public_resolver_retains_tombstone(
+async def _prepare_projection_successor_tombstone_case(
     persistence_adapter,
-) -> None:
+    *,
+    seed: int,
+):
     prepared = await _prepare_projection_publication(
         persistence_adapter,
-        seed=26200,
+        seed=seed,
         projection_kind="context",
     )
     activation = prepared.activated.activation
@@ -1294,7 +1304,7 @@ async def test_projection_successor_public_resolver_retains_tombstone(
     context = persistence_adapter.ingestion_context(
         activation.workspace_id, activation.environment_id, "projection_run"
     )
-    tombstone_revision = tombstone(case.source, UUID(int=26299))
+    tombstone_revision = tombstone(case.source, UUID(int=seed + 99))
     tombstone_provenance = provenance(
         case.source, tombstone_revision.revision_id, "event-2"
     )
@@ -1307,19 +1317,23 @@ async def test_projection_successor_public_resolver_retains_tombstone(
                 source=case.source,
                 revision=tombstone_revision,
                 provenance=tombstone_provenance,
-                idempotency_key=IdempotencyKey("successor-tombstone-observation-26200"),
+                idempotency_key=IdempotencyKey(
+                    f"successor-tombstone-observation-{seed}"
+                ),
             )
         )
         await uow.commit()
-    audit_id = UUID(int=26296)
-    outbox_id = UUID(int=26297)
-    acceptance_id = UUID(int=26295)
+    audit_id = UUID(int=seed + 96)
+    outbox_id = UUID(int=seed + 97)
+    acceptance_id = UUID(int=seed + 95)
     tombstone_acceptance = CanonicalAcceptanceCommand.create(
         source=case.source,
         revision=tombstone_revision,
         provenance=tombstone_provenance,
         expected_current_revision_id=case.revision.revision_id,
-        idempotency_key=IdempotencyKey("successor-tombstone-acceptance-26200"),
+        idempotency_key=IdempotencyKey(
+            f"successor-tombstone-acceptance-{seed}"
+        ),
         canonical_acceptance_id=acceptance_id,
         admission_decision_id=None,
         access_policy_version_id=None,
@@ -1358,11 +1372,15 @@ async def test_projection_successor_public_resolver_retains_tombstone(
             CanonicalBoundaryCaptureCommand.create(
                 projection_kind="context",
                 scope_version="r1",
-                idempotency_key=IdempotencyKey("successor-tombstone-boundary-26200"),
+                idempotency_key=IdempotencyKey(
+                    f"successor-tombstone-boundary-{seed}"
+                ),
             )
         )
         await uow.commit()
-    request = _successor_request(activation, captured, command_id=UUID(int=26298))
+    request = _successor_request(
+        activation, captured, command_id=UUID(int=seed + 98)
+    )
     resolver = PersistenceCanonicalProjectionRecoveryResolver(
         uow_factory=persistence_adapter.uow_factory,
         context_factory=lambda _: context,
@@ -1388,11 +1406,11 @@ async def test_projection_successor_public_resolver_retains_tombstone(
         artifact_integrity_digest="e" * 64,
         implementation_schema_version="cognee-context-projection:v1",
         implementation_metadata={"adapter_contract": "adapter:v1"},
-        idempotency_key="successor-tombstone-receipt-26200",
+        idempotency_key=f"successor-tombstone-receipt-{seed}",
         completed_at=NOW,
     )
     receipt = ProjectionReceipt(
-        projection_receipt_id=UUID(int=26290),
+        projection_receipt_id=UUID(int=seed + 90),
         projection_run_id=plan.command.projection_run_id,
         projection_candidate_id=plan.command.projection_candidate.candidate_id,
         projection_partition_id=plan.command.projection_candidate.partition_id,
@@ -1406,7 +1424,7 @@ async def test_projection_successor_public_resolver_retains_tombstone(
         counts={},
         implementation_schema_version="cognee-context-projection:v1",
         implementation_metadata={"adapter_contract": "adapter:v1"},
-        idempotency_receipt_id=UUID(int=26291),
+        idempotency_receipt_id=UUID(int=seed + 91),
         completed_at=NOW,
     )
     handoff = ProjectionMappingHandoff(
@@ -1414,7 +1432,9 @@ async def test_projection_successor_public_resolver_retains_tombstone(
         adapter_receipt=adapter_receipt,
         receipt_command=ProjectionReceiptCommand.create(
             receipt=receipt,
-            idempotency_key=IdempotencyKey("successor-tombstone-mapping-26200"),
+            idempotency_key=IdempotencyKey(
+                f"successor-tombstone-mapping-{seed}"
+            ),
         ),
         source_references=(),
     )
@@ -1428,8 +1448,12 @@ async def test_projection_successor_public_resolver_retains_tombstone(
     mapping = await gateway.accept(handoff)
 
     class PhysicalStore:
+        def __init__(self) -> None:
+            self.reads = 0
+
         async def physical_artifacts_for(self, **kwargs):
             del kwargs
+            self.reads += 1
             return ()
 
         def data_id_for(self, **kwargs):
@@ -1440,20 +1464,83 @@ async def test_projection_successor_public_resolver_retains_tombstone(
             del command, processing_receipt_id
             raise AssertionError("tombstone projection has no parsed content")
 
-    completion = ProjectionPublicationCompletion(
+    return SimpleNamespace(
+        prepared=prepared,
+        plan=plan,
+        mapping=mapping,
+        context=context,
+        physical_store=PhysicalStore(),
+        artifact_resolver=ArtifactResolver(),
+    )
+
+
+def _projection_fault_controller(persistence_adapter, case, *, boundary: str):
+    reasons = {
+        "before_physical_validation": (
+            "projection.qualification.before_physical_validation"
+        ),
+        "after_validation_before_activation": (
+            "projection.qualification.after_validation_before_activation"
+        ),
+    }
+    fault_profile = ProjectionPublicationFaultInjectionProfile.model_validate(
+        {
+            "profile_id": "qualification-issue578-contract",
+            "profile_version": "v1",
+            "commit_sha": "a" * 40,
+            "deployment_fingerprint": "b" * 64,
+            "provider_profile_digest": "c" * 64,
+            "workspace_id": case.plan.command.workspace_id,
+            "environment_id": case.plan.command.environment_id,
+            "projection_kind": "context",
+            "successor_command_identity": case.plan.command.command_identity,
+            "rules": (
+                {
+                    "boundary": boundary,
+                    "reason_code": reasons[boundary],
+                },
+            ),
+        }
+    )
+    return ProjectionPublicationFaultController(
+        fault_profile,
         uow_factory=persistence_adapter.uow_factory,
         context_factory=lambda workspace_id, environment_id, operation, run_id: (
             persistence_adapter.ingestion_context(
                 workspace_id, environment_id, operation
             )
         ),
-        artifact_resolver=ArtifactResolver(),
-        physical_store=PhysicalStore(),
         clock=lambda: NOW,
     )
-    await completion.complete(mapping)
 
-    async with persistence_adapter.uow_factory(context) as uow:
+
+def _projection_completion(persistence_adapter, case, *, fault_controller=None):
+    return ProjectionPublicationCompletion(
+        uow_factory=persistence_adapter.uow_factory,
+        context_factory=lambda workspace_id, environment_id, operation, run_id: (
+            persistence_adapter.ingestion_context(
+                workspace_id, environment_id, operation
+            )
+        ),
+        artifact_resolver=case.artifact_resolver,
+        physical_store=case.physical_store,
+        clock=lambda: NOW,
+        fault_injector=fault_controller,
+    )
+
+
+@pytest.mark.asyncio
+async def test_projection_successor_public_resolver_retains_tombstone(
+    persistence_adapter,
+) -> None:
+    case = await _prepare_projection_successor_tombstone_case(
+        persistence_adapter, seed=26200
+    )
+    completion = _projection_completion(persistence_adapter, case)
+
+    await completion.complete(case.mapping)
+
+    async with persistence_adapter.uow_factory(case.context) as uow:
         publication = await uow.projections.resolve_active_publication("context")
         assert isinstance(publication, PublishedActivePublication)
         members = await uow.projections.list_snapshot_members(
@@ -1464,6 +1551,78 @@ async def test_projection_successor_public_resolver_retains_tombstone(
     assert publication.projection_snapshot.projection_kind == "context"
     assert len(members) == 1
     assert members[0].disposition is ProjectionSnapshotMemberDisposition.TOMBSTONED
+
+
+@pytest.mark.asyncio
+async def test_projection_pre_validation_fault_avoids_physical_read_and_preserves_active(
+    persistence_adapter,
+) -> None:
+    case = await _prepare_projection_successor_tombstone_case(
+        persistence_adapter, seed=26300
+    )
+    controller = _projection_fault_controller(
+        persistence_adapter, case, boundary="before_physical_validation"
+    )
+    completion = _projection_completion(
+        persistence_adapter, case, fault_controller=controller
+    )
+
+    with pytest.raises(ProjectionPublicationFaultInjected) as before_validation:
+        await completion.complete(case.mapping)
+    assert (
+        before_validation.value.reason
+        is ProjectionPublicationFaultReason.BEFORE_PHYSICAL_VALIDATION
+    )
+    async with persistence_adapter.uow_factory(case.context) as uow:
+        active = await uow.projections.resolve_active_publication("context")
+        run_after_first_fault = await uow.projections.resolve_run(
+            case.plan.command.projection_run_id
+        )
+        await uow.rollback()
+    assert case.physical_store.reads == 0
+    assert isinstance(active, PublishedActivePublication)
+    assert (
+        active.projection_snapshot.projection_snapshot_id
+        == case.prepared.assembled.value.projection_snapshot_id
+    )
+    assert run_after_first_fault.candidate_state is not ProjectionCandidateState.SEALED
+
+
+@pytest.mark.asyncio
+async def test_projection_post_validation_fault_retains_seal_and_preserves_active(
+    persistence_adapter,
+) -> None:
+    case = await _prepare_projection_successor_tombstone_case(
+        persistence_adapter, seed=26400
+    )
+    controller = _projection_fault_controller(
+        persistence_adapter,
+        case,
+        boundary="after_validation_before_activation",
+    )
+    completion = _projection_completion(
+        persistence_adapter, case, fault_controller=controller
+    )
+
+    with pytest.raises(ProjectionPublicationFaultInjected) as before_activation:
+        await completion.complete(case.mapping)
+    assert (
+        before_activation.value.reason
+        is ProjectionPublicationFaultReason.AFTER_VALIDATION_BEFORE_ACTIVATION
+    )
+    async with persistence_adapter.uow_factory(case.context) as uow:
+        active = await uow.projections.resolve_active_publication("context")
+        run_after_second_fault = await uow.projections.resolve_run(
+            case.plan.command.projection_run_id
+        )
+        await uow.rollback()
+    assert case.physical_store.reads == 1
+    assert isinstance(active, PublishedActivePublication)
+    assert (
+        active.projection_snapshot.projection_snapshot_id
+        == case.prepared.assembled.value.projection_snapshot_id
+    )
+    assert run_after_second_fault.candidate_state is ProjectionCandidateState.SEALED
 
 
 @pytest.mark.asyncio

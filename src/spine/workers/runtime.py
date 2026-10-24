@@ -50,6 +50,10 @@ from spine.application.physical_projection_validation import (
     PhysicalProjectionEvidenceCoordinator,
     PhysicalProjectionReconciliationRequest,
 )
+from spine.application.projection_publication_faults import (
+    ProjectionPublicationFaultBoundary,
+    ProjectionPublicationFaultInjector,
+)
 from spine.application.projection_result_mapping import ProjectionMappingResult
 from spine.application.projection_identity import projection_publication_entity_id
 from spine.infrastructure.db.settings import (
@@ -68,6 +72,11 @@ from spine.infrastructure.local_cognee_provider_guards import (
     LocalCogneeProviderSecretPresenceSettings,
     build_local_cognee_provider_guards,
 )
+from spine.infrastructure.projection_publication_fault_injection import (
+    ProjectionPublicationFaultController,
+    ProjectionPublicationFaultInjectionSettings,
+)
+from spine.infrastructure.qa_deployment_settings import ProductionQAADeploymentSettings
 from spine.infrastructure.outbox.delivery import PostgreSQLOutboxDeliveryRepository
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.persistence.parsed_artifacts import PostgreSQLParsedArtifactRepository
@@ -132,6 +141,7 @@ class OutboxWorkerSettings(BaseSettings):
     )
 
     service_principal_id: UUID
+    commit_sha: str = Field(default="0" * 40, pattern=r"^[a-f0-9]{40}$")
     identity: str = Field(
         default="outbox-dispatcher", pattern=r"^[a-z][a-z0-9_.:-]{0,63}$"
     )
@@ -521,9 +531,19 @@ class ProjectionPublicationCompletion:
     artifact_resolver: _DurableArtifactResolver
     physical_store: CogneeChunkProjectionStore
     clock: object
+    fault_injector: ProjectionPublicationFaultInjector | None = None
 
     async def complete(self, mapping: ProjectionMappingResult) -> None:
         command = mapping.handoff.command
+        run = await self._run(command)
+        if (
+            run.candidate_state is not ProjectionCandidateState.SEALED
+            and self.fault_injector is not None
+        ):
+            await self.fault_injector.inject_if_bound(
+                command,
+                ProjectionPublicationFaultBoundary.BEFORE_PHYSICAL_VALIDATION,
+            )
         evidence = await self._evidence(mapping)
         coordinator = PhysicalProjectionEvidenceCoordinator(
             uow_factory=self.uow_factory,  # type: ignore[arg-type]
@@ -534,7 +554,6 @@ class ProjectionPublicationCompletion:
                 command.projection_run_id,
             ),
         )
-        run = await self._run(command)
         if run.candidate_state is not ProjectionCandidateState.SEALED:
             sealed = await coordinator.validate_and_seal(
                 evidence,
@@ -550,6 +569,11 @@ class ProjectionPublicationCompletion:
         evidence_digest = run.candidate_evidence_digest
         if evidence_digest is None:
             raise ValueError("sealed projection candidate has no evidence digest")
+        if self.fault_injector is not None:
+            await self.fault_injector.inject_if_bound(
+                command,
+                ProjectionPublicationFaultBoundary.AFTER_VALIDATION_BEFORE_ACTIVATION,
+            )
 
         active = await self._active(command)
         snapshot_id = _publication_id(command, "snapshot")
@@ -942,6 +966,18 @@ def create_production_outbox_worker_runtime(
         cognee_binding_configuration
         or CogneeWorkerBindingSettings().load_configuration()
     )
+    fault_profile = ProjectionPublicationFaultInjectionSettings().load_profile()
+    unbound_fault_controller = ProjectionPublicationFaultController(fault_profile)
+    if unbound_fault_controller.enabled:
+        deployment_profile = ProductionQAADeploymentSettings().load_profile()
+        unbound_fault_controller.assert_runtime_binding(
+            commit_sha=settings.commit_sha,
+            deployment_fingerprint=deployment_profile.deployment_fingerprint,
+            provider_profile_digest=cognee_configuration.profile.profile_digest,
+            isolated_development=(
+                deployment_profile.authentication_mode == "local_development"
+            ),
+        )
     if (
         secret_resolver is None
         and budget_authorization_resolver is None
@@ -1003,6 +1039,13 @@ def create_production_outbox_worker_runtime(
             trace_id=trace_id,
         )
 
+    fault_controller = ProjectionPublicationFaultController(
+        fault_profile,
+        uow_factory=persistence.uow_factory,
+        context_factory=context_for_scope,
+        clock=lambda: datetime.now(timezone.utc),
+    )
+
     parsed = PostgreSQLParsedArtifactRepository(
         runtime_sessions,
         context_factory=lambda workspace_id, environment_id: context_for_scope(
@@ -1056,6 +1099,7 @@ def create_production_outbox_worker_runtime(
         artifact_resolver=resolver,
         physical_store=physical_store,
         clock=lambda: datetime.now(timezone.utc),
+        fault_injector=fault_controller,
     )
     routes = OutboxDeliveryRouteRegistry(version="issue508.worker.v1")
     register_projection_delivery_routes(routes)
@@ -1124,6 +1168,7 @@ def create_production_outbox_worker_runtime(
             uow_factory=persistence.uow_factory,
             context_factory=context_for_scope,
         ).prepare,
+        projection_qualification_guard=fault_controller,
     )
     return ProductionOutboxWorkerRuntime(
         worker=worker,

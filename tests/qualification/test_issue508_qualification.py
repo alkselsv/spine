@@ -246,3 +246,18 @@ def test_issue508_compose_passes_opt_in_ingestion_fault_profile_only_to_api() ->
 
     assert binding in api
     assert compose.count(binding) == 1
+
+
+def test_issue578_compose_passes_projection_fault_profile_only_to_dispatcher() -> None:
+    compose = COMPOSE_PATH.read_text(encoding="utf-8")
+    binding = (
+        "SPINE_PROJECTION_PUBLICATION_FAULT_PROFILE_JSON: "
+        "${SPINE_PROJECTION_PUBLICATION_FAULT_PROFILE_JSON:-}"
+    )
+    dispatcher = compose.split("  outbox-dispatcher:", 1)[1].split(
+        "  qa-worker:", 1
+    )[0]
+
+    assert binding in dispatcher
+    assert "SPINE_WORKER_COMMIT_SHA: ${SPINE_QA_DEPLOYMENT_COMMIT_SHA}" in dispatcher
+    assert compose.count(binding) == 1

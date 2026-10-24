@@ -549,6 +549,16 @@ canonical acceptance. Processing retries use the existing operator command and
 remain idempotent; a pre-acceptance retry repeats the original upload command so
 canonical acceptance remains the only current-revision transition.
 
+Projection-publication qualification faults are likewise disabled by default
+and restricted to the isolated local deployment. Their immutable profile binds
+the exact commit, deployment and provider digests plus one tenant-scoped
+successor command. The two allowlisted boundaries run inside the ordinary
+validation/seal/CAS lifecycle. A PostgreSQL idempotency receipt consumes each
+fault once across retry or worker restart; injection never advances the active
+publication pointer and does not revive quarantined delivery rows. Fault
+consumption and its bounded `command.outcome` audit event commit atomically, so
+successful retry does not erase the qualification evidence.
+
 Canonical acceptance tombstone немедленно прекращает ordinary disclosure из
 published projections, caches, citations и derived evidence; asynchronous
 physical cleanup не продлевает доступ. Verified reappearance создаёт новую

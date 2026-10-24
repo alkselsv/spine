@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -10,6 +12,10 @@ from spine.application.outbox.dispatch import DispatchReport
 from spine.application.persistence.projection import PROJECTION_RECEIPT_OPERATION
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.cognee_worker_settings import CogneeWorkerConfigurationError
+from spine.infrastructure.cognee_worker_settings import CogneeWorkerBindingSettings
+from spine.infrastructure.projection_publication_fault_injection import (
+    ProjectionPublicationFaultInjectionProfile,
+)
 from spine.infrastructure.db.settings import (
     DispatcherDatabaseSettings,
     RuntimeDatabaseSettings,
@@ -23,6 +29,7 @@ from spine.workers.runtime import (
 )
 
 from tests.application.test_projection_result_mapping import _command
+from tests.infrastructure.test_cognee_worker_settings import binding_payload
 
 
 class RecordingWorker:
@@ -277,3 +284,86 @@ def test_runtime_missing_profile_binding_fails_closed_before_startup(
         )
 
     assert error.value.reason_code == "profile_binding_missing"
+
+
+def test_production_runtime_wires_enabled_projection_fault_controller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import spine.workers.runtime as runtime_module
+
+    configuration = CogneeWorkerBindingSettings(
+        binding_json=json.dumps(binding_payload())
+    ).load_configuration()
+    profile = ProjectionPublicationFaultInjectionProfile.model_validate(
+        {
+            "profile_id": "qualification-issue578",
+            "profile_version": "v1",
+            "commit_sha": "a" * 40,
+            "deployment_fingerprint": "b" * 64,
+            "provider_profile_digest": configuration.profile.profile_digest,
+            "workspace_id": UUID(int=57801),
+            "environment_id": UUID(int=57802),
+            "projection_kind": "context",
+            "successor_command_identity": "successor-000000000000000000000578",
+            "rules": (
+                {
+                    "boundary": "before_physical_validation",
+                    "reason_code": (
+                        "projection.qualification.before_physical_validation"
+                    ),
+                },
+            ),
+        }
+    )
+    monkeypatch.setattr(
+        runtime_module.ProjectionPublicationFaultInjectionSettings,
+        "load_profile",
+        lambda self: profile,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "ProductionQAADeploymentSettings",
+        lambda: SimpleNamespace(
+            load_profile=lambda: SimpleNamespace(
+                deployment_fingerprint="b" * 64,
+                authentication_mode="local_development",
+            )
+        ),
+    )
+    recorded: dict[str, bool] = {}
+
+    def build_worker(**kwargs: object) -> object:
+        guard = kwargs["projection_qualification_guard"]
+        completion = kwargs["projection_request_completion"]
+        recorded["guard_enabled"] = guard.enabled  # type: ignore[union-attr]
+        recorded["same_controller"] = completion.fault_injector is guard  # type: ignore[union-attr]
+        return object()
+
+    monkeypatch.setattr(runtime_module, "create_production_outbox_worker", build_worker)
+    monkeypatch.setattr(
+        runtime_module,
+        "CogneeChunkProjectionStore",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "CogneeStructuredRetrieval",
+        lambda: SimpleNamespace(),
+    )
+
+    runtime = runtime_module.create_production_outbox_worker_runtime(
+        runtime_database=RuntimeDatabaseSettings(
+            url="postgresql+psycopg://spine_runtime:secret@localhost/spine"
+        ),
+        dispatcher_database=DispatcherDatabaseSettings(
+            url="postgresql+psycopg://spine_dispatcher:secret@localhost/spine"
+        ),
+        worker_settings=OutboxWorkerSettings(
+            service_principal_id=UUID(int=500),
+            commit_sha="a" * 40,
+        ),
+        cognee_binding_configuration=configuration,
+    )
+
+    assert recorded == {"guard_enabled": True, "same_controller": True}
+    assert runtime.worker is not None
