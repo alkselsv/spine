@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from uuid import UUID
 
 import httpx
@@ -15,7 +16,11 @@ from spine.application.production_qa_deployment import (
 from spine.application.diagnostics import AuditEventRegistry, DiagnosticEventRegistry
 from spine.application.ingestion_history import IngestionHistoryPage
 from spine.auth import InMemoryAuthorizationDirectory, RoutePolicyRegistry
-from spine.infrastructure.auth import LocalAuthenticationSettings
+from spine.infrastructure.auth import (
+    InteractiveClientQualification,
+    LocalAuthenticationSettings,
+    OIDCAuthenticationSettings,
+)
 from spine.infrastructure.auth import RequestAuthorizationComposer, TrustedRequestContextBoundary
 from spine.infrastructure.db.readiness import load_migration_inventory
 from spine.infrastructure.db.settings import RuntimeDatabaseSettings
@@ -148,6 +153,93 @@ def _authorization_runtime() -> ApiAuthorizationRuntime:
         route_policies=route_policies,
         readiness_probe=authorization_ready,
     )
+
+
+def _fault_profile_json() -> str:
+    return json.dumps(
+        {
+            "schema_version": "spine-ingestion-fault-profile:v1",
+            "profile_id": "qualification-issue577",
+            "profile_version": "v1",
+            "deployment_profile_id": "spine-r1-local",
+            "deployment_profile_version": "2026.10.22",
+            "deployment_fingerprint": "a" * 64,
+            "rules": [
+                {
+                    "workspace_id": str(WORKSPACE_ID),
+                    "environment_id": str(ENVIRONMENT_ID),
+                    "command_identity": "api.document.upload." + "a" * 32,
+                    "boundary": "parser",
+                    "reason_code": "parser_retryable",
+                }
+            ],
+        }
+    )
+
+
+def test_production_app_enables_exact_bound_ingestion_fault_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SPINE_INGESTION_FAULT_PROFILE_JSON", _fault_profile_json())
+    original_build = runtime_module.build_production_ingestion
+    captured: dict[str, bool] = {}
+
+    def capture_fault_controller(**arguments: object):
+        controller = arguments.get("fault_controller")
+        captured["enabled"] = bool(
+            controller is not None and getattr(controller, "enabled", False)
+        )
+        return original_build(**arguments)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        runtime_module,
+        "build_production_ingestion",
+        capture_fault_controller,
+    )
+
+    application = _production_app()
+
+    assert application.state.ingestion_fault_profile_enabled is True
+    assert captured == {"enabled": True}
+
+
+def test_production_app_rejects_fault_profile_for_oidc_deployment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SPINE_INGESTION_FAULT_PROFILE_JSON", _fault_profile_json())
+    baseline = _production_app()
+    oidc_settings = OIDCAuthenticationSettings(
+        configuration_version="issue-577-oidc",
+        issuer="https://identity.example.test/tenant",
+        audience="https://api.spine.example.test",
+        qualified_interactive_clients=(
+            InteractiveClientQualification(
+                client_id="spine-web",
+                configuration_version="issue-577-oidc",
+                issuer="https://identity.example.test/tenant",
+                audience="https://api.spine.example.test",
+                client_credentials_for_audience_disabled=True,
+                evidence_reference="qualification-fixture",
+            ),
+        ),
+    )
+    api_settings = baseline.state.production_api_settings.model_copy(
+        update={"authentication_mode": "oidc"}
+    )
+    profile = _deployment_profile(
+        authentication_profile_id="issue-577-oidc",
+        authentication_mode="oidc",
+    )
+
+    with pytest.raises(ValueError) as raised:
+        create_production_app(
+            database_settings=baseline.state.production_database_settings,
+            authentication_settings=oidc_settings,
+            api_settings=api_settings,
+            deployment_profile=profile,
+        )
+
+    assert str(raised.value) == "INGESTION_FAULT_PROFILE_FORBIDDEN"
 
 
 def _production_app_with_empty_ingestion_history(

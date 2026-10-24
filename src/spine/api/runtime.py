@@ -179,13 +179,16 @@ def create_production_app(
     fault_controller = IngestionFaultController(
         IngestionFaultInjectionSettings().load_profile()
     )
+    authentication_mode = _validate_authentication_mode(
+        resolved_api, resolved_authentication
+    )
+    fault_controller.assert_qualification_deployment(
+        isolated_development=authentication_mode == "local_development"
+    )
     fault_controller.assert_deployment_binding(
         profile_id=resolved_profile.profile_id,
         profile_version=resolved_profile.profile_version,
         deployment_fingerprint=resolved_profile.deployment_fingerprint,
-    )
-    authentication_mode = _validate_authentication_mode(
-        resolved_api, resolved_authentication
     )
     if (
         resolved_profile.release_identity != resolved_api.build_version

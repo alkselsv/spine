@@ -3,10 +3,19 @@
 Fault injection is disabled unless `SPINE_INGESTION_FAULT_PROFILE_JSON` is set
 on the isolated qualification API deployment. The v1 profile is immutable and
 bound to the running Q&A deployment profile ID, version and fingerprint. Startup
-fails closed if any binding differs. Both profile IDs must begin with
-`qualification-`; it contains only synthetic workspace/environment IDs,
-server-generated command identities, one of the three fixed boundaries and its
-matching safe reason code.
+fails closed if any binding differs. The fault profile's own `profile_id` must
+begin with `qualification-`; `deployment_profile_id` must exactly equal the
+real running profile, such as `spine-local-qa`. It contains only synthetic
+workspace/environment IDs, server-generated command identities, one of the
+three fixed boundaries and its matching safe reason code.
+
+Repository Compose passes the optional variable only to the API process. An
+unset or empty value keeps injection disabled; workers and the dispatcher never
+receive the profile. Configure the JSON before creating or force-recreating the
+API container, then verify readiness before starting a qualification mutation.
+The API also rejects an enabled profile unless its independently bound
+authentication mode is `local_development`; OIDC deployments cannot enable
+qualification faults even when all profile identifiers match.
 
 The profile may arm several distinct commands in one deployment. Each rule is
 consumed once per API process, and the ingestion failure ledger prevents a
@@ -22,8 +31,8 @@ non-secret references):
   "schema_version": "spine-ingestion-fault-profile:v1",
   "profile_id": "qualification-issue561",
   "profile_version": "r1",
-  "deployment_profile_id": "qualification-q16-01",
-  "deployment_profile_version": "r1",
+  "deployment_profile_id": "spine-local-qa",
+  "deployment_profile_version": "v1",
   "deployment_fingerprint": "<64 lowercase hex characters>",
   "rules": [
     {
