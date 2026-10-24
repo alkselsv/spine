@@ -48,26 +48,26 @@ platform.
       `AgentRequest`/`AgentResponse` и полный `AgentExecutionContext`.
       `implemented`, `qualified: deterministic offline contract`,
       `integrated: R1 candidate generation and typed artifacts`,
-      `not integrated: production AnswerQuestionCapability composition`.
+      `integrated and qualified: deployed R1 AnswerQuestionCapability composition`
+      в Q16-01 и governed browser flow.
 - [x] Явный registry/factory, structural `AgentHandler`, adapter async-функций,
       `EventSink`, cooperative cancellation и разделение runtime/workflow retry.
       `implemented`, `qualified: deterministic offline contract`,
-      `integrated: durable R1 Ask lifecycle on contract/disposable boundaries`,
-      `not integrated: production composition and Tool Gateway`.
+      `integrated and qualified: durable deployed R1 Ask lifecycle через общий
+      API / Temporal / observer path`; Tool Gateway остаётся вне R1 scope.
 - [ ] Workspace и environment context во всех API-командах.
       `implemented and qualified: identity/request/persistence foundation`;
       `integrated: /api/v1 control-plane and Q&A resources`;
       `not integrated by design: legacy /ask and /ingest compatibility path`.
-- [ ] `SourceObject`, `SourceRevision`, immutable originals и provenance locators.
-      `implemented and integrated: canonical ingestion and Knowledge resources`;
-      `qualified: supported local PostgreSQL/filesystem ingestion profile`;
-      `not qualified: complete R1 path and deployment profile`.
-- [ ] Context Broker с Cognee как заменяемой retrieval-проекцией.
+- [x] `SourceObject`, `SourceRevision`, immutable originals и provenance locators.
+      `implemented, integrated and qualified`: deployed five-format canonical
+      ingestion, version/replacement/tombstone lifecycle и stable locators прошли
+      Q16-02 R4 (#561).
+- [x] Context Broker с Cognee как заменяемой retrieval-проекцией.
       `implemented: provider-neutral projection and authorized retrieval contracts`;
-      `integrated and qualified: deterministic offline Context Broker flow`;
-      `production qualification: no-go` для PostgreSQL + Neo4j + PGVector
-      (#212): configured physical provider проверен локально, 9 из 10 gates
-      пройдены; canonical lifecycle gate не пройден, deployment profile не проверен.
+      `integrated and qualified`: deterministic/offline contracts и configured
+      Cognee 1.5.4 + PostgreSQL 17 + Neo4j + PGVector profile; все physical gates,
+      включая canonical lifecycle separation, прошли (#212, #507, #562).
 - [x] Единые trace ID, structured errors и audit events.
       `implemented`, `qualified: offline diagnostics/delivery foundation`,
       `integrated: API, outbox, workers, projection, Q&A and no-log diagnosis`;
@@ -75,7 +75,7 @@ platform.
 - [x] Минимальный app shell и сгенерированный API client.
       `implemented and qualified: reproducible OpenAPI generation, scoped typed
       client and TanStack Query boundary`; R1 Knowledge, Chat and Runs resources
-      реализованы и проходят controlled browser qualification.
+      прошли controlled и deployed governed browser qualification (#508, #560).
 
 R0 не является самостоятельным продуктовым релизом: задачи из него выполняются
 по мере необходимости для R1.
@@ -92,54 +92,60 @@ R0 не является самостоятельным продуктовым �
 
 ### Scope
 
-Ни один R1 scope item пока не имеет одновременно статусы `implemented`,
-`integrated` и `qualified` на полном production-capable пользовательском пути.
-Ingestion, authorization, projection/retrieval contracts, grounded-answer
-contracts, durable Ask lifecycle, Knowledge/Chat UI, diagnostics и evaluation
-уже реализованы и квалифицированы на явно ограниченных границах. Governed flow
-`upload → projection → answer → citations → UI` ещё не собран одной production
-композицией и не проверен реальным benchmark.
+Основной governed flow `upload → projection → answer → citations → UI` собран
+одной production-capable композицией и квалифицирован на изолированном локальном
+deployment profile: runtime readiness (#560), пятиформатный canonical ingestion
+(#561), physical projection publication/recovery (#562) и реальный browser-flow
+без API mocking (#508) имеют `PASS`. Это не завершает релиз: approved private
+Golden Dataset ещё не прогнан через тот же production Q&A path, численные quality
+thresholds не утверждены, backup/isolated restore не квалифицированы, а финальный
+current-commit evidence aggregate и GO/NO-GO отсутствуют (#509–#511, #16).
 
-- [ ] Надёжная загрузка PDF, DOCX, XLSX, Markdown и text с версиями и checksum.
-      `implemented, integrated and qualified: supported local ingestion profile`
-      с PostgreSQL/filesystem adapters; `not qualified: complete R1 deployment`.
-- [ ] Parsing metadata: страницы, листы, строки, заголовки и другие stable locators.
-      `implemented and qualified: parser, artifact and locator contracts` для
-      всех R1-форматов; real-corpus и deployed-provider qualification остаются
-      частью финального R1 gate.
-- [ ] Versioned baseline ontology и evidence-linked извлечение domain entities и
+- [x] Надёжная загрузка PDF, DOCX, XLSX, Markdown и text с версиями и checksum.
+      `implemented, integrated and qualified`: Q16-02 R4 прошёл deployed upload,
+      duplicate replay, changed revision, tombstone и retry после parser,
+      original-storage и pre-acceptance failures (#561, #570).
+- [x] Parsing metadata: страницы, листы, строки, заголовки и другие stable locators.
+      `implemented, integrated and qualified` для всех R1-форматов; форматные
+      locators сохранены через canonical ingestion и projection handoff (#561,
+      #565, #568, #581).
+- [x] Versioned baseline ontology и evidence-linked извлечение domain entities и
       relations из `SourceRevision`.
-      `implemented: provider-neutral extraction handoff and versioned projection
-      contracts`; `qualified offline`; live extraction/provider не квалифицированы.
-- [ ] Индексация, обновление, удаление и полная перестройка graph/vector Context
+      `implemented, integrated and qualified`: live structured chunk/entity/
+      relation round trip сохраняет exact SourceRevision provenance на approved
+      physical provider profile (#212, #507, #562).
+- [x] Индексация, обновление, удаление и полная перестройка graph/vector Context
       projection; Cognee — первый replaceable adapter.
-      `implemented and qualified offline`: shadow build, activation, tombstone,
-      failed rebuild, recovery и successor rollback; configured physical Cognee /
-      Neo4j / PGVector profile не квалифицирован.
-- [ ] Object-level Access Policy и наследование прав документ → chunk/reference.
-      `implemented and integrated`: canonical policy, human/service intersection,
-      authorized retrieval и disclosure revalidation; production identity/policy
-      bindings не квалифицированы.
-- [ ] Typed retrieval contract через Context Broker.
-      `implemented and qualified offline`: authorized retrieval, immutable
-      ContextBundle, provenance and replay; PostgreSQL gates обязательны и
-      проходят в repository suite, live Cognee provider не квалифицирован.
-- [ ] Capability `answer_question` как эталонный local `AgentHandler`: pinned
+      `implemented, integrated and qualified`: physical Cognee / Neo4j / PGVector
+      profile, shadow validation, activation CAS, update/remove/tombstone,
+      injected publication failures, redrive и recovery successor прошли (#212,
+      #562, #576–#583).
+- [x] Object-level Access Policy и наследование прав документ → chunk/reference.
+      `implemented, integrated and qualified`: canonical policy, human/service
+      intersection, RLS, current authorization, authorized retrieval и disclosure
+      revalidation прошли deployed runtime и two-workspace browser scenarios
+      (#508, #544, #560).
+- [x] Typed retrieval contract через Context Broker.
+      `implemented, integrated and qualified`: authorized retrieval, immutable
+      ContextBundle, exact provenance, replay и physical-provider execution
+      проверены в общем production Q&A path (#508, #560, #562).
+- [x] Capability `answer_question` как эталонный local `AgentHandler`: pinned
       `AgentVersion`/`ContextProfile`, runtime-managed artifacts и citations.
-      `implemented and qualified: complete capability contract on deterministic
-      providers and disposable PostgreSQL`; concrete production composition для
-      API/Temporal/observer остаётся blocker #469.
-- [ ] `/api/v1/ask`: grounded answer/outcome, structured citations, optional
+      `implemented, integrated and qualified`: shared API / Temporal / observer
+      composition, authenticated same-execution capture и production model/provider
+      bindings прошли Q16-01 и governed browser qualification (#469, #508, #560).
+- [x] `/api/v1/ask`: grounded answer/outcome, structured citations, optional
       versioned confidence metadata, `as_of`, trace ID и abstention.
-      `implemented: terminal Ask, durable admission/status/cancellation, SSE,
-      sessions and run contracts`; `qualified: ASGI, PostgreSQL and Temporal test
-      boundaries`; production composition и deployed flow не квалифицированы.
-- [ ] Administrator-only Knowledge Control Plane: документы и ревизии, ingestion /
+      `implemented, integrated and qualified`: durable admission/status/
+      cancellation, SSE replay, sessions, structured citations, abstention,
+      terminal persistence и disclosure rejection прошли deployed flow (#508,
+      #560).
+- [x] Administrator-only Knowledge Control Plane: документы и ревизии, ingestion /
       projection status, диагностический Q&A, citations inspector, run timeline,
       freshness и feedback.
-      `implemented`; `integrated and qualified: generated client, component,
-      controlled Playwright and in-process ASGI boundaries`; browser journey
-      против deployed API/provider не выполнен.
+      `implemented, integrated and qualified`: generated client, components,
+      controlled Playwright и real Chromium journey против deployed API/provider;
+      основной сценарий выполняется без CLI (#508, #560, #561).
 - [ ] Golden Dataset из реальных корпоративных документов и вопросов для R1 Q&A;
       обязательная анонимизация не требуется. Приватный корпус используется
       только в пределах разрешения и действующих runtime authorization и
@@ -147,8 +153,8 @@ contracts, durable Ask lifecycle, Knowledge/Chat UI, diagnostics и evaluation
       используют только безопасные synthetic или anonymized fixtures.
       `implemented: approved private baseline 0.3.9-user-approved, 30 sources and
       149 cases`; mapping, canonical preparation and post-observation evaluation
-      contracts реализованы; реальный application-flow run не выполнен, direct
-      denied coverage отсутствует.
+      contracts реализованы; полный 149-case production-flow run не выполнен,
+      direct denied coverage в dataset отсутствует (#510).
 - [ ] Regression eval для retrieval, groundedness, citation correctness и access-policy leakage.
       `implemented and qualified: deterministic synthetic offline gate`;
       real-observation evaluator реализован, end-to-end benchmark не выполнен.
@@ -159,17 +165,23 @@ contracts, durable Ask lifecycle, Knowledge/Chat UI, diagnostics и evaluation
 
 ### Актуальные release blockers
 
-- #469 / #470–#478 — одна production-композиция `AnswerQuestionCapability`,
-  canonical terminal waiter, authenticated ephemeral capture и общий API /
-  Temporal / observer path.
-- #443 / #450 — наблюдение реальных кейсов через тот же authorized Q&A flow без
-  второго retrieval или доступа observer к gold labels.
-- #452 / #453 — локальный real-dataset benchmark, безопасный отчёт,
-  qualification evidence и operator runbook.
-- #17 — baseline quality и утверждение versioned product thresholds.
-- #16 — полная end-to-end квалификация R0 + R1 через UI без CLI.
-- Production operational evidence — deployment-approved backup/isolated restore,
-  configured physical projection provider и повтор runbook exercises.
+- #509 — deployment-approved coordinated backup, physically isolated restore,
+  reconciliation, projection recovery и authorized canary; текущий evidence
+  остаётся `BLOCKED / NOT_VERIFIED`.
+- #510 — полный 149-case run approved Golden Dataset через production durable
+  Q&A/capture path, metadata-only baseline и отдельное утверждение versioned
+  numerical thresholds Product Owner-ом.
+- #511 — current-commit aggregate всех обязательных R0/R1 evidence, repository
+  gates, legacy disposition и финальное воспроизводимое решение GO/NO-GO.
+- #16 — родительский end-to-end release gate остаётся открытым до завершения
+  #509–#511; закрытые component tickets сами по себе не означают готовность R1.
+
+### Текущий release verdict
+
+`NO-GO`: продуктовый R1 путь реализован и квалифицирован на зафиксированных
+изолированных deployment targets, но release qualification ещё не завершена.
+Отсутствие recovery exercise, реального baseline/approved thresholds или единого
+совместимого evidence package является блокирующим, а не неявным `PASS`.
 
 ### Exit criteria
 
