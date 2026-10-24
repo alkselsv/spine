@@ -21,6 +21,8 @@ SOURCE_OBJECT_ID = UUID("90000000-0000-0000-0000-000000000003")
 REVISION_ID = UUID("90000000-0000-0000-0000-000000000004")
 BINDING_ID = UUID("90000000-0000-0000-0000-000000000005")
 RECEIPT_ID = UUID("90000000-0000-0000-0000-000000000006")
+ORIGINAL_RECEIPT_ID = UUID("90000000-0000-0000-0000-000000000008")
+PROVENANCE_ID = UUID("90000000-0000-0000-0000-000000000009")
 
 
 class FakeUnitOfWork:
@@ -33,6 +35,7 @@ class FakeUnitOfWork:
             resolve_processing_receipt=self.resolve_processing_receipt,
             resolve_failures=self.resolve_failures,
         )
+        self.canonical = SimpleNamespace(list_acceptances=self.list_acceptances)
         self.committed = False
         self.rolled_back = False
 
@@ -74,6 +77,8 @@ class FakeUnitOfWork:
             binding_id=BINDING_ID,
             source_object_id=SOURCE_OBJECT_ID,
             source_revision_id=REVISION_ID,
+            original_receipt_id=ORIGINAL_RECEIPT_ID,
+            original_receipt_digest="b" * 64,
         )
 
     async def resolve_processing_receipt(self, item_id: UUID):
@@ -87,6 +92,15 @@ class FakeUnitOfWork:
             output_digest=None,
             warning_ids=(),
             failure_ids=(),
+        )
+
+    async def list_acceptances(self, source_object_id: UUID):
+        assert source_object_id == SOURCE_OBJECT_ID
+        return (
+            SimpleNamespace(
+                source_revision_id=REVISION_ID,
+                provenance_id=PROVENANCE_ID,
+            ),
         )
 
     async def resolve_failures(self, item_id: UUID):
@@ -120,6 +134,10 @@ async def test_status_reads_ledger_binding_and_receipt_in_one_authorized_scope()
     assert status.run_state is IngestionRunState.PROCESSING
     assert status.item_state is IngestionItemState.PROCESSING
     assert status.binding_id == BINDING_ID
+    assert status.canonical_acceptance_committed is True
+    assert status.original_receipt_id == ORIGINAL_RECEIPT_ID
+    assert status.original_receipt_digest == "b" * 64
+    assert status.provenance_id == PROVENANCE_ID
     assert status.processing_receipt_id == RECEIPT_ID
     assert status.failure_reason_codes == ("parser_retryable",)
     assert uow.committed is True

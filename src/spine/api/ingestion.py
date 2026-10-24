@@ -20,7 +20,6 @@ from spine.application.document_ingestion import (
     DocumentIngestionStatus,
     DocumentUploadCommand,
 )
-from spine.application.ingestion_faults import IngestionFaultReason
 from spine.application.ingestion_api import (
     DocumentIngestionService,
     IngestionStatusSnapshot,
@@ -123,6 +122,11 @@ class IngestionStatusResponse(BaseModel):
     source_object_id: UUID | None = None
     source_revision_id: UUID | None = None
     binding_id: UUID | None = None
+    original_receipt_id: UUID | None = None
+    original_receipt_digest: str | None = Field(
+        default=None, pattern=r"[0-9a-f]{64}"
+    )
+    provenance_id: UUID | None = None
     processing_receipt: IngestionReceiptResponse | None = None
     warning_ids: tuple[UUID, ...] = ()
     failure_ids: tuple[UUID, ...] = ()
@@ -356,6 +360,9 @@ def _status_response(snapshot: IngestionStatusSnapshot) -> IngestionStatusRespon
         source_object_id=snapshot.source_object_id,
         source_revision_id=snapshot.source_revision_id,
         binding_id=snapshot.binding_id,
+        original_receipt_id=snapshot.original_receipt_id,
+        original_receipt_digest=snapshot.original_receipt_digest,
+        provenance_id=snapshot.provenance_id,
         processing_receipt=receipt,
         warning_ids=snapshot.warning_ids,
         failure_ids=snapshot.failure_ids,
@@ -417,15 +424,10 @@ def _snapshot_phases(snapshot: IngestionStatusSnapshot) -> tuple[PublicAcceptanc
         return PublicAcceptanceStatus.QUARANTINED, PublicProcessingStatus.NOT_STARTED
     if state == "rejected":
         return PublicAcceptanceStatus.REJECTED, PublicProcessingStatus.NOT_STARTED
-    pre_acceptance_failure = (
-        IngestionFaultReason.PRE_ACCEPTANCE_RETRYABLE.value
-        in snapshot.failure_reason_codes
-        and snapshot.processing_coverage is not ProcessingCoverage.COMPLETE
-    )
     if (
         state
         in {"accepted", "processing", "processed", "projection_requested", "processing_failed"}
-        and not pre_acceptance_failure
+        and snapshot.canonical_acceptance_committed
     ):
         acceptance = PublicAcceptanceStatus.ACCEPTED
     else:

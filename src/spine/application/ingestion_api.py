@@ -79,6 +79,10 @@ class IngestionStatusSnapshot:
     source_object_id: UUID | None
     source_revision_id: UUID | None
     binding_id: UUID | None
+    canonical_acceptance_committed: bool
+    original_receipt_id: UUID | None
+    original_receipt_digest: str | None
+    provenance_id: UUID | None
     processing_receipt_id: UUID | None
     processing_coverage: ProcessingCoverage | None
     parser_name: str | None
@@ -156,6 +160,23 @@ class OrchestratedDocumentIngestionService:
                 return None
             head = await uow.ingestion.resolve_item_head(item_id)
             binding = await uow.ingestion.resolve_binding(item_id)
+            acceptances = (
+                await uow.canonical.list_acceptances(binding.source_object_id)
+                if binding is not None
+                else ()
+            )
+            acceptance = (
+                next(
+                    (
+                        candidate
+                        for candidate in acceptances
+                        if candidate.source_revision_id == binding.source_revision_id
+                    ),
+                    None,
+                )
+                if binding is not None
+                else None
+            )
             receipt = await uow.ingestion.resolve_processing_receipt(item_id)
             failures = await uow.ingestion.resolve_failures(item_id)
             await uow.commit()
@@ -170,6 +191,10 @@ class OrchestratedDocumentIngestionService:
             source_object_id=(binding.source_object_id if binding else None),
             source_revision_id=(binding.source_revision_id if binding else None),
             binding_id=(binding.binding_id if binding else None),
+            canonical_acceptance_committed=acceptance is not None,
+            original_receipt_id=(binding.original_receipt_id if binding else None),
+            original_receipt_digest=(binding.original_receipt_digest if binding else None),
+            provenance_id=(acceptance.provenance_id if acceptance else None),
             processing_receipt_id=(receipt.processing_receipt_id if receipt else None),
             processing_coverage=(receipt.coverage if receipt else None),
             parser_name=(receipt.parser_name if receipt else None),

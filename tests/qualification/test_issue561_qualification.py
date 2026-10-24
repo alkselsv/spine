@@ -64,6 +64,9 @@ def _assert_pass_report(report: dict[str, Any]) -> None:
     assert all(item["accepted"] for item in observations)
     assert all(item["checksum_reference"] for item in observations)
     assert all(item["locator_kinds"] for item in observations)
+    assert all(item["original_receipt_digest"] for item in observations)
+    assert all(item["original_receipt_reference"] for item in observations)
+    assert all(item["provenance_reference"] for item in observations)
     assert all(item["source_reference"] for item in observations)
     assert all(item["revision_reference"] for item in observations)
     duplicate = report["lifecycle"]["duplicate"]
@@ -186,6 +189,9 @@ def test_issue561_complete_pass_evidence_satisfies_gate() -> None:
             "checksum_reference": "a" * 64,
             "format": format_name,
             "locator_kinds": ["stable_locator"],
+            "original_receipt_digest": "b" * 64,
+            "original_receipt_reference": "30000000-0000-4000-8000-000000000001",
+            "provenance_reference": "40000000-0000-4000-8000-000000000001",
             "source_reference": "10000000-0000-4000-8000-000000000001",
             "revision_reference": "20000000-0000-4000-8000-000000000001",
         }

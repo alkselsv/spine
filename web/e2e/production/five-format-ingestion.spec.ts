@@ -81,6 +81,12 @@ test('test_real_browser_qualifies_five_format_canonical_ingestion', async ({ pag
         processingReceipt.receipt_id,
         'five_format_upload_schema_invalid',
       );
+      const itemEvidence = await waitForItemTerminal(
+        request,
+        config,
+        runId,
+        safeUuid(item.item_id, 'five_format_upload_schema_invalid'),
+      );
       report.attempted_observations.push({
         format,
         processing_receipt_reference: processingReceiptReference,
@@ -100,7 +106,19 @@ test('test_real_browser_qualifies_five_format_canonical_ingestion', async ({ pag
         checksum_reference: safeDigest(inspection.original_sha256, 'parsed_content_checksum_unavailable'),
         format,
         locator_kinds: locatorKinds(inspection.items),
+        original_receipt_digest: safeDigest(
+          itemEvidence.original_receipt_digest,
+          'five_format_original_receipt_unavailable',
+        ),
+        original_receipt_reference: safeUuid(
+          itemEvidence.original_receipt_id,
+          'five_format_original_receipt_unavailable',
+        ),
         processing_receipt_reference: processingReceiptReference,
+        provenance_reference: safeUuid(
+          itemEvidence.provenance_id,
+          'five_format_provenance_unavailable',
+        ),
         revision_reference: revisionReference,
         source_reference: sourceReference,
       });

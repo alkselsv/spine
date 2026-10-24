@@ -38,7 +38,10 @@ export interface FormatObservation {
   checksum_reference: string;
   format: QualificationFormat;
   locator_kinds: string[];
+  original_receipt_digest: string;
+  original_receipt_reference: string;
   processing_receipt_reference: string;
+  provenance_reference: string;
   revision_reference: string;
   source_reference: string;
 }
