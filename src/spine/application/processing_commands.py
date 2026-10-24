@@ -57,6 +57,7 @@ from spine.domain.ingestion import (
     WarningStage,
 )
 from spine.domain.sources import RevisionKind
+from spine.domain.sources.original_reference import ObjectReference
 from spine.domain.artifacts import ParseCoverage, ParsedDocument
 
 
@@ -168,6 +169,13 @@ class _OriginalContentReader(Protocol):
         receipt: object,
         max_bytes: int,
     ) -> AsyncIterable[bytes]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _FinalizedOriginalReceipt:
+    """Minimal receipt view required by the finalized-content reader."""
+
+    object_reference: ObjectReference
 
 
 class _DocumentParser(Protocol):
@@ -616,6 +624,11 @@ class OrchestratedProcessingCommandService:
         profile: str,
         command_key: str,
     ) -> None:
+        if binding.original_reference is None:
+            raise ProcessingCommandRejected()
+        finalized_receipt = _FinalizedOriginalReceipt(
+            object_reference=binding.original_reference,
+        )
         trace_id = self._stable_id(operation_id, "process-trace")
         async with self.uow_factory(
             self.context_factory(PersistenceOperation("processing_receipt"), trace_id)
@@ -639,7 +652,7 @@ class OrchestratedProcessingCommandService:
                         workspace_id=run.workspace_id,
                         environment_id=run.environment_id,
                         source_revision_id=revision.revision_id,  # type: ignore[attr-defined]
-                        receipt=binding,
+                        receipt=finalized_receipt,
                         max_bytes=self.max_parse_bytes,
                     ),
                     self.max_parse_bytes,

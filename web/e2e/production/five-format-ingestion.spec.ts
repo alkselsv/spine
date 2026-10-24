@@ -479,7 +479,9 @@ async function qualifySafeFailureUi(
   report: IngestionQualificationReport,
 ): Promise<void> {
   await page.goto(scoped(`/runs/${runId}`, config.workspaceAId, config.environmentAId));
-  await page.getByRole('heading', { name: 'Запуск обработки' }).waitFor({ state: 'visible' });
+  await page
+    .getByRole('heading', { name: 'Запуск', exact: true })
+    .waitFor({ state: 'visible', timeout: 30_000 });
   await page.getByText('parser_retryable').first().waitFor({ state: 'visible', timeout: 30_000 });
   await page
     .getByRole('button', { name: 'Повторить обработку файла' })
