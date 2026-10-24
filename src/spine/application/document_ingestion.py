@@ -224,6 +224,7 @@ class DocumentUploadCommand(BaseModel):
     expected_sha256: str | None = Field(default=None, pattern=r"[0-9a-f]{64}")
     expected_byte_length: int | None = Field(default=None, ge=0)
     expected_current_revision_id: UUID | None = None
+    source_created_at: datetime | None = None
     access_policy_version_id: UUID | None = None
     source_metadata: RevisionMetadata = RevisionMetadata()
 
@@ -1054,7 +1055,7 @@ class DocumentIngestionOrchestrator:
             source_kind="document",
             identity_mode=IdentityMode.UPLOAD,
             upload_identity=request.upload_identity,
-            created_at=now,
+            created_at=request.source_created_at or now,
         )
         receipt = upload.write_receipt
         media_type = _media_type(request)

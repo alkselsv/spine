@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import AsyncIterable, AsyncIterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -652,6 +652,27 @@ async def test_document_ingestion_completes_text_path_and_replays_stably() -> No
         IngestionItemState.PROCESSED,
         IngestionItemState.PROJECTION_REQUESTED,
     ]
+
+
+@pytest.mark.asyncio
+async def test_replacement_ingestion_preserves_existing_source_creation_time() -> None:
+    source_created_at = NOW - timedelta(days=1)
+    orchestrator, *_ = _orchestrator(
+        b"replacement\n",
+        media_type="text/plain",
+        parser_calls=[],
+    )
+    request = _request("text/plain", key="replacement").model_copy(
+        update={"source_created_at": source_created_at}
+    )
+
+    result = await orchestrator.ingest(
+        request=request,
+        chunks=_stream(b"replacement\n"),
+    )
+
+    assert result.source.created_at == source_created_at
+    assert result.item.created_at == NOW
 
 
 @pytest.mark.parametrize(

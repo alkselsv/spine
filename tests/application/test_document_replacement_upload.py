@@ -20,6 +20,7 @@ WORKSPACE_ID = UUID("20000000-0000-4000-8000-000000000001")
 ENVIRONMENT_ID = UUID("30000000-0000-4000-8000-000000000001")
 SOURCE_ID = UUID("40000000-0000-4000-8000-000000000001")
 CURRENT_REVISION_ID = UUID("50000000-0000-4000-8000-000000000001")
+SOURCE_CREATED_AT = datetime(2026, 10, 1, tzinfo=timezone.utc)
 
 
 class FakeUnitOfWork:
@@ -58,7 +59,7 @@ class FakeUnitOfWork:
             source_kind="document",
             identity_mode=IdentityMode.UPLOAD,
             upload_identity="existing.upload.identity",
-            created_at=datetime(2026, 10, 1, tzinfo=timezone.utc),
+            created_at=SOURCE_CREATED_AT,
         )
 
     async def resolve_current(self, source_object_id: UUID):
@@ -144,6 +145,7 @@ async def test_replacement_uses_existing_upload_identity_and_revision_cas() -> N
     assert ingestion_command.workspace_id == WORKSPACE_ID
     assert ingestion_command.environment_id == ENVIRONMENT_ID
     assert ingestion_command.expected_current_revision_id == CURRENT_REVISION_ID
+    assert ingestion_command.source_created_at == SOURCE_CREATED_AT
     assert ingestion_command.declared_filename == "handbook.md"
 
 

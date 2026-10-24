@@ -1,4 +1,4 @@
-import { test, type APIRequestContext, type Page } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, dirname } from 'node:path';
 
@@ -106,10 +106,18 @@ test('test_real_browser_qualifies_five_format_canonical_ingestion', async ({ pag
       });
       report.formats.push(format);
     }
-    await page.getByText('Готов', { exact: true }).first().waitFor({ state: 'visible' });
-    if (await page.getByText('Готов', { exact: true }).count() < REQUIRED_FORMATS.length) {
-      throw new Error('five_format_ui_not_accepted');
-    }
+    await page.goto(scoped(
+      `/runs/${runId}`,
+      config.workspaceAId,
+      config.environmentAId,
+    ));
+    const renderedItems = page
+      .getByRole('list', { name: 'Результаты файлов' })
+      .getByRole('listitem');
+    await expect(renderedItems).toHaveCount(REQUIRED_FORMATS.length);
+    await expect(renderedItems.getByText('Принят', { exact: true })).toHaveCount(REQUIRED_FORMATS.length);
+    await expect(renderedItems.getByText('Завершена', { exact: true })).toHaveCount(REQUIRED_FORMATS.length);
+    await expect(page.getByText('Завершён успешно', { exact: true }).first()).toBeVisible();
     report.scenarios.push('five_format_upload');
     report.ui_states.push('accepted');
 
