@@ -474,6 +474,7 @@ def _validation_metrics(evidence: PhysicalProjectionEvidence) -> dict[str, Any]:
                 key=lambda item: (item.source_object_id.int, item.source_revision_id.int),
             )
         ],
+        "allows_empty_source_set": expectation.allows_empty_source_set,
         "source_projection_references": [
             {
                 "reference_id": str(reference.source_projection_reference_id),

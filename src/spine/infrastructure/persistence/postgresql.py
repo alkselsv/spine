@@ -35,6 +35,7 @@ from spine.application.persistence.canonical import (
 from spine.application.persistence.boundary import (
     CANONICAL_BOUNDARY_RESULT_TYPE,
     CANONICAL_BOUNDARY_SCHEMA_VERSION,
+    CanonicalBoundaryClaimCaptureResult,
     CanonicalBoundaryCaptureCommand,
     CanonicalBoundaryCaptureResult,
 )
@@ -265,6 +266,7 @@ from spine.infrastructure.persistence.postgresql_mappings import (
     answer_question_runs as _ANSWER_QUESTION_RUNS,
     qa_message_versions as _QA_MESSAGE_VERSIONS,
     idempotency_receipts as _IDEMPOTENCY_RECEIPTS,
+    outbox_deliveries as _OUTBOX_DELIVERIES,
     outbox_intents as _OUTBOX_INTENTS,
     original_upload_records as _ORIGINAL_UPLOAD_RECORDS,
     source_objects as _SOURCE_OBJECTS,
@@ -3006,6 +3008,65 @@ class _PostgreSQLCanonicalBoundaryRepository:
                 ConstraintConflictError("Canonical boundary command digest is invalid.")
             )
 
+        accepted_through_generation, boundary_time = await self._lock_boundary()
+
+        claim = await self._uow.idempotency.claim(
+            operation_schema_version=CANONICAL_BOUNDARY_SCHEMA_VERSION,
+            key=command.idempotency_key,
+            digest=command.digest,
+        )
+        if isinstance(claim, IdempotencyReplay):
+            boundary = await self.resolve(claim.result.result_id)
+            if boundary is None:
+                await self._uow._fail(
+                    ConstraintConflictError("Canonical boundary replay is unavailable.")
+                )
+            members = await self.resolve_members(boundary.boundary_id)
+            if canonical_boundary_manifest_digest(boundary, members) != boundary.manifest_digest:
+                await self._uow._fail(
+                    ConstraintConflictError("Canonical boundary replay is unavailable.")
+                )
+            return CanonicalBoundaryCaptureResult(boundary, members, True, claim, claim.result)
+
+        captured = await self._capture_owned(
+            projection_kind=command.projection_kind,
+            scope_version=command.scope_version,
+            receipt_id=claim.receipt_id,
+            accepted_through_generation=accepted_through_generation,
+            boundary_time=boundary_time,
+        )
+        reference = OpaqueResultReference(
+            result_type=CANONICAL_BOUNDARY_RESULT_TYPE,
+            result_id=captured.boundary.boundary_id,
+            schema_version=CANONICAL_BOUNDARY_SCHEMA_VERSION,
+        )
+        await self._uow.idempotency.complete(claim, reference)
+        return CanonicalBoundaryCaptureResult(
+            captured.boundary, captured.members, False, claim, reference
+        )
+
+    async def capture_for_claim(
+        self,
+        *,
+        projection_kind: str,
+        scope_version: str,
+        claim: OwnedIdempotencyClaim,
+    ) -> CanonicalBoundaryClaimCaptureResult:
+        if self._uow._owned_claims.get(claim.receipt_id) != claim:
+            await self._uow._fail(
+                IdempotencyConflictError("Idempotency claim is invalid.")
+            )
+        accepted_through_generation, boundary_time = await self._lock_boundary()
+        return await self._capture_owned(
+            projection_kind=projection_kind,
+            scope_version=scope_version,
+            receipt_id=claim.receipt_id,
+            accepted_through_generation=accepted_through_generation,
+            boundary_time=boundary_time,
+        )
+
+    async def _lock_boundary(self) -> tuple[int, datetime]:
+        scope = self._scope()
         # This is the global serialization barrier. It must precede all source
         # head reads so READ COMMITTED cannot mix generations.
         counter_updated_at = (
@@ -3041,25 +3102,18 @@ class _PostgreSQLCanonicalBoundaryRepository:
         await self._uow._run_transaction_probe(
             PostgreSQLTransactionStage.AFTER_CANONICAL_BOUNDARY_COUNTER_LOCKED
         )
+        return accepted_through_generation, boundary_time
 
-        claim = await self._uow.idempotency.claim(
-            operation_schema_version=CANONICAL_BOUNDARY_SCHEMA_VERSION,
-            key=command.idempotency_key,
-            digest=command.digest,
-        )
-        if isinstance(claim, IdempotencyReplay):
-            boundary = await self.resolve(claim.result.result_id)
-            if boundary is None:
-                await self._uow._fail(
-                    ConstraintConflictError("Canonical boundary replay is unavailable.")
-                )
-            members = await self.resolve_members(boundary.boundary_id)
-            if canonical_boundary_manifest_digest(boundary, members) != boundary.manifest_digest:
-                await self._uow._fail(
-                    ConstraintConflictError("Canonical boundary replay is unavailable.")
-                )
-            return CanonicalBoundaryCaptureResult(boundary, members, True, claim, claim.result)
-
+    async def _capture_owned(
+        self,
+        *,
+        projection_kind: str,
+        scope_version: str,
+        receipt_id: UUID,
+        accepted_through_generation: int,
+        boundary_time: datetime,
+    ) -> CanonicalBoundaryClaimCaptureResult:
+        scope = self._scope()
         boundary_id = self._uow._boundary_id_factory()
         heads = (
             await self._uow._execute(
@@ -3089,12 +3143,12 @@ class _PostgreSQLCanonicalBoundaryRepository:
             boundary_id=boundary_id,
             workspace_id=scope.workspace_id,
             environment_id=scope.environment_id,
-            projection_kind=command.projection_kind,
-            scope_version=command.scope_version,
+            projection_kind=projection_kind,
+            scope_version=scope_version,
             accepted_through_generation=accepted_through_generation,
             boundary_time=boundary_time,
             manifest_digest="0" * 64,
-            idempotency_receipt_id=claim.receipt_id,
+            idempotency_receipt_id=receipt_id,
         )
         boundary = boundary_without_digest.model_copy(
             update={"manifest_digest": canonical_boundary_manifest_digest(boundary_without_digest, members)}
@@ -3108,13 +3162,7 @@ class _PostgreSQLCanonicalBoundaryRepository:
                     [member.model_dump(mode="python") for member in members]
                 )
             )
-        reference = OpaqueResultReference(
-            result_type=CANONICAL_BOUNDARY_RESULT_TYPE,
-            result_id=boundary.boundary_id,
-            schema_version=CANONICAL_BOUNDARY_SCHEMA_VERSION,
-        )
-        await self._uow.idempotency.complete(claim, reference)
-        return CanonicalBoundaryCaptureResult(boundary, members, False, claim, reference)
+        return CanonicalBoundaryClaimCaptureResult(boundary, members)
 
 
 class _PostgreSQLIngestionRepository:
@@ -4691,6 +4739,15 @@ class _PostgreSQLOutboxWriter:
         values["event_id"] = event_id
         await self._uow._execute(insert(_OUTBOX_INTENTS).values(**values).inline())
         return event_id
+
+    async def resolve_delivery_status(self, event_id: UUID) -> str | None:
+        self._uow._guard_active()
+        result = await self._uow._execute(
+            select(_OUTBOX_DELIVERIES.c.status).where(
+                _OUTBOX_DELIVERIES.c.event_id == event_id,
+            )
+        )
+        return result.scalar_one_or_none()
 
 
 class _PostgreSQLAuditWriter:

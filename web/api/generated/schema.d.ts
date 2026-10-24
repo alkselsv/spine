@@ -463,6 +463,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projections/{projection_kind}/successors/{command_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Projection.Successor Status */
+        get: operations["projection.successor_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/qa/citations/{citation_id}": {
         parameters: {
             query?: never;
@@ -1428,6 +1445,31 @@ export interface components {
         /** ApiResponseEnvelope[ProjectionStatusResponse] */
         ApiResponseEnvelope_ProjectionStatusResponse_: {
             data: components["schemas"]["ProjectionStatusResponse"];
+            /**
+             * Environment Id
+             * Format: uuid
+             */
+            environment_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Trace Id
+             * Format: uuid
+             */
+            trace_id: string;
+            /**
+             * Workspace Id
+             * Format: uuid
+             */
+            workspace_id: string;
+        };
+        /** ApiResponseEnvelope[ProjectionSuccessorStatusResponse] */
+        ApiResponseEnvelope_ProjectionSuccessorStatusResponse_: {
+            data: components["schemas"]["ProjectionSuccessorStatusResponse"];
             /**
              * Environment Id
              * Format: uuid
@@ -3142,7 +3184,7 @@ export interface components {
          * @description Operator-requested work; the worker selects canonical inputs later.
          * @enum {string}
          */
-        ProjectionRecoveryAction: "retry" | "rebuild" | "recover";
+        ProjectionRecoveryAction: "retry" | "rebuild" | "recover" | "successor";
         /** ProjectionRecoveryRequest */
         ProjectionRecoveryRequest: {
             action: components["schemas"]["ProjectionRecoveryAction"];
@@ -3237,6 +3279,45 @@ export interface components {
             schema_version: 1;
             /** Snapshot Id */
             snapshot_id?: string | null;
+        };
+        /** ProjectionSuccessorStatusResponse */
+        ProjectionSuccessorStatusResponse: {
+            /** Activation Id */
+            activation_id?: string | null;
+            /** Candidate Id */
+            candidate_id?: string | null;
+            /**
+             * Command Id
+             * Format: uuid
+             */
+            command_id: string;
+            /**
+             * Intent Id
+             * Format: uuid
+             */
+            intent_id: string;
+            /** Projection Kind */
+            projection_kind: string;
+            /**
+             * Receipt Ids
+             * @default []
+             */
+            receipt_ids: string[];
+            /** Run Id */
+            run_id?: string | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "accepted" | "running" | "completed" | "failed" | "unavailable";
         };
         /**
          * PublicAcceptanceStatus
@@ -6945,6 +7026,113 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponseEnvelope_ProjectionStatusResponse_"];
+                };
+            };
+            /** @description Safe request error. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authentication is invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Authorization is denied. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Resource is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Command conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request payload is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Request validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Unexpected internal error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+            /** @description Dependency is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredError"];
+                };
+            };
+        };
+    };
+    "projection.successor_status": {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Workspace-ID": string;
+                "X-Environment-ID": string;
+            };
+            path: {
+                command_id: string;
+                projection_kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope_ProjectionSuccessorStatusResponse_"];
                 };
             };
             /** @description Safe request error. */

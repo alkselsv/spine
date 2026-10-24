@@ -28,6 +28,7 @@ from spine.application.persistence.parsed_artifacts import ParsedArtifactReposit
 from spine.application.persistence.projection import (
     PROJECTION_OUTBOX_SCHEMA_VERSION,
     PROJECTION_RECOVERY_REQUESTED_OUTBOX_EVENT_TYPE,
+    PROJECTION_SUCCESSOR_REQUESTED_OUTBOX_EVENT_TYPE,
 )
 from spine.application.persistence.unit_of_work import UnitOfWorkFactory
 from spine.application.projection_request_execution import (
@@ -234,6 +235,7 @@ def build_postgresql_cognee_projection_delivery_binding(
         ),
         projection=projection,
         result_recorder=recorder,
+        completion=completion,
         lifecycle=PersistenceProjectionRecoveryLifecycle(
             uow_factory=uow_factory,
             context_factory=projection_context_factory,
@@ -262,6 +264,11 @@ def register_projection_delivery_routes(
         schema_version=PROJECTION_OUTBOX_SCHEMA_VERSION,
         consumer_name=PROJECTION_REQUEST_CONSUMER_NAME,
     )
+    routes.register(
+        event_type=PROJECTION_SUCCESSOR_REQUESTED_OUTBOX_EVENT_TYPE,
+        schema_version=PROJECTION_OUTBOX_SCHEMA_VERSION,
+        consumer_name=PROJECTION_REQUEST_CONSUMER_NAME,
+    )
 
 
 class _ProjectionRequestRouteConsumer:
@@ -282,7 +289,11 @@ class _ProjectionRequestRouteConsumer:
         diagnostic_context: DiagnosticContext,
     ) -> OutboxConsumerSuccess:
         if (
-            intent.event_type == PROJECTION_RECOVERY_REQUESTED_OUTBOX_EVENT_TYPE
+            intent.event_type
+            in {
+                PROJECTION_RECOVERY_REQUESTED_OUTBOX_EVENT_TYPE,
+                PROJECTION_SUCCESSOR_REQUESTED_OUTBOX_EVENT_TYPE,
+            }
             and intent.schema_version == PROJECTION_OUTBOX_SCHEMA_VERSION
         ):
             return await self._recovery_request_consumer.consume(

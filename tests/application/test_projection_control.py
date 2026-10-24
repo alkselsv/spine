@@ -7,8 +7,10 @@ from uuid import UUID
 import pytest
 
 from spine.application.persistence.context import EnvironmentScope
+from spine.application.persistence.canonical import CanonicalAcceptanceCommand
 from spine.application.persistence.errors import IdempotencyConflictError
 from spine.application.persistence.idempotency import IdempotencyKey
+from spine.application.persistence.repositories import SourceObservationCommand
 from spine.application.projection_control import (
     CanonicalProjectionStatusService,
     ProjectionRecoveryAction,
@@ -25,7 +27,16 @@ from spine.domain.projections import (
     UnpublishedActivePublication,
     projection_reconciliation_findings_digest,
 )
-from spine.domain.workspaces import Environment
+from spine.domain.workspaces import Environment, Workspace
+from tests.contracts.persistence.test_canonical_acceptance_contract import (
+    _audit,
+    _canonical_outbox,
+    prepare_case,
+)
+from tests.contracts.persistence.test_source_observation_contract import (
+    provenance,
+    tombstone,
+)
 
 
 NOW = datetime(2026, 10, 15, 12, tzinfo=timezone.utc)
@@ -329,7 +340,6 @@ async def test_projection_recovery_request_replays_and_emits_one_typed_outbox_in
     assert first.command_id == replay.command_id
     assert first.replay is False
     assert replay.replay is True
-
     await persistence_adapter.delivery_repository.materialize(
         limit=10,
         materialized_at=NOW,
@@ -359,3 +369,318 @@ async def test_projection_recovery_request_replays_and_emits_one_typed_outbox_in
             action=ProjectionRecoveryAction.RETRY,
             idempotency_key=IdempotencyKey("projection-recovery-1"),
         )
+
+
+@pytest.mark.asyncio
+async def test_projection_successor_retry_after_outbox_failure_commits_one_effect() -> None:
+    from tests.contracts.persistence.conftest import create_in_memory_adapter
+
+    adapter = await create_in_memory_adapter()
+    case = await prepare_case(adapter, 57_600)
+    async with adapter.uow_factory(case.context) as uow:
+        await uow.canonical.accept(case.command)
+        await uow.commit()
+    context = adapter.ingestion_context(
+        case.source.workspace_id,
+        case.source.environment_id,
+        "request_projection_recovery",
+    )
+
+    class FailingOutbox:
+        async def append(self, intent):
+            del intent
+            raise RuntimeError("synthetic outbox failure")
+
+    class FailingUnitOfWork:
+        def __init__(self, inner):
+            self._inner = inner
+            self.outbox = FailingOutbox()
+
+        async def __aenter__(self):
+            await self._inner.__aenter__()
+            return self
+
+        async def __aexit__(self, exc_type, exc_value, traceback):
+            await self._inner.__aexit__(exc_type, exc_value, traceback)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    failing = ProjectionRecoveryRequestService(
+        uow_factory=lambda trusted: FailingUnitOfWork(
+            adapter.uow_factory(trusted)
+        ),
+        outbox_events=adapter.outbox_events,
+    )
+    key = IdempotencyKey("projection-successor-partial-failure-575")
+    with pytest.raises(RuntimeError, match="synthetic outbox failure"):
+        await failing.request(
+            context=context,
+            projection_kind="qa",
+            action=ProjectionRecoveryAction.SUCCESSOR,
+            idempotency_key=key,
+        )
+
+    recovered = await ProjectionRecoveryRequestService(
+        uow_factory=adapter.uow_factory,
+        outbox_events=adapter.outbox_events,
+    ).request(
+        context=context,
+        projection_kind="qa",
+        action=ProjectionRecoveryAction.SUCCESSOR,
+        idempotency_key=key,
+    )
+    await adapter.delivery_repository.materialize(limit=20, materialized_at=NOW)
+    claims = await adapter.delivery_repository.claim_due(
+        limit=20,
+        worker_identity="projection_successor_partial_failure_test",
+        claimed_at=NOW,
+        lease_duration=timedelta(minutes=1),
+    )
+    matching_claims = tuple(
+        claim
+        for claim in claims
+        if claim.intent.event_type == "projection.successor_requested"
+    )
+    matching = tuple(claim.intent for claim in matching_claims)
+
+    assert recovered.replay is False
+    assert len(matching) == 1
+    assert matching[0].payload.command_id == recovered.command_id
+
+
+@pytest.mark.asyncio
+async def test_projection_successor_after_head_change_captures_distinct_boundary() -> None:
+    from tests.contracts.persistence.conftest import create_in_memory_adapter
+
+    adapter = await create_in_memory_adapter()
+    case = await prepare_case(adapter, 57_700)
+    async with adapter.uow_factory(case.context) as uow:
+        await uow.canonical.accept(case.command)
+        await uow.commit()
+    context = adapter.ingestion_context(
+        case.source.workspace_id,
+        case.source.environment_id,
+        "request_projection_recovery",
+    )
+    service = ProjectionRecoveryRequestService(
+        uow_factory=adapter.uow_factory,
+        outbox_events=adapter.outbox_events,
+    )
+    first = await service.request(
+        context=context,
+        projection_kind="qa",
+        action=ProjectionRecoveryAction.SUCCESSOR,
+        idempotency_key=IdempotencyKey("projection-successor-before-change-575"),
+    )
+
+    deletion = tombstone(case.source, UUID(int=57_799))
+    deletion_provenance = provenance(case.source, deletion.revision_id, "event-2")
+    source_context = adapter.source_context(
+        case.source.workspace_id, case.source.environment_id
+    )
+    async with adapter.uow_factory(source_context) as uow:
+        await uow.sources.record_observation(
+            SourceObservationCommand.create(
+                source=case.source,
+                revision=deletion,
+                provenance=deletion_provenance,
+                idempotency_key=IdempotencyKey("projection-successor-delete-575"),
+            )
+        )
+        await uow.commit()
+    acceptance_id = UUID(int=57_795)
+    audit_id = UUID(int=57_796)
+    outbox_id = UUID(int=57_797)
+    command = CanonicalAcceptanceCommand.create(
+        source=case.source,
+        revision=deletion,
+        provenance=deletion_provenance,
+        expected_current_revision_id=case.revision.revision_id,
+        idempotency_key=IdempotencyKey("projection-successor-delete-acceptance-575"),
+        canonical_acceptance_id=acceptance_id,
+        admission_decision_id=None,
+        access_policy_version_id=None,
+        audit_event_id=audit_id,
+        outbox_event_id=outbox_id,
+        accepted_at=NOW,
+        audit_event=_audit(
+            context=case.context,
+            source_revision_id=deletion.revision_id,
+            event_id=audit_id,
+            reason="source_tombstoned",
+            transition="source.tombstoned",
+        ),
+        outbox_intent=_canonical_outbox(
+            adapter,
+            context=case.context,
+            source_object_id=case.source.source_object_id,
+            source_revision_id=deletion.revision_id,
+            acceptance_id=acceptance_id,
+            generation=2,
+            audit_event_id=audit_id,
+            event_id=outbox_id,
+            transition="source.tombstoned",
+        ),
+    )
+    async with adapter.uow_factory(case.context) as uow:
+        await uow.canonical.accept(command)
+        await uow.commit()
+
+    second = await service.request(
+        context=context,
+        projection_kind="qa",
+        action=ProjectionRecoveryAction.SUCCESSOR,
+        idempotency_key=IdempotencyKey("projection-successor-after-change-575"),
+    )
+    await adapter.delivery_repository.materialize(limit=20, materialized_at=NOW)
+    claims = await adapter.delivery_repository.claim_due(
+        limit=20,
+        worker_identity="projection_successor_changed_head_test",
+        claimed_at=NOW,
+        lease_duration=timedelta(minutes=1),
+    )
+    intents = {
+        claim.intent.event_id: claim.intent
+        for claim in claims
+        if claim.intent.event_type == "projection.successor_requested"
+    }
+    first_payload = intents[first.intent_id].payload
+    second_payload = intents[second.intent_id].payload
+
+    assert first.command_id != second.command_id
+    assert first.intent_id != second.intent_id
+    assert first_payload.canonical_boundary_id != second_payload.canonical_boundary_id
+    assert first_payload.accepted_through_generation == 1
+    assert second_payload.accepted_through_generation == 2
+
+
+@pytest.mark.asyncio
+async def test_projection_successor_request_captures_current_boundary_and_replays_one_intent() -> None:
+    from tests.contracts.persistence.conftest import create_in_memory_adapter
+
+    persistence_adapter = await create_in_memory_adapter()
+    case = await prepare_case(persistence_adapter, 57_500)
+    async with persistence_adapter.uow_factory(case.context) as uow:
+        await uow.canonical.accept(case.command)
+        await uow.commit()
+
+    context = persistence_adapter.ingestion_context(
+        case.source.workspace_id,
+        case.source.environment_id,
+        "request_projection_recovery",
+    )
+    service = ProjectionRecoveryRequestService(
+        uow_factory=persistence_adapter.uow_factory,
+        outbox_events=persistence_adapter.outbox_events,
+    )
+
+    first = await service.request(
+        context=context,
+        projection_kind="qa",
+        action=ProjectionRecoveryAction.SUCCESSOR,
+        idempotency_key=IdempotencyKey("projection-successor-1"),
+    )
+    replay = await service.request(
+        context=context,
+        projection_kind="qa",
+        action=ProjectionRecoveryAction.SUCCESSOR,
+        idempotency_key=IdempotencyKey("projection-successor-1"),
+    )
+
+    assert first.command_id == replay.command_id
+    assert first.replay is False
+    assert replay.replay is True
+    accepted_status = await service.successor_status(
+        context=context,
+        projection_kind="qa",
+        command_id=first.command_id,
+    )
+    unknown_status = await service.successor_status(
+        context=context,
+        projection_kind="qa",
+        command_id=UUID(int=57_599),
+    )
+    foreign_workspace_id = UUID(int=67_500)
+    foreign_environment_id = UUID(int=67_501)
+    async with persistence_adapter.uow_factory(
+        persistence_adapter.workspace_context(foreign_workspace_id)
+    ) as uow:
+        await uow.workspaces.add(
+            Workspace(
+                id=foreign_workspace_id,
+                slug="foreign-projection-status",
+                display_name="Foreign projection status workspace",
+            )
+        )
+        await uow.environments.add(
+            Environment(
+                id=foreign_environment_id,
+                workspace_id=foreign_workspace_id,
+                kind=EnvironmentKind.DEVELOPMENT,
+                display_name="Foreign projection status scope",
+            )
+        )
+        await uow.commit()
+    foreign_status = await service.successor_status(
+        context=persistence_adapter.ingestion_context(
+            foreign_workspace_id,
+            foreign_environment_id,
+            "inspect_projection_status",
+        ),
+        projection_kind="qa",
+        command_id=first.command_id,
+    )
+    assert accepted_status.status == "unavailable"
+    assert unknown_status.status == "unavailable"
+    assert foreign_status.status == "unavailable"
+
+    await persistence_adapter.delivery_repository.materialize(
+        limit=20,
+        materialized_at=NOW,
+    )
+    pending_status = await service.successor_status(
+        context=context,
+        projection_kind="qa",
+        command_id=first.command_id,
+    )
+    assert pending_status.status == "accepted"
+    claims = await persistence_adapter.delivery_repository.claim_due(
+        limit=20,
+        worker_identity="projection_successor_control_test",
+        claimed_at=NOW,
+        lease_duration=timedelta(minutes=1),
+    )
+    matching_claims = tuple(
+        claim
+        for claim in claims
+        if claim.intent.event_type == "projection.successor_requested"
+    )
+    matching = tuple(claim.intent for claim in matching_claims)
+
+    assert len(matching) == 1
+    payload = matching[0].payload
+    assert payload.command_id == first.command_id
+    assert payload.projection_kind == "qa"
+    assert payload.canonical_boundary_id is not None
+    assert payload.canonical_boundary_digest != "0" * 64
+    assert payload.accepted_through_generation == 1
+    assert matching[0].payload_snapshot is not None
+    assert b"source_revision" not in matching[0].payload_snapshot
+    assert b"namespace" not in matching[0].payload_snapshot
+    assert b"candidate" not in matching[0].payload_snapshot
+    quarantined = await persistence_adapter.delivery_repository.quarantine(
+        matching_claims[0],
+        quarantined_at=NOW + timedelta(seconds=1),
+        error_code="projection.lineage_invalid",
+    )
+    failed_status = await service.successor_status(
+        context=context,
+        projection_kind="qa",
+        command_id=first.command_id,
+    )
+    after_status = await persistence_adapter.delivery_repository.resolve(
+        quarantined.event_id
+    )
+    assert failed_status.status == "failed"
+    assert after_status == quarantined

@@ -8,7 +8,7 @@ from enum import Enum
 from typing import Literal, Protocol
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from spine.application.persistence.command_digest import CommandDigest, digest_command
 from spine.application.persistence.context import PersistenceOperation
@@ -58,6 +58,7 @@ PROJECTION_ACTIVATION_SCHEMA_VERSION = 1
 PROJECTION_ACTIVATED_OUTBOX_EVENT_TYPE = "projection.activated"
 PROJECTION_CATCH_UP_OUTBOX_EVENT_TYPE = "projection.catch_up_requested"
 PROJECTION_RECOVERY_REQUESTED_OUTBOX_EVENT_TYPE = "projection.recovery_requested"
+PROJECTION_SUCCESSOR_REQUESTED_OUTBOX_EVENT_TYPE = "projection.successor_requested"
 PROJECTION_OUTBOX_SCHEMA_VERSION = 1
 
 
@@ -67,6 +68,7 @@ class ProjectionRecoveryAction(str, Enum):
     RETRY = "retry"
     REBUILD = "rebuild"
     RECOVER = "recover"
+    SUCCESSOR = "successor"
 
 
 class ProjectionActivatedOutboxPayload(BaseModel):
@@ -106,6 +108,25 @@ class ProjectionRecoveryRequestedOutboxPayload(BaseModel):
     action: ProjectionRecoveryAction
     command_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
+    @model_validator(mode="after")
+    def reject_successor_on_legacy_event(self) -> "ProjectionRecoveryRequestedOutboxPayload":
+        if self.action is ProjectionRecoveryAction.SUCCESSOR:
+            raise ValueError("successor requires a boundary-pinned outbox event")
+        return self
+
+
+class ProjectionSuccessorRequestedOutboxPayload(BaseModel):
+    """Content-free request pinned to one freshly captured canonical boundary."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    command_id: UUID
+    projection_kind: ProjectionKind
+    canonical_boundary_id: UUID
+    canonical_boundary_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    accepted_through_generation: int = Field(ge=0)
+    command_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
 
 def register_projection_outbox_events(registry: object) -> None:
     """Add the Issue #89 event schemas to an adapter-owned registry."""
@@ -125,6 +146,11 @@ def register_projection_outbox_events(registry: object) -> None:
         event_type=PROJECTION_RECOVERY_REQUESTED_OUTBOX_EVENT_TYPE,
         schema_version=PROJECTION_OUTBOX_SCHEMA_VERSION,
         payload_type=ProjectionRecoveryRequestedOutboxPayload,
+    )
+    register(
+        event_type=PROJECTION_SUCCESSOR_REQUESTED_OUTBOX_EVENT_TYPE,
+        schema_version=PROJECTION_OUTBOX_SCHEMA_VERSION,
+        payload_type=ProjectionSuccessorRequestedOutboxPayload,
     )
 
 
@@ -606,6 +632,9 @@ def has_complete_physical_validation(
         artifact = validation.metrics_payload.get("artifact_evidence")
         source_lineage = validation.metrics_payload.get("source_lineage")
         source_references = validation.metrics_payload.get("source_projection_references")
+        allows_empty_source_set = validation.metrics_payload.get(
+            "allows_empty_source_set", False
+        )
         if (
             validation.metrics_payload.get("schema_version")
             != PROJECTION_PHYSICAL_VALIDATION_METRICS_SCHEMA_VERSION
@@ -613,7 +642,7 @@ def has_complete_physical_validation(
             or not isinstance(artifact, Mapping)
             or not isinstance(source_lineage, (list, tuple))
             or not isinstance(source_references, (list, tuple))
-            or not source_lineage
+            or not isinstance(allows_empty_source_set, bool)
         ):
             return False
         partition_id = lineage.get("partition_id")
@@ -685,7 +714,16 @@ def has_complete_physical_validation(
             or len(lineage_namespace_digest) != 64
             or any(not isinstance(value, str) for value in lineage_sources for value in value[:3])
             or any(not isinstance(value, int) or value < 1 for value in lineage_sources for value in value[3:4])
-            or not lineage_sources
+            or (
+                not lineage_sources
+                and not (
+                    allows_empty_source_set
+                    and isinstance(lineage_command_identity, str)
+                    and lineage_command_identity.startswith("successor-")
+                    and not reference_keys
+                )
+            )
+            or (lineage_sources and allows_empty_source_set)
             or lineage_references != reference_keys
             or artifact.get("reference") != receipt.artifact_reference
             or artifact.get("digest") != receipt.artifact_integrity_digest
@@ -699,6 +737,7 @@ def has_complete_physical_validation(
 
 __all__ = [
     "PROJECTION_RECOVERY_REQUESTED_OUTBOX_EVENT_TYPE",
+    "PROJECTION_SUCCESSOR_REQUESTED_OUTBOX_EVENT_TYPE",
     "PROJECTION_RECEIPT_SCHEMA_VERSION",
     "PROJECTION_RESULT_SCHEMA_VERSION",
     "PROJECTION_RUN_SCHEMA_VERSION",
@@ -727,6 +766,7 @@ __all__ = [
     "ProjectionPublicationResolution",
     "ProjectionRecoveryAction",
     "ProjectionRecoveryRequestedOutboxPayload",
+    "ProjectionSuccessorRequestedOutboxPayload",
     "require_expected_candidate",
     "has_complete_physical_validation",
     "transition_allowed",

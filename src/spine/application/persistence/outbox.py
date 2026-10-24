@@ -382,6 +382,8 @@ def validate_outbox_intent_for_context(
 class OutboxWriter(Protocol):
     async def append(self, intent: OutboxIntent) -> UUID: ...
 
+    async def resolve_delivery_status(self, event_id: UUID) -> str | None: ...
+
 
 __all__ = [
     "OpaqueObjectReference",

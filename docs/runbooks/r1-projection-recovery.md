@@ -35,12 +35,22 @@ adapter storage.
    safe snapshot, boundary, freshness, health, reason code, and generation.
 2. When approved by the incident owner, submit
    `POST /api/v1/projections/{projection_kind}/recovery` with one of the
-   contract actions `retry`, `rebuild`, or `recover`, plus the required
+   contract actions `retry`, `rebuild`, `recover`, or `successor`, plus the required
    `Idempotency-Key`. The command returns `202 accepted`; that is only durable
    request acceptance, never completion.
-3. Follow the same request through the `projection_request` outbox, worker
-   delivery, physical result, canonical result bridge, validation/sealing, and
-   publication status. Confirm one logical terminal result despite redelivery.
+   Use `retry`, `rebuild`, or `recover` only when the last active snapshot's
+   exact source revisions are still current and its physical artifacts are the
+   recovery target. Use `successor` after a canonical head changed or became a
+   tombstone: the command transaction captures the current canonical boundary
+   and creates a new immutable outbox request. Never use a new key merely to
+   retry an uncertain `successor`; replay the original key first.
+3. For `successor`, poll
+   `GET /api/v1/projections/{projection_kind}/successors/{command_id}`. Its
+   content-free response correlates the command and intent with any canonical
+   run, candidate, receipts, snapshot and activation, and reports only
+   `accepted`, `running`, `completed`, or `failed`. Follow the same request
+   through worker delivery and confirm one logical terminal result despite
+   redelivery.
 4. Publish only a physically validated, sealed successor through the existing
    canonical activation CAS. On failure, keep the active pointer unchanged and
    preserve the safe terminal code.
@@ -71,7 +81,8 @@ or raw adapter payloads.
 ## Stop and escalate
 
 Stop on authorization denial, scope/digest mismatch, stale/tombstoned/foreign
-input, lost lease, unavailable worker/adapter, duplicate logical result,
+active-recovery input, changed successor boundary lineage, missing or ambiguous
+processing receipt, lost lease, unavailable worker/adapter, duplicate logical result,
 missing canonical bridge, invalid physical evidence, failed validation,
 or activation CAS conflict. Do not publish an unvalidated/mixed successor,
 directly mutate canonical state, or turn missing evidence into success. Escalate

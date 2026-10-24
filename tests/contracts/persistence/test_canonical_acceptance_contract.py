@@ -111,13 +111,20 @@ class CanonicalCase:
     command: CanonicalAcceptanceCommand
 
 
-def _audit(*, context: object, source_revision_id: UUID, event_id: UUID, reason: str):
+def _audit(
+    *,
+    context: object,
+    source_revision_id: UUID,
+    event_id: UUID,
+    reason: str,
+    transition: str = "source.accepted",
+):
     return AuditEventRegistry.with_default_families().build_event(
         workspace_id=context.scope.workspace_id,
         environment_id=context.scope.environment_id,
         event_type="canonical.transition",
         schema_version=1,
-        payload=CanonicalTransitionAuditPayload(transition="source.accepted"),
+        payload=CanonicalTransitionAuditPayload(transition=transition),
         origin=ContextOrigin.WORKER,
         acting_subject_id=None,
         service_principal_id=context.service_principal_id,

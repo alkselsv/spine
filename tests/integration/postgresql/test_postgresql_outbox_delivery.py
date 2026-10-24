@@ -44,7 +44,11 @@ from spine.application.persistence.delivery import (
 from spine.application.persistence.outbox import OutboxIntent
 from spine.application.persistence.errors import AuditConflictError
 from spine.application.persistence.idempotency import IdempotencyKey
-from spine.application.persistence.projection import ProjectionRecoveryAction
+from spine.application.persistence.projection import (
+    PROJECTION_SUCCESSOR_REQUESTED_OUTBOX_EVENT_TYPE,
+    ProjectionRecoveryAction,
+    ProjectionSuccessorRequestedOutboxPayload,
+)
 from spine.application.projection_control import ProjectionRecoveryRequestService
 from spine.domain.common import EnvironmentKind
 from spine.domain.workspaces import Environment, Workspace
@@ -69,6 +73,9 @@ from spine.infrastructure.persistence.postgresql import PostgreSQLPersistence
 from spine.infrastructure.persistence.projection_composition import (
     PROJECTION_REQUEST_CONSUMER_NAME,
     register_projection_delivery_routes,
+)
+from tests.contracts.persistence.test_canonical_acceptance_contract import (
+    prepare_case as prepare_canonical_case,
 )
 from spine.workers import OutboxConsumerBinding, create_outbox_worker
 from spine.workers.runtime import OutboxWorkerSettings, ProductionOutboxWorkerRuntime
@@ -281,8 +288,23 @@ async def postgresql_delivery_adapter(
                 environment_id=environment_id,
             ),
             service_principal_id=synthetic_uuid(6547),
-            purpose=PersistencePurpose("projection_recovery_test"),
+            purpose=PersistencePurpose("contract_test"),
             operation=PersistenceOperation(operation),
+            trace_id=synthetic_uuid(6548),
+        )
+
+    def source_context(
+        workspace_id: UUID,
+        environment_id: UUID,
+    ) -> TrustedPersistenceContext:
+        return boundary.worker(
+            scope=EnvironmentScope(
+                workspace_id=workspace_id,
+                environment_id=environment_id,
+            ),
+            service_principal_id=synthetic_uuid(6547),
+            purpose=PersistencePurpose("contract_test"),
+            operation=PersistenceOperation("source_observation"),
             trace_id=synthetic_uuid(6548),
         )
 
@@ -296,6 +318,7 @@ async def postgresql_delivery_adapter(
         worker_workspace_context=worker_workspace_context,
         environment_context=environment_context,
         ingestion_context=ingestion_context,
+        source_context=source_context,
         hold_transactions=hold_transactions,
         outbox_events=outbox_events,
         audit_events=audit_events,
@@ -722,6 +745,7 @@ class _SuccessfulConsumer:
 class _RecordingConsumer(_SuccessfulConsumer):
     def __init__(self) -> None:
         self.event_ids: list[UUID] = []
+        self.intents: list[OutboxIntent] = []
 
     async def consume(
         self,
@@ -730,6 +754,7 @@ class _RecordingConsumer(_SuccessfulConsumer):
     ) -> OutboxConsumerSuccess:
         assert intent.event_id is not None
         self.event_ids.append(intent.event_id)
+        self.intents.append(intent)
         return await super().consume(intent, diagnostic_context)
 
 
@@ -775,6 +800,7 @@ async def test_postgresql_recovery_request_replay_dispatches_one_tenant_scoped_i
     consumer = _RecordingConsumer()
     consumers = OutboxConsumerRegistry()
     consumers.register(PROJECTION_REQUEST_CONSUMER_NAME, consumer)
+    consumers.register("workspace_projection", consumer)
     diagnostics = DiagnosticEventRegistry.with_default_families()
     dispatcher = OutboxDispatcher(
         repository=adapter.delivery_repository,
@@ -806,6 +832,111 @@ async def test_postgresql_recovery_request_replay_dispatches_one_tenant_scoped_i
     assert replay.replay is True
     assert report.delivered == 1
     assert len(consumer.event_ids) == 1
+
+
+async def test_postgresql_successor_request_atomically_captures_boundary_once(
+    postgresql_delivery_adapter: DeliveryPersistenceAdapter,
+) -> None:
+    adapter = postgresql_delivery_adapter
+    case = await prepare_canonical_case(adapter, 6970)
+    async with adapter.uow_factory(case.context) as uow:
+        await uow.canonical.accept(case.command)
+        await uow.commit()
+    context = adapter.ingestion_context(
+        case.source.workspace_id,
+        case.source.environment_id,
+        "request_projection_recovery",
+    )
+    service = ProjectionRecoveryRequestService(
+        uow_factory=adapter.uow_factory,
+        outbox_events=adapter.outbox_events,
+    )
+
+    first = await service.request(
+        context=context,
+        projection_kind="context",
+        action=ProjectionRecoveryAction.SUCCESSOR,
+        idempotency_key=IdempotencyKey("postgresql-projection-successor-575"),
+    )
+    status = await service.successor_status(
+        context=context,
+        projection_kind="context",
+        command_id=first.command_id,
+    )
+    await adapter.delivery_repository.materialize(
+        limit=10,
+        materialized_at=datetime(2026, 10, 24, 12, 59, tzinfo=timezone.utc),
+    )
+    pending_status = await service.successor_status(
+        context=context,
+        projection_kind="context",
+        command_id=first.command_id,
+    )
+    replay = await service.request(
+        context=context,
+        projection_kind="context",
+        action=ProjectionRecoveryAction.SUCCESSOR,
+        idempotency_key=IdempotencyKey("postgresql-projection-successor-575"),
+    )
+    consumer = _RecordingConsumer()
+    consumers = OutboxConsumerRegistry()
+    consumers.register(PROJECTION_REQUEST_CONSUMER_NAME, consumer)
+    consumers.register("workspace_projection", consumer)
+    diagnostics = DiagnosticEventRegistry.with_default_families()
+    dispatcher = OutboxDispatcher(
+        repository=adapter.delivery_repository,
+        consumers=consumers,
+        audit_events=adapter.audit_events,
+        diagnostic_events=diagnostics,
+        diagnostic_sink=RecordingDiagnosticSink(diagnostics),
+        service_principal_id=synthetic_uuid(6972),
+        clock=lambda: datetime(2026, 10, 24, 13, tzinfo=timezone.utc),
+        audit_event_id_source=(
+            synthetic_uuid(value) for value in range(6973, 6983)
+        ).__next__,
+        retry_delay=lambda attempt: timedelta(seconds=attempt),
+        maximum_retry_delay=timedelta(minutes=5),
+        lease_duration=timedelta(seconds=30),
+        handler_timeout=timedelta(seconds=5),
+        maximum_attempts=3,
+    )
+
+    report = await dispatcher.dispatch_batch(
+        limit=10,
+        worker_identity="projection_successor_worker",
+    )
+
+    assert replay.command_id == first.command_id
+    assert replay.replay is True
+    assert status.status == "unavailable"
+    assert pending_status.status == "accepted"
+    assert report.delivered >= 1
+    successor_intents = [
+        intent
+        for intent in consumer.intents
+        if intent.event_type == PROJECTION_SUCCESSOR_REQUESTED_OUTBOX_EVENT_TYPE
+    ]
+    assert len(successor_intents) == 1
+    intent = successor_intents[0]
+    assert intent.event_type == PROJECTION_SUCCESSOR_REQUESTED_OUTBOX_EVENT_TYPE
+    assert isinstance(intent.payload, ProjectionSuccessorRequestedOutboxPayload)
+    async with adapter.uow_factory(
+        adapter.ingestion_context(
+            case.source.workspace_id,
+            case.source.environment_id,
+            "canonical_boundary_capture",
+        )
+    ) as uow:
+        boundary = await uow.boundaries.resolve(intent.payload.canonical_boundary_id)
+        members = await uow.boundaries.resolve_members(
+            intent.payload.canonical_boundary_id
+        )
+        await uow.rollback()
+    assert boundary is not None
+    assert boundary.manifest_digest == intent.payload.canonical_boundary_digest
+    assert [member.source_revision_id for member in members] == [
+        case.revision.revision_id
+    ]
 
 
 class _LeakingConsumer:
