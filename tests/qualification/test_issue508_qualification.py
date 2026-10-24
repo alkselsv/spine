@@ -234,3 +234,15 @@ def test_issue508_compose_profile_is_reproducible_and_fail_closed() -> None:
     assert "resolver 127.0.0.11" in web_proxy
     assert "proxy_pass $spine_api" in web_proxy
     assert "docker compose up --build --detach --wait" in runbook
+
+
+def test_issue508_compose_passes_opt_in_ingestion_fault_profile_only_to_api() -> None:
+    compose = COMPOSE_PATH.read_text(encoding="utf-8")
+    binding = (
+        "SPINE_INGESTION_FAULT_PROFILE_JSON: "
+        "${SPINE_INGESTION_FAULT_PROFILE_JSON:-}"
+    )
+    api = compose.split("  api:", 1)[1].split("  outbox-dispatcher:", 1)[0]
+
+    assert binding in api
+    assert compose.count(binding) == 1

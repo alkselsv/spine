@@ -59,9 +59,7 @@ class IngestionFaultInjectionProfile(DefinitionModel):
     schema_version: Literal["spine-ingestion-fault-profile:v1"] = "spine-ingestion-fault-profile:v1"
     profile_id: str = Field(pattern=r"^qualification-[a-z0-9][a-z0-9_.:-]{0,63}$")
     profile_version: VersionIdentifier
-    deployment_profile_id: str = Field(
-        pattern=r"^qualification-[a-z0-9][a-z0-9_.:-]{0,63}$"
-    )
+    deployment_profile_id: VersionIdentifier
     deployment_profile_version: VersionIdentifier
     deployment_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
     rules: tuple[IngestionFaultRule, ...] = Field(min_length=1, max_length=32)
@@ -88,6 +86,14 @@ class IngestionFaultController:
     @property
     def enabled(self) -> bool:
         return self._profile is not None
+
+    def assert_qualification_deployment(
+        self, *, isolated_development: bool
+    ) -> None:
+        """Reject enabled faults unless trusted composition selected isolation."""
+
+        if self.enabled and not isolated_development:
+            raise ValueError("INGESTION_FAULT_PROFILE_FORBIDDEN")
 
     def assert_deployment_binding(
         self,
@@ -152,13 +158,12 @@ class IngestionFaultInjectionSettings(BaseSettings):
 
     profile_json: str | None = Field(
         default=None,
-        min_length=2,
         repr=False,
         validation_alias="SPINE_INGESTION_FAULT_PROFILE_JSON",
     )
 
     def load_profile(self) -> IngestionFaultInjectionProfile | None:
-        if self.profile_json is None:
+        if not self.profile_json:
             return None
         try:
             return IngestionFaultInjectionProfile.model_validate_json(self.profile_json)
