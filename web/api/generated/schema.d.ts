@@ -2431,8 +2431,14 @@ export interface components {
             item_id: string;
             /** Item State */
             item_state: string;
+            /** Original Receipt Digest */
+            original_receipt_digest?: string | null;
+            /** Original Receipt Id */
+            original_receipt_id?: string | null;
             processing: components["schemas"]["PublicProcessingStatus"];
             processing_receipt?: components["schemas"]["IngestionReceiptResponse"] | null;
+            /** Provenance Id */
+            provenance_id?: string | null;
             /**
              * Run Id
              * Format: uuid

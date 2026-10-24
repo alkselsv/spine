@@ -30,7 +30,7 @@ DISPATCHER_ROLE = "spine_dispatcher"
 MIGRATION_PASSWORD = "migration-readiness-secret"
 RUNTIME_PASSWORD = "runtime-readiness-secret"
 DISPATCHER_PASSWORD = "dispatcher-readiness-secret"
-HEAD_REVISION = "20261120_57"
+HEAD_REVISION = "20261121_58"
 
 
 @dataclass(frozen=True, slots=True)

@@ -105,6 +105,7 @@ class DocumentReplacementUploadService:
             expected_sha256=command.expected_sha256,
             expected_byte_length=command.expected_byte_length,
             expected_current_revision_id=command.expected_current_revision_id,
+            source_created_at=source.created_at,
         )
         result = await self.ingestion_service.submit(
             context=context,

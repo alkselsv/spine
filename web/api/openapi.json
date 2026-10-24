@@ -3793,6 +3793,30 @@
             "title": "Item State",
             "type": "string"
           },
+          "original_receipt_digest": {
+            "anyOf": [
+              {
+                "pattern": "[0-9a-f]{64}",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Receipt Digest"
+          },
+          "original_receipt_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Receipt Id"
+          },
           "processing": {
             "$ref": "#/components/schemas/PublicProcessingStatus"
           },
@@ -3805,6 +3829,18 @@
                 "type": "null"
               }
             ]
+          },
+          "provenance_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provenance Id"
           },
           "run_id": {
             "format": "uuid",

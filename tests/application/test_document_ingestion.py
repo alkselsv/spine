@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import AsyncIterable, AsyncIterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -139,6 +139,7 @@ class _Ingestion:
         self.item = None
         self.transitions: list[IngestionTransition] = []
         self.binding = None
+        self.observation = None
         self.receipt: ProcessingReceipt | None = None
         self.failures = []
 
@@ -172,6 +173,8 @@ class _Ingestion:
                 state=IngestionItemState.RECEIVED, attempt=1, actor_or_service="fake",
                 trace_id=_id("trace"), occurred_at=NOW,
             ))
+        elif self.item != item:
+            raise AssertionError("Ingestion item identity conflicts.")
         return self.item
 
     async def resolve_run_head(self, run_id):
@@ -183,6 +186,7 @@ class _Ingestion:
     async def bind_source(self, command):
         if self.binding is None:
             self.binding = command.binding
+            self.observation = command.observation
             head = await self.resolve_item_head(command.item.ingestion_run_source_id)
             self.transitions.append(IngestionTransition(
                 ingestion_transition_id=_id("observed"), workspace_id=command.item.workspace_id,
@@ -229,6 +233,7 @@ class _Ingestion:
             self.item,
             list(self.transitions),
             self.binding,
+            self.observation,
             self.receipt,
         )
 
@@ -237,7 +242,8 @@ class _Ingestion:
         self.item = snapshot[1]
         self.transitions = list(snapshot[2])
         self.binding = snapshot[3]
-        self.receipt = snapshot[4]
+        self.observation = snapshot[4]
+        self.receipt = snapshot[5]
 
 
 class _Admissions:
@@ -256,9 +262,12 @@ class _Canonical:
     def __init__(self) -> None:
         self.calls = 0
         self.current_revision_id: UUID | None = None
+        self.expected_revision = None
 
     async def accept(self, command):
         self.calls += 1
+        if self.expected_revision is not None:
+            assert command.revision == self.expected_revision
         self.current_revision_id = command.revision.revision_id
         return command
 
@@ -333,6 +342,7 @@ def _orchestrator(
     parser_calls: list[int],
     pre_acceptance_faults: list[bool] | None = None,
     fault_injector=None,
+    clock=lambda: NOW,
 ):
     ingestion = _Ingestion()
     admissions = _Admissions()
@@ -374,7 +384,7 @@ def _orchestrator(
         outbox_events=OutboxEventRegistry(),
         parser=parse,
         fault_injector=fault_injector,
-        clock=lambda: NOW,
+        clock=clock,
         max_validation_bytes=10_000_000,
         max_parse_bytes=10_000_000,
     ), uploader, reader, canonical, outbox, ingestion
@@ -383,11 +393,13 @@ def _orchestrator(
 @pytest.mark.asyncio
 async def test_pre_acceptance_fault_is_visible_and_retry_does_not_create_early_current_revision() -> None:
     parser_calls: list[int] = []
+    current_time = [NOW]
     orchestrator, _, _, canonical, _, ingestion = _orchestrator(
         b"qualification source\n",
         media_type="text/plain",
         parser_calls=parser_calls,
         pre_acceptance_faults=[True],
+        clock=lambda: current_time[0],
     )
 
     failed = await orchestrator.ingest(
@@ -400,6 +412,8 @@ async def test_pre_acceptance_fault_is_visible_and_retry_does_not_create_early_c
     assert ingestion.failures[0].code == "pre_acceptance_retryable"
     assert ingestion.failures[0].retryable is True
 
+    canonical.expected_revision = ingestion.observation.revision
+    current_time[0] = NOW + timedelta(minutes=5)
     retried = await orchestrator.ingest(
         request=_request("text/plain"), chunks=_stream(b"qualification source\n")
     )
@@ -652,6 +666,50 @@ async def test_document_ingestion_completes_text_path_and_replays_stably() -> No
         IngestionItemState.PROCESSED,
         IngestionItemState.PROJECTION_REQUESTED,
     ]
+
+
+@pytest.mark.asyncio
+async def test_document_ingestion_replay_reuses_item_when_clock_advances() -> None:
+    clock_now = [NOW]
+    orchestrator, _, _, _, _, _ = _orchestrator(
+        b"hello\nworld\n",
+        media_type="text/plain",
+        parser_calls=[],
+        clock=lambda: clock_now[0],
+    )
+    request = _request("text/plain")
+
+    first = await orchestrator.ingest(
+        request=request, chunks=_stream(b"hello\nworld\n")
+    )
+    clock_now[0] = NOW.replace(minute=NOW.minute + 1)
+    replay = await orchestrator.ingest(
+        request=request, chunks=_stream(b"hello\nworld\n")
+    )
+
+    assert replay.replay is True
+    assert replay.item == first.item
+
+
+@pytest.mark.asyncio
+async def test_replacement_ingestion_preserves_existing_source_creation_time() -> None:
+    source_created_at = NOW - timedelta(days=1)
+    orchestrator, *_ = _orchestrator(
+        b"replacement\n",
+        media_type="text/plain",
+        parser_calls=[],
+    )
+    request = _request("text/plain", key="replacement").model_copy(
+        update={"source_created_at": source_created_at}
+    )
+
+    result = await orchestrator.ingest(
+        request=request,
+        chunks=_stream(b"replacement\n"),
+    )
+
+    assert result.source.created_at == source_created_at
+    assert result.item.created_at == NOW
 
 
 @pytest.mark.parametrize(

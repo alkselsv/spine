@@ -224,6 +224,7 @@ class DocumentUploadCommand(BaseModel):
     expected_sha256: str | None = Field(default=None, pattern=r"[0-9a-f]{64}")
     expected_byte_length: int | None = Field(default=None, ge=0)
     expected_current_revision_id: UUID | None = None
+    source_created_at: datetime | None = None
     access_policy_version_id: UUID | None = None
     source_metadata: RevisionMetadata = RevisionMetadata()
 
@@ -579,7 +580,12 @@ class DocumentIngestionOrchestrator:
             result = await uow.ingestion.create_run(
                 IngestionRunCommand.create(run=run, idempotency_key=_key(request, "run"))
             )
-            await uow.ingestion.create_item(item)
+            stored_item = (
+                await uow.ingestion.resolve_item(item_id) if result.replay else None
+            )
+            if stored_item is None:
+                stored_item = await uow.ingestion.create_item(item)
+            item = stored_item
             run_head = await uow.ingestion.resolve_run_head(run_id)
             if run_head is not None and run_head.state is IngestionRunState.REQUESTED:
                 await self._advance_run_in_uow(uow, result.value, IngestionRunState.RECEIVING, now)
@@ -1046,7 +1052,7 @@ class DocumentIngestionOrchestrator:
         item: IngestionRunSource,
         upload: OriginalUploadOutcome,
     ):
-        now = self._now()
+        now = upload.write_receipt.finalized_at
         source = SourceObject(
             source_object_id=_source_object_id(request),
             workspace_id=request.workspace_id,
@@ -1054,7 +1060,7 @@ class DocumentIngestionOrchestrator:
             source_kind="document",
             identity_mode=IdentityMode.UPLOAD,
             upload_identity=request.upload_identity,
-            created_at=now,
+            created_at=request.source_created_at or now,
         )
         receipt = upload.write_receipt
         media_type = _media_type(request)
