@@ -8,6 +8,8 @@ import { apiQueryOptions } from '../../api/query';
 import { useAuth } from '../../app/auth';
 import { ApiErrorPanel, StatusPanel } from '../../app/status';
 import { useScope, type Scope } from '../../app/scope';
+import { WorkspaceLayout } from '../../components/WorkspaceLayout';
+import { formatNumber } from '../../i18n/format';
 import { OperationalCorrelationPanel } from '../diagnostics/OperationalCorrelationPanel';
 import { CompletenessPresentation } from '../chat/CompletenessPresentation';
 import { ru } from '../../i18n/resources';
@@ -26,7 +28,7 @@ export function QARunDetailPage() {
   const auth = useAuth();
   const { scope, queryKey } = useScope();
   const { runId } = useParams();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const client = useMemo(
     () =>
       createScopedApiClient({
@@ -71,6 +73,7 @@ export function QARunDetailPage() {
       detail={detailQuery.data}
       queryKey={queryKey}
       searchParams={searchParams}
+      setSearchParams={setSearchParams}
       scope={scope}
     />
   );
@@ -81,14 +84,41 @@ function QARunDetail({
   detail,
   queryKey,
   searchParams,
+  setSearchParams,
   scope,
 }: {
   client: ReturnType<typeof createScopedApiClient>;
   detail: QARunDetail;
   queryKey: (resource: string) => readonly unknown[];
   searchParams: URLSearchParams;
+  setSearchParams: ReturnType<typeof useSearchParams>[1];
   scope: Scope;
 }) {
+  const orderedAttempts = [...detail.attempts].sort(
+    (left, right) => left.attempt_number - right.attempt_number || left.attempt_id.localeCompare(right.attempt_id),
+  );
+  const requestedAttemptId = searchParams.get('attempt_id');
+  const implicitAttemptId = detail.final_attempt_id;
+  const selectedAttemptId = requestedAttemptId ?? implicitAttemptId;
+  const selectedAttempt = selectedAttemptId
+    ? orderedAttempts.find((attempt) => attempt.attempt_id === selectedAttemptId) ?? null
+    : null;
+  const invalidAttemptSelection = Boolean(
+    requestedAttemptId && (!isValidQARunId(requestedAttemptId) || !selectedAttempt),
+  );
+
+  function selectAttempt(attemptId: string) {
+    const next = new URLSearchParams(searchParams);
+    next.set('attempt_id', attemptId);
+    setSearchParams(next);
+  }
+
+  function clearAttemptSelection() {
+    const next = new URLSearchParams(searchParams);
+    next.delete('attempt_id');
+    setSearchParams(next);
+  }
+
   return (
     <section className={styles.page} aria-labelledby="qa-run-detail-heading">
       <DetailHeader detail={detail} />
@@ -97,20 +127,54 @@ function QARunDetail({
         <BackToRuns searchParams={searchParams} scope={scope} />
       </div>
 
-      <OperationalCorrelationPanel
-        client={client}
-        queryKey={queryKey}
-        referenceId={detail.run_id}
-        referenceKind="run"
-        scope={scope}
+      <WorkspaceLayout
+        ariaLabel={ru.qaRuns.detail.workspaceLabel}
+        master={(
+          <div className={styles.timelinePane}>
+            <TimelineCard events={detail.diagnostic_events} />
+            <AttemptSelector
+              attempts={orderedAttempts}
+              onSelect={selectAttempt}
+              selectedAttemptId={selectedAttemptId}
+            />
+          </div>
+        )}
+        detail={(
+          <div className={styles.detailPane}>
+            {requestedAttemptId ? (
+              <button className={`${styles.secondaryButton} ${styles.mobileOnly}`} onClick={clearAttemptSelection} type="button">
+                {ru.qaRuns.detail.backToTimeline}
+              </button>
+            ) : null}
+            <IdentityCard detail={detail} />
+            <WarningsCard warnings={detail.warnings} />
+            {invalidAttemptSelection ? (
+              <StatusPanel state="failed" />
+            ) : selectedAttempt ? (
+              <section className={styles.selectedAttempt} aria-labelledby="qa-run-selected-attempt-heading">
+                <h3 id="qa-run-selected-attempt-heading">{ru.qaRuns.detail.selectedAttempt}</h3>
+                <AttemptCard attempt={selectedAttempt} />
+              </section>
+            ) : (
+              <section className={styles.emptySelection}>
+                <h3>{ru.qaRuns.detail.selectAttempt}</h3>
+                <p>{ru.qaRuns.detail.selectAttemptDescription}</p>
+              </section>
+            )}
+            <EvidenceCard detail={detail} evidence={detail.accepted_evidence} scope={scope} />
+          </div>
+        )}
+        mobileDetailActive={Boolean(requestedAttemptId)}
       />
 
-      <div className={styles.grid}>
-        <IdentityCard detail={detail} />
-        <WarningsCard warnings={detail.warnings} />
-        <TimelineCard events={detail.diagnostic_events} />
-        <AttemptsCard attempts={detail.attempts} />
-        <EvidenceCard detail={detail} evidence={detail.accepted_evidence} scope={scope} />
+      <div className={styles.diagnosticsSurface}>
+        <OperationalCorrelationPanel
+          client={client}
+          queryKey={queryKey}
+          referenceId={detail.run_id}
+          referenceKind="run"
+          scope={scope}
+        />
       </div>
     </section>
   );
@@ -173,7 +237,7 @@ function WarningsCard({ warnings }: { warnings: readonly string[] }) {
 function TimelineCard({ events }: { events: readonly QARunTimelineEvent[] }) {
   const orderedEvents = [...events].sort(compareTimelineEvents);
   return (
-    <section className={`${styles.card} ${styles.cardWide}`} aria-labelledby="qa-run-timeline-heading">
+    <section className={styles.timelineSection} aria-labelledby="qa-run-timeline-heading">
       <h3 id="qa-run-timeline-heading">{ru.qaRuns.detail.timeline}</h3>
       {orderedEvents.length === 0 ? (
         <p className={styles.muted}>{ru.qaRuns.detail.noTimeline}</p>
@@ -198,19 +262,36 @@ function TimelineCard({ events }: { events: readonly QARunTimelineEvent[] }) {
   );
 }
 
-function AttemptsCard({ attempts }: { attempts: readonly QARunAttempt[] }) {
-  const orderedAttempts = [...attempts].sort(
-    (left, right) => left.attempt_number - right.attempt_number || left.attempt_id.localeCompare(right.attempt_id),
-  );
+function AttemptSelector({
+  attempts,
+  onSelect,
+  selectedAttemptId,
+}: {
+  attempts: readonly QARunAttempt[];
+  onSelect: (attemptId: string) => void;
+  selectedAttemptId: string | null;
+}) {
   return (
-    <section className={`${styles.card} ${styles.cardWide}`} aria-labelledby="qa-run-attempts-heading">
+    <section className={styles.attemptSelector} aria-labelledby="qa-run-attempts-heading">
       <h3 id="qa-run-attempts-heading">{ru.qaRuns.detail.attempts}</h3>
-      {orderedAttempts.length === 0 ? (
+      {attempts.length === 0 ? (
         <p className={styles.muted}>{ru.qaRuns.detail.noAttempts}</p>
       ) : (
-        <div className={styles.attemptList}>
-          {orderedAttempts.map((attempt) => <AttemptCard attempt={attempt} key={attempt.attempt_id} />)}
-        </div>
+        <ul className={styles.attemptList}>
+          {attempts.map((attempt) => (
+            <li key={attempt.attempt_id}>
+              <button
+                aria-current={attempt.attempt_id === selectedAttemptId ? 'step' : undefined}
+                className={styles.attemptButton}
+                onClick={() => onSelect(attempt.attempt_id)}
+                type="button"
+              >
+                <span>{ru.qaRuns.detail.attempt} {formatNumber(attempt.attempt_number)}</span>
+                <small>{stateLabel(attempt.state)} · {outcomeLabel(attempt.outcome)}</small>
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
     </section>
   );
@@ -224,7 +305,7 @@ function AttemptCard({ attempt }: { attempt: QARunAttempt }) {
       <header className={styles.subHeader}>
         <div>
           <h4 id={`qa-run-attempt-${attempt.attempt_id}`}>
-            {ru.qaRuns.detail.attempt} {attempt.attempt_number}
+            {ru.qaRuns.detail.attempt} {formatNumber(attempt.attempt_number)}
           </h4>
           <code>{attempt.attempt_id}</code>
         </div>
@@ -308,7 +389,7 @@ function EvidenceCard({
   scope: Scope;
 }) {
   return (
-    <section className={`${styles.card} ${styles.cardWide}`} aria-labelledby="qa-run-evidence-heading">
+    <section className={styles.card} aria-labelledby="qa-run-evidence-heading">
       <h3 id="qa-run-evidence-heading">{ru.qaRuns.detail.evidence}</h3>
       {!detail.evidence_eligible ? (
         <p className={styles.muted} role="note">{ru.qaRuns.detail.evidenceHidden}</p>
@@ -432,6 +513,9 @@ function DetailValue({
 
 function BackToRuns({ searchParams, scope }: { searchParams: URLSearchParams; scope: Scope }) {
   const nextSearch = new URLSearchParams(searchParams);
+  nextSearch.delete('attempt_id');
+  nextSearch.delete('return_session_id');
+  nextSearch.delete('return_message_id');
   nextSearch.set('workspace', scope.workspaceId);
   nextSearch.set('environment', scope.environmentId);
   return (

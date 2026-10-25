@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 import type { ScopedApiClient } from '../../api/client';
 import type { Scope } from '../../app/scope';
@@ -13,12 +14,16 @@ import styles from './SessionBrowserPage.module.css';
 type AnswerState = 'checking' | 'available' | 'unavailable' | 'unsafe';
 export function AcceptedAnswer({
   client,
+  inspectorHost = null,
   message,
+  onCitationSelectionChange,
   targetCitationId = null,
   scope,
 }: {
   client: ScopedApiClient;
+  inspectorHost?: HTMLElement | null;
   message: QAMessage;
+  onCitationSelectionChange?: (citationId: string | null) => void;
   targetCitationId?: string | null;
   scope: Scope;
 }) {
@@ -85,6 +90,12 @@ export function AcceptedAnswer({
     setInspectionPending(false);
     setInspectionAttempted(false);
     let active = true;
+    if (targetCitationId) {
+      return () => {
+        active = false;
+        request.current?.abort();
+      };
+    }
     void buildCitationPlacements(message).then((result) => {
       if (!active) return;
       if (!result) {
@@ -110,7 +121,7 @@ export function AcceptedAnswer({
       active = false;
       request.current?.abort();
     };
-  }, [answer, client, message, scope.environmentId, scope.workspaceId]);
+  }, [answer, client, message, scope.environmentId, scope.workspaceId, targetCitationId]);
 
   useEffect(() => {
     if (!targetCitationId) return;
@@ -119,17 +130,19 @@ export function AcceptedAnswer({
     autoInspection.current = requestKey;
     if (!presentation?.citation_ids.includes(targetCitationId)) {
       setInspectionAttempted(true);
+      setValidatedMessage(message);
       setState('unavailable');
       return;
     }
-    void onInspect(targetCitationId);
+    void onInspect(targetCitationId, false);
     return () => {
       if (autoInspection.current === requestKey) autoInspection.current = null;
     };
   }, [message.message_id, presentation, targetCitationId]);
 
-  async function onInspect(citationId: string): Promise<void> {
+  async function onInspect(citationId: string, announceSelection = true): Promise<void> {
     if (!presentation || !message.session_id || !message.run_id) return;
+    if (announceSelection) onCitationSelectionChange?.(citationId);
     request.current?.abort();
     const controller = new AbortController();
     request.current = controller;
@@ -169,6 +182,7 @@ export function AcceptedAnswer({
       );
       if (controller.signal.aborted) return;
       if (inspected.status === 'unavailable') {
+        setValidatedMessage(message);
         setState('unavailable');
         return;
       }
@@ -177,7 +191,10 @@ export function AcceptedAnswer({
       setValidatedMessage(message);
       setState('available');
     } catch {
-      if (!controller.signal.aborted) setState('unavailable');
+      if (!controller.signal.aborted) {
+        setValidatedMessage(message);
+        setState('unavailable');
+      }
     } finally {
       if (request.current === controller) {
         request.current = null;
@@ -188,18 +205,36 @@ export function AcceptedAnswer({
 
   if (state === 'checking' || validatedMessage !== message) {
     return (
-      <p className={styles.answerUnavailable} role="status" aria-live="polite">
-        {inspectionPending ? ru.chat.citationChecking : ru.chat.answerChecking}
-      </p>
+      <>
+        <p className={styles.answerUnavailable} role="status" aria-live="polite">
+          {inspectionPending ? ru.chat.citationChecking : ru.chat.answerChecking}
+        </p>
+        {inspectionPending && inspectorHost
+          ? createPortal(
+              <p className={styles.inspectorStatus} role="status">{ru.chat.citationInspectorChecking}</p>,
+              inspectorHost,
+            )
+          : null}
+      </>
     );
   }
   if (state !== 'available' || !answer || !presentation) {
-    const message = state === 'unsafe'
+    const unavailableMessage = state === 'unsafe'
       ? ru.chat.answerUnsafe
       : inspectionAttempted
         ? ru.chat.citationUnavailable
         : ru.chat.answerUnavailable;
-    return <p className={styles.answerUnavailable} role="status">{message}</p>;
+    return (
+      <>
+        <p className={styles.answerUnavailable} role="status">{unavailableMessage}</p>
+        {inspectionAttempted && inspectorHost
+          ? createPortal(
+              <p className={styles.inspectorStatus} role="status">{ru.chat.citationInspectorUnavailable}</p>,
+              inspectorHost,
+            )
+          : null}
+      </>
+    );
   }
 
   return (
@@ -214,14 +249,33 @@ export function AcceptedAnswer({
         messageId={message.message_id}
       />
       {inspection?.status === 'available' ? (
-        <CitationEvidence
-          citationNumber={citationNumber(presentation.citation_ids, inspection.evidence.citation_id)}
-          client={client}
-          evidence={inspection.evidence}
-          messageId={message.message_id}
-          runId={presentation.run_id}
-          onClose={() => setInspection(null)}
-        />
+        inspectorHost
+          ? createPortal(
+              <CitationEvidence
+                citationNumber={citationNumber(presentation.citation_ids, inspection.evidence.citation_id)}
+                client={client}
+                evidence={inspection.evidence}
+                messageId={message.message_id}
+                runId={presentation.run_id}
+                onClose={() => {
+                  setInspection(null);
+                  onCitationSelectionChange?.(null);
+                }}
+              />,
+              inspectorHost,
+            )
+          : onCitationSelectionChange
+            ? null
+            : <CitationEvidence
+              citationNumber={citationNumber(presentation.citation_ids, inspection.evidence.citation_id)}
+              client={client}
+              evidence={inspection.evidence}
+              messageId={message.message_id}
+              runId={presentation.run_id}
+              onClose={() => {
+                setInspection(null);
+              }}
+            />
       ) : null}
     </div>
   );

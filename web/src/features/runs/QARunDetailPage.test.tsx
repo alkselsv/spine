@@ -22,6 +22,31 @@ afterEach(() => {
 });
 
 describe('Q&A run detail', () => {
+  it('test_attempt_selection_updates_the_url_and_restores_the_selected_attempt', async () => {
+    vi.stubGlobal('fetch', createRunAndCorrelationFetch());
+    const router = renderDetail(
+      `/qa/runs/${runId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}`,
+    );
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('button', { name: /Попытка 1/ }));
+
+    expect(router.state.location.search).toContain(`attempt_id=${makeAttempt().attempt_id}`);
+    expect(screen.getByRole('heading', { name: ru.qaRuns.detail.selectedAttempt })).toBeVisible();
+    expect(screen.getByRole('button', { name: /Попытка 1/ })).toHaveAttribute('aria-current', 'step');
+  });
+
+  it('test_mismatched_attempt_selection_fails_closed_without_fabricating_a_trace_tree', async () => {
+    vi.stubGlobal('fetch', createRunAndCorrelationFetch());
+    const unknownAttempt = 'a1000000-0000-4000-8000-000000000099';
+
+    renderDetail(`/qa/runs/${runId}?attempt_id=${unknownAttempt}`);
+
+    expect(await screen.findByRole('region', { name: ru.status.failed.title })).toBeVisible();
+    expect(screen.queryByText(/gpt-safe-2026/)).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent('trace tree');
+  });
+
   it('test_qa_run_detail_renders_authoritative_metadata_and_sorted_safe_timeline', async () => {
     vi.stubGlobal('fetch', createRunAndCorrelationFetch());
 

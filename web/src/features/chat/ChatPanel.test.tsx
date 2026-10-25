@@ -216,6 +216,64 @@ afterEach(() => {
 });
 
 describe('final Chat experience', () => {
+  it('test_session_list_keeps_detail_neutral_until_an_explicit_session_is_selected', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (input, init) => {
+      const request = new Request(input, init);
+      return collection(request, [session()], null);
+    }));
+
+    renderPage(`/chat?workspace=${scope.workspaceId}&environment=${scope.environmentId}`);
+
+    expect(await screen.findByRole('link', { name: /Сессия · 00000001/ })).toHaveAttribute(
+      'href',
+      `/chat/${sessionId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}`,
+    );
+    expect(screen.getByRole('heading', { name: ru.chat.noSessionTitle })).toBeVisible();
+    expect(screen.getByText(ru.chat.inspectorEmptyDescription)).toBeVisible();
+    expect(screen.getByLabelText('Текущий адрес')).toHaveTextContent('/chat?');
+    expect(screen.queryByText('Где находится политика отпуска?')).not.toBeInTheDocument();
+  });
+
+  it('test_safe_run_inspector_selection_is_linkable_and_keeps_the_run_detail_separate', async () => {
+    const currentMessage = message();
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname === '/api/v1/qa/sessions') return collection(request, [session()], null);
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}`) {
+        return response({ data: session(), workspace_id: scope.workspaceId, environment_id: scope.environmentId, trace_id: traceId });
+      }
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages/${messageId}`) {
+        return response({
+          schema_version: 1,
+          trace_id: traceId,
+          workspace_id: scope.workspaceId,
+          environment_id: scope.environmentId,
+          data: currentMessage,
+        });
+      }
+      if (url.pathname === `/api/v1/qa/sessions/${sessionId}/messages`) {
+        return collection(request, [currentMessage], null);
+      }
+      return response({ error: 'unexpected request' });
+    }));
+    const user = userEvent.setup();
+
+    renderPage(`/chat/${sessionId}?workspace=${scope.workspaceId}&environment=${scope.environmentId}`);
+    const inspectorTrigger = await screen.findByRole('button', { name: ru.chat.inspectRunSummary });
+    await user.click(inspectorTrigger);
+
+    expect(await screen.findByRole('dialog', { name: ru.chat.runInspectorTitle })).toBeVisible();
+    await waitFor(() => expect(screen.getByRole('button', { name: ru.chat.closeInspector })).toHaveFocus());
+    expect(screen.getByRole('link', { name: ru.chat.openRun })).toBeVisible();
+    expect(screen.getByLabelText('Текущий адрес')).toHaveTextContent(`message_id=${messageId}`);
+    expect(screen.getByLabelText('Текущий адрес')).toHaveTextContent(`run_id=${runId}`);
+    expect(screen.getByLabelText('Текущий адрес')).toHaveTextContent('inspector=run');
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.getByRole('button', { name: ru.chat.inspectRunSummary })).toHaveFocus());
+    expect(screen.queryByRole('dialog', { name: ru.chat.runInspectorTitle })).not.toBeInTheDocument();
+  });
+
   it('test_offline_refresh_with_cached_sessions_shows_stale_partial_state', async () => {
     onlineManager.setOnline(false);
     renderPage(
@@ -1006,7 +1064,11 @@ describe('final Chat experience', () => {
     await screen.findByRole('link', { name: new RegExp(`Сессия · ${sessionId.slice(-8)}`) });
     await user.click(screen.getByRole('button', { name: 'Следующая страница' }));
 
-    expect(await screen.findByRole('link', { name: new RegExp(`Сессия · ${nextId.slice(-8)}`) })).toBeVisible();
+    const nextSession = await screen.findByRole('link', { name: new RegExp(`Сессия · ${nextId.slice(-8)}`) });
+    expect(nextSession).toBeVisible();
+    expect(screen.getByLabelText('Текущий адрес')).toHaveTextContent('session_cursor=page-2');
+    await user.click(nextSession);
+    expect(screen.getByLabelText('Текущий адрес')).toHaveTextContent(`/chat/${nextId}`);
     expect(screen.getByLabelText('Текущий адрес')).toHaveTextContent('session_cursor=page-2');
   });
 });
