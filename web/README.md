@@ -78,8 +78,10 @@ pnpm --dir web exec playwright install --with-deps chromium
 `pnpm web:test:e2e` запускает собранную SPA в Chromium. Тестовые URL с
 `fixture=controlled` включают только синтетический API/SSE boundary для
 квалификации foundation; этот режим не является авторизацией и не считается production evidence.
-Опциональная `test:e2e:production` команда работает только с уже развёрнутым Web/API и
-требует доверенные `SPINE_E2E_*` bindings; она не поднимает preview server и не перехватывает API.
+Опциональная `test:e2e:production` команда работает только с уже развёрнутым
+Web/API. Она загружает runtime identity/scope из корневого `.env`, а approved
+browser inputs и evidence paths — из `.env.e2e`; команда не поднимает preview
+server и не перехватывает API.
 Описание контролируемых сценариев находится в
 [`docs/design/issue-167-frontend-qualification.md`](../docs/design/issue-167-frontend-qualification.md).
 Живая R1-квалификация и формат metadata-only отчёта описаны в

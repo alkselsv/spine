@@ -5,6 +5,9 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .env
+.env.qualification
+.env.e2e
+.env.test
 .spine/
 data/incoming/**
 !data/incoming/.gitkeep

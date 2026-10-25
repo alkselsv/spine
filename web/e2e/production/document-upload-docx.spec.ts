@@ -13,10 +13,10 @@ test('test_real_browser_uploads_docx_through_parsing_and_projection', async ({ p
     throw new Error('qualification_configuration_invalid:SPINE_E2E_DOCX_DOCUMENT_PATH');
   }
 
-  const accessToken = required('SPINE_E2E_ACCESS_TOKEN');
-  const identityVersion = required('SPINE_E2E_IDENTITY_VERSION');
-  const workspaceId = uuid('SPINE_E2E_WORKSPACE_A_ID');
-  const environmentId = uuid('SPINE_E2E_ENVIRONMENT_A_ID');
+  const accessToken = required('SPINE_LOCAL_AUTH_BEARER_CREDENTIAL');
+  const identityVersion = required('SPINE_LOCAL_AUTH_CONFIGURATION_VERSION');
+  const workspaceId = uuid('SPINE_WORKSPACE_A_ID');
+  const environmentId = uuid('SPINE_ENVIRONMENT_A_ID');
   await installRuntimeBinding(page, { accessToken, environmentId, identityVersion, workspaceId });
 
   const documentListResponse = page.waitForResponse((response) =>

@@ -12,6 +12,11 @@ LIVE_CONFIG_PATH = ROOT / "web/playwright.production.config.ts"
 LIVE_INPUT_CONFIG_PATH = ROOT / "web/e2e/production/live-config.ts"
 RUNBOOK_PATH = ROOT / "docs/runbooks/r1-governed-qa-browser-qualification.md"
 COMPOSE_PATH = ROOT / "compose.yaml"
+RUNTIME_ENV_EXAMPLE_PATH = ROOT / ".env.example"
+QUALIFICATION_ENV_EXAMPLE_PATH = ROOT / ".env.qualification.example"
+E2E_ENV_EXAMPLE_PATH = ROOT / ".env.e2e.example"
+TEST_ENV_EXAMPLE_PATH = ROOT / ".env.test.example"
+MAKEFILE_PATH = ROOT / "Makefile"
 PYTHON_IMAGE_PATH = ROOT / "Dockerfile"
 WEB_IMAGE_PATH = ROOT / "web/Dockerfile"
 WEB_PROXY_PATH = ROOT / "docker/web/default.conf.template"
@@ -150,7 +155,7 @@ def test_issue508_live_target_has_no_controlled_routes_or_content_artifacts() ->
     assert "webServer" not in config
     assert "qualification_configuration_missing:SPINE_E2E_WEB_BASE_URL" in config
     assert "127.0.0.1" not in config
-    assert "loadEnv('qualification', repositoryRoot, '')" in config
+    assert "loadEnv('e2e', repositoryRoot, '')" in config
     assert "process.env[name] === undefined" in config
     assert "docx|md|markdown|pdf|txt|xlsx" in input_config
     assert "corepack pnpm test:e2e:production" in runbook
@@ -182,8 +187,8 @@ def test_issue508_compose_profile_is_reproducible_and_fail_closed() -> None:
     assert "condition: service_completed_successfully" in compose
     assert "127.0.0.1:${SPINE_WEB_PORT:-4175}:8080" in compose
     assert "./data/incoming/issue508:/app/data/incoming/issue508:ro" in compose
-    assert "SPINE_E2E_ACCESS_TOKEN: ${SPINE_E2E_ACCESS_TOKEN}" in compose
-    assert "SPINE_E2E_ACCESS_TOKEN=" not in compose
+    assert "SPINE_WEB_ACCESS_TOKEN: ${SPINE_LOCAL_AUTH_BEARER_CREDENTIAL}" in compose
+    assert "SPINE_E2E_ACCESS_TOKEN" not in compose
     shared_environment = compose.split("x-app-environment:", 1)[1].split("services:", 1)[0]
     assert "SPINE_LOCAL_AUTH_BEARER_CREDENTIAL" not in shared_environment
     assert "SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_ISSUER" not in shared_environment
@@ -192,7 +197,10 @@ def test_issue508_compose_profile_is_reproducible_and_fail_closed() -> None:
     assert "SPINE_MIGRATION_DATABASE_URL" not in shared_environment
     assert "SPINE_API_INGESTION_SERVICE_PRINCIPAL_ID" not in shared_environment
     api_environment = compose.split("  api:", 1)[1].split("  outbox-dispatcher:", 1)[0]
-    assert "SPINE_LOCAL_AUTH_BEARER_CREDENTIAL: ${SPINE_E2E_ACCESS_TOKEN}" in api_environment
+    assert (
+        "SPINE_LOCAL_AUTH_BEARER_CREDENTIAL: "
+        "${SPINE_LOCAL_AUTH_BEARER_CREDENTIAL}"
+    ) in api_environment
     assert (
         "SPINE_API_INGESTION_SERVICE_ALIAS_ISSUER: "
         "${SPINE_LOCAL_AUTH_AUTHENTICATION_ALIAS_ISSUER}"
@@ -233,7 +241,62 @@ def test_issue508_compose_profile_is_reproducible_and_fail_closed() -> None:
     assert "pnpm install --frozen-lockfile" in web_image
     assert "resolver 127.0.0.11" in web_proxy
     assert "proxy_pass $spine_api" in web_proxy
-    assert "docker compose up --build --detach --wait" in runbook
+    assert "--env-file .env --env-file .env.qualification" in runbook
+    assert "up --build --detach --wait" in runbook
+
+
+def test_issue508_environment_templates_separate_runtime_and_test_authority() -> None:
+    runtime = RUNTIME_ENV_EXAMPLE_PATH.read_text(encoding="utf-8")
+    qualification = QUALIFICATION_ENV_EXAMPLE_PATH.read_text(encoding="utf-8")
+    e2e = E2E_ENV_EXAMPLE_PATH.read_text(encoding="utf-8")
+    test = TEST_ENV_EXAMPLE_PATH.read_text(encoding="utf-8")
+
+    assert "SPINE_LOCAL_AUTH_BEARER_CREDENTIAL=" in runtime
+    assert "SPINE_RUNTIME_RELEASE_IDENTITY=" in runtime
+    assert "SPINE_E2E_" not in runtime
+    assert "SPINE_TEST_DATABASE_" not in runtime
+    assert "SPINE_QUALIFICATION_" not in runtime
+    assert "SPINE_COGNEE_LOCAL_PROVIDER_AUTHORIZATION_JSON" not in runtime
+    assert "SPINE_INGESTION_FAULT_PROFILE_JSON" not in runtime
+    assert "SPINE_PROJECTION_PUBLICATION_FAULT_PROFILE_JSON" not in runtime
+
+    assert "SPINE_QUALIFICATION_AUTHORITY_EXPIRES_AT=" in qualification
+    assert "SPINE_COGNEE_LOCAL_PROVIDER_AUTHORIZATION_JSON=" in qualification
+    assert "SPINE_INGESTION_FAULT_PROFILE_JSON=" in qualification
+    assert "SPINE_LOCAL_AUTH_BEARER_CREDENTIAL" not in qualification
+    assert "SPINE_TEST_DATABASE_" not in qualification
+
+    assert "SPINE_E2E_WEB_BASE_URL=" in e2e
+    assert "SPINE_E2E_DOCUMENT_PATH=" in e2e
+    assert "SPINE_LOCAL_AUTH_BEARER_CREDENTIAL" not in e2e
+    assert "SPINE_QUALIFICATION_AUTHORITY_EXPIRES_AT" not in e2e
+    assert "SPINE_TEST_DATABASE_" not in e2e
+
+    assert "SPINE_TEST_DATABASE_URL=" in test
+    assert "SPINE_TEST_DATABASE_EXPECTED_NAME=" in test
+    assert "SPINE_TEST_DATABASE_DISPOSABLE_MARKER=" in test
+    assert "SPINE_LOCAL_AUTH_BEARER_CREDENTIAL" not in test
+    assert "SPINE_QUALIFICATION_" not in test
+    assert "SPINE_E2E_" not in test
+
+
+def test_issue508_make_targets_keep_generation_and_runtime_start_separate() -> None:
+    makefile = MAKEFILE_PATH.read_text(encoding="utf-8")
+
+    qualification_env = makefile.split("qualification-env:", 1)[1].split(
+        "compose-env:", 1
+    )[0]
+    start = makefile.split("start:", 1)[1].split("status:", 1)[0]
+
+    assert "spine-qualification-env" in qualification_env
+    assert "qualification-provision:" in makefile
+    assert "qualification-authority-provisioner" in makefile
+    assert "start: qualification-provision" in makefile
+    assert "up --build --detach --wait" in start
+    assert "qualification-env" not in start
+    assert "destroy: compose-env" in makefile
+    assert "down --volumes --remove-orphans" in makefile
+    assert "destroy" not in start
 
 
 def test_issue508_compose_passes_opt_in_ingestion_fault_profile_only_to_api() -> None:

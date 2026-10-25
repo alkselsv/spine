@@ -89,17 +89,17 @@ export function readIngestionQualificationConfig(
   }
 
   return Object.freeze({
-    accessToken: required('SPINE_E2E_ACCESS_TOKEN'),
+    accessToken: required('SPINE_LOCAL_AUTH_BEARER_CREDENTIAL'),
     authorizationGeneration,
-    apiReleaseIdentity: safeId('SPINE_E2E_API_RELEASE_IDENTITY'),
+    apiReleaseIdentity: safeId('SPINE_RUNTIME_RELEASE_IDENTITY'),
     commitSha,
     corpus: Object.freeze(corpus),
     corpusApprovalReference: safeId('SPINE_INGESTION_QUALIFICATION_CORPUS_APPROVAL_REFERENCE'),
     corpusDirectory,
     deploymentFingerprint,
-    environmentAId: uuid('SPINE_E2E_ENVIRONMENT_A_ID'),
-    environmentBId: uuid('SPINE_E2E_ENVIRONMENT_B_ID'),
-    identityVersion: safeId('SPINE_E2E_IDENTITY_VERSION'),
+    environmentAId: uuid('SPINE_ENVIRONMENT_A_ID'),
+    environmentBId: uuid('SPINE_ENVIRONMENT_B_ID'),
+    identityVersion: safeId('SPINE_LOCAL_AUTH_CONFIGURATION_VERSION'),
     providerProfileIdentity: safeId('SPINE_E2E_PROVIDER_PROFILE_IDENTITY'),
     q16ReportPath: resolve(required('SPINE_INGESTION_Q16_REPORT_PATH')),
     qualificationRunId: safeId('SPINE_E2E_QUALIFICATION_RUN_ID'),
@@ -107,7 +107,7 @@ export function readIngestionQualificationConfig(
     reportPath: resolve(required('SPINE_INGESTION_QUALIFICATION_REPORT_PATH')),
     trustedUploadAuthorityReference: safeId('SPINE_E2E_TRUSTED_UPLOAD_AUTHORITY_REFERENCE'),
     webReleaseIdentity: safeId('SPINE_E2E_WEB_RELEASE_IDENTITY'),
-    workspaceAId: uuid('SPINE_E2E_WORKSPACE_A_ID'),
-    workspaceBId: uuid('SPINE_E2E_WORKSPACE_B_ID'),
+    workspaceAId: uuid('SPINE_WORKSPACE_A_ID'),
+    workspaceBId: uuid('SPINE_WORKSPACE_B_ID'),
   });
 }

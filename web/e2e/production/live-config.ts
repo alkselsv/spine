@@ -58,22 +58,22 @@ export function readLiveQualificationConfig(environment: NodeJS.ProcessEnv): Liv
   }
 
   return Object.freeze({
-    accessToken: required('SPINE_E2E_ACCESS_TOKEN'),
+    accessToken: required('SPINE_LOCAL_AUTH_BEARER_CREDENTIAL'),
     answerableQuestion: question('SPINE_E2E_ANSWERABLE_QUESTION'),
-    apiReleaseIdentity: safeId('SPINE_E2E_API_RELEASE_IDENTITY'),
+    apiReleaseIdentity: safeId('SPINE_RUNTIME_RELEASE_IDENTITY'),
     cancelQuestion: question('SPINE_E2E_CANCEL_QUESTION'),
     commitSha,
     deploymentFingerprint,
     documentPath,
-    environmentAId: uuid('SPINE_E2E_ENVIRONMENT_A_ID'),
-    environmentBId: uuid('SPINE_E2E_ENVIRONMENT_B_ID'),
-    identityVersion: safeId('SPINE_E2E_IDENTITY_VERSION'),
+    environmentAId: uuid('SPINE_ENVIRONMENT_A_ID'),
+    environmentBId: uuid('SPINE_ENVIRONMENT_B_ID'),
+    identityVersion: safeId('SPINE_LOCAL_AUTH_CONFIGURATION_VERSION'),
     providerProfileIdentity: safeId('SPINE_E2E_PROVIDER_PROFILE_IDENTITY'),
     qualificationRunId: safeId('SPINE_E2E_QUALIFICATION_RUN_ID'),
     reportPath: resolve(environment.SPINE_E2E_REPORT_PATH ?? '../docs/qualification/issue-508-governed-qa-browser-report.json'),
     unanswerableQuestion: question('SPINE_E2E_UNANSWERABLE_QUESTION'),
     webReleaseIdentity: safeId('SPINE_E2E_WEB_RELEASE_IDENTITY'),
-    workspaceAId: uuid('SPINE_E2E_WORKSPACE_A_ID'),
-    workspaceBId: uuid('SPINE_E2E_WORKSPACE_B_ID'),
+    workspaceAId: uuid('SPINE_WORKSPACE_A_ID'),
+    workspaceBId: uuid('SPINE_WORKSPACE_B_ID'),
   });
 }

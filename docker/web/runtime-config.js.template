@@ -2,19 +2,19 @@ window.__SPINE_RUNTIME__ = Object.freeze({
   authentication: Object.freeze({
     status: 'authenticated',
     role: 'administrator',
-    identityVersion: '${SPINE_E2E_IDENTITY_VERSION}',
-    getBearerCredential: () => '${SPINE_E2E_ACCESS_TOKEN}',
+    identityVersion: '${SPINE_WEB_IDENTITY_VERSION}',
+    getBearerCredential: () => '${SPINE_WEB_ACCESS_TOKEN}',
   }),
   scope: Object.freeze({
-    defaultWorkspaceId: '${SPINE_E2E_WORKSPACE_A_ID}',
-    defaultEnvironmentId: '${SPINE_E2E_ENVIRONMENT_A_ID}',
+    defaultWorkspaceId: '${SPINE_WEB_WORKSPACE_A_ID}',
+    defaultEnvironmentId: '${SPINE_WEB_ENVIRONMENT_A_ID}',
     workspaces: Object.freeze([
-      Object.freeze({ id: '${SPINE_E2E_WORKSPACE_A_ID}', label: 'Workspace A' }),
-      Object.freeze({ id: '${SPINE_E2E_WORKSPACE_B_ID}', label: 'Workspace B' }),
+      Object.freeze({ id: '${SPINE_WEB_WORKSPACE_A_ID}', label: 'Workspace A' }),
+      Object.freeze({ id: '${SPINE_WEB_WORKSPACE_B_ID}', label: 'Workspace B' }),
     ]),
     environments: Object.freeze([
-      Object.freeze({ id: '${SPINE_E2E_ENVIRONMENT_A_ID}', label: 'Qualification A' }),
-      Object.freeze({ id: '${SPINE_E2E_ENVIRONMENT_B_ID}', label: 'Qualification B' }),
+      Object.freeze({ id: '${SPINE_WEB_ENVIRONMENT_A_ID}', label: 'Environment A' }),
+      Object.freeze({ id: '${SPINE_WEB_ENVIRONMENT_B_ID}', label: 'Environment B' }),
     ]),
   }),
 });

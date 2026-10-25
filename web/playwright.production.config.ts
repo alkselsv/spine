@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { loadEnv } from 'vite';
 
 const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
-const fileEnvironment = loadEnv('qualification', repositoryRoot, '');
+const fileEnvironment = loadEnv('e2e', repositoryRoot, '');
 for (const [name, value] of Object.entries(fileEnvironment)) {
   if (process.env[name] === undefined) process.env[name] = value;
 }
