@@ -222,6 +222,11 @@ The verifiably represented portion of a Target Completeness Scope in the pinned
 Projection Snapshot, including explicit lifecycle, exclusion and freshness gaps.
 _Avoid_: Target Completeness Scope, retrieved evidence, successful publication
 
+**Q&A Run**:
+One admitted durable execution of the `answer_question` Capability, containing
+one or more Q&A Attempts and ending in exactly one Q&A Outcome.
+_Avoid_: Agent Run, Q&A Attempt, trace, chat session
+
 **Q&A Attempt**:
 One bounded generation and validation attempt using exactly one pinned Projection
 Snapshot, Canonical Boundary and Context Bundle.
