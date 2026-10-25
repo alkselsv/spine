@@ -7,7 +7,7 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "test:unit": "vitest run",
-    "test:e2e": "playwright test --config playwright.config.ts",
+    "test:e2e": "corepack pnpm build && playwright test --config playwright.config.ts",
     "test:e2e:production": "playwright test --config playwright.production.config.ts"
   },
   "dependencies": {
