@@ -4,238 +4,273 @@ Spine — платформа для корпоративных AI-сценари
 контекст, совместная работа агентов и людей и контролируемые действия во внешних
 системах.
 
-Проект находится на стадии интеграции и квалификации R1 — Q&A по внутренним
-документам. R0-фундамент, versioned ingestion, governed retrieval contracts,
-grounded-answer contracts, durable Q&A lifecycle и администраторский web-интерфейс
-уже реализованы и проверены на своих границах. Полный production-capable путь
-`upload → projection → answer → citations → UI` ещё не квалифицирован: требуется
-единая production-композиция `answer_question`, реальный benchmark и финальные
-release gates. Legacy Q&A-прототип на Cognee сохраняется как compatibility path.
+## Запуск проекта
 
-## Продуктовые кейсы
+Основной локальный способ запуска — полный Compose-стенд. Он поднимает
+PostgreSQL/PGVector, Temporal, Temporal UI, Neo4j/APOC, API, фоновые обработчики
+и web-интерфейс Control Plane. Команды запуска обёрнуты в `Makefile`, чтобы один
+и тот же Compose project name и оба env-файла использовались согласованно.
 
-Spine развивается вертикальными релизами в фиксированном порядке:
+### 1. Установите необходимые инструменты
 
-1. **Q&A по внутренним документам** — ответы с цитатами и контролем доступа.
-2. **Генерация коммерческих предложений** — поиск аналогов, расчёт сметы,
-   уточнения и согласование редактируемого черновика.
-3. **Мониторинг клиентских коммуникаций** — вопросы без ответа, обязательства,
-   претензии и очередь ситуаций, требующих реакции.
-4. **Контроль исполнения внутренних задач** — смысловые блокировки,
-   ответственность, SLA и эскалации.
+Потребуются:
 
-Общие компоненты платформы извлекаются из этих кейсов по мере их реализации, а
-не разрабатываются заранее как самостоятельный продукт.
-
-## Текущий статус
-
-Канонические определения находятся в
-[roadmap](docs/ROADMAP.md#статусы-поставки). В документации используются три
-статуса:
-
-- `implemented` — компонент существует и проверен на своей контрактной границе;
-- `integrated` — компонент подключён к целевому пользовательскому пути;
-- `qualified` — для указанной границы собраны acceptance evidence и пройдены её
-  обязательные gates.
-
-Квалификация отдельного компонента не означает, что квалифицирован весь R1 или
-реальная внешняя интеграция.
-
-### Реализовано
-
-- PostgreSQL persistence kernel с tenancy/RLS, idempotency и transactional outbox;
-- provider-neutral identity и request authorization contracts;
-- trace context, structured errors, diagnostic events и append-only audit;
-- immutable original-storage contracts и filesystem adapter;
-- deployable ingestion composition: PostgreSQL upload ledger, validation,
-  parsing, canonical acceptance, initial access policy and transactional outbox;
-- bounded outbox dispatcher for durable Ask admission/cancellation and
-  provider-backed Cognee projection/recovery requests;
-- `SourceObject`/`SourceRevision`, admission decisions, ingestion ledger и
-  canonical source/projection lifecycle;
-- versioned ingestion PDF, DOCX, XLSX, Markdown и text через `/api/v1`, включая
-  stable locators, batch/partial outcomes и Knowledge Control Plane;
-- provider-neutral Context Projection и authorized Context Broker с immutable
-  Context Bundles, access-policy enforcement и disclosure revalidation;
-- grounded `answer_question` contracts: typed outcomes, abstention, claims,
-  citations, lineage validation и Q&A run persistence;
-- local Agent Runtime: typed schemas and artifacts, explicit registry/bindings,
-  diagnostics, cooperative cancellation, replay/recovery и bounded local retry;
-- durable Ask Admission через PostgreSQL, transactional outbox и Temporal,
-  включая idempotency, retry, cancellation и terminal arbitration;
-- React Control Plane: документы и ревизии, ingestion/projection state,
-  диагностический Chat, citation inspector, feedback и Q&A runs;
-- synthetic regression gate и компоненты real-dataset mapping, canonical corpus
-  preparation и post-observation evaluation.
-
-### Operational compatibility path
-
-- загрузка локальных `.md`, `.txt`, `.pdf`, `.docx` и `.xlsx` файлов;
-- добавление текстового корпуса в Cognee через `remember`;
-- вопросы к корпусу через Cognee `recall`;
-- CLI-команды для загрузки данных и вопросов;
-- FastAPI endpoints `/health`, `/ingest` и `/ask`;
-- diagnostics и authorization composition для API/workers;
-- synthetic `answer_question`-shaped handler через общий Agent Runtime contract.
-
-Первые пять пунктов образуют legacy prototype path. Он operational, но не имеет
-статуса `integrated`, потому что не входит в целевой governed R1 flow. Команды
-быстрого старта ниже относятся именно к этому compatibility path.
-
-### Интегрировано и квалифицировано на ограниченных границах
-
-- supported local ingestion profile квалифицирован с реальными PostgreSQL и
-  filesystem adapters;
-- PostgreSQL persistence/tenancy, RLS, outbox и durable Ask lifecycle проверены
-  на disposable PostgreSQL 17 и Temporal test server;
-- Context Projection и authorized Context Broker квалифицированы offline на
-  deterministic provider-shaped fakes; production Cognee/Neo4j/PGVector profile
-  не квалифицирован;
-- `answer_question`, grounded-answer safety и disclosure gates квалифицированы
-  offline и на disposable PostgreSQL, без реального LLM/provider execution;
-- Knowledge Control Plane и Chat/Runs проходят component, in-process ASGI и
-  controlled Playwright gates с synthetic API responses;
-- synthetic R1 regression gate воспроизводим и квалифицирован offline;
-- operational telemetry, metrics, correlation и no-log UI diagnosis собраны и
-  квалифицированы детерминированно, но deployment backup/restore и physical
-  provider evidence остаются незавершёнными.
-
-### Что ещё блокирует R1
-
-- единая production-композиция `AnswerQuestionCapability`, общая для API,
-  Temporal worker и evaluation observer;
-- bounded canonical terminal readback и безопасный typed capture из того же
-  authorized execution без повторного retrieval;
-- фактический прогон утверждённого private Golden Dataset
-  `0.3.9-user-approved` через production application flow;
-- утверждение quality/latency/cost/usefulness thresholds и полная end-to-end
-  квалификация R0 + R1 через UI;
-- deployment-approved backup/restore exercises и production qualification
-  выбранного Cognee/Neo4j/PGVector и LLM profile.
-
-Поэтому legacy `/ask` и `/ingest` остаются prototype endpoints, а наличие
-квалифицированных компонентов и fake-backed UI journeys не означает готовность
-пользовательского R1 или production approval. Канонический статус release gates
-зафиксирован в [`docs/qualification/`](docs/qualification/).
-
-## Быстрый старт
-
-Требования:
-
+- Docker с Compose v2;
+- GNU Make;
 - Python 3.10–3.14;
 - [uv](https://docs.astral.sh/uv/);
-- ключ доступа к поддерживаемому Cognee LLM-провайдеру.
+- ключи выбранных LLM- и embedding-провайдеров, если стенд должен выполнять
+  реальные provider-вызовы.
 
-Установите зависимости и создайте локальную конфигурацию:
+Проверьте окружение:
 
 ```bash
-uv sync
+docker --version
+docker compose version
+make --version
+uv --version
+```
+
+Установите Python-зависимости, включая инструменты разработки:
+
+```bash
+make install
+```
+
+Node.js и pnpm для обычного Compose-запуска на хосте не требуются: web-интерфейс
+собирается внутри Docker image.
+
+### 2. Подготовьте runtime-конфигурацию
+
+При первом запуске создайте локальный `.env` из шаблона и ограничьте доступ к
+нему. Если рабочий `.env` уже существует, не копируйте шаблон поверх него.
+
+```bash
 cp .env.example .env
+chmod 600 .env
 ```
 
-Укажите ключ в `.env`:
+Заполните все значения `<...>` в `.env`. Файл разделён на тематические секции;
+для запуска особенно важны:
 
-```dotenv
-LLM_API_KEY=your-key
+- `LLM_*` и `EMBEDDING_*` — провайдеры, модели, endpoints и API keys;
+- `SPINE_DATABASE_*` и `SPINE_NEO4J_PASSWORD` — независимые локальные пароли;
+- `SPINE_LOCAL_AUTH_*` и `SPINE_API_CURSOR_SECRET` — development-only
+  аутентификация и секреты длиной не менее 32 символов;
+- `SPINE_QA_DEPLOYMENT_COMMIT_SHA` — текущий полный Git SHA;
+- `SPINE_QA_DEPLOYMENT_SETTINGS_JSON` — согласованный immutable deployment
+  profile; его `commit_sha`, release/model identifiers должны совпадать с
+  соседними переменными, а fingerprint должен быть 64-символьным hex-значением
+  и меняться при изменении связанной конфигурации;
+- `SPINE_COGNEE_WORKER_BINDING_JSON` — одобренная привязка профиля Cognee с
+  корректным digest. Схема описана в
+  [документе о worker binding](docs/qualification/issue-533-cognee-worker-binding.md).
+
+Для локальных случайных секретов можно использовать `openssl rand -hex 32`, а
+текущий commit получить командой `git rev-parse HEAD`. Не используйте одинаковый
+секрет для разных ролей, кроме явно описанного в `.env.example` локального
+совпадения operator-пароля и пароля БД Cognee.
+
+Убедитесь, что в файле не осталось шаблонных значений:
+
+```bash
+grep -nE '<[^>]+>' .env
 ```
 
-При использовании OpenAI-совместимого прокси раскомментируйте соответствующие
-`LLM_PROVIDER`, `LLM_MODEL` и `LLM_ENDPOINT` в `.env`.
+Команда не должна ничего вывести. Не коммитьте `.env`: в нём находятся секреты
+локального стенда.
 
-### Загрузить демонстрационные документы
+### 3. Создайте временные настройки квалификации
+
+Runtime-настройки и временные полномочия намеренно разделены. После заполнения
+`.env` сгенерируйте `.env.qualification`:
+
+```bash
+make qualification-env
+```
+
+По умолчанию файл:
+
+- действует четыре часа;
+- создаётся с правами `0600`;
+- не разрешает внешние provider-вызовы и расходы;
+- привязывается к deployment и областям доступа из `.env`.
+
+Изменить срок действия можно в пределах от пяти минут до семи дней:
+
+```bash
+make qualification-env QUALIFICATION_TTL=30m
+make qualification-env QUALIFICATION_TTL=2d
+```
+
+Генератор не перезаписывает существующий файл. Для ротации истёкших полномочий
+нужно явно разрешить замену:
+
+```bash
+make qualification-env FORCE=1
+```
+
+Если нужны реальные provider-вызовы, задайте заранее согласованный бюджет:
+
+```bash
+make qualification-env PROVIDER_BUDGET=1.00 PROVIDER_CURRENCY=USD
+```
+
+Бюджет не может превышать предел из `SPINE_COGNEE_WORKER_BINDING_JSON`, а его
+валюта должна совпадать с валютой профиля. Ручной вариант конфигурации приведён
+в `.env.qualification.example`.
+
+### 4. Запустите Compose-стенд
+
+```bash
+make start
+```
+
+Первый запуск занимает больше времени, поскольку Docker скачивает базовые
+образы и собирает приложения. `make start` последовательно:
+
+1. проверяет наличие `.env` и `.env.qualification`;
+2. запускает PostgreSQL и выполняет bootstrap ролей и Alembic migrations;
+3. записывает временные полномочия локальной квалификации;
+4. собирает и запускает весь стенд;
+5. ждёт успешных health checks.
+
+`make start` не генерирует и не перезаписывает env-файлы. Это защищает от
+неявной ротации identity, полномочий и разрешения на расходы.
+
+### 5. Проверьте запуск
+
+```bash
+make status
+curl -fsS http://127.0.0.1:18080/api/v1/health/live
+curl -fsS http://127.0.0.1:4175/api/v1/health/live
+```
+
+После запуска доступны:
+
+- Control Plane: <http://127.0.0.1:4175>;
+- API напрямую: <http://127.0.0.1:18080>;
+- Temporal UI: <http://127.0.0.1:8233>;
+- Neo4j Browser: <http://127.0.0.1:17474>.
+
+Все порты публикуются только на `127.0.0.1`. При конфликте измените
+соответствующие `SPINE_*_PORT` в `.env` и повторите запуск.
+
+Сервисы `database-bootstrap`, `qualification-authority-provisioner`,
+`qualification-authority-verifier` и `original-storage-bootstrap` выполняют
+одноразовую подготовку и могут отображаться как завершённые с кодом `0`. API,
+workers, PostgreSQL, Temporal, Neo4j и web должны оставаться запущенными.
+
+### Повторный запуск и диагностика
+
+Для повторного запуска с сохранёнными данными снова используйте:
+
+```bash
+make start
+```
+
+Посмотреть последние 200 строк логов основных приложений:
+
+```bash
+make logs
+```
+
+Изменить глубину и набор сервисов:
+
+```bash
+make logs LOG_TAIL=500 LOG_SERVICES="api qa-worker outbox-dispatcher"
+```
+
+Если временные полномочия истекли, сначала обновите их, затем снова запустите
+стенд:
+
+```bash
+make qualification-env FORCE=1
+make start
+```
+
+Если `database-bootstrap` завершается с ошибкой после изменения несовместимой
+локальной схемы, удалите disposable volumes и выполните чистый bootstrap. Это
+удалит все локальные данные стенда:
+
+```bash
+make destroy
+make start
+```
+
+### Остановка и удаление локальных данных
+
+Остановить контейнеры, сохранив PostgreSQL, Neo4j и оригиналы документов в
+volumes:
+
+```bash
+make stop
+```
+
+Удалить контейнеры, сеть и все volumes проекта без возможности восстановления:
+
+```bash
+make destroy
+```
+
+По умолчанию Make использует Compose project name `spine`. Для нескольких
+изолированных стендов передавайте одно и то же имя во все команды:
+
+```bash
+make start COMPOSE_PROJECT=spine-local-2
+make status COMPOSE_PROJECT=spine-local-2
+make logs COMPOSE_PROJECT=spine-local-2
+make stop COMPOSE_PROJECT=spine-local-2
+make destroy COMPOSE_PROJECT=spine-local-2
+```
+
+`make destroy` затрагивает только выбранный Compose-проект, но необратимо удаляет
+его PostgreSQL, Neo4j и хранилище оригиналов.
+
+### Дополнительный локальный CLI
+
+Для изолированной работы с исходным Q&A CLI без полного Control Plane можно
+использовать команды ниже. Они читают runtime-настройки из `.env`.
+
+Загрузить демонстрационный корпус из `data/fixtures/`:
 
 ```bash
 uv run spine-seed
 ```
 
-Команда загружает файлы из `data/fixtures/` в dataset `spine`.
-
-Для собственного корпуса поместите документы в `data/incoming/` или передайте
-явный путь:
+Загрузить собственные документы:
 
 ```bash
 uv run spine-seed --path data/incoming
 uv run spine-seed --path "/absolute/path/to/documents"
 ```
 
-### Задать вопрос
+Задать вопрос:
 
 ```bash
 uv run spine-ask "Какие задачи ожидают ответа?"
-```
-
-При необходимости можно указать другой dataset:
-
-```bash
 uv run spine-ask --dataset my-dataset "О чём говорится в документах?"
 ```
 
-### Запустить API
+Запустить совместимый API отдельно от Compose:
 
 ```bash
-uv run uvicorn spine.api.main:app --reload --port 8080
+make api
+curl -fsS http://127.0.0.1:8080/health
 ```
 
-Проверка состояния:
+### Offline regression gate
 
-```bash
-curl http://localhost:8080/health
-```
-
-### Запустить локальный Compose-стенд
-
-Заполните локальный `.env` по `.env.example`, включая отдельные пароли
-PostgreSQL, пароль Neo4j, provider bindings и development-only local auth.
-Затем соберите и запустите pinned PostgreSQL/PGVector, Temporal, Neo4j/APOC,
-API и Web:
-
-```bash
-docker compose up --build --detach --wait
-curl http://127.0.0.1:4175/api/v1/health/live
-docker compose ps --all
-```
-
-Web доступен на `http://127.0.0.1:4175`, Temporal UI — на
-`http://127.0.0.1:8233`. По умолчанию наружу публикуются только loopback-порты;
-их можно переопределить переменными `SPINE_*_PORT`.
-
-Остановить стенд, сохранив данные:
-
-```bash
-docker compose down
-```
-
-`docker compose down --volumes` удаляет только disposable volumes этого
-стенда и используется для полностью чистого повторного bootstrap.
-
-### Run the offline regression gate
-
-The gate replays the synthetic R1 dataset twice without external services,
-credentials or production providers. It validates versioned schemas, retrieval,
-evidence safety and expected outcomes, and writes a CI artifact:
+Offline gate не требует внешних сервисов или provider credentials. Он дважды
+воспроизводит синтетический R1 dataset и проверяет схемы, retrieval, evidence
+safety и ожидаемые результаты:
 
 ```bash
 uv run spine-eval-gate --output offline-regression-gate.json
 ```
 
-This is an offline contract gate, not qualification of the real Context Broker,
-LLM or production retrieval path.
-
-Вопрос через API:
-
-```bash
-curl -X POST http://localhost:8080/ask \
-  -H 'Content-Type: application/json' \
-  -d '{"question":"Какие задачи ожидают ответа?"}'
-```
-
-Загрузка локальной директории через API:
-
-```bash
-curl -X POST http://localhost:8080/ingest \
-  -H 'Content-Type: application/json' \
-  -d '{"path":"data/incoming"}'
-```
+Этот прогон проверяет offline-контракты, но не реальный Context Broker, LLM или
+production retrieval path.
 
 ## Локальные данные
 
@@ -306,6 +341,9 @@ make verify
 версия, operator bootstrap, отдельные runtime/migration/test настройки,
 Alembic-команды и безопасный explicit-URL режим описаны в
 [PostgreSQL bootstrap, migrations, runtime and test harness](docs/postgresql.md).
+Опциональная внешняя disposable test database настраивается отдельно по
+`.env.test.example`; обычный gate не читает runtime или qualification secrets и
+по умолчанию использует Testcontainers.
 Для короткого локального цикла `make test-fast` явно пропускает PostgreSQL
 acceptance и поэтому не является release gate.
 
