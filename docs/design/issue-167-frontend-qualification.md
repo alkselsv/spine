@@ -11,6 +11,14 @@ The fixture is deliberately not an implementation of Issue #26. It does not
 contact FastAPI, Cognee, Temporal, a model provider, a database or an identity
 provider. The production chat adapter remains a later consuming step.
 
+The controlled command always builds the current frontend sources before
+Playwright starts a run. Playwright owns a strict Vite preview server at
+`http://127.0.0.1:4175` by default; `SPINE_CONTROLLED_PREVIEW_PORT` can select a
+different valid TCP port. Existing listeners are never reused, so a collision
+fails before browser tests execute. The deployed-infrastructure qualification
+remains isolated in `playwright.production.config.ts` and does not use this
+preview server or the controlled fixtures.
+
 ## Qualified journeys
 
 - administrator shell navigation preserves Workspace/Environment in the URL;

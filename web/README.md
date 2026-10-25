@@ -75,9 +75,16 @@ pnpm --dir web exec playwright install --with-deps chromium
 
 ## Browser qualification
 
-`pnpm web:test:e2e` запускает собранную SPA в Chromium. Тестовые URL с
-`fixture=controlled` включают только синтетический API/SSE boundary для
-квалификации foundation; этот режим не является авторизацией и не считается production evidence.
+`pnpm web:test:e2e` сначала заново собирает SPA, затем запускает принадлежащий
+этому прогону Vite preview и Chromium. По умолчанию preview использует
+`http://127.0.0.1:4175`; порт можно переопределить переменной
+`SPINE_CONTROLLED_PREVIEW_PORT`. Значение должно быть целым числом от 1 до
+65535. Занятый порт завершает квалификацию явной ошибкой до запуска тестов:
+существующий listener никогда не переиспользуется.
+
+Тестовые URL с `fixture=controlled` включают только синтетический API/SSE
+boundary для квалификации foundation; этот режим не является авторизацией и не
+считается production evidence.
 Опциональная `test:e2e:production` команда работает только с уже развёрнутым
 Web/API. Она загружает runtime identity/scope из корневого `.env`, а approved
 browser inputs и evidence paths — из `.env.e2e`; команда не поднимает preview
