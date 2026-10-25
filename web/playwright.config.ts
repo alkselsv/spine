@@ -5,11 +5,13 @@ process.env.NO_PROXY = [localBypass, process.env.NO_PROXY].filter(Boolean).join(
 process.env.no_proxy = [localBypass, process.env.no_proxy].filter(Boolean).join(',');
 
 const previewPortValue = process.env.SPINE_CONTROLLED_PREVIEW_PORT ?? '4175';
-if (!/^\d+$/.test(previewPortValue)) {
-  throw new Error('qualification_configuration_invalid:SPINE_CONTROLLED_PREVIEW_PORT');
-}
 const previewPort = Number(previewPortValue);
-if (!Number.isSafeInteger(previewPort) || previewPort < 1 || previewPort > 65_535) {
+if (
+  !/^\d+$/.test(previewPortValue)
+  || !Number.isSafeInteger(previewPort)
+  || previewPort < 1
+  || previewPort > 65_535
+) {
   throw new Error('qualification_configuration_invalid:SPINE_CONTROLLED_PREVIEW_PORT');
 }
 const previewOrigin = `http://127.0.0.1:${previewPort}`;
