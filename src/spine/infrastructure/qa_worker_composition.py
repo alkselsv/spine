@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from contextvars import ContextVar
+import hashlib
+import json
 import logging
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -33,8 +35,12 @@ from spine.application.authorized_context_broker import (
     AuthorizedContextBrokerApplicationService,
     ContextBrokerReadModel,
 )
-from spine.application.authorized_retrieval_scope import AuthorizedRetrievalScopeResolver
+from spine.application.authorized_retrieval_scope import (
+    AuthorizedRetrievalScope,
+    AuthorizedRetrievalScopeResolver,
+)
 from spine.application.content_authorization import (
+    AuthorizationReasonCode,
     ContentAuthorizationDecisionService,
     CurrentContentAuthorizationSnapshot,
 )
@@ -54,6 +60,7 @@ from spine.application.evidence_lineage_verification import (
 )
 from spine.application.projection_locator import canonical_projection_locator_digest
 from spine.application.production_qa_capability import (
+    AnswerQuestionEvaluationLineage,
     AnswerQuestionValidationPlan,
     AnswerQuestionContextReferences,
     ExistingAnswerQuestionCandidateValidator,
@@ -80,18 +87,33 @@ from spine.domain.agents import (
 )
 from spine.domain.capabilities import CapabilityDefinition
 from spine.domain.capabilities.answer_evaluation import (
-    AnswerDisclosureStatus,
-    AnswerEvaluationDecision,
-    AnswerEvaluationSafeReason,
-    AnswerPartialityStatus,
     AttemptProjectionBoundary,
-    CoverageEvaluationStatus,
-    GroundedConflictStatus,
+    CanonicalViewMember,
+    ClaimAuthorizationStatus,
+    ClaimEvidenceValidation,
+    ClaimGroundingStatus,
+    CoverageMemberStatus,
+    GroundedClaimAssessment,
+    GroundedConflict,
+    MissingCoverageImpact,
+    ObservedCoverage,
+    ObservedCoverageMember,
+    PartialClaimUtility,
+    PartialFallbackAuthorization,
+    PartialFallbackAuthority,
+    TargetCompletenessScope,
+    TargetScopeMember,
 )
+from spine.domain.capabilities.evaluate_answer import (
+    AnswerEvaluationRequest,
+    evaluate_answer_candidate,
+)
+from spine.domain.capabilities.answer_question import ClaimEvidenceRelationshipKind
 from spine.domain.capabilities.semantic_support import (
     SemanticSupportEvidence,
     SemanticSupportPolicy,
     SemanticSupportRequest,
+    SemanticSupportOutcome,
 )
 from spine.domain.capabilities.answer_question_execution import (
     PinnedAgentVersion,
@@ -102,7 +124,11 @@ from spine.domain.capabilities.answer_question_execution import (
     agent_version_digest,
 )
 from spine.domain.common import EnvironmentKind, SchemaRef
-from spine.domain.context_profiles import ContextProfileVersion
+from spine.domain.context_profiles import (
+    CompletenessRequirement,
+    ContextProfileVersion,
+    PartialAnswerFallback,
+)
 from spine.domain.projections import PublishedActivePublication
 from spine.domain.sources import RevisionKind
 from spine.domain.context_bundles import (
@@ -131,6 +157,8 @@ from spine.infrastructure.persistence.postgresql_authorization import (
 )
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from spine.infrastructure.qa_agent_runtime import (
+    ConfiguredGroundedConflictValidator,
+    ConfiguredMissingCoverageImpactValidator,
     ConfiguredLLMRuntimeProvider,
     ConfiguredSemanticSupportValidator,
     PostgreSQLQAArtifactStore,
@@ -173,6 +201,12 @@ class _ActiveRequestScope:
     trace_id: UUID
 
 
+@dataclass(frozen=True, slots=True)
+class _ActiveCompletenessIntent:
+    allow_partial_answer: bool | None
+    command_id: UUID
+
+
 _ACTIVE_REQUEST_SCOPE: ContextVar[_ActiveRequestScope | None] = ContextVar(
     "spine_qa_active_request_scope", default=None
 )
@@ -181,6 +215,12 @@ _ACTIVE_AUTHORIZATION_CONTEXT: ContextVar[TrustedAuthorizationContext | None] = 
 )
 _ACTIVE_EVIDENCE_CONTENT: ContextVar[dict[str, str] | None] = ContextVar(
     "spine_qa_active_evidence_content", default=None
+)
+_ACTIVE_RETRIEVAL_SCOPE: ContextVar[AuthorizedRetrievalScope | None] = ContextVar(
+    "spine_qa_active_retrieval_scope", default=None
+)
+_ACTIVE_COMPLETENESS_INTENT: ContextVar[_ActiveCompletenessIntent | None] = (
+    ContextVar("spine_qa_active_completeness_intent", default=None)
 )
 
 
@@ -448,6 +488,15 @@ class _TrustedContextRegistry:
                 trace_id=request_context.trace_id,
             )
         )
+        command_id = getattr(command, "command_id", None)
+        if not isinstance(command_id, UUID):
+            raise RuntimeError("active Q&A command identity is unavailable")
+        _ACTIVE_COMPLETENESS_INTENT.set(
+            _ActiveCompletenessIntent(
+                allow_partial_answer=getattr(command, "allow_partial_answer", None),
+                command_id=command_id,
+            )
+        )
         context = TrustedAuthorizationContext(
             mode=AuthorizationContextMode.INTERACTIVE_PROCESSING,
             workspace_id=request_context.workspace_id,
@@ -526,6 +575,22 @@ class _SnapshotMembers(_ScopedPort):
             result = await uow.projections.list_snapshot_members(projection_snapshot_id)
             await uow.commit()
             return result
+
+
+class _CanonicalBoundaryMembers(_ScopedPort):
+    async def resolve_members(self, boundary_id: UUID) -> tuple[object, ...]:
+        async with self._uow_factory(self.context()) as uow:  # type: ignore[operator]
+            result = await uow.canonical_boundaries.resolve_members(boundary_id)
+            await uow.commit()
+            return result
+
+    async def resolve_current_members(self) -> tuple[object, ...]:
+        """Read the current canonical heads independently of a pinned projection."""
+
+        async with self._uow_factory(self.context()) as uow:  # type: ignore[operator]
+            heads = await uow.canonical.list_current()
+            await uow.commit()
+            return heads
 
 
 class _CurrentContentAuthorization(_ScopedPort):
@@ -643,6 +708,8 @@ class _CurrentQAServiceAuthority:
 
 class _CanonicalSourceIsolation:
     async def can_express(self, scope: object) -> bool:
+        if isinstance(scope, AuthorizedRetrievalScope):
+            _ACTIVE_RETRIEVAL_SCOPE.set(scope)
         constraints = getattr(scope, "source_constraints", ())
         return bool(constraints)
 
@@ -1068,6 +1135,19 @@ def _projection_reference_matches_evidence(
 
 
 class _ValidationPlans:
+    def __init__(
+        self,
+        *,
+        boundary_members: _CanonicalBoundaryMembers,
+        authorization: ContentAuthorizationDecisionService,
+        conflict_validator: object | None = None,
+        impact_validator: object | None = None,
+    ) -> None:
+        self._boundary_members = boundary_members
+        self._authorization = authorization
+        self._conflict_validator = conflict_validator
+        self._impact_validator = impact_validator
+
     def create_plan(
         self, *, question: object, authorized_context: object, candidate: object
     ) -> AnswerQuestionValidationPlan:
@@ -1114,33 +1194,511 @@ class _ValidationPlans:
                     evidence=evidence,
                 )
             )
-        bundle = authorized_context.bundle
-        evaluation = AnswerEvaluationDecision(
-            boundary=AttemptProjectionBoundary(
-                workspace_id=question.scope.workspace_id,
-                environment_id=question.scope.environment_id,
-                run_id=question.correlation.run_id,
-                attempt_id=question.correlation.attempt_id,
-                projection_snapshot_id=bundle.projection_snapshot.projection_snapshot_id,
-                activation_generation=bundle.activation_generation,
-                canonical_boundary_id=bundle.canonical_boundary.boundary_id,
-            ),
-            target_scope_id=uuid5(bundle.bundle_id, "target-completeness-scope"),
-            observed_coverage_id=uuid5(bundle.bundle_id, "observed-coverage"),
-            evaluation_lineage_reference=uuid5(
-                bundle.bundle_id, "answer-evaluation:complete"
-            ),
-            disclosure_status=AnswerDisclosureStatus.ACCEPTED,
-            coverage_status=CoverageEvaluationStatus.COMPLETE,
-            partiality_status=AnswerPartialityStatus.EXHAUSTIVE,
-            conflict_status=GroundedConflictStatus.NONE,
-            safe_reason=AnswerEvaluationSafeReason.COMPLETE,
-            disclosable_claim_ids=tuple(item.claim_id for item in answer.claims),
-        )
         return AnswerQuestionValidationPlan(
             citation_authorization_context=authorization,
             semantic_requests=tuple(requests),
-            evaluation=evaluation,
+            evaluation=None,
+        )
+
+    async def evaluate(
+        self,
+        *,
+        question: object,
+        authorized_context: object,
+        candidate: object,
+        citation_results: tuple[object, ...],
+        semantic_results: tuple[object, ...],
+    ) -> AnswerQuestionEvaluationLineage:
+        """Build boundary-pinned facts and invoke the deterministic evaluator."""
+
+        scope = _ACTIVE_RETRIEVAL_SCOPE.get()
+        if scope is None:
+            raise RuntimeError("authorized completeness scope is unavailable")
+        bundle = authorized_context.bundle
+        boundary = AttemptProjectionBoundary(
+            workspace_id=question.scope.workspace_id,
+            environment_id=question.scope.environment_id,
+            run_id=question.correlation.run_id,
+            attempt_id=question.correlation.attempt_id,
+            projection_snapshot_id=bundle.projection_snapshot.projection_snapshot_id,
+            activation_generation=bundle.activation_generation,
+            canonical_boundary_id=bundle.canonical_boundary.boundary_id,
+        )
+        constraints = tuple(
+            sorted(scope.source_constraints, key=lambda item: item.source_object_id.hex)
+        )
+        constraints_by_source = {item.source_object_id: item for item in constraints}
+        authorization = _ACTIVE_AUTHORIZATION_CONTEXT.get()
+        if authorization is None:
+            raise RuntimeError("active Q&A authorization context is unavailable")
+        evidence_content = _ACTIVE_EVIDENCE_CONTENT.get()
+        if evidence_content is None:
+            raise RuntimeError("active Q&A evidence content is unavailable")
+        all_current_members = tuple(
+            sorted(
+                await self._boundary_members.resolve_current_members(),
+                key=lambda item: item.source_object_id.hex,
+            )
+        )
+        canonical_view_digest = hashlib.sha256(
+            json.dumps(
+                [
+                    [
+                        str(item.source_object_id),
+                        str(item.current_revision_id),
+                        item.current_revision_kind.value,
+                        item.accepted_generation,
+                        item.cas_version,
+                    ]
+                    for item in all_current_members
+                ],
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        canonical_view_members = tuple(
+            CanonicalViewMember(
+                source_object_id=item.source_object_id,
+                source_revision_id=item.current_revision_id,
+                revision_kind=item.current_revision_kind,
+                accepted_generation=item.accepted_generation,
+                cas_version=item.cas_version,
+            )
+            for item in all_current_members
+        )
+        canonical_members = all_current_members
+        if scope.completeness_requirement is CompletenessRequirement.BEST_EFFORT:
+            constrained_source_ids = set(constraints_by_source)
+            canonical_members = tuple(
+                member
+                for member in canonical_members
+                if member.source_object_id in constrained_source_ids
+            )
+        target_members: list[TargetScopeMember] = []
+        coverage_members: list[ObservedCoverageMember] = []
+        for member in canonical_members:
+            revision_kind = getattr(
+                member, "current_revision_kind", getattr(member, "revision_kind", None)
+            )
+            source_revision_id = getattr(
+                member, "current_revision_id", getattr(member, "source_revision_id", None)
+            )
+            if revision_kind is not RevisionKind.CONTENT:
+                continue
+            decision = await self._authorization.decide_interactive_processing(
+                authorization, (member.source_object_id,)
+            )
+            if not decision.allowed:
+                if decision.reason_code is AuthorizationReasonCode.AUTHORIZATION_DENIED:
+                    continue
+                raise RuntimeError("canonical completeness authorization is unavailable")
+            if (
+                decision.source_object_ids != (member.source_object_id,)
+                or len(decision.policy_evidence) != 1
+                or decision.policy_evidence[0].source_revision_id
+                != source_revision_id
+            ):
+                raise RuntimeError("canonical completeness source is not current")
+            target_members.append(
+                TargetScopeMember(
+                    source_object_id=member.source_object_id,
+                    source_revision_id=source_revision_id,
+                    authorization_decision_reference=decision.decision_reference,
+                )
+            )
+            represented = constraints_by_source.get(member.source_object_id)
+            status = (
+                CoverageMemberStatus.PROJECTION_GAP
+                if represented is None
+                else CoverageMemberStatus.STALE
+                if represented.source_revision_id != source_revision_id
+                else CoverageMemberStatus.REPRESENTED
+            )
+            coverage_members.append(
+                ObservedCoverageMember(
+                    source_object_id=member.source_object_id,
+                    source_revision_id=source_revision_id,
+                    status=status,
+                    proof_reference=(
+                        represented.projection_snapshot_member_id
+                        if represented is not None
+                        and represented.source_revision_id == source_revision_id
+                        else None
+                    ),
+                )
+            )
+        current_members_after_authorization = tuple(
+            sorted(
+                await self._boundary_members.resolve_current_members(),
+                key=lambda item: item.source_object_id.hex,
+            )
+        )
+        if current_members_after_authorization != all_current_members:
+            raise RuntimeError("canonical completeness view changed during evaluation")
+        revalidated_target_members = []
+        for target_member in target_members:
+            decision = await self._authorization.decide_interactive_processing(
+                authorization, (target_member.source_object_id,)
+            )
+            if (
+                not decision.allowed
+                or decision.source_object_ids != (target_member.source_object_id,)
+                or len(decision.policy_evidence) != 1
+                or decision.policy_evidence[0].source_revision_id
+                != target_member.source_revision_id
+            ):
+                raise RuntimeError(
+                    "canonical completeness authorization changed during evaluation"
+                )
+            revalidated_target_members.append(
+                target_member.model_copy(
+                    update={
+                        "authorization_decision_reference": decision.decision_reference
+                    }
+                )
+            )
+        target_members = revalidated_target_members
+        source_constraint_digest = hashlib.sha256(
+            json.dumps(
+                [
+                    [
+                        str(item.source_object_id),
+                        str(item.source_revision_id),
+                        str(item.authorization_decision_reference),
+                    ]
+                    for item in target_members
+                ],
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        target_scope_id = uuid5(
+            bundle.bundle_id,
+            f"target-completeness-scope:v2:{canonical_view_digest}:{source_constraint_digest}",
+        )
+        target_scope = TargetCompletenessScope(
+            target_scope_id=target_scope_id,
+            boundary=boundary,
+            derivation_reference=uuid5(
+                bundle.bundle_id, f"target-scope-derivation:v2:{source_constraint_digest}"
+            ),
+            canonical_view_reference=uuid5(
+                bundle.bundle_id, f"target-canonical-view:v1:{canonical_view_digest}"
+            ),
+            canonical_view_digest=canonical_view_digest,
+            canonical_view_generation=max(
+                (item.accepted_generation for item in canonical_view_members),
+                default=0,
+            ),
+            canonical_view_members=canonical_view_members,
+            source_constraint_digest=source_constraint_digest,
+            members=tuple(target_members),
+        )
+        observed_coverage = ObservedCoverage(
+            observed_coverage_id=uuid5(target_scope_id, "observed-coverage:v2"),
+            target_scope_id=target_scope_id,
+            boundary=boundary,
+            proof_reference=uuid5(bundle.bundle_id, "coverage-proof:v1"),
+            members=tuple(coverage_members),
+        )
+        partial_fallback = None
+        if scope.partial_answer_fallback is PartialAnswerFallback.ALLOWED:
+            completeness_intent = _ACTIVE_COMPLETENESS_INTENT.get()
+            if completeness_intent is None:
+                raise RuntimeError("active Q&A completeness intent is unavailable")
+            current_request = completeness_intent.allow_partial_answer is True
+            if completeness_intent.allow_partial_answer is not False:
+                partial_fallback = PartialFallbackAuthorization(
+                    boundary=boundary,
+                    authority=(
+                        PartialFallbackAuthority.CURRENT_REQUEST
+                        if current_request
+                        else PartialFallbackAuthority.ACCEPTED_PREFERENCE
+                    ),
+                    authorization_reference=uuid5(
+                        completeness_intent.command_id
+                        if current_request
+                        else scope.profile_ref.profile_id,
+                        "partial-fallback-authorization:v2:"
+                        + (
+                            "current-request"
+                            if current_request
+                            else f"{scope.profile_ref.profile_version}:{scope.profile_ref.profile_digest}"
+                        ),
+                    ),
+                    policy_version=(
+                        "qa.ask-admission-request:v3"
+                        if current_request
+                        else (
+                            f"context-profile:{scope.profile_ref.profile_version}:"
+                            f"{scope.profile_ref.profile_digest}"
+                        )
+                    ),
+                    applicability_reference=(
+                        completeness_intent.command_id
+                        if current_request
+                        else scope.profile_ref.profile_id
+                    ),
+                )
+
+        citations = tuple(candidate.answer.citations)
+        citation_results_by_id = {
+            citation.citation_id: result
+            for citation, result in zip(citations, citation_results, strict=True)
+        }
+        citation_sources = {
+            citation.citation_id: citation.evidence_reference.source_object_id
+            for citation in citations
+        }
+        semantic_by_claim = {item.claim_id: item for item in semantic_results}
+        target_by_source = {
+            item.source_object_id: item for item in target_scope.members
+        }
+        assessments = []
+        coverage_is_complete = bool(coverage_members) and all(
+            item.status is CoverageMemberStatus.REPRESENTED
+            for item in coverage_members
+        )
+        for claim in candidate.answer.claims:
+            relationships = tuple(
+                item
+                for item in candidate.answer.relationships
+                if item.claim_id == claim.claim_id
+                and item.kind is not ClaimEvidenceRelationshipKind.CONTRADICTION
+            )
+            citation_ids = tuple(
+                citation_id
+                for relationship in relationships
+                for citation_id in relationship.citation_ids
+            )
+            semantic = semantic_by_claim.get(claim.claim_id)
+            validations = tuple(
+                ClaimEvidenceValidation(
+                    citation_id=citation_id,
+                    citation_validation_reference=citation_results_by_id[
+                        citation_id
+                    ].validation_reference,
+                    semantic_support_validation_reference=semantic.validation_record_id,
+                    authorization_validation_reference=(
+                        target_by_source[citation_sources[citation_id]].authorization_decision_reference
+                        if citation_sources[citation_id] in target_by_source
+                        else uuid5(
+                            citation_results_by_id[citation_id].validation_reference,
+                            "current-authorization-rejected:v1",
+                        )
+                    ),
+                )
+                for citation_id in citation_ids
+            )
+            citations_current = bool(validations) and all(
+                isinstance(citation_results_by_id[citation_id], ValidCitation)
+                for citation_id in citation_ids
+            )
+            supported = (
+                semantic is not None
+                and semantic.outcome is SemanticSupportOutcome.SUPPORTED
+            )
+            independently_validated = (
+                supported
+                and citations_current
+                and bool(relationships)
+                and all(
+                    relationship.kind
+                    is ClaimEvidenceRelationshipKind.INDEPENDENT
+                    for relationship in relationships
+                )
+            )
+            missing_coverage_impact = MissingCoverageImpact.UNKNOWN
+            partial_validation_reference = (
+                uuid5(
+                    semantic.validation_record_id,
+                    "independent-partial-claim-policy:v1",
+                )
+                if semantic is not None
+                else uuid5(
+                    bundle.bundle_id,
+                    f"partial-claim-validation-unavailable:v1:{claim.claim_id}",
+                )
+            )
+            if independently_validated and coverage_is_complete:
+                missing_coverage_impact = MissingCoverageImpact.IMMATERIAL
+            elif independently_validated:
+                if self._impact_validator is None:
+                    raise RuntimeError("missing coverage impact validator is unavailable")
+                impact_validation = await self._impact_validator.assess(
+                    question=question.subject.text,
+                    claim=claim,
+                    evidence=tuple(
+                        evidence_content[citation.evidence_id]
+                        for relationship in relationships
+                        for citation in citations
+                        if citation.citation_id in relationship.citation_ids
+                    ),
+                )
+                missing_coverage_impact = impact_validation.impact
+                partial_validation_reference = impact_validation.validation_reference
+            assessments.append(
+                GroundedClaimAssessment(
+                    boundary=boundary,
+                    claim_id=claim.claim_id,
+                    grounding_status=(
+                        ClaimGroundingStatus.GROUNDED
+                        if supported
+                        else ClaimGroundingStatus.REJECTED
+                    ),
+                    authorization_status=(
+                        ClaimAuthorizationStatus.CURRENT
+                        if citations_current
+                        else ClaimAuthorizationStatus.REJECTED
+                    ),
+                    partial_utility=(
+                        PartialClaimUtility.INDEPENDENTLY_USEFUL
+                        if independently_validated
+                        else PartialClaimUtility.DEPENDENT
+                    ),
+                    missing_coverage_impact=missing_coverage_impact,
+                    evidence_validations=validations,
+                    partial_validation_reference=partial_validation_reference,
+                )
+            )
+        conflict_relationships: dict[tuple[UUID, UUID], list[UUID]] = {}
+        for item in candidate.answer.relationships:
+            if (
+                item.kind is not ClaimEvidenceRelationshipKind.CONTRADICTION
+                or item.related_claim_id is None
+            ):
+                continue
+            pair = tuple(
+                sorted((item.claim_id, item.related_claim_id), key=lambda value: value.hex)
+            )
+            conflict_relationships.setdefault(pair, []).append(item.relationship_id)
+        assessment_by_claim = {item.claim_id: item for item in assessments}
+        validated_claims = tuple(
+            claim
+            for claim in candidate.answer.claims
+            if assessment_by_claim[claim.claim_id].grounding_status
+            is ClaimGroundingStatus.GROUNDED
+            and assessment_by_claim[claim.claim_id].authorization_status
+            is ClaimAuthorizationStatus.CURRENT
+        )
+        if len(validated_claims) > 1:
+            if self._conflict_validator is None:
+                raise RuntimeError("grounded conflict validator is unavailable")
+            evidence_by_claim = {
+                claim.claim_id: tuple(
+                    evidence_content[citation.evidence_id]
+                    for relationship in candidate.answer.relationships
+                    if relationship.claim_id == claim.claim_id
+                    and relationship.kind
+                    is not ClaimEvidenceRelationshipKind.CONTRADICTION
+                    for citation in citations
+                    if citation.citation_id in relationship.citation_ids
+                )
+                for claim in validated_claims
+            }
+            conflict_validation = await self._conflict_validator.detect(
+                claims=validated_claims,
+                evidence=evidence_by_claim,
+            )
+            grounded_conflict_pairs = {
+                pair: tuple(
+                    sorted(
+                        conflict_relationships.get(
+                            pair,
+                            (
+                                uuid5(
+                                    conflict_validation.validation_reference,
+                                    f"missing-candidate-conflict-relationship:v1:{pair[0]}:{pair[1]}",
+                                ),
+                            ),
+                        ),
+                        key=lambda value: value.hex,
+                    )
+                )
+                for pair in conflict_validation.conflict_pairs
+            }
+            conflict_validation_reference = conflict_validation.validation_reference
+            conflict_policy_version = conflict_validation.policy_version
+        else:
+            grounded_conflict_pairs = {}
+            conflict_validation_reference = uuid5(
+                bundle.bundle_id, "grounded-conflict-single-claim:v1"
+            )
+            conflict_policy_version = "qa.grounded-conflict:r1"
+        conflicts = tuple(
+            GroundedConflict(
+                conflict_id=uuid5(
+                    bundle.bundle_id, f"grounded-conflict:v1:{left}:{right}"
+                ),
+                boundary=boundary,
+                claim_ids=(left, right),
+                relationship_ids=relationship_ids,
+                detection_reference=uuid5(
+                    conflict_validation_reference,
+                    "grounded-conflict-detection:v1:"
+                    + ":".join(
+                        str(value)
+                        for value in (
+                            left,
+                            right,
+                            assessment_by_claim[left].partial_validation_reference,
+                            assessment_by_claim[right].partial_validation_reference,
+                            *(
+                                reference
+                                for claim_id in (left, right)
+                                for validation in assessment_by_claim[
+                                    claim_id
+                                ].evidence_validations
+                                for reference in (
+                                    validation.citation_validation_reference,
+                                    validation.semantic_support_validation_reference,
+                                    validation.authorization_validation_reference,
+                                )
+                            ),
+                            *relationship_ids,
+                        )
+                    ),
+                ),
+                detection_policy_version=conflict_policy_version,
+            )
+            for (left, right), relationship_ids in sorted(
+                grounded_conflict_pairs.items(), key=lambda item: item[0][0].hex
+            )
+        )
+        evaluation_payload = {
+            "answer": candidate.answer.model_dump(mode="json"),
+            "target_scope": target_scope.model_dump(mode="json"),
+            "observed_coverage": observed_coverage.model_dump(mode="json"),
+            "claim_assessments": [item.model_dump(mode="json") for item in assessments],
+            "partial_fallback": (
+                None
+                if partial_fallback is None
+                else partial_fallback.model_dump(mode="json")
+            ),
+            "conflicts": [item.model_dump(mode="json") for item in conflicts],
+        }
+        evaluation_digest = hashlib.sha256(
+            json.dumps(evaluation_payload, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        request = AnswerEvaluationRequest(
+            answer=candidate.answer,
+            target_scope=target_scope,
+            observed_coverage=observed_coverage,
+            claim_assessments=tuple(assessments),
+            partial_fallback=partial_fallback,
+            conflicts=conflicts,
+            evaluation_lineage_reference=uuid5(
+                bundle.bundle_id, f"answer-evaluation:v2:{evaluation_digest}"
+            ),
+        )
+        decision = evaluate_answer_candidate(request)
+        return AnswerQuestionEvaluationLineage(
+            target_scope=target_scope,
+            observed_coverage=observed_coverage,
+            partial_fallback=partial_fallback,
+            claim_assessments=tuple(assessments),
+            conflicts=conflicts,
+            decision=decision,
         )
 
 
@@ -1612,7 +2170,23 @@ async def build_production_qa_capability_graph(
                     endpoint=llm_endpoint,
                 )
             ),
-            plans=_ValidationPlans(),
+            plans=_ValidationPlans(
+                boundary_members=_CanonicalBoundaryMembers(
+                    **port_values,
+                    operation="resolve_canonical_completeness_scope",
+                ),
+                authorization=content_authorization,
+                conflict_validator=ConfiguredGroundedConflictValidator(
+                    api_key=llm_api_key,
+                    model=llm_model,
+                    endpoint=llm_endpoint,
+                ),
+                impact_validator=ConfiguredMissingCoverageImpactValidator(
+                    api_key=llm_api_key,
+                    model=llm_model,
+                    endpoint=llm_endpoint,
+                ),
+            ),
         ),
     )
     return ProductionQACapabilityGraph(

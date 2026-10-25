@@ -31,6 +31,10 @@ describe('Q&A run detail', () => {
     expect(screen.getAllByText(runId)).toHaveLength(2);
     expect(screen.getByText(/gpt-safe-2026/)).toBeVisible();
     expect(screen.getByText(/b0000000-0000-4000-8000-000000000004/)).toBeVisible();
+    expect(screen.getByText(ru.chat.completeness.partiality.partial)).toBeVisible();
+    expect(screen.getByText(/несовместимые подтверждённые позиции/)).toBeVisible();
+    expect(screen.getByText(/target-completeness-scope:v1/)).toBeVisible();
+    expect(screen.getByText(/observed-coverage:v1/)).toBeVisible();
     expect(screen.getByText('12')).toBeVisible();
     await userEvent.click(screen.getByRole('button', { name: ru.diagnostics.open }));
     expect(await screen.findByText(ru.diagnostics.partial)).toBeVisible();
@@ -163,6 +167,19 @@ function makeAttempt(): components['schemas']['QARunAttemptResponse'] {
     attempt_id: 'a1000000-0000-4000-8000-000000000001',
     attempt_number: 1,
     completed_at: '2026-10-16T10:00:03Z',
+    completeness: {
+      schema_version: 'answer-completeness-presentation:v1',
+      target_scope_id: 'd0000000-0000-4000-8000-000000000010',
+      target_scope_version: 'target-completeness-scope:v1',
+      observed_coverage_id: 'd0000000-0000-4000-8000-000000000011',
+      observed_coverage_version: 'observed-coverage:v1',
+      coverage_status: 'insufficient',
+      partiality_status: 'partial',
+      conflict_status: 'presented',
+      partial_fallback_authority: 'current_request',
+      serving_decision: 'serve',
+      validation_decision: 'grounded_conflict',
+    },
     context: {
       activation_generation: 4,
       bundle_digest: 'sha256:bundle',

@@ -32,6 +32,13 @@ from spine.domain.capabilities.answer_question_candidate import (
     AnswerQuestionCandidateOutput,
 )
 from spine.domain.capabilities.answer_evaluation import AnswerEvaluationDecision
+from spine.domain.capabilities.answer_evaluation import (
+    GroundedConflict,
+    GroundedClaimAssessment,
+    ObservedCoverage,
+    PartialFallbackAuthorization,
+    TargetCompletenessScope,
+)
 from spine.domain.capabilities.semantic_support import (
     SemanticSupportOutcome,
     SemanticSupportResult,
@@ -49,6 +56,11 @@ class AnswerOutcomeFacts:
     citation_results: tuple[CitationValidationOutcome, ...] = ()
     semantic_results: tuple[SemanticSupportResult, ...] = ()
     evaluation: AnswerEvaluationDecision | None = None
+    target_scope: TargetCompletenessScope | None = None
+    observed_coverage: ObservedCoverage | None = None
+    partial_fallback: PartialFallbackAuthorization | None = None
+    claim_assessments: tuple[GroundedClaimAssessment, ...] = ()
+    conflicts: tuple[GroundedConflict, ...] = ()
     disclosure_eligible: bool = False
     clarification: ClarificationAssessment | None = None
     cancellation_requested: bool = False

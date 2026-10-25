@@ -8,6 +8,7 @@ from spine.domain.capabilities.answer_evaluation import (
     AnswerPartialityStatus,
     AttemptProjectionBoundary,
     ClaimAuthorizationStatus,
+    CanonicalViewMember,
     ClaimEvidenceValidation,
     ClaimGroundingStatus,
     CoverageEvaluationStatus,
@@ -41,6 +42,10 @@ from spine.domain.capabilities.answer_disclosure import (
     DisclosureEligibilityStatus,
     GroundedAnswer,
     compose_answer_disclosure,
+)
+from spine.domain.capabilities.completeness_presentation import (
+    AnswerCompletenessPresentation,
+    AnswerServingDecisionCode,
 )
 from spine.domain.capabilities.answer_question import (
     ANSWER_CLAIM_SCHEMA,
@@ -157,6 +162,8 @@ __all__ = [
     "AcceptedAnswer",
     "AcceptedGroundedAnswer",
     "AnswerDisclosureDecision",
+    "AnswerCompletenessPresentation",
+    "AnswerServingDecisionCode",
     "AnswerDisclosureRequest",
     "AnswerDisclosureRecord",
     "AnswerDisclosureValidation",
@@ -225,6 +232,7 @@ __all__ = [
     "ClarificationRequest",
     "ClarificationAssessment",
     "ClaimAuthorizationStatus",
+    "CanonicalViewMember",
     "ClaimEvidenceValidation",
     "ClaimGroundingStatus",
     "CoverageEvaluationStatus",

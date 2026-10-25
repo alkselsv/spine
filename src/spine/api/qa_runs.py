@@ -42,7 +42,7 @@ from spine.auth import (
     RouteAuthorizationPolicy,
 )
 from spine.application.persistence import PersistenceOperation, PersistencePurpose
-from spine.domain.capabilities import AnswerQuestionOutcome
+from spine.domain.capabilities import AnswerCompletenessPresentation, AnswerQuestionOutcome
 
 
 _COLLECTION_OPERATION = "qa.runs.list"
@@ -181,6 +181,7 @@ class QARunAttemptResponse(BaseModel):
     usage: QARunUsageResponse
     timeline: tuple[QARunTimelineEventResponse, ...]
     context: QARunContextResponse | None
+    completeness: AnswerCompletenessPresentation | None = None
 
 
 class QARunEvidenceResponse(BaseModel):
@@ -401,9 +402,12 @@ def _summary(item) -> QARunSummaryResponse:
 
 def _detail(detail: QARunDetail) -> QARunDetailResponse:
     run = detail.run
+    completeness = detail.completeness or tuple(None for _ in detail.attempts)
     attempts = tuple(
-        _attempt(attempt, context)
-        for attempt, context in zip(detail.attempts, detail.contexts)
+        _attempt(attempt, context, completeness)
+        for attempt, context, completeness in zip(
+            detail.attempts, detail.contexts, completeness, strict=True
+        )
     )
     diagnostic_events = tuple(
         event
@@ -444,7 +448,7 @@ def _detail(detail: QARunDetail) -> QARunDetailResponse:
     )
 
 
-def _attempt(attempt, context) -> QARunAttemptResponse:
+def _attempt(attempt, context, completeness) -> QARunAttemptResponse:
     pin = attempt.execution_pin
     return QARunAttemptResponse(
         schema_version=attempt.schema_version,
@@ -479,6 +483,7 @@ def _attempt(attempt, context) -> QARunAttemptResponse:
             for event in attempt.events
         ),
         context=_context(context) if context is not None else None,
+        completeness=completeness,
     )
 
 

@@ -300,6 +300,7 @@ async def test_ask_admission_returns_stable_ids_without_content_before_execution
                 "schema_version": 1,
                 "session_id": str(SESSION_ID),
                 "question": "protected question",
+                "allow_partial_answer": False,
             },
             headers={**headers(), "Idempotency-Key": "admission-1"},
         )
@@ -309,6 +310,7 @@ async def test_ask_admission_returns_stable_ids_without_content_before_execution
     assert response.json()["result"]["run_id"] == str(RUN_ID)
     assert "protected question" not in response.text
     assert "answer" not in response.text
+    assert admission.calls[0].allow_partial_answer is False
 
 
 @pytest.mark.asyncio

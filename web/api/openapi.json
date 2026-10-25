@@ -218,6 +218,98 @@
         "title": "AnswerClaimKind",
         "type": "string"
       },
+      "AnswerCompletenessPresentation": {
+        "additionalProperties": false,
+        "description": "Stable codes and opaque version identities; never source membership/counts.",
+        "properties": {
+          "conflict_status": {
+            "$ref": "#/components/schemas/GroundedConflictStatus"
+          },
+          "coverage_status": {
+            "$ref": "#/components/schemas/CoverageEvaluationStatus"
+          },
+          "observed_coverage_id": {
+            "format": "uuid",
+            "title": "Observed Coverage Id",
+            "type": "string"
+          },
+          "observed_coverage_version": {
+            "const": "observed-coverage:v1",
+            "title": "Observed Coverage Version",
+            "type": "string"
+          },
+          "partial_fallback_authority": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PartialFallbackAuthority"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "partiality_status": {
+            "$ref": "#/components/schemas/AnswerPartialityStatus"
+          },
+          "schema_version": {
+            "const": "answer-completeness-presentation:v1",
+            "default": "answer-completeness-presentation:v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "serving_decision": {
+            "$ref": "#/components/schemas/AnswerServingDecisionCode"
+          },
+          "target_scope_id": {
+            "format": "uuid",
+            "title": "Target Scope Id",
+            "type": "string"
+          },
+          "target_scope_version": {
+            "const": "target-completeness-scope:v1",
+            "title": "Target Scope Version",
+            "type": "string"
+          },
+          "validation_decision": {
+            "$ref": "#/components/schemas/AnswerEvaluationSafeReason"
+          }
+        },
+        "required": [
+          "target_scope_id",
+          "target_scope_version",
+          "observed_coverage_id",
+          "observed_coverage_version",
+          "coverage_status",
+          "partiality_status",
+          "conflict_status",
+          "serving_decision",
+          "validation_decision"
+        ],
+        "title": "AnswerCompletenessPresentation",
+        "type": "object"
+      },
+      "AnswerEvaluationSafeReason": {
+        "enum": [
+          "complete",
+          "partial_authorized",
+          "claim_rejected",
+          "incomplete_authorized_coverage",
+          "coverage_not_proven",
+          "grounded_conflict",
+          "precedence_applied"
+        ],
+        "title": "AnswerEvaluationSafeReason",
+        "type": "string"
+      },
+      "AnswerPartialityStatus": {
+        "enum": [
+          "exhaustive",
+          "partial",
+          "none"
+        ],
+        "title": "AnswerPartialityStatus",
+        "type": "string"
+      },
       "AnswerQuestionOutcome": {
         "description": "The complete and closed set of terminal Q&A outcomes.",
         "enum": [
@@ -247,6 +339,14 @@
           "cancelled"
         ],
         "title": "AnswerQuestionSafeReasonCode",
+        "type": "string"
+      },
+      "AnswerServingDecisionCode": {
+        "enum": [
+          "serve",
+          "withhold"
+        ],
+        "title": "AnswerServingDecisionCode",
         "type": "string"
       },
       "ApiCollectionEnvelope_DocumentProcessingHistoryResponse_": {
@@ -1785,6 +1885,17 @@
       "AuthorizedAskRequest": {
         "additionalProperties": false,
         "properties": {
+          "allow_partial_answer": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allow Partial Answer"
+          },
           "clarification_of_message_id": {
             "anyOf": [
               {
@@ -2669,6 +2780,15 @@
         "title": "CorrelationSourceLineage",
         "type": "object"
       },
+      "CoverageEvaluationStatus": {
+        "enum": [
+          "complete",
+          "insufficient",
+          "unproven"
+        ],
+        "title": "CoverageEvaluationStatus",
+        "type": "string"
+      },
       "CreateQAMessageRequest": {
         "additionalProperties": false,
         "properties": {
@@ -3320,6 +3440,15 @@
           "citation"
         ],
         "title": "FeedbackTargetKind",
+        "type": "string"
+      },
+      "GroundedConflictStatus": {
+        "enum": [
+          "none",
+          "presented",
+          "resolved_by_precedence"
+        ],
+        "title": "GroundedConflictStatus",
         "type": "string"
       },
       "HTTPValidationError": {
@@ -5186,6 +5315,14 @@
         "title": "ParsedContentSegmentResponse",
         "type": "object"
       },
+      "PartialFallbackAuthority": {
+        "enum": [
+          "current_request",
+          "accepted_preference"
+        ],
+        "title": "PartialFallbackAuthority",
+        "type": "string"
+      },
       "PhysicalLineLocator": {
         "additionalProperties": false,
         "description": "A half-open raw Unicode code-point range on one physical line.",
@@ -6085,6 +6222,17 @@
         "additionalProperties": false,
         "description": "Versioned request model for the durable admission operation.",
         "properties": {
+          "allow_partial_answer": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allow Partial Answer"
+          },
           "clarification_of_message_id": {
             "anyOf": [
               {
@@ -6256,6 +6404,16 @@
           "cancelled": {
             "title": "Cancelled",
             "type": "boolean"
+          },
+          "completeness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnswerCompletenessPresentation"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "created_at": {
             "format": "date-time",
@@ -6463,6 +6621,16 @@
               }
             ],
             "title": "Completed At"
+          },
+          "completeness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnswerCompletenessPresentation"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "context": {
             "anyOf": [

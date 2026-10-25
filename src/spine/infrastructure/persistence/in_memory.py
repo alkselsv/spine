@@ -2028,6 +2028,20 @@ class _CanonicalAcceptanceRepository:
             return None
         return head.model_copy(deep=True)
 
+    async def list_current(self) -> tuple[CurrentSourceHead, ...]:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return ()
+        return tuple(
+            head.model_copy(deep=True)
+            for head in sorted(
+                self._heads().values(), key=lambda value: value.source_object_id.hex
+            )
+            if (head.workspace_id, head.environment_id)
+            == (scope.workspace_id, scope.environment_id)
+        )
+
     async def resolve_acceptance(
         self, canonical_acceptance_id: UUID
     ) -> CanonicalAcceptance | None:

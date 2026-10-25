@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from hashlib import sha256
 import json
+from dataclasses import dataclass
+import re
 from collections.abc import Awaitable, Callable
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -24,6 +26,7 @@ from spine.domain.capabilities import (
     Citation,
     ClaimEvidenceRelationship,
     ClaimEvidenceRelationshipKind,
+    MissingCoverageImpact,
 )
 from spine.domain.capabilities.semantic_support import (
     SemanticSupportAssessment,
@@ -52,6 +55,215 @@ SEMANTIC_SUPPORT_POLICY_VERSION = "r2"
 SEMANTIC_SUPPORT_POLICY_DIGEST = sha256(
     _SEMANTIC_SUPPORT_SYSTEM_PROMPT.encode("utf-8")
 ).hexdigest()
+
+_GROUNDED_CONFLICT_SYSTEM_PROMPT = (
+    "Identify semantic contradictions between the supplied grounded claims using only "
+    "their supplied evidence. Return JSON with conflicts as an array of two-element "
+    "claim ID arrays. Include a pair only when both claims cannot simultaneously be true. "
+    "Do not resolve conflicts, choose a winner, or infer facts outside the evidence."
+)
+GROUNDED_CONFLICT_POLICY_VERSION = "qa.grounded-conflict:r1"
+GROUNDED_CONFLICT_POLICY_DIGEST = sha256(
+    _GROUNDED_CONFLICT_SYSTEM_PROMPT.encode("utf-8")
+).hexdigest()
+
+_MISSING_COVERAGE_IMPACT_SYSTEM_PROMPT = (
+    "Assess whether unknown evidence outside the observed coverage could materially "
+    "refute or change the supplied grounded claim for the user's question. Return JSON "
+    "with impact equal to immaterial, material, or unknown. Use immaterial only when "
+    "the claim remains independently useful and its bounded wording cannot imply "
+    "completeness or absence outside the supplied evidence. Prefer unknown when unsure."
+)
+MISSING_COVERAGE_IMPACT_POLICY_VERSION = "qa.missing-coverage-impact:r1"
+MISSING_COVERAGE_IMPACT_POLICY_DIGEST = sha256(
+    _MISSING_COVERAGE_IMPACT_SYSTEM_PROMPT.encode("utf-8")
+).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class MissingCoverageImpactValidation:
+    impact: MissingCoverageImpact
+    validation_reference: UUID
+    policy_version: str = MISSING_COVERAGE_IMPACT_POLICY_VERSION
+
+
+class ConfiguredMissingCoverageImpactValidator:
+    """Versioned semantic check for safe usefulness under incomplete coverage."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        endpoint: str,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        if not api_key or not model:
+            raise RuntimeError("configured completeness impact validator is unavailable")
+        self._api_key = api_key
+        self._model = model
+        self._endpoint = endpoint.rstrip("/")
+        self._transport = transport
+
+    async def assess(
+        self,
+        *,
+        question: str,
+        claim: AnswerClaim,
+        evidence: tuple[str, ...],
+    ) -> MissingCoverageImpactValidation:
+        request_payload = {
+            "question": question,
+            "claim_id": str(claim.claim_id),
+            "claim": claim.text,
+            "observed_evidence": list(evidence),
+        }
+        payload = {
+            "model": self._model,
+            "temperature": 0,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": _MISSING_COVERAGE_IMPACT_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": json.dumps(request_payload, ensure_ascii=False),
+                },
+            ],
+        }
+        async with httpx.AsyncClient(timeout=120, transport=self._transport) as client:
+            response = await client.post(
+                f"{self._endpoint}/chat/completions",
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                json=payload,
+            )
+            response.raise_for_status()
+        decoded = json.loads(response.json()["choices"][0]["message"]["content"])
+        impact = {
+            "immaterial": MissingCoverageImpact.IMMATERIAL,
+            "material": MissingCoverageImpact.MATERIAL,
+            "unknown": MissingCoverageImpact.UNKNOWN,
+        }.get(str(decoded.get("impact", "")).strip().lower())
+        if impact is None:
+            raise RuntimeError(
+                "configured completeness impact validator returned invalid output"
+            )
+        digest = sha256(
+            json.dumps(
+                {
+                    "policy_digest": MISSING_COVERAGE_IMPACT_POLICY_DIGEST,
+                    "request": request_payload,
+                    "impact": impact.value,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        return MissingCoverageImpactValidation(
+            impact=impact,
+            validation_reference=uuid5(
+                NAMESPACE_URL, f"spine:missing-coverage-impact:r1:{digest}"
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GroundedConflictValidation:
+    conflict_pairs: tuple[tuple[UUID, UUID], ...]
+    validation_reference: UUID
+    policy_version: str = GROUNDED_CONFLICT_POLICY_VERSION
+
+
+class ConfiguredGroundedConflictValidator:
+    """Second-pass semantic conflict validator over grounded authorized claims."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        endpoint: str,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        if not api_key or not model:
+            raise RuntimeError("configured conflict validator is unavailable")
+        self._api_key = api_key
+        self._model = model
+        self._endpoint = endpoint.rstrip("/")
+        self._transport = transport
+
+    async def detect(
+        self,
+        *,
+        claims: tuple[AnswerClaim, ...],
+        evidence: dict[UUID, tuple[str, ...]],
+    ) -> GroundedConflictValidation:
+        claim_ids = {claim.claim_id for claim in claims}
+        request_payload = {
+            "claims": [
+                {
+                    "claim_id": str(claim.claim_id),
+                    "text": claim.text,
+                    "evidence": list(evidence.get(claim.claim_id, ())),
+                }
+                for claim in claims
+            ]
+        }
+        payload = {
+            "model": self._model,
+            "temperature": 0,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": _GROUNDED_CONFLICT_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": json.dumps(request_payload, ensure_ascii=False),
+                },
+            ],
+        }
+        async with httpx.AsyncClient(timeout=120, transport=self._transport) as client:
+            response = await client.post(
+                f"{self._endpoint}/chat/completions",
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                json=payload,
+            )
+            response.raise_for_status()
+        decoded = json.loads(response.json()["choices"][0]["message"]["content"])
+        raw_conflicts = decoded.get("conflicts")
+        if not isinstance(raw_conflicts, list):
+            raise RuntimeError("configured conflict validator returned invalid output")
+        pairs = set()
+        for raw_pair in raw_conflicts:
+            if not isinstance(raw_pair, list) or len(raw_pair) != 2:
+                raise RuntimeError("configured conflict validator returned invalid output")
+            try:
+                pair = tuple(sorted((UUID(str(raw_pair[0])), UUID(str(raw_pair[1]))), key=lambda value: value.hex))
+            except (TypeError, ValueError) as error:
+                raise RuntimeError(
+                    "configured conflict validator returned invalid output"
+                ) from error
+            if pair[0] == pair[1] or not set(pair).issubset(claim_ids):
+                raise RuntimeError("configured conflict validator returned invalid output")
+            pairs.add(pair)
+        ordered = tuple(sorted(pairs, key=lambda pair: (pair[0].hex, pair[1].hex)))
+        digest = sha256(
+            json.dumps(
+                {
+                    "policy_digest": GROUNDED_CONFLICT_POLICY_DIGEST,
+                    "request": request_payload,
+                    "conflicts": [[str(left), str(right)] for left, right in ordered],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        return GroundedConflictValidation(
+            conflict_pairs=ordered,
+            validation_reference=uuid5(
+                NAMESPACE_URL, f"spine:grounded-conflict-validation:r1:{digest}"
+            ),
+        )
 
 
 class PostgreSQLQAArtifactStore:
@@ -583,7 +795,6 @@ def _candidate(
     question = value.question
     bundle = value.context_bundle
     answer_id = uuid5(question.correlation.run_id, "accepted-answer")
-    claim_id = uuid5(answer_id, "claim-1")
     references = {
         item.evidence_id: item for item in bundle.evidence_references
     }
@@ -601,28 +812,35 @@ def _candidate(
         if len(citations) == 1
         else ClaimEvidenceRelationshipKind.JOINT
     )
-    claim = AnswerClaim(
-        claim_id=claim_id,
-        workspace_id=question.scope.workspace_id,
-        environment_id=question.scope.environment_id,
-        run_id=question.correlation.run_id,
-        attempt_id=question.correlation.attempt_id,
-        kind=AnswerClaimKind.FACTUAL,
-        text=answer_text,
-        location=AnswerClaimLocation(
-            answer_id=answer_id, start_offset=0, end_offset=len(answer_text)
-        ),
+    spans = _claim_spans(answer_text)
+    claims = tuple(
+        AnswerClaim(
+            claim_id=uuid5(answer_id, f"claim-{index}"),
+            workspace_id=question.scope.workspace_id,
+            environment_id=question.scope.environment_id,
+            run_id=question.correlation.run_id,
+            attempt_id=question.correlation.attempt_id,
+            kind=AnswerClaimKind.FACTUAL,
+            text=answer_text[start:end],
+            location=AnswerClaimLocation(
+                answer_id=answer_id, start_offset=start, end_offset=end
+            ),
+        )
+        for index, (start, end) in enumerate(spans, start=1)
     )
-    relationship = ClaimEvidenceRelationship(
-        relationship_id=uuid5(answer_id, "relationship-1"),
-        answer_id=answer_id,
-        workspace_id=question.scope.workspace_id,
-        environment_id=question.scope.environment_id,
-        run_id=question.correlation.run_id,
-        attempt_id=question.correlation.attempt_id,
-        claim_id=claim_id,
-        kind=relationship_kind,
-        citation_ids=tuple(item.citation_id for item in citations),
+    relationships = tuple(
+        ClaimEvidenceRelationship(
+            relationship_id=uuid5(answer_id, f"relationship-{index}"),
+            answer_id=answer_id,
+            workspace_id=question.scope.workspace_id,
+            environment_id=question.scope.environment_id,
+            run_id=question.correlation.run_id,
+            attempt_id=question.correlation.attempt_id,
+            claim_id=claim.claim_id,
+            kind=relationship_kind,
+            citation_ids=tuple(item.citation_id for item in citations),
+        )
+        for index, claim in enumerate(claims, start=1)
     )
     return AnswerQuestionCandidateOutput(
         question=question,
@@ -634,11 +852,33 @@ def _candidate(
             run_id=question.correlation.run_id,
             attempt_id=question.correlation.attempt_id,
             text=answer_text,
-            claims=(claim,),
+            claims=claims,
             citations=citations,
-            relationships=(relationship,),
+            relationships=relationships,
         ),
     )
+
+
+def _claim_spans(answer_text: str) -> tuple[tuple[int, int], ...]:
+    """Split configured runtime output into exact sentence-level claim spans."""
+
+    boundaries = [match.end() for match in re.finditer(r"[.!?](?=\s|$)", answer_text)]
+    if not boundaries or boundaries[-1] != len(answer_text):
+        boundaries.append(len(answer_text))
+    spans = []
+    start = 0
+    for boundary in boundaries:
+        while start < boundary and answer_text[start].isspace():
+            start += 1
+        end = boundary
+        while end > start and answer_text[end - 1].isspace():
+            end -= 1
+        if start < end:
+            spans.append((start, end))
+        start = boundary
+    if not spans:
+        raise RuntimeError("configured Q&A LLM returned an empty answer")
+    return tuple(spans)
 
 
 __all__ = [

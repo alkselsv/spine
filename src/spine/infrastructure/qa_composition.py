@@ -244,6 +244,63 @@ class _CurrentSessionDisclosureState:
         )
 
 
+def current_disclosure_revalidator(
+    uow: object, requester: object
+) -> DisclosureRevalidationService:
+    """Bind fresh disclosure checks to the active scoped unit of work."""
+
+    return DisclosureRevalidationService(
+        state_provider=_CurrentSessionDisclosureState(
+            uow=uow,
+            requester=requester,  # type: ignore[arg-type]
+        ),
+        result_repository=uow.disclosure_validations,  # type: ignore[attr-defined]
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _CurrentTargetScopeAuthorizer:
+    uow: object
+    requester: object
+
+    async def allows(self, target_scope: object) -> bool:
+        members = getattr(target_scope, "members", None)
+        requester_id = getattr(self.requester, "subject_id", None)
+        if members is None or requester_id is None:
+            return False
+        for member in members:
+            head = await self.uow.canonical.resolve_current(  # type: ignore[attr-defined]
+                member.source_object_id
+            )
+            current_policy = await self.uow.access_policies.resolve_current(  # type: ignore[attr-defined]
+                member.source_object_id
+            )
+            policy = (
+                None
+                if current_policy is None
+                else await self.uow.access_policies.resolve_policy(  # type: ignore[attr-defined]
+                    current_policy.access_policy_version_id
+                )
+            )
+            if (
+                head is None
+                or head.current_revision_id != member.source_revision_id
+                or head.current_revision_kind is not RevisionKind.CONTENT
+                or policy is None
+                or not policy.allows_human_read(requester_id, frozenset())
+            ):
+                return False
+        return True
+
+
+def current_target_scope_authorizer(
+    uow: object, requester: object
+) -> _CurrentTargetScopeAuthorizer:
+    """Bind target-scope authorization to the active scoped unit of work."""
+
+    return _CurrentTargetScopeAuthorizer(uow=uow, requester=requester)
+
+
 @dataclass(frozen=True, slots=True)
 class PostgreSQLQASessionService:
     """Run the existing session application service in one scoped UoW."""
@@ -259,13 +316,7 @@ class PostgreSQLQASessionService:
         accepted = None
         if requester is not None:
             accepted = RevalidatingQAMessageDisclosure(
-                DisclosureRevalidationService(
-                    state_provider=_CurrentSessionDisclosureState(
-                        uow=uow,
-                        requester=requester,
-                    ),
-                    result_repository=uow.disclosure_validations,  # type: ignore[attr-defined]
-                )
+                current_disclosure_revalidator(uow, requester)
             )
         return PersistedQASessionService(
             repository=repository,
@@ -276,7 +327,6 @@ class PostgreSQLQASessionService:
             answer_question_runs=uow.answer_question_runs,  # type: ignore[attr-defined]
             answer_disclosures=uow.answer_disclosures,  # type: ignore[attr-defined]
         )
-
     async def create_session(
         self,
         *,

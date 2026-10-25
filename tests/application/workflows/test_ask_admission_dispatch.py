@@ -102,6 +102,51 @@ def admission_intent():
     )
 
 
+@pytest.mark.parametrize(
+    ("capture", "subscription", "legacy_version", "completeness_version"),
+    (
+        (False, False, 4, 10),
+        (True, False, 5, 11),
+        (True, True, 6, 12),
+    ),
+)
+def test_admission_payload_versions_preserve_legacy_and_version_completeness_intent(
+    capture: bool,
+    subscription: bool,
+    legacy_version: int,
+    completeness_version: int,
+) -> None:
+    capture_id = UUID("90000000-0000-0000-0000-000000000427") if capture else None
+    capture_subscription = (
+        AskCaptureSubscription(
+            capture_id=capture_id,
+            subscription_id=UUID("91000000-0000-0000-0000-000000000427"),
+            expires_at=NOW + timedelta(minutes=5),
+        )
+        if subscription and capture_id is not None
+        else None
+    )
+    payload = {
+        "command_id": COMMAND_ID,
+        "session_id": SESSION_ID,
+        "message_id": MESSAGE_ID,
+        "run_id": RUN_ID,
+        "authorization_generation": 1,
+        "capture_id": capture_id,
+        "capture_subscription": capture_subscription,
+    }
+
+    legacy = AskAdmissionDispatchPayload(**payload, schema_version=legacy_version)
+    completeness_aware = AskAdmissionDispatchPayload(
+        **payload,
+        allow_partial_answer=False,
+        schema_version=completeness_version,
+    )
+
+    assert legacy.allow_partial_answer is None
+    assert completeness_aware.allow_partial_answer is False
+
+
 def test_capture_enabled_dispatch_uses_v5_workflow_metadata() -> None:
     capture_id = UUID("90000000-0000-0000-0000-000000000427")
     registry = OutboxEventRegistry()
@@ -456,7 +501,11 @@ async def test_workflow_executor_releases_only_scoped_admitted_identity_to_capab
     )
 
     capture_input = workflow_input().model_copy(
-            update={"capture_id": capture_id, "schema_version": 5}
+        update={
+            "capture_id": capture_id,
+            "allow_partial_answer": False,
+            "schema_version": 11,
+        }
     )
     result = await executor.execute(capture_input)
     retry_result = await executor.execute(capture_input)
@@ -466,6 +515,7 @@ async def test_workflow_executor_releases_only_scoped_admitted_identity_to_capab
     assert service.commands[0].question == "secret question"
     assert service.commands[0].message_id == MESSAGE_ID
     assert service.commands[0].run_id == RUN_ID
+    assert service.commands[0].allow_partial_answer is False
     assert service.commands[0].logical_execution_key == (
         f"durable-ask:{COMMAND_ID}"
     )

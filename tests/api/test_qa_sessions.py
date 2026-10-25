@@ -5,7 +5,9 @@ from uuid import UUID
 import httpx
 import pytest
 
-from spine.api.qa_sessions import install_qa_session_routes
+from spine.api.qa_sessions import _message_response, install_qa_session_routes
+from spine.application.qa_completeness import completeness_presentation
+from tests.application.test_qa_completeness import _record as completeness_record
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.persistence.context import EnvironmentScope, PersistenceOperation
 from spine.application.qa_sessions import PersistedQASessionService
@@ -160,6 +162,39 @@ async def test_administrator_without_content_grant_receives_metadata_only_messag
     assert payload["disclosure_eligibility"] == "ineligible"
     assert payload["question"] is None
     assert payload["answer"] is None
+
+
+def test_message_response_serializes_only_safe_completeness_fields() -> None:
+    record = completeness_record()
+    response = _message_response(
+        SimpleNamespace(
+            message_id=MESSAGE_ID,
+            session_id=UUID(int=81),
+            workspace_id=WORKSPACE_ID,
+            environment_id=ENVIRONMENT_ID,
+            version=2,
+            ordinal=1,
+            trace_id=UUID(int=82),
+            run_id=record.run_id,
+            state="terminal",
+            terminal_outcome=record.outcome,
+            cancelled=False,
+            disclosure_eligibility=SimpleNamespace(value="ineligible"),
+            question=None,
+            answer=None,
+            accepted_presentation=None,
+            completeness=completeness_presentation(record),
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+
+    payload = response.model_dump(mode="json")
+    assert payload["question"] is None
+    assert payload["answer"] is None
+    assert payload["completeness"]["coverage_status"] == "unproven"
+    assert "members" not in payload["completeness"]
+    assert "source_object_id" not in str(payload)
 
 
 @pytest.mark.asyncio

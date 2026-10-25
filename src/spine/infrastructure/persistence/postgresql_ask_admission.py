@@ -78,6 +78,7 @@ class PostgreSQLAskAdmissionRepository(AskAdmissionRepository):
             question=command.question,
             idempotency_key=command.idempotency_key,
             clarification_of_message_id=command.clarification_of_message_id,
+            allow_partial_answer=command.allow_partial_answer,
             authorization_generation=command.authorization_generation,
         ).digest
         if command.digest != expected_digest:
@@ -184,10 +185,12 @@ class PostgreSQLAskAdmissionRepository(AskAdmissionRepository):
             authorization_generation=command.authorization_generation,
             capture_id=command.capture_id,
             capture_subscription=command.capture_subscription,
+            allow_partial_answer=command.allow_partial_answer,
             schema_version=ask_admission_metadata_schema_version(
                 command.capture_id,
                 command.capture_subscription,
                 command.authorization_generation,
+                completeness_intent_versioned=True,
             ),
         )
         intent = self._uow._outbox_events.build_intent(

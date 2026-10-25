@@ -98,6 +98,8 @@ from spine.infrastructure.qa_composition import (
     PostgreSQLCitationInspectorService,
     PostgreSQLFeedbackService,
     PostgreSQLQASessionService,
+    current_disclosure_revalidator,
+    current_target_scope_authorizer,
 )
 from spine.infrastructure.qa_observation_capture import HttpCaptureChannel
 
@@ -355,7 +357,9 @@ def create_production_app(
             resolved_api.cursor_secret.get_secret_value().encode("utf-8")
         ),
         qa_run_history_service=PersistedQARunHistoryService(
-            persistence.uow_factory
+            persistence.uow_factory,
+            disclosure_revalidator_factory=current_disclosure_revalidator,
+            target_scope_authorizer_factory=current_target_scope_authorizer,
         ),
         qa_run_history_cursor_secret=(
             resolved_api.cursor_secret.get_secret_value().encode("utf-8")

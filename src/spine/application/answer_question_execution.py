@@ -59,10 +59,10 @@ class AnswerQuestionExecutionIntent(ValidatedDefinitionModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
 
-    allow_partial_answer: bool = False
+    allow_partial_answer: bool | None = None
 
     def runtime_constraints(self) -> dict[str, bool]:
-        if not self.allow_partial_answer:
+        if self.allow_partial_answer is not True:
             return {}
         return {"allow_partial_answer": True}
 

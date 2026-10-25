@@ -9,6 +9,7 @@ from uuid import UUID
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from spine.domain.common import ValidatedDefinitionModel
+from spine.domain.sources import RevisionKind
 
 
 _DIGEST = r"^[0-9a-f]{64}$"
@@ -76,8 +77,24 @@ class TargetScopeMember(_EvaluationModel):
         return _require_id(value, info.field_name)
 
 
+class CanonicalViewMember(_EvaluationModel):
+    """One exact current-head fact used to derive the target scope."""
+
+    schema_version: Literal["canonical-view-member:v1"] = "canonical-view-member:v1"
+    source_object_id: UUID
+    source_revision_id: UUID
+    revision_kind: RevisionKind
+    accepted_generation: int = Field(ge=1)
+    cas_version: int = Field(ge=1)
+
+    @field_validator("source_object_id", "source_revision_id")
+    @classmethod
+    def validate_id(cls, value: UUID, info: Any) -> UUID:
+        return _require_id(value, info.field_name)
+
+
 class TargetCompletenessScope(_EvaluationModel):
-    """Server-derived authorized source boundary required for exhaustiveness."""
+    """Server-derived authorized scope plus its exact canonical view reference."""
 
     schema_version: Literal["target-completeness-scope:v1"] = (
         "target-completeness-scope:v1"
@@ -86,10 +103,17 @@ class TargetCompletenessScope(_EvaluationModel):
     boundary: AttemptProjectionBoundary
     derivation_authority: Literal["server_policy"] = "server_policy"
     derivation_reference: UUID
+    canonical_view_reference: UUID
+    canonical_view_digest: str = Field(pattern=_DIGEST)
+    canonical_view_generation: int = Field(ge=0)
+    canonical_view_basis: Literal["current_at_evaluation"] = "current_at_evaluation"
+    canonical_view_members: tuple[CanonicalViewMember, ...] = ()
     source_constraint_digest: str = Field(pattern=_DIGEST)
-    members: tuple[TargetScopeMember, ...] = Field(min_length=1)
+    members: tuple[TargetScopeMember, ...] = ()
 
-    @field_validator("target_scope_id", "derivation_reference")
+    @field_validator(
+        "target_scope_id", "derivation_reference", "canonical_view_reference"
+    )
     @classmethod
     def validate_id(cls, value: UUID, info: Any) -> UUID:
         return _require_id(value, info.field_name)
@@ -99,6 +123,11 @@ class TargetCompletenessScope(_EvaluationModel):
         source_ids = tuple(member.source_object_id for member in self.members)
         if len(set(source_ids)) != len(source_ids):
             raise ValueError("target scope members must be unique")
+        canonical_source_ids = tuple(
+            member.source_object_id for member in self.canonical_view_members
+        )
+        if len(set(canonical_source_ids)) != len(canonical_source_ids):
+            raise ValueError("canonical view members must be unique")
         return self
 
 
@@ -259,6 +288,7 @@ class GroundedConflict(_EvaluationModel):
     conflict_id: UUID
     boundary: AttemptProjectionBoundary
     claim_ids: tuple[UUID, ...] = Field(min_length=2, max_length=2)
+    relationship_ids: tuple[UUID, ...] = Field(min_length=1)
     detection_reference: UUID
     detection_policy_version: str = Field(pattern=_VERSION)
 
@@ -271,6 +301,11 @@ class GroundedConflict(_EvaluationModel):
     @classmethod
     def validate_claim_ids(cls, value: tuple[UUID, ...]) -> tuple[UUID, ...]:
         return _unique_ids(value, "claim_ids")
+
+    @field_validator("relationship_ids")
+    @classmethod
+    def validate_relationship_ids(cls, value: tuple[UUID, ...]) -> tuple[UUID, ...]:
+        return _unique_ids(value, "relationship_ids")
 
 
 class ApprovedPrecedenceRule(_EvaluationModel):
@@ -430,6 +465,7 @@ __all__ = [
     "CoverageEvaluationStatus",
     "CoverageMemberStatus",
     "ClaimAuthorizationStatus",
+    "CanonicalViewMember",
     "ClaimEvidenceValidation",
     "ClaimGroundingStatus",
     "DerivationInput",

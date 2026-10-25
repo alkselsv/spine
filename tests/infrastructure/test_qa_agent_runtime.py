@@ -5,12 +5,17 @@ from uuid import UUID
 import httpx
 import pytest
 
-from spine.domain.capabilities import SemanticSupportOutcome
+from spine.domain.capabilities import MissingCoverageImpact, SemanticSupportOutcome
 from spine.infrastructure.qa_agent_runtime import (
+    ConfiguredGroundedConflictValidator,
     ConfiguredLLMRuntime,
+    ConfiguredMissingCoverageImpactValidator,
     ConfiguredSemanticSupportValidator,
     _SEMANTIC_SUPPORT_SYSTEM_PROMPT,
+    _candidate,
 )
+from tests.domain.capabilities.test_answer_evaluation import _answer, _conflicting_answer
+from tests.domain.capabilities.test_answer_question_candidate import candidate_input
 from tests.application.test_semantic_support import request as semantic_request
 from tests.agents.test_answer_question_candidate_runtime import (
     candidate_context,
@@ -63,6 +68,112 @@ class _Artifacts:
     @staticmethod
     async def _bind_scope(*_: object) -> None:
         return None
+
+
+def test_configured_candidate_exposes_sentence_level_claims_for_conflict_validation() -> None:
+    value = candidate_input()
+    evidence_id = value.context_bundle.evidence_references[0].evidence_id
+
+    result = _candidate(
+        value,
+        "Alpha is enabled. Alpha is disabled!",
+        (evidence_id,),
+    )
+
+    assert [claim.text for claim in result.answer.claims] == [
+        "Alpha is enabled.",
+        "Alpha is disabled!",
+    ]
+    assert [claim.location.start_offset for claim in result.answer.claims] == [0, 18]
+    assert {item.claim_id for item in result.answer.relationships} == {
+        claim.claim_id for claim in result.answer.claims
+    }
+
+
+@pytest.mark.asyncio
+async def test_missing_coverage_validator_returns_versioned_immaterial_decision() -> None:
+    claim = _answer().claims[0]
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert "Prefer unknown when unsure" in payload["messages"][0]["content"]
+        user_payload = json.loads(payload["messages"][1]["content"])
+        assert user_payload["claim_id"] == str(claim.claim_id)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": json.dumps({"impact": "immaterial"})}}
+                ]
+            },
+        )
+
+    result = await ConfiguredMissingCoverageImpactValidator(
+        api_key="synthetic",
+        model="synthetic",
+        endpoint="https://example.invalid/v1",
+        transport=httpx.MockTransport(provider),
+    ).assess(
+        question="What is Alpha?",
+        claim=claim,
+        evidence=("Alpha evidence",),
+    )
+
+    assert result.impact is MissingCoverageImpact.IMMATERIAL
+    assert result.policy_version == "qa.missing-coverage-impact:r1"
+
+
+@pytest.mark.asyncio
+async def test_grounded_conflict_validator_uses_all_grounded_claims_and_evidence() -> None:
+    answer = _conflicting_answer()
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert "choose a winner" in payload["messages"][0]["content"]
+        claims = json.loads(payload["messages"][1]["content"])["claims"]
+        assert {item["claim_id"] for item in claims} == {
+            str(claim.claim_id) for claim in answer.claims
+        }
+        assert all(item["evidence"] for item in claims)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "conflicts": [
+                                        [
+                                            str(answer.claims[0].claim_id),
+                                            str(answer.claims[1].claim_id),
+                                        ]
+                                    ]
+                                }
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    result = await ConfiguredGroundedConflictValidator(
+        api_key="synthetic",
+        model="synthetic",
+        endpoint="https://example.invalid/v1",
+        transport=httpx.MockTransport(provider),
+    ).detect(
+        claims=answer.claims,
+        evidence={
+            answer.claims[0].claim_id: ("Alpha evidence",),
+            answer.claims[1].claim_id: ("Beta evidence",),
+        },
+    )
+
+    assert result.conflict_pairs == (
+        (answer.claims[0].claim_id, answer.claims[1].claim_id),
+    )
+    assert result.policy_version == "qa.grounded-conflict:r1"
 
 
 @pytest.mark.asyncio

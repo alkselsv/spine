@@ -27,6 +27,19 @@ const attemptId = '90000000-0000-4000-8000-000000000001';
 const claimId = 'a0000000-0000-4000-8000-000000000001';
 const relationshipId = 'b0000000-0000-4000-8000-000000000001';
 const citationId = 'c0000000-0000-4000-8000-000000000001';
+const protectedCompleteness = {
+  schema_version: 'answer-completeness-presentation:v1',
+  target_scope_id: 'e0000000-0000-4000-8000-000000000001',
+  target_scope_version: 'target-completeness-scope:v1',
+  observed_coverage_id: 'e0000000-0000-4000-8000-000000000002',
+  observed_coverage_version: 'observed-coverage:v1',
+  coverage_status: 'complete',
+  partiality_status: 'exhaustive',
+  conflict_status: 'none',
+  partial_fallback_authority: null,
+  serving_decision: 'serve',
+  validation_decision: 'complete',
+};
 
 function session(status: 'active' | 'archived' = 'active', version = 1) {
   return {
@@ -431,6 +444,7 @@ describe('final Chat experience', () => {
   it('test_revoked_citation_deep_link_shows_safe_hidden_message_state', async () => {
     const revokedMessage = message(null, null, 'answered', {
       accepted_presentation: null,
+      completeness: protectedCompleteness,
       disclosure_eligibility: 'ineligible',
     });
     vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (input, init) => {
@@ -461,6 +475,7 @@ describe('final Chat experience', () => {
     expect(await screen.findByText(ru.chat.messageContentHidden)).toBeVisible();
     expect(screen.queryByRole('region', { name: ru.status.failed.title })).toBeNull();
     expect(screen.queryByText('В разделе HR.')).toBeNull();
+    expect(document.body).not.toHaveTextContent(protectedCompleteness.target_scope_id);
   });
 
   it('test_archived_session_requires_restore_before_messages_are_loaded', async () => {
@@ -588,6 +603,18 @@ describe('final Chat experience', () => {
       expect(screen.queryByText('Кандидат ответа не должен появиться.')).not.toBeInTheDocument();
     },
   );
+
+  it('test_denied_message_hides_protected_completeness_details', async () => {
+    renderSessionMessages([
+      message('Вопрос', 'Скрытый кандидат.', 'denied', {
+        completeness: protectedCompleteness,
+      }),
+    ]);
+
+    expect(await screen.findByText('Доступ запрещён')).toBeVisible();
+    expect(document.body).not.toHaveTextContent(protectedCompleteness.target_scope_id);
+    expect(document.body).not.toHaveTextContent(protectedCompleteness.observed_coverage_id);
+  });
 
   it('test_answered_message_hides_answer_when_accepted_digest_does_not_match', async () => {
     const accepted = message('Вопрос', 'Чужой или изменённый ответ.');
