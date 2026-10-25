@@ -17,6 +17,8 @@ from spine.application.qa_run_history import (
     QARunHistoryRequester,
 )
 from spine.domain.common import ContextOrigin
+from tests.application.test_qa_completeness import _record
+from tests.domain.capabilities.test_answer_question_candidate import candidate_input
 
 
 SUBJECT_ID = UUID(int=536)
@@ -108,3 +110,45 @@ async def test_attempt_contexts_are_materialized_in_attempt_order() -> None:
     contexts = await service._contexts(uow, attempts)  # type: ignore[arg-type]
 
     assert contexts == tuple(resolved)
+
+
+@pytest.mark.asyncio
+async def test_revoked_attempt_hides_completeness_during_run_history_read() -> None:
+    record = _record()
+
+    class Disclosures:
+        async def resolve_for_attempt(self, **kwargs):
+            assert kwargs["attempt_id"] == record.attempt_id
+            return record
+
+    class Revalidator:
+        requests = []
+
+        async def revalidate(self, request):
+            self.requests.append(request)
+            return SimpleNamespace(can_disclose_content=False)
+
+    class TargetAuthorizer:
+        async def allows(self, target_scope):
+            del target_scope
+            raise AssertionError("revoked dependency must short-circuit target access")
+
+    revalidator = Revalidator()
+    service = PersistedQARunHistoryService(uow_factory=object())  # type: ignore[arg-type]
+
+    result = await service._completeness(
+        Disclosures(),  # type: ignore[arg-type]
+        run=SimpleNamespace(
+            run_id=record.run_id,
+            workspace_id=record.workspace_id,
+            environment_id=record.environment_id,
+        ),
+        attempts=(SimpleNamespace(attempt_id=record.attempt_id),),  # type: ignore[arg-type]
+        contexts=(candidate_input().context_bundle,),
+        requester=QARunHistoryRequester(subject_id=SUBJECT_ID),
+        revalidator=revalidator,
+        target_scope_authorizer=TargetAuthorizer(),
+    )
+
+    assert result == (None,)
+    assert len(revalidator.requests) == 1

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from collections.abc import Callable
 from typing import Protocol
 from uuid import UUID
 
@@ -18,6 +19,8 @@ from spine.application.persistence.errors import AnswerQuestionRunNotFoundError
 from spine.application.persistence.context import EnvironmentScope, TrustedPersistenceContext
 from spine.application.persistence.unit_of_work import UnitOfWorkFactory
 from spine.domain.capabilities import AnswerQuestionOutcome
+from spine.domain.capabilities import AnswerCompletenessPresentation
+from spine.application.qa_completeness import completeness_presentation
 from spine.domain.capabilities.answer_question_runs import (
     AnswerQuestionAttempt,
     AnswerQuestionRun,
@@ -103,6 +106,7 @@ class QARunDetail:
     contexts: tuple[ContextBundle | None, ...]
     accepted_evidence: tuple[QARunEvidence, ...]
     evidence_eligible: bool
+    completeness: tuple[AnswerCompletenessPresentation | None, ...] = ()
 
 
 class QARunHistoryService(Protocol):
@@ -129,12 +133,22 @@ class RunDisclosureRevalidator(Protocol):
     async def revalidate(self, request: DisclosureRevalidationRequest) -> object: ...
 
 
+class RunTargetScopeAuthorizer(Protocol):
+    async def allows(self, target_scope: object) -> bool: ...
+
+
 @dataclass(frozen=True, slots=True)
 class PersistedQARunHistoryService:
     """Project canonical run/attempt records without exposing protected content."""
 
     uow_factory: UnitOfWorkFactory
     disclosure_revalidator: RunDisclosureRevalidator | None = None
+    disclosure_revalidator_factory: (
+        Callable[[object, QARunHistoryRequester], RunDisclosureRevalidator] | None
+    ) = None
+    target_scope_authorizer_factory: (
+        Callable[[object, QARunHistoryRequester], RunTargetScopeAuthorizer] | None
+    ) = None
 
     async def list_runs(
         self,
@@ -200,12 +214,30 @@ class PersistedQARunHistoryService:
             attempts = await uow.answer_question_runs.list_attempts(run.run_id)
             link = await uow.answer_question_runs.resolve_message_link(run.run_id)
             contexts = await self._contexts(uow, attempts)
+            revalidator = self.disclosure_revalidator
+            if self.disclosure_revalidator_factory is not None:
+                revalidator = self.disclosure_revalidator_factory(uow, requester)
+            target_scope_authorizer = (
+                None
+                if self.target_scope_authorizer_factory is None
+                else self.target_scope_authorizer_factory(uow, requester)
+            )
             evidence, eligible = await self._accepted_evidence(
                 uow.answer_disclosures,
                 run=run,
                 attempts=attempts,
                 contexts=contexts,
                 requester=requester,
+                revalidator=revalidator,
+            )
+            completeness = await self._completeness(
+                uow.answer_disclosures,
+                run=run,
+                attempts=attempts,
+                contexts=contexts,
+                requester=requester,
+                revalidator=revalidator,
+                target_scope_authorizer=target_scope_authorizer,
             )
             await uow.commit()
         return QARunDetail(
@@ -215,6 +247,7 @@ class PersistedQARunHistoryService:
             contexts=contexts,
             accepted_evidence=evidence,
             evidence_eligible=eligible,
+            completeness=completeness,
         )
 
     async def _context(self, uow: object, attempt: AnswerQuestionAttempt) -> ContextBundle | None:
@@ -245,8 +278,9 @@ class PersistedQARunHistoryService:
         attempts: tuple[AnswerQuestionAttempt, ...],
         contexts: tuple[ContextBundle | None, ...],
         requester: QARunHistoryRequester,
+        revalidator: RunDisclosureRevalidator | None,
     ) -> tuple[tuple[QARunEvidence, ...], bool]:
-        if self.disclosure_revalidator is None:
+        if revalidator is None:
             return (), False
         for attempt, bundle in reversed(tuple(zip(attempts, contexts))):
             if bundle is None:
@@ -256,7 +290,7 @@ class PersistedQARunHistoryService:
                 continue
             try:
                 dependencies = DisclosureDependencySet.from_context_bundle(bundle)
-                result = await self.disclosure_revalidator.revalidate(
+                result = await revalidator.revalidate(
                     DisclosureRevalidationRequest(
                         request_id=record.request_id,
                         workspace_id=run.workspace_id,
@@ -290,6 +324,52 @@ class PersistedQARunHistoryService:
             except Exception:
                 return (), False
         return (), False
+
+    async def _completeness(
+        self,
+        disclosures: AnswerDisclosureRepository,
+        *,
+        run: AnswerQuestionRun,
+        attempts: tuple[AnswerQuestionAttempt, ...],
+        contexts: tuple[ContextBundle | None, ...],
+        requester: QARunHistoryRequester,
+        revalidator: RunDisclosureRevalidator | None,
+        target_scope_authorizer: RunTargetScopeAuthorizer | None,
+    ) -> tuple[AnswerCompletenessPresentation | None, ...]:
+        values = []
+        for attempt, bundle in zip(attempts, contexts, strict=True):
+            record = await _resolve_disclosure(disclosures, run, attempt)
+            if (
+                record is None
+                or bundle is None
+                or revalidator is None
+                or target_scope_authorizer is None
+            ):
+                values.append(None)
+                continue
+            try:
+                result = await revalidator.revalidate(
+                    DisclosureRevalidationRequest(
+                        request_id=record.request_id,
+                        workspace_id=run.workspace_id,
+                        environment_id=run.environment_id,
+                        requester_id=requester.subject_id,
+                        checkpoint=DisclosureRevalidationCheckpoint.BEFORE_HISTORY_READ,
+                        dependencies=DisclosureDependencySet.from_context_bundle(bundle),
+                        run_id=run.run_id,
+                        attempt_id=attempt.attempt_id,
+                        force_fresh=True,
+                    )
+                )
+                values.append(
+                    completeness_presentation(record)
+                    if getattr(result, "can_disclose_content", False) is True
+                    and await target_scope_authorizer.allows(record.target_scope)
+                    else None
+                )
+            except Exception:
+                values.append(None)
+        return tuple(values)
 
     @staticmethod
     def _validate(

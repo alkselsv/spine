@@ -9,6 +9,7 @@ import { useAuth } from '../../app/auth';
 import { ApiErrorPanel, StatusPanel } from '../../app/status';
 import { useScope, type Scope } from '../../app/scope';
 import { OperationalCorrelationPanel } from '../diagnostics/OperationalCorrelationPanel';
+import { CompletenessPresentation } from '../chat/CompletenessPresentation';
 import { ru } from '../../i18n/resources';
 import {
   isValidQARunId,
@@ -237,6 +238,21 @@ function AttemptCard({ attempt }: { attempt: QARunAttempt }) {
         <DetailValue label={ru.qaRuns.detail.latency} value={formatLatency(attempt.latency_ms)} />
         <DetailValue label={ru.qaRuns.detail.reason} value={attempt.reason ?? ru.qaRuns.detail.unknown} />
       </dl>
+      <CompletenessPresentation value={attempt.completeness ?? null} />
+      {attempt.completeness ? (
+        <dl className={`${styles.details} ${styles.completenessVersions}`}>
+          <DetailValue
+            label={ru.qaRuns.detail.targetScopeVersion}
+            value={`${attempt.completeness.target_scope_version} · ${attempt.completeness.target_scope_id}`}
+            code
+          />
+          <DetailValue
+            label={ru.qaRuns.detail.observedCoverageVersion}
+            value={`${attempt.completeness.observed_coverage_version} · ${attempt.completeness.observed_coverage_id}`}
+            code
+          />
+        </dl>
+      ) : null}
 
       <div className={styles.subGrid}>
         <section className={styles.subCard} aria-labelledby={`qa-run-attempt-${attempt.attempt_id}-versions`}>

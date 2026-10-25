@@ -31,13 +31,13 @@ from spine.domain.capabilities.answer_question_runs import AnswerQuestionRunStat
 
 QA_ASK_ADMISSION_OPERATION = PersistenceOperation("qa.ask-admission-cancellation")
 QA_ASK_LEGACY_OPERATION = PersistenceOperation("qa.ask")
-QA_ASK_ADMISSION_SCHEMA_VERSION = 2
+QA_ASK_ADMISSION_SCHEMA_VERSION = 3
 QA_ASK_ADMISSION_RESULT_TYPE = "qa_ask_admission"
 QA_ASK_ADMISSION_EVENT_TYPE = "qa.ask-admitted"
 QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION = 2
 QA_ASK_CANCELLATION_EVENT_TYPE = "qa.ask-cancellation-requested"
 QA_ASK_CANCELLATION_EVENT_SCHEMA_VERSION = 1
-QA_ASK_ADMISSION_REQUEST_SCHEMA = "qa.ask-admission-request:v2"
+QA_ASK_ADMISSION_REQUEST_SCHEMA = "qa.ask-admission-request:v3"
 ASK_CAPTURE_SUBSCRIPTION_SCHEMA = "r1-qa-observer-subscription:v1"
 
 
@@ -70,13 +70,16 @@ def ask_admission_metadata_schema_version(
     capture_id: UUID | None,
     capture_subscription: AskCaptureSubscription | None = None,
     authorization_generation: int | None = None,
+    *,
+    completeness_intent_versioned: bool = False,
 ) -> int:
     """Version opaque observer routing while retaining v1/v2 history support."""
 
     offset = 3 if authorization_generation is not None else 0
-    if capture_subscription is not None:
-        return 3 + offset
-    return (2 if capture_id is not None else 1) + offset
+    base = 3 + offset if capture_subscription is not None else (
+        2 if capture_id is not None else 1
+    ) + offset
+    return base + (6 if completeness_intent_versioned else 0)
 
 
 class AskCancellationDispatchPayload(BaseModel):
@@ -107,6 +110,7 @@ class AskAdmissionDispatchPayload(BaseModel):
     authorization_generation: int | None = Field(default=None, ge=1)
     capture_id: UUID | None = None
     capture_subscription: AskCaptureSubscription | None = None
+    allow_partial_answer: bool | None = None
     schema_version: int = Field(default=1, gt=0)
 
     @field_validator("capture_id")
@@ -118,12 +122,16 @@ class AskAdmissionDispatchPayload(BaseModel):
 
     @model_validator(mode="after")
     def validate_payload_version(self) -> "AskAdmissionDispatchPayload":
+        versioned_completeness = self.schema_version >= 7
         if self.schema_version != ask_admission_metadata_schema_version(
             self.capture_id,
             self.capture_subscription,
             self.authorization_generation,
+            completeness_intent_versioned=versioned_completeness,
         ):
             raise ValueError("Ask admission dispatch payload version is invalid")
+        if not versioned_completeness and self.allow_partial_answer is not None:
+            raise ValueError("legacy Ask admission payload cannot carry completeness intent")
         if self.capture_subscription is not None and (
             self.capture_subscription.capture_id != self.capture_id
         ):
@@ -147,6 +155,7 @@ class AskAdmissionCommand:
     clarification_of_message_id: UUID | None = None
     capture_id: UUID | None = None
     capture_subscription: AskCaptureSubscription | None = None
+    allow_partial_answer: bool | None = None
 
     def __post_init__(self) -> None:
         identifiers = (
@@ -186,6 +195,7 @@ class AskAdmissionCommand:
         clarification_of_message_id: UUID | None = None,
         capture_id: UUID | None = None,
         capture_subscription: AskCaptureSubscription | None = None,
+        allow_partial_answer: bool | None = None,
         authorization_generation: int,
     ) -> "AskAdmissionCommand":
         digest = digest_command(
@@ -202,6 +212,7 @@ class AskAdmissionCommand:
                 "clarification_of_message_id": clarification_of_message_id,
                 "idempotency_key": idempotency_key.value,
                 "authorization_generation": authorization_generation,
+                "allow_partial_answer": allow_partial_answer,
             },
         )
         return cls(
@@ -217,6 +228,7 @@ class AskAdmissionCommand:
             clarification_of_message_id=clarification_of_message_id,
             capture_id=capture_id,
             capture_subscription=capture_subscription,
+            allow_partial_answer=allow_partial_answer,
         )
 
 

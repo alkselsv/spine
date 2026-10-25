@@ -2192,6 +2192,23 @@ class _PostgreSQLCanonicalAcceptanceRepository:
         ).mappings().one_or_none()
         return self._head(row) if row is not None else None
 
+    async def list_current(self) -> tuple[CurrentSourceHead, ...]:
+        self._uow._guard_active()
+        scope = self._uow.scope
+        if not isinstance(scope, EnvironmentScope):
+            return ()
+        rows = (
+            await self._uow._execute(
+                select(_CURRENT_SOURCE_HEADS)
+                .where(
+                    _CURRENT_SOURCE_HEADS.c.workspace_id == scope.workspace_id,
+                    _CURRENT_SOURCE_HEADS.c.environment_id == scope.environment_id,
+                )
+                .order_by(_CURRENT_SOURCE_HEADS.c.source_object_id)
+            )
+        ).mappings().all()
+        return tuple(self._head(row) for row in rows)
+
     async def resolve_acceptance(
         self, canonical_acceptance_id: UUID
     ) -> CanonicalAcceptance | None:

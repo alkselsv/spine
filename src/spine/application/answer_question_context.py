@@ -130,6 +130,7 @@ class AnswerQuestionContextRequest(ValidatedDefinitionModel):
     trusted_request_context_ref: UUID
     authorization_context_ref: UUID
     idempotency_key: str = Field(min_length=1, max_length=256)
+    allow_partial_answer: bool | None = None
     cancelled: bool = False
     capture_context: AuthorizedContextCaptureContext | None = None
 
@@ -246,6 +247,7 @@ class AnswerQuestionContextService:
                 correlation_id=request.question.correlation.correlation_id,
                 causation_id=request.question.correlation.causation_id,
             ),
+            allow_partial_answer=request.allow_partial_answer,
             cancelled=request.cancelled,
         )
         broker_capture = None

@@ -832,6 +832,54 @@ export interface components {
          */
         AnswerClaimKind: "factual" | "derived";
         /**
+         * AnswerCompletenessPresentation
+         * @description Stable codes and opaque version identities; never source membership/counts.
+         */
+        AnswerCompletenessPresentation: {
+            conflict_status: components["schemas"]["GroundedConflictStatus"];
+            coverage_status: components["schemas"]["CoverageEvaluationStatus"];
+            /**
+             * Observed Coverage Id
+             * Format: uuid
+             */
+            observed_coverage_id: string;
+            /**
+             * Observed Coverage Version
+             * @constant
+             */
+            observed_coverage_version: "observed-coverage:v1";
+            partial_fallback_authority?: components["schemas"]["PartialFallbackAuthority"] | null;
+            partiality_status: components["schemas"]["AnswerPartialityStatus"];
+            /**
+             * Schema Version
+             * @default answer-completeness-presentation:v1
+             * @constant
+             */
+            schema_version: "answer-completeness-presentation:v1";
+            serving_decision: components["schemas"]["AnswerServingDecisionCode"];
+            /**
+             * Target Scope Id
+             * Format: uuid
+             */
+            target_scope_id: string;
+            /**
+             * Target Scope Version
+             * @constant
+             */
+            target_scope_version: "target-completeness-scope:v1";
+            validation_decision: components["schemas"]["AnswerEvaluationSafeReason"];
+        };
+        /**
+         * AnswerEvaluationSafeReason
+         * @enum {string}
+         */
+        AnswerEvaluationSafeReason: "complete" | "partial_authorized" | "claim_rejected" | "incomplete_authorized_coverage" | "coverage_not_proven" | "grounded_conflict" | "precedence_applied";
+        /**
+         * AnswerPartialityStatus
+         * @enum {string}
+         */
+        AnswerPartialityStatus: "exhaustive" | "partial" | "none";
+        /**
          * AnswerQuestionOutcome
          * @description The complete and closed set of terminal Q&A outcomes.
          * @enum {string}
@@ -843,6 +891,11 @@ export interface components {
          * @enum {string}
          */
         AnswerQuestionSafeReasonCode: "ambiguous_question" | "no_usable_evidence" | "insufficient_support" | "unresolved_conflict" | "incomplete_authorized_coverage" | "unmet_freshness" | "evidence_invalidated" | "rejected_candidate" | "authorization_denied" | "mandatory_processing_failed" | "cancelled";
+        /**
+         * AnswerServingDecisionCode
+         * @enum {string}
+         */
+        AnswerServingDecisionCode: "serve" | "withhold";
         /** ApiCollectionEnvelope[DocumentProcessingHistoryResponse] */
         ApiCollectionEnvelope_DocumentProcessingHistoryResponse_: {
             /**
@@ -1685,6 +1738,8 @@ export interface components {
         };
         /** AuthorizedAskRequest */
         AuthorizedAskRequest: {
+            /** Allow Partial Answer */
+            allow_partial_answer?: boolean | null;
             /** Clarification Of Message Id */
             clarification_of_message_id?: string | null;
             /** Question */
@@ -2089,6 +2144,11 @@ export interface components {
             /** Source Schema Version */
             source_schema_version: string;
         };
+        /**
+         * CoverageEvaluationStatus
+         * @enum {string}
+         */
+        CoverageEvaluationStatus: "complete" | "insufficient" | "unproven";
         /** CreateQAMessageRequest */
         CreateQAMessageRequest: {
             /** Question */
@@ -2322,6 +2382,11 @@ export interface components {
          * @enum {string}
          */
         FeedbackTargetKind: "answer" | "citation";
+        /**
+         * GroundedConflictStatus
+         * @enum {string}
+         */
+        GroundedConflictStatus: "none" | "presented" | "resolved_by_precedence";
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -3006,6 +3071,11 @@ export interface components {
             text_digest: string;
         };
         /**
+         * PartialFallbackAuthority
+         * @enum {string}
+         */
+        PartialFallbackAuthority: "current_request" | "accepted_preference";
+        /**
          * PhysicalLineLocator
          * @description A half-open raw Unicode code-point range on one physical line.
          */
@@ -3360,6 +3430,8 @@ export interface components {
          * @description Versioned request model for the durable admission operation.
          */
         QAAskAdmissionRequestV1: {
+            /** Allow Partial Answer */
+            allow_partial_answer?: boolean | null;
             /** Clarification Of Message Id */
             clarification_of_message_id?: string | null;
             /** Question */
@@ -3449,6 +3521,7 @@ export interface components {
             answer: string | null;
             /** Cancelled */
             cancelled: boolean;
+            completeness?: components["schemas"]["AnswerCompletenessPresentation"] | null;
             /**
              * Created At
              * Format: date-time
@@ -3548,6 +3621,7 @@ export interface components {
             attempt_number: number;
             /** Completed At */
             completed_at: string | null;
+            completeness?: components["schemas"]["AnswerCompletenessPresentation"] | null;
             context: components["schemas"]["QARunContextResponse"] | null;
             /** Context Bundle Digest */
             context_bundle_digest: string | null;

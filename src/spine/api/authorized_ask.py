@@ -79,6 +79,7 @@ class AuthorizedAskRequest(BaseModel):
     session_id: UUID
     question: str = Field(min_length=1, max_length=_MAX_TEXT_LENGTH)
     clarification_of_message_id: UUID | None = None
+    allow_partial_answer: bool | None = None
 
     @field_validator("question")
     @classmethod
@@ -257,6 +258,7 @@ def install_authorized_ask_routes(
                         request.headers.getlist("Idempotency-Key")
                     ),
                     clarification_of_message_id=body.clarification_of_message_id,
+                    allow_partial_answer=body.allow_partial_answer,
                     authorization_generation=request_context.authorization_generation,
                 ),
             )
@@ -321,6 +323,7 @@ def install_authorized_ask_routes(
                     session_id=body.session_id,
                     question=body.question,
                     clarification_of_message_id=body.clarification_of_message_id,
+                    allow_partial_answer=body.allow_partial_answer,
                     idempotency_key=_idempotency(
                         request.headers.getlist("Idempotency-Key")
                     ),
@@ -569,6 +572,7 @@ def install_qa_observer_admission_route(
                         request.headers.getlist(_IDEMPOTENCY_HEADER)
                     ),
                     clarification_of_message_id=body.clarification_of_message_id,
+                    allow_partial_answer=body.allow_partial_answer,
                     authorization_generation=request_context.authorization_generation,
                 ),
             )

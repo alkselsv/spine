@@ -20,6 +20,7 @@ import {
   type QAMessage,
 } from './session-api';
 import { AcceptedAnswer } from './AcceptedAnswer';
+import { CompletenessPresentation } from './CompletenessPresentation';
 import { AskComposer } from './AskComposer';
 import { AskCancellationControl } from './AskCancellationControl';
 import { DiagnosticChatPanel, type DiagnosticChatPanelProps } from './DiagnosticChatPanel';
@@ -641,6 +642,14 @@ function MessageCard({
         <time dateTime={message.created_at}>{formatDate(new Date(message.created_at))}</time>
         <span>{messageStateLabel(message)}</span>
       </div>
+      <CompletenessPresentation
+        value={
+          message.disclosure_eligibility === 'eligible'
+          && message.terminal_outcome !== 'denied'
+            ? message.completeness ?? null
+            : null
+        }
+      />
       {message.disclosure_eligibility === 'ineligible' ? (
         <p className={styles.protectedNotice}>{ru.chat.messageContentHidden}</p>
       ) : (

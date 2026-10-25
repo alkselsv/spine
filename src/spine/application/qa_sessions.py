@@ -30,10 +30,12 @@ from spine.application.persistence.answer_disclosure import AnswerDisclosureRepo
 from spine.application.persistence.answer_question_runs import AnswerQuestionRunRepository
 from spine.domain.capabilities import AnswerDisclosureRecord, AnswerQuestionOutcome
 from spine.domain.capabilities import (
+    AnswerCompletenessPresentation,
     AcceptedAnswerClaimPresentation,
     AcceptedAnswerPresentation,
     AcceptedAnswerRelationshipPresentation,
 )
+from spine.application.qa_completeness import completeness_presentation
 from spine.domain.capabilities.answer_question_runs import AnswerQuestionRunState
 from spine.domain.disclosure import DisclosureDependencySet
 from spine.domain.qa_sessions import QAMessage, QAMessageDisclosureEligibility, QAMessageState, QASession
@@ -126,6 +128,7 @@ class QAMessageRead:
     accepted_presentation: AcceptedAnswerPresentation | None
     created_at: datetime
     updated_at: datetime
+    completeness: AnswerCompletenessPresentation | None = None
 
 
 class QASessionRepository(Protocol):
@@ -572,6 +575,11 @@ class PersistedQASessionService:
         question = message.question if allowed else None
         answer = message.answer if allowed else None
         accepted_presentation = None
+        completeness = (
+            await self._completeness_presentation(message)
+            if allowed and message.terminal_outcome is not AnswerQuestionOutcome.DENIED
+            else None
+        )
         if allowed and message.answer is not None:
             if message.run_id is None:
                 eligibility = QAMessageDisclosureEligibility.INELIGIBLE
@@ -584,6 +592,7 @@ class PersistedQASessionService:
                     question = None
                     answer = None
                     accepted_presentation = None
+                    completeness = None
         return QAMessageRead(
             message_id=message.message_id,
             session_id=message.session_id,
@@ -600,6 +609,7 @@ class PersistedQASessionService:
             question=question,
             answer=answer,
             accepted_presentation=accepted_presentation,
+            completeness=completeness,
             created_at=message.created_at,
             updated_at=message.updated_at,
         )
@@ -669,6 +679,42 @@ class PersistedQASessionService:
             raise
         except Exception:
             raise QAMessagePresentationUnavailable() from None
+
+    async def _completeness_presentation(
+        self, message: QAMessage
+    ) -> AnswerCompletenessPresentation | None:
+        """Restore only independently disclosure-safe decision codes."""
+
+        if (
+            message.run_id is None
+            or self.answer_question_runs is None
+            or self.answer_disclosures is None
+        ):
+            return None
+        try:
+            run = await self.answer_question_runs.resolve_run_in_scope(
+                workspace_id=message.workspace_id,
+                environment_id=message.environment_id,
+                run_id=message.run_id,
+            )
+            if run.final_attempt_id is None:
+                return None
+            link = await self.repository.resolve_message_link(
+                workspace_id=message.workspace_id,
+                environment_id=message.environment_id,
+                run_id=message.run_id,
+            )
+            if link != (message.session_id, message.message_id):
+                return None
+            record = await self.answer_disclosures.resolve_for_attempt(
+                workspace_id=message.workspace_id,
+                environment_id=message.environment_id,
+                run_id=message.run_id,
+                attempt_id=run.final_attempt_id,
+            )
+            return completeness_presentation(record)
+        except Exception:
+            return None
 
 
 def _scope(context: TrustedPersistenceContext) -> tuple[UUID, UUID]:

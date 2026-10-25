@@ -841,8 +841,10 @@ async def test_canonical_rejects_stale_expected_current_without_success_effect(
             await uow.canonical.accept(stale)
     async with persistence_adapter.uow_factory(case.context) as uow:
         current = await uow.canonical.resolve_current(case.source.source_object_id)
+        current_scope = await uow.canonical.list_current()
         await uow.rollback()
     assert current == first.current
+    assert current_scope == (first.current,)
 
 
 @pytest.mark.asyncio

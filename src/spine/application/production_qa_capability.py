@@ -24,10 +24,12 @@ from spine.application.answer_question_context import (
 )
 from spine.application.answer_question_execution import (
     AnswerQuestionExecutionBoundary,
+    AnswerQuestionExecutionIntent,
     AnswerQuestionExecutionRequest,
 )
 from spine.application.answer_outcomes import AnswerOutcomeFacts, resolve_answer_outcome
 from spine.application.citation_validation import (
+    CitationValidationOutcome,
     CitationValidationReasonCode,
     CitationValidationService,
     RejectedCitation,
@@ -77,10 +79,18 @@ from spine.domain.capabilities.answer_question_execution import (
     AnswerQuestionExecutionPin,
 )
 from spine.domain.capabilities.answer_question_runs import AgentResultRef
-from spine.domain.capabilities.answer_evaluation import AnswerEvaluationDecision
+from spine.domain.capabilities.answer_evaluation import (
+    AnswerEvaluationDecision,
+    GroundedConflict,
+    GroundedClaimAssessment,
+    ObservedCoverage,
+    PartialFallbackAuthorization,
+    TargetCompletenessScope,
+)
 from spine.domain.capabilities.semantic_support import (
     SemanticSupportOutcome,
     SemanticSupportRequest,
+    SemanticSupportResult,
 )
 from spine.application.semantic_support import SemanticSupportValidationService
 from spine.application.answer_question_candidate import (
@@ -329,6 +339,18 @@ class AnswerQuestionValidationPlan:
     evaluation: AnswerEvaluationDecision | None
 
 
+@dataclass(frozen=True, slots=True)
+class AnswerQuestionEvaluationLineage:
+    """Immutable evaluator inputs and decision for one exact attempt."""
+
+    target_scope: TargetCompletenessScope
+    observed_coverage: ObservedCoverage
+    partial_fallback: PartialFallbackAuthorization | None
+    claim_assessments: tuple[GroundedClaimAssessment, ...]
+    conflicts: tuple[GroundedConflict, ...]
+    decision: AnswerEvaluationDecision
+
+
 class AnswerQuestionValidationPlanProvider(Protocol):
     """Resolve current authorization and semantic inputs without retrieval."""
 
@@ -339,6 +361,16 @@ class AnswerQuestionValidationPlanProvider(Protocol):
         authorized_context: AnswerQuestionAuthorizedContext,
         candidate: AnswerQuestionCandidateOutput,
     ) -> AnswerQuestionValidationPlan: ...
+
+    async def evaluate(
+        self,
+        *,
+        question: AnswerQuestionInput,
+        authorized_context: AnswerQuestionAuthorizedContext,
+        candidate: AnswerQuestionCandidateOutput,
+        citation_results: tuple[CitationValidationOutcome, ...],
+        semantic_results: tuple[SemanticSupportResult, ...],
+    ) -> AnswerQuestionEvaluationLineage: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -385,6 +417,18 @@ class ExistingAnswerQuestionCandidateValidator:
                 for request in plan.semantic_requests
             ]
         )
+        evaluation_lineage = None
+        evaluate = getattr(self.plans, "evaluate", None)
+        if callable(evaluate):
+            evaluation_lineage = await evaluate(
+                question=question,
+                authorized_context=authorized_context,
+                candidate=candidate,
+                citation_results=citation_results,
+                semantic_results=semantic_results,
+            )
+            if type(evaluation_lineage) is not AnswerQuestionEvaluationLineage:
+                raise ValueError("answer evaluation lineage is invalid")
         return AnswerOutcomeFacts(
             question=question,
             retrieval_outcome=RetrievalOutcome.EVIDENCE_AVAILABLE,
@@ -392,7 +436,32 @@ class ExistingAnswerQuestionCandidateValidator:
             candidate=candidate,
             citation_results=citation_results,
             semantic_results=semantic_results,
-            evaluation=plan.evaluation,
+            evaluation=(
+                plan.evaluation
+                if evaluation_lineage is None
+                else evaluation_lineage.decision
+            ),
+            target_scope=(
+                None if evaluation_lineage is None else evaluation_lineage.target_scope
+            ),
+            observed_coverage=(
+                None
+                if evaluation_lineage is None
+                else evaluation_lineage.observed_coverage
+            ),
+            partial_fallback=(
+                None
+                if evaluation_lineage is None
+                else evaluation_lineage.partial_fallback
+            ),
+            claim_assessments=(
+                ()
+                if evaluation_lineage is None
+                else evaluation_lineage.claim_assessments
+            ),
+            conflicts=(
+                () if evaluation_lineage is None else evaluation_lineage.conflicts
+            ),
         )
 
 
@@ -409,12 +478,15 @@ class ProductionAnswerQuestionCapability:
     disclosure_environment: EnvironmentKind = EnvironmentKind.PRODUCTION
 
     def _execution_request(
-        self, question: AnswerQuestionInput
+        self, question: AnswerQuestionInput, allow_partial_answer: bool | None
     ) -> AnswerQuestionExecutionRequest:
         return AnswerQuestionExecutionRequest(
             workspace_id=question.scope.workspace_id,
             environment_id=question.scope.environment_id,
             environment=self.disclosure_environment,
+            intent=AnswerQuestionExecutionIntent(
+                allow_partial_answer=allow_partial_answer
+            ),
         )
 
     async def answer(
@@ -456,7 +528,9 @@ class ProductionAnswerQuestionCapability:
                     subscription=command.capture_subscription,
                     question=request.question,
                 )
-            execution_request = self._execution_request(request.question)
+            execution_request = self._execution_request(
+                request.question, request.allow_partial_answer
+            )
             _, pin = self.execution.resolve(execution_request)
             if command.execution_pin is not None and command.execution_pin != pin:
                 # The allocated pin is canonical. Do not retrieve under a newly
@@ -475,6 +549,7 @@ class ProductionAnswerQuestionCapability:
                     trusted_request_context_ref=request.references.trusted_request_context_ref,
                     authorization_context_ref=request.references.authorization_context_ref,
                     idempotency_key=request.idempotency_key,
+                    allow_partial_answer=request.allow_partial_answer,
                     cancelled=command.cancelled,
                     capture_context=capture_context,
                 )
@@ -929,6 +1004,7 @@ class ProductionAnswerQuestionCapability:
             idempotency_key=key,
             command_id=command_id,
             references=None,
+            allow_partial_answer=command.allow_partial_answer,
         )
 
     def _failed(
@@ -1002,6 +1078,7 @@ class _CapabilityRequest:
     idempotency_key: str
     command_id: UUID
     references: AnswerQuestionContextReferences | None
+    allow_partial_answer: bool | None
 
 
 def _validator_unavailable(facts: AnswerOutcomeFacts) -> bool:
@@ -1022,6 +1099,7 @@ __all__ = [
     "AnswerQuestionContextReferences",
     "AnswerQuestionRunCanceller",
     "AnswerQuestionValidationPlan",
+    "AnswerQuestionEvaluationLineage",
     "AnswerQuestionValidationPlanProvider",
     "CandidateInputArtifactWriter",
     "ExistingAnswerQuestionCandidateValidator",

@@ -28,17 +28,26 @@ from spine.domain.capabilities.answer_question import (
     AnswerQuestionSafeReason,
     AnswerQuestionSafeReasonCode,
 )
+from spine.domain.capabilities.answer_evaluation import (
+    AnswerEvaluationDecision,
+    GroundedConflict,
+    GroundedClaimAssessment,
+    ObservedCoverage,
+    PartialFallbackAuthorization,
+    TargetCompletenessScope,
+)
 from spine.domain.capabilities.answer_question_execution import AnswerQuestionExecutionPin
 from spine.domain.capabilities.answer_question_runs import AgentResultRef
 from spine.domain.common import DefinitionModel
 from spine.domain.context_bundles import ContextBundleRef
 
 
-ANSWER_DISCLOSURE_REQUEST_SCHEMA = "answer-disclosure-request:v1"
+ANSWER_DISCLOSURE_REQUEST_SCHEMA = "answer-disclosure-request:v3"
 ANSWER_DISCLOSURE_DECISION_SCHEMA = "answer-disclosure-decision:v1"
 ACCEPTED_GROUNDED_ANSWER_SCHEMA = "accepted-grounded-answer:v1"
 ANSWER_DISCLOSURE_RECORD_SCHEMA = "answer-disclosure-record:v1"
 ANSWER_DISCLOSURE_RECORD_V2_SCHEMA = "answer-disclosure-record:v2"
+ANSWER_DISCLOSURE_RECORD_V3_SCHEMA = "answer-disclosure-record:v3"
 ANSWER_EXECUTION_CHECKPOINT_SCHEMA = "answer-execution-checkpoint:v1"
 _DIGEST = r"^[0-9a-f]{64}$"
 
@@ -198,10 +207,15 @@ class AnswerDisclosureRequest(DefinitionModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["answer-disclosure-request:v1"] = ANSWER_DISCLOSURE_REQUEST_SCHEMA
+    schema_version: Literal["answer-disclosure-request:v3"] = ANSWER_DISCLOSURE_REQUEST_SCHEMA
     request_id: UUID
     decision: AnswerOutcomeDecisionInput
     current_eligibility: CurrentDisclosureEligibility | None = None
+    target_scope: TargetCompletenessScope | None = None
+    observed_coverage: ObservedCoverage | None = None
+    partial_fallback: PartialFallbackAuthorization | None = None
+    claim_assessments: tuple[GroundedClaimAssessment, ...] = ()
+    conflicts: tuple[GroundedConflict, ...] = ()
 
     @property
     def command_digest(self) -> str:
@@ -220,6 +234,42 @@ class AnswerDisclosureRequest(DefinitionModel):
             candidate = self.decision.candidate
             if candidate.question != self.decision.question:
                 raise ValueError("candidate question does not match disclosure request")
+        lineage = (self.target_scope, self.observed_coverage)
+        if any(value is not None for value in lineage):
+            if any(value is None for value in lineage):
+                raise ValueError("answer evaluation lineage must be complete")
+            assert self.target_scope is not None
+            assert self.observed_coverage is not None
+            if self.decision.evaluation is None:
+                raise ValueError("answer evaluation lineage must include its decision")
+            assessed_claim_ids = tuple(item.claim_id for item in self.claim_assessments)
+            if (
+                not assessed_claim_ids
+                or len(set(assessed_claim_ids)) != len(assessed_claim_ids)
+                or self.target_scope.boundary != self.observed_coverage.boundary
+                or self.target_scope.boundary != self.decision.evaluation.boundary
+                or self.target_scope.target_scope_id
+                != self.decision.evaluation.target_scope_id
+                or self.observed_coverage.observed_coverage_id
+                != self.decision.evaluation.observed_coverage_id
+                or any(item.boundary != self.target_scope.boundary for item in self.conflicts)
+                or any(
+                    item.boundary != self.target_scope.boundary
+                    for item in self.claim_assessments
+                )
+                or not set(self.decision.evaluation.disclosable_claim_ids).issubset(
+                    assessed_claim_ids
+                )
+                or any(
+                    not set(item.claim_ids).issubset(assessed_claim_ids)
+                    for item in self.conflicts
+                )
+                or (
+                    self.partial_fallback is not None
+                    and self.partial_fallback.boundary != self.target_scope.boundary
+                )
+            ):
+                raise ValueError("answer evaluation lineage has mixed boundaries")
         return self
 
 
@@ -409,11 +459,61 @@ class AnswerDisclosureRecordV2(AnswerDisclosureRecord):
         )
 
 
+class AnswerDisclosureRecordV3(AnswerDisclosureRecordV2):
+    """Disclosure v3 persists immutable completeness and conflict decisions."""
+
+    schema_version: Literal["answer-disclosure-record:v3"] = (
+        ANSWER_DISCLOSURE_RECORD_V3_SCHEMA
+    )
+    target_scope: TargetCompletenessScope
+    observed_coverage: ObservedCoverage
+    partial_fallback: PartialFallbackAuthorization | None = None
+    claim_assessments: tuple[GroundedClaimAssessment, ...] = ()
+    conflicts: tuple[GroundedConflict, ...] = ()
+    evaluation: AnswerEvaluationDecision
+
+    @model_validator(mode="after")
+    def validate_evaluation_lineage(self) -> "AnswerDisclosureRecordV3":
+        boundary = self.target_scope.boundary
+        assessed_claim_ids = tuple(item.claim_id for item in self.claim_assessments)
+        if (
+            not assessed_claim_ids
+            or len(set(assessed_claim_ids)) != len(assessed_claim_ids)
+            or self.observed_coverage.boundary != boundary
+            or self.evaluation.boundary != boundary
+            or self.target_scope.target_scope_id != self.evaluation.target_scope_id
+            or self.observed_coverage.observed_coverage_id
+            != self.evaluation.observed_coverage_id
+            or boundary.workspace_id != self.workspace_id
+            or boundary.environment_id != self.environment_id
+            or boundary.run_id != self.run_id
+            or boundary.attempt_id != self.attempt_id
+            or any(item.boundary != boundary for item in self.conflicts)
+            or any(item.boundary != boundary for item in self.claim_assessments)
+            or not set(self.evaluation.disclosable_claim_ids).issubset(
+                assessed_claim_ids
+            )
+            or any(
+                not set(item.claim_ids).issubset(assessed_claim_ids)
+                for item in self.conflicts
+            )
+            or (
+                self.partial_fallback is not None
+                and self.partial_fallback.boundary != boundary
+            )
+        ):
+            raise ValueError("persisted answer evaluation lineage is inconsistent")
+        return self
+
+
 def parse_answer_disclosure_record(payload: object) -> AnswerDisclosureRecord:
     """Restore either persisted disclosure schema while preserving v1 reads."""
 
-    if isinstance(payload, dict) and payload.get("schema_version") == ANSWER_DISCLOSURE_RECORD_V2_SCHEMA:
-        return AnswerDisclosureRecordV2.model_validate(payload)
+    if isinstance(payload, dict):
+        if payload.get("schema_version") == ANSWER_DISCLOSURE_RECORD_V3_SCHEMA:
+            return AnswerDisclosureRecordV3.model_validate(payload)
+        if payload.get("schema_version") == ANSWER_DISCLOSURE_RECORD_V2_SCHEMA:
+            return AnswerDisclosureRecordV2.model_validate(payload)
     return AnswerDisclosureRecord.model_validate(payload)
 
 
@@ -562,11 +662,13 @@ __all__ = [
     "ACCEPTED_GROUNDED_ANSWER_SCHEMA",
     "ANSWER_DISCLOSURE_DECISION_SCHEMA",
     "ANSWER_DISCLOSURE_RECORD_SCHEMA",
+    "ANSWER_DISCLOSURE_RECORD_V3_SCHEMA",
     "ANSWER_DISCLOSURE_REQUEST_SCHEMA",
     "AcceptedAnswer",
     "AcceptedGroundedAnswer",
     "AnswerDisclosureDecision",
     "AnswerDisclosureRequest",
+    "AnswerDisclosureRecordV3",
     "AnswerDisclosureRecord",
     "AnswerDisclosureValidation",
     "CurrentDisclosureEligibility",

@@ -83,6 +83,7 @@ class AskAdmissionWorkflowInput(BaseModel):
     causation_id: UUID | None = None
     capture_id: UUID | None = None
     capture_subscription: AskCaptureSubscription | None = None
+    allow_partial_answer: bool | None = None
 
     def model_post_init(self, __context: object) -> None:
         del __context
@@ -104,12 +105,16 @@ class AskAdmissionWorkflowInput(BaseModel):
             value = getattr(self, field_name)
             if value is not None:
                 _require_id(value, field_name)
+        versioned_completeness = self.schema_version >= 7
         if self.schema_version != ask_admission_metadata_schema_version(
             self.capture_id,
             self.capture_subscription,
             self.authorization_generation,
+            completeness_intent_versioned=versioned_completeness,
         ):
             raise ValueError("Ask workflow input version is invalid")
+        if not versioned_completeness and self.allow_partial_answer is not None:
+            raise ValueError("legacy Ask workflow input cannot carry completeness intent")
         if self.capture_subscription is not None and (
             self.capture_subscription.capture_id != self.capture_id
         ):
@@ -123,7 +128,7 @@ class AskAdmissionWorkflowInput(BaseModel):
             or intent.schema_version != QA_ASK_ADMISSION_EVENT_SCHEMA_VERSION
             or intent.environment_id is None
             or type(intent.payload) is not AskAdmissionDispatchPayload
-            or intent.payload.schema_version not in {4, 5, 6}
+            or intent.payload.schema_version not in {4, 5, 6, 10, 11, 12}
             or intent.aggregate is None
             or intent.aggregate.object_type != "answer_question_run"
         ):
@@ -152,6 +157,7 @@ class AskAdmissionWorkflowInput(BaseModel):
             causation_id=intent.event_id,
             capture_id=payload.capture_id,
             capture_subscription=payload.capture_subscription,
+            allow_partial_answer=payload.allow_partial_answer,
             schema_version=payload.schema_version,
         )
 
@@ -503,6 +509,7 @@ class AskAdmissionWorkflowExecutor:
                 idempotency_key=IdempotencyKey(command.idempotency_key),
                 logical_execution_key=f"durable-ask:{workflow_input.command_id}",
                 capture_subscription=workflow_input.capture_subscription,
+                allow_partial_answer=workflow_input.allow_partial_answer,
             )
         )
         finished_at = self._monotonic_ns() if started_at is not None else None
@@ -619,6 +626,7 @@ class AskAdmissionWorkflowExecutor:
                 question=command.question,
                 idempotency_key=IdempotencyKey(command.idempotency_key),
                 logical_execution_key=f"durable-ask:{workflow_input.command_id}",
+                allow_partial_answer=workflow_input.allow_partial_answer,
                 cancelled=True,
             )
         )

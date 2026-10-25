@@ -20,6 +20,7 @@ from spine.domain.capabilities import (
     ClaimEvidenceRelationship,
     ClaimEvidenceRelationshipKind,
     ClaimAuthorizationStatus,
+    CanonicalViewMember,
     ClaimEvidenceValidation,
     ClaimGroundingStatus,
     CoverageMemberStatus,
@@ -271,6 +272,18 @@ def _target() -> TargetCompletenessScope:
         target_scope_id=TARGET,
         boundary=_boundary(),
         derivation_reference=UUID(int=30),
+        canonical_view_reference=UUID(int=32),
+        canonical_view_digest="e" * 64,
+        canonical_view_generation=1,
+        canonical_view_members=(
+            CanonicalViewMember(
+                source_object_id=SOURCE,
+                source_revision_id=REVISION,
+                revision_kind="content",
+                accepted_generation=1,
+                cas_version=1,
+            ),
+        ),
         source_constraint_digest="f" * 64,
         members=(
             TargetScopeMember(
@@ -363,6 +376,7 @@ def test_current_grounded_conflict_is_presented_without_selecting_a_winner() -> 
                 conflict_id=UUID(int=60),
                 boundary=_boundary(),
                 claim_ids=(CLAIM, CLAIM_B),
+                relationship_ids=(UUID(int=24),),
                 detection_reference=UUID(int=61),
                 detection_policy_version="conflict-policy:v1",
             ),
@@ -379,6 +393,7 @@ def test_approved_deterministic_precedence_selects_the_winning_claim() -> None:
         conflict_id=UUID(int=60),
         boundary=_boundary(),
         claim_ids=(CLAIM, CLAIM_B),
+        relationship_ids=(UUID(int=24),),
         detection_reference=UUID(int=61),
         detection_policy_version="conflict-policy:v1",
     )
@@ -752,7 +767,7 @@ def test_contradiction_relationship_without_detected_conflict_is_rejected() -> N
     assert result.disclosure_status is AnswerDisclosureStatus.REJECTED
 
 
-def test_detected_conflict_without_contradiction_relationship_is_rejected() -> None:
+def test_authoritative_detected_conflict_does_not_require_candidate_relationship() -> None:
     answer = _conflicting_answer()
     answer_without_conflict = answer.model_copy(
         update={"relationships": answer.relationships[:2]}
@@ -771,13 +786,15 @@ def test_detected_conflict_without_contradiction_relationship_is_rejected() -> N
                 conflict_id=UUID(int=60),
                 boundary=_boundary(),
                 claim_ids=(CLAIM, CLAIM_B),
+                relationship_ids=(UUID(int=24),),
                 detection_reference=UUID(int=61),
                 detection_policy_version="conflict-policy:v1",
             ),
         ),
     )
 
-    assert result.disclosure_status is AnswerDisclosureStatus.REJECTED
+    assert result.disclosure_status is AnswerDisclosureStatus.ACCEPTED
+    assert result.conflict_status is GroundedConflictStatus.PRESENTED
 
 
 def test_stale_claim_grounding_assessment_is_rejected() -> None:
@@ -802,6 +819,7 @@ def test_overlapping_conflict_precedence_is_rejected_fail_closed() -> None:
         conflict_id=UUID(int=60),
         boundary=_boundary(),
         claim_ids=(CLAIM, CLAIM_B),
+        relationship_ids=(UUID(int=24),),
         detection_reference=UUID(int=61),
         detection_policy_version="conflict-policy:v1",
     )
@@ -875,6 +893,7 @@ def test_partial_grounded_conflict_preserves_independent_semantics() -> None:
                 conflict_id=UUID(int=60),
                 boundary=_boundary(),
                 claim_ids=(CLAIM, CLAIM_B),
+                relationship_ids=(UUID(int=24),),
                 detection_reference=UUID(int=61),
                 detection_policy_version="conflict-policy:v1",
             ),
@@ -901,6 +920,7 @@ def test_overlapping_unresolved_conflict_edges_are_presented() -> None:
                 conflict_id=UUID(int=60),
                 boundary=_boundary(),
                 claim_ids=(CLAIM, CLAIM_B),
+                relationship_ids=(UUID(int=24),),
                 detection_reference=UUID(int=61),
                 detection_policy_version="conflict-policy:v1",
             ),
@@ -908,6 +928,7 @@ def test_overlapping_unresolved_conflict_edges_are_presented() -> None:
                 conflict_id=UUID(int=62),
                 boundary=_boundary(),
                 claim_ids=(CLAIM_B, CLAIM_C),
+                relationship_ids=(UUID(int=26),),
                 detection_reference=UUID(int=63),
                 detection_policy_version="conflict-policy:v1",
             ),

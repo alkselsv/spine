@@ -125,6 +125,7 @@ def command(
     attempt_id: UUID | None = None,
     attempt_number: int | None = None,
     execution_pin: AnswerQuestionExecutionPin | None = None,
+    allow_partial_answer: bool | None = None,
     cancelled: bool = False,
 ) -> AnswerQuestionCapabilityCommand:
     return AnswerQuestionCapabilityCommand(
@@ -159,6 +160,7 @@ def command(
         attempt_id=attempt_id,
         attempt_number=attempt_number,
         execution_pin=execution_pin,
+        allow_partial_answer=allow_partial_answer,
         cancelled=cancelled,
     )
 
@@ -639,11 +641,13 @@ async def test_persisted_attempt_identity_is_used_before_context_retrieval() -> 
             worker=True,
             attempt_id=canonical_attempt_id,
             attempt_number=3,
+            allow_partial_answer=False,
         )
     )
 
     assert result.output.correlation.attempt_id == canonical_attempt_id
     assert context.prepared == 1
+    assert context.requests[0].allow_partial_answer is False
 
 
 @pytest.mark.asyncio

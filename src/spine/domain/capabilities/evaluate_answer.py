@@ -120,7 +120,7 @@ def evaluate_answer_candidate(
         len(conflict_by_id) == len(conflicts)
         and len(rules_by_conflict) == len(precedence_rules)
         and len(detected_pairs) == len(conflicts)
-        and detected_pairs == contradiction_pairs
+        and contradiction_pairs.issubset(detected_pairs)
         and all(
             conflict.boundary == target_scope.boundary
             and set(conflict.claim_ids).issubset(claim_ids)

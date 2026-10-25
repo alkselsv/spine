@@ -13,6 +13,8 @@ from spine.application.qa_run_history import (
     QARunHistoryRequester,
 )
 from spine.domain.capabilities import AnswerQuestionOutcome
+from spine.application.qa_completeness import completeness_presentation
+from tests.application.test_qa_completeness import _record as completeness_record
 from tests.api.test_authorization import (
     ENVIRONMENT_ID,
     OTHER_ENVIRONMENT_ID,
@@ -191,6 +193,47 @@ async def test_run_detail_exposes_pinned_attempt_metadata_and_safe_timeline():
     assert payload["execution_pin"]["agent_version"]["agent_version_id"]
     assert payload["timeline"][0]["kind"] == "started"
     assert "input_artifact_ids" in payload
+
+
+@pytest.mark.asyncio
+async def test_run_detail_serializes_safe_completeness_without_membership() -> None:
+    record = completeness_record()
+    run = _run_record(run_id=record.run_id)
+    attempt = AnswerQuestionAttempt.start(
+        attempt_id=record.attempt_id,
+        run=run,
+        attempt_number=1,
+        execution_pin=_pin(run.workspace_id, run.environment_id),
+        input_artifact_ids=run.input_artifact_ids,
+        diagnostic_context=run.diagnostic_context,
+        started_at=NOW,
+    )
+
+    class CompletenessFake(RunHistoryFake):
+        async def get_run(self, *, context, requester, run_id):
+            del context, requester, run_id
+            return QARunDetail(
+                run,
+                (attempt,),
+                None,
+                (None,),
+                (),
+                False,
+                (completeness_presentation(record),),
+            )
+
+    application = _application(CompletenessFake((run,)))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.get(f"/api/v1/qa/runs/{run.run_id}", headers=_headers())
+
+    payload = response.json()["data"]["attempts"][0]["completeness"]
+    assert response.status_code == 200
+    assert payload["coverage_status"] == "unproven"
+    assert payload["serving_decision"] == "withhold"
+    assert "members" not in response.text
+    assert "source_object_id" not in response.text
 
 
 def test_run_context_uses_canonical_boundary_manifest_digest() -> None:

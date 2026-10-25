@@ -258,6 +258,10 @@
   margin-top: var(--space-5);
 }
 
+.completenessVersions {
+  margin-top: var(--space-3);
+}
+
 .subCard {
   min-width: 0;
   border: 1px solid var(--color-border);

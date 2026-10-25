@@ -1360,6 +1360,8 @@ test('test_chat_sends_question_displays_answer_inspects_citation_and_records_fee
   const answerDigest = createHash('sha256').update(answer, 'utf8').digest('hex');
   const citationRequests: Array<{ headers: Record<string, string>; url: string }> = [];
   const feedbackRequests: Array<{ headers: Record<string, string>; body: string }> = [];
+  const targetScopeId = '90000000-0000-4000-8000-000000000091';
+  const observedCoverageId = '90000000-0000-4000-8000-000000000092';
   let askAdmitted = false;
   let admissionRequest: { headers: Record<string, string>; body: string } | null = null;
   const message = {
@@ -1401,6 +1403,19 @@ test('test_chat_sends_question_displays_answer_inspects_citation_and_records_fee
         related_claim_id: null,
       }],
       citation_ids: [chatCitation],
+    },
+    completeness: {
+      schema_version: 'answer-completeness-presentation:v1',
+      target_scope_id: targetScopeId,
+      target_scope_version: 'target-completeness-scope:v1',
+      observed_coverage_id: observedCoverageId,
+      observed_coverage_version: 'observed-coverage:v1',
+      coverage_status: 'insufficient',
+      partiality_status: 'partial',
+      conflict_status: 'presented',
+      partial_fallback_authority: 'current_request',
+      serving_decision: 'serve',
+      validation_decision: 'grounded_conflict',
     },
     created_at: '2026-10-17T10:01:00Z',
     updated_at: '2026-10-17T10:01:00Z',
@@ -1597,6 +1612,12 @@ test('test_chat_sends_question_displays_answer_inspects_citation_and_records_fee
   await page.keyboard.press('Enter');
 
   await expect(page.locator('[data-accepted-answer-text]')).toContainText(answer);
+  await expect(page.getByText('Частичный ответ', { exact: true })).toBeVisible();
+  await expect(page.getByText(/несовместимые подтверждённые позиции/)).toBeVisible();
+  await expect(page.getByText(/разрешено текущим запросом/)).toBeVisible();
+  await expect(page.locator('body')).not.toContainText(targetScopeId);
+  await expect(page.locator('body')).not.toContainText(observedCoverageId);
+  await expect(page.locator('body')).not.toContainText(/\d+ (источник|источника|источников)/i);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   expect(admissionRequest).not.toBeNull();
   expect(JSON.parse(admissionRequest!.body)).toEqual({

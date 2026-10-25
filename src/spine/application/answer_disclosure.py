@@ -16,6 +16,7 @@ from spine.domain.capabilities.answer_disclosure import (
     AnswerDisclosureDecision,
     AcceptedGroundedAnswer,
     AnswerDisclosureRecordV2,
+    AnswerDisclosureRecordV3,
     AnswerExecutionCheckpoint,
     execution_checkpoint_for_disclosure,
     CurrentDisclosureEligibility,
@@ -83,6 +84,11 @@ class AnswerDisclosureFacts:
             request_id=self.request_id,
             decision=build_decision_input(self.outcome_facts),
             current_eligibility=self.current_eligibility,
+            target_scope=self.outcome_facts.target_scope,
+            observed_coverage=self.outcome_facts.observed_coverage,
+            partial_fallback=self.outcome_facts.partial_fallback,
+            claim_assessments=self.outcome_facts.claim_assessments,
+            conflicts=self.outcome_facts.conflicts,
         )
 
 
@@ -444,6 +450,21 @@ def _record(
         created_at=created_at,
     )
     if execution_checkpoint is not None:
+        if (
+            request.target_scope is not None
+            and request.observed_coverage is not None
+            and request.decision.evaluation is not None
+        ):
+            return AnswerDisclosureRecordV3(
+                **record_fields,
+                execution_checkpoint=execution_checkpoint,
+                target_scope=request.target_scope,
+                observed_coverage=request.observed_coverage,
+                partial_fallback=request.partial_fallback,
+                claim_assessments=request.claim_assessments,
+                conflicts=request.conflicts,
+                evaluation=request.decision.evaluation,
+            )
         return AnswerDisclosureRecordV2(
             **record_fields, execution_checkpoint=execution_checkpoint
         )

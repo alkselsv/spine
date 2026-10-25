@@ -101,6 +101,7 @@ class AskCommand:
     question: str
     idempotency_key: IdempotencyKey
     clarification_of_message_id: UUID | None = None
+    allow_partial_answer: bool | None = None
 
     @property
     def workspace_id(self) -> UUID:
@@ -159,6 +160,7 @@ class AskExecutionCommand:
     idempotency_key: IdempotencyKey
     logical_execution_key: str | None = None
     capture_subscription: AskCaptureSubscription | None = None
+    allow_partial_answer: bool | None = None
     cancelled: bool = False
 
     def __post_init__(self) -> None:
@@ -203,6 +205,7 @@ class AnswerQuestionCapabilityCommand:
     attempt_number: int | None = None
     execution_pin: AnswerQuestionExecutionPin | None = None
     capture_subscription: AskCaptureSubscription | None = None
+    allow_partial_answer: bool | None = None
     cancelled: bool = False
 
     def __post_init__(self) -> None:
@@ -416,6 +419,7 @@ class PersistedAuthorizedAskService:
                     question=command.question,
                     idempotency_key=command.idempotency_key,
                     clarification_of_message_id=command.clarification_of_message_id,
+                    allow_partial_answer=command.allow_partial_answer,
                     authorization_generation=command.request_context.authorization_generation,
                 ),
             )
@@ -429,6 +433,7 @@ class PersistedAuthorizedAskService:
                     run_id=admitted.run_id,
                     question=command.question,
                     idempotency_key=command.idempotency_key,
+                    allow_partial_answer=command.allow_partial_answer,
                 )
             )
         requester = QASessionRequester(
@@ -453,6 +458,7 @@ class PersistedAuthorizedAskService:
                 run_id=None,
                 idempotency_key=command.idempotency_key,
                 clarification_of_message_id=command.clarification_of_message_id,
+                allow_partial_answer=command.allow_partial_answer,
             )
         )
         return await self._finish(
@@ -542,6 +548,7 @@ class PersistedAuthorizedAskService:
                     allocated.attempt.execution_pin if allocated is not None else None
                 ),
                 capture_subscription=command.capture_subscription,
+                allow_partial_answer=command.allow_partial_answer,
                 cancelled=command.cancelled,
             )
         )
