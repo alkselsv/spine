@@ -6,7 +6,7 @@ on:
     branches: [main]
 
 jobs:
-  python:
+  python-compatibility:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -25,8 +25,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --extra dev --locked
-      - run: uv run pytest -q
       - run: uv run python -m compileall -q src tests
+      - name: Run version-sensitive compatibility suite
+        run: >-
+          uv run pytest -q
+          tests/application/persistence/test_command_digest.py
+          tests/application/persistence/test_source_observation.py
+          tests/infrastructure/auth/test_dependency_contract.py
+          tests/infrastructure/db/test_dependency_contract.py
+          tests/infrastructure/memory/test_cognee_dependency_contract.py
+          tests/qualification/test_issue592_qualification.py
+          tests/test_architecture_scaffold.py
       - run: git diff --check
 
   web:
@@ -73,6 +82,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv sync --extra dev --locked
+      - run: uv run python -m compileall -q src tests
       - name: Run mandatory repository and PostgreSQL suite
         id: repository-tests
         continue-on-error: true
