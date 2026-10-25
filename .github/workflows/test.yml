@@ -34,26 +34,8 @@ jobs:
           tests/infrastructure/auth/test_dependency_contract.py
           tests/infrastructure/db/test_dependency_contract.py
           tests/infrastructure/memory/test_cognee_dependency_contract.py
+          tests/qualification/test_issue592_qualification.py
           tests/test_architecture_scaffold.py
-      - run: git diff --check
-
-  python:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-      - uses: astral-sh/setup-uv@v10.2.0
-        with:
-          version: "0.12.24"
-          enable-cache: true
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - run: uv sync --extra dev --locked
-      - run: uv run pytest -q
-      - run: uv run python -m compileall -q src tests
       - run: git diff --check
 
   web:
@@ -100,6 +82,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv sync --extra dev --locked
+      - run: uv run python -m compileall -q src tests
       - name: Run mandatory repository and PostgreSQL suite
         id: repository-tests
         continue-on-error: true
