@@ -328,10 +328,27 @@ def test_issue68_gate_runner_executes_every_declared_command_in_order() -> None:
     assert all(result.status == "passed" for result in results)
 
 
-def test_issue68_gate_runner_cli_binds_to_staged_diff() -> None:
+def test_issue68_gate_runner_cli_binds_to_staged_diff(tmp_path: Path) -> None:
     repository_root = Path(__file__).parents[2]
+    qualified_repository = tmp_path / "qualified-repository"
+    qualified_repository.mkdir()
+    _git_init(qualified_repository)
+    tracked = qualified_repository / "tracked.txt"
+    tracked.write_text("staged\n", encoding="utf-8")
+    subprocess.run(
+        ("git", "add", "tracked.txt"),
+        cwd=qualified_repository,
+        check=True,
+    )
     result = subprocess.run(
-        [sys.executable, "-m", "tests.qualification.gate_runner", "--dry-run"],
+        [
+            sys.executable,
+            "-m",
+            "tests.qualification.gate_runner",
+            "--dry-run",
+            "--repository-root",
+            str(qualified_repository),
+        ],
         cwd=repository_root,
         check=False,
         capture_output=True,
@@ -339,7 +356,10 @@ def test_issue68_gate_runner_cli_binds_to_staged_diff() -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     report = json.loads(result.stdout)
-    assert report["staged_diff_sha256"] == staged_diff_sha256(repository_root)
+    assert report["staged_diff_sha256"] == staged_diff_sha256(qualified_repository)
+    assert report["qualified_tree_sha256"] == qualified_tree_sha256(
+        qualified_repository
+    )
     assert tuple(report["commands"]) == tuple(" ".join(command) for command in GATE_COMMANDS)
     assert report["results"] == []
 

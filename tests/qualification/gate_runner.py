@@ -253,8 +253,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="emit the staged-diff identity and command manifest without executing gates",
     )
+    parser.add_argument(
+        "--repository-root",
+        type=Path,
+        help=argparse.SUPPRESS,
+    )
     arguments = parser.parse_args(argv)
-    repository_root = Path(__file__).parents[2]
+    repository_root = (
+        arguments.repository_root.resolve()
+        if arguments.repository_root is not None
+        else Path(__file__).parents[2]
+    )
     if _worktree_has_unstaged_files(repository_root):
         print(json.dumps({"status": "failed", "summary": "unstaged or untracked files present"}))
         return 1
