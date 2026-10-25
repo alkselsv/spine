@@ -54,8 +54,11 @@ describe('controlled browser preview configuration', () => {
       readFileSync(resolve(process.cwd(), 'package.json'), 'utf8'),
     ) as { scripts: Record<string, string> };
 
-    expect(packageManifest.scripts['test:e2e']).toBe(
+    expect(packageManifest.scripts['test:e2e:run']).toBe(
       'corepack pnpm build && playwright test --config playwright.config.ts',
+    );
+    expect(packageManifest.scripts['test:e2e']).toBe(
+      'corepack pnpm test:e2e:ownership && corepack pnpm test:e2e:run',
     );
   });
 });
