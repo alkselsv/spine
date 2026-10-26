@@ -397,6 +397,25 @@ ingestion_transitions = Table(
     Column("ingestion_transition_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("target_kind", Text, nullable=False), Column("ingestion_run_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("ingestion_run_source_id", PostgreSQLUUID(as_uuid=True)), Column("predecessor_transition_id", PostgreSQLUUID(as_uuid=True)), Column("state", Text, nullable=False), Column("attempt", Integer, nullable=False), Column("safe_metrics_schema", Text), Column("safe_metrics", JSONB), Column("actor_or_service", Text, nullable=False), Column("trace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("occurred_at", DateTime(timezone=True), nullable=False),
 )
 
+drive_snapshot_runs = Table(
+    "drive_snapshot_runs",
+    metadata,
+    Column("sync_run_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("connection_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("resource_scope_reference", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("service_principal_id", PostgreSQLUUID(as_uuid=True), nullable=False),
+    Column("idempotency_key", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("proposed_start_page_token", Text, nullable=False),
+    Column("committed_cursor", Text),
+    Column("next_page_token", Text),
+    Column("record", JSONB, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
 ingestion_warnings = Table(
     "ingestion_warnings", metadata,
     Column("ingestion_warning_id", PostgreSQLUUID(as_uuid=True), primary_key=True), Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("ingestion_run_source_id", PostgreSQLUUID(as_uuid=True), nullable=False), Column("attempt", Integer, nullable=False), Column("stage", Text, nullable=False), Column("code", Text, nullable=False), Column("retryable", Boolean, nullable=False), Column("safe_detail_schema", Text, nullable=False), Column("safe_detail", JSONB, nullable=False), Column("safe_detail_digest", String(64), nullable=False), Column("opaque_detail_ref", PostgreSQLUUID(as_uuid=True)), Column("occurred_at", DateTime(timezone=True), nullable=False),
@@ -1192,6 +1211,7 @@ __all__ = [
     "ingestion_run_sources",
     "ingestion_run_source_bindings",
     "ingestion_transitions",
+    "drive_snapshot_runs",
     "ingestion_warnings",
     "ingestion_failures",
     "processing_receipts",

@@ -143,6 +143,36 @@ async def test_drive_reader_preserves_exact_download_bytes_and_version_guard():
 
 
 @pytest.mark.asyncio
+async def test_drive_snapshot_reader_targets_the_enumerated_file_identity():
+    class FileAwareService(FakeDriveService):
+        async def get_metadata_for_file(self, connection, resource_scope_reference, file_id):
+            assert file_id == "file-42"
+            return await self.get_metadata(connection, resource_scope_reference)
+
+    service = FileAwareService(
+        (_metadata(), _metadata()),
+        DriveFileContent(content=b"snapshot-bytes", media_type="application/pdf"),
+    )
+    observation = await _provider(service).read(
+        SimpleNamespace(
+            connection_id=CONNECTION,
+            workspace_id=UUID("10000000-0000-0000-8000-000000000001"),
+            environment_id=UUID("20000000-0000-0000-8000-000000000001"),
+        ),
+        GoogleReadCommand(
+            connection_id=CONNECTION,
+            resource_scope_reference=SCOPE,
+            authorization_generation=7,
+            configuration_generation=11,
+            resource_object_reference="file-42",
+        ),
+    )
+
+    assert observation.file_id == "file-42"
+    assert observation.original_bytes == b"snapshot-bytes"
+
+
+@pytest.mark.asyncio
 async def test_drive_reader_uses_approved_export_profile_and_retains_export_mime():
     service = FakeDriveService(
         (

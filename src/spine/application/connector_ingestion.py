@@ -99,6 +99,7 @@ class ConnectorIngestionCommand(BaseModel):
     resource_scope_reference: UUID
     authorization_generation: int = Field(ge=1)
     configuration_generation: int = Field(ge=1)
+    resource_object_reference: str | None = Field(default=None, min_length=1, max_length=256)
     access_policy_version_id: UUID
     expected_current_revision_id: UUID | None = None
 
@@ -174,6 +175,7 @@ class GoogleAuthorizedObservationReader:
                 ),
                 authorization_generation=command.authorization_generation,
                 configuration_generation=command.configuration_generation,
+                resource_object_reference=command.resource_object_reference,
             ),
             context,
         )
