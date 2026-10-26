@@ -333,9 +333,18 @@ Halaska не становится внешней доменной моделью
 Нельзя заменять Halaska-based production shell параллельным shell только ради
 прохождения тестов или qualification-сборки. Production, qualification и fixture builds
 рендерят один и тот же component graph; режим сборки может менять только источник
-данных. `AppShell` подключает Halaska `ThemeProvider` и route-компоненты через
-`appRoutes` внутри `AdministratorBoundary`, а переходы выполняются через React Router, поэтому
-deep links, back/forward и URL scope остаются частью публичного контракта.
+данных. Эталон этого graph — перенесённые в `web/src/ported/spine` `SpineApp` и
+экраны: `SpineSidebar`, `SpineTopBar`,
+`SpineDocumentsTable`, `SpineDocumentDetails`, `SpineChatScreen`, `QARunsList` и
+`QARunScreen`. Production `appRoutes` монтирует именно `SpineApp` внутри
+`AdministratorBoundary`; API, auth, scope и React Router адаптируются в hooks этого
+дерева без замены его другим shell или feature-page. Deep links, back/forward и URL
+scope остаются частью публичного контракта.
+
+Визуальные изменения эталонной разметки, размеров, spacing, typography, цветов или
+композиции требуют отдельного принятого design note. Подключение только
+`ThemeProvider`, tokens или `data-presentation-runtime` к другому component graph не
+считается переносом интерфейса и является регрессией.
 
 Выбранные части Halaska:
 
@@ -373,7 +382,10 @@ scope selectors на границе routing/auth используют Base UI. V
 
 Регрессионный gate обязан открыть без query-параметров fixture-контейнером как
 минимум `/knowledge/documents`, `/chat`, `/qa/runs` и `/qa/runs/:runId` и доказать,
-что каждый URL находится внутри элемента `data-presentation-runtime="halaska"`.
+что каждый URL рендерит характерную доступную структуру соответствующего исходного
+экрана: button-навигацию `SpineSidebar`, compound scope pill, preset/filter toolbar
+Knowledge, Sessions rail/thread/inspector Chat и интерактивные строки Q&A Runs.
+Проверка одного marker-атрибута или наличия Halaska provider недостаточна.
 Отдельные проверки подтверждают auth denial, backend headers, сохранение scope в
 URL и browser back/forward. Зелёный API/behavior suite без этого presentation
 assertion не подтверждает перенос интерфейса.
