@@ -83,6 +83,9 @@ def upgrade() -> None:
         f"FOR ALL TO {migration_role} USING (true) WITH CHECK (true)"
     )
     op.execute(
+        f"REVOKE ALL ON {SCHEMA}.drive_snapshot_runs FROM {runtime_role}"
+    )
+    op.execute(
         f"GRANT SELECT, INSERT, UPDATE ON {SCHEMA}.drive_snapshot_runs TO {runtime_role}"
     )
     op.execute(
