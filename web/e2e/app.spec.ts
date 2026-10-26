@@ -45,6 +45,7 @@ test('test_controlled_fixture_shows_embedded_data_without_test_route_interceptio
   await installContainerRuntime(page);
   await page.goto('/knowledge/documents');
 
+  await expect(page.getByTestId('spine-control-plane')).toHaveAttribute('data-presentation-runtime', 'halaska');
   await expect(page.getByRole('table', { name: 'Документы текущей рабочей области' })).toBeVisible();
   await expect(page.locator('tbody tr')).toHaveCount(14);
   await expect(page.getByText('sd/operations').first()).toBeVisible();
@@ -54,6 +55,7 @@ test('test_chat_fixture_shows_embedded_sessions_and_messages', { tag: '@embedded
   await installContainerRuntime(page);
   await page.goto('/chat');
 
+  await expect(page.getByTestId('spine-control-plane')).toHaveAttribute('data-presentation-runtime', 'halaska');
   const sessions = page.getByRole('region', { name: 'Сессии вопросов и ответов' }).getByRole('link');
   await expect(sessions).toHaveCount(3);
   await sessions.first().click();
@@ -80,9 +82,11 @@ test('test_qa_runs_fixture_shows_embedded_run_history', { tag: '@embedded-fixtur
   await installContainerRuntime(page);
   await page.goto('/qa/runs');
 
+  await expect(page.getByTestId('spine-control-plane')).toHaveAttribute('data-presentation-runtime', 'halaska');
   await expect(page.getByRole('table', { name: 'Запуски Q&A текущей рабочей области' })).toBeVisible();
   await expect(page.locator('tbody tr')).toHaveCount(11);
   await page.locator('tbody tr').first().getByRole('link').click();
+  await expect(page.getByTestId('spine-control-plane')).toHaveAttribute('data-presentation-runtime', 'halaska');
   await expect(page.getByRole('heading', { level: 2, name: 'Детали запуска Q&A' })).toBeVisible();
 });
 

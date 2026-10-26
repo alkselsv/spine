@@ -16,6 +16,7 @@ import {
   SunIcon,
 } from '../components/icons';
 import { ru } from '../i18n/resources';
+import { ThemeProvider } from '../ported/halaska-kit';
 import { useAuth } from './auth';
 import { localizeApiError } from './errors';
 import { useBrowserRuntime } from './runtime-context';
@@ -70,6 +71,7 @@ const connectionCopy: Record<ConnectionStatus, string> = {
 };
 
 export function AppShell() {
+  const [theme, toggleTheme] = useTheme();
   const [searchParams] = useSearchParams();
   const location = useLocation();
   const navigate = useNavigate();
@@ -126,8 +128,14 @@ export function AppShell() {
   const search = searchParams.toString();
 
   return (
-    <ScopeContext.Provider value={{ scope, queryKey: (resource) => scopeQueryKey(resource, scope) }}>
-      <div className={styles.shell} data-sidebar-collapsed={sidebarCollapsed}>
+    <ThemeProvider theme={theme}>
+      <ScopeContext.Provider value={{ scope, queryKey: (resource) => scopeQueryKey(resource, scope) }}>
+      <div
+        className={styles.shell}
+        data-presentation-runtime="halaska"
+        data-sidebar-collapsed={sidebarCollapsed}
+        data-testid="spine-control-plane"
+      >
         <aside className={styles.sidebar}>
           <div className={styles.brandBlock}>
             <span className={styles.brandMark} aria-hidden="true">
@@ -163,7 +171,7 @@ export function AppShell() {
             </div>
           </nav>
 
-          <SidebarFooter role={auth.role} />
+          <SidebarFooter role={auth.role} theme={theme} toggleTheme={toggleTheme} />
         </aside>
 
         <div className={styles.frame}>
@@ -216,7 +224,8 @@ export function AppShell() {
           </main>
         </div>
       </div>
-    </ScopeContext.Provider>
+      </ScopeContext.Provider>
+    </ThemeProvider>
   );
 }
 
@@ -236,8 +245,15 @@ function ShellNavLink({ item, search }: { item: NavigationItem; search: string }
   );
 }
 
-function SidebarFooter({ role }: { role: 'administrator' | 'member' | undefined }) {
-  const [theme, toggleTheme] = useTheme();
+function SidebarFooter({
+  role,
+  theme,
+  toggleTheme,
+}: {
+  role: 'administrator' | 'member' | undefined;
+  theme: 'light' | 'dark';
+  toggleTheme: () => void;
+}) {
   const roleLabel = role ? ru.roles[role] : null;
   const isDark = theme === 'dark';
   return (

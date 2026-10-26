@@ -25,6 +25,16 @@ function renderApp(router: ReturnType<typeof createMemoryRouter>, auth?: AuthSta
 }
 
 describe('application bootstrap', () => {
+  it('test_primary_product_routes_render_the_halaska_control_plane_runtime', async () => {
+    const router = createMemoryRouter(appRoutes, { initialEntries: ['/knowledge/documents'] });
+
+    renderApp(router);
+
+    const controlPlane = await screen.findByTestId('spine-control-plane');
+    expect(controlPlane).toHaveAttribute('data-presentation-runtime', 'halaska');
+    expect(screen.getByRole('navigation', { name: 'Разделы workspace' })).toBeVisible();
+  });
+
   it('test_root_route_renders_control_plane_boundary', () => {
     const router = createMemoryRouter(appRoutes, { initialEntries: ['/'] });
 
@@ -57,7 +67,7 @@ describe('application bootstrap', () => {
 
     renderApp(router);
 
-    expect(await screen.findByRole('heading', { name: 'Запуски Q&A' })).toBeVisible();
+    expect(await screen.findByRole('heading', { level: 2, name: 'Запуски Q&A' })).toBeVisible();
     expect(screen.getByRole('link', { name: 'Запуски Q&A' })).toHaveAttribute(
       'href',
       expect.stringContaining('/qa/runs'),
