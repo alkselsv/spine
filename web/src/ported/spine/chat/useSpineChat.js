@@ -1,5 +1,6 @@
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router";
 import { createQaApiClient, createScopedApiClient, SpineApiError } from "../../../api/client";
 import { useAuth } from "../../../app/auth";
 import { createAskCommandActions } from "../../../features/chat/ask-command";
@@ -8,7 +9,7 @@ import { inspectAcceptedCitation } from "../../../features/chat/citation-inspect
 import { submitQaFeedback } from "../../../features/chat/feedback-api";
 import { loadQARunDetail } from "../../../features/runs/qa-run-api";
 import {
-  createQASession, loadQAMessagePage, loadQASessionPage, restoreQASession,
+  createQASession, loadQAMessage, loadQAMessagePage, loadQASession, loadQASessionPage, restoreQASession,
 } from "../../../features/chat/session-api";
 import { ru } from "../ru";
 
@@ -46,6 +47,7 @@ function mappedClaims(message) {
 
 export function mapApiMessage(message, evidenceByCitation = {}, detail = null) {
   const presentation = message.accepted_presentation;
+  const unavailableEvidence = (presentation?.citation_ids ?? []).some(citationId => evidenceByCitation[citationId]?.unavailable);
   const citations = (presentation?.citation_ids ?? []).map(citationId => {
     const evidence = evidenceByCitation[citationId];
     return {
@@ -73,6 +75,7 @@ export function mapApiMessage(message, evidenceByCitation = {}, detail = null) {
   }[message.terminal_outcome];
   return {
     ...message,
+    disclosure_eligibility: unavailableEvidence ? "ineligible" : message.disclosure_eligibility,
     clarifies: null,
     answer_id: presentation?.answer_id ?? null,
     reason: outcomeReason ?? null,
@@ -110,6 +113,8 @@ export function mapApiMessage(message, evidenceByCitation = {}, detail = null) {
 }
 
 export function useSpineChat(toast, { workspace, environment }) {
+  const location = useLocation();
+  const navigate = useNavigate();
   const auth = useAuth();
   const queryClient = useQueryClient();
   const scope = useMemo(() => ({ workspaceId: workspace, environmentId: environment }), [workspace, environment]);
@@ -125,7 +130,7 @@ export function useSpineChat(toast, { workspace, environment }) {
     scope,
   }), [auth.getBearerCredential, scope]);
   const askActions = useMemo(() => createAskCommandActions(askClient, scope), [askClient, scope]);
-  const routeSessionId = window.location.pathname.match(/^\/chat\/([^/]+)$/)?.[1] ?? null;
+  const routeSessionId = location.pathname.match(/^\/chat\/([^/]+)$/)?.[1] ?? null;
   const [selectedId, setSelectedId] = useState(routeSessionId);
   const [inspector, setInspector] = useState(null);
   const [clarifyTarget, setClarifyTarget] = useState(null);
@@ -136,8 +141,10 @@ export function useSpineChat(toast, { workspace, environment }) {
   const [feedback, setFeedback] = useState({});
   const [focusId, setFocusId] = useState(null);
   const [citationEvidence, setCitationEvidence] = useState({});
+  const [admittedMessages, setAdmittedMessages] = useState([]);
   const [pendingCitation, setPendingCitation] = useState(null);
   const previousScope = useRef(`${workspace}/${environment}`);
+  const inspectorClosing = useRef(false);
 
   const sessionsQuery = useQuery({
     queryKey: ["spine", "ported-chat-sessions", workspace, environment, auth.identityVersion],
@@ -145,7 +152,17 @@ export function useSpineChat(toast, { workspace, environment }) {
     enabled,
     retry: false,
   });
-  const sessions = sessionsQuery.data?.items ?? [];
+  const directSessionQuery = useQuery({
+    queryKey: ["spine", "ported-chat-session", workspace, environment, routeSessionId, auth.identityVersion],
+    queryFn: ({ signal }) => loadQASession(client, scope, routeSessionId, signal),
+    enabled: enabled && Boolean(routeSessionId),
+    retry: false,
+  });
+  const sessions = useMemo(() => {
+    const byId = new Map((sessionsQuery.data?.items ?? []).map(session => [session.session_id, session]));
+    if (directSessionQuery.data) byId.set(directSessionQuery.data.session_id, directSessionQuery.data);
+    return [...byId.values()];
+  }, [directSessionQuery.data, sessionsQuery.data?.items]);
   const session = sessions.find(s => s.session_id === selectedId) ?? null;
   const messagesQuery = useQuery({
     queryKey: ["spine", "ported-chat-messages", workspace, environment, selectedId, auth.identityVersion],
@@ -154,7 +171,12 @@ export function useSpineChat(toast, { workspace, environment }) {
     retry: false,
     refetchInterval: query => query.state.data?.items.some(m => m.state !== "terminal") ? 1_000 : false,
   });
-  const rawMessages = messagesQuery.data?.items ?? [];
+  const rawMessages = useMemo(() => {
+    const loaded = messagesQuery.data?.items ?? [];
+    const byId = new Map(admittedMessages.map(message => [message.message_id, message]));
+    loaded.forEach(message => byId.set(message.message_id, message));
+    return [...byId.values()].sort((a, b) => a.ordinal - b.ordinal);
+  }, [admittedMessages, messagesQuery.data?.items]);
   const runQueries = useQueries({
     queries: rawMessages.filter(message => message.run_id).map(message => ({
       queryKey: ["spine", "ported-chat-run-detail", workspace, environment, message.run_id],
@@ -186,22 +208,57 @@ export function useSpineChat(toast, { workspace, environment }) {
     if (previousScope.current === nextScope) return;
     previousScope.current = nextScope;
     setSelectedId(null);
+    setAdmittedMessages([]);
     setInspector(null);
     setClarifyTarget(null);
   }, [workspace, environment]);
   useEffect(() => {
     if (!pendingCitation || !thread.some(m => m.message_id === pendingCitation.messageId)) return;
-    void openCitation(pendingCitation.messageId, pendingCitation.citationId);
+    void openCitation(pendingCitation.messageId, pendingCitation.citationId, pendingCitation.returnRunId);
     setPendingCitation(null);
   }, [pendingCitation, thread]);
+  useEffect(() => {
+    const search = new URLSearchParams(location.search);
+    if (inspectorClosing.current) {
+      if (search.has("inspector") || search.has("citation_id") || search.has("message_id")) return;
+      inspectorClosing.current = false;
+    }
+    if (inspector || !thread.length) return;
+    const messageId = search.get("message_id");
+    const citationId = search.get("citation_id");
+    const mode = search.get("inspector");
+    if (!messageId || !thread.some(message => message.message_id === messageId)) return;
+    if (citationId || mode === "citation") {
+      if (citationId) void openCitation(messageId, citationId);
+      return;
+    }
+    if (mode === "run" || search.get("run_id")) setInspector({ mode: "run", messageId });
+  }, [inspector, location.search, thread]);
+
+  function writeInspector(nextInspector) {
+    const search = new URLSearchParams(location.search);
+    if (!nextInspector) {
+      search.delete("message_id");
+      search.delete("run_id");
+      search.delete("citation_id");
+      search.delete("inspector");
+    } else {
+      const message = thread.find(item => item.message_id === nextInspector.messageId);
+      search.set("message_id", nextInspector.messageId);
+      if (message?.run_id) search.set("run_id", message.run_id);
+      search.set("inspector", nextInspector.mode);
+      if (nextInspector.mode === "citation") search.set("citation_id", nextInspector.citationId);
+      else search.delete("citation_id");
+      if (nextInspector.returnRunId) search.set("return_run_id", nextInspector.returnRunId);
+    }
+    navigate({ pathname: selectedId ? `/chat/${selectedId}` : "/chat", search: search.toString() }, { replace: true });
+  }
 
   function selectSession(id) {
     setSelectedId(id);
     setInspector(null);
     setClarifyTarget(null);
-    const url = new URL(window.location.href);
-    url.pathname = `/chat/${id}`;
-    window.history.replaceState(null, "", url);
+    navigate({ pathname: `/chat/${id}`, search: location.search }, { replace: true });
   }
 
   async function createSession() {
@@ -240,7 +297,21 @@ export function useSpineChat(toast, { workspace, environment }) {
       if (result.kind !== "accepted") throw new Error(result.message ?? "Не удалось отправить вопрос.");
       setDraft("");
       setClarifyTarget(null);
-      await messagesQuery.refetch();
+      try {
+        const admitted = await loadQAMessage(
+          client,
+          scope,
+          session.session_id,
+          result.admission.message_id,
+          new AbortController().signal,
+        );
+        setAdmittedMessages(current => [
+          ...current.filter(message => message.message_id !== admitted.message_id),
+          admitted,
+        ]);
+      } catch {
+        await messagesQuery.refetch();
+      }
     } catch (error) {
       toast(error instanceof SpineApiError ? error.safeMessage : error instanceof Error ? error.message : "Не удалось отправить вопрос.", "warning");
     } finally {
@@ -255,9 +326,10 @@ export function useSpineChat(toast, { workspace, environment }) {
     await messagesQuery.refetch();
   }
 
-  async function openCitation(messageId, citationId) {
+  async function openCitation(messageId, citationId, returnRunId = null) {
     const message = thread.find(m => m.message_id === messageId);
     setInspector({ mode: "citation", messageId, citationId, checking: true });
+    writeInspector({ mode: "citation", messageId, citationId, returnRunId });
     const presentation = message?.accepted_presentation;
     if (!presentation) return;
     try {
@@ -268,6 +340,8 @@ export function useSpineChat(toast, { workspace, environment }) {
       }, citationId, new AbortController().signal);
       if (result.status === "available") {
         setCitationEvidence(current => ({ ...current, [citationId]: result.evidence }));
+      } else {
+        setCitationEvidence(current => ({ ...current, [citationId]: { unavailable: true } }));
       }
     } catch {
       toast("Источник сейчас недоступен.", "warning");
@@ -311,17 +385,33 @@ export function useSpineChat(toast, { workspace, environment }) {
     sessions, session, selectSession, createSession, creating, restoreSession, restoring, busySessions,
     thread, running, observation: running ? "observing" : "idle", messagesBySession,
     showMessage: (sessionId, messageId) => { selectSession(sessionId); setInspector({ mode: "run", messageId }); setFocusId(messageId); },
-    showCitation: (sessionId, messageId, citationId) => {
+    showCitation: (sessionId, messageId, citationId, returnRunId = null) => {
       selectSession(sessionId);
       setFocusId(messageId);
-      setPendingCitation({ messageId, citationId });
+      setPendingCitation({ messageId, citationId, returnRunId });
     },
     focusId, clearFocus: () => setFocusId(null),
     draft, setDraft, ask, submitting, stop,
     clarifyTarget, setClarifyTarget,
-    inspector, openCitation, openRun: messageId => setInspector({ mode: "run", messageId }), closeInspector: () => setInspector(null),
+    inspector,
+    openCitation,
+    openRun: messageId => {
+      setInspector({ mode: "run", messageId });
+      writeInspector({ mode: "run", messageId });
+    },
+    closeInspector: () => {
+      inspectorClosing.current = true;
+      setInspector(null);
+      writeInspector(null);
+    },
     feedback, submitFeedback,
     copy, refresh: () => { void sessionsQuery.refetch(); void messagesQuery.refetch(); },
-    interfaceState: !enabled ? "degraded" : sessionsQuery.isPending ? "loading" : sessionsQuery.error ? "failed" : "ready",
+    interfaceState: !enabled
+      ? "degraded"
+      : (routeSessionId ? directSessionQuery.isPending : sessionsQuery.isPending)
+        ? "loading"
+        : (routeSessionId ? directSessionQuery.error : sessionsQuery.error)
+          ? "failed"
+          : "ready",
   };
 }

@@ -260,7 +260,7 @@ function Answer({ m, selectedCitation, onCite }) {
     const claim = m.claims[p.claim];
     const lit = selectedCitation && claim.rel.some(r => r.cites?.some(ci => m.citations[ci].citation_id === selectedCitation));
     return (
-      <span key={i}>
+      <span key={i} data-claim-id={p.claim} data-start-utf16={start} data-end-utf16={start + text.length}>
         <span style={lit ? { background: pal.bgMuted, boxShadow: `0 0 0 2px ${pal.bgMuted}`, borderRadius: 2, color: pal.text } : undefined}>{shown}</span>
         {atCaret && caret}
         {settled && shown.length === text.length && claim.rel.map((r, ri) => (r.kind === "contradiction"
@@ -463,7 +463,7 @@ export default function SpineChatMessage({ m, chat, onOpenRun }) {
             {timeline && terminal && <Timeline m={m} />}
           </div>
           {answered && terminal && m.completeness && <CompletenessNote c={m.completeness} />}
-          {showAnswer && <Answer m={m} selectedCitation={selectedCitation} onCite={cite} />}
+          {showAnswer && <div data-accepted-answer-text style={{ display: "contents" }}><Answer m={m} selectedCitation={selectedCitation} onCite={cite} /></div>}
           {terminal && !hidden && <Outcome m={m} chat={chat} />}
           {terminal && hidden && <HiddenNote />}
           {answered && terminal && m.citations.length > 0 && <Sources m={m} selectedCitation={selectedCitation} onCite={cite} />}

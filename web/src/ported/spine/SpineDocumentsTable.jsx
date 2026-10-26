@@ -114,7 +114,7 @@ function Row({ doc, columns, selected, onSelect, onFocusMove, onClose, last }) {
 
 function LoadingRows({ columns }) {
   return (
-    <div aria-busy="true" aria-label={ru.status.loading.description} style={{ padding: "4px 14px" }}>
+    <div role="region" aria-busy="true" aria-label={ru.status.loading.title} style={{ padding: "4px 14px" }}>
       {Array.from({ length: 7 }, (_, i) => (
         <div key={i} style={{ display: "grid", gridTemplateColumns: columns.map(c => c.width).join(" "), gap: 14, alignItems: "center", height: 56 }}>
           {columns.map((c, j) => <Skeleton key={c.key} height={j === 0 ? 28 : 12} width={j === 0 ? "80%" : `${50 + ((i + j) % 3) * 15}%`} rounded />)}
@@ -125,9 +125,10 @@ function LoadingRows({ columns }) {
 }
 
 function CenteredEmpty(props) {
+  const { role = "region", ...emptyProps } = props;
   return (
-    <div style={{ padding: "56px 16px", display: "flex", justifyContent: "center", textAlign: "center" }}>
-      <EmptyState {...props} />
+    <div role={role} aria-label={emptyProps.title} style={{ padding: "56px 16px", display: "flex", justifyContent: "center", textAlign: "center" }}>
+      <EmptyState {...emptyProps} />
     </div>
   );
 }
@@ -141,7 +142,7 @@ export default function SpineDocumentsTable({ kb, compact, onUpload }) {
   let body;
   if (state === "loading") body = <LoadingRows columns={columns} />;
   else if (error) body = (
-    <CenteredEmpty icon={<CircleAlert size={20} strokeWidth={1.25} />} title={ru.status[state].title} description={ru.status[state].description}
+    <CenteredEmpty role="alert" icon={<CircleAlert size={20} strokeWidth={1.25} />} title={ru.status[state].title} description={ru.status[state].description}
       action={<Button size="sm" variant="outline" onClick={kb.retry}>{D.retry}</Button>} />
   );
   else if (state === "empty") body = (

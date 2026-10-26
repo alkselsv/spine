@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router";
 import { FileUp, RotateCcw, Trash2, X } from "lucide-react";
 import {
   AlertBanner, Button, Caption, Card, CardHeader, Divider, IconButton, Sheet,
@@ -13,6 +14,8 @@ import { ru } from "./ru";
 
 const D = ru.documents;
 const TABS = [D.overviewTab, D.revisionTimeline, D.contentInspectionTab];
+const TAB_QUERY = { overview: D.overviewTab, revisions: D.revisionTimeline, content: D.contentInspectionTab };
+const QUERY_TAB = Object.fromEntries(Object.entries(TAB_QUERY).map(([key, value]) => [value, key]));
 
 const detailsTitle = (doc) => `${sourceKindLabel(doc.source_kind)} · …${idTail(doc.source_object_id)}`;
 
@@ -173,10 +176,20 @@ function Actions({ doc, stacked, onReprocess, onReplace, onTombstone }) {
 }
 
 function Body({ doc, onCopy, onCommand }) {
-  const [tab, setTab] = useState(TABS[0]);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [tab, setTab] = useState(() => TAB_QUERY[searchParams.get("tab")] ?? TABS[0]);
+  useEffect(() => setTab(TAB_QUERY[searchParams.get("tab")] ?? TABS[0]), [searchParams]);
+  const changeTab = (value) => {
+    setTab(value);
+    const next = new URLSearchParams(searchParams);
+    const query = QUERY_TAB[value];
+    if (query === "overview") next.delete("tab"); else next.set("tab", query);
+    if (query !== "revisions" && query !== "content") next.delete("revision");
+    setSearchParams(next, { replace: true });
+  };
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <SubtleTabs tabs={TABS} value={tab} onChange={setTab} />
+      <SubtleTabs tabs={TABS} value={tab} onChange={changeTab} />
       <div role="tabpanel" aria-label={tab}>
         {tab === TABS[0] && <Overview doc={doc} onCopy={onCopy} onCommand={onCommand} />}
         {tab === TABS[1] && <History doc={doc} />}

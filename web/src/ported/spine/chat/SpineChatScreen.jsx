@@ -33,11 +33,11 @@ const SessionId = ({ id }) => {
   return <span style={{ fontFamily: tokens.font.mono, fontWeight: tokens.weight.semibold, color: pal.text }}>{id.slice(-8)}</span>;
 };
 
-function SessionsRail({ chat, onCollapse }) {
+function SessionsRail({ chat, onCollapse, onSelect, mobile }) {
   const pal = usePal();
   return (
     <aside aria-labelledby="sessions-heading" style={{
-      width: RAIL, flexShrink: 0, display: "flex", flexDirection: "column", minHeight: 0, borderRight: `1px solid ${pal.borderSubtle}`,
+      width: mobile ? "100%" : RAIL, flexShrink: 0, display: "flex", flexDirection: "column", minHeight: 0, borderRight: `1px solid ${pal.borderSubtle}`,
       animation: `halaska-fade-in ${motion.normal} ${motion.easeOut} both`,
     }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 10px 8px 20px" }}>
@@ -58,7 +58,7 @@ function SessionsRail({ chat, onCollapse }) {
           const active = s.session_id === chat.session?.session_id;
           const archived = s.status === "archived";
           return (
-            <button key={s.session_id} type="button" role="listitem" aria-current={active ? "page" : undefined} onClick={() => chat.selectSession(s.session_id)}
+            <button key={s.session_id} type="button" role="listitem" aria-current={active ? "page" : undefined} onClick={() => onSelect(s.session_id)}
               style={{
                 ...interactiveBase, display: "flex", flexDirection: "column", gap: 3, padding: "8px 12px", borderRadius: tokens.radius.sm, textAlign: "left",
                 background: active ? pal.bgMuted : "transparent",
@@ -218,7 +218,8 @@ export default function SpineChatScreen({ chat, kb, viewport, onOpenDocument, on
   const last = messages[messages.length - 1];
   const wide = viewport >= 1180;
   const inspectorOpen = !!chat.inspector;
-  const showRail = railOpen && viewport >= 900;
+  const mobileRail = viewport < 900;
+  const showRail = railOpen;
   const sessionId = chat.session?.session_id;
 
   useEffect(() => { stick.current = true; }, [sessionId]);
@@ -276,9 +277,10 @@ export default function SpineChatScreen({ chat, kb, viewport, onOpenDocument, on
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
-      {showRail && <SessionsRail chat={chat} onCollapse={() => setRailOpen(false)} />}
+      {showRail && <SessionsRail chat={chat} mobile={mobileRail} onCollapse={() => setRailOpen(false)}
+        onSelect={(id) => { chat.selectSession(id); if (mobileRail) setRailOpen(false); }} />}
 
-      <section aria-labelledby="session-heading" style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+      <section aria-labelledby="session-heading" style={{ flex: 1, minWidth: 0, display: mobileRail && showRail ? "none" : "flex", flexDirection: "column" }}>
         <SessionToolbar chat={chat} railOpen={showRail} onShowRail={() => setRailOpen(true)} onShortcuts={() => setShortcuts(true)} onOpenRuns={openLatestRun}
           compact={viewport < (showRail ? 1360 : 1100) || (inspectorOpen && viewport < 1500)} />
 

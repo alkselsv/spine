@@ -15,6 +15,7 @@ function Dropzone({ multiple, onFiles, onSample }) {
   const pick = (list) => onFiles(Array.from(list ?? []));
   return (
     <div
+      aria-label={U.dropzone}
       onDragOver={(e) => { e.preventDefault(); setOver(true); }}
       onDragLeave={() => setOver(false)}
       onDrop={(e) => { e.preventDefault(); setOver(false); pick(multiple ? e.dataTransfer.files : [e.dataTransfer.files[0]].filter(Boolean)); }}
@@ -66,7 +67,7 @@ export function UploadDialog({ open, onClose, onSubmit }) {
       <Dropzone multiple onFiles={(next) => setFiles(f => [...f, ...next])} />
       <Caption>{U.acceptedTypes}</Caption>
       {files.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div role="region" aria-label={U.review} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
             <Label>{U.review}</Label>
             <Caption>{U.selectedCount.replace("{count}", String(files.length))}</Caption>

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useLocation } from "react-router";
 import { ArrowUpRight, ExternalLink, X } from "lucide-react";
 import { Button, IconButton, Spinner, StatusDot, interactiveBase, motion, tokens, usePal } from "../../halaska-kit";
 import { caps } from "../../components/ui";
@@ -149,10 +150,16 @@ function RunBody({ message, onOpenRun }) {
 
 export function InspectorPanel({ chat, onOpenDocument, onOpenRun }) {
   const pal = usePal();
+  const location = useLocation();
   const closeRef = useRef(null);
+  const returnFocusRef = useRef(null);
   const { inspector } = chat;
   const message = chat.thread.find(m => m.message_id === inspector.messageId);
-  useEffect(() => { closeRef.current?.querySelector("button")?.focus({ preventScroll: true }); }, [inspector.mode, inspector.citationId]);
+  useEffect(() => {
+    returnFocusRef.current = document.activeElement;
+    closeRef.current?.querySelector("button")?.focus({ preventScroll: true });
+    return () => returnFocusRef.current?.focus?.({ preventScroll: true });
+  }, []);
   if (!message) return null;
   const number = message.citations.findIndex(c => c.citation_id === inspector.citationId) + 1;
   return (
@@ -177,6 +184,12 @@ export function InspectorPanel({ chat, onOpenDocument, onOpenRun }) {
           </span>
         )}
         {inspector.mode === "citation" && !inspector.checking && <CitationBody chat={chat} message={message} citationId={inspector.citationId} onOpenDocument={onOpenDocument} />}
+        {inspector.mode === "citation" && new URLSearchParams(location.search).has("return_run_id") && (
+          <Button variant="outline" size="sm" icon={<ExternalLink size={13} strokeWidth={1.75} />}
+            onClick={() => onOpenRun(message.message_id)} style={{ alignSelf: "flex-start", marginTop: 16 }}>
+            Вернуться к запуску Q&A
+          </Button>
+        )}
         {inspector.mode === "run" && <RunBody message={message} onOpenRun={onOpenRun} />}
       </div>
     </div>

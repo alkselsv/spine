@@ -1,9 +1,12 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router";
 import { createScopedApiClient, SpineApiError } from "../../api/client";
 import { useAuth } from "../../app/auth";
+import { localizeApiError } from "../../app/errors";
 import { useBrowserRuntime } from "../../app/runtime-context";
 import { createLifecycleIdempotencyKey, loadLifecycleOperation, submitDocumentTombstone } from "../../features/knowledge/lifecycle-api";
+import { loadDocument } from "../../features/knowledge/DocumentDetailPage";
 import { loadParsedContent } from "../../features/knowledge/ParsedContentInspector";
 import { DEFAULT_PROCESSING_PROFILE, loadProcessingCommand, reprocessDocument } from "../../features/knowledge/processing-api";
 import { loadReplacementUploadStatus, submitDocumentRevisionUpload } from "../../features/knowledge/replacement-upload-api";
@@ -15,6 +18,10 @@ import { ru } from "./ru";
 
 const PAGE_LIMIT = 25;
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const safeErrorMessage = (error) => {
+  const localized = localizeApiError(error);
+  return `${localized.title}. ${localized.description}`;
+};
 
 async function pollUntil(load, terminal, attempts = 40) {
   let value = await load();
@@ -25,8 +32,8 @@ async function pollUntil(load, terminal, attempts = 40) {
   return value;
 }
 
-function initialScope(runtime) {
-  const search = new URLSearchParams(window.location.search);
+function initialScope(runtime, routeSearch) {
+  const search = new URLSearchParams(routeSearch);
   const workspace = search.get("workspace");
   const environment = search.get("environment");
   return {
@@ -63,15 +70,20 @@ function resolveInterfaceState(query, enabled) {
 }
 
 export function useSpineDocuments(toast, { initialSelectedId = null } = {}) {
+  const location = useLocation();
+  const navigate = useNavigate();
   const auth = useAuth();
   const runtime = useBrowserRuntime();
   const queryClient = useQueryClient();
-  const scopeInitial = useMemo(() => initialScope(runtime), [runtime]);
+  const scopeInitial = useMemo(() => initialScope(runtime, location.search), [location.search, runtime]);
   const [workspace, setWorkspace] = useState(scopeInitial.workspace);
   const [environment, setEnvironment] = useState(scopeInitial.environment);
-  const [filters, setFilters] = useState({});
+  const [filters, setFilters] = useState(() => {
+    const search = new URLSearchParams(location.search);
+    return Object.fromEntries(FILTER_KEYS.flatMap(key => search.get(key) ? [[key, search.get(key)]] : []));
+  });
   const [preset, setPresetState] = useState("all");
-  const [cursor, setCursor] = useState(null);
+  const [cursor, setCursor] = useState(() => new URLSearchParams(location.search).get("cursor"));
   const [cursorHistory, setCursorHistory] = useState([]);
   const [selectedId, setSelectedId] = useState(initialSelectedId);
   const [connection, setConnection] = useState("connected");
@@ -100,7 +112,14 @@ export function useSpineDocuments(toast, { initialSelectedId = null } = {}) {
   const scoped = documentsQuery.data?.items ?? [];
   const filtered = scoped.filter(d => matchesPreset(d, preset));
   const presetCounts = Object.fromEntries(PRESETS.map(p => [p.value, scoped.filter(d => matchesPreset(d, p.value)).length]));
-  const selectedBase = scoped.find(d => d.source_object_id === selectedId) ?? null;
+  const directDocumentQuery = useQuery({
+    queryKey: ["spine", "ported-document-detail", workspace, environment, selectedId],
+    queryFn: ({ signal }) => loadDocument(client, selectedId, signal),
+    enabled: enabled && Boolean(selectedId),
+    retry: false,
+  });
+  const selectedBase = scoped.find(d => d.source_object_id === selectedId)
+    ?? (directDocumentQuery.data?.document ? normalizeApiDocument(directDocumentQuery.data.document) : null);
   const revisionsQuery = useQuery({
     queryKey: ["spine", "ported-document-revisions", workspace, environment, selectedId],
     queryFn: ({ signal }) => loadRevisionHistory(client, selectedId, undefined, signal),
@@ -132,11 +151,18 @@ export function useSpineDocuments(toast, { initialSelectedId = null } = {}) {
   } : null;
 
   function writeScope(nextWorkspace, nextEnvironment) {
-    const url = new URL(window.location.href);
-    url.searchParams.set("workspace", nextWorkspace);
-    url.searchParams.set("environment", nextEnvironment);
-    url.searchParams.delete("cursor");
-    window.history.replaceState(null, "", url);
+    const search = new URLSearchParams(location.search);
+    search.set("workspace", nextWorkspace);
+    search.set("environment", nextEnvironment);
+    search.delete("cursor");
+    search.delete("processing_cursor");
+    navigate({ pathname: location.pathname, search: search.toString() }, { replace: true });
+  }
+
+  function writeCollectionQuery(mutator) {
+    const search = new URLSearchParams(location.search);
+    mutator(search);
+    navigate({ pathname: location.pathname, search: search.toString() }, { replace: true });
   }
 
   function changeScope(next) {
@@ -146,7 +172,8 @@ export function useSpineDocuments(toast, { initialSelectedId = null } = {}) {
     setEnvironment(nextEnvironment);
     setCursor(null);
     setCursorHistory([]);
-    setSelectedId(null);
+    const deepLinkedDocumentId = location.pathname.match(/^\/knowledge\/documents\/([^/]+)$/)?.[1] ?? null;
+    setSelectedId(deepLinkedDocumentId);
     setConnection("connected");
     writeScope(nextWorkspace, nextEnvironment);
   }
@@ -160,11 +187,24 @@ export function useSpineDocuments(toast, { initialSelectedId = null } = {}) {
     setCursor(null);
     setCursorHistory([]);
     setSelectedId(null);
+    writeCollectionQuery(search => {
+      if (value) search.set(key, value); else search.delete(key);
+      search.delete("cursor");
+    });
   }
 
   function setPreset(value) {
     setPresetState(value);
     setSelectedId(null);
+  }
+
+  function selectDocument(id) {
+    setSelectedId(id);
+    if (!location.pathname.startsWith("/knowledge/documents")) return;
+    navigate({
+      pathname: id ? `/knowledge/documents/${id}` : "/knowledge/documents",
+      search: location.search,
+    }, { replace: true });
   }
 
   async function refresh() {
@@ -192,7 +232,7 @@ export function useSpineDocuments(toast, { initialSelectedId = null } = {}) {
   }
 
   async function reprocess(id) {
-    const revisionId = scoped.find(d => d.source_object_id === id)?.current_revision?.source_revision_id;
+    const revisionId = (selectedBase?.source_object_id === id ? selectedBase : scoped.find(d => d.source_object_id === id))?.current_revision?.source_revision_id;
     if (!revisionId) return;
     try {
       const receipt = await reprocessDocument(client, {
@@ -210,12 +250,12 @@ export function useSpineDocuments(toast, { initialSelectedId = null } = {}) {
       }
       await refresh();
     } catch (error) {
-      toast(error instanceof SpineApiError ? error.safeMessage : ru.status.failed.description, "warning");
+      toast(safeErrorMessage(error), "warning");
     }
   }
 
   async function replace(id, file) {
-    const revisionId = scoped.find(d => d.source_object_id === id)?.current_revision?.source_revision_id;
+    const revisionId = (selectedBase?.source_object_id === id ? selectedBase : scoped.find(d => d.source_object_id === id))?.current_revision?.source_revision_id;
     if (!revisionId || !(file instanceof File)) return;
     try {
       const receipt = await submitDocumentRevisionUpload(client, id, revisionId, file, createIdempotencyKey(), new AbortController().signal);
@@ -228,28 +268,28 @@ export function useSpineDocuments(toast, { initialSelectedId = null } = {}) {
       }
       await refresh();
     } catch (error) {
-      toast(error instanceof SpineApiError ? error.safeMessage : ru.status.failed.description, "warning");
+      toast(safeErrorMessage(error), "warning");
     }
   }
 
   async function tombstone(id, reason) {
-    const revisionId = scoped.find(d => d.source_object_id === id)?.current_revision?.source_revision_id;
+    const revisionId = (selectedBase?.source_object_id === id ? selectedBase : scoped.find(d => d.source_object_id === id))?.current_revision?.source_revision_id;
     if (!revisionId) return;
     try {
       const receipt = await submitDocumentTombstone(client, id, {
         deletion_reason: reason,
         expected_current_revision_id: revisionId,
       }, createLifecycleIdempotencyKey("tombstone"), new AbortController().signal);
-      toast(ru.documents.documentActions.tombstoneCreated, "success");
       if (["accepted_processing_pending", "processing_dispatched"].includes(receipt.status)) {
         await pollUntil(
           () => loadLifecycleOperation(client, receipt.operation_id, new AbortController().signal),
           status => !["accepted_processing_pending", "processing_dispatched"].includes(status.status),
         );
       }
+      toast(ru.documents.documentActions.tombstoneCreated, "success");
       await refresh();
     } catch (error) {
-      toast(error instanceof SpineApiError ? error.safeMessage : ru.status.failed.description, "warning");
+      toast(safeErrorMessage(error), "warning");
     }
   }
 
@@ -274,7 +314,15 @@ export function useSpineDocuments(toast, { initialSelectedId = null } = {}) {
     workspaceOptions: runtime.scope.workspaceOptions,
     environmentOptions: runtime.scope.environmentOptions,
     preset, presetCounts, setPreset,
-    filters, setFilter, clearFilters: () => { setFilters({}); setCursor(null); setCursorHistory([]); },
+    filters, setFilter, clearFilters: () => {
+      setFilters({});
+      setCursor(null);
+      setCursorHistory([]);
+      writeCollectionQuery(search => {
+        FILTER_KEYS.forEach(key => search.delete(key));
+        search.delete("cursor");
+      });
+    },
     hasFilters: Object.keys(filters).length > 0,
     scoped, filtered, pageRows: filtered,
     cursor: cursorHistory.length * PAGE_LIMIT, pageLimit: PAGE_LIMIT,
@@ -285,19 +333,27 @@ export function useSpineDocuments(toast, { initialSelectedId = null } = {}) {
       setCursorHistory(history => [...history, cursor]);
       setCursor(next);
       setSelectedId(null);
+      writeCollectionQuery(search => search.set("cursor", next));
     },
     prevPage: () => setCursorHistory(history => {
       if (!history.length) return history;
-      setCursor(history.at(-1) ?? null);
+      const previous = history.at(-1) ?? null;
+      setCursor(previous);
       setSelectedId(null);
+      writeCollectionQuery(search => {
+        if (previous) search.set("cursor", previous); else search.delete("cursor");
+      });
       return history.slice(0, -1);
     }),
     inFlight: scoped.filter(isInFlight),
-    selected, selectedId: selected?.source_object_id ?? null, setSelectedId,
-    scenario: "ready", setScenario: () => {}, interfaceState: resolveInterfaceState(documentsQuery, enabled),
+    selected, selectedId: selected?.source_object_id ?? null, setSelectedId: selectDocument,
+    scenario: "ready", setScenario: () => {},
+    interfaceState: selectedId && directDocumentQuery.error
+      ? resolveInterfaceState(directDocumentQuery, enabled)
+      : resolveInterfaceState(documentsQuery, enabled),
     retry: () => documentsQuery.refetch(),
     connection, checkConnection,
     upload, reprocess, replace, tombstone, copy,
-    reveal: setSelectedId,
+    reveal: selectDocument,
   };
 }
