@@ -68,6 +68,9 @@ class NormalizedConnectorObservation(DefinitionModel):
     observer_service: BoundedIdentifier
     received_at: datetime
     observed_at: datetime
+    provider_media_type: str | None = Field(default=None, max_length=255)
+    provider_version_before: str | None = Field(default=None, min_length=1, max_length=128)
+    provider_version_after: str | None = Field(default=None, min_length=1, max_length=128)
 
     @model_validator(mode="after")
     def validate_scope_and_provenance(self) -> "NormalizedConnectorObservation":
@@ -84,6 +87,15 @@ class NormalizedConnectorObservation(DefinitionModel):
             raise ValueError("external identity connection does not match observation")
         if (self.order_scheme is None) != (self.order_token is None):
             raise ValueError("order scheme and token must be supplied together")
+        if (self.provider_version_before is None) != (
+            self.provider_version_after is None
+        ):
+            raise ValueError("provider version guard must contain both versions")
+        if (
+            self.provider_version_before is not None
+            and self.provider_version_before != self.provider_version_after
+        ):
+            raise ValueError("provider version guard must be stable")
         for value in (self.received_at, self.observed_at):
             if value.tzinfo is None or value.utcoffset() is None:
                 raise ValueError("observation timestamps must be timezone-aware")

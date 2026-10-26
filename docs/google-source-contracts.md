@@ -89,3 +89,20 @@ rejected by the existing idempotency and observation repositories.
 
 No connector code calls Cognee directly. Projection remains a downstream
 consumer of the committed `ingestion.projection.requested` intent.
+
+## Drive file reader
+
+Issue #602 adds a provider-neutral Drive adapter behind the same admission and
+handoff boundary. It reads one explicitly approved file by taking metadata,
+downloading the exact bytes (or using the configured export MIME), and taking
+metadata again. The candidate is rejected if the file ID or provider version
+changes during that sequence. The resulting observation retains the provider
+MIME, representation profile, exact bytes and both version-guard values.
+
+`connection_id + file_id` is mapped through `google-drive-file-key:v1`; file
+name, URL, drive/parent metadata and the current provider version are
+provenance or operational evidence, not source identity. The normalized
+handoff carries the provider version as an ordering token and the selected
+MIME/profile into the existing immutable original, `SourceRevision`, acceptance
+and projection-outbox path. The adapter has no cursor, deletion behavior,
+Cognee dependency or credential handling.

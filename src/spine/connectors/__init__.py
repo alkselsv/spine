@@ -6,6 +6,18 @@ from spine.connectors.observations import (
     ConnectorCoverage,
     NormalizedConnectorObservation,
 )
+from spine.connectors.google_drive import (
+    DriveFileContent,
+    DriveFileMetadata,
+    DriveFileReadProfile,
+    GoogleDriveConcurrentModificationError,
+    GoogleDriveObservation,
+    GoogleDriveObservationReader,
+    GoogleDriveProvider,
+    GoogleDriveProviderAdapter,
+    GoogleDriveReader,
+    GoogleDriveService,
+)
 
 __all__ = [
     "CONNECTOR_OBSERVATION_SCHEMA",
@@ -14,4 +26,14 @@ __all__ = [
     "NormalizedConnectorObservation",
     "SourceRecord",
     "SyncBatch",
+    "DriveFileContent",
+    "DriveFileMetadata",
+    "DriveFileReadProfile",
+    "GoogleDriveConcurrentModificationError",
+    "GoogleDriveObservation",
+    "GoogleDriveObservationReader",
+    "GoogleDriveProvider",
+    "GoogleDriveProviderAdapter",
+    "GoogleDriveReader",
+    "GoogleDriveService",
 ]
