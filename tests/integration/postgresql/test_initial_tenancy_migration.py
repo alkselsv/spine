@@ -4902,13 +4902,14 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261121_58_ingestion_qualification_failure_codes.py",
         "20261122_59_projection_terminal_transitions.py",
         "20261123_60_google_connection_admission.py",
+        "20261124_61_drive_revision_metadata.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
     (target / "versions" / "20261124_61_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
         "revision = '20261124_61'\n"
-        "down_revision = '20261123_60'\n"
+        "down_revision = '20261124_61'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"
