@@ -586,6 +586,74 @@ async def test_sheets_location_only_observation_skips_revision_projection_intent
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case", "cell_update"),
+    (
+        (
+            "formula",
+            {"entered": GoogleSheetCellValue(kind="formula", value="=SUM(C2:E2)")},
+        ),
+        (
+            "entered_value",
+            {"entered": GoogleSheetCellValue(kind="string", value="1250.5")},
+        ),
+        (
+            "effective_value",
+            {"effective": GoogleSheetCellValue(kind="number", value="1251.5")},
+        ),
+        ("formatted_value", {"formatted": "1 251,50 ₽"}),
+        (
+            "number_format",
+            {
+                "number_format": GoogleSheetNumberFormat(
+                    type="CURRENCY", pattern="₽ #,##0.00"
+                )
+            },
+        ),
+    ),
+)
+async def test_configured_cell_edit_creates_revision_and_projection_intent(
+    case: str, cell_update: dict[str, object]
+) -> None:
+    original_snapshot = _handoff_snapshot(row_number=2)
+    original_row = original_snapshot.rows[0]
+    changed_row = original_row.model_copy(
+        update={
+            "cells": (
+                original_row.cells[0],
+                original_row.cells[1].model_copy(update=cell_update),
+            )
+        }
+    )
+    changed_snapshot = original_snapshot.model_copy(update={"rows": (changed_row,)})
+    reader = _SheetsHandoffReader(
+        snapshots=(original_snapshot, changed_snapshot)
+    )
+    orchestrator, _, _, _, uow = _orchestrator(reader=reader)
+    before = await orchestrator.ingest(
+        _command(f"{case}-before").model_copy(
+            update={"command_identity": f"connector.{case}-before"}
+        )
+    )
+    after = await orchestrator.ingest(
+        _command(f"{case}-after").model_copy(
+            update={
+                "command_identity": f"connector.{case}-after",
+                "expected_current_revision_id": before.revision.revision_id,
+            }
+        )
+    )
+
+    assert before.revision.revision_id != after.revision.revision_id
+    assert after.revision.original_sha256 != before.revision.original_sha256
+    assert uow.accepted == 2
+    assert len(uow.events) == 2
+    assert all(
+        event.event_type == "ingestion.projection.requested" for event in uow.events
+    )
+
+
+@pytest.mark.asyncio
 async def test_read_denial_stops_before_original_storage():
     orchestrator, reader, uploader, _, _ = _orchestrator(_observation())
     reader.error = RuntimeError("read denied")
