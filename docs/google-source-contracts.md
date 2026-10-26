@@ -136,3 +136,13 @@ SourceObject/SourceRevision, canonical-acceptance and transactional-outbox
 path as the Drive reader. Replaying an unchanged row reproduces the same
 original bytes, event identity and revision digest; locator resolution remains
 bound to the exact stored row revision and representation.
+
+Before and after the configured spreadsheet/range extraction, the reader checks
+the provider file version. A version change rejects the whole candidate, so no
+partial row reaches canonical ingestion. The original row digest includes only
+configured cell representations and spreadsheet locale/timezone. Row/A1
+position, sheet title and Developer Metadata locator details stay in
+revision-scoped provenance. A location-only observation appends provenance to
+the current revision without repeating canonical acceptance or requesting a
+new projection. A changed row representation creates a new revision and follows
+the normal acceptance and projection-intent path.

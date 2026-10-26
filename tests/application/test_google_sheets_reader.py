@@ -8,6 +8,7 @@ import pytest
 
 from spine.connectors.google_sheets import (
     GoogleSheetsCellData,
+    GoogleSheetsConcurrentModificationError,
     GoogleSheetsDeveloperMetadata,
     GoogleSheetsProviderAdapter,
     GoogleSheetsReadProfile,
@@ -137,6 +138,18 @@ class FakeSheetsService:
     def __init__(self, snapshot: GoogleSheetsSnapshot) -> None:
         self.snapshot = snapshot
         self.calls: list[tuple[str, str, int]] = []
+        self.provider_versions = ["1", "1"]
+        self.version_calls = 0
+
+    async def get_provider_version(
+        self, connection, resource_scope_reference, spreadsheet_id
+    ) -> str:
+        del connection, resource_scope_reference, spreadsheet_id
+        version = self.provider_versions[
+            min(self.version_calls, len(self.provider_versions) - 1)
+        ]
+        self.version_calls += 1
+        return version
 
     async def get_spreadsheet(
         self, connection, resource_scope_reference, spreadsheet_id, sheet_id
@@ -188,6 +201,125 @@ async def test_sheets_reader_preserves_all_configured_cell_representations_and_c
     normalized = observation.to_normalized_observation()
     assert normalized.external_identity.provider_key.sheet_id == 17
     assert normalized.original_bytes.startswith(b'{"cells":')
+    assert normalized.provider_version_before == "1"
+    assert normalized.provider_version_after == "1"
+
+
+@pytest.mark.asyncio
+async def test_sheets_location_changes_preserve_content_digest_and_append_locator_provenance():
+    first = _provider(FakeSheetsService(_snapshot(_row(row_number=2))))
+    moved_row = _row(row_number=5)
+    second_service = FakeSheetsService(
+        GoogleSheetsSnapshot(
+            spreadsheet_id="spreadsheet-456",
+            sheet_id=17,
+            sheet_title="Renamed estimates",
+            locale="ru_RU",
+            time_zone="Europe/Moscow",
+            rows=(moved_row.model_copy(update={"developer_metadata": (
+                GoogleSheetsDeveloperMetadata(
+                    metadata_id=9002,
+                    key="spine.business_id",
+                    value="EST-2026-0001",
+                    row_number=5,
+                ),
+            )}),),
+        )
+    )
+    second = _provider(second_service)
+    command = SimpleNamespace(
+        resource_scope_reference=SimpleNamespace(value=SCOPE),
+        authorization_generation=7,
+        configuration_generation=11,
+    )
+    connection = SimpleNamespace(
+        connection_id=CONNECTION,
+        workspace_id=UUID("10000000-0000-4000-8000-000000000001"),
+        environment_id=UUID("20000000-0000-4000-8000-000000000001"),
+    )
+
+    first_observation = await first.read(connection, command)
+    second_observation = await second.read(connection, command)
+    first_normalized = first_observation.to_normalized_observation()
+    second_normalized = second_observation.to_normalized_observation()
+
+    assert first_normalized.original_bytes == second_normalized.original_bytes
+    assert first_normalized.event_digest == second_normalized.event_digest
+    assert first_normalized.event_identity != second_normalized.event_identity
+    assert first_normalized.origin_locator_digest != second_normalized.origin_locator_digest
+    assert first_normalized.origin_locator_value == "sheet-row:2:a1:a2:c2"
+    assert second_normalized.origin_locator_value == "sheet-row:5:a1:a5:c5"
+
+
+@pytest.mark.asyncio
+async def test_sheets_reader_rejects_provider_change_during_snapshot_read():
+    service = FakeSheetsService(_snapshot(_row()))
+    service.provider_versions = ["14", "15"]
+
+    with pytest.raises(GoogleSheetsConcurrentModificationError):
+        await _provider(service).read(
+            SimpleNamespace(
+                connection_id=CONNECTION,
+                workspace_id=UUID("10000000-0000-4000-8000-000000000001"),
+                environment_id=UUID("20000000-0000-4000-8000-000000000001"),
+            ),
+            SimpleNamespace(
+                resource_scope_reference=SimpleNamespace(value=SCOPE),
+                authorization_generation=7,
+                configuration_generation=11,
+            ),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cell_update",
+    (
+        {"entered": GoogleSheetCellValue(kind="formula", value="=SUM(C2:E2)")},
+        {"entered": GoogleSheetCellValue(kind="number", value="1250.5")},
+        {"effective": GoogleSheetCellValue(kind="number", value="1251.5")},
+        {"formatted": "1 251,50 ₽"},
+        {
+            "number_format": GoogleSheetNumberFormat(
+                type="CURRENCY", pattern="#,##0.00 ₽"
+            )
+        },
+    ),
+)
+async def test_sheets_revision_digest_changes_when_a_configured_representation_changes(
+    cell_update: dict[str, object],
+) -> None:
+    row = _row()
+    changed_cells = (
+        row.cells[0],
+        row.cells[1].model_copy(update=cell_update),
+        row.cells[2],
+    )
+    changed_row = row.model_copy(update={"cells": changed_cells})
+    connection = SimpleNamespace(
+        connection_id=CONNECTION,
+        workspace_id=UUID("10000000-0000-4000-8000-000000000001"),
+        environment_id=UUID("20000000-0000-4000-8000-000000000001"),
+    )
+    command = SimpleNamespace(
+        resource_scope_reference=SimpleNamespace(value=SCOPE),
+        authorization_generation=7,
+        configuration_generation=11,
+    )
+
+    original = await _provider(FakeSheetsService(_snapshot(row))).read(
+        connection, command
+    )
+    changed = await _provider(FakeSheetsService(_snapshot(changed_row))).read(
+        connection, command
+    )
+
+    assert original.to_normalized_observation().original_bytes != (
+        changed.to_normalized_observation().original_bytes
+    )
+    assert original.to_normalized_observation().event_digest != (
+        changed.to_normalized_observation().event_digest
+    )
 
 
 @pytest.mark.asyncio
