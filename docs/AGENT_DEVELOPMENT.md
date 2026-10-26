@@ -1,9 +1,9 @@
 # Разработка агентов в Spine
 
 Статус: руководство по целевому процессу разработки. Agent runtime, Context
-Broker, versioned registry, Temporal workflows и release gates пока реализованы
-не полностью; примеры ниже задают направление реализации, а не утверждают, что
-все команды и интерфейсы уже доступны.
+Broker, versioned registry и release gates пока реализованы не полностью;
+примеры ниже задают направление реализации, а не утверждают, что все команды и
+интерфейсы уже доступны.
 
 Этот документ описывает последовательный code-first процесс разработки агента в
 Spine. Сквозной пример — подготовка коммерческого предложения по первичному
@@ -15,6 +15,8 @@ Spine. Сквозной пример — подготовка коммерчес
 [ADR 0010](adr/0010-capability-based-agent-runtime.md). Требования к самому кейсу
 зафиксированы в [ROADMAP.md](ROADMAP.md#r2--генерация-коммерческих-предложений) и
 [описании кейса](cases/ИИ-ассистент%20для%20генерации%20коммерческих%20предложений.md).
+Проектирование, версия и выпуск процесса, в который включается агент, описаны
+отдельно в [WORKFLOW_DEVELOPMENT.md](WORKFLOW_DEVELOPMENT.md).
 
 ## 1. Основная идея
 
@@ -33,8 +35,8 @@ Spine. Сквозной пример — подготовка коммерчес
   → handlers, code steps, prompts и tools
   → tests и versioned eval dataset
   → immutable Agent Version
-  → code-first workflow с gates и human review
-  → shadow/canary/production
+  → scoped Agent Binding
+  → shadow/canary/production deployment
   → feedback и следующая версия
 ```
 
@@ -172,10 +174,11 @@ PostgreSQL и оригиналы источников остаются кано�
 relation traversal и token budget. Handler обращается к Context Broker через
 предоставленный runtime port/tool и не вызывает `cognee.*` напрямую.
 
-## 5. Шаг 4. Разделить процесс на шаги
+## 5. Шаг 4. Определить границу capability
 
-Не следует помещать весь процесс подготовки КП в один prompt. Каждый шаг должен
-иметь понятный контракт и независимо проверяемый результат.
+Не следует помещать весь процесс подготовки КП в один prompt или одного агента.
+До реализации нужно определить, какую законченную часть процесса предоставляет
+capability и какой типизированный artifact она принимает и возвращает.
 
 Начальная декомпозиция:
 
@@ -213,6 +216,9 @@ ClientRequest
 
 Расширять её следует только после прохождения eval и проверки пользовательского
 сценария, а не заранее строить универсальную систему генерации документов.
+Полная декомпозиция процесса, переходы между шагами и human review относятся к
+разработке workflow и описаны в
+[WORKFLOW_DEVELOPMENT.md](WORKFLOW_DEVELOPMENT.md).
 
 ## 6. Шаг 5. Определить capabilities
 
@@ -463,66 +469,42 @@ security/tool review, cost budget или quality threshold. Версия пос�
 workspace, environment или workflow scope. Workflow ссылается на capability, а
 не импортирует handler и не зашивает конкретную модель.
 
-## 13. Шаг 12. Собрать code-first workflow
+## 13. Шаг 12. Подключить Agent Version через binding
 
-Workflow definitions на текущем этапе создаются и рецензируются как
-типизированный код в Git. Control Plane может показывать graph, diff, runs,
-deploy и rollback, но не является визуальным редактором исходного определения.
+Готовая версия не импортируется напрямую из workflow. Для capability создаётся
+scoped `Agent Binding`, который выбирает `Agent Version` в конкретных workspace,
+environment или workflow scope. Binding должен закреплять допустимый deployment,
+grants и rollback target, не расширяя права пользователя, выпустившего агента.
 
-Рекомендуемое разделение:
+Workflow step ссылается на стабильное имя capability. Благодаря этому новую
+версию можно проверить в shadow/canary, переключить или откатить без изменения
+контракта процесса. Порядок создания и выпуска самого workflow описан в
+[WORKFLOW_DEVELOPMENT.md](WORKFLOW_DEVELOPMENT.md).
 
-```text
-src/spine/workflows/
-  definitions/
-    proposal_generation/
-      v1.py
-  code_steps/
-    proposal_pricing.py
-  temporal/
-    definitions/
-    activities/
-```
+## 14. Шаг 13. Проверить интеграцию
 
-Business workflow definition описывает типизированные steps, transitions,
-policies и bindings к capabilities/code-step keys. Temporal adapter переводит
-его в durable execution. В определении не должно быть import path из базы,
-прямого вызова Cognee или недетерминированного I/O.
-
-Для генерации КП workflow должен явно содержать:
-
-- создание и версии входных artifacts;
-- capability steps и их handoff gates;
-- ветку уточнения при неполных требованиях;
-- детерминированный расчёт сметы;
-- human edit/approve;
-- запрет отправки без approval;
-- idempotency keys, retry/fallback policy и terminal states;
-- закреплённую версию определения или полный execution snapshot.
-
-## 14. Шаг 13. Проверить процесс целиком
-
-Перед выпуском запускается вертикальный сценарий:
+Перед выпуском запускается вертикальный сценарий, который доказывает работу
+capability через публичные runtime и workflow boundaries:
 
 ```text
 загрузить тестовые источники
   → построить projection
   → создать ClientRequest
-  → запустить workflow
-  → проверить промежуточные artifacts и evidence
-  → запросить уточнение или approval
-  → получить ProposalDraft и Estimate
-  → сравнить исходный draft с правками менеджера
+  → вызвать capability через Agent Binding
+  → проверить output artifact и evidence
+  → проверить abstention и безопасную ошибку
+  → повторить вызов с тем же idempotency key
 ```
 
-Проверяются не только финальный текст, но и:
+Проверяются не только содержимое результата, но и:
 
-- версии source, projection, agent, prompt, context и workflow;
-- lineage каждого промежуточного artifact;
+- версии source, projection, agent, prompt и context;
+- lineage входного и выходного artifacts;
 - корректность и доступность citations;
-- воспроизводимость суммы;
-- отсутствие внешнего действия до approval;
-- понятные loading/partial/degraded/failure состояния в UI;
-- единый trace от пользовательского действия до retrieval и model call.
+- изоляция workspace и environment;
+- запрет неразрешённых tools и внешних действий;
+- совместимость результата с handoff-контрактом;
+- единый trace от agent invocation до retrieval и model call.
 
 ## 15. Шаг 14. Развернуть и наблюдать
 
@@ -532,9 +514,9 @@ policies и bindings к capabilities/code-step keys. Temporal adapter перев
 draft
   → offline eval
   → shadow
-  → canary binding
-  → production binding
-  → continuous handoff eval
+  → canary deployment/binding
+  → production deployment/binding
+  → continuous capability eval
   → rollback или superseded
 ```
 
@@ -547,7 +529,7 @@ draft
 
 - какая версия и с какими настройками создала результат;
 - какие источники и retrieval strategy использовались;
-- какой gate остановил или пропустил artifact;
+- какой validator или policy остановил результат;
 - сколько менеджер исправил и почему отклонил результат;
 - можно ли отключить binding или grant и вернуться к прошлой версии.
 
@@ -585,10 +567,10 @@ production observation
 - package, prompts, tools и resource limits версионированы;
 - unit, contract, isolation и failure tests проходят;
 - versioned eval dataset проходит согласованные thresholds;
-- code-first workflow содержит gates, human steps и rollback behavior;
 - Agent Version immutable и подключается через scoped binding;
+- интеграционный контракт с workflow определён и проверен;
 - runs сохраняют lineage, versions, metrics и trace;
-- UI позволяет человеку проверить evidence, исправить artifact и принять решение.
+- UI или artifact inspector позволяет человеку проверить evidence и результат.
 
 Если хотя бы один пункт нельзя подтвердить, агент остаётся draft или работает в
 shadow-режиме, но не становится production binding.

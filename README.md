@@ -300,6 +300,7 @@ production retrieval path.
 
 Подробные документы: [целевая архитектура](docs/ARCHITECTURE.md),
 [процесс разработки агентов](docs/AGENT_DEVELOPMENT.md),
+[процесс разработки workflow](docs/WORKFLOW_DEVELOPMENT.md),
 [требования к интерфейсу](docs/INTERFACE.md), [словарь терминов](docs/GLOSSARY.md)
 и [порядок релизов](docs/ROADMAP.md).
 
