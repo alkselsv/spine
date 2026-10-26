@@ -145,6 +145,13 @@ async def google_database(
         yield GoogleDatabase(migration_engine, runtime_engine)
     finally:
         await runtime_engine.dispose()
+        async with migration_engine.begin() as connection:
+            # The session PostgreSQL target is shared across modules. Google
+            # connection history is intentionally immutable, so reset this
+            # disposable schema instead of deleting protected audit records.
+            await connection.execute(
+                text("DROP SCHEMA IF EXISTS spine CASCADE")
+            )
         await migration_engine.dispose()
 
 

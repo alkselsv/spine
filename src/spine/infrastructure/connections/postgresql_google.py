@@ -6,7 +6,15 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from sqlalchemy import BigInteger, Column, DateTime, ForeignKeyConstraint, String, Table
+from sqlalchemy import (
+    BigInteger,
+    Column,
+    DateTime,
+    ForeignKeyConstraint,
+    MetaData,
+    String,
+    Table,
+)
 from sqlalchemy import insert, select, text
 from sqlalchemy.dialects.postgresql import ARRAY, UUID as PostgreSQLUUID
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -36,12 +44,15 @@ from spine.domain.connections.google import (
     OpaqueGoogleReference,
 )
 from spine.infrastructure.db.engine import SessionFactory
-from spine.infrastructure.persistence.postgresql_mappings import audit_events, metadata
+from spine.infrastructure.persistence.postgresql_mappings import audit_events
+
+
+_google_connection_metadata = MetaData(schema="spine")
 
 
 google_connection_versions = Table(
     "google_connection_versions",
-    metadata,
+    _google_connection_metadata,
     Column("connection_version_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
     Column("connection_id", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("approval_id", PostgreSQLUUID(as_uuid=True), nullable=False),
@@ -72,7 +83,7 @@ google_connection_versions = Table(
 
 google_connection_approvals = Table(
     "google_connection_approvals",
-    metadata,
+    _google_connection_metadata,
     Column("approval_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
     Column("workspace_id", PostgreSQLUUID(as_uuid=True), nullable=False),
     Column("environment_id", PostgreSQLUUID(as_uuid=True), nullable=False),
