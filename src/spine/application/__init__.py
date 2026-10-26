@@ -94,6 +94,12 @@ __all__ = [
     "QAEventLogStore",
     "QAResultEventPublisher",
     "ResumeCursorError",
+    "ConnectorIngestionCommand",
+    "ConnectorIngestionOrchestrator",
+    "ConnectorIngestionResult",
+    "ConnectorIngestionStatus",
+    "GoogleAuthorizedObservationReader",
+    "build_connector_canonical_acceptance_command",
 ]
 
 
@@ -145,6 +151,15 @@ def __getattr__(name: str) -> object:
         )
         if name == "ProductionAnswerQuestionCapability":
             module_name = "spine.application.production_qa_capability"
+        if name in {
+            "ConnectorIngestionCommand",
+            "ConnectorIngestionOrchestrator",
+            "ConnectorIngestionResult",
+            "ConnectorIngestionStatus",
+            "GoogleAuthorizedObservationReader",
+            "build_connector_canonical_acceptance_command",
+        }:
+            module_name = "spine.application.connector_ingestion"
         if name in {
             "AuthorizedQAStreamService",
             "QAEventLogStore",
