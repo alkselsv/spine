@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 
 import { createQaApiClient, createScopedApiClient } from '../../api/client';
@@ -7,8 +7,9 @@ import { apiQueryOptions } from '../../api/query';
 import { useAuth } from '../../app/auth';
 import { ApiErrorPanel, StatusPanel } from '../../app/status';
 import { useScope, type Scope } from '../../app/scope';
-import { formatDate } from '../../i18n/format';
+import { formatDate, formatNumber } from '../../i18n/format';
 import { ru } from '../../i18n/resources';
+import { WorkspaceLayout } from '../../components/WorkspaceLayout';
 import {
   createQASession,
   loadQAMessage,
@@ -57,6 +58,8 @@ function ChatExperience() {
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const identityVersion = auth.identityVersion ?? '';
+  const sessionCursor = readCursor(searchParams.get(SESSION_CURSOR));
+  const messageCursor = readCursor(searchParams.get(MESSAGE_CURSOR));
   const previousContext = useRef({ scope, identityVersion });
   const scopeChanged =
     previousContext.current.scope.workspaceId !== scope.workspaceId ||
@@ -66,6 +69,9 @@ function ChatExperience() {
     workspace: scope.workspaceId,
     environment: scope.environmentId,
   }).toString();
+  const sessionSearchParams = new URLSearchParams(scopeSearch);
+  if (sessionCursor) sessionSearchParams.set(SESSION_CURSOR, sessionCursor);
+  const sessionSearch = sessionSearchParams.toString();
   const client = useMemo(
     () =>
       createScopedApiClient({
@@ -97,14 +103,12 @@ function ChatExperience() {
     previousContext.current = { scope, identityVersion };
   }, [identityChanged, identityVersion, navigate, queryClient, scope, scopeChanged, scopeSearch]);
 
-  const sessionCursor = readCursor(searchParams.get(SESSION_CURSOR));
-  const messageCursor = readCursor(searchParams.get(MESSAGE_CURSOR));
   const sessionsQuery = useQuery({
     ...apiQueryOptions({
       load: (signal) => loadQASessionPage(client, scope, sessionCursor, signal),
       queryKey: qaSessionQueryKeys.sessions(scope, sessionCursor, identityVersion),
     }),
-    enabled: Boolean(auth.getBearerCredential && identityVersion && !sessionId && !scopeChanged),
+    enabled: Boolean(auth.getBearerCredential && identityVersion && !scopeChanged),
   });
   const validSessionId = sessionId && UUID_PATTERN.test(sessionId) ? sessionId : null;
   const sessionQuery = useQuery({
@@ -170,44 +174,12 @@ function ChatExperience() {
 
   if (!auth.getBearerCredential || !identityVersion) return <StatusPanel state="degraded" />;
   if (scopeChanged) return <StatusPanel state="loading" />;
-  if (sessionId) {
-    if (!validSessionId) {
-      return <StatusPanel state="failed" />;
-    }
-    return (
-      <SessionDetails
-        key={`${validSessionId}:${identityVersion}`}
-        client={client}
-        askClient={askClient}
-        identityVersion={identityVersion}
-        messageCursor={messageCursor}
-        messageQuery={messagesQuery}
-        onBack={() => navigate({ pathname: '/chat', search: `?${scopeSearch}` })}
-        onNextMessages={() => {
-          const cursor = messagesQuery.data?.next_cursor;
-          if (!cursor) return;
-          const next = new URLSearchParams(searchParams);
-          next.delete(SESSION_CURSOR);
-          next.set(MESSAGE_CURSOR, cursor);
-          setSearchParams(next);
-        }}
-        onRestore={() => {
-          restoreKey.current ??= createIdempotencyKey();
-          restoreMutation.mutate();
-        }}
-        restoreError={restoreMutation.error}
-        restorePending={restoreMutation.isPending}
-        scope={scope}
-        sessionQuery={sessionQuery}
-      />
-    );
-  }
-
-  return (
+  const sessionsRail = (
     <SessionList
+      compact
       createError={createMutation.error}
       createPending={createMutation.isPending}
-      currentSearch={scopeSearch}
+      currentSearch={sessionSearch}
       onCreate={() => {
         createKey.current ??= createIdempotencyKey();
         createMutation.mutate();
@@ -221,27 +193,80 @@ function ChatExperience() {
         setSearchParams(next);
       }}
       query={sessionsQuery}
+      selectedSessionId={validSessionId}
+    />
+  );
+  if (sessionId && !validSessionId) {
+    return (
+      <WorkspaceLayout
+        ariaLabel={ru.chat.workspaceLabel}
+        master={sessionsRail}
+        detail={<div className={styles.emptyDetail}><StatusPanel state="failed" /></div>}
+        mobileDetailActive
+      />
+    );
+  }
+  if (validSessionId) {
+    return (
+      <SessionDetails
+        key={`${validSessionId}:${identityVersion}`}
+        client={client}
+        askClient={askClient}
+        identityVersion={identityVersion}
+        messageCursor={messageCursor}
+        messageQuery={messagesQuery}
+        onBack={() => navigate({ pathname: '/chat', search: `?${sessionSearch}` })}
+        onNextMessages={() => {
+          const cursor = messagesQuery.data?.next_cursor;
+          if (!cursor) return;
+          const next = new URLSearchParams(searchParams);
+          next.set(MESSAGE_CURSOR, cursor);
+          setSearchParams(next);
+        }}
+        onRestore={() => {
+          restoreKey.current ??= createIdempotencyKey();
+          restoreMutation.mutate();
+        }}
+        restoreError={restoreMutation.error}
+        restorePending={restoreMutation.isPending}
+        scope={scope}
+        sessionQuery={sessionQuery}
+        sessionsRail={sessionsRail}
+      />
+    );
+  }
+
+  return (
+    <WorkspaceLayout
+      ariaLabel={ru.chat.workspaceLabel}
+      master={sessionsRail}
+      detail={<NeutralChatDetail />}
+      inspector={<NeutralInspector />}
     />
   );
 }
 
 function SessionList({
+  compact = false,
   createError,
   createPending,
   currentSearch,
   onCreate,
   onNextPage,
   query,
+  selectedSessionId = null,
 }: {
+  compact?: boolean;
   createError: unknown;
   createPending: boolean;
   currentSearch: string;
   onCreate: () => void;
   onNextPage: () => void;
   query: ReturnType<typeof useQuery<Awaited<ReturnType<typeof loadQASessionPage>>>>;
+  selectedSessionId?: string | null;
 }) {
   return (
-    <section className={styles.page} aria-labelledby="sessions-heading">
+    <section className={compact ? styles.sessionRail : styles.page} aria-labelledby="sessions-heading">
       <header className={styles.pageHeader}>
         <div>
           <p className={styles.eyebrow}>{ru.page.eyebrow}</p>
@@ -254,7 +279,9 @@ function SessionList({
       </header>
 
       {createError ? <ApiErrorPanel error={createError} /> : null}
-      {query.error && !query.data ? <ApiErrorPanel error={query.error} /> : null}
+      {query.error && !query.data
+        ? compact ? <StatusPanel state="degraded" /> : <ApiErrorPanel error={query.error} />
+        : null}
       {query.isPending ? <StatusPanel state="loading" /> : null}
       {query.isStale && query.data ? <StatusPanel state="stale" /> : null}
       {(query.isStale || query.error || query.fetchStatus === 'paused') && query.data ? <StatusPanel state="partial" /> : null}
@@ -264,6 +291,7 @@ function SessionList({
         <div className={styles.sessionList} aria-label={ru.chat.sessionsTitle}>
           {query.data.items.map((session) => (
             <Link
+              aria-current={session.session_id === selectedSessionId ? 'page' : undefined}
               className={styles.sessionLink}
               key={session.session_id}
               to={{ pathname: `/chat/${session.session_id}`, search: `?${currentSearch}` }}
@@ -312,6 +340,7 @@ function SessionDetails({
   restorePending,
   scope,
   sessionQuery,
+  sessionsRail,
 }: {
   client: ReturnType<typeof createScopedApiClient>;
   askClient: ReturnType<typeof createQaApiClient>;
@@ -325,23 +354,39 @@ function SessionDetails({
   restorePending: boolean;
   scope: Scope;
   sessionQuery: ReturnType<typeof useQuery<Awaited<ReturnType<typeof loadQASession>>>>;
+  sessionsRail: ReactNode;
 }) {
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const [admission, setAdmission] = useState<{ messageId: string; runId: string } | null>(null);
   const [eventObservation, setEventObservation] = useState<'idle' | 'observing' | 'reconnecting' | 'failed'>('idle');
   const [clarificationTarget, setClarificationTarget] = useState<string | null>(null);
+  const [railCollapsed, setRailCollapsed] = useState(false);
+  const [inspectorHost, setInspectorHost] = useState<HTMLElement | null>(null);
+  const inspectorTrigger = useRef<HTMLElement | null>(null);
+  const inspectorTriggerLabel = useRef<string | null>(null);
+  const showSessionsButton = useRef<HTMLButtonElement | null>(null);
   const session = sessionQuery.isStale || sessionQuery.error ? undefined : sessionQuery.data;
   const linkedMessageId = searchParams.get('message_id');
   const linkedRunId = searchParams.get('run_id');
   const linkedCitationId = searchParams.get('citation_id');
+  const requestedInspector = searchParams.get('inspector');
   const returnRunId = searchParams.get('return_run_id');
   const invalidDeepLink = Boolean(
     (linkedMessageId && !UUID_PATTERN.test(linkedMessageId)) ||
     (linkedRunId && !UUID_PATTERN.test(linkedRunId)) ||
     (linkedCitationId && (!linkedMessageId || !linkedRunId || !UUID_PATTERN.test(linkedCitationId))) ||
+    (requestedInspector && requestedInspector !== 'run' && requestedInspector !== 'citation') ||
+    (requestedInspector === 'citation' && !linkedCitationId) ||
     (returnRunId && !UUID_PATTERN.test(returnRunId)),
   );
+  const inspectorMode: 'citation' | 'run' | 'none' = invalidDeepLink
+    ? 'none'
+    : linkedCitationId
+      ? 'citation'
+      : requestedInspector === 'run'
+        ? 'run'
+        : 'none';
   const deepLinkMessageId = invalidDeepLink ? null : linkedMessageId;
   const requestedMessageId = deepLinkMessageId ?? admission?.messageId ?? null;
   const admittedMessageQuery = useQuery({
@@ -437,8 +482,64 @@ function SessionDetails({
   const clarificationMessage = messages?.find(
     (message) => message.message_id === clarificationTarget && message.terminal_outcome === 'clarification_required',
   );
+  const inspectorMessage = linkedMessageId
+    ? messages?.find((message) => message.message_id === linkedMessageId) ?? null
+    : null;
+
+  function openInspector(message: QAMessage, mode: 'citation' | 'run', citationId?: string | null) {
+    inspectorTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    inspectorTriggerLabel.current = inspectorTrigger.current?.getAttribute('aria-label')
+      ?? inspectorTrigger.current?.textContent?.trim()
+      ?? null;
+    const next = new URLSearchParams(searchParams);
+    next.set('message_id', message.message_id);
+    if (message.run_id) next.set('run_id', message.run_id);
+    else next.delete('run_id');
+    next.set('inspector', mode);
+    if (mode === 'citation' && citationId) next.set('citation_id', citationId);
+    else next.delete('citation_id');
+    setSearchParams(next);
+  }
+
+  function closeInspector() {
+    const previousTrigger = inspectorTrigger.current;
+    const previousTriggerLabel = inspectorTriggerLabel.current;
+    const next = new URLSearchParams(searchParams);
+    next.delete('inspector');
+    next.delete('citation_id');
+    setSearchParams(next);
+    requestAnimationFrame(() => {
+      if (previousTrigger?.isConnected) {
+        previousTrigger.focus();
+        return;
+      }
+      const replacement = [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) =>
+        button.getAttribute('aria-label') === previousTriggerLabel || button.textContent?.trim() === previousTriggerLabel,
+      );
+      replacement?.focus();
+    });
+  }
+
   return (
-    <section className={styles.page} aria-labelledby="session-heading">
+    <WorkspaceLayout
+      ariaLabel={ru.chat.workspaceLabel}
+      master={(
+        <div className={styles.railShell}>
+          <button
+            className={styles.collapseButton}
+            onClick={() => {
+              setRailCollapsed(true);
+              requestAnimationFrame(() => showSessionsButton.current?.focus());
+            }}
+            type="button"
+          >
+            {ru.chat.collapseSessions}
+          </button>
+          {sessionsRail}
+        </div>
+      )}
+      detail={(
+    <section className={styles.threadPane} aria-labelledby="session-heading">
       <header className={styles.pageHeader}>
         <div>
           <p className={styles.eyebrow}>{ru.chat.sessionsTitle}</p>
@@ -451,9 +552,19 @@ function SessionDetails({
             </p>
           ) : null}
         </div>
-        <button className={styles.secondaryButton} onClick={onBack} type="button">
-          {ru.chat.backToSessions}
-        </button>
+        <div className={styles.headerActions}>
+          <button
+            className={styles.secondaryButton}
+            onClick={() => setRailCollapsed((collapsed) => !collapsed)}
+            ref={showSessionsButton}
+            type="button"
+          >
+            {railCollapsed ? ru.chat.showSessions : ru.chat.collapseSessions}
+          </button>
+          <button className={`${styles.secondaryButton} ${styles.mobileOnly}`} onClick={onBack} type="button">
+            {ru.chat.backToSessions}
+          </button>
+        </div>
       </header>
 
       {sessionQuery.error ? <ApiErrorPanel error={sessionQuery.error} /> : null}
@@ -508,6 +619,16 @@ function SessionDetails({
                     if (requestedMessageId === message.message_id) void admittedMessageQuery.refetch();
                   }}
                   onClarify={() => setClarificationTarget(message.message_id)}
+                  onCitationSelectionChange={(citationId) => {
+                    if (citationId) openInspector(message, 'citation', citationId);
+                    else closeInspector();
+                  }}
+                  onOpenRunSummary={() => openInspector(message, 'run')}
+                  inspectorHost={
+                    message.message_id === linkedMessageId && inspectorMode === 'citation'
+                      ? inspectorHost
+                      : null
+                  }
                   targetCitationId={
                     message.message_id === deepLinkMessageId && !deepLinkMismatch ? linkedCitationId : null
                   }
@@ -593,6 +714,7 @@ function SessionDetails({
             nextSearch.delete('message_id');
             nextSearch.delete('run_id');
             nextSearch.delete('citation_id');
+            nextSearch.delete('inspector');
             nextSearch.delete('return_run_id');
             nextSearch.delete(MESSAGE_CURSOR);
             setSearchParams(nextSearch, { replace: true });
@@ -614,24 +736,43 @@ function SessionDetails({
         </footer>
       ) : null}
     </section>
+      )}
+      inspector={(
+        <ContextualInspector
+          hostRef={setInspectorHost}
+          message={inspectorMessage}
+          mode={inspectorMode}
+          onClose={closeInspector}
+        />
+      )}
+      inspectorOpen={inspectorMode !== 'none'}
+      masterCollapsed={railCollapsed}
+      mobileDetailActive
+    />
   );
 }
 
 function MessageCard({
   client,
   hideCancellationControl,
+  inspectorHost,
   message,
   onCanonicalRefresh,
+  onCitationSelectionChange,
   onClarify,
+  onOpenRunSummary,
   targetCitationId,
   returnRunId,
   scope,
 }: {
   client: ReturnType<typeof createScopedApiClient>;
   hideCancellationControl: boolean;
+  inspectorHost: HTMLElement | null;
   message: QAMessage;
   onCanonicalRefresh: () => void;
+  onCitationSelectionChange: (citationId: string | null) => void;
   onClarify: () => void;
+  onOpenRunSummary: () => void;
   targetCitationId: string | null;
   returnRunId: string | null;
   scope: Scope;
@@ -676,7 +817,9 @@ function MessageCard({
           {message.state === 'terminal' && message.terminal_outcome === 'answered' ? (
             <AcceptedAnswer
               client={client}
+              inspectorHost={inspectorHost}
               message={message}
+              onCitationSelectionChange={onCitationSelectionChange}
               targetCitationId={targetCitationId}
               scope={scope}
             />
@@ -689,24 +832,108 @@ function MessageCard({
           {message.run_id &&
           UUID_PATTERN.test(message.run_id) &&
           UUID_PATTERN.test(message.message_id) ? (
-            <Link
-              className={styles.textButton}
-              to={{
-                pathname: `/qa/runs/${message.run_id}`,
-                search: `?${new URLSearchParams({
-                  workspace: scope.workspaceId,
-                  environment: scope.environmentId,
-                  return_session_id: message.session_id,
-                  return_message_id: message.message_id,
-                }).toString()}`,
-              }}
-            >
-              {returnRunId === message.run_id ? ru.chat.backToRun : ru.chat.openRun}
-            </Link>
+            <div className={styles.messageActions}>
+              <button className={styles.textButton} onClick={onOpenRunSummary} type="button">
+                {ru.chat.inspectRunSummary}
+              </button>
+              <Link
+                className={styles.textButton}
+                to={{
+                  pathname: `/qa/runs/${message.run_id}`,
+                  search: `?${new URLSearchParams({
+                    workspace: scope.workspaceId,
+                    environment: scope.environmentId,
+                    return_session_id: message.session_id,
+                    return_message_id: message.message_id,
+                  }).toString()}`,
+                }}
+              >
+                {returnRunId === message.run_id ? ru.chat.backToRun : ru.chat.openRun}
+              </Link>
+            </div>
           ) : null}
         </>
       )}
     </article>
+  );
+}
+
+function NeutralChatDetail() {
+  return (
+    <div className={styles.emptyDetail}>
+      <p className={styles.eyebrow}>{ru.chat.threadEyebrow}</p>
+      <h2>{ru.chat.noSessionTitle}</h2>
+      <p>{ru.chat.noSessionDescription}</p>
+    </div>
+  );
+}
+
+function NeutralInspector() {
+  return (
+    <div className={styles.inspectorPanel} role="note">
+      <p className={styles.eyebrow}>{ru.chat.inspectorTitle}</p>
+      <h3>{ru.chat.inspectorEmptyTitle}</h3>
+      <p>{ru.chat.inspectorEmptyDescription}</p>
+    </div>
+  );
+}
+
+function ContextualInspector({
+  hostRef,
+  message,
+  mode,
+  onClose,
+}: {
+  hostRef: (node: HTMLElement | null) => void;
+  message: QAMessage | null;
+  mode: 'citation' | 'run' | 'none';
+  onClose: () => void;
+}) {
+  const closeButton = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (mode === 'none') return;
+    requestAnimationFrame(() => closeButton.current?.focus());
+  }, [mode]);
+  if (mode === 'none') return <NeutralInspector />;
+  return (
+    <div
+      aria-label={mode === 'citation' ? ru.chat.citationInspectorTitle : ru.chat.runInspectorTitle}
+      aria-modal="false"
+      className={styles.inspectorPanel}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') onClose();
+      }}
+      role="dialog"
+      tabIndex={-1}
+    >
+      <header className={styles.inspectorHeader}>
+        <div>
+          <p className={styles.eyebrow}>{ru.chat.inspectorTitle}</p>
+          <h3>{mode === 'citation' ? ru.chat.citationInspectorTitle : ru.chat.runInspectorTitle}</h3>
+        </div>
+        <button className={styles.textButton} onClick={onClose} ref={closeButton} type="button">
+          {ru.chat.closeInspector}
+        </button>
+      </header>
+      {mode === 'citation' ? (
+        <div className={styles.inspectorContent} ref={hostRef} />
+      ) : message ? (
+        <div className={styles.runSummary}>
+          <span className={styles.statusChip}>{messageStateLabel(message)}</span>
+          <dl>
+            <div><dt>{ru.qaRuns.detail.messageId}</dt><dd><code>{message.message_id}</code></dd></div>
+            <div><dt>{ru.qaRuns.run}</dt><dd><code>{message.run_id ?? ru.qaRuns.unknown}</code></dd></div>
+            <div><dt>{ru.qaRuns.detail.attempt}</dt><dd><code>{message.accepted_presentation?.attempt_id ?? ru.qaRuns.unknown}</code></dd></div>
+            <div><dt>{ru.chat.messageVersion}</dt><dd>{formatNumber(message.version)}</dd></div>
+          </dl>
+          <CompletenessPresentation
+            value={message.disclosure_eligibility === 'eligible' ? message.completeness ?? null : null}
+          />
+        </div>
+      ) : (
+        <StatusPanel state="failed" />
+      )}
+    </div>
   );
 }
 

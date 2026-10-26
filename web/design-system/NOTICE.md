@@ -1,8 +1,10 @@
 # Third-party design reference notice
 
-The administrator shell adapts selected presentation patterns from Halaska UI:
-navigation density, status panels and recovery-oriented hierarchy. No Halaska
-runtime, transport, domain model or source file is included in Spine.
+The administrator shell and Q&A workspaces adapt selected presentation patterns
+from Halaska UI: navigation and data-table density, side-sheet composition,
+status indicators, empty states, thin separators and recovery-oriented
+hierarchy. The patterns are rewritten in typed Spine TSX and CSS Modules; no
+Halaska runtime, transport, domain model or source file is included in Spine.
 
 Source revision: https://github.com/Halaska-Studio/ui/tree/f11ab6958de3fb186a4d431e8425bbe43a6dc87b
 Upstream license: MIT — https://github.com/Halaska-Studio/ui/blob/f11ab6958de3fb186a4d431e8425bbe43a6dc87b/LICENSE

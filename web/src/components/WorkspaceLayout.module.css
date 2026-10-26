@@ -1,0 +1,102 @@
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(13rem, 17rem) minmax(24rem, 1fr);
+  min-height: 38rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  background: var(--color-surface);
+  overflow: clip;
+}
+
+.workspace[data-has-inspector='true'] {
+  grid-template-columns: minmax(13rem, 17rem) minmax(24rem, 1fr) minmax(17rem, 22rem);
+}
+
+.master,
+.detail,
+.inspector {
+  min-width: 0;
+  min-height: 0;
+}
+
+.master,
+.detail {
+  border-right: 1px solid var(--color-border);
+}
+
+.workspace:not([data-has-inspector='true']) .detail {
+  border-right: 0;
+}
+
+.workspace[data-master-collapsed='true'] {
+  grid-template-columns: 0 minmax(24rem, 1fr);
+}
+
+.workspace[data-master-collapsed='true'][data-has-inspector='true'] {
+  grid-template-columns: 0 minmax(24rem, 1fr) minmax(17rem, 22rem);
+}
+
+.workspace[data-master-collapsed='true'] .master {
+  visibility: hidden;
+  overflow: hidden;
+}
+
+@media (max-width: 1180px) {
+  .workspace[data-has-inspector='true'] {
+    grid-template-columns: minmax(13rem, 16rem) minmax(22rem, 1fr);
+  }
+
+  .workspace[data-has-inspector='true'] .detail {
+    border-right: 0;
+  }
+
+  .workspace[data-has-inspector='true'] .inspector {
+    grid-column: 1 / -1;
+    border-top: 1px solid var(--color-border);
+  }
+
+  .workspace[data-master-collapsed='true'][data-has-inspector='true'] {
+    grid-template-columns: 0 minmax(22rem, 1fr);
+  }
+}
+
+@media (max-width: 720px) {
+  .workspace,
+  .workspace[data-has-inspector='true'],
+  .workspace[data-master-collapsed='true'],
+  .workspace[data-master-collapsed='true'][data-has-inspector='true'] {
+    display: block;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .master,
+  .detail {
+    border-right: 0;
+  }
+
+  .workspace[data-mobile-detail='true'] .master,
+  .workspace:not([data-mobile-detail='true']) .detail {
+    display: none;
+  }
+
+  .workspace[data-master-collapsed='true'] .master {
+    display: none;
+  }
+
+  .workspace[data-has-inspector='true'] .inspector {
+    display: none;
+  }
+
+  .workspace[data-has-inspector='true'][data-inspector-open='true'] .inspector {
+    display: block;
+    position: fixed;
+    z-index: 30;
+    inset: auto 0 0;
+    max-height: min(80vh, 42rem);
+    overflow: auto;
+    border-top: 1px solid var(--color-border);
+    background: var(--color-surface);
+    box-shadow: 0 -1rem 3rem rgb(16 24 40 / 18%);
+  }
+}

@@ -19,10 +19,207 @@
   text-transform: uppercase;
 }
 
-.page h2 {
+.page h2,
+.threadPane h2,
+.emptyDetail h2 {
   margin-bottom: var(--space-3);
   font-size: clamp(1.7rem, 3vw, 2.5rem);
   letter-spacing: -0.04em;
+}
+
+.sessionRail,
+.threadPane,
+.inspectorPanel,
+.emptyDetail {
+  min-width: 0;
+}
+
+.sessionRail {
+  height: 100%;
+  padding: var(--space-4);
+  background: var(--color-surface);
+}
+
+.sessionRail .pageHeader {
+  display: grid;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.sessionRail h2 {
+  margin: 0 0 var(--space-2);
+  font-size: 1rem;
+  letter-spacing: -0.02em;
+}
+
+.sessionRail .lede {
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.sessionRail .primaryButton,
+.sessionRail .secondaryButton {
+  width: 100%;
+  padding: 0.55rem 0.65rem;
+  font-size: 0.82rem;
+}
+
+.sessionRail .sessionList {
+  gap: 0;
+  margin-inline: calc(var(--space-4) * -1);
+}
+
+.sessionRail .sessionLink {
+  border-width: 1px 0 0;
+  border-radius: 0;
+  padding: var(--space-3) var(--space-4);
+}
+
+.sessionRail .sessionLink[aria-current='page'] {
+  border-left: 0.2rem solid var(--color-link);
+  background: var(--color-surface-strong);
+}
+
+.sessionRail .sessionHeading {
+  align-items: flex-start;
+  font-size: 0.82rem;
+}
+
+.threadPane {
+  min-height: 38rem;
+  padding: var(--space-5);
+  background: var(--color-surface);
+}
+
+.railShell {
+  position: relative;
+  height: 100%;
+}
+
+.collapseButton {
+  position: absolute;
+  z-index: 1;
+  top: var(--space-3);
+  right: var(--space-3);
+  width: 1.9rem;
+  height: 1.9rem;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 0.4rem;
+  padding: 0;
+  background: var(--color-surface);
+  color: transparent;
+  cursor: pointer;
+}
+
+.collapseButton::before {
+  content: '‹';
+  display: grid;
+  place-items: center;
+  color: var(--color-link);
+  font-size: 1.2rem;
+}
+
+.headerActions,
+.messageActions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.messageActions .textButton {
+  display: inline-flex;
+}
+
+.mobileOnly {
+  display: none;
+}
+
+.emptyDetail {
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  min-height: 38rem;
+  padding: clamp(var(--space-6), 6vw, var(--space-10));
+  color: var(--color-muted);
+}
+
+.emptyDetail h2 {
+  margin-bottom: var(--space-3);
+  color: var(--color-ink);
+}
+
+.inspectorPanel {
+  height: 100%;
+  padding: var(--space-4);
+  background: var(--color-surface);
+  overflow-wrap: anywhere;
+}
+
+.inspectorPanel h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.inspectorPanel > p:not(.eyebrow),
+.inspectorStatus {
+  margin: var(--space-3) 0 0;
+  color: var(--color-muted);
+  line-height: 1.5;
+}
+
+.inspectorHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.inspectorContent {
+  min-height: 8rem;
+}
+
+.inspectorContent .citationEvidence {
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+}
+
+.runSummary {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.runSummary dl {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.runSummary dl div {
+  min-width: 0;
+}
+
+.runSummary dt {
+  color: var(--color-muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.runSummary dd {
+  margin: 0.2rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.statusChip {
+  justify-self: start;
+  border-radius: 999px;
+  padding: 0.25rem 0.55rem;
+  background: var(--color-surface-strong);
+  font-size: 0.78rem;
+  font-weight: 700;
 }
 
 .lede {
@@ -143,6 +340,15 @@
   padding: var(--space-5);
   background: var(--color-surface);
   box-shadow: var(--shadow-card);
+}
+
+.threadPane .messagePanel,
+.threadPane .askForm {
+  border-right: 0;
+  border-left: 0;
+  border-radius: 0;
+  padding-inline: 0;
+  box-shadow: none;
 }
 
 .recoveryPanel > span {
@@ -377,6 +583,32 @@
   min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+@media (max-width: 720px) {
+  .threadPane,
+  .sessionRail,
+  .inspectorPanel {
+    min-height: 0;
+    padding: var(--space-4);
+  }
+
+  .threadPane .pageHeader {
+    display: grid;
+    gap: var(--space-3);
+  }
+
+  .mobileOnly {
+    display: inline-flex;
+  }
+
+  .collapseButton {
+    display: none;
+  }
+
+  .citationEvidence dl div {
+    grid-template-columns: 1fr;
+  }
 }
 
 .messageMeta time,

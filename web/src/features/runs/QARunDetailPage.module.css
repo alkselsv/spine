@@ -91,10 +91,47 @@
   gap: var(--space-3);
 }
 
-.grid {
+.timelinePane,
+.detailPane {
+  min-width: 0;
+  padding: var(--space-4);
+}
+
+.timelinePane {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: var(--space-6);
+  height: 100%;
+  background: var(--color-surface);
+}
+
+.detailPane {
+  display: grid;
+  align-content: start;
   gap: var(--space-4);
+}
+
+.timelineSection,
+.attemptSelector {
+  min-width: 0;
+}
+
+.timelineSection h3,
+.attemptSelector h3,
+.selectedAttempt > h3,
+.emptySelection h3 {
+  margin: 0 0 var(--space-3);
+  font-size: 0.95rem;
+}
+
+.diagnosticsSurface {
+  margin-top: var(--space-5);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-4);
+}
+
+.mobileOnly {
+  display: none;
 }
 
 .card {
@@ -106,8 +143,11 @@
   box-shadow: var(--shadow-card);
 }
 
-.cardWide {
-  grid-column: 1 / -1;
+.detailPane > .card {
+  border-width: 0 0 1px;
+  border-radius: 0;
+  padding: 0 0 var(--space-4);
+  box-shadow: none;
 }
 
 .card h3,
@@ -238,12 +278,64 @@
 
 .attemptList {
   display: grid;
-  gap: var(--space-4);
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.attemptButton {
+  display: grid;
+  gap: 0.2rem;
+  width: 100%;
+  border: 0;
+  border-top: 1px solid var(--color-border);
+  padding: var(--space-3);
+  background: transparent;
+  color: var(--color-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.attemptButton:last-child {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.attemptButton:hover,
+.attemptButton:focus-visible,
+.attemptButton[aria-current='step'] {
+  background: var(--color-surface-strong);
+}
+
+.attemptButton[aria-current='step'] {
+  box-shadow: inset 0.2rem 0 var(--color-link);
+}
+
+.attemptButton small {
+  color: var(--color-muted);
 }
 
 .attempt {
   border-top: 1px solid var(--color-border);
   padding-top: var(--space-4);
+}
+
+.selectedAttempt .attempt {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.emptySelection {
+  border: 1px dashed var(--color-border);
+  border-radius: 0.65rem;
+  padding: var(--space-5);
+  color: var(--color-muted);
+}
+
+.emptySelection p {
+  margin: 0;
+  line-height: 1.5;
 }
 
 .attempt:first-child {
@@ -293,5 +385,15 @@
 
   .details {
     grid-template-columns: 1fr;
+  }
+
+  .mobileOnly {
+    display: inline-block;
+    justify-self: start;
+  }
+
+  .timelinePane,
+  .detailPane {
+    padding: var(--space-4);
   }
 }

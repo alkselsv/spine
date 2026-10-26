@@ -2510,6 +2510,35 @@ test('test_chat_run_citation_navigation_preserves_scope_back_reload_and_denies_o
     });
   });
 
+  await page.route(
+    (url) => url.pathname === '/api/v1/qa/sessions',
+    async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        status: 200,
+        body: JSON.stringify({
+          schema_version: 1,
+          workspace_id: salesWorkspace,
+          environment_id: stagingEnvironment,
+          trace_id: traceId,
+          limit: 25,
+          next_cursor: null,
+          items: [{
+            schema_version: 1,
+            session_id: chatSession,
+            workspace_id: salesWorkspace,
+            environment_id: stagingEnvironment,
+            subject_id: '90000000-0000-4000-8000-000000000010',
+            version: 1,
+            status: 'active',
+            created_at: '2026-10-17T10:00:00Z',
+            updated_at: '2026-10-17T10:01:00Z',
+          }],
+        }),
+      });
+    },
+  );
+
   await page.goto(`/chat/${chatSession}?fixture=chat-api&workspace=${salesWorkspace}&environment=${stagingEnvironment}`);
   await page.getByRole('link', { name: 'Открыть запуск Q&A' }).click();
   await expect(page).toHaveURL(new RegExp(`/qa/runs/${chatRun}.*workspace=${salesWorkspace}.*environment=${stagingEnvironment}`));
@@ -2522,6 +2551,7 @@ test('test_chat_run_citation_navigation_preserves_scope_back_reload_and_denies_o
   await expect(page.locator('body')).not.toContainText('provider stack trace');
   await page.getByRole('link', { name: 'Открыть источник в чате' }).click();
   await expect(page).toHaveURL(new RegExp(`/chat/${chatSession}.*message_id=${chatMessage}.*run_id=${chatRun}.*citation_id=${chatCitation}.*return_run_id=${chatRun}`));
+  await expect(page.getByRole('dialog', { name: 'Инспектор источника' })).toBeVisible();
   await expect(page.getByText('Ответ и ссылки скрыты: не удалось подтвердить их актуальность и доступность.')).toBeVisible();
   await expect(page.locator('body')).not.toContainText(answer);
   await page.goto(`${page.url()}&fixture=chat-api`);
@@ -2539,6 +2569,155 @@ test('test_chat_run_citation_navigation_preserves_scope_back_reload_and_denies_o
   expect(runRequests.some((headers) => headers['x-workspace-id'] === primaryWorkspace)).toBe(true);
   expect(citationRequests.every((headers) => headers['x-workspace-id'] === salesWorkspace)).toBe(true);
 });
+
+test('test_chat_session_navigation_preserves_page_and_uses_sequential_mobile_panels', async ({ page }) => {
+  const secondSession = '90000000-0000-4000-8000-000000000010';
+  await installChatWorkspaceRoutes(page, secondSession);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `/chat?fixture=chat-api&workspace=${salesWorkspace}&environment=${stagingEnvironment}&session_cursor=page-2`,
+  );
+
+  const firstSessionLink = page.getByRole('link', { name: new RegExp(chatSession.slice(-8)) });
+  await expect(firstSessionLink).toBeVisible();
+  await firstSessionLink.click();
+  await expect(page).toHaveURL(new RegExp(`/chat/${chatSession}.*session_cursor=page-2`));
+  await expect(page.getByRole('heading', { name: new RegExp(chatSession.slice(-8)) })).toBeVisible();
+  await expect(firstSessionLink).not.toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+  await page.getByRole('button', { name: 'К списку сессий' }).click();
+  await expect(page).toHaveURL(new RegExp(`/chat\\?.*session_cursor=page-2`));
+  const secondSessionLink = page.getByRole('link', { name: new RegExp(secondSession.slice(-8)) });
+  await expect(secondSessionLink).toBeVisible();
+  await secondSessionLink.click();
+  await expect(page).toHaveURL(new RegExp(`/chat/${secondSession}.*session_cursor=page-2`));
+  await expect(page.getByRole('heading', { name: new RegExp(secondSession.slice(-8)) })).toBeVisible();
+});
+
+test('test_chat_run_summary_inspector_restores_focus_after_escape', async ({ page }) => {
+  await installChatWorkspaceRoutes(page);
+  await page.goto(
+    `/chat/${chatSession}?fixture=chat-api&workspace=${salesWorkspace}&environment=${stagingEnvironment}`,
+  );
+
+  const runSummaryTrigger = page.getByRole('button', { name: 'Показать сводку запуска' });
+  await runSummaryTrigger.click();
+  await expect(page).toHaveURL(new RegExp(`message_id=${chatMessage}.*run_id=${chatRun}.*inspector=run`));
+  await expect(page.getByRole('dialog', { name: 'Безопасная сводка запуска' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Закрыть панель' })).toBeFocused();
+
+  await page.keyboard.press('Escape');
+
+  await expect(page.getByRole('dialog', { name: 'Безопасная сводка запуска' })).toHaveCount(0);
+  await expect(runSummaryTrigger).toBeFocused();
+});
+
+async function installChatWorkspaceRoutes(
+  page: Page,
+  secondSession = '90000000-0000-4000-8000-000000000010',
+): Promise<void> {
+  const sessionRecord = (
+    sessionId: string,
+  ): components['schemas']['QASessionResponse'] => ({
+    schema_version: 1,
+    session_id: sessionId,
+    workspace_id: salesWorkspace,
+    environment_id: stagingEnvironment,
+    subject_id: '90000000-0000-4000-8000-000000000011',
+    version: 1,
+    status: 'active',
+    created_at: '2026-10-17T10:00:00Z',
+    updated_at: '2026-10-17T10:01:00Z',
+  });
+  const message = {
+    schema_version: 1,
+    message_id: chatMessage,
+    session_id: chatSession,
+    workspace_id: salesWorkspace,
+    environment_id: stagingEnvironment,
+    version: 1,
+    ordinal: 1,
+    trace_id: traceId,
+    run_id: chatRun,
+    state: 'terminal',
+    terminal_outcome: 'abstained',
+    cancelled: false,
+    disclosure_eligibility: 'eligible',
+    question: 'Достаточно ли оснований для ответа?',
+    answer: null,
+    accepted_presentation: null,
+    created_at: '2026-10-17T10:01:00Z',
+    updated_at: '2026-10-17T10:01:00Z',
+  } satisfies components['schemas']['QAMessageResponse'];
+
+  await page.route('**/api/v1/qa/sessions**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/api/v1/qa/sessions') {
+      await route.fulfill({
+        contentType: 'application/json',
+        status: 200,
+        body: JSON.stringify({
+          schema_version: 1,
+          workspace_id: salesWorkspace,
+          environment_id: stagingEnvironment,
+          trace_id: traceId,
+          limit: 25,
+          next_cursor: null,
+          items: [sessionRecord(chatSession), sessionRecord(secondSession)],
+        }),
+      });
+      return;
+    }
+    if (url.pathname === `/api/v1/qa/sessions/${chatSession}/messages/${chatMessage}`) {
+      await route.fulfill({
+        contentType: 'application/json',
+        status: 200,
+        body: JSON.stringify({
+          schema_version: 1,
+          workspace_id: salesWorkspace,
+          environment_id: stagingEnvironment,
+          trace_id: traceId,
+          data: message,
+        }),
+      });
+      return;
+    }
+    const messagesMatch = url.pathname.match(/^\/api\/v1\/qa\/sessions\/([^/]+)\/messages$/);
+    if (messagesMatch) {
+      await route.fulfill({
+        contentType: 'application/json',
+        status: 200,
+        body: JSON.stringify({
+          schema_version: 1,
+          workspace_id: salesWorkspace,
+          environment_id: stagingEnvironment,
+          trace_id: traceId,
+          limit: 25,
+          next_cursor: null,
+          items: messagesMatch[1] === chatSession ? [message] : [],
+        }),
+      });
+      return;
+    }
+    const sessionMatch = url.pathname.match(/^\/api\/v1\/qa\/sessions\/([^/]+)$/);
+    if (sessionMatch) {
+      await route.fulfill({
+        contentType: 'application/json',
+        status: 200,
+        body: JSON.stringify({
+          schema_version: 1,
+          workspace_id: salesWorkspace,
+          environment_id: stagingEnvironment,
+          trace_id: traceId,
+          data: sessionRecord(sessionMatch[1] ?? chatSession),
+        }),
+      });
+      return;
+    }
+    await route.fulfill({ status: 404, body: '{}' });
+  });
+}
 
 function isOwnedScope(
   headers: Record<string, string>,
