@@ -13,6 +13,14 @@ from pydantic import Field, StrictInt, field_validator, model_validator
 
 from spine.domain.common import ActorRef, DefinitionModel, SchemaRef, SpineModel
 from spine.domain.sources import SourceRevision
+from spine.domain.sources.google import (
+    GOOGLE_SHEET_A1_RANGE_PATTERN,
+    GOOGLE_SHEET_CELL_COORDINATE_PATTERN,
+    GoogleSheetCellValue,
+    GoogleSheetNumberFormat,
+    GoogleSheetRowOriginal,
+    google_sheet_a1_row,
+)
 
 
 class ArtifactRef(SpineModel):
@@ -184,6 +192,38 @@ class XlsxCellLocator(DefinitionModel):
             raise ValueError("locator range must be ordered")
         return self
 
+
+class GoogleSheetCellLocator(DefinitionModel):
+    """One representation of a business-identified cell in an exact revision."""
+
+    kind: Literal["google_sheet_cell"] = "google_sheet_cell"
+    schema_version: Literal["locator:google-sheet-cell:v1"] = (
+        "locator:google-sheet-cell:v1"
+    )
+    source_revision_id: UUID
+    spreadsheet_id: str = Field(min_length=1, max_length=1024)
+    sheet_id: StrictInt = Field(ge=0)
+    immutable_business_id: str = Field(min_length=1, max_length=1024)
+    column_key: str = Field(min_length=1, max_length=256)
+    representation: Literal["entered", "effective", "formatted", "format"]
+    observed_a1_range: str = Field(
+        pattern=GOOGLE_SHEET_A1_RANGE_PATTERN,
+        max_length=128,
+    )
+    observed_cell_coordinate: str = Field(
+        pattern=GOOGLE_SHEET_CELL_COORDINATE_PATTERN,
+        max_length=64,
+    )
+
+    @model_validator(mode="after")
+    def validate_scope_and_hints(self) -> "GoogleSheetCellLocator":
+        if self.source_revision_id.int == 0:
+            raise ValueError("source_revision_id must be a non-zero UUID")
+        if google_sheet_a1_row(self.observed_a1_range) != google_sheet_a1_row(
+            self.observed_cell_coordinate
+        ):
+            raise ValueError("cell coordinate must belong to the observed row range")
+        return self
 
 
 Locator = Annotated[
@@ -495,6 +535,37 @@ def resolve_locator(
     if expected_text is not None and value != expected_text:
         raise ValueError("locator does not resolve")
     return value
+
+
+def resolve_google_sheet_cell_locator(
+    original: GoogleSheetRowOriginal,
+    locator: GoogleSheetCellLocator,
+    *,
+    source_revision_id: UUID,
+) -> GoogleSheetCellValue | GoogleSheetNumberFormat | str:
+    """Resolve a locator only against its exact immutable business row revision."""
+
+    key = original.key
+    if (
+        source_revision_id != locator.source_revision_id
+        or key.spreadsheet_id != locator.spreadsheet_id
+        or key.sheet_id != locator.sheet_id
+        or key.immutable_business_id != locator.immutable_business_id
+    ):
+        raise ValueError("locator does not resolve")
+    cell = next(
+        (item for item in original.cells if item.column_key == locator.column_key),
+        None,
+    )
+    if cell is None:
+        raise ValueError("locator does not resolve")
+    if locator.representation == "entered":
+        return cell.entered
+    if locator.representation == "effective":
+        return cell.effective
+    if locator.representation == "formatted":
+        return cell.formatted
+    return cell.number_format
 
 
 def _canonical_json(value: object) -> bytes:
