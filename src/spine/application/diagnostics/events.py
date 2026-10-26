@@ -407,6 +407,7 @@ class DiagnosticFailureCode(str, Enum):
     AUTHENTICATION_UNAVAILABLE = "authentication.unavailable"
     AUTHORIZATION_DENIED = "authorization.denied"
     AUTHORIZATION_UNAVAILABLE = "authorization.unavailable"
+    PROVIDER_UNAVAILABLE = "provider.unavailable"
     PERSISTENCE_FAILURE = "persistence.failure"
     PERSISTENCE_UNAVAILABLE = "persistence.unavailable"
     TRACE_CONTEXT_INVALID = "trace_context.invalid"

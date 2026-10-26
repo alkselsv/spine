@@ -23,16 +23,26 @@ def _role(attribute: str) -> str:
     return op.get_bind().dialect.identifier_preparer.quote(getattr(settings, attribute))
 
 
-def _tenant_policy(table: str, runtime_role: str, migration_role: str) -> None:
+def _tenant_policy(
+    table: str,
+    runtime_role: str,
+    migration_role: str,
+    *,
+    runtime_write: bool,
+) -> None:
     op.execute(f"ALTER TABLE {SCHEMA}.{table} ENABLE ROW LEVEL SECURITY")
     op.execute(f"ALTER TABLE {SCHEMA}.{table} FORCE ROW LEVEL SECURITY")
     op.execute(
         f"CREATE POLICY pol_{table}_tenant_isolation ON {SCHEMA}.{table} "
-        f"FOR ALL TO {runtime_role} "
+        f"FOR {'ALL' if runtime_write else 'SELECT'} TO {runtime_role} "
         "USING (workspace_id = nullif(current_setting('spine.workspace_id', true), '')::uuid "
-        "AND environment_id = nullif(current_setting('spine.environment_id', true), '')::uuid) "
-        "WITH CHECK (workspace_id = nullif(current_setting('spine.workspace_id', true), '')::uuid "
         "AND environment_id = nullif(current_setting('spine.environment_id', true), '')::uuid)"
+        + (
+            " WITH CHECK (workspace_id = nullif(current_setting('spine.workspace_id', true), '')::uuid "
+            "AND environment_id = nullif(current_setting('spine.environment_id', true), '')::uuid)"
+            if runtime_write
+            else ""
+        )
     )
     op.execute(
         f"CREATE POLICY pol_{table}_migration_maintenance ON {SCHEMA}.{table} "
@@ -44,19 +54,63 @@ def upgrade() -> None:
     runtime_role = _role("runtime_role")
     migration_role = _role("migration_role")
     op.create_table(
+        "google_connection_approvals",
+        sa.Column("approval_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("workspace_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("environment_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("service_principal_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("credential_reference", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("grant_reference", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column(
+            "approved_resource_scope_references",
+            postgresql.ARRAY(postgresql.UUID(as_uuid=True)),
+            nullable=False,
+        ),
+        sa.Column("authorization_generation", sa.BigInteger(), nullable=False),
+        sa.Column("configuration_generation", sa.BigInteger(), nullable=False),
+        sa.Column("status", sa.String(length=16), nullable=False),
+        sa.Column(
+            "recorded_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("CURRENT_TIMESTAMP"),
+        ),
+        sa.PrimaryKeyConstraint("approval_id", name="pk_google_connection_approvals"),
+        sa.ForeignKeyConstraint(
+            ["workspace_id", "environment_id"],
+            [f"{SCHEMA}.environments.workspace_id", f"{SCHEMA}.environments.id"],
+            name="fk_google_connection_approval_environment",
+        ),
+        sa.CheckConstraint(
+            "authorization_generation > 0 AND configuration_generation > 0",
+            name="ck_google_connection_approval_generations",
+        ),
+        sa.CheckConstraint(
+            "status IN ('active', 'suspended', 'revoked')",
+            name="ck_google_connection_approval_status",
+        ),
+        sa.CheckConstraint(
+            "cardinality(approved_resource_scope_references) > 0 "
+            "AND array_position(approved_resource_scope_references, NULL) IS NULL",
+            name="ck_google_connection_approval_resource_scopes",
+        ),
+        schema=SCHEMA,
+    )
+    op.create_table(
         "google_connection_versions",
         sa.Column("connection_version_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("connection_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("approval_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("version", sa.BigInteger(), nullable=False),
         sa.Column("predecessor_version_id", postgresql.UUID(as_uuid=True)),
         sa.Column("workspace_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("environment_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("service_principal_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("credential_reference", sa.String(length=224), nullable=False),
-        sa.Column("grant_reference", sa.String(length=224), nullable=False),
+        sa.Column("credential_reference", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("grant_reference", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column(
             "approved_resource_scope_references",
-            postgresql.ARRAY(sa.String(length=224)),
+            postgresql.ARRAY(postgresql.UUID(as_uuid=True)),
             nullable=False,
         ),
         sa.Column("authorization_generation", sa.BigInteger(), nullable=False),
@@ -91,9 +145,19 @@ def upgrade() -> None:
             "predecessor_version_id", name="uq_google_connection_predecessor"
         ),
         sa.ForeignKeyConstraint(
+            ["approval_id"],
+            [f"{SCHEMA}.google_connection_approvals.approval_id"],
+            name="fk_google_connection_approval",
+        ),
+        sa.ForeignKeyConstraint(
             ["predecessor_version_id"],
             [f"{SCHEMA}.google_connection_versions.connection_version_id"],
             name="fk_google_connection_predecessor",
+        ),
+        sa.ForeignKeyConstraint(
+            ["audit_event_id"],
+            [f"{SCHEMA}.audit_events.audit_event_id"],
+            name="fk_google_connection_audit_event",
         ),
         sa.ForeignKeyConstraint(
             ["workspace_id", "environment_id"],
@@ -124,51 +188,14 @@ def upgrade() -> None:
         ),
         schema=SCHEMA,
     )
-    op.create_table(
-        "google_connection_audit_events",
-        sa.Column("audit_event_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("connection_version_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("connection_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("workspace_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("environment_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("service_principal_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("authorization_generation", sa.BigInteger(), nullable=False),
-        sa.Column("configuration_generation", sa.BigInteger(), nullable=False),
-        sa.Column("status", sa.String(length=16), nullable=False),
-        sa.Column(
-            "resource_scope_references",
-            postgresql.ARRAY(sa.String(length=224)),
-            nullable=False,
-        ),
-        sa.Column(
-            "recorded_at",
-            sa.DateTime(timezone=True),
-            nullable=False,
-            server_default=sa.text("CURRENT_TIMESTAMP"),
-        ),
-        sa.PrimaryKeyConstraint(
-            "audit_event_id", name="pk_google_connection_audit_events"
-        ),
-        sa.ForeignKeyConstraint(
-            ["connection_version_id"],
-            [f"{SCHEMA}.google_connection_versions.connection_version_id"],
-            name="fk_google_connection_audit_version",
-        ),
-        sa.ForeignKeyConstraint(
-            ["workspace_id", "environment_id"],
-            [f"{SCHEMA}.environments.workspace_id", f"{SCHEMA}.environments.id"],
-            name="fk_google_connection_audit_environment",
-        ),
-        schema=SCHEMA,
+    op.execute(
+        f"COMMENT ON TABLE {SCHEMA}.google_connection_approvals IS "
+        "'classification=tenant_authorization_approval; secret_values=forbidden; "
+        "provider_content=forbidden'"
     )
     op.execute(
         f"COMMENT ON TABLE {SCHEMA}.google_connection_versions IS "
         "'classification=tenant_authorization_reference; secret_values=forbidden; "
-        "provider_content=forbidden'"
-    )
-    op.execute(
-        f"COMMENT ON TABLE {SCHEMA}.google_connection_audit_events IS "
-        "'classification=safe_audit_metadata; secret_values=forbidden; "
         "provider_content=forbidden'"
     )
     op.execute(
@@ -178,7 +205,10 @@ def upgrade() -> None:
         LANGUAGE plpgsql
         SET search_path = pg_catalog, {SCHEMA}
         AS $function$
-        DECLARE predecessor {SCHEMA}.google_connection_versions%ROWTYPE;
+        DECLARE
+            predecessor {SCHEMA}.google_connection_versions%ROWTYPE;
+            approval {SCHEMA}.google_connection_approvals%ROWTYPE;
+            audit_scope RECORD;
         BEGIN
             IF cardinality(NEW.approved_resource_scope_references) <> (
                 SELECT count(DISTINCT scope_reference)
@@ -210,6 +240,36 @@ def upgrade() -> None:
                               CONSTRAINT = 'ck_google_connection_successor';
                 END IF;
             END IF;
+            SELECT * INTO approval
+              FROM {SCHEMA}.google_connection_approvals
+             WHERE approval_id = NEW.approval_id;
+            IF NOT FOUND
+               OR approval.workspace_id <> NEW.workspace_id
+               OR approval.environment_id <> NEW.environment_id
+               OR approval.service_principal_id <> NEW.service_principal_id
+               OR approval.credential_reference <> NEW.credential_reference
+               OR approval.grant_reference <> NEW.grant_reference
+               OR approval.approved_resource_scope_references
+                  <> NEW.approved_resource_scope_references
+               OR approval.authorization_generation <> NEW.authorization_generation
+               OR approval.configuration_generation <> NEW.configuration_generation
+               OR approval.status <> NEW.status
+            THEN
+                RAISE EXCEPTION 'google connection approval does not match'
+                    USING ERRCODE = '23514',
+                          CONSTRAINT = 'ck_google_connection_approval_match';
+            END IF;
+            SELECT workspace_id, environment_id INTO audit_scope
+              FROM {SCHEMA}.audit_events
+             WHERE audit_event_id = NEW.audit_event_id;
+            IF NOT FOUND
+               OR audit_scope.workspace_id <> NEW.workspace_id
+               OR audit_scope.environment_id IS DISTINCT FROM NEW.environment_id
+            THEN
+                RAISE EXCEPTION 'google connection audit scope does not match'
+                    USING ERRCODE = '23514',
+                          CONSTRAINT = 'ck_google_connection_audit_scope';
+            END IF;
             RETURN NEW;
         END;
         $function$
@@ -224,8 +284,24 @@ def upgrade() -> None:
         f"ON {SCHEMA}.google_connection_versions FOR EACH ROW "
         f"EXECUTE FUNCTION {SCHEMA}.enforce_google_connection_successor()"
     )
-    for table in ("google_connection_versions", "google_connection_audit_events"):
-        _tenant_policy(table, runtime_role, migration_role)
+    _tenant_policy(
+        "google_connection_approvals",
+        runtime_role,
+        migration_role,
+        runtime_write=False,
+    )
+    op.execute(
+        f"CREATE TRIGGER trg_google_connection_approvals_immutable "
+        f"BEFORE UPDATE OR DELETE ON {SCHEMA}.google_connection_approvals "
+        f"FOR EACH ROW EXECUTE FUNCTION {SCHEMA}.reject_authorization_history_mutation()"
+    )
+    op.execute(
+        f"GRANT SELECT ON {SCHEMA}.google_connection_approvals TO {runtime_role}"
+    )
+    for table in ("google_connection_versions",):
+        _tenant_policy(
+            table, runtime_role, migration_role, runtime_write=True
+        )
         op.execute(
             f"CREATE TRIGGER trg_{table}_immutable BEFORE UPDATE OR DELETE "
             f"ON {SCHEMA}.{table} FOR EACH ROW "
@@ -235,6 +311,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_table("google_connection_audit_events", schema=SCHEMA)
     op.drop_table("google_connection_versions", schema=SCHEMA)
+    op.drop_table("google_connection_approvals", schema=SCHEMA)
     op.execute(f"DROP FUNCTION {SCHEMA}.enforce_google_connection_successor()")

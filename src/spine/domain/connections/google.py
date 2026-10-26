@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 from enum import Enum
-import re
 from uuid import UUID
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from spine.domain.common import ValidatedDefinitionModel
-
-
-_OPAQUE_REFERENCE = re.compile(r"^[a-z][a-z0-9_.-]{0,31}:[A-Za-z0-9_.:/-]{1,191}$")
 
 
 def _non_nil_uuid(value: UUID, info: ValidationInfo) -> UUID:
@@ -23,14 +19,12 @@ def _non_nil_uuid(value: UUID, info: ValidationInfo) -> UUID:
 class OpaqueGoogleReference(ValidatedDefinitionModel):
     """A bounded provider-neutral reference, never credential material."""
 
-    value: str = Field(min_length=3, max_length=224)
+    value: UUID
 
     @field_validator("value")
     @classmethod
-    def _validate_value(cls, value: str) -> str:
-        if _OPAQUE_REFERENCE.fullmatch(value) is None:
-            raise ValueError("value must be a bounded opaque reference")
-        return value
+    def _validate_value(cls, value: UUID, info: ValidationInfo) -> UUID:
+        return _non_nil_uuid(value, info)
 
 
 class GoogleConnectionStatus(str, Enum):
@@ -44,6 +38,7 @@ class GoogleConnection(ValidatedDefinitionModel):
 
     connection_version_id: UUID
     connection_id: UUID
+    approval_id: UUID
     version: int = Field(ge=1)
     predecessor_version_id: UUID | None = None
     workspace_id: UUID
@@ -61,6 +56,7 @@ class GoogleConnection(ValidatedDefinitionModel):
     @field_validator(
         "connection_version_id",
         "connection_id",
+        "approval_id",
         "workspace_id",
         "environment_id",
         "service_principal_id",
@@ -76,7 +72,7 @@ class GoogleConnection(ValidatedDefinitionModel):
     ) -> tuple[OpaqueGoogleReference, ...]:
         if len({value.value for value in values}) != len(values):
             raise ValueError("approved resource scope references must be unique")
-        return tuple(sorted(values, key=lambda item: item.value))
+        return tuple(sorted(values, key=lambda item: item.value.int))
 
     @model_validator(mode="after")
     def _validate_version_history(self) -> "GoogleConnection":
@@ -90,8 +86,42 @@ class GoogleConnection(ValidatedDefinitionModel):
         return self
 
 
+class GoogleConnectionApproval(ValidatedDefinitionModel):
+    """Server-owned approval for one exact references-only connection version."""
+
+    approval_id: UUID
+    workspace_id: UUID
+    environment_id: UUID
+    service_principal_id: UUID
+    credential_reference: OpaqueGoogleReference
+    grant_reference: OpaqueGoogleReference
+    approved_resource_scope_references: tuple[OpaqueGoogleReference, ...] = Field(
+        min_length=1
+    )
+    authorization_generation: int = Field(ge=1)
+    configuration_generation: int = Field(ge=1)
+    status: GoogleConnectionStatus
+
+    @field_validator(
+        "approval_id", "workspace_id", "environment_id", "service_principal_id"
+    )
+    @classmethod
+    def _validate_ids(cls, value: UUID, info: ValidationInfo) -> UUID:
+        return _non_nil_uuid(value, info)
+
+    @field_validator("approved_resource_scope_references")
+    @classmethod
+    def _validate_resource_scopes(
+        cls, values: tuple[OpaqueGoogleReference, ...]
+    ) -> tuple[OpaqueGoogleReference, ...]:
+        if len({value.value for value in values}) != len(values):
+            raise ValueError("approved resource scope references must be unique")
+        return tuple(sorted(values, key=lambda item: item.value.int))
+
+
 __all__ = [
     "GoogleConnection",
+    "GoogleConnectionApproval",
     "GoogleConnectionStatus",
     "OpaqueGoogleReference",
 ]

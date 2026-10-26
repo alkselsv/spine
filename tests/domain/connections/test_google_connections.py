@@ -20,14 +20,15 @@ def test_google_connection_accepts_references_without_secret_values() -> None:
     connection = GoogleConnection(
         connection_version_id=_id(1),
         connection_id=_id(2),
+        approval_id=_id(6),
         version=1,
         workspace_id=_id(3),
         environment_id=_id(4),
         service_principal_id=_id(5),
-        credential_reference=OpaqueGoogleReference(value="vault:google-r2-v1"),
-        grant_reference=OpaqueGoogleReference(value="grant:google-r2-v1"),
+        credential_reference=OpaqueGoogleReference(value=_id(7)),
+        grant_reference=OpaqueGoogleReference(value=_id(8)),
         approved_resource_scope_references=(
-            OpaqueGoogleReference(value="scope:estimate-register-v1"),
+            OpaqueGoogleReference(value=_id(9)),
         ),
         authorization_generation=1,
         configuration_generation=1,
@@ -35,7 +36,7 @@ def test_google_connection_accepts_references_without_secret_values() -> None:
     )
 
     payload = connection.model_dump(mode="json")
-    assert payload["credential_reference"] == {"value": "vault:google-r2-v1"}
+    assert payload["credential_reference"] == {"value": str(_id(7))}
     assert "credential_value" not in payload
     assert "refresh_token" not in payload
 
@@ -43,6 +44,8 @@ def test_google_connection_accepts_references_without_secret_values() -> None:
         GoogleConnection.model_validate(
             {**payload, "refresh_token": "secret-refresh-token"}
         )
+    with pytest.raises(ValidationError):
+        OpaqueGoogleReference(value="https://drive.google.test/customer-plan.xlsx")
 
 
 def test_google_connection_rejects_invalid_version_history() -> None:
@@ -50,15 +53,16 @@ def test_google_connection_rejects_invalid_version_history() -> None:
         GoogleConnection(
             connection_version_id=_id(1),
             connection_id=_id(2),
+            approval_id=_id(6),
             version=1,
             predecessor_version_id=_id(9),
             workspace_id=_id(3),
             environment_id=_id(4),
             service_principal_id=_id(5),
-            credential_reference=OpaqueGoogleReference(value="vault:google-r2-v1"),
-            grant_reference=OpaqueGoogleReference(value="grant:google-r2-v1"),
+            credential_reference=OpaqueGoogleReference(value=_id(7)),
+            grant_reference=OpaqueGoogleReference(value=_id(8)),
             approved_resource_scope_references=(
-                OpaqueGoogleReference(value="scope:estimate-register-v1"),
+                OpaqueGoogleReference(value=_id(9)),
             ),
             authorization_generation=1,
             configuration_generation=1,

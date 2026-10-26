@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -13,6 +15,7 @@ from spine.application.connections.google import (
     GoogleReadAdmission,
     GoogleReadCommand,
 )
+from spine.application.diagnostics import DiagnosticEventRegistry
 from spine.application.persistence import (
     EnvironmentScope,
     PersistenceOperation,
@@ -20,10 +23,12 @@ from spine.application.persistence import (
 )
 from spine.domain.connections.google import (
     GoogleConnection,
+    GoogleConnectionApproval,
     GoogleConnectionStatus,
     OpaqueGoogleReference,
 )
 from spine.infrastructure.connections.google import InMemoryGoogleConnectionRepository
+from spine.infrastructure.diagnostics import RecordingDiagnosticSink
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 
 
@@ -35,7 +40,8 @@ WORKSPACE_ID = _id(1)
 ENVIRONMENT_ID = _id(2)
 SERVICE_PRINCIPAL_ID = _id(3)
 CONNECTION_ID = _id(4)
-RESOURCE_SCOPE = OpaqueGoogleReference(value="scope:estimate-register-v1")
+RESOURCE_SCOPE = OpaqueGoogleReference(value=_id(6))
+NOW = datetime(2026, 10, 26, 12, tzinfo=timezone.utc)
 
 
 def _boundary() -> TrustedContextBoundary:
@@ -72,17 +78,48 @@ def _connection(
     return GoogleConnection(
         connection_version_id=_id(100 + version),
         connection_id=CONNECTION_ID,
+        approval_id=_id(200 + version),
         version=version,
         predecessor_version_id=predecessor_version_id,
         workspace_id=WORKSPACE_ID,
         environment_id=ENVIRONMENT_ID,
         service_principal_id=SERVICE_PRINCIPAL_ID,
-        credential_reference=OpaqueGoogleReference(value="vault:google-r2-v1"),
-        grant_reference=OpaqueGoogleReference(value="grant:google-r2-v1"),
+        credential_reference=OpaqueGoogleReference(value=_id(7 + version)),
+        grant_reference=OpaqueGoogleReference(value=_id(17 + version)),
         approved_resource_scope_references=(RESOURCE_SCOPE,),
         authorization_generation=authorization_generation,
         configuration_generation=configuration_generation,
         status=status,
+    )
+
+
+def _approval(connection: GoogleConnection) -> GoogleConnectionApproval:
+    return GoogleConnectionApproval(
+        approval_id=connection.approval_id,
+        workspace_id=connection.workspace_id,
+        environment_id=connection.environment_id,
+        service_principal_id=connection.service_principal_id,
+        credential_reference=connection.credential_reference,
+        grant_reference=connection.grant_reference,
+        approved_resource_scope_references=connection.approved_resource_scope_references,
+        authorization_generation=connection.authorization_generation,
+        configuration_generation=connection.configuration_generation,
+        status=connection.status,
+    )
+
+
+def _admission(repository, provider):
+    registry = DiagnosticEventRegistry.with_default_families()
+    sink = RecordingDiagnosticSink(registry)
+    return (
+        GoogleReadAdmission(
+            repository=repository,
+            provider=provider,
+            diagnostic_sink=sink,
+            diagnostic_registry=registry,
+            clock=lambda: NOW,
+        ),
+        sink,
     )
 
 
@@ -102,7 +139,9 @@ class RecordingGoogleProvider:
 
 async def _repository_with(connection: GoogleConnection):
     boundary = _boundary()
-    repository = InMemoryGoogleConnectionRepository(context_verifier=boundary)
+    repository = InMemoryGoogleConnectionRepository(
+        context_verifier=boundary, approvals=(_approval(connection),)
+    )
     context = boundary.worker(
         scope=EnvironmentScope(
             workspace_id=WORKSPACE_ID, environment_id=ENVIRONMENT_ID
@@ -117,6 +156,7 @@ async def _repository_with(connection: GoogleConnection):
             connection=connection,
             idempotency_key="google-connection-registration-v1",
             audit_event_id=_id(93),
+            occurred_at=NOW,
         ),
         context,
     )
@@ -127,7 +167,7 @@ async def _repository_with(connection: GoogleConnection):
 async def test_active_connection_allows_one_provider_read() -> None:
     boundary, repository = await _repository_with(_connection())
     provider = RecordingGoogleProvider()
-    admission = GoogleReadAdmission(repository=repository, provider=provider)
+    admission, sink = _admission(repository, provider)
     command = GoogleReadCommand(
         connection_id=CONNECTION_ID,
         resource_scope_reference=RESOURCE_SCOPE,
@@ -150,6 +190,7 @@ async def test_active_connection_allows_one_provider_read() -> None:
 
     assert result == {"provider_event_reference": "event:synthetic-v1"}
     assert provider.calls == [(_connection(), command)]
+    assert sink.events == ()
 
 
 @pytest.mark.asyncio
@@ -170,7 +211,7 @@ async def test_active_connection_allows_one_provider_read() -> None:
         (
             "out_of_scope",
             _connection(),
-            {"resource_scope_reference": OpaqueGoogleReference(value="scope:other-v1")},
+            {"resource_scope_reference": OpaqueGoogleReference(value=_id(70))},
             {},
         ),
         ("wrong_operation", _connection(), {}, {"operation": "source_observation"}),
@@ -185,7 +226,7 @@ async def test_denied_request_fails_before_provider_call(
     del case
     boundary, repository = await _repository_with(connection)
     provider = RecordingGoogleProvider()
-    admission = GoogleReadAdmission(repository=repository, provider=provider)
+    admission, sink = _admission(repository, provider)
     command = GoogleReadCommand(
         connection_id=CONNECTION_ID,
         resource_scope_reference=RESOURCE_SCOPE,
@@ -214,6 +255,7 @@ async def test_denied_request_fails_before_provider_call(
 
     assert str(failure.value) == "Google connection read denied."
     assert provider.calls == []
+    assert sink.events[0].payload_json() == {"failure_code": "authorization.denied"}
 
 
 @pytest.mark.asyncio
@@ -224,7 +266,7 @@ async def test_provider_failure_returns_content_free_error() -> None:
             "https://drive.google.test/private/customer-plan.xlsx refresh-token-secret"
         )
     )
-    admission = GoogleReadAdmission(repository=repository, provider=provider)
+    admission, sink = _admission(repository, provider)
 
     with pytest.raises(GoogleProviderReadError) as failure:
         await admission.read(
@@ -248,3 +290,82 @@ async def test_provider_failure_returns_content_free_error() -> None:
     assert str(failure.value) == "Google provider read failed."
     assert "customer-plan" not in repr(failure.value)
     assert "refresh-token-secret" not in repr(failure.value)
+    assert sink.events[0].payload_json() == {"failure_code": "provider.unavailable"}
+
+
+@pytest.mark.asyncio
+async def test_read_lease_blocks_revocation_until_provider_call_finishes() -> None:
+    initial = _connection()
+    revoked = _connection(
+        status=GoogleConnectionStatus.REVOKED,
+        version=2,
+        predecessor_version_id=initial.connection_version_id,
+        authorization_generation=8,
+        configuration_generation=12,
+    )
+    boundary = _boundary()
+    repository = InMemoryGoogleConnectionRepository(
+        context_verifier=boundary,
+        approvals=(_approval(initial), _approval(revoked)),
+    )
+    registration_context = boundary.worker(
+        scope=EnvironmentScope(
+            workspace_id=WORKSPACE_ID, environment_id=ENVIRONMENT_ID
+        ),
+        service_principal_id=SERVICE_PRINCIPAL_ID,
+        purpose=PersistencePurpose("google_connector"),
+        operation=PersistenceOperation("google_connection_register"),
+        trace_id=_id(97),
+    )
+    await repository.register(
+        GoogleConnectionCommand(
+            connection=initial,
+            idempotency_key="read-lease-initial-v1",
+            audit_event_id=_id(98),
+            occurred_at=NOW,
+        ),
+        registration_context,
+    )
+    provider_started = asyncio.Event()
+    release_provider = asyncio.Event()
+
+    class BlockingProvider:
+        async def read(
+            self, connection: GoogleConnection, command: GoogleReadCommand
+        ) -> str:
+            del connection, command
+            provider_started.set()
+            await release_provider.wait()
+            return "complete"
+
+    admission, _ = _admission(repository, BlockingProvider())
+    read_task = asyncio.create_task(
+        admission.read(
+            GoogleReadCommand(
+                connection_id=CONNECTION_ID,
+                resource_scope_reference=RESOURCE_SCOPE,
+                authorization_generation=7,
+                configuration_generation=11,
+            ),
+            _context(),
+        )
+    )
+    await provider_started.wait()
+    revoke_task = asyncio.create_task(
+        repository.register(
+            GoogleConnectionCommand(
+                connection=revoked,
+                idempotency_key="read-lease-revoked-v2",
+                audit_event_id=_id(99),
+                occurred_at=NOW,
+            ),
+            registration_context,
+        )
+    )
+    await asyncio.sleep(0)
+
+    assert revoke_task.done() is False
+
+    release_provider.set()
+    assert await read_task == "complete"
+    assert (await revoke_task).connection == revoked

@@ -3,16 +3,20 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from uuid import UUID
 
 import pytest
 import pytest_asyncio
 from pydantic import SecretStr
-from sqlalchemy import text
+from sqlalchemy import insert, text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from spine.application.connections.google import (
+    GoogleConnectionCommand,
+    GoogleConnectionConflictError,
     GoogleConnectionDeniedError,
     GoogleReadCommand,
 )
@@ -23,11 +27,13 @@ from spine.application.persistence import (
 )
 from spine.domain.connections.google import (
     GoogleConnection,
+    GoogleConnectionApproval,
     GoogleConnectionStatus,
     OpaqueGoogleReference,
 )
 from spine.infrastructure.connections.postgresql_google import (
     PostgreSQLGoogleConnectionRepository,
+    google_connection_approvals,
 )
 from spine.infrastructure.db.migrations import upgrade_database
 from spine.infrastructure.db.operator import bootstrap_database_roles
@@ -39,8 +45,12 @@ from spine.infrastructure.db.settings import (
 from spine.infrastructure.db.test_harness import TestDatabaseProvision
 from spine.infrastructure.persistence.contexts import TrustedContextBoundary
 from tests.contracts.connections.google_connection_repository_contract import (
+    OCCURRED_AT,
     GoogleConnectionRepositoryScenario,
-    assert_google_connection_repository_contract,
+    assert_google_connection_generation_fencing_contract,
+    assert_google_connection_idempotency_conflict_contract,
+    assert_google_connection_registration_replay_contract,
+    assert_google_connection_successor_contract,
 )
 
 
@@ -86,7 +96,7 @@ async def google_database(
         dispatcher_password=DISPATCHER_PASSWORD,
     )
     await bootstrap_database_roles(operator)
-    migration_url = _role_url(postgresql_provision, MIGRATION_ROLE, MIGRATION_PASSWORD)
+    migration_url = _role_url(provision=postgresql_provision, role=MIGRATION_ROLE, password=MIGRATION_PASSWORD)
     await asyncio.to_thread(
         upgrade_database,
         MigrationDatabaseSettings(
@@ -100,7 +110,9 @@ async def google_database(
         migration_url.get_secret_value(), hide_parameters=True
     )
     runtime_engine = create_async_engine(
-        _role_url(postgresql_provision, RUNTIME_ROLE, RUNTIME_PASSWORD).get_secret_value(),
+        _role_url(
+            postgresql_provision, RUNTIME_ROLE, RUNTIME_PASSWORD
+        ).get_secret_value(),
         hide_parameters=True,
         connect_args={"options": POSTGRESQL_SEARCH_PATH_OPTIONS},
     )
@@ -136,31 +148,74 @@ async def google_database(
         await migration_engine.dispose()
 
 
+def _id(value: int) -> UUID:
+    return UUID(f"85000000-0000-0000-0000-{value:012d}")
+
+
 def _connection(
     *,
+    case: int,
     version: int,
     predecessor: UUID | None = None,
-    connection_id: UUID = UUID("84000000-0000-0000-0000-000000000001"),
 ) -> GoogleConnection:
     return GoogleConnection(
-        connection_version_id=UUID(
-            f"85000000-0000-0000-0000-{version:012d}"
-        ),
-        connection_id=connection_id,
+        connection_version_id=_id(case * 100 + version),
+        connection_id=_id(case * 100),
+        approval_id=_id(case * 100 + 20 + version),
         version=version,
         predecessor_version_id=predecessor,
         workspace_id=WORKSPACE_ID,
         environment_id=ENVIRONMENT_ID,
         service_principal_id=SERVICE_PRINCIPAL_ID,
-        credential_reference=OpaqueGoogleReference(value=f"vault:google-v{version}"),
-        grant_reference=OpaqueGoogleReference(value=f"grant:google-v{version}"),
+        credential_reference=OpaqueGoogleReference(value=_id(case * 100 + 40 + version)),
+        grant_reference=OpaqueGoogleReference(value=_id(case * 100 + 60 + version)),
         approved_resource_scope_references=(
-            OpaqueGoogleReference(value="scope:estimate-register-v1"),
+            OpaqueGoogleReference(value=_id(case * 100 + 80)),
         ),
         authorization_generation=version,
         configuration_generation=version,
         status=GoogleConnectionStatus.ACTIVE,
     )
+
+
+def _approval(connection: GoogleConnection) -> GoogleConnectionApproval:
+    return GoogleConnectionApproval(
+        approval_id=connection.approval_id,
+        workspace_id=connection.workspace_id,
+        environment_id=connection.environment_id,
+        service_principal_id=connection.service_principal_id,
+        credential_reference=connection.credential_reference,
+        grant_reference=connection.grant_reference,
+        approved_resource_scope_references=connection.approved_resource_scope_references,
+        authorization_generation=connection.authorization_generation,
+        configuration_generation=connection.configuration_generation,
+        status=connection.status,
+    )
+
+
+async def _seed_approvals(
+    database: GoogleDatabase, approvals: tuple[GoogleConnectionApproval, ...]
+) -> None:
+    async with database.migration_engine.begin() as connection:
+        for approval in approvals:
+            await connection.execute(
+                insert(google_connection_approvals).values(
+                    approval_id=approval.approval_id,
+                    workspace_id=approval.workspace_id,
+                    environment_id=approval.environment_id,
+                    service_principal_id=approval.service_principal_id,
+                    credential_reference=approval.credential_reference.value,
+                    grant_reference=approval.grant_reference.value,
+                    approved_resource_scope_references=[
+                        item.value
+                        for item in approval.approved_resource_scope_references
+                    ],
+                    authorization_generation=approval.authorization_generation,
+                    configuration_generation=approval.configuration_generation,
+                    status=approval.status.value,
+                    recorded_at=datetime(2026, 10, 26, tzinfo=timezone.utc),
+                )
+            )
 
 
 def _boundary() -> TrustedContextBoundary:
@@ -170,47 +225,92 @@ def _boundary() -> TrustedContextBoundary:
     )
 
 
-def _context(boundary: TrustedContextBoundary, *, workspace_id=WORKSPACE_ID, environment_id=ENVIRONMENT_ID):
+def _context(
+    boundary: TrustedContextBoundary,
+    *,
+    workspace_id: UUID = WORKSPACE_ID,
+    environment_id: UUID = ENVIRONMENT_ID,
+    operation: str = "google_connection_register",
+):
     return boundary.worker(
         scope=EnvironmentScope(
             workspace_id=workspace_id, environment_id=environment_id
         ),
         service_principal_id=SERVICE_PRINCIPAL_ID,
         purpose=PersistencePurpose("google_connector"),
-        operation=PersistenceOperation("google_connection_register"),
+        operation=PersistenceOperation(operation),
         trace_id=UUID("87000000-0000-0000-0000-000000000001"),
     )
 
 
+async def _scenario(
+    database: GoogleDatabase, *, case: int
+) -> GoogleConnectionRepositoryScenario:
+    boundary = _boundary()
+    initial = _connection(case=case, version=1)
+    successor = _connection(
+        case=case, version=2, predecessor=initial.connection_version_id
+    )
+    await _seed_approvals(database, (_approval(initial), _approval(successor)))
+    return GoogleConnectionRepositoryScenario(
+        repository=PostgreSQLGoogleConnectionRepository(
+            session_factory=async_sessionmaker(
+                database.runtime_engine, expire_on_commit=False
+            ),
+            context_verifier=boundary,
+        ),
+        context=_context(boundary),
+        initial=initial,
+        successor=successor,
+    )
+
+
 @pytest.mark.asyncio(loop_scope="session")
-async def test_postgresql_google_connection_repository_contract(
+async def test_postgresql_registration_replay_is_stable(
     google_database: GoogleDatabase,
 ) -> None:
     async def scenario() -> GoogleConnectionRepositoryScenario:
-        boundary = _boundary()
-        initial = _connection(version=1)
-        return GoogleConnectionRepositoryScenario(
-            repository=PostgreSQLGoogleConnectionRepository(
-                session_factory=async_sessionmaker(
-                    google_database.runtime_engine, expire_on_commit=False
-                ),
-                context_verifier=boundary,
-            ),
-            context=_context(boundary),
-            initial=initial,
-            successor=_connection(
-                version=2, predecessor=initial.connection_version_id
-            ),
-        )
+        return await _scenario(google_database, case=1)
 
-    await assert_google_connection_repository_contract(scenario)
+    await assert_google_connection_registration_replay_contract(scenario)
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_postgresql_google_connection_rls_hides_other_workspace(
+async def test_postgresql_idempotency_key_reuse_with_other_payload_conflicts(
+    google_database: GoogleDatabase,
+) -> None:
+    async def scenario() -> GoogleConnectionRepositoryScenario:
+        return await _scenario(google_database, case=2)
+
+    await assert_google_connection_idempotency_conflict_contract(scenario)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_unfenced_successor_conflicts(
+    google_database: GoogleDatabase,
+) -> None:
+    async def scenario() -> GoogleConnectionRepositoryScenario:
+        return await _scenario(google_database, case=3)
+
+    await assert_google_connection_generation_fencing_contract(scenario)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_fenced_successor_becomes_current(
+    google_database: GoogleDatabase,
+) -> None:
+    async def scenario() -> GoogleConnectionRepositoryScenario:
+        return await _scenario(google_database, case=4)
+
+    await assert_google_connection_successor_contract(scenario)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_unapproved_connection_conflicts(
     google_database: GoogleDatabase,
 ) -> None:
     boundary = _boundary()
+    connection = _connection(case=6, version=1)
     repository = PostgreSQLGoogleConnectionRepository(
         session_factory=async_sessionmaker(
             google_database.runtime_engine, expire_on_commit=False
@@ -218,22 +318,87 @@ async def test_postgresql_google_connection_rls_hides_other_workspace(
         context_verifier=boundary,
     )
 
-    with pytest.raises(GoogleConnectionDeniedError):
-        await repository.resolve_for_read(
-            GoogleReadCommand(
-                connection_id=UUID("84000000-0000-0000-0000-000000000001"),
-                resource_scope_reference=OpaqueGoogleReference(
-                    value="scope:estimate-register-v1"
+    with pytest.raises(GoogleConnectionConflictError):
+        await repository.register(
+            GoogleConnectionCommand(
+                connection=connection,
+                idempotency_key="unapproved-postgresql-google-connection",
+                audit_event_id=_id(5990),
+                occurred_at=OCCURRED_AT,
+            ),
+            _context(boundary),
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_runtime_cannot_mint_connection_approval(
+    google_database: GoogleDatabase,
+) -> None:
+    approval = _approval(_connection(case=7, version=1))
+
+    with pytest.raises(ProgrammingError):
+        async with google_database.runtime_engine.begin() as database_connection:
+            await database_connection.execute(
+                text(
+                    "SELECT set_config('spine.workspace_id', :workspace_id, true), "
+                    "set_config('spine.environment_id', :environment_id, true)"
                 ),
-                authorization_generation=2,
-                configuration_generation=2,
+                {
+                    "workspace_id": str(WORKSPACE_ID),
+                    "environment_id": str(ENVIRONMENT_ID),
+                },
+            )
+            await database_connection.execute(
+                insert(google_connection_approvals).values(
+                    approval_id=approval.approval_id,
+                    workspace_id=approval.workspace_id,
+                    environment_id=approval.environment_id,
+                    service_principal_id=approval.service_principal_id,
+                    credential_reference=approval.credential_reference.value,
+                    grant_reference=approval.grant_reference.value,
+                    approved_resource_scope_references=[
+                        item.value
+                        for item in approval.approved_resource_scope_references
+                    ],
+                    authorization_generation=approval.authorization_generation,
+                    configuration_generation=approval.configuration_generation,
+                    status=approval.status.value,
+                    recorded_at=OCCURRED_AT,
+                )
+            )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_postgresql_rls_hides_other_workspace(
+    google_database: GoogleDatabase,
+) -> None:
+    scenario = await _scenario(google_database, case=5)
+    await scenario.repository.register(
+        GoogleConnectionCommand(
+            connection=scenario.initial,
+            idempotency_key="rls-google-connection-v1",
+            audit_event_id=_id(5991),
+            occurred_at=OCCURRED_AT,
+        ),
+        scenario.context,
+    )
+
+    with pytest.raises(GoogleConnectionDeniedError):
+        async with scenario.repository.admit_read(
+            GoogleReadCommand(
+                connection_id=scenario.initial.connection_id,
+                resource_scope_reference=scenario.initial.approved_resource_scope_references[0],
+                authorization_generation=1,
+                configuration_generation=1,
             ),
             _context(
-                boundary,
+                _boundary(),
                 workspace_id=OTHER_WORKSPACE_ID,
                 environment_id=OTHER_ENVIRONMENT_ID,
+                operation="google_connection_read",
             ),
-        )
+        ):
+            pytest.fail("RLS-hidden connection was admitted")
 
     async with google_database.runtime_engine.begin() as connection:
         await connection.execute(
@@ -249,4 +414,8 @@ async def test_postgresql_google_connection_rls_hides_other_workspace(
         count = await connection.scalar(
             text("SELECT count(*) FROM spine.google_connection_versions")
         )
+        approval_count = await connection.scalar(
+            text("SELECT count(*) FROM spine.google_connection_approvals")
+        )
     assert count == 0
+    assert approval_count == 0
