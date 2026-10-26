@@ -252,6 +252,68 @@ async def test_sheets_location_changes_preserve_content_digest_and_append_locato
 
 
 @pytest.mark.asyncio
+async def test_sheets_row_sort_preserves_target_content_and_updates_its_coordinate():
+    target = _row(row_number=2)
+    other = _row(
+        business_id="EST-2026-0002",
+        row_number=3,
+        metadata_value="EST-2026-0002",
+    )
+
+    def at_row(row: GoogleSheetsRowData, row_number: int) -> GoogleSheetsRowData:
+        return row.model_copy(
+            update={
+                "row_number": row_number,
+                "a1_range": f"A{row_number}:C{row_number}",
+                "cells": tuple(
+                    cell.model_copy(
+                        update={
+                            "coordinate": f"{cell.coordinate.rstrip('0123456789')}"
+                            f"{row_number}"
+                        }
+                    )
+                    for cell in row.cells
+                ),
+                "developer_metadata": tuple(
+                    metadata.model_copy(update={"row_number": row_number})
+                    for metadata in row.developer_metadata
+                ),
+            }
+        )
+
+    first = _snapshot(target, other)
+    sorted_rows = _snapshot(at_row(other, 2), at_row(target, 3))
+    profile = _profile(target_business_id="EST-2026-0001")
+    command = SimpleNamespace(
+        resource_scope_reference=SimpleNamespace(value=SCOPE),
+        authorization_generation=7,
+        configuration_generation=11,
+    )
+    connection = SimpleNamespace(
+        connection_id=CONNECTION,
+        workspace_id=UUID("10000000-0000-4000-8000-000000000001"),
+        environment_id=UUID("20000000-0000-4000-8000-000000000001"),
+    )
+
+    before = await GoogleSheetsProviderAdapter(
+        service=FakeSheetsService(first), profile=profile, clock=lambda: NOW
+    ).read(connection, command)
+    after = await GoogleSheetsProviderAdapter(
+        service=FakeSheetsService(sorted_rows), profile=profile, clock=lambda: NOW
+    ).read(connection, command)
+
+    before_normalized = before.to_normalized_observation()
+    after_normalized = after.to_normalized_observation()
+    assert before.original.key == after.original.key
+    assert before_normalized.original_bytes == after_normalized.original_bytes
+    assert before_normalized.event_digest == after_normalized.event_digest
+    assert before.location.observed_row_number == 2
+    assert after.location.observed_row_number == 3
+    assert before_normalized.origin_locator_value == "sheet-row:2:a1:a2:c2"
+    assert after_normalized.origin_locator_value == "sheet-row:3:a1:a3:c3"
+
+
+@pytest.mark.asyncio
 async def test_sheets_reader_rejects_provider_change_during_snapshot_read():
     service = FakeSheetsService(_snapshot(_row()))
     service.provider_versions = ["14", "15"]
