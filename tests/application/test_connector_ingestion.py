@@ -20,6 +20,7 @@ from spine.application.persistence.context import (
     PersistencePurpose,
     WorkspaceScope,
 )
+from spine.application.persistence.errors import OptimisticConflictError
 from spine.application.persistence.outbox import OutboxEventRegistry
 from spine.application.persistence.ingestion import IngestionMutationResult
 from spine.application.persistence.idempotency import OpaqueResultReference
@@ -145,7 +146,7 @@ class _Uploader:
         self.fail_next = False
 
     async def upload(self, context, command, chunks):
-        del context, command
+        del context
         self.calls += 1
         if self.fail_next:
             self.fail_next = False
@@ -154,15 +155,15 @@ class _Uploader:
         digest = __import__("hashlib").sha256(content).hexdigest()
         reference = ObjectReference(
             schema_version=1,
-            object_id=_id("object"),
-            storage_generation=_id("generation"),
+            object_id=_id(f"object:{digest}"),
+            storage_generation=_id(f"generation:{digest}"),
             digest_algorithm="sha256",
             digest_hex=digest,
             byte_length=len(content),
         )
         receipt = WriteReceipt(
             schema_version=1,
-            upload_id=_id("upload"),
+            upload_id=_id(f"upload:{command.idempotency_key}"),
             object_reference=reference,
             observed_content=ObservedContentIdentity(
                 observed_sha256=digest, observed_byte_length=len(content)
@@ -184,7 +185,9 @@ class _Uploader:
             ),
             upload_id=receipt.upload_id,
             object_id=reference.object_id,
-            issue8_result_reference={"receipt_id": _id("issue8-receipt")},
+            issue8_result_reference={
+                "receipt_id": _id(f"issue8-receipt:{command.idempotency_key}")
+            },
         )
         return OriginalUploadOutcome(result=result, write_receipt=receipt, replay=False)
 
@@ -324,9 +327,12 @@ class _Uow:
         self.ingestion = ingestion
         self.sources = ingestion
         self.admissions = admissions
-        self.canonical = SimpleNamespace(accept=self._accept)
+        self.canonical = SimpleNamespace(
+            accept=self._accept, resolve_current=self._resolve_current
+        )
         self.outbox = SimpleNamespace(append=self._append)
         self.accepted = 0
+        self.current_revision_id = None
         self.events = []
         self.trace_id = _id("uow-trace")
 
@@ -339,9 +345,19 @@ class _Uow:
     async def commit(self):
         return None
 
+    async def rollback(self):
+        return None
+
     async def _accept(self, command):
         self.accepted += 1
+        self.current_revision_id = command.revision.revision_id
         return command
+
+    async def _resolve_current(self, source_object_id):
+        del source_object_id
+        if self.current_revision_id is None:
+            return None
+        return SimpleNamespace(current_revision_id=self.current_revision_id)
 
     async def _append(self, intent):
         self.events.append(intent)
@@ -383,57 +399,31 @@ def _orchestrator(observation=None, *, reader=None):
 
 
 class _HandoffSheetsService:
+    def __init__(self, snapshots=None) -> None:
+        self.snapshots = snapshots
+        self.read_count = 0
+
+    async def get_provider_version(
+        self, connection, resource_scope_reference, spreadsheet_id
+    ):
+        del connection, resource_scope_reference, spreadsheet_id
+        return "1"
+
     async def get_spreadsheet(
         self, connection, resource_scope_reference, spreadsheet_id, sheet_id
     ):
-        del connection, resource_scope_reference
-        return GoogleSheetsSnapshot(
-            spreadsheet_id=spreadsheet_id,
-            sheet_id=sheet_id,
-            sheet_title="Estimates",
-            locale="ru_RU",
-            time_zone="Europe/Moscow",
-            rows=(
-                GoogleSheetsRowData(
-                    row_number=2,
-                    a1_range="A2:B2",
-                    cells=(
-                        GoogleSheetsCellData(
-                            column_key="estimate_id",
-                            coordinate="A2",
-                            entered=GoogleSheetCellValue(
-                                kind="string", value="estimate-42"
-                            ),
-                            effective=GoogleSheetCellValue(
-                                kind="string", value="estimate-42"
-                            ),
-                            formatted="estimate-42",
-                            number_format=GoogleSheetNumberFormat(type="TEXT"),
-                        ),
-                        GoogleSheetsCellData(
-                            column_key="total",
-                            coordinate="B2",
-                            entered=GoogleSheetCellValue(
-                                kind="formula", value="=SUM(C2:D2)"
-                            ),
-                            effective=GoogleSheetCellValue(
-                                kind="number", value="1250.5"
-                            ),
-                            formatted="1250.50",
-                            number_format=GoogleSheetNumberFormat(
-                                type="NUMBER", pattern="#,##0.00"
-                            ),
-                        ),
-                    ),
-                ),
-            ),
-        )
+        del connection, resource_scope_reference, spreadsheet_id, sheet_id
+        if self.snapshots is not None:
+            snapshot = self.snapshots[min(self.read_count, len(self.snapshots) - 1)]
+            self.read_count += 1
+            return snapshot
+        return _handoff_snapshot(row_number=2)
 
 
 class _SheetsHandoffReader:
-    def __init__(self) -> None:
+    def __init__(self, snapshots=None) -> None:
         self.provider = GoogleSheetsProviderAdapter(
-            service=_HandoffSheetsService(),
+            service=_HandoffSheetsService(snapshots),
             profile=GoogleSheetsReadProfile(
                 spreadsheet_id="spreadsheet-1",
                 sheet_id=17,
@@ -465,6 +455,50 @@ class _SheetsHandoffReader:
             ),
         )
         return observation.to_normalized_observation()
+
+
+def _handoff_snapshot(
+    *, row_number: int, sheet_title: str = "Estimates", formula: str = "=SUM(C2:D2)"
+) -> GoogleSheetsSnapshot:
+    return GoogleSheetsSnapshot(
+        spreadsheet_id="spreadsheet-1",
+        sheet_id=17,
+        sheet_title=sheet_title,
+        locale="ru_RU",
+        time_zone="Europe/Moscow",
+        rows=(
+            GoogleSheetsRowData(
+                row_number=row_number,
+                a1_range=f"A{row_number}:B{row_number}",
+                cells=(
+                    GoogleSheetsCellData(
+                        column_key="estimate_id",
+                        coordinate=f"A{row_number}",
+                        entered=GoogleSheetCellValue(
+                            kind="string", value="estimate-42"
+                        ),
+                        effective=GoogleSheetCellValue(
+                            kind="string", value="estimate-42"
+                        ),
+                        formatted="estimate-42",
+                        number_format=GoogleSheetNumberFormat(type="TEXT"),
+                    ),
+                    GoogleSheetsCellData(
+                        column_key="total",
+                        coordinate=f"B{row_number}",
+                        entered=GoogleSheetCellValue(kind="formula", value=formula),
+                        effective=GoogleSheetCellValue(
+                            kind="number", value="1250.5"
+                        ),
+                        formatted="1250.50",
+                        number_format=GoogleSheetNumberFormat(
+                            type="NUMBER", pattern="#,##0.00"
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
 
 
 @pytest.mark.asyncio
@@ -510,6 +544,116 @@ async def test_google_sheets_reader_reaches_shared_canonical_and_projection_hand
 
 
 @pytest.mark.asyncio
+async def test_sheets_location_only_observation_skips_revision_projection_intent():
+    reader = _SheetsHandoffReader(
+        snapshots=(
+            _handoff_snapshot(row_number=2),
+            _handoff_snapshot(row_number=5, sheet_title="Renamed estimates"),
+            _handoff_snapshot(row_number=5, formula="=SUM(C2:E2)"),
+        )
+    )
+    orchestrator, _, _, _, uow = _orchestrator(reader=reader)
+
+    first = await orchestrator.ingest(
+        _command("projection-count-1").model_copy(
+            update={"command_identity": "connector.projection-count-1"}
+        )
+    )
+    moved = await orchestrator.ingest(
+        _command("projection-count-2").model_copy(
+            update={
+                "command_identity": "connector.projection-count-2",
+                "expected_current_revision_id": first.revision.revision_id,
+            }
+        )
+    )
+    edited = await orchestrator.ingest(
+        _command("projection-count-3").model_copy(
+            update={
+                "command_identity": "connector.projection-count-3",
+                "expected_current_revision_id": moved.revision.revision_id,
+            }
+        )
+    )
+
+    assert first.revision.revision_id == moved.revision.revision_id
+    assert edited.revision.revision_id != moved.revision.revision_id
+    assert uow.accepted == 2
+    assert len(uow.events) == 2
+    assert all(
+        event.event_type == "ingestion.projection.requested" for event in uow.events
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case", "cell_update"),
+    (
+        (
+            "formula",
+            {"entered": GoogleSheetCellValue(kind="formula", value="=SUM(C2:E2)")},
+        ),
+        (
+            "entered_value",
+            {"entered": GoogleSheetCellValue(kind="string", value="1250.5")},
+        ),
+        (
+            "effective_value",
+            {"effective": GoogleSheetCellValue(kind="number", value="1251.5")},
+        ),
+        ("formatted_value", {"formatted": "1 251,50 ₽"}),
+        (
+            "number_format",
+            {
+                "number_format": GoogleSheetNumberFormat(
+                    type="CURRENCY", pattern="₽ #,##0.00"
+                )
+            },
+        ),
+    ),
+)
+async def test_configured_cell_edit_creates_revision_and_projection_intent(
+    case: str, cell_update: dict[str, object]
+) -> None:
+    original_snapshot = _handoff_snapshot(row_number=2)
+    original_row = original_snapshot.rows[0]
+    changed_row = original_row.model_copy(
+        update={
+            "cells": (
+                original_row.cells[0],
+                original_row.cells[1].model_copy(update=cell_update),
+            )
+        }
+    )
+    changed_snapshot = original_snapshot.model_copy(update={"rows": (changed_row,)})
+    reader = _SheetsHandoffReader(
+        snapshots=(original_snapshot, changed_snapshot)
+    )
+    orchestrator, _, _, _, uow = _orchestrator(reader=reader)
+    before = await orchestrator.ingest(
+        _command(f"{case}-before").model_copy(
+            update={"command_identity": f"connector.{case}-before"}
+        )
+    )
+    after = await orchestrator.ingest(
+        _command(f"{case}-after").model_copy(
+            update={
+                "command_identity": f"connector.{case}-after",
+                "expected_current_revision_id": before.revision.revision_id,
+            }
+        )
+    )
+
+    assert before.revision.revision_id != after.revision.revision_id
+    assert after.revision.original_sha256 != before.revision.original_sha256
+    assert uow.accepted == 2
+    assert len(uow.events) == 2
+    assert all(
+        event.event_type == "ingestion.projection.requested" for event in uow.events
+    )
+
+
+@pytest.mark.asyncio
 async def test_read_denial_stops_before_original_storage():
     orchestrator, reader, uploader, _, _ = _orchestrator(_observation())
     reader.error = RuntimeError("read denied")
@@ -543,8 +687,24 @@ async def test_repeated_observation_reuses_ingestion_effects():
     assert first.revision.revision_id == second.revision.revision_id
     assert first.processing_receipt.processing_receipt_id == second.processing_receipt.processing_receipt_id
     assert uploader.calls == 2
-    assert len(uow.events) == 2
+    assert len(uow.events) == 1
     assert ingestion.receipt == second.processing_receipt
+
+
+@pytest.mark.asyncio
+async def test_location_only_observation_rejects_a_stale_expected_source_head():
+    orchestrator, _, _, _, _ = _orchestrator(_observation())
+    await orchestrator.ingest(_command("current-observation"))
+
+    stale = _command("stale-observation").model_copy(
+        update={
+            "command_identity": "connector.stale-observation",
+            "expected_current_revision_id": _id("stale-revision"),
+        }
+    )
+
+    with pytest.raises(OptimisticConflictError, match="source head is stale"):
+        await orchestrator.ingest(stale)
 
 
 class _EligiblePolicyRepository:
@@ -603,7 +763,13 @@ async def test_handoff_uses_real_in_memory_source_admission_canonical_and_ledger
         )
         await uow.commit()
 
-    reader = _Reader(_observation())
+    reader = _SheetsHandoffReader(
+        snapshots=(
+            _handoff_snapshot(row_number=2),
+            _handoff_snapshot(row_number=5, sheet_title="Renamed estimates"),
+            _handoff_snapshot(row_number=5, formula="=SUM(C2:E2)"),
+        )
+    )
     uploader = _Uploader()
     orchestrator = ConnectorIngestionOrchestrator(
         uow_factory=persistence.uow_factory,
@@ -633,7 +799,27 @@ async def test_handoff_uses_real_in_memory_source_admission_canonical_and_ledger
         clock=lambda: NOW,
     )
 
-    result = await orchestrator.ingest(_command())
+    first = await orchestrator.ingest(
+        _command("sheets-observation-1").model_copy(
+            update={"command_identity": "connector.sheets-observation-1"}
+        )
+    )
+    moved = await orchestrator.ingest(
+        _command("sheets-observation-2").model_copy(
+            update={
+                "command_identity": "connector.sheets-observation-2",
+                "expected_current_revision_id": first.revision.revision_id,
+            }
+        )
+    )
+    edited = await orchestrator.ingest(
+        _command("sheets-observation-3").model_copy(
+            update={
+                "command_identity": "connector.sheets-observation-3",
+                "expected_current_revision_id": moved.revision.revision_id,
+            }
+        )
+    )
 
     async with persistence.uow_factory(
         boundary.worker(
@@ -644,11 +830,29 @@ async def test_handoff_uses_real_in_memory_source_admission_canonical_and_ledger
             trace_id=_id("readback"),
         )
     ) as uow:
-        current = await uow.canonical.resolve_current(result.source.source_object_id)
-        state = await uow.ingestion.derive_run_state(result.run.ingestion_run_id)
+        current = await uow.canonical.resolve_current(first.source.source_object_id)
+        revisions = await uow.sources.list_revisions(
+            first.source.source_object_id, limit=10
+        )
+        location_provenance = await uow.sources.list_provenance(
+            first.revision.revision_id
+        )
+        state = await uow.ingestion.derive_run_state(edited.run.ingestion_run_id)
+        moved_state = await uow.ingestion.derive_run_state(moved.run.ingestion_run_id)
         await uow.rollback()
 
     assert current is not None
-    assert current.current_revision_id == result.revision.revision_id
+    assert first.revision.revision_id == moved.revision.revision_id
+    assert edited.revision.revision_id != moved.revision.revision_id
+    assert current.current_revision_id == edited.revision.revision_id
+    assert current.accepted_generation == 2
+    assert len(revisions) == 2
+    assert {item.origin_locator_value for item in location_provenance} == {
+        "sheet-row:2:a1:a2:b2",
+        "sheet-row:5:a1:a5:b5",
+    }
+    assert len({item.origin_locator_digest for item in location_provenance}) == 2
     assert state is not None
     assert state.state is IngestionRunState.SUCCEEDED
+    assert moved_state is not None
+    assert moved_state.state is IngestionRunState.SUCCEEDED

@@ -59,6 +59,10 @@ class GoogleSheetsConfiguredScopeError(GoogleProviderContractError):
     """The provider response is outside the configured spreadsheet/sheet."""
 
 
+class GoogleSheetsConcurrentModificationError(GoogleProviderContractError):
+    """The spreadsheet changed while its configured ranges were being read."""
+
+
 class GoogleSheetsColumn(DefinitionModel):
     """One explicitly configured register column and its Sheets grid column."""
 
@@ -154,6 +158,13 @@ class GoogleSheetsSnapshot(DefinitionModel):
 class GoogleSheetsService(Protocol):
     """Fakeable boundary for the official Sheets spreadsheet read semantics."""
 
+    async def get_provider_version(
+        self,
+        connection: GoogleConnection,
+        resource_scope_reference: OpaqueGoogleReference,
+        spreadsheet_id: str,
+    ) -> str: ...
+
     async def get_spreadsheet(
         self,
         connection: GoogleConnection,
@@ -181,6 +192,8 @@ class GoogleSheetsObservation(DefinitionModel):
     configuration_generation: int = Field(ge=1)
     original: GoogleSheetRowOriginal
     location: GoogleSheetRowLocation
+    provider_version_before: StrictStr = Field(min_length=1, max_length=128)
+    provider_version_after: StrictStr = Field(min_length=1, max_length=128)
     observed_at: datetime
     received_at: datetime
 
@@ -199,14 +212,20 @@ class GoogleSheetsObservation(DefinitionModel):
                 raise ValueError("Sheets observation timestamps must be timezone-aware")
         if self.received_at < self.observed_at:
             raise ValueError("received_at cannot precede observed_at")
+        if self.provider_version_before != self.provider_version_after:
+            raise ValueError("Sheets provider version must remain stable during a read")
         return self
 
     def to_normalized_observation(self) -> NormalizedConnectorObservation:
         digest = google_sheet_row_content_digest(self.original)
+        location_digest = hashlib.sha256(
+            self.location.model_dump_json().encode("utf-8")
+        ).hexdigest()
         key = self.original.key
-        locator_value = _bounded_locator_value(
-            f"{key.spreadsheet_id}:{key.sheet_id}:{key.immutable_business_id}"
-        )
+        locator_value = _row_locator_value(self.location)
+        event_identity_digest = hashlib.sha256(
+            f"{digest}:{location_digest}".encode("ascii")
+        ).hexdigest()
         return NormalizedConnectorObservation(
             workspace_id=self.workspace_id,
             environment_id=self.environment_id,
@@ -222,18 +241,18 @@ class GoogleSheetsObservation(DefinitionModel):
             locator_contract_version=GOOGLE_SHEETS_ROW_LOCATOR,
             coverage=ConnectorCoverage.COMPLETE,
             producer_reference="google-sheets-reader",
-            event_identity=f"sheet-row:{digest[:54]}",
+            event_identity=f"sheet-row:{event_identity_digest[:54]}",
             event_digest=digest,
             origin_locator_kind="google-sheet-row",
             origin_locator_value=locator_value,
             origin_locator_schema="google-sheet-row-location:v1",
-            origin_locator_digest=hashlib.sha256(
-                self.location.model_dump_json().encode("utf-8")
-            ).hexdigest(),
+            origin_locator_digest=location_digest,
             observer_service="google-sheets-reader",
             received_at=self.received_at,
             observed_at=self.observed_at,
             provider_media_type=GOOGLE_SHEETS_PROVIDER_MEDIA_TYPE,
+            provider_version_before=self.provider_version_before,
+            provider_version_after=self.provider_version_after,
         )
 
 
@@ -250,12 +269,26 @@ class GoogleSheetsProviderAdapter(GoogleProvider[GoogleSheetsObservation]):
         connection: GoogleConnection,
         command: GoogleReadCommand,
     ) -> GoogleSheetsObservation:
+        version_before = await self.service.get_provider_version(
+            connection,
+            command.resource_scope_reference,
+            self.profile.spreadsheet_id,
+        )
         snapshot = await self.service.get_spreadsheet(
             connection,
             command.resource_scope_reference,
             self.profile.spreadsheet_id,
             self.profile.sheet_id,
         )
+        version_after = await self.service.get_provider_version(
+            connection,
+            command.resource_scope_reference,
+            self.profile.spreadsheet_id,
+        )
+        if not version_before or len(version_before) > 128 or version_before != version_after:
+            raise GoogleSheetsConcurrentModificationError(
+                "Google Sheets spreadsheet changed during guarded read."
+            )
         if snapshot.spreadsheet_id != self.profile.spreadsheet_id:
             raise GoogleSheetsConfiguredScopeError(
                 "Sheets response is outside the configured spreadsheet."
@@ -277,6 +310,8 @@ class GoogleSheetsProviderAdapter(GoogleProvider[GoogleSheetsObservation]):
             configuration_generation=command.configuration_generation,
             original=selected[0],
             location=selected[1],
+            provider_version_before=version_before,
+            provider_version_after=version_after,
             observed_at=now,
             received_at=now,
         )
@@ -432,11 +467,16 @@ def _column_from_coordinate(coordinate: str) -> str:
     return re.sub(r"[1-9][0-9]*$", "", coordinate)
 
 
-def _bounded_locator_value(value: str) -> str:
-    encoded = f"sheet-row:{hashlib.sha256(value.encode('utf-8')).hexdigest()[:54]}"
-    if re.fullmatch(r"[a-z][a-z0-9_.:-]{0,63}", encoded) is None:
-        raise ValueError("Google Sheets locator value exceeds the contract bound")
-    return encoded
+def _row_locator_value(location: GoogleSheetRowLocation) -> str:
+    """Keep the observed row and A1 coordinate readable in revision provenance."""
+
+    value = (
+        f"sheet-row:{location.observed_row_number}:"
+        f"a1:{location.observed_a1_range.lower()}"
+    )
+    if re.fullmatch(r"[a-z][a-z0-9_.:-]{0,63}", value) is None:
+        raise ValueError("Google Sheets row locator exceeds the provenance bound")
+    return value
 
 
 __all__ = [
@@ -446,6 +486,7 @@ __all__ = [
     "GoogleSheetsCellData",
     "GoogleSheetsColumn",
     "GoogleSheetsConfiguredScopeError",
+    "GoogleSheetsConcurrentModificationError",
     "GoogleSheetsDeveloperMetadata",
     "GoogleSheetsObservation",
     "GoogleSheetsObservationReader",

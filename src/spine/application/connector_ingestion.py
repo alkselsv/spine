@@ -31,6 +31,7 @@ from spine.application.persistence.context import (
     PersistenceOperation,
     TrustedPersistenceContext,
 )
+from spine.application.persistence.errors import OptimisticConflictError
 from spine.application.persistence.idempotency import IdempotencyKey
 from spine.application.persistence.ingestion import (
     IngestionBindingCommand,
@@ -249,9 +250,21 @@ class ConnectorIngestionOrchestrator:
             context=canonical_context,
             accepted_at=self._now(),
         )
+        projection_required = True
         async with self.uow_factory(canonical_context) as uow:
-            await uow.canonical.accept(canonical_command)
-            await uow.commit()
+            current = await uow.canonical.resolve_current(source.source_object_id)
+            if (
+                current is not None
+                and command.expected_current_revision_id is not None
+                and command.expected_current_revision_id != current.current_revision_id
+            ):
+                raise OptimisticConflictError("The expected source head is stale.")
+            if current is not None and current.current_revision_id == revision.revision_id:
+                projection_required = False
+                await uow.rollback()
+            else:
+                await uow.canonical.accept(canonical_command)
+                await uow.commit()
 
         receipt = await self._record_processing(
             command=command,
@@ -261,6 +274,7 @@ class ConnectorIngestionOrchestrator:
             source=source,
             revision=revision,
             binding=binding,
+            projection_required=projection_required,
         )
         return ConnectorIngestionResult(
             command=command,
@@ -558,6 +572,7 @@ class ConnectorIngestionOrchestrator:
         source: SourceObject,
         revision: SourceRevision,
         binding: IngestionRunSourceBinding,
+        projection_required: bool,
     ) -> ProcessingReceipt:
         context = self.context_factory(
             PersistenceOperation("processing_receipt"), _id(command, "processing")
@@ -616,24 +631,26 @@ class ConnectorIngestionOrchestrator:
             stored = result.value
             if not isinstance(stored, ProcessingReceipt):
                 raise TypeError("processing receipt repository returned an invalid value")
-            await uow.outbox.append(
-                build_projection_request_intent(
-                    registry=self.outbox_events,
-                    run=run,
-                    item=item,
-                    receipt=stored,
-                    trace_id=context.trace_id,
-                    causation_id=stored.processing_receipt_id,
+            if projection_required:
+                await uow.outbox.append(
+                    build_projection_request_intent(
+                        registry=self.outbox_events,
+                        run=run,
+                        item=item,
+                        receipt=stored,
+                        trace_id=context.trace_id,
+                        causation_id=stored.processing_receipt_id,
+                    )
                 )
-            )
             current = await uow.ingestion.resolve_item_head(item.ingestion_run_source_id)
             if current is not None and current.state is IngestionItemState.PROCESSING:
                 await self._append_transition(
                     uow, item, IngestionItemState.PROCESSED, self._now()
                 )
-                await self._append_transition(
-                    uow, item, IngestionItemState.PROJECTION_REQUESTED, self._now()
-                )
+                if projection_required:
+                    await self._append_transition(
+                        uow, item, IngestionItemState.PROJECTION_REQUESTED, self._now()
+                    )
             await uow.commit()
             return stored
 
