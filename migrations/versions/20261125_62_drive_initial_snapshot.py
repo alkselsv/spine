@@ -71,7 +71,7 @@ def upgrade() -> None:
         f"ALTER TABLE {SCHEMA}.drive_snapshot_runs FORCE ROW LEVEL SECURITY"
     )
     op.execute(
-        f"CREATE POLICY pol_drive_snapshot_runs_tenant ON {SCHEMA}.drive_snapshot_runs "
+        f"CREATE POLICY pol_drive_snapshot_runs_tenant_isolation ON {SCHEMA}.drive_snapshot_runs "
         f"FOR ALL TO {runtime_role} "
         "USING (workspace_id = nullif(current_setting('spine.workspace_id', true), '')::uuid "
         "AND environment_id = nullif(current_setting('spine.environment_id', true), '')::uuid) "

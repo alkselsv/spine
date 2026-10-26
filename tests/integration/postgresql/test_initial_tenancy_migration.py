@@ -2515,6 +2515,7 @@ async def _assert_final_catalog_after_upgrade(connection: AsyncConnection) -> No
         "projection_activations": (True, True, False, False),
         "active_projections": (True, True, True, False),
         "projection_drifts": (True, True, False, False),
+        "drive_snapshot_runs": (True, True, True, False),
         "source_canonical_tables": (True, False, False, False),
         "source_canonical_unicode": (True, False, False, False),
         "source_canonical_compositions": (True, False, False, False),
@@ -2714,7 +2715,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_receipts', 'source_projection_references', "
                             "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
-                            "'projection_drifts', 'answer_question_runs', "
+                            "'projection_drifts', 'drive_snapshot_runs', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
                                 "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records')"
                     )
@@ -2810,7 +2811,7 @@ async def test_initial_schema_has_named_tenancy_constraints_and_postgresql_types
                             "'projection_receipts', 'source_projection_references', "
                             "'projection_validations', 'projection_snapshots', 'projection_snapshot_members', "
                             "'projection_reconciliation_results', 'projection_activations', 'active_projections', "
-                                "'projection_drifts', 'answer_question_runs', "
+                                "'projection_drifts', 'drive_snapshot_runs', 'answer_question_runs', "
                                 "'answer_question_attempts', 'qa_session_versions', "
                                 "'qa_message_versions', 'qa_disclosure_validation_results', 'qa_answer_disclosure_records', 'qa_answer_disclosure_deliveries', 'feedback_records', 'operational_metric_events', 'operational_correlation_records')"
                     )
@@ -3592,6 +3593,7 @@ async def test_rls_catalog_declares_forced_read_and_write_checks(
             "projection_activations": (True, True),
             "active_projections": (True, True),
             "projection_drifts": (True, True),
+        "drive_snapshot_runs": (True, True),
         "drive_snapshot_runs": (True, True),
             "original_upload_records": (True, True),
             "qa_agent_artifacts": (True, True),
