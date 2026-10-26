@@ -68,3 +68,24 @@ adds the locator to active projection lineage, it must use ADR-0043's normal
 successor-publication path, retain the last active publication on rebuild
 failure, roll back through a new successor, and extend the pinned evidence
 lineage regression evaluation before activation.
+
+## Connector observation handoff
+
+Issue #601 adds `connector-observation:v1` and the application
+`ConnectorIngestionOrchestrator`. A Google reader returns a normalized
+observation only after the trusted `GoogleReadAdmission` boundary has accepted
+the connection, resource scope, authorization generation and configuration
+generation. The observation contains the exact normalized bytes, media type,
+extraction/locator profile versions, provider identity, event provenance and
+coverage state; it contains no provider SDK or Cognee value.
+
+The application handoff then reuses the existing original-upload, source
+observation, admission, canonical-acceptance, ingestion-ledger and
+transactional projection-outbox ports. Connector `SourceObject` identity is
+derived from workspace/environment, connection and the versioned external
+identity, while revision identity is derived from that source and the observed
+original digest. A repeated command is idempotent; a conflicting replay is
+rejected by the existing idempotency and observation repositories.
+
+No connector code calls Cognee directly. Projection remains a downstream
+consumer of the committed `ingestion.projection.requested` intent.
