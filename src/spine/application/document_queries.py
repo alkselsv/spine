@@ -30,6 +30,7 @@ from spine.domain.projections import (
 
 
 SnapshotT = TypeVar("SnapshotT")
+_PRODUCT_SOURCE_KINDS = frozenset(kind.value for kind in SourceKind)
 
 
 class DocumentNotFound(LookupError):
@@ -382,7 +383,7 @@ class CanonicalDocumentQueryService:
                 previous_source_after = source_after
                 source_after = (sources[-1].created_at, sources[-1].source_object_id)
                 for source in sources:
-                    if not _source_in_context(source, context):
+                    if not _is_product_source(source) or not _source_in_context(source, context):
                         continue
                     snapshot = await self._document_snapshot(
                         uow,
@@ -412,7 +413,11 @@ class CanonicalDocumentQueryService:
         _validate_query(context, requester, 1)
         async with self.uow_factory(context) as uow:
             source = await uow.sources.resolve_source(source_object_id)
-            if source is None or not _source_in_context(source, context):
+            if (
+                source is None
+                or not _is_product_source(source)
+                or not _source_in_context(source, context)
+            ):
                 await uow.commit()
                 return None
             snapshot = await self._document_snapshot(
@@ -436,7 +441,11 @@ class CanonicalDocumentQueryService:
         _validate_query(context, requester, limit)
         async with self.uow_factory(context) as uow:
             source = await uow.sources.resolve_source(source_object_id)
-            if source is None or not _source_in_context(source, context):
+            if (
+                source is None
+                or not _is_product_source(source)
+                or not _source_in_context(source, context)
+            ):
                 await uow.commit()
                 return None
             revisions = await uow.sources.list_revisions(
@@ -925,6 +934,11 @@ def _source_in_context(source: SourceObject, context: TrustedPersistenceContext)
         and source.workspace_id == scope.workspace_id
         and source.environment_id == scope.environment_id
     )
+
+
+def _is_product_source(source: SourceObject) -> bool:
+    """Keep internal qualification rows outside the public document surface."""
+    return source.source_kind in _PRODUCT_SOURCE_KINDS
 
 
 __all__ = [

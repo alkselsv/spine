@@ -524,6 +524,66 @@ async def test_document_query_filters_before_forming_the_bounded_page() -> None:
     assert page.has_more is False
 
 
+async def test_document_query_excludes_non_product_qualification_sources() -> None:
+    uow = FakeUnitOfWork(allow_content=False)
+    qualification_source = uow.source.model_copy(
+        update={
+            "source_object_id": UUID("52000000-0000-0000-0000-000000000022"),
+            "source_kind": "qualification",
+            "created_at": uow.source.created_at + timedelta(minutes=1),
+        }
+    )
+    uow.sources.source_objects = (uow.source, qualification_source)
+    service = CanonicalDocumentQueryService(lambda context: uow)
+
+    page = await service.list_documents(
+        context=SimpleNamespace(
+            scope=EnvironmentScope(
+                workspace_id=uow.source.workspace_id,
+                environment_id=uow.source.environment_id,
+            )
+        ),
+        requester=DocumentQueryRequester(
+            canonical_human_id=HUMAN_ID,
+            authorization_generation=1,
+        ),
+        limit=10,
+        after=None,
+    )
+
+    assert [item.source_object_id for item in page.items] == [
+        uow.source.source_object_id
+    ]
+    assert await service.get_document(
+        context=SimpleNamespace(
+            scope=EnvironmentScope(
+                workspace_id=uow.source.workspace_id,
+                environment_id=uow.source.environment_id,
+            )
+        ),
+        requester=DocumentQueryRequester(
+            canonical_human_id=HUMAN_ID,
+            authorization_generation=1,
+        ),
+        source_object_id=qualification_source.source_object_id,
+    ) is None
+    assert await service.list_revisions(
+        context=SimpleNamespace(
+            scope=EnvironmentScope(
+                workspace_id=uow.source.workspace_id,
+                environment_id=uow.source.environment_id,
+            )
+        ),
+        requester=DocumentQueryRequester(
+            canonical_human_id=HUMAN_ID,
+            authorization_generation=1,
+        ),
+        source_object_id=qualification_source.source_object_id,
+        limit=10,
+        after=None,
+    ) is None
+
+
 async def test_document_query_filter_returns_empty_page_without_leaking_other_sources() -> None:
     uow = FakeUnitOfWork(allow_content=True)
     service = CanonicalDocumentQueryService(lambda context: uow)
