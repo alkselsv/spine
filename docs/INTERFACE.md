@@ -324,12 +324,24 @@ evidence/confidence, feedback, action receipts, recovery и run diagnostics.
 аналог отсутствует, нарушает accessibility или не способен выразить обязательные
 состояния и безопасные outcomes Spine.
 
-Halaska не становится внешней доменной моделью или runtime Spine. Его единый JSX
-kit не добавляется в production-код без изменений и не устанавливается широким
-agent prompt поверх всего `web/`. Выбранные части:
+Halaska не становится внешней доменной моделью Spine, но закреплённый JSX kit
+является обязательным presentation runtime и источником tokens/patterns для
+основных экранов Control Plane: Knowledge, Chat, список и карточка Q&A Run. Он хранится в репозитории как
+контролируемая vendored-копия и не имеет права владеть transport, auth, scope или
+маршрутизацией. Эти границы остаются Spine-owned.
+
+Нельзя заменять Halaska-based production shell параллельным shell только ради
+прохождения тестов или qualification-сборки. Production, qualification и fixture builds
+рендерят один и тот же component graph; режим сборки может менять только источник
+данных. `AppShell` подключает Halaska `ThemeProvider` и route-компоненты через
+`appRoutes` внутри `AdministratorBoundary`, а переходы выполняются через React Router, поэтому
+deep links, back/forward и URL scope остаются частью публичного контракта.
+
+Выбранные части Halaska:
 
 - переносятся контролируемым diff из закреплённого upstream commit;
-- преобразуются в типизированные `.tsx`-модули;
+- могут исполняться из закреплённого kit во время текущей миграции; новые и
+  существенно изменённые Spine-owned модули пишутся как типизированные `.tsx`;
 - раскладываются по `design-system` и consuming feature;
 - связываются с design tokens Spine;
 - получают component и interaction tests;
@@ -353,9 +365,18 @@ web/
     runs/
 ```
 
-Сложные интерактивные элементы — dialog, menu, combobox, select, tooltip —
-строятся на Base UI, даже если их внешний вид следует Halaska. В R1 не смешиваются
-две primitive libraries.
+Spine-owned сложные интерактивные элементы — dialog, menu, combobox, select,
+tooltip — строятся на Base UI, даже если их внешний вид следует Halaska. В частности,
+scope selectors на границе routing/auth используют Base UI. Vendored kit не может
+добавлять второй router, API client или fixture store. Прототипный `SpineApp`
+не является отдельным entrypoint; production route tree остаётся единственным.
+
+Регрессионный gate обязан открыть без query-параметров fixture-контейнером как
+минимум `/knowledge/documents`, `/chat`, `/qa/runs` и `/qa/runs/:runId` и доказать,
+что каждый URL находится внутри элемента `data-presentation-runtime="halaska"`.
+Отдельные проверки подтверждают auth denial, backend headers, сохранение scope в
+URL и browser back/forward. Зелёный API/behavior suite без этого presentation
+assertion не подтверждает перенос интерфейса.
 
 ### 8.2. Chat принадлежит Spine
 

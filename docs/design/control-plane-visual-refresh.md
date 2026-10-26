@@ -1,7 +1,7 @@
 # Визуальное обновление Control Plane
 
-Статус: реализовано как обратимое presentation-изменение. Маршруты, scope,
-авторизация, disclosure-контракты и доступные имена элементов не менялись.
+Статус: реализовано как Halaska-based presentation runtime поверх штатных
+маршрутов, scope, авторизации и disclosure-контрактов Spine.
 
 ## Референсы
 
@@ -16,9 +16,10 @@
   моноширинный eyebrow над заголовком, тёмные pill-кнопки, паттерн `status`
   и контейнер `prompt-input`, переключатель светлой/тёмной темы.
 
-Как и раньше, kit Halaska не устанавливается: паттерны переписаны в Spine
-CSS Modules поверх токенов `web/src/styles/globals.css`, Base UI остаётся
-единственной primitive library.
+Закреплённый `web/src/ported/halaska-kit.jsx` подключён через production
+`AppShell` и используется как presentation runtime для темы, primitives и tokens;
+React Router, auth boundary, generated API clients и URL scope остаются
+Spine-owned. Qualification и fixture builds не имеют альтернативного shell.
 
 ## Сопоставление
 
@@ -34,8 +35,9 @@ CSS Modules поверх токенов `web/src/styles/globals.css`, Base UI о
 
 ## Проверка
 
-- `web/src/app.test.tsx` покрывает активность ссылки «Обзор» только на корне
-  и переключение темы с сохранением выбора; `web/src/app/theme.test.ts`
-  покрывает выбор начальной темы.
+- `web/src/app.test.tsx` проверяет, что production routes действительно рендерят
+  Halaska runtime, а также покрывает navigation, scope и тему.
+- Playwright fixture qualification открывает Knowledge, Chat и Q&A Runs по
+  чистым URL и проверяет тот же runtime marker вместе с данными API fixtures.
 - Существующие unit- и Playwright-сценарии, включая отсутствие
   горизонтального переполнения на 390px, проходят без изменений.
