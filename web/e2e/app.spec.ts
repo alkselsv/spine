@@ -22,6 +22,168 @@ const chatRelationship = '90000000-0000-4000-8000-000000000007';
 const chatAnswer = '90000000-0000-4000-8000-000000000008';
 const chatAttempt = '90000000-0000-4000-8000-000000000009';
 
+async function installContainerRuntime(page: Page): Promise<void> {
+  await page.addInitScript(({ environmentId, workspaceId }) => {
+    window.__SPINE_RUNTIME__ = {
+      authentication: {
+        status: 'authenticated',
+        role: 'administrator',
+        identityVersion: 'container-fixture-principal-v1',
+        getBearerCredential: () => 'container-fixture-token',
+      },
+      scope: {
+        defaultEnvironmentId: environmentId,
+        defaultWorkspaceId: workspaceId,
+        environments: [{ id: environmentId, label: 'Local' }],
+        workspaces: [{ id: workspaceId, label: 'Основная' }],
+      },
+    };
+  }, { environmentId: localEnvironment, workspaceId: primaryWorkspace });
+}
+
+test('test_controlled_fixture_shows_embedded_data_without_test_route_interception', async ({ page }) => {
+  await installContainerRuntime(page);
+  await page.goto('/knowledge/documents');
+
+  await expect(page.getByRole('table', { name: 'Документы текущей рабочей области' })).toBeVisible();
+  await expect(page.locator('tbody tr')).toHaveCount(14);
+  await expect(page.getByText('sd/operations').first()).toBeVisible();
+});
+
+test('test_chat_fixture_shows_embedded_sessions_and_messages', async ({ page }) => {
+  await installContainerRuntime(page);
+  await page.goto('/chat');
+
+  await expect(page.getByRole('heading', { name: /^Сессии 3/ })).toBeVisible();
+  await expect(page.getByRole('article')).toHaveCount(5);
+  await expect(page.getByRole('article', { name: 'Вопрос 1' })
+    .getByText('Какой срок хранения исходных файлов и что происходит с историей при удалении?')).toBeVisible();
+  await expect(page.getByRole('article', { name: 'Вопрос 5' }).getByText('Когда релиз проекции?')).toBeVisible();
+  await expect(page.getByText('Источники расходятся.')).toBeVisible();
+  const answer = page.getByText('Исходные файлы хранятся 36 месяцев.');
+  await expect(answer).toBeVisible();
+  expect((await page.getByRole('article', { name: 'Вопрос 1' }).locator('p').first().boundingBox())?.width)
+    .toBeGreaterThan(300);
+
+  await page.getByRole('button', { name: /Открыть источник 1/ }).first().click();
+  await expect(page.getByText('Срок хранения исходных файлов — 36 месяцев; логическое удаление не затрагивает историю ревизий.')).toBeVisible();
+
+  await page.getByRole('listitem').nth(1).click();
+  await expect(page.getByRole('article')).toHaveCount(5);
+  await expect(page.getByText('Недостаточно данных для ответа')).toBeVisible();
+  await expect(page.getByText('Доступ запрещён')).toBeVisible();
+  await expect(page.getByText('Завершилось с ошибкой')).toBeVisible();
+  await expect(page.getByText('Отменён')).toBeVisible();
+});
+
+test('test_qa_runs_fixture_shows_embedded_run_history', async ({ page }) => {
+  await installContainerRuntime(page);
+  await page.goto('/qa/runs');
+
+  await expect(page.getByRole('table', { name: 'Запуски Q&A текущей рабочей области' })).toBeVisible();
+  await expect(page.locator('tbody tr')).toHaveCount(11);
+  await page.locator('tbody tr').first().click();
+  await expect(page.getByRole('heading', { level: 1, name: 'Детали запуска Q&A' })).toBeVisible();
+});
+
+test('test_fixture_query_uses_the_ported_interface_instead_of_the_legacy_router', async ({ page }) => {
+  await installControlledDocuments(page);
+
+  await page.goto('/knowledge/documents?fixture=controlled');
+
+  await expect(page.getByRole('navigation', { name: 'Разделы workspace' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Знания' })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByRole('table', { name: 'Документы текущей рабочей области' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Control Plane Spine' })).toHaveCount(0);
+});
+
+test('test_live_ported_interface_does_not_fall_back_to_demo_documents', async ({ page }) => {
+  await page.addInitScript(({ environmentId, workspaceId }) => {
+    window.__SPINE_RUNTIME__ = {
+      authentication: {
+        status: 'authenticated',
+        role: 'administrator',
+        identityVersion: 'live-empty-principal-v1',
+        getBearerCredential: () => 'live-empty-token',
+      },
+      scope: {
+        defaultEnvironmentId: environmentId,
+        defaultWorkspaceId: workspaceId,
+        environments: [{ id: environmentId, label: 'Local' }],
+        workspaces: [{ id: workspaceId, label: 'Основная' }],
+      },
+    };
+  }, { environmentId: localEnvironment, workspaceId: primaryWorkspace });
+  await page.route('**/api/v1/documents*', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(controlledDocumentCollection(route.request().headers(), [])),
+      status: 200,
+    });
+  });
+
+  await page.goto('/knowledge/documents');
+
+  await expect(page.getByText('Пока нет данных')).toBeVisible();
+  await expect(page.getByText('Регламент описывает порядок приёма')).toHaveCount(0);
+  await expect(page.locator('tbody tr')).toHaveCount(0);
+});
+
+test('test_ported_knowledge_ui_reads_backend_with_runtime_auth_and_scope', async ({ page }) => {
+  const documentRequests = await installControlledDocuments(page);
+  await page.addInitScript(({ environmentId, workspaceId }) => {
+    window.__SPINE_RUNTIME__ = {
+      authentication: {
+        status: 'authenticated',
+        role: 'administrator',
+        identityVersion: 'ported-ui-principal-v1',
+        getBearerCredential: () => 'ported-ui-token',
+      },
+      scope: {
+        defaultEnvironmentId: environmentId,
+        defaultWorkspaceId: workspaceId,
+        environments: [{ id: environmentId, label: 'Local' }],
+        workspaces: [{ id: workspaceId, label: 'Основная' }],
+      },
+    };
+  }, { environmentId: localEnvironment, workspaceId: primaryWorkspace });
+
+  await page.goto('/knowledge/documents');
+
+  await expect(page.getByRole('table', { name: 'Документы текущей рабочей области' })).toBeVisible();
+  await expect(page.getByRole('row', { name: `Документ ${primaryDocument}` })).toBeVisible();
+  expect(documentRequests).toHaveLength(1);
+  expect(documentRequests[0]?.headers.authorization).toBe('Bearer ported-ui-token');
+  expect(documentRequests[0]?.headers['x-workspace-id']).toBe(primaryWorkspace);
+  expect(documentRequests[0]?.headers['x-environment-id']).toBe(localEnvironment);
+});
+
+test('test_ported_chat_ui_reads_backend_sessions_and_messages', async ({ page }) => {
+  await installChatWorkspaceRoutes(page);
+  await page.addInitScript(({ environmentId, workspaceId }) => {
+    window.__SPINE_RUNTIME__ = {
+      authentication: {
+        status: 'authenticated',
+        role: 'administrator',
+        identityVersion: 'ported-chat-principal-v1',
+        getBearerCredential: () => 'ported-chat-token',
+      },
+      scope: {
+        defaultEnvironmentId: environmentId,
+        defaultWorkspaceId: workspaceId,
+        environments: [{ id: environmentId, label: 'Staging' }],
+        workspaces: [{ id: workspaceId, label: 'Продажи' }],
+      },
+    };
+  }, { environmentId: stagingEnvironment, workspaceId: salesWorkspace });
+
+  await page.goto('/chat');
+
+  await expect(page.getByRole('heading', { name: /^Сессии 2/ })).toBeVisible();
+  await expect(page.getByText('Достаточно ли оснований для ответа?')).toBeVisible();
+  await expect(page.getByText('Недостаточно данных для ответа')).toBeVisible();
+});
+
 test('test_control_plane_navigation_preserves_scope_and_generated_client_context', async ({ page }) => {
   const healthRequests = await installControlledHealth(page);
   const documentRequests = await installControlledDocuments(page);
@@ -144,7 +306,7 @@ test('test_documents_discovery_filters_paginates_and_navigates_without_content_i
   await expect(page).toHaveURL(/cursor=documents-next/);
   await expect(page.getByText(`ID: ${secondDocument}`)).toBeVisible();
 
-  await page.getByRole('link', { name: 'Открыть' }).click();
+  await page.getByRole('link', { name: 'Открыть ›', exact: true }).click();
   await expect(page).toHaveURL(
     new RegExp(`/knowledge/documents/${secondDocument}\\?.*workspace=${salesWorkspace}.*publication_status=published.*cursor=documents-next`),
   );
@@ -182,6 +344,7 @@ test('test_documents_upload_reviews_batch_polls_processing_and_links_run', async
   await page.goto(
     `/knowledge/documents?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`,
   );
+  await page.getByRole('button', { name: 'Загрузить документы' }).click();
   await page.locator('[aria-label="Перетащите файлы сюда"]').evaluate((element) => {
     const dataTransfer = new DataTransfer();
     dataTransfer.items.add(new File(['synthetic upload fixture'], 'proposal.txt', { type: 'text/plain' }));
@@ -191,7 +354,8 @@ test('test_documents_upload_reviews_batch_polls_processing_and_links_run', async
 
   await expect(page.getByRole('region', { name: 'Проверка перед отправкой' })).toBeVisible();
   await expect(page.getByText('Файлов в очереди: 2')).toBeVisible();
-  await page.getByRole('button', { name: 'Загрузить документы' }).click();
+  await page.getByRole('dialog', { name: 'Загрузить документы' })
+    .getByRole('button', { name: 'Загрузить документы' }).click();
   await expect(page.getByRole('listitem').filter({ hasText: 'Готов' })).toHaveCount(2);
   await expect(page.getByRole('link', { name: 'Открыть запуск обработки' })).toHaveAttribute(
     'href',
@@ -222,6 +386,7 @@ test('test_documents_upload_accepts_docx_and_displays_completed_ingestion_status
   await page.goto(
     `/knowledge/documents?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`,
   );
+  await page.getByRole('button', { name: 'Загрузить документы' }).click();
   await page.locator('input[type="file"]').setInputFiles({
     name: 'handbook.docx',
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -230,7 +395,8 @@ test('test_documents_upload_accepts_docx_and_displays_completed_ingestion_status
 
   await expect(page.getByRole('region', { name: 'Проверка перед отправкой' })).toBeVisible();
   await expect(page.getByText('handbook.docx')).toBeVisible();
-  await page.getByRole('button', { name: 'Загрузить документы' }).click();
+  await page.getByRole('dialog', { name: 'Загрузить документы' })
+    .getByRole('button', { name: 'Загрузить документы' }).click();
   await expect(page.getByRole('listitem').filter({ hasText: 'Готов' })).toHaveCount(1);
 
   expect(uploadRequests).toHaveLength(1);
@@ -588,6 +754,7 @@ test('test_documents_upload_rejects_invalid_file_before_network_submission', asy
   await page.goto(
     `/knowledge/documents?fixture=controlled&workspace=${salesWorkspace}&environment=${stagingEnvironment}`,
   );
+  await page.getByRole('button', { name: 'Загрузить документы' }).click();
   await page.locator('input[type="file"]').setInputFiles({
     name: 'unsupported.exe',
     mimeType: 'application/x-msdownload',

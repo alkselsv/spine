@@ -1,12 +1,25 @@
 import { Button, Select } from '@base-ui/react';
-import { useState } from 'react';
-import { NavLink, Outlet, useNavigate, useSearchParams } from 'react-router';
+import { useEffect, useState, type ComponentType, type SVGProps } from 'react';
+import { NavLink, Outlet, useLocation, useNavigate, useSearchParams } from 'react-router';
 
 import { createScopedApiClient, type SpineApiError } from '../api/client';
+import {
+  ActivityIcon,
+  BookIcon,
+  ChatIcon,
+  ChevronIcon,
+  HomeIcon,
+  LayersIcon,
+  MoonIcon,
+  RefreshIcon,
+  SettingsIcon,
+  SunIcon,
+} from '../components/icons';
 import { ru } from '../i18n/resources';
 import { useAuth } from './auth';
 import { localizeApiError } from './errors';
 import { useBrowserRuntime } from './runtime-context';
+import { useTheme } from './theme';
 import {
   parseScopeSearch,
   ScopeContext,
@@ -18,13 +31,34 @@ import {
 } from './scope';
 import styles from './AppShell.module.css';
 
-const navigation = [
-  { label: ru.navigation.knowledge, to: '/knowledge/documents' },
-  { label: ru.navigation.chat, to: '/chat' },
-  { label: ru.navigation.qaRuns, to: '/qa/runs' },
-  { label: ru.navigation.runs, to: '/runs' },
-  { label: ru.navigation.settings, to: '/settings' },
-] as const;
+interface NavigationItem {
+  label: string;
+  to: string;
+  icon: ComponentType<Omit<SVGProps<SVGSVGElement>, 'children'>>;
+  end?: boolean;
+}
+
+const navigationGroups: readonly { label?: string; items: readonly NavigationItem[] }[] = [
+  { items: [{ label: ru.navigation.overview, to: '/', icon: HomeIcon, end: true }] },
+  {
+    label: ru.navigation.groupWork,
+    items: [
+      { label: ru.navigation.chat, to: '/chat', icon: ChatIcon },
+      { label: ru.navigation.knowledge, to: '/knowledge/documents', icon: BookIcon },
+    ],
+  },
+  {
+    label: ru.navigation.groupObserve,
+    items: [
+      { label: ru.navigation.qaRuns, to: '/qa/runs', icon: ActivityIcon },
+      { label: ru.navigation.runs, to: '/runs', icon: LayersIcon },
+    ],
+  },
+];
+
+const footerNavigation: readonly NavigationItem[] = [
+  { label: ru.navigation.settings, to: '/settings', icon: SettingsIcon },
+];
 
 type ConnectionStatus = 'connected' | 'checking' | 'checked' | 'failed';
 
@@ -37,12 +71,18 @@ const connectionCopy: Record<ConnectionStatus, string> = {
 
 export function AppShell() {
   const [searchParams] = useSearchParams();
+  const location = useLocation();
   const navigate = useNavigate();
   const auth = useAuth();
   const runtime = useBrowserRuntime();
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connected');
   const [connectionError, setConnectionError] = useState<SpineApiError | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => location.pathname.startsWith('/chat'));
   const scope = parseScopeSearch(`?${searchParams.toString()}`, runtime.scope);
+
+  useEffect(() => {
+    setSidebarCollapsed(location.pathname.startsWith('/chat'));
+  }, [location.pathname]);
 
   function changeScope(next: Partial<Scope>) {
     const nextScope: Scope = { ...scope, ...next };
@@ -83,15 +123,51 @@ export function AppShell() {
     }
   }
 
+  const search = searchParams.toString();
+
   return (
     <ScopeContext.Provider value={{ scope, queryKey: (resource) => scopeQueryKey(resource, scope) }}>
-      <div className={styles.shell}>
-        <header className={styles.header}>
+      <div className={styles.shell} data-sidebar-collapsed={sidebarCollapsed}>
+        <aside className={styles.sidebar}>
           <div className={styles.brandBlock}>
-            <p className={styles.brand}>{ru.brand}</p>
-            <h1>{ru.shellTitle}</h1>
+            <span className={styles.brandMark} aria-hidden="true">
+              S
+            </span>
+            <div className={styles.brandText}>
+              <h1>{ru.shellTitle}</h1>
+              <p className={styles.brand}>{ru.brand}</p>
+            </div>
+            <button
+              aria-label={sidebarCollapsed ? 'Развернуть навигацию' : 'Свернуть навигацию'}
+              className={styles.sidebarToggle}
+              onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+              type="button"
+            >
+              {sidebarCollapsed ? '›' : '‹'}
+            </button>
           </div>
-          <div className={styles.context}>
+
+          <nav className={styles.navigation} aria-label={ru.navigation.label}>
+            {navigationGroups.map((group, index) => (
+              <div className={styles.navGroup} key={group.label ?? index}>
+                {group.label ? <p className={styles.navigationLabel}>{group.label}</p> : null}
+                {group.items.map((item) => (
+                  <ShellNavLink item={item} key={item.to} search={search} />
+                ))}
+              </div>
+            ))}
+            <div className={`${styles.navGroup} ${styles.navGroupFooter}`}>
+              {footerNavigation.map((item) => (
+                <ShellNavLink item={item} key={item.to} search={search} />
+              ))}
+            </div>
+          </nav>
+
+          <SidebarFooter role={auth.role} />
+        </aside>
+
+        <div className={styles.frame}>
+          <header className={styles.topbar}>
             <div
               aria-label="Рабочая область и среда"
               className={styles.scopeControls}
@@ -103,6 +179,9 @@ export function AppShell() {
                 value={scope.workspaceId}
                 onValueChange={(value) => changeScope({ workspaceId: value as WorkspaceId })}
               />
+              <span className={styles.scopeDivider} aria-hidden="true">
+                /
+              </span>
               <ScopeSelector
                 ariaLabel={ru.scope.environmentLabel}
                 options={runtime.scope.environmentOptions}
@@ -126,34 +205,63 @@ export function AppShell() {
                 onClick={() => void checkConnection()}
                 type="button"
               >
+                <RefreshIcon className={styles.refreshIcon} />
                 {connectionStatus === 'checking' ? ru.connection.checking : ru.connection.check}
               </Button>
             </div>
-          </div>
-        </header>
-
-        <div className={styles.layout}>
-          <nav className={styles.navigation} aria-label={ru.navigation.label}>
-            <span className={styles.navigationLabel}>{ru.navigation.label}</span>
-            {navigation.map((item) => (
-              <NavLink
-                className={({ isActive }) =>
-                  isActive ? `${styles.navLink} ${styles.navLinkActive}` : styles.navLink
-                }
-                key={item.to}
-                to={{ pathname: item.to, search: searchParams.toString() }}
-              >
-                {item.label}
-              </NavLink>
-            ))}
-          </nav>
-          <main className={styles.content}>
+          </header>
+          <main className={styles.content} data-route={location.pathname.startsWith('/chat') ? 'chat' : 'default'}>
             {connectionError ? <ConnectionErrorPanel error={connectionError} /> : null}
             <Outlet />
           </main>
         </div>
       </div>
     </ScopeContext.Provider>
+  );
+}
+
+function ShellNavLink({ item, search }: { item: NavigationItem; search: string }) {
+  const IconComponent = item.icon;
+  return (
+    <NavLink
+      className={({ isActive }) =>
+        isActive ? `${styles.navLink} ${styles.navLinkActive}` : styles.navLink
+      }
+      end={item.end}
+      to={{ pathname: item.to, search }}
+    >
+      <IconComponent className={styles.navIcon} />
+      <span>{item.label}</span>
+    </NavLink>
+  );
+}
+
+function SidebarFooter({ role }: { role: 'administrator' | 'member' | undefined }) {
+  const [theme, toggleTheme] = useTheme();
+  const roleLabel = role ? ru.roles[role] : null;
+  const isDark = theme === 'dark';
+  return (
+    <div className={styles.sidebarFooter}>
+      {roleLabel ? (
+        <span className={styles.identity}>
+          <span className={styles.avatar} aria-hidden="true">
+            {roleLabel.slice(0, 1)}
+          </span>
+          {roleLabel}
+        </span>
+      ) : (
+        <span />
+      )}
+      <button
+        aria-label={isDark ? ru.theme.enableLight : ru.theme.enableDark}
+        className={styles.themeToggle}
+        onClick={toggleTheme}
+        title={isDark ? ru.theme.enableLight : ru.theme.enableDark}
+        type="button"
+      >
+        {isDark ? <SunIcon /> : <MoonIcon />}
+      </button>
+    </div>
   );
 }
 
@@ -191,7 +299,9 @@ function ScopeSelector<Value extends string>({
       >
         <Select.Trigger className={styles.scopeTrigger} aria-label={ariaLabel}>
           <Select.Value />
-          <Select.Icon className={styles.scopeIcon}>⌄</Select.Icon>
+          <Select.Icon className={styles.scopeIcon}>
+            <ChevronIcon />
+          </Select.Icon>
         </Select.Trigger>
         <Select.Portal>
           <Select.Positioner className={styles.scopePositioner} sideOffset={4}>

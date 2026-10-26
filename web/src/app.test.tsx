@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -10,6 +10,8 @@ import { AuthProvider, type AuthState } from './app/auth';
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  window.localStorage.clear();
+  delete document.documentElement.dataset.theme;
 });
 
 function renderApp(router: ReturnType<typeof createMemoryRouter>, auth?: AuthState) {
@@ -40,11 +42,12 @@ describe('application bootstrap', () => {
     expect(screen.getByRole('navigation', { name: 'Разделы workspace' })).toBeVisible();
     expect(screen.getByRole('main')).toBeVisible();
     expect(screen.getByRole('group', { name: 'Рабочая область и среда' })).toBeVisible();
-    expect(screen.getByRole('group', { name: 'Состояние соединения' })).toBeVisible();
+    const connectionStatus = screen.getByRole('group', { name: 'Состояние соединения' });
+    expect(connectionStatus).toBeVisible();
     expect(screen.getByRole('combobox', { name: 'Рабочая область' })).toBeVisible();
     expect(screen.getByRole('combobox', { name: 'Среда' })).toBeVisible();
     expect(screen.getByRole('link', { name: 'Чат' })).toHaveAttribute('aria-current', 'page');
-    expect(screen.getByRole('status')).toHaveTextContent('Подключено');
+    expect(within(connectionStatus).getByRole('status')).toHaveTextContent('Подключено');
   });
 
   it('test_qa_runs_route_is_available_from_the_scoped_navigation', async () => {
@@ -127,5 +130,31 @@ describe('application bootstrap', () => {
     await waitFor(() => expect(router.state.location.pathname).toBe('/runs'));
     await user.click(screen.getByRole('link', { name: 'Настройки' }));
     expect(router.state.location.pathname).toBe('/settings');
+  });
+
+  it('test_overview_link_is_current_only_on_root_route', async () => {
+    const user = userEvent.setup();
+    const router = createMemoryRouter(appRoutes, { initialEntries: ['/'] });
+
+    renderApp(router);
+    expect(screen.getByRole('link', { name: 'Обзор' })).toHaveAttribute('aria-current', 'page');
+
+    await user.click(screen.getByRole('link', { name: 'Чат' }));
+    expect(screen.getByRole('link', { name: 'Обзор' })).not.toHaveAttribute('aria-current');
+  });
+
+  it('test_theme_toggle_switches_document_theme_and_persists_choice', async () => {
+    const user = userEvent.setup();
+    document.documentElement.dataset.theme = 'light';
+    const router = createMemoryRouter(appRoutes, { initialEntries: ['/'] });
+
+    renderApp(router);
+    await user.click(screen.getByRole('button', { name: 'Включить тёмную тему' }));
+
+    expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(window.localStorage.getItem('spine.theme')).toBe('dark');
+    await user.click(screen.getByRole('button', { name: 'Включить светлую тему' }));
+    expect(document.documentElement.dataset.theme).toBe('light');
+    expect(window.localStorage.getItem('spine.theme')).toBe('light');
   });
 });

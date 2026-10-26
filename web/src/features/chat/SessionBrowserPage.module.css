@@ -13,9 +13,10 @@
 .eyebrow {
   margin: 0 0 var(--space-2);
   color: var(--color-muted);
-  font-size: 0.72rem;
-  font-weight: 750;
-  letter-spacing: 0.16em;
+  font-family: var(--font-mono);
+  font-size: var(--text-label);
+  font-weight: 500;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
@@ -23,8 +24,9 @@
 .threadPane h2,
 .emptyDetail h2 {
   margin-bottom: var(--space-3);
-  font-size: clamp(1.7rem, 3vw, 2.5rem);
-  letter-spacing: -0.04em;
+  font-size: var(--text-title);
+  font-weight: 600;
+  letter-spacing: -0.02em;
 }
 
 .sessionRail,
@@ -76,7 +78,7 @@
 }
 
 .sessionRail .sessionLink[aria-current='page'] {
-  border-left: 0.2rem solid var(--color-link);
+  border-left: 2px solid var(--color-brand);
   background: var(--color-surface-strong);
 }
 
@@ -105,7 +107,7 @@
   height: 1.9rem;
   overflow: hidden;
   border: 1px solid var(--color-border);
-  border-radius: 0.4rem;
+  border-radius: var(--radius-sm);
   padding: 0;
   background: var(--color-surface);
   color: transparent;
@@ -205,7 +207,7 @@
 .runSummary dt {
   color: var(--color-muted);
   font-size: 0.74rem;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .runSummary dd {
@@ -215,36 +217,40 @@
 
 .statusChip {
   justify-self: start;
-  border-radius: 999px;
-  padding: 0.25rem 0.55rem;
-  background: var(--color-surface-strong);
-  font-size: 0.78rem;
-  font-weight: 700;
+  border-radius: var(--radius-sm);
+  padding: 0.15rem 0.45rem;
+  background: var(--color-surface-sunken);
+  font-size: var(--text-label);
+  font-weight: 500;
+  border: 1px solid var(--color-border);
+  font-family: var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .lede {
   max-width: 45rem;
   margin: 0;
   color: var(--color-muted);
-  line-height: 1.6;
+  line-height: 1.55;
 }
 
 .primaryButton,
 .secondaryButton {
   border: 1px solid var(--color-border);
-  border-radius: 0.5rem;
-  padding: 0.7rem 1rem;
+  border-radius: var(--radius-pill);
+  padding: 0.5rem 1rem;
   background: var(--color-surface);
-  color: var(--color-link);
+  color: var(--color-ink);
   font: inherit;
-  font-weight: 700;
+  font-weight: 500;
   cursor: pointer;
 }
 
 .primaryButton {
   border-color: transparent;
-  background: var(--color-link);
-  color: white;
+  background: var(--color-primary);
+  color: var(--color-primary-ink);
 }
 
 .primaryButton:hover,
@@ -261,7 +267,7 @@
   background: transparent;
   color: var(--color-link);
   font: inherit;
-  font-weight: 700;
+  font-weight: 600;
   text-align: left;
   text-decoration: underline;
   text-underline-offset: 0.15em;
@@ -288,7 +294,7 @@
   display: grid;
   gap: var(--space-2);
   border: 1px solid var(--color-border);
-  border-radius: 0.7rem;
+  border-radius: var(--radius-md);
   padding: var(--space-4);
   background: var(--color-surface);
   color: var(--color-ink);
@@ -336,19 +342,62 @@
   gap: var(--space-4);
   margin-top: var(--space-6);
   border: 1px solid var(--color-border);
-  border-radius: 0.8rem;
+  border-radius: var(--radius-lg);
   padding: var(--space-5);
   background: var(--color-surface);
   box-shadow: var(--shadow-card);
 }
 
-.threadPane .messagePanel,
-.threadPane .askForm {
+.threadPane .messagePanel {
   border-right: 0;
+  border-bottom: 0;
   border-left: 0;
   border-radius: 0;
   padding-inline: 0;
   box-shadow: none;
+}
+
+/* Halaska prompt-input: the composer is one soft container, the field is borderless. */
+.threadPane .askForm {
+  border-radius: var(--radius-xl);
+  padding: var(--space-4);
+  background: var(--color-surface-sunken);
+  box-shadow: none;
+}
+
+.threadPane .askForm:focus-within {
+  border-color: var(--color-border-strong);
+  box-shadow: 0 0 0 2px var(--color-focus);
+}
+
+.threadPane .askForm label {
+  color: var(--color-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-label);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.threadPane .askForm textarea {
+  min-height: 5rem;
+  border: 0;
+  padding: var(--space-2) 0;
+  background: transparent;
+}
+
+.threadPane .askForm textarea:focus-visible {
+  outline: 0;
+}
+
+.threadPane .askActions {
+  justify-content: flex-end;
+}
+
+.headerActions .secondaryButton {
+  padding: 0.35rem 0.8rem;
+  font-size: var(--text-small);
+  white-space: nowrap;
 }
 
 .recoveryPanel > span {
@@ -370,7 +419,7 @@
   gap: var(--space-3);
   margin-top: var(--space-6);
   border: 1px solid var(--color-border);
-  border-radius: 0.8rem;
+  border-radius: var(--radius-lg);
   padding: var(--space-5);
   background: var(--color-surface);
   box-shadow: var(--shadow-card);
@@ -382,7 +431,7 @@
 }
 
 .askForm label {
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .askForm textarea {
@@ -421,9 +470,9 @@
   display: grid;
   gap: var(--space-4);
   border: 1px solid var(--color-border);
-  border-radius: 0.7rem;
+  border-radius: var(--radius-md);
   padding: var(--space-4);
-  background: var(--color-surface-strong);
+  background: var(--color-surface);
   overflow-wrap: anywhere;
 }
 
@@ -486,7 +535,7 @@
   display: grid;
   gap: 0.35rem;
   border: 1px solid var(--color-border);
-  border-left: 0.25rem solid var(--color-link);
+  border-left: 2px solid var(--color-warning);
   border-radius: 0.5rem;
   padding: var(--space-3);
   background: var(--color-surface);
@@ -520,15 +569,15 @@
   color: var(--color-link);
   font: inherit;
   font-size: 0.85em;
-  font-weight: 750;
+  font-weight: 600;
   line-height: 1.2;
   cursor: pointer;
 }
 
 .citationMarker:hover,
 .citationMarker:focus-visible {
-  background: var(--color-link);
-  color: white;
+  background: var(--color-primary);
+  color: var(--color-primary-ink);
 }
 
 .citationMarker:focus-visible {
@@ -540,7 +589,7 @@
   display: grid;
   gap: var(--space-3);
   border: 1px solid var(--color-border);
-  border-radius: 0.65rem;
+  border-radius: var(--radius-md);
   padding: var(--space-4);
   background: var(--color-surface);
 }
@@ -558,7 +607,7 @@
 }
 
 .citationExcerpt {
-  border-left: 3px solid var(--color-link);
+  border-left: 2px solid var(--color-border-strong);
   padding-left: var(--space-3);
 }
 
@@ -611,6 +660,307 @@
   }
 }
 
+/* Conversation workspace ported from the Spine UI prototype. */
+.sessionRail {
+  padding: 0;
+}
+
+.sessionRail .pageHeader {
+  min-height: 3.1rem;
+  margin: 0;
+  border-bottom: 1px solid var(--color-border);
+  padding: 0.9rem 1rem;
+}
+
+.sessionRail .pageHeader > div:first-child {
+  min-width: 0;
+}
+
+.sessionRail .eyebrow,
+.sessionRail .lede {
+  display: none;
+}
+
+.sessionRail h2 {
+  margin: 0;
+  font-size: 0.82rem;
+}
+
+.sessionRail .primaryButton {
+  position: fixed;
+  z-index: 3;
+  top: 4.65rem;
+  right: 1rem;
+  width: auto;
+  border-radius: 0.65rem;
+  padding-inline: 1rem;
+}
+
+.sessionRail .primaryButton::before {
+  content: '+\00a0';
+}
+
+.sessionRail .sessionList {
+  margin: 0;
+}
+
+.sessionRail .sessionLink {
+  gap: 0.35rem;
+  min-height: 4rem;
+  border: 0;
+  border-radius: 0.55rem;
+  padding: 0.7rem 0.8rem;
+  margin: 0.2rem 0.5rem;
+}
+
+.sessionRail .sessionLink[aria-current='page'] {
+  border-left: 0;
+  background: var(--color-surface-sunken);
+}
+
+.sessionRail .sessionHeading strong {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessionStatus {
+  display: none;
+}
+
+.sessionDate {
+  font-size: 0.68rem;
+}
+
+.collapseButton {
+  top: 0.65rem;
+  right: 0.65rem;
+  border: 0;
+}
+
+.threadPane {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  height: calc(100dvh - 4rem);
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+
+.threadPane > .pageHeader {
+  min-height: 3.1rem;
+  margin: 0;
+  border-bottom: 1px solid var(--color-border);
+  padding: 0.75rem 1rem;
+}
+
+.threadPane > .pageHeader .eyebrow,
+.threadPane > .pageHeader .lede {
+  display: none;
+}
+
+.threadPane > .pageHeader h2 {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+
+.headerActions .secondaryButton:first-child {
+  width: 2rem;
+  height: 2rem;
+  overflow: hidden;
+  color: transparent;
+}
+
+.headerActions .secondaryButton:first-child::before {
+  content: '☷';
+  color: var(--color-muted);
+}
+
+.messagePanel {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+}
+
+.threadPane .messagePanel {
+  padding: 0;
+}
+
+.messagePanel > h3 {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.messageList {
+  display: flex;
+  width: min(48rem, calc(100% - 3rem));
+  flex-direction: column;
+  gap: 2rem;
+  margin: 2rem auto 8rem;
+}
+
+.messageCard {
+  position: relative;
+  display: flex;
+  gap: 0.85rem;
+  border: 0;
+  border-radius: 0;
+  padding: 0 0 1.25rem 2rem;
+  background: transparent;
+}
+
+.messageCard::before {
+  content: 'S';
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: grid;
+  width: 1.45rem;
+  height: 1.45rem;
+  place-items: center;
+  border-radius: 0.4rem;
+  background: var(--color-primary);
+  color: var(--color-primary-ink);
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+.messageMeta {
+  justify-content: flex-start;
+  gap: 0.6rem;
+  min-height: 1.5rem;
+}
+
+.messageMeta span {
+  color: var(--color-success);
+  font-size: 0.72rem;
+}
+
+.messageLabel {
+  display: none;
+}
+
+.messageCard > div:has(.messageLabel) {
+  align-self: flex-end;
+  max-width: 75%;
+  border-radius: 999px;
+  padding: 0.15rem 1rem;
+  background: var(--color-surface-sunken);
+}
+
+.messageCard p,
+.answerMarkdown {
+  color: var(--color-muted);
+  font-size: 0.9rem;
+}
+
+.threadPane > .askForm {
+  position: absolute;
+  z-index: 2;
+  right: 50%;
+  bottom: 1rem;
+  width: min(45rem, calc(100% - 3rem));
+  margin: 0;
+  transform: translateX(50%);
+  border: 1px solid var(--color-border);
+  border-radius: 1rem;
+  padding: 0.45rem 0.65rem;
+  background: color-mix(in srgb, var(--color-surface) 92%, transparent);
+  box-shadow: 0 0.8rem 2.5rem rgb(15 23 42 / 0.08);
+  backdrop-filter: blur(16px);
+}
+
+.threadPane .askForm h3,
+.threadPane .askForm > p {
+  display: none;
+}
+
+.threadPane .askForm > label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.threadPane .askForm textarea {
+  min-height: 2.5rem;
+  max-height: 9rem;
+  padding: 0.7rem 0.55rem;
+  resize: none;
+}
+
+.threadPane .askActions {
+  position: absolute;
+  right: 0.65rem;
+  bottom: 0.55rem;
+}
+
+.threadPane .askActions .primaryButton {
+  width: 2.2rem;
+  height: 2.2rem;
+  overflow: hidden;
+  border-radius: 50%;
+  padding: 0;
+  color: transparent;
+}
+
+.threadPane .askActions .primaryButton::after {
+  content: '↑';
+  color: var(--color-primary-ink);
+  font-size: 1rem;
+}
+
+.identity {
+  display: none;
+}
+
+.inspectorPanel {
+  padding: 3.4rem 0.75rem 1rem;
+}
+
+.inspectorPanel .eyebrow,
+.inspectorPanel > h3,
+.inspectorPanel > p {
+  font-size: 0.68rem;
+}
+
+.emptyDetail {
+  min-height: calc(100dvh - 4rem);
+}
+
+@media (max-width: 1180px) {
+  .sessionRail .primaryButton {
+    position: static;
+    width: calc(100% - 1rem);
+    margin: 0.5rem;
+  }
+}
+
+@media (max-width: 720px) {
+  .threadPane {
+    height: calc(100dvh - 4rem);
+  }
+
+  .messageList {
+    width: calc(100% - 2rem);
+  }
+}
+
 .messageMeta time,
 .messageLabel,
 .identity > span {
@@ -619,7 +969,7 @@
 }
 
 .messageLabel {
-  font-weight: 750;
+  font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }

@@ -12,7 +12,7 @@
   padding: 0 var(--space-1);
   color: var(--color-muted);
   font-size: 0.82rem;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .commentLabel {
@@ -26,7 +26,7 @@
   min-height: 4rem;
   resize: vertical;
   border: 1px solid var(--color-border);
-  border-radius: 0.4rem;
+  border-radius: var(--radius-sm);
   padding: var(--space-2);
   background: var(--color-surface);
   color: var(--color-ink);
@@ -53,12 +53,12 @@
 .action {
   min-height: 2.25rem;
   border: 1px solid var(--color-border);
-  border-radius: 0.45rem;
+  border-radius: var(--radius-sm);
   padding: 0.4rem 0.75rem;
   background: var(--color-surface);
   color: var(--color-link);
   font: inherit;
-  font-weight: 700;
+  font-weight: 600;
   cursor: pointer;
 }
 

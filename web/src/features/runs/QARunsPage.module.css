@@ -13,16 +13,18 @@
 .eyebrow {
   margin: 0 0 var(--space-2);
   color: var(--color-muted);
-  font-size: 0.72rem;
-  font-weight: 750;
-  letter-spacing: 0.16em;
+  font-family: var(--font-mono);
+  font-size: var(--text-label);
+  font-weight: 500;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 .page h2 {
   margin-bottom: var(--space-3);
-  font-size: clamp(1.7rem, 3vw, 2.5rem);
-  letter-spacing: -0.04em;
+  font-size: var(--text-title);
+  font-weight: 600;
+  letter-spacing: -0.02em;
 }
 
 .runLink {
@@ -35,7 +37,7 @@
   max-width: 45rem;
   margin: 0;
   color: var(--color-muted);
-  line-height: 1.6;
+  line-height: 1.55;
 }
 
 .filters {
@@ -45,9 +47,9 @@
   gap: var(--space-3);
   margin-bottom: var(--space-4);
   border: 1px solid var(--color-border);
-  border-radius: 0.8rem;
+  border-radius: var(--radius-lg);
   padding: var(--space-4);
-  background: var(--color-surface);
+  background: var(--color-surface-sunken);
 }
 
 .filter {
@@ -55,7 +57,7 @@
   gap: 0.35rem;
   color: var(--color-muted);
   font-size: 0.78rem;
-  font-weight: 700;
+  font-weight: 500;
 }
 
 .input,
@@ -67,7 +69,7 @@
   min-width: 0;
   min-height: 2.4rem;
   border: 1px solid var(--color-border);
-  border-radius: 0.45rem;
+  border-radius: var(--radius-sm);
   padding: 0.55rem 0.6rem;
   background: var(--color-surface);
   color: var(--color-ink);
@@ -79,13 +81,13 @@
 .filterTrigger:hover,
 .filterTrigger[data-popup-open],
 .filterTrigger:focus-visible {
-  border-color: var(--color-link);
-  background: var(--color-surface-strong);
+  border-color: var(--color-border-strong);
+  background: var(--color-surface);
   outline: 2px solid transparent;
 }
 
 .filterIcon {
-  color: var(--color-link);
+  color: var(--color-muted);
 }
 
 .filterPositioner {
@@ -95,18 +97,17 @@
 .filterPopup {
   min-width: 14rem;
   overflow: hidden;
-  border: 1px solid var(--color-border);
-  border-radius: 0.65rem;
+  border-radius: var(--radius-md);
   padding: 0.3rem;
   background: var(--color-surface);
-  box-shadow: var(--shadow-card);
+  box-shadow: var(--shadow-popover);
 }
 
 .filterOption {
   display: block;
   width: 100%;
   border: 0;
-  border-radius: 0.4rem;
+  border-radius: var(--radius-sm);
   padding: 0.55rem 0.65rem;
   background: transparent;
   color: var(--color-ink);
@@ -122,36 +123,40 @@
 
 .primaryButton,
 .secondaryButton {
-  border-radius: 0.5rem;
-  padding: 0.65rem 0.85rem;
+  min-height: 2.25rem;
+  border-radius: var(--radius-pill);
+  padding: 0.45rem 1rem;
   font: inherit;
-  font-weight: 700;
+  font-weight: 500;
+  white-space: nowrap;
   cursor: pointer;
 }
 
 .primaryButton {
   border: 0;
-  background: var(--color-link);
-  color: var(--color-header-ink);
+  background: var(--color-primary);
+  color: var(--color-primary-ink);
 }
 
 .secondaryButton {
   border: 1px solid var(--color-border);
   background: var(--color-surface);
-  color: var(--color-link);
+  color: var(--color-ink);
 }
 
 .primaryButton:hover,
-.primaryButton:focus-visible,
+.primaryButton:focus-visible {
+  background: var(--color-primary-hover);
+}
+
 .secondaryButton:hover,
 .secondaryButton:focus-visible {
-  background: var(--color-ink);
-  color: var(--color-header-ink);
+  background: var(--color-surface-strong);
 }
 
 .validation {
   margin: 0 0 var(--space-4);
-  border-left: 0.25rem solid var(--color-link);
+  border-left: 2px solid var(--color-warning);
   padding: 0.8rem 1rem;
   background: var(--color-surface-strong);
   color: var(--color-ink);
@@ -166,9 +171,8 @@
 .tableFrame {
   overflow-x: auto;
   border: 1px solid var(--color-border);
-  border-radius: 0.8rem;
+  border-radius: var(--radius-lg);
   background: var(--color-surface);
-  box-shadow: var(--shadow-card);
 }
 
 .table {
@@ -181,15 +185,23 @@
 .table th,
 .table td {
   border-bottom: 1px solid var(--color-border);
-  padding: 0.85rem 1rem;
+  padding: 0.6rem 0.9rem;
   vertical-align: middle;
 }
 
 .table th {
+  background: var(--color-surface-sunken);
   color: var(--color-muted);
-  font-size: 0.75rem;
-  letter-spacing: 0.06em;
+  font-family: var(--font-mono);
+  font-size: var(--text-label);
+  font-weight: 500;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.table tbody tr:hover td {
+  background: var(--color-surface-sunken);
 }
 
 .table tbody tr:last-child td {
@@ -202,7 +214,7 @@
 }
 
 .primaryCell {
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .secondaryCell {
@@ -212,17 +224,25 @@
 
 .statusPill {
   display: inline-block;
-  border-radius: 999px;
-  padding: 0.25rem 0.55rem;
-  background: var(--color-surface-strong);
+  border-radius: var(--radius-sm);
+  padding: 0.15rem 0.45rem;
+  background: var(--color-surface-sunken);
   color: var(--color-ink);
-  font-size: 0.8rem;
+  font-size: var(--text-label);
   white-space: nowrap;
+  border: 1px solid var(--color-border);
+  font-family: var(--font-mono);
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .rowLink {
   color: var(--color-link);
-  font-weight: 700;
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: var(--color-border-strong);
+  text-underline-offset: 0.2em;
   white-space: nowrap;
 }
 
@@ -242,5 +262,176 @@
 
   .pageHeader .secondaryButton {
     margin-top: var(--space-4);
+  }
+}
+
+/* Dense Q&A run ledger from the Spine UI prototype. */
+.page {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: none;
+  min-height: calc(100dvh - 6rem);
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 1.35rem;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+}
+
+.pageHeader {
+  align-items: center;
+  min-height: 3.8rem;
+  margin: 0;
+  padding: 0.85rem 1rem 0.35rem;
+}
+
+.pageHeader .eyebrow,
+.pageHeader .lede {
+  display: none;
+}
+
+.page h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.filters {
+  grid-template-columns: 0.8fr 1.45fr 1.1fr 1.1fr auto;
+  gap: 0.65rem;
+  margin: 0;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  padding: 0.35rem 1rem 1rem;
+  background: var(--color-surface);
+}
+
+.filter > span {
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.input,
+.filterTrigger {
+  min-height: 2.45rem;
+  border: 0;
+  border-radius: 999px;
+  padding-inline: 0.95rem;
+  background: var(--color-surface-sunken);
+}
+
+.primaryButton,
+.secondaryButton {
+  min-height: 2.4rem;
+}
+
+.validation {
+  margin: 0;
+}
+
+.page > div:last-child {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.tableFrame {
+  flex: 1;
+  overflow: auto;
+  border: 0;
+  border-radius: 0;
+}
+
+.table {
+  min-width: 66rem;
+}
+
+.table th,
+.table td {
+  height: 3.55rem;
+  padding: 0.55rem 0.85rem;
+}
+
+.table th {
+  height: 2.1rem;
+  background: var(--color-surface);
+  font-size: 0.62rem;
+}
+
+.runLink {
+  display: block;
+  max-width: 16rem;
+  overflow: hidden;
+  color: var(--color-ink);
+  font-weight: 600;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runLink::before {
+  content: '∿';
+  display: inline-grid;
+  width: 1.8rem;
+  height: 1.8rem;
+  margin-right: 0.65rem;
+  place-items: center;
+  border-radius: 0.55rem;
+  background: var(--color-surface-sunken);
+  color: var(--color-muted);
+  font-family: sans-serif;
+}
+
+.runLink code {
+  font-size: 0.72rem;
+}
+
+.statusPill {
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  font-family: inherit;
+  font-size: 0.78rem;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.statusPill::before {
+  content: '';
+  display: inline-block;
+  width: 0.45rem;
+  height: 0.45rem;
+  margin-right: 0.45rem;
+  border-radius: 50%;
+  background: var(--color-success);
+  vertical-align: 0.05rem;
+}
+
+.primaryCell code {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+}
+
+.secondaryCell,
+.table time {
+  font-size: 0.69rem;
+}
+
+@media (max-width: 1050px) {
+  .filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .page {
+    min-height: calc(100dvh - 5rem);
+    border-radius: 0;
+  }
+
+  .filters {
+    grid-template-columns: 1fr;
   }
 }

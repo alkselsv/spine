@@ -13,16 +13,18 @@
 .eyebrow {
   margin: 0 0 var(--space-2);
   color: var(--color-muted);
-  font-size: 0.72rem;
-  font-weight: 750;
-  letter-spacing: 0.16em;
+  font-family: var(--font-mono);
+  font-size: var(--text-label);
+  font-weight: 500;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 .header h2 {
   margin: 0 0 var(--space-3);
-  font-size: clamp(1.7rem, 3vw, 2.5rem);
-  letter-spacing: -0.04em;
+  font-size: var(--text-title);
+  font-weight: 600;
+  letter-spacing: -0.02em;
 }
 
 .lede {
@@ -59,7 +61,7 @@
   padding: 0.7rem 0.8rem;
   color: var(--color-muted);
   font-size: 0.86rem;
-  font-weight: 700;
+  font-weight: 600;
   text-decoration: none;
 }
 
@@ -79,7 +81,7 @@
 .card {
   min-width: 0;
   border: 1px solid var(--color-border);
-  border-radius: 0.8rem;
+  border-radius: var(--radius-lg);
   padding: var(--space-5);
   background: var(--color-surface);
   box-shadow: var(--shadow-card);
@@ -103,7 +105,7 @@
 .projectionKindValue {
   color: var(--color-muted);
   font-size: 0.76rem;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .projectionKindValue code {
@@ -113,7 +115,7 @@
 
 .refreshButton {
   border: 1px solid var(--color-border);
-  border-radius: 0.45rem;
+  border-radius: var(--radius-sm);
   padding: 0.5rem 0.65rem;
   background: var(--color-surface);
   color: var(--color-ink);
@@ -139,7 +141,7 @@
 
 .operationalNotice {
   margin: var(--space-4) 0 0;
-  border-left: 0.22rem solid var(--color-accent);
+  border-left: 2px solid var(--color-border-strong);
   padding: 0.65rem 0.8rem;
   background: var(--color-surface-strong);
   color: var(--color-ink);
@@ -152,10 +154,10 @@
   border: 1px solid var(--color-link);
   border-radius: 0.5rem;
   padding: 0.65rem 0.9rem;
-  background: var(--color-link);
-  color: white;
+  background: var(--color-primary);
+  color: var(--color-primary-ink);
   font: inherit;
-  font-weight: 700;
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -174,13 +176,17 @@
 
 .statusPill {
   display: inline-block;
-  border-radius: 999px;
-  padding: 0.3rem 0.65rem;
-  background: var(--color-surface-strong);
+  border-radius: var(--radius-sm);
+  padding: 0.15rem 0.45rem;
+  background: var(--color-surface-sunken);
   color: var(--color-ink);
-  font-size: 0.8rem;
-  font-weight: 750;
+  font-size: var(--text-label);
+  font-weight: 500;
   white-space: nowrap;
+  border: 1px solid var(--color-border);
+  font-family: var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .details {
@@ -197,7 +203,7 @@
 .details dt {
   color: var(--color-muted);
   font-size: 0.76rem;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .details dd {
@@ -208,7 +214,7 @@
 
 .immutable {
   margin: 0 0 var(--space-4);
-  border-left: 0.25rem solid var(--color-accent);
+  border-left: 2px solid var(--color-border-strong);
   padding: 0.7rem 0.85rem;
   background: var(--color-surface-strong);
   color: var(--color-muted);
@@ -246,7 +252,7 @@
 
 .link {
   color: var(--color-link);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .actionRow {
@@ -262,7 +268,7 @@
   border-radius: 0.5rem;
   padding: 0.65rem 0.85rem;
   color: var(--color-link);
-  font-weight: 700;
+  font-weight: 600;
   text-decoration: none;
 }
 
@@ -281,7 +287,7 @@
   display: grid;
   gap: var(--space-3);
   border: 1px solid var(--color-border);
-  border-radius: 0.65rem;
+  border-radius: var(--radius-md);
   padding: var(--space-4);
   background: var(--color-surface-strong);
 }
@@ -295,14 +301,14 @@
   gap: 0.35rem;
   color: var(--color-muted);
   font-size: 0.82rem;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .lifecycleField input,
 .lifecycleField select {
   min-width: 0;
   border: 1px solid var(--color-border);
-  border-radius: 0.45rem;
+  border-radius: var(--radius-sm);
   padding: 0.65rem 0.7rem;
   background: var(--color-surface);
   color: var(--color-ink);
@@ -311,22 +317,23 @@
 
 .lifecyclePrimaryButton,
 .lifecycleDangerButton {
-  border: 1px solid var(--color-link);
-  border-radius: 0.5rem;
-  padding: 0.65rem 0.85rem;
-  color: white;
+  border: 1px solid var(--color-primary);
+  border-radius: var(--radius-pill);
+  padding: 0.5rem 1rem;
+  color: var(--color-primary-ink);
   font: inherit;
-  font-weight: 700;
+  font-weight: 500;
   cursor: pointer;
 }
 
 .lifecyclePrimaryButton {
-  background: var(--color-link);
+  background: var(--color-primary);
 }
 
 .lifecycleDangerButton {
-  border-color: var(--color-accent);
-  background: var(--color-accent);
+  border-color: color-mix(in srgb, var(--color-danger) 45%, var(--color-border));
+  background: var(--color-surface);
+  color: var(--color-danger);
 }
 
 .lifecyclePrimaryButton:disabled,
@@ -340,19 +347,19 @@
   display: grid;
   gap: 0.45rem;
   margin-top: var(--space-5);
-  border-radius: 0.65rem;
+  border-radius: var(--radius-md);
   padding: var(--space-4);
   line-height: 1.45;
 }
 
 .lifecycleStatus {
-  border: 1px solid var(--color-accent);
-  background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
+  border: 1px solid color-mix(in srgb, var(--color-success) 35%, var(--color-border));
+  background: color-mix(in srgb, var(--color-success) 6%, var(--color-surface));
 }
 
 .lifecycleError {
-  border: 1px solid var(--color-link);
-  background: color-mix(in srgb, var(--color-link) 8%, var(--color-surface));
+  border: 1px solid color-mix(in srgb, var(--color-danger) 35%, var(--color-border));
+  background: color-mix(in srgb, var(--color-danger) 6%, var(--color-surface));
 }
 
 .lifecycleStatus code,
@@ -363,7 +370,7 @@
 .subviewNotice {
   margin: 0 0 var(--space-4);
   border: 1px solid var(--color-border);
-  border-radius: 0.8rem;
+  border-radius: var(--radius-lg);
   padding: var(--space-4);
   background: var(--color-surface-strong);
   color: var(--color-muted);
@@ -378,7 +385,7 @@
 
 .protectedNotice {
   margin: 0 0 var(--space-4);
-  border-left: 0.25rem solid var(--color-accent);
+  border-left: 2px solid var(--color-border-strong);
   padding: 0.65rem 0.85rem;
   color: var(--color-muted);
   font-size: 0.84rem;
@@ -396,7 +403,7 @@
 .revisionRow {
   min-width: 0;
   border: 1px solid var(--color-border);
-  border-radius: 0.65rem;
+  border-radius: var(--radius-md);
   padding: var(--space-4);
   background: var(--color-surface);
 }
@@ -411,7 +418,7 @@
 
 .revisionId {
   color: var(--color-link);
-  font-weight: 700;
+  font-weight: 600;
   overflow-wrap: anywhere;
 }
 
@@ -441,13 +448,13 @@
 .tombstoneMark {
   color: var(--color-muted);
   font-size: 0.8rem;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .selectedRevision {
   margin-bottom: var(--space-5);
   border: 1px solid var(--color-border);
-  border-radius: 0.65rem;
+  border-radius: var(--radius-md);
   padding: var(--space-4);
   background: var(--color-surface-strong);
 }
@@ -476,7 +483,7 @@
 .contentSegment {
   min-width: 0;
   border: 1px solid var(--color-border);
-  border-radius: 0.65rem;
+  border-radius: var(--radius-md);
   padding: var(--space-4);
   background: var(--color-surface-strong);
 }

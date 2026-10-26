@@ -2,8 +2,9 @@
 
 The administrator shell and Q&A workspaces adapt selected presentation patterns
 from Halaska UI: navigation and data-table density, side-sheet composition,
-status indicators, empty states, thin separators and recovery-oriented
-hierarchy. The patterns are rewritten in typed Spine TSX and CSS Modules; no
+status indicators, empty states, thin separators, recovery-oriented
+hierarchy, the neutral light/dark token palette, monospace section labels and
+the prompt-input composer container. The patterns are rewritten in typed Spine TSX and CSS Modules; no
 Halaska runtime, transport, domain model or source file is included in Spine.
 
 Source revision: https://github.com/Halaska-Studio/ui/tree/f11ab6958de3fb186a4d431e8425bbe43a6dc87b
