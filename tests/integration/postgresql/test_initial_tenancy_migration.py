@@ -4905,10 +4905,10 @@ def _write_failing_revision(tmp_path: Path) -> Config:
         "20261124_61_drive_revision_metadata.py",
     ):
         shutil.copy(source / "versions" / revision_file, target / "versions" / revision_file)
-    (target / "versions" / "20261124_61_injected_failure.py").write_text(
+    (target / "versions" / "20261125_62_injected_failure.py").write_text(
         "from alembic import op\n"
         "import sqlalchemy as sa\n"
-        "revision = '20261124_61'\n"
+        "revision = '20261125_62'\n"
         "down_revision = '20261124_61'\n"
         "branch_labels = None\n"
         "depends_on = None\n"
