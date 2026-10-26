@@ -412,52 +412,12 @@ class _HandoffSheetsService:
     async def get_spreadsheet(
         self, connection, resource_scope_reference, spreadsheet_id, sheet_id
     ):
-        del connection, resource_scope_reference
+        del connection, resource_scope_reference, spreadsheet_id, sheet_id
         if self.snapshots is not None:
             snapshot = self.snapshots[min(self.read_count, len(self.snapshots) - 1)]
             self.read_count += 1
             return snapshot
-        return GoogleSheetsSnapshot(
-            spreadsheet_id=spreadsheet_id,
-            sheet_id=sheet_id,
-            sheet_title="Estimates",
-            locale="ru_RU",
-            time_zone="Europe/Moscow",
-            rows=(
-                GoogleSheetsRowData(
-                    row_number=2,
-                    a1_range="A2:B2",
-                    cells=(
-                        GoogleSheetsCellData(
-                            column_key="estimate_id",
-                            coordinate="A2",
-                            entered=GoogleSheetCellValue(
-                                kind="string", value="estimate-42"
-                            ),
-                            effective=GoogleSheetCellValue(
-                                kind="string", value="estimate-42"
-                            ),
-                            formatted="estimate-42",
-                            number_format=GoogleSheetNumberFormat(type="TEXT"),
-                        ),
-                        GoogleSheetsCellData(
-                            column_key="total",
-                            coordinate="B2",
-                            entered=GoogleSheetCellValue(
-                                kind="formula", value="=SUM(C2:D2)"
-                            ),
-                            effective=GoogleSheetCellValue(
-                                kind="number", value="1250.5"
-                            ),
-                            formatted="1250.50",
-                            number_format=GoogleSheetNumberFormat(
-                                type="NUMBER", pattern="#,##0.00"
-                            ),
-                        ),
-                    ),
-                ),
-            ),
-        )
+        return _handoff_snapshot(row_number=2)
 
 
 class _SheetsHandoffReader:
@@ -581,6 +541,48 @@ async def test_google_sheets_reader_reaches_shared_canonical_and_projection_hand
     assert ingestion.observation is not None
     assert len(uow.events) == 1
     assert uow.events[0].event_type == "ingestion.projection.requested"
+
+
+@pytest.mark.asyncio
+async def test_sheets_location_only_observation_skips_revision_projection_intent():
+    reader = _SheetsHandoffReader(
+        snapshots=(
+            _handoff_snapshot(row_number=2),
+            _handoff_snapshot(row_number=5, sheet_title="Renamed estimates"),
+            _handoff_snapshot(row_number=5, formula="=SUM(C2:E2)"),
+        )
+    )
+    orchestrator, _, _, _, uow = _orchestrator(reader=reader)
+
+    first = await orchestrator.ingest(
+        _command("projection-count-1").model_copy(
+            update={"command_identity": "connector.projection-count-1"}
+        )
+    )
+    moved = await orchestrator.ingest(
+        _command("projection-count-2").model_copy(
+            update={
+                "command_identity": "connector.projection-count-2",
+                "expected_current_revision_id": first.revision.revision_id,
+            }
+        )
+    )
+    edited = await orchestrator.ingest(
+        _command("projection-count-3").model_copy(
+            update={
+                "command_identity": "connector.projection-count-3",
+                "expected_current_revision_id": moved.revision.revision_id,
+            }
+        )
+    )
+
+    assert first.revision.revision_id == moved.revision.revision_id
+    assert edited.revision.revision_id != moved.revision.revision_id
+    assert uow.accepted == 2
+    assert len(uow.events) == 2
+    assert all(
+        event.event_type == "ingestion.projection.requested" for event in uow.events
+    )
 
 
 @pytest.mark.asyncio
