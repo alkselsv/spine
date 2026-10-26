@@ -17,6 +17,9 @@ Halaska UI. Chat использует Spine-owned transport поверх API/SSE
 Route shell, URL scope context, administrator boundary, localized states and
 reference decisions реализованы в
 [`docs/design/issue-165-control-plane-shell.md`](../docs/design/issue-165-control-plane-shell.md).
+Текущая композиция shell (sidebar, рамка рабочей области, светлая/тёмная тема)
+и сопоставление с Agno/Halaska описаны в
+[`docs/design/control-plane-visual-refresh.md`](../docs/design/control-plane-visual-refresh.md).
 
 ```text
 app/
@@ -53,6 +56,7 @@ pnpm web:api:generate # export FastAPI OpenAPI and regenerate TypeScript types
 pnpm web:api:check # regenerate and fail if committed artifacts differ
 pnpm web:typecheck # strict TypeScript
 pnpm web:build     # static SPA production build
+pnpm --dir web build:fixtures # isolated build with synthetic browser fixtures
 pnpm web:test      # Vitest + Testing Library
 pnpm web:test:e2e  # Playwright against a controlled Vite preview
 pnpm --dir web test:e2e:production # opt-in deployed-backend qualification
@@ -75,16 +79,21 @@ pnpm --dir web exec playwright install --with-deps chromium
 
 ## Browser qualification
 
-`pnpm web:test:e2e` сначала заново собирает SPA, затем запускает принадлежащий
-этому прогону Vite preview и Chromium. По умолчанию preview использует
+`pnpm web:test:e2e` сначала заново собирает fixture-вариант SPA, затем запускает
+принадлежащий этому прогону Vite preview и Chromium. По умолчанию preview использует
 `http://127.0.0.1:4175`; порт можно переопределить переменной
 `SPINE_CONTROLLED_PREVIEW_PORT`. Значение должно быть целым числом от 1 до
 65535. Занятый порт завершает квалификацию явной ошибкой до запуска тестов:
 существующий listener никогда не переиспользуется.
 
-Тестовые URL с `fixture=controlled` включают только синтетический API/SSE
-boundary для квалификации foundation; этот режим не является авторизацией и не
-считается production evidence.
+Fixture-сервис использует обычные product URL (`/chat`, `/knowledge/documents`,
+`/qa/runs`) и автоматически выбирает подходящий синтетический набор по маршруту.
+Query-параметр `fixture` оставлен только для явных qualification-сценариев вроде
+`auth-denied`. Fixture transport компилируется только режимом Vite `fixtures` и
+не входит в обычную production-сборку. В Compose этот bundle доступен только у
+профильного сервиса `web-fixtures` на порту `4176`; обычный `web` на порту
+`4175` игнорирует параметр `fixture` и всегда обращается к live API. Fixture-режим
+не является авторизацией и не считается production evidence.
 Опциональная `test:e2e:production` команда работает только с уже развёрнутым
 Web/API. Она загружает runtime identity/scope из корневого `.env`, а approved
 browser inputs и evidence paths — из `.env.e2e`; команда не поднимает preview

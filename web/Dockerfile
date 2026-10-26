@@ -1,5 +1,7 @@
 FROM node:22.20.0-bookworm-slim AS build
 
+ARG SPINE_WEB_BUILD_MODE=production
+
 RUN npm install --global pnpm@12.11.2
 WORKDIR /app
 
@@ -9,7 +11,7 @@ COPY web/api/codegen/package.json ./web/api/codegen/package.json
 RUN pnpm install --frozen-lockfile
 
 COPY web ./web
-RUN pnpm --dir web build
+RUN pnpm --dir web exec vite build --mode "${SPINE_WEB_BUILD_MODE}"
 
 FROM nginx:1.28.0-alpine
 

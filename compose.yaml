@@ -319,6 +319,8 @@ services:
     build:
       context: .
       dockerfile: web/Dockerfile
+      args:
+        SPINE_WEB_BUILD_MODE: production
     depends_on:
       api:
         condition: service_healthy
@@ -331,6 +333,26 @@ services:
       SPINE_WEB_ENVIRONMENT_B_ID: ${SPINE_ENVIRONMENT_B_ID}
     ports:
       - "127.0.0.1:${SPINE_WEB_PORT:-4175}:8080"
+
+  web-fixtures:
+    profiles: ["fixtures"]
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+      args:
+        SPINE_WEB_BUILD_MODE: fixtures
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      SPINE_WEB_ACCESS_TOKEN: ${SPINE_LOCAL_AUTH_BEARER_CREDENTIAL}
+      SPINE_WEB_IDENTITY_VERSION: ${SPINE_LOCAL_AUTH_CONFIGURATION_VERSION}
+      SPINE_WEB_WORKSPACE_A_ID: ${SPINE_WORKSPACE_A_ID}
+      SPINE_WEB_WORKSPACE_B_ID: ${SPINE_WORKSPACE_B_ID}
+      SPINE_WEB_ENVIRONMENT_A_ID: ${SPINE_ENVIRONMENT_A_ID}
+      SPINE_WEB_ENVIRONMENT_B_ID: ${SPINE_ENVIRONMENT_B_ID}
+    ports:
+      - "127.0.0.1:${SPINE_WEB_FIXTURES_PORT:-4176}:8080"
 
 volumes:
   spine-postgres:

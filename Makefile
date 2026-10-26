@@ -19,7 +19,7 @@ TEST_UV_CACHE_DIR ?= $(TEST_TMP_ROOT)/spine-uv-cache
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install test test-fast test-release compile diff-check check verify api qualification-env compose-env qualification-provision start status logs stop destroy
+.PHONY: help install test test-fast test-release compile diff-check check verify api qualification-env compose-env qualification-provision start start-fixtures status logs stop destroy
 
 help: ## Show available commands.
 	@printf '%s\n' \
@@ -32,6 +32,7 @@ help: ## Show available commands.
 		'make verify   Install dependencies and run all checks' \
 		'make qualification-env Generate a bounded local .env.qualification' \
 		'make start    Provision qualification authority and start Compose' \
+		'make start-fixtures Start the isolated fixture UI on port 4176' \
 		'make status   Show all Compose services' \
 		'make logs     Show recent application service logs' \
 		'make stop     Stop Compose and preserve its volumes' \
@@ -80,18 +81,21 @@ qualification-provision: compose-env ## Provision disposable qualification autho
 start: qualification-provision ## Build and start the complete local Compose stack.
 	$(COMPOSE_COMMAND) up --build --detach --wait
 
+start-fixtures: qualification-provision ## Start the fixture-only web build and its backend dependencies.
+	$(COMPOSE_COMMAND) --profile fixtures up --build --detach --wait web-fixtures
+
 status: compose-env ## Show all local Compose services.
-	$(COMPOSE_COMMAND) ps --all
+	$(COMPOSE_COMMAND) --profile fixtures ps --all
 
 logs: compose-env ## Show recent logs; override LOG_TAIL or LOG_SERVICES if needed.
 	$(COMPOSE_COMMAND) logs --tail="$(LOG_TAIL)" $(LOG_SERVICES)
 
 stop: compose-env ## Stop the stack without deleting disposable volumes.
-	$(COMPOSE_COMMAND) down
+	$(COMPOSE_COMMAND) --profile fixtures down
 
 destroy: compose-env ## Delete the selected Compose project and its disposable volumes.
 	@printf '%s\n' 'Удаляются контейнеры и все disposable volumes Compose-проекта $(COMPOSE_PROJECT).'
-	$(COMPOSE_COMMAND) down --volumes --remove-orphans
+	$(COMPOSE_COMMAND) --profile fixtures down --volumes --remove-orphans
 
 api: ## Start the development API; override PORT if needed.
 	$(UV) run uvicorn spine.api.main:app --reload --port $(PORT)
