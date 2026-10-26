@@ -60,6 +60,10 @@ class GoogleProviderReadError(GoogleConnectionError):
         super().__init__("Google provider read failed.")
 
 
+class GoogleProviderContractError(GoogleConnectionError):
+    """A provider response violated a typed, fail-closed reader contract."""
+
+
 @dataclass(frozen=True, slots=True)
 class GoogleConnectionCommand:
     connection: GoogleConnection
@@ -158,6 +162,8 @@ class GoogleReadAdmission(Generic[ProviderResultT]):
                 try:
                     return await self._provider.read(connection, command)
                 except asyncio.CancelledError:
+                    raise
+                except GoogleProviderContractError:
                     raise
                 except Exception:
                     await self._emit_failure(
@@ -286,6 +292,7 @@ __all__ = [
     "GoogleConnectionMutationResult",
     "GoogleConnectionRepository",
     "GoogleProvider",
+    "GoogleProviderContractError",
     "GoogleProviderReadError",
     "GoogleReadAdmission",
     "GoogleReadCommand",

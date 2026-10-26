@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 from types import SimpleNamespace
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -12,6 +13,7 @@ from spine.application.connector_ingestion import (
     ConnectorIngestionStatus,
     build_connector_canonical_acceptance_command,
 )
+from spine.application.connections.google import GoogleReadCommand
 from spine.application.persistence.context import (
     EnvironmentScope,
     PersistenceOperation,
@@ -23,6 +25,13 @@ from spine.application.persistence.ingestion import IngestionMutationResult
 from spine.application.persistence.idempotency import OpaqueResultReference
 from spine.application.diagnostics import AuditEventRegistry
 from spine.connectors import ConnectorCoverage, NormalizedConnectorObservation
+from spine.connectors.google_sheets import (
+    GoogleSheetsCellData,
+    GoogleSheetsProviderAdapter,
+    GoogleSheetsReadProfile,
+    GoogleSheetsRowData,
+    GoogleSheetsSnapshot,
+)
 from spine.domain.ingestion import (
     IngestionItemState,
     IngestionRunState,
@@ -32,8 +41,11 @@ from spine.domain.ingestion import (
 )
 from spine.domain.sources.google import (
     GoogleRegisterRowKey,
+    GoogleSheetCellValue,
+    GoogleSheetNumberFormat,
     google_source_identity,
 )
+from spine.domain.connections.google import OpaqueGoogleReference
 from spine.domain.common import EnvironmentKind
 from spine.domain.workspaces import Environment, Workspace
 from spine.infrastructure.persistence.contexts import (
@@ -339,8 +351,8 @@ class _Uow:
         return self.trace_id
 
 
-def _orchestrator(observation):
-    reader = _Reader(observation)
+def _orchestrator(observation=None, *, reader=None):
+    reader = reader or _Reader(observation)
     uploader = _Uploader()
     ingestion = _Ingestion()
     admissions = _Admissions()
@@ -370,6 +382,91 @@ def _orchestrator(observation):
     )
 
 
+class _HandoffSheetsService:
+    async def get_spreadsheet(
+        self, connection, resource_scope_reference, spreadsheet_id, sheet_id
+    ):
+        del connection, resource_scope_reference
+        return GoogleSheetsSnapshot(
+            spreadsheet_id=spreadsheet_id,
+            sheet_id=sheet_id,
+            sheet_title="Estimates",
+            locale="ru_RU",
+            time_zone="Europe/Moscow",
+            rows=(
+                GoogleSheetsRowData(
+                    row_number=2,
+                    a1_range="A2:B2",
+                    cells=(
+                        GoogleSheetsCellData(
+                            column_key="estimate_id",
+                            coordinate="A2",
+                            entered=GoogleSheetCellValue(
+                                kind="string", value="estimate-42"
+                            ),
+                            effective=GoogleSheetCellValue(
+                                kind="string", value="estimate-42"
+                            ),
+                            formatted="estimate-42",
+                            number_format=GoogleSheetNumberFormat(type="TEXT"),
+                        ),
+                        GoogleSheetsCellData(
+                            column_key="total",
+                            coordinate="B2",
+                            entered=GoogleSheetCellValue(
+                                kind="formula", value="=SUM(C2:D2)"
+                            ),
+                            effective=GoogleSheetCellValue(
+                                kind="number", value="1250.5"
+                            ),
+                            formatted="1250.50",
+                            number_format=GoogleSheetNumberFormat(
+                                type="NUMBER", pattern="#,##0.00"
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+
+class _SheetsHandoffReader:
+    def __init__(self) -> None:
+        self.provider = GoogleSheetsProviderAdapter(
+            service=_HandoffSheetsService(),
+            profile=GoogleSheetsReadProfile(
+                spreadsheet_id="spreadsheet-1",
+                sheet_id=17,
+                business_id_column="estimate_id",
+                columns=(
+                    {"column_key": "estimate_id", "coordinate": "A"},
+                    {"column_key": "total", "coordinate": "B"},
+                ),
+            ),
+            clock=lambda: NOW,
+        )
+        self.connection = SimpleNamespace(
+            connection_id=CONNECTION,
+            workspace_id=WORKSPACE,
+            environment_id=ENVIRONMENT,
+        )
+
+    async def read(self, command, context):
+        del context
+        observation = await self.provider.read(
+            self.connection,
+            GoogleReadCommand(
+                connection_id=command.connection_id,
+                resource_scope_reference=OpaqueGoogleReference(
+                    value=command.resource_scope_reference
+                ),
+                authorization_generation=command.authorization_generation,
+                configuration_generation=command.configuration_generation,
+            ),
+        )
+        return observation.to_normalized_observation()
+
+
 @pytest.mark.asyncio
 async def test_authorized_normalized_observation_reaches_canonical_and_projection_handoffs():
     orchestrator, reader, uploader, ingestion, uow = _orchestrator(_observation())
@@ -386,6 +483,28 @@ async def test_authorized_normalized_observation_reaches_canonical_and_projectio
     assert result.processing_receipt.output_digest == result.revision.revision_digest
     assert ingestion.observation is not None
     assert ingestion.receipt is result.processing_receipt
+    assert len(uow.events) == 1
+    assert uow.events[0].event_type == "ingestion.projection.requested"
+
+
+@pytest.mark.asyncio
+async def test_google_sheets_reader_reaches_shared_canonical_and_projection_handoff():
+    reader = _SheetsHandoffReader()
+    orchestrator, _, uploader, ingestion, uow = _orchestrator(reader=reader)
+
+    result = await orchestrator.ingest(_command())
+
+    assert result.status is ConnectorIngestionStatus.SUCCEEDED
+    assert result.source.external_object_id == (
+        result.observation.external_identity.external_object_id
+    )
+    assert result.revision.original_sha256 == hashlib.sha256(
+        result.observation.original_bytes
+    ).hexdigest()
+    assert result.provenance.revision_id == result.revision.revision_id
+    assert uow.accepted == 1
+    assert uploader.calls == 1
+    assert ingestion.observation is not None
     assert len(uow.events) == 1
     assert uow.events[0].event_type == "ingestion.projection.requested"
 

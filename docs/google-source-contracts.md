@@ -61,9 +61,9 @@ wrong revision, provider row key or column and never consults a live sheet.
 
 This ticket defines the locator as a standalone evidence contract; it does not
 widen the persisted `ParsedSegment` locator union or an active projection
-format. The Sheets reader/ingestion slice must add that adapter integration with
-its persistence and projection contract tests before emitting these locators.
-Consequently #600 requires no projection rebuild or rollback. If a later slice
+format. The Sheets reader/ingestion slice adds that adapter integration at the
+shared canonical handoff; it does not widen the active projection locator union.
+Consequently #600 and #603 require no projection rebuild or rollback. If a later slice
 adds the locator to active projection lineage, it must use ADR-0043's normal
 successor-publication path, retain the last active publication on rebuild
 failure, roll back through a new successor, and extend the pinned evidence
@@ -106,3 +106,33 @@ handoff carries the provider version as an ordering token and the selected
 MIME/profile into the existing immutable original, `SourceRevision`, acceptance
 and projection-outbox path. The adapter has no cursor, deletion behavior,
 Cognee dependency or credential handling.
+
+## Sheets register-row reader
+
+Issue #603 adds the first production-selected row-aware Sheets adapter. Its
+fakeable service boundary models one bounded `spreadsheets.get`-style response
+for the configured `spreadsheet_id` and stable numeric `sheet_id`; it never
+uses Drive CSV export. `GoogleSheetsReadProfile` fixes the business-ID column,
+selected grid columns, optional Developer Metadata key and optional target row.
+
+The adapter preserves each selected column's entered/formula, effective,
+formatted and number-format values, together with spreadsheet locale and time
+zone, in `GoogleSheetRowOriginal`. Row number, A1 range, sheet title and a
+validated Developer Metadata ID are stored in `GoogleSheetRowLocation` only.
+They are not part of the row revision digest.
+
+The reader fails closed with a typed `GoogleSheetsUnsafeIdentityError` for a
+missing or conflicting business ID, duplicate ID in the observed scope, or a
+configured Developer Metadata mismatch. It also rejects a response whose
+spreadsheet or numeric sheet ID, configured column, or observed cell coordinate
+does not match the approved profile. No rejected row is converted into a
+normalized observation, so the shared connector handoff cannot create an
+accepted revision or projection intent for it.
+
+A valid row maps to `NormalizedConnectorObservation` with the existing
+`google-register-row-key:v1` identity and `locator:google-sheet-cell:v1`
+contract. The observation then enters the same immutable-original,
+SourceObject/SourceRevision, canonical-acceptance and transactional-outbox
+path as the Drive reader. Replaying an unchanged row reproduces the same
+original bytes, event identity and revision digest; locator resolution remains
+bound to the exact stored row revision and representation.
